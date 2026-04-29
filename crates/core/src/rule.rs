@@ -1,120 +1,116 @@
-//! Design notes for the `Rule` trait. *No trait yet* — the shape is open
-//! until we have two or three signals partially implemented and can see
-//! what they actually need. Listing options here so the decision is in
-//! one place.
+//! The `Rule` trait. Picked after 4 hygiene rules landed as free
+//! functions and the shape they wanted became obvious. See git history
+//! for the candidate-comparison design notes.
 //!
-//! ## What every rule needs to do
+//! ## The trait
 //!
-//! 1. Identify itself (`RuleId`).
-//! 2. Read its config (enabled flag, thresholds — config is *override*,
-//!    not the primary configuration surface; see `signals::hygiene` for
-//!    the statistical-first / config-as-override policy).
-//! 3. Examine the project (target verses; sometimes source verses;
-//!    sometimes corpus-wide aggregates computed in a prior pass;
-//!    sometimes the discourse-level view from `crate::discourse`).
-//! 4. Emit zero or more `Finding`s with spans into either `Verse.nfc`
-//!    or (mapped back through) the discourse stream.
-//! 5. Skip findings whose `(rule_id, sid)` is in the `ExceptionSet`.
-//!
-//! ## Candidate trait shapes
-//!
-//! ### A. Stateless function pointers
 //! ```ignore
-//! pub type RuleFn = for<'a> fn(&'a Project<'a>, &RuleConfig) -> Vec<Finding<'a>>;
-//! ```
-//! Pros: dead simple, easy to register in a static table.
-//! Cons: a `fn` pointer has no `self`, so any per-rule precomputed
-//! state (a trained char-LM, a glossary index) has to live somewhere
-//! outside the function and be threaded in through arguments. That's
-//! doable, but you end up reinventing `&self` by hand: a registry of
-//! per-rule state keyed by `RuleId`, looked up at call time. Workable
-//! but ugly.
-//!
-//! ### B. Trait with a `prepare` step
-//! ```ignore
-//! pub trait Rule {
+//! pub trait Rule: Sync {
 //!     fn id(&self) -> RuleId;
-//!     fn prepare(&mut self, project: &Project) {} // optional precompute
-//!     fn check<'a>(&self, project: &'a Project<'a>) -> Vec<Finding<'a>>;
+//!     fn check<'src>(&self, project: &'src Project<'src>) -> Vec<Finding<'src>>;
 //! }
 //! ```
-//! Pros: per-rule state lives in the impl struct. Clean.
-//! Cons: dyn-dispatch + boxing; lifetimes get hairy with `&mut self`.
 //!
-//! ### C. Two-phase: corpus stats first, then rules
-//! Engine builds `CorpusStats` (token freqs, char-LM, hapax sets) once,
-//! every rule receives `&Project, &CorpusStats, &RuleConfig`. Rules stay
-//! stateless; expensive shared work is hoisted into one obvious place.
+//! The trait takes the whole `Project`, not a single `Verse`. Three
+//! reasons:
 //!
-//! Currently leaning **C** — most rules read from the same handful of
-//! aggregates, and "compute every aggregate once, pass it to every
-//! rule" matches how the calibration profiler already works. Decide
-//! for real once `analysis::dunning` is implemented and we can see
-//! what one full signal looks like.
+//! 1. **Discourse-level rules need cross-verse access.** Sentence-start
+//!    capitalisation, paired-punctuation balance, etc. cannot be
+//!    expressed by a per-verse function.
+//! 2. **Source-relative rules need both corpora.** Per-verse signature
+//!    would force every source-relative rule to thread the source
+//!    corpus through some side channel.
+//! 3. **Iteration shape varies.** Hygiene rules iterate every verse;
+//!    proportionality iterates `source ∩ target`; sentence-start
+//!    iterates the discourse stream. Putting iteration in the rule
+//!    rather than the engine means each rule expresses what it actually
+//!    needs.
 //!
-//! TODO: pick A/B/C after the first signal lands. Then write the
-//! trait. Then refactor the signal to fit.
+//! Per-verse hygiene rules pay for this with a one-line `flat_map`
+//! over `project.target.verses.values()` — cheap.
 //!
-//! ## Hygiene vs. statistical signals
+//! ## Stateful rules (later)
 //!
-//! Two architecturally distinct rule populations:
+//! Char-LM and glossary rules need precomputed state. Three options:
 //!
-//! - **Hygiene** (`signals::hygiene`): truly invariant patterns —
-//!   never legitimate regardless of corpus or language. Tab in body,
-//!   C0/C1 control chars, ZWSP misuse in scripts that don't use
-//!   joiners. Fixed severity, no statistics. Bar for inclusion is
-//!   high: if there's any plausible language where the pattern is
-//!   fine, it doesn't belong here.
-//! - **Statistical** (everything else): convention is *observed* from
-//!   the corpus, with config as override. Threshold derived from
-//!   corpus shape (sigmoid-weighted by morphology / orthographic
-//!   complexity per METHODS.md §5.9.2). Need `analysis::*` primitives
-//!   and a precomputed corpus-stats aggregate.
+//! - Lazy state inside the rule struct (e.g. `OnceCell<CharLm>` populated
+//!   on first `check`).
+//! - Add an optional `prepare(&mut self, project: &Project)` method.
+//! - Two-phase: engine builds a shared `CorpusStats` aggregate, passes
+//!   it to every `check`.
 //!
-//! The motivation for keeping config as *override* and not the primary
-//! surface is the user population: field translators are not
-//! tech-literate and shouldn't have to set 10K levers to get good
-//! defaults. The engine should observe "this corpus uses single
-//! spaces" and act accordingly; config exists for the ambiguous /
-//! corrupted-corpus cases.
+//! Defer until a stateful rule actually exists. The current trait
+//! accommodates all three: option 1 needs no change; options 2/3 are
+//! additive.
 //!
-//! ## Score combination — leaning γ
+//! ## Score combination (γ from the prior design notes)
 //!
-//! METHODS.md calibrates each statistical signal *independently*. It
-//! does NOT specify how findings combine into a per-verse confidence
-//! score. Three options:
+//! Still leaning γ: each rule emits an optional `evidence_score` along
+//! with its `Finding`s, a meta-pass fuses correlated findings, the UI
+//! sees a single per-Sid sigmoid score. Touches the `Finding` shape
+//! when it lands. Defer until ~5 statistical rules exist and we can
+//! see what their evidence streams actually look like.
 //!
-//! ### α. Independent findings, no combination
-//! Each finding stands alone with its own severity. UI groups by Sid
-//! and stacks them. Simplest; loses cross-rule reinforcement.
+//! ## Parallelism (forward-compatibility note)
 //!
-//! ### β. Per-verse aggregate score
-//! Sum or max-pool findings' severities into a single `verse_score`.
-//! Risks double-counting correlated rules (proportionality +
-//! length-anomaly often co-fire).
+//! Three layers that may eventually want parallelism, plus what we've
+//! already committed to so they remain possible:
 //!
-//! ### γ. Two-stage with cross-rule escalation *(leaning this)*
-//! Pass 1: every rule emits `Finding` with its own severity, *plus* an
-//! optional `evidence_score: f32` in `[0, 1]`. Pass 2: a small set of
-//! "meta rules" reads the evidence stream and escalates Info → Warn →
-//! Error when independent rules co-fire on the same Sid (e.g.
-//! proportionality + char-LM-surprisal both firing upgrades both to
-//! Warn). The source-relative "upgrade/downgrade only" policy is
-//! exactly this shape.
+//! 1. **File-level ingest** (read USFM file → parse → NFC →
+//!    segmentation). Lives in `scc-ingest` and `scc-core::verse`. Every
+//!    file is independent; every verse is independent for NFC and
+//!    segmentation. Trivially `par_iter`-able. No API impact — the
+//!    output is still `BTreeMap<Sid, Verse>`. Will be a `parallel`
+//!    Cargo feature in `scc-core` (default off, so WASM and minimal
+//!    builds stay clean) when we measure that sequential is the
+//!    bottleneck.
 //!
-//! Why γ for v1: data sparsity. NT-sized corpora produce noisy
-//! single-rule signals; multiple co-firing rules push noise down and
-//! catch genuinely-suspicious "never a word" type cases that any one
-//! rule would miss.
+//! 2. **Corpus-stats build** (n-gram counts, hapax sets, char-LM
+//!    training). When these land they'll live in a `CorpusStats` type
+//!    in core, computed via map-reduce: each verse contributes counts
+//!    in parallel, a reduce step merges. **Design note:** keep
+//!    `CorpusStats` aggregable — `HashMap<K, u64>` with a `merge`
+//!    method — so the build path can be sequential *or* parallel
+//!    without changing the rest of the engine. The rules don't care
+//!    which.
 //!
-//! γ also opens the door to a **single combined sigmoid score** per
-//! Sid for UI. Once every rule emits `evidence_score`, the meta-pass
-//! can fuse them (logistic regression with hand-set or
-//! corpus-fit weights) into one [0, 1] number per Sid. The UI then
-//! becomes "drag a threshold slider, see all verses above the line"
-//! instead of "configure 20 rules' severities individually." That's
-//! the right ergonomic shape for the user population.
+//! 3. **Rule-level parallelism**. The engine can dispatch
+//!    `Rule::check` calls across rayon threads because of the `Sync`
+//!    supertrait below. `Vec<Finding>` per rule, merge at the end. A
+//!    rule that internally wants to parallelise its verse iteration
+//!    can do so within its `check` body — that's its call, not the
+//!    engine's.
 //!
-//! TODO: revisit after `pos.sentence-start-case`, `src.proportionality`,
-//! and one hygiene rule are implemented. γ is leaning hard but defer
-//! the wire-up until we have real findings to fuse.
+//! ### What `Rule: Sync` commits us to
+//!
+//! Don't put non-`Sync` state in a rule struct. No `Rc`, no `Cell`,
+//! no `RefCell`, no `ThreadRng`. If a rule needs interior mutability
+//! (lazy state), use `OnceLock` or `Mutex<…>`, both of which are
+//! `Sync`. Same for any future `CorpusStats`: must be `Send + Sync`.
+//!
+//! `Project`, `NamedCorpus`, `Verse`, `Sid`, `Finding`, `Diagnostics`
+//! are already `Send + Sync` (only owned `String`s, `Vec`s, `BTreeMap`s,
+//! `Copy` types). Don't introduce non-thread-safe types into them.
+
+use crate::diagnostics::{Finding, RuleId};
+use crate::project::Project;
+use crate::signals;
+
+/// A single signal. Implementations are typically zero-sized unit
+/// structs (hygiene, simple statistical rules) or small structs
+/// holding precomputed state (eventually).
+pub trait Rule: Sync {
+    fn id(&self) -> RuleId;
+    fn check<'src>(&self, project: &'src Project<'src>) -> Vec<Finding<'src>>;
+}
+
+/// All rules wired in by default. The dogfood CLI's config can disable
+/// individual rules; this list is the universe of what's available.
+pub fn default_rules() -> Vec<Box<dyn Rule>> {
+    vec![
+        Box::new(signals::hygiene::TabInBody),
+        Box::new(signals::hygiene::ControlChars),
+        Box::new(signals::hygiene::ZeroWidthMisuse),
+        Box::new(signals::hygiene::EmptyVerse),
+    ]
+}

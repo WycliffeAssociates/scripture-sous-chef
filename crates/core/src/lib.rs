@@ -15,6 +15,7 @@ pub mod rule;
 pub mod script;
 pub mod sid;
 pub mod signals;
+pub mod unicode;
 pub mod verse;
 
 pub use config::{Config, ExceptionSet};
@@ -23,18 +24,28 @@ pub use project::{NamedCorpus, Project};
 pub use sid::{BookId, Sid};
 pub use verse::{Token, TokenKind, Verse};
 
-/// Run all enabled signals against `project` and return the accumulated
-/// diagnostics. Borrows from each verse's precomputed views, so the result
-/// is bounded by `'src` (the lifetime of the ingested verse text).
+/// Run all enabled rules against `project` and return the accumulated
+/// diagnostics. Borrows from each verse's precomputed views, so the
+/// result is bounded by `'src` (the lifetime of the ingested verse
+/// text).
 ///
-/// v0 implementation: a flat loop over verses calling each signal as a
-/// free function, with an `ExceptionSet` filter. Becomes a real
-/// pipeline once the `Rule` trait lands (see `crate::rule`) and once
-/// score combination (γ in `rule.rs`) is wired.
+/// Walks `rule::default_rules()`. For a custom rule set (testing,
+/// embedding), call `analyze_with` instead.
+///
+/// Currently sequential. Parallel rule dispatch is forward-compatible
+/// via the `Rule: Sync` bound — see `rule.rs` for the three-layer
+/// parallelism note.
 pub fn analyze<'src>(project: &'src Project<'src>) -> Diagnostics<'src> {
+    analyze_with(project, &rule::default_rules())
+}
+
+/// Like `analyze`, but with a caller-supplied rule registry.
+pub fn analyze_with<'src>(
+    project: &'src Project<'src>,
+    rules: &[Box<dyn rule::Rule>],
+) -> Diagnostics<'src> {
     let mut diags = Diagnostics::default();
 
-    // Build lookup maps for config
     let enabled: std::collections::HashMap<RuleId, bool> = project
         .config
         .rules
@@ -48,23 +59,18 @@ pub fn analyze<'src>(project: &'src Project<'src>) -> Diagnostics<'src> {
         .filter_map(|r| r.severity.map(|s| (r.id, s)))
         .collect();
 
-    for verse in project.target.verses.values() {
-        for mut f in signals::hygiene::tab_in_body(verse) {
-            // Check if rule is explicitly disabled
-            if enabled.get(&f.rule_id) == Some(&false) {
-                continue;
-            }
-
-            // Check exceptions
+    for r in rules {
+        let id = r.id();
+        if enabled.get(&id) == Some(&false) {
+            continue;
+        }
+        for mut f in r.check(project) {
             if project.exceptions.contains(f.rule_id, f.sid) {
                 continue;
             }
-
-            // Apply severity override if present
             if let Some(&sev) = severity_override.get(&f.rule_id) {
                 f.severity = sev;
             }
-
             diags.push(f);
         }
     }
