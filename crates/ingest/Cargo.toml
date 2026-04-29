@@ -1,8 +1,8 @@
 [package]
-name = "scc-ingest"
+name = "ssc-ingest"
 version.workspace = true
 edition.workspace = true
 
 [dependencies]
-scc-core = { workspace = true }
+ssc-core = { workspace = true }
 usfm_onion = { workspace = true }

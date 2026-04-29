@@ -358,33 +358,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b39cdef0fa800fc44525c84ccb54a029961a8215f9619753635a9c0d2538d46d"
 
 [[package]]
-name = "scc-cli"
-version = "0.1.0"
-dependencies = [
- "plotters",
- "scc-core",
- "scc-ingest",
- "usfm_onion",
-]
-
-[[package]]
-name = "scc-core"
-version = "0.1.0"
-dependencies = [
- "icu_segmenter",
- "unicode-normalization",
- "unicode-segmentation",
-]
-
-[[package]]
-name = "scc-ingest"
-version = "0.1.0"
-dependencies = [
- "scc-core",
- "usfm_onion",
-]
-
-[[package]]
 name = "serde"
 version = "1.0.228"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -438,6 +411,35 @@ name = "slab"
 version = "0.4.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
+
+[[package]]
+name = "ssc-cli"
+version = "0.1.0"
+dependencies = [
+ "plotters",
+ "serde",
+ "serde_json",
+ "ssc-core",
+ "ssc-ingest",
+ "usfm_onion",
+]
+
+[[package]]
+name = "ssc-core"
+version = "0.1.0"
+dependencies = [
+ "icu_segmenter",
+ "unicode-normalization",
+ "unicode-segmentation",
+]
+
+[[package]]
+name = "ssc-ingest"
+version = "0.1.0"
+dependencies = [
+ "ssc-core",
+ "usfm_onion",
+]
 
 [[package]]
 name = "stable_deref_trait"

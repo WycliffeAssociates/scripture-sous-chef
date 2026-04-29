@@ -21,8 +21,8 @@ use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
-use scc_core::profile::{Profile, VerseMap, profile_verses};
-use scc_core::script::is_nt_book;
+use ssc_core::profile::{Profile, VerseMap, profile_verses};
+use ssc_core::script::is_nt_book;
 
 const DEFAULT_MIN_NT_VERSES: u32 = 6000;
 

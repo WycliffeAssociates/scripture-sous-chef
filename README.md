@@ -29,7 +29,7 @@ end-to-end as the architectural spine.
 cargo test --workspace
 
 # Run a single crate's tests
-cargo test -p scc-core
+cargo test -p ssc-core
 
 # Build everything (release)
 cargo build --release --workspace

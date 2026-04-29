@@ -5,10 +5,10 @@
 use std::collections::BTreeMap;
 use std::marker::PhantomData;
 
-use scc_core::config::{Config, ExceptionSet};
-use scc_core::project::{NamedCorpus, Project};
-use scc_core::sid::Sid;
-use scc_core::verse::build_verses;
+use ssc_core::config::{Config, ExceptionSet};
+use ssc_core::project::{NamedCorpus, Project};
+use ssc_core::sid::Sid;
+use ssc_core::verse::build_verses;
 
 pub fn project_from_raw_map(
     target_name: String,
@@ -27,5 +27,10 @@ pub fn project_from_raw_map(
         verses: build_verses(raw),
         _src: PhantomData,
     });
-    Project { target, source, config, exceptions }
+    Project {
+        target,
+        source,
+        config,
+        exceptions,
+    }
 }

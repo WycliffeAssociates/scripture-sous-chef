@@ -20,6 +20,8 @@ pub struct Config {
 pub struct RuleConfig {
     pub id: RuleId,
     pub enabled: bool,
+    /// Optional severity override. If None, use the rule's default.
+    pub severity: Option<crate::diagnostics::Severity>,
     /// Signal-specific knobs. We'll likely replace this with a typed enum
     /// once a few rules are real, but `Vec<(&'static str, f64)>` is
     /// enough to compile against without committing to a schema.

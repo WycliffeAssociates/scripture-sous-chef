@@ -220,7 +220,7 @@ pub struct Diagnostics {
 }
 
 pub struct Finding {
-    pub rule_id: &'static str,        // "SCC-PUNCT-001"
+    pub rule_id: &'static str,        // "SSC-PUNCT-001"
     pub r#ref: VerseRef,
     pub span: Option<Span>,           // byte offset + length in verse text
     pub score: f32,                   // 0.0..=1.0
@@ -371,9 +371,9 @@ version-controls cleanly alongside USFM.
 
 ```
 rule_id           ref           token_or_span     reason
-SCC-LEX-001       JHN.3.16      truly truly       Hebraic doubling, intentional
-SCC-PUNCT-001     PSA.119.105   word—word         em-dash, allowed in this project
-SCC-LEX-HAPAX-001 GEN.10.8      Nimrod            proper noun
+SSC-LEX-001       JHN.3.16      truly truly       Hebraic doubling, intentional
+SSC-PUNCT-001     PSA.119.105   word—word         em-dash, allowed in this project
+SSC-LEX-HAPAX-001 GEN.10.8      Nimrod            proper noun
 ```
 
 - `rule_id` matches the stable rule identifier.
@@ -381,7 +381,7 @@ SCC-LEX-HAPAX-001 GEN.10.8      Nimrod            proper noun
 - `token_or_span` is the exact substring or token to exempt.
 - `reason` is free-text for human bookkeeping.
 
-The CLI (eventually) provides a `scc suppress --rule X --ref Y --token Z
+The CLI (eventually) provides a `ssc suppress --rule X --ref Y --token Z
 --reason "..."` helper that appends to the appropriate TSV. The editor
 eventually surfaces a "suppress this finding" action that does the same.
 
@@ -454,7 +454,7 @@ problem.
 ## 7. Output
 
 Findings are emitted with:
-- `rule_id`: stable identifier (e.g. `SCC-PUNCT-001`).
+- `rule_id`: stable identifier (e.g. `SSC-PUNCT-001`).
 - `ref`: verse reference (book + chapter + verse).
 - `span`: optional byte offset and length into the verse text.
 - `score`: f32 in [0, 1].
@@ -477,7 +477,7 @@ tiers:
 - **Tier 3 (research):** require investigation, labelled data, or
   language-specific knowledge before they make sense as defaults.
 
-Every rule is identified by a stable ID of the form `SCC-<FAMILY>-<NNN>`.
+Every rule is identified by a stable ID of the form `SSC-<FAMILY>-<NNN>`.
 Families: `LEX` (lexical), `PUNCT` (punctuation), `CASE` (casing), `WS`
 (whitespace), `UNI` (Unicode), `PROP` (proportionality / source-relative),
 `STRUCT` (structural / per-verse), `CONS` (cross-verse consistency), `LIST`
@@ -485,15 +485,15 @@ Families: `LEX` (lexical), `PUNCT` (punctuation), `CASE` (casing), `WS`
 
 ### 8.1 Tier 1 — v1 starter rules
 
-| ID | Name | Category | Score | Default sev | Summary |
-|---|---|---|---|---|---|
-| `SCC-LEX-001` | duplicate-word | LEX | binary 1.0 | warn | Two consecutive identical tokens after normalisation. FP risk: Hebraic doublings, reduplicative languages. |
-| `SCC-LEX-HAPAX-001` | hapax-suspicion | LEX | scored 0–1 | info | Multi-signal score for hapax tokens (§5.4). Surfaces above threshold. |
-| `SCC-PUNCT-001` | intermedial-punct | PUNCT | binary 1.0 | warn | Punctuation between letters in a token, where the char is not in the allow-list. Allow-list can be corpus-derived. |
-| `SCC-CASE-001` | mixed-casing-in-token | CASE | binary 1.0 | info | Uppercase letter mid-token in a corpus that is otherwise predominantly lowercase. Opt-out for transliteration conventions. |
-| `SCC-PROP-001` | length-ratio-outlier | PROP | normalised \|z\| | warn | Per-verse target/reference length ratio outside per-book mean by configured z-score. Catches misplaced verse numbers, gross over/under-translation. |
-| `SCC-UNI-001` | unicode-anomaly | UNI | binary 1.0 | warn | Combining marks without base, mixed scripts within token, suspicious zero-width chars (ZWNJ/ZWJ unexpectedly, BOM mid-text, soft hyphens). |
-| `SCC-WS-001` | whitespace-anomaly | WS | binary 1.0 | info | Leading/trailing whitespace inside verse, double whitespace, non-breaking spaces where regular spaces expected. |
+| ID                  | Name                  | Category | Score            | Default sev | Summary                                                                                                                                             |
+| ------------------- | --------------------- | -------- | ---------------- | ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `SSC-LEX-001`       | duplicate-word        | LEX      | binary 1.0       | warn        | Two consecutive identical tokens after normalisation. FP risk: Hebraic doublings, reduplicative languages.                                          |
+| `SSC-LEX-HAPAX-001` | hapax-suspicion       | LEX      | scored 0–1       | info        | Multi-signal score for hapax tokens (§5.4). Surfaces above threshold.                                                                               |
+| `SSC-PUNCT-001`     | intermedial-punct     | PUNCT    | binary 1.0       | warn        | Punctuation between letters in a token, where the char is not in the allow-list. Allow-list can be corpus-derived.                                  |
+| `SSC-CASE-001`      | mixed-casing-in-token | CASE     | binary 1.0       | info        | Uppercase letter mid-token in a corpus that is otherwise predominantly lowercase. Opt-out for transliteration conventions.                          |
+| `SSC-PROP-001`      | length-ratio-outlier  | PROP     | normalised \|z\| | warn        | Per-verse target/reference length ratio outside per-book mean by configured z-score. Catches misplaced verse numbers, gross over/under-translation. |
+| `SSC-UNI-001`       | unicode-anomaly       | UNI      | binary 1.0       | warn        | Combining marks without base, mixed scripts within token, suspicious zero-width chars (ZWNJ/ZWJ unexpectedly, BOM mid-text, soft hyphens).          |
+| `SSC-WS-001`        | whitespace-anomaly    | WS       | binary 1.0       | info        | Leading/trailing whitespace inside verse, double whitespace, non-breaking spaces where regular spaces expected.                                     |
 
 ### 8.2 Tier 2 — designed candidates (v1.5+)
 
@@ -501,55 +501,55 @@ These are checks we have specced enough to know we want them, and have a
 clear-enough algorithm that no research is required. They are deferred from
 v1 only to keep the initial surface small.
 
-| ID | Name | Category | Score | Notes |
-|---|---|---|---|---|
-| `SCC-PUNCT-002` | space-before-punct | PUNCT | binary | Space immediately before a punctuation mark where corpus norm is no-space. Often a typo. |
-| `SCC-PUNCT-003` | repeated-punct | PUNCT | binary | Two or more consecutive punctuation marks (`,,`, `..`, `?!?`) outside an allow-list (`...`, `?!`). |
-| `SCC-PUNCT-004` | bracket-pair-balance | PUNCT | binary | Per-verse imbalance of `()`, `[]`, `{}`, `«»`, `“”`, etc. Counts and depth. |
-| `SCC-PUNCT-005` | quote-direction-consistency | PUNCT | binary | Curly vs straight quotes mixed, or open/close quote direction wrong. |
-| `SCC-PUNCT-006` | trailing-terminal-punct | PUNCT | binary | Verse does not end with terminal punctuation when corpus norm says it should. |
-| `SCC-PUNCT-007` | placeholder-text-leftover | PUNCT | binary | Brackets like `[TODO]`, `[?]`, `<...>` left in text from drafting. |
-| `SCC-WS-002` | space-around-punct-consistency | WS | binary | Inconsistent spacing around punctuation chars (e.g. sometimes `« mot »`, sometimes `«mot»`). |
-| `SCC-CASE-002` | sentence-initial-case | CASE | binary | Sentence-initial token begins lowercase (cased scripts only). |
-| `SCC-CASE-003` | proper-noun-case-consistency | CASE | scored | Same token surface form sometimes capitalised, sometimes not, across the corpus. |
-| `SCC-LEX-002` | repeated-character-in-token | LEX | scored | Three or more consecutive identical characters (`heeello`, `wordd`) where the corpus norm is at most two. Score modulated by morphological plausibility. |
-| `SCC-LEX-003` | long-token-outlier | LEX | normalised \|z\| | Token length exceeds per-corpus distribution by configured z. Often a missing space. |
-| `SCC-LEX-004` | digit-only-or-punct-only-token | LEX | binary | A "word" containing only digits or only punctuation, surfacing as a token where text was expected. |
-| `SCC-LEX-005` | ngram-rarity | LEX | scored | Surface tokens whose constituent character bigrams/trigrams have very low corpus probability. Backbone signal for `SCC-LEX-HAPAX-001`; also useful standalone. |
-| `SCC-CONS-001` | similar-token-cluster | CONS | scored | Edit-distance clustering of low-frequency tokens against a high-frequency neighbour (e.g. `yesterday` once, `yesturday` once → likely typo). |
-| `SCC-CONS-002` | repeated-phrase-proximity | CONS | binary | An n-gram of length ≥ 4 appears multiple times in close proximity (within N verses). Often copy-paste damage. |
-| `SCC-CONS-003` | cross-verse-token-boundary | CONS | binary | Concatenating consecutive verses produces an obvious duplicate at the boundary, suggesting a misplaced verse break. |
-| `SCC-STRUCT-001` | empty-verse | STRUCT | binary | Verse text is empty or whitespace-only. |
-| `SCC-STRUCT-002` | missing-verse | STRUCT | binary | A `Sid` present in the reference corpus is absent from the target. |
-| `SCC-STRUCT-003` | extra-verse | STRUCT | binary | A `Sid` present in the target is absent from all references. |
-| `SCC-STRUCT-004` | verse-order-anomaly | STRUCT | binary | Verses out of canonical order within a chapter. |
-| `SCC-STRUCT-005` | source-marker-leftover | STRUCT | binary | Backslash-marker remnants (`\v`, `\p`, `\f`), caret-style markup, or HTML/XML tags inside verse text. Indicates the ingest adapter missed something. |
-| `SCC-PROP-002` | token-count-ratio-outlier | PROP | normalised \|z\| | Same shape as length-ratio but counts tokens instead of graphemes. Often more meaningful for agglutinative target / analytical reference (or vice-versa). |
-| `SCC-PROP-003` | punct-density-ratio | PROP | normalised \|z\| | Punctuation marks per verse, target vs reference. Wildly different density may indicate mis-segmentation. |
-| `SCC-LIST-001` | glossary-required-term | LIST | binary | Project-supplied glossary table maps source terms → expected target tokens; flag verses where the source term occurs but the expected target is absent. (Without alignment, "occurs in source verse" is the trigger.) |
-| `SCC-LIST-002` | glossary-banned-term | LIST | binary | Project-supplied list of forbidden tokens (placeholders, deprecated renderings); flag any occurrence. |
-| `SCC-LIST-003` | wordlist-spell-check | LIST | binary | If a project word-list exists, flag tokens not in the list AND not derivable by simple morphology. Opt-in only — useless without a maintained list. |
+| ID               | Name                           | Category | Score            | Notes                                                                                                                                                                                                                 |
+| ---------------- | ------------------------------ | -------- | ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `SSC-PUNCT-002`  | space-before-punct             | PUNCT    | binary           | Space immediately before a punctuation mark where corpus norm is no-space. Often a typo.                                                                                                                              |
+| `SSC-PUNCT-003`  | repeated-punct                 | PUNCT    | binary           | Two or more consecutive punctuation marks (`,,`, `..`, `?!?`) outside an allow-list (`...`, `?!`).                                                                                                                    |
+| `SSC-PUNCT-004`  | bracket-pair-balance           | PUNCT    | binary           | Per-verse imbalance of `()`, `[]`, `{}`, `«»`, `“”`, etc. Counts and depth.                                                                                                                                           |
+| `SSC-PUNCT-005`  | quote-direction-consistency    | PUNCT    | binary           | Curly vs straight quotes mixed, or open/close quote direction wrong.                                                                                                                                                  |
+| `SSC-PUNCT-006`  | trailing-terminal-punct        | PUNCT    | binary           | Verse does not end with terminal punctuation when corpus norm says it should.                                                                                                                                         |
+| `SSC-PUNCT-007`  | placeholder-text-leftover      | PUNCT    | binary           | Brackets like `[TODO]`, `[?]`, `<...>` left in text from drafting.                                                                                                                                                    |
+| `SSC-WS-002`     | space-around-punct-consistency | WS       | binary           | Inconsistent spacing around punctuation chars (e.g. sometimes `« mot »`, sometimes `«mot»`).                                                                                                                          |
+| `SSC-CASE-002`   | sentence-initial-case          | CASE     | binary           | Sentence-initial token begins lowercase (cased scripts only).                                                                                                                                                         |
+| `SSC-CASE-003`   | proper-noun-case-consistency   | CASE     | scored           | Same token surface form sometimes capitalised, sometimes not, across the corpus.                                                                                                                                      |
+| `SSC-LEX-002`    | repeated-character-in-token    | LEX      | scored           | Three or more consecutive identical characters (`heeello`, `wordd`) where the corpus norm is at most two. Score modulated by morphological plausibility.                                                              |
+| `SSC-LEX-003`    | long-token-outlier             | LEX      | normalised \|z\| | Token length exceeds per-corpus distribution by configured z. Often a missing space.                                                                                                                                  |
+| `SSC-LEX-004`    | digit-only-or-punct-only-token | LEX      | binary           | A "word" containing only digits or only punctuation, surfacing as a token where text was expected.                                                                                                                    |
+| `SSC-LEX-005`    | ngram-rarity                   | LEX      | scored           | Surface tokens whose constituent character bigrams/trigrams have very low corpus probability. Backbone signal for `SSC-LEX-HAPAX-001`; also useful standalone.                                                        |
+| `SSC-CONS-001`   | similar-token-cluster          | CONS     | scored           | Edit-distance clustering of low-frequency tokens against a high-frequency neighbour (e.g. `yesterday` once, `yesturday` once → likely typo).                                                                          |
+| `SSC-CONS-002`   | repeated-phrase-proximity      | CONS     | binary           | An n-gram of length ≥ 4 appears multiple times in close proximity (within N verses). Often copy-paste damage.                                                                                                         |
+| `SSC-CONS-003`   | cross-verse-token-boundary     | CONS     | binary           | Concatenating consecutive verses produces an obvious duplicate at the boundary, suggesting a misplaced verse break.                                                                                                   |
+| `SSC-STRUCT-001` | empty-verse                    | STRUCT   | binary           | Verse text is empty or whitespace-only.                                                                                                                                                                               |
+| `SSC-STRUCT-002` | missing-verse                  | STRUCT   | binary           | A `Sid` present in the reference corpus is absent from the target.                                                                                                                                                    |
+| `SSC-STRUCT-003` | extra-verse                    | STRUCT   | binary           | A `Sid` present in the target is absent from all references.                                                                                                                                                          |
+| `SSC-STRUCT-004` | verse-order-anomaly            | STRUCT   | binary           | Verses out of canonical order within a chapter.                                                                                                                                                                       |
+| `SSC-STRUCT-005` | source-marker-leftover         | STRUCT   | binary           | Backslash-marker remnants (`\v`, `\p`, `\f`), caret-style markup, or HTML/XML tags inside verse text. Indicates the ingest adapter missed something.                                                                  |
+| `SSC-PROP-002`   | token-count-ratio-outlier      | PROP     | normalised \|z\| | Same shape as length-ratio but counts tokens instead of graphemes. Often more meaningful for agglutinative target / analytical reference (or vice-versa).                                                             |
+| `SSC-PROP-003`   | punct-density-ratio            | PROP     | normalised \|z\| | Punctuation marks per verse, target vs reference. Wildly different density may indicate mis-segmentation.                                                                                                             |
+| `SSC-LIST-001`   | glossary-required-term         | LIST     | binary           | Project-supplied glossary table maps source terms → expected target tokens; flag verses where the source term occurs but the expected target is absent. (Without alignment, "occurs in source verse" is the trigger.) |
+| `SSC-LIST-002`   | glossary-banned-term           | LIST     | binary           | Project-supplied list of forbidden tokens (placeholders, deprecated renderings); flag any occurrence.                                                                                                                 |
+| `SSC-LIST-003`   | wordlist-spell-check           | LIST     | binary           | If a project word-list exists, flag tokens not in the list AND not derivable by simple morphology. Opt-in only — useless without a maintained list.                                                                   |
 
 ### 8.3 Tier 3 — research / aspirational
 
 These need investigation, labelled data, or language-specific knowledge
 before they can ship as defaults. Listed for completeness.
 
-| ID | Name | Category | Notes |
-|---|---|---|---|
-| `SCC-LEX-VERSE-SCORE` | per-verse-suspicion-score | LEX | Aggregate per-verse score combining all rule outputs. Drives "sort verses by suspicion" UX in editors. Needs weighting design. |
-| `SCC-CONS-NAME-CONSISTENCY` | proper-noun-rendering-consistency | CONS | Detect divergent transliterations of the same source proper noun. Without alignment: cluster low-freq tokens that co-occur with the same source-side hapax. |
-| `SCC-PROP-VERSE-MISPLACEMENT` | adjacent-verse-rebalance | PROP | Detect the "verse N is 90%, verse N+1 is 10%" pattern explicitly as a paired finding rather than two independent length-ratio outliers. |
-| `SCC-LEX-MORPHOLOGY` | morphological-implausibility | LEX | Score tokens by character-level language-model probability under a per-corpus model (e.g. char-n-gram, BPE+frequency). Generalises `SCC-LEX-005`. Risk of overfitting to the corpus. |
-| `SCC-CASE-TITLE-CASE` | title-case-consistency | CASE | Section headings, proper noun phrases. Requires structure-aware ingest. |
-| `SCC-PUNCT-NESTED-QUOTES` | quote-nesting-depth | PUNCT | Track open/close depth of nested quotation marks within a verse or pericope. |
-| `SCC-DIR-MARKS` | bidi-mark-anomaly | UNI | LRM/RLM in unexpected positions in mixed-script verses. RTL-specific. |
-| `SCC-DIACRITIC-COMPLETENESS` | diacritic-completeness | UNI | Tokens missing diacritics relative to the corpus norm for the same lemma. Needs a notion of "same lemma" — not always cheap. |
-| `SCC-STOPWORD-ANOMALY` | stopword-frequency-per-verse | LEX | A verse with no high-frequency function words may be truncated or mis-segmented. Needs a corpus-derived stopword set. |
-| `SCC-PROP-PROPER-NOUN-COUNT` | proper-noun-count-mismatch | PROP | Without alignment, count likely-proper-nouns (capitalised tokens, hapax-with-parallel-presence) per verse target vs reference and flag mismatches. |
-| `SCC-NUMERAL-CONSISTENCY` | numeral-system-consistency | LEX | Mixing Arabic and local-script digits in the same corpus. |
-| `SCC-FOOTNOTE-INTEGRITY` | footnote-and-xref-integrity | STRUCT | Pending decisions about what the ingest layer carries forward from USFM notes/xrefs. Out of core's strings-only scope unless we extend the input model. |
-| `SCC-CHAPTER-SHAPE` | chapter-shape-anomaly | STRUCT | Per-chapter token count vs reference distribution. Coarser than length-ratio; possibly subsumed by it. |
+| ID                            | Name                              | Category | Notes                                                                                                                                                                                |
+| ----------------------------- | --------------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `SSC-LEX-VERSE-SCORE`         | per-verse-suspicion-score         | LEX      | Aggregate per-verse score combining all rule outputs. Drives "sort verses by suspicion" UX in editors. Needs weighting design.                                                       |
+| `SSC-CONS-NAME-CONSISTENCY`   | proper-noun-rendering-consistency | CONS     | Detect divergent transliterations of the same source proper noun. Without alignment: cluster low-freq tokens that co-occur with the same source-side hapax.                          |
+| `SSC-PROP-VERSE-MISPLACEMENT` | adjacent-verse-rebalance          | PROP     | Detect the "verse N is 90%, verse N+1 is 10%" pattern explicitly as a paired finding rather than two independent length-ratio outliers.                                              |
+| `SSC-LEX-MORPHOLOGY`          | morphological-implausibility      | LEX      | Score tokens by character-level language-model probability under a per-corpus model (e.g. char-n-gram, BPE+frequency). Generalises `SSC-LEX-005`. Risk of overfitting to the corpus. |
+| `SSC-CASE-TITLE-CASE`         | title-case-consistency            | CASE     | Section headings, proper noun phrases. Requires structure-aware ingest.                                                                                                              |
+| `SSC-PUNCT-NESTED-QUOTES`     | quote-nesting-depth               | PUNCT    | Track open/close depth of nested quotation marks within a verse or pericope.                                                                                                         |
+| `SSC-DIR-MARKS`               | bidi-mark-anomaly                 | UNI      | LRM/RLM in unexpected positions in mixed-script verses. RTL-specific.                                                                                                                |
+| `SSC-DIACRITIC-COMPLETENESS`  | diacritic-completeness            | UNI      | Tokens missing diacritics relative to the corpus norm for the same lemma. Needs a notion of "same lemma" — not always cheap.                                                         |
+| `SSC-STOPWORD-ANOMALY`        | stopword-frequency-per-verse      | LEX      | A verse with no high-frequency function words may be truncated or mis-segmented. Needs a corpus-derived stopword set.                                                                |
+| `SSC-PROP-PROPER-NOUN-COUNT`  | proper-noun-count-mismatch        | PROP     | Without alignment, count likely-proper-nouns (capitalised tokens, hapax-with-parallel-presence) per verse target vs reference and flag mismatches.                                   |
+| `SSC-NUMERAL-CONSISTENCY`     | numeral-system-consistency        | LEX      | Mixing Arabic and local-script digits in the same corpus.                                                                                                                            |
+| `SSC-FOOTNOTE-INTEGRITY`      | footnote-and-xref-integrity       | STRUCT   | Pending decisions about what the ingest layer carries forward from USFM notes/xrefs. Out of core's strings-only scope unless we extend the input model.                              |
+| `SSC-CHAPTER-SHAPE`           | chapter-shape-anomaly             | STRUCT   | Per-chapter token count vs reference distribution. Coarser than length-ratio; possibly subsumed by it.                                                                               |
 
 ### 8.4 Open ideas not yet rule-shaped
 
@@ -605,24 +605,24 @@ regression test for diagnostic *volume*. Correctness is still hand-reviewed.
 These were decided during pre-build discovery and should not be re-litigated
 without explicit reason.
 
-| # | Decision | Rationale |
-|---|----------|-----------|
-| 1 | Rust core, strings-only API | Wasm target free; trivially testable; no IO concerns leaking into core. |
-| 2 | Tauri is the primary editor target; Wasm + API consumers later | Editor we own; engine stays consumer-agnostic. |
-| 3 | USFM 3.0 via existing `usfm-onion` (vibe-coded), with verse + substring granularity | Don't sink pilot time into reparsing USFM. |
-| 4 | Granularity = verse + substring offset into verse text | Sufficient for editor highlighting; upstream can map further if needed. |
-| 5 | NFC normalisation, no diacritic folding | Conservative; respects translator choices. |
-| 6 | All scripts via ICU4X `WordSegmenter` (UAX #29 + dict/ML for scriptio continua) | Pure Rust; sensible numbers for Thai/Khmer/CJK in calibration. |
-| 7 | Rules are Rust traits; user extensibility is data files only | Avoid scripting/plugin scope explosion. |
-| 8 | Two-layer config: defaults + project TOML | Simple, sufficient. |
-| 9 | TSV exception files with rule + ref + token + reason; per-verse pinning | Spreadsheet-editable, version-controllable. |
-| 10 | Batch-only analysis; "run on save" with debounce in editors | Whole-Bible is fast in Rust; incremental is unnecessary v1 cost. |
-| 11 | Findings carry a 0–1 score; binary rules emit 1.0 | Uniform pipeline; scoring/threshold/noise-kill work for everything. |
-| 12 | Pure rules, impure surfacing | Rules emit everything above a small minimum; surfacing layer drops/orders/severity-buckets. |
-| 13 | Hard auto-suppress on absurdly noisy rules | Better to drop a rule with one meta-diagnostic than drown signal. |
-| 14 | Stable English messages with structured params; localisation later | Forwards-compatible without committing to bundling translations now. |
-| 15 | `analyze(&Project) -> Diagnostics` + free analysis primitives | Single-call ergonomics + composable internals. |
-| 16 | Length-ratio proportionality compares to a single configured reference | Simplest viable definition; ensemble averaging is a future option. |
+| #   | Decision                                                                            | Rationale                                                                                   |
+| --- | ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| 1   | Rust core, strings-only API                                                         | Wasm target free; trivially testable; no IO concerns leaking into core.                     |
+| 2   | Tauri is the primary editor target; Wasm + API consumers later                      | Editor we own; engine stays consumer-agnostic.                                              |
+| 3   | USFM 3.0 via existing `usfm-onion` (vibe-coded), with verse + substring granularity | Don't sink pilot time into reparsing USFM.                                                  |
+| 4   | Granularity = verse + substring offset into verse text                              | Sufficient for editor highlighting; upstream can map further if needed.                     |
+| 5   | NFC normalisation, no diacritic folding                                             | Conservative; respects translator choices.                                                  |
+| 6   | All scripts via ICU4X `WordSegmenter` (UAX #29 + dict/ML for scriptio continua)     | Pure Rust; sensible numbers for Thai/Khmer/CJK in calibration.                              |
+| 7   | Rules are Rust traits; user extensibility is data files only                        | Avoid scripting/plugin scope explosion.                                                     |
+| 8   | Two-layer config: defaults + project TOML                                           | Simple, sufficient.                                                                         |
+| 9   | TSV exception files with rule + ref + token + reason; per-verse pinning             | Spreadsheet-editable, version-controllable.                                                 |
+| 10  | Batch-only analysis; "run on save" with debounce in editors                         | Whole-Bible is fast in Rust; incremental is unnecessary v1 cost.                            |
+| 11  | Findings carry a 0–1 score; binary rules emit 1.0                                   | Uniform pipeline; scoring/threshold/noise-kill work for everything.                         |
+| 12  | Pure rules, impure surfacing                                                        | Rules emit everything above a small minimum; surfacing layer drops/orders/severity-buckets. |
+| 13  | Hard auto-suppress on absurdly noisy rules                                          | Better to drop a rule with one meta-diagnostic than drown signal.                           |
+| 14  | Stable English messages with structured params; localisation later                  | Forwards-compatible without committing to bundling translations now.                        |
+| 15  | `analyze(&Project) -> Diagnostics` + free analysis primitives                       | Single-call ergonomics + composable internals.                                              |
+| 16  | Length-ratio proportionality compares to a single configured reference              | Simplest viable definition; ensemble averaging is a future option.                          |
 
 ## 12. Open questions and research items
 
@@ -763,8 +763,8 @@ These are *not* decided yet; track them and revisit.
    `ExceptionSet`) in `core` with `todo!()` bodies. Compile-checked contract.
 3. Implement `AnalysisContext` (tokenisation, frequency tables, n-gram
    tables, casing stats, length distributions). Property tests.
-4. Implement two contrasting rules end-to-end: `SCC-LEX-001` (binary, simple)
-   and `SCC-LEX-HAPAX-001` (scored, multi-signal). These exercise both ends
+4. Implement two contrasting rules end-to-end: `SSC-LEX-001` (binary, simple)
+   and `SSC-LEX-HAPAX-001` (scored, multi-signal). These exercise both ends
    of the rule spectrum and shake out the pipeline.
 5. Implement the surfacing layer (threshold + exception filtering + noise-kill).
 6. Build the CLI dogfood layer: walk a directory, parse config + TSVs,

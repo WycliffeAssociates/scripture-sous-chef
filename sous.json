@@ -1,0 +1,9 @@
+{
+  "rules": {
+    "hyg.tab-in-body": {
+      "enabled": true,
+      "severity": "error",
+      "exceptions": []
+    }
+  }
+}

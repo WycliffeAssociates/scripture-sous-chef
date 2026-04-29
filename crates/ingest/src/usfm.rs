@@ -6,8 +6,8 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use scc_core::script::is_nt_book;
-use scc_core::sid::Sid;
+use ssc_core::script::is_nt_book;
+use ssc_core::sid::Sid;
 use usfm_onion::Usfm;
 
 /// Read every `*.usfm` file in `dir`, parse it via `usfm_onion`, and
@@ -30,7 +30,9 @@ pub fn read_usfm_dir(dir: &Path, nt_only: bool) -> io::Result<BTreeMap<Sid, Stri
         let src = fs::read_to_string(&path)?;
         let m = Usfm::from_str(&src).to_vref();
         for (sid_str, text) in m {
-            let Some(sid) = Sid::parse(&sid_str) else { continue };
+            let Some(sid) = Sid::parse(&sid_str) else {
+                continue;
+            };
             if nt_only && !is_nt_book(sid.book.as_str()) {
                 continue;
             }

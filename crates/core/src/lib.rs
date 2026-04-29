@@ -1,4 +1,4 @@
-//! `scc-core` — public engine contract.
+//! `ssc-core` — public engine contract.
 //!
 //! Locked types only. Bodies are deliberately `todo!()` until we commit to
 //! implementation. The shape here is what every signal in METHODS.md §3 will
@@ -33,11 +33,39 @@ pub use verse::{Token, TokenKind, Verse};
 /// score combination (γ in `rule.rs`) is wired.
 pub fn analyze<'src>(project: &'src Project<'src>) -> Diagnostics<'src> {
     let mut diags = Diagnostics::default();
+
+    // Build lookup maps for config
+    let enabled: std::collections::HashMap<RuleId, bool> = project
+        .config
+        .rules
+        .iter()
+        .map(|r| (r.id, r.enabled))
+        .collect();
+    let severity_override: std::collections::HashMap<RuleId, Severity> = project
+        .config
+        .rules
+        .iter()
+        .filter_map(|r| r.severity.map(|s| (r.id, s)))
+        .collect();
+
     for verse in project.target.verses.values() {
-        for f in signals::hygiene::tab_in_body(verse) {
-            if !project.exceptions.contains(f.rule_id, f.sid) {
-                diags.push(f);
+        for mut f in signals::hygiene::tab_in_body(verse) {
+            // Check if rule is explicitly disabled
+            if enabled.get(&f.rule_id) == Some(&false) {
+                continue;
             }
+
+            // Check exceptions
+            if project.exceptions.contains(f.rule_id, f.sid) {
+                continue;
+            }
+
+            // Apply severity override if present
+            if let Some(&sev) = severity_override.get(&f.rule_id) {
+                f.severity = sev;
+            }
+
+            diags.push(f);
         }
     }
     diags

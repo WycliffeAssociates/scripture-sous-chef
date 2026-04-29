@@ -9,13 +9,17 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Instant;
 
-use scc_core::analyze;
-use scc_core::config::{Config, ExceptionSet};
-use scc_core::diagnostics::Diagnostics;
-use scc_ingest::{build, usfm};
+use ssc_core::analyze;
+use ssc_core::config::{Config, ExceptionSet};
+use ssc_core::diagnostics::Diagnostics;
+use ssc_ingest::{build, usfm};
+
+mod config_loader {
+    include!("../config_loader.rs");
+}
 
 fn usage() -> ExitCode {
-    eprintln!("usage: sous check [--nt-only] <corpus-dir>");
+    eprintln!("usage: sous check [--nt-only] [--config <path>] <corpus-dir>");
     ExitCode::from(2)
 }
 
@@ -31,10 +35,19 @@ fn main() -> ExitCode {
     }
 
     let mut nt_only = false;
+    let mut config_path: Option<PathBuf> = None;
     let mut path: Option<PathBuf> = None;
-    for a in iter {
+    let mut args_iter = iter.peekable();
+    while let Some(a) = args_iter.next() {
         match a.as_str() {
             "--nt-only" => nt_only = true,
+            "--config" => {
+                let Some(p) = args_iter.next() else {
+                    eprintln!("--config requires a path argument");
+                    return usage();
+                };
+                config_path = Some(PathBuf::from(p));
+            }
             other if other.starts_with("--") => {
                 eprintln!("unknown flag: {other}");
                 return usage();
@@ -50,6 +63,40 @@ fn main() -> ExitCode {
         .unwrap_or("?")
         .to_string();
 
+    // Load config: explicit path, discovered path, or defaults
+    let (config, exceptions) = match config_path {
+        Some(p) => match config_loader::load_config(&p) {
+            Ok((cfg, exc, warnings)) => {
+                for w in warnings {
+                    eprintln!("config warning: {w}");
+                }
+                (cfg, exc)
+            }
+            Err(e) => {
+                eprintln!("config error: {e}");
+                return ExitCode::from(1);
+            }
+        },
+        None => {
+            if let Some(p) = config_loader::discover_config(&path) {
+                match config_loader::load_config(&p) {
+                    Ok((cfg, exc, warnings)) => {
+                        for w in warnings {
+                            eprintln!("config warning: {w}");
+                        }
+                        (cfg, exc)
+                    }
+                    Err(e) => {
+                        eprintln!("config warning: {} (using defaults)", e);
+                        (Config::default(), ExceptionSet::default())
+                    }
+                }
+            } else {
+                (Config::default(), ExceptionSet::default())
+            }
+        }
+    };
+
     let raw = match usfm::read_usfm_dir(&path, nt_only) {
         Ok(m) => m,
         Err(e) => {
@@ -58,13 +105,7 @@ fn main() -> ExitCode {
         }
     };
 
-    let project = build::project_from_raw_map(
-        name.clone(),
-        raw,
-        None,
-        Config::default(),
-        ExceptionSet::default(),
-    );
+    let project = build::project_from_raw_map(name.clone(), raw, None, config, exceptions);
 
     let start = Instant::now();
     let diags = analyze(&project);

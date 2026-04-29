@@ -1,5 +1,5 @@
 [package]
-name = "scc-core"
+name = "ssc-core"
 version.workspace = true
 edition.workspace = true
 

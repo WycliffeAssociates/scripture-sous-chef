@@ -8,8 +8,8 @@ version = "0.1.0"
 edition = "2024"
 
 [workspace.dependencies]
-scc-core = { path = "crates/core" }
-scc-ingest = { path = "crates/ingest" }
+ssc-core = { path = "crates/core" }
+ssc-ingest = { path = "crates/ingest" }
 unicode-segmentation = "1.12"
 unicode-normalization = "0.1"
 icu_segmenter = "2.2"

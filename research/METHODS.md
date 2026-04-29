@@ -39,15 +39,15 @@ $ cargo run --release --bin profile-corpora -- --nt-only \
     corpora/bem_reg corpora/fij-x-saqani_reg
 ```
 
-| Corpus | Verses | Tokens | Types | tok/type‡ | Bigrams | bg-hap% | char trigram-hap% | charvoc | Script |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|---|
-| `en_ulb` (English ULB) | 7,902 | 181,219 | 6,535 | **27.7** | 56,256 | 65.8% | 13.0% | 58 | Latin |
-| `es-419_ulb` (Spanish ULB) | 7,959 | 178,640 | 12,962 | 13.8 | 71,263 | 73.1% | 18.2% | 69 | Latin |
-| `acz_reg` (Garme; Tibeto-Burman) | 7,439 | 186,146 | 19,163 | 9.7 | 83,603 | 77.8% | 30.2% | 85 | Latin |
-| `anl-x-khawngtu_reg` (Khawng-Tu) | 7,953 | 243,040 | 6,424 | **37.8** | 48,176 | **62.2%** | 19.9% | 51 | Latin |
-| `bap-x-rai_reg` (Rai; Devanagari) | 7,949 | 135,759 | 22,819 | 6.0 | 91,080 | **85.7%** | 26.9% | 74 | Devanagari |
-| `bem_reg` (Bemba; Bantu) | 7,951 | 140,114 | 23,414 | 6.0 | 85,869 | 84.8% | 19.8% | 57 | Latin |
-| `fij-x-saqani_reg` (Saqani) | 7,947 | 228,387 | 10,208 | **22.4** | 57,615 | 70.3% | 28.5% | 58 | Latin |
+| Corpus                            | Verses |  Tokens |  Types | tok/type‡ | Bigrams |   bg-hap% | char trigram-hap% | charvoc | Script     |
+| --------------------------------- | -----: | ------: | -----: | --------: | ------: | --------: | ----------------: | ------: | ---------- |
+| `en_ulb` (English ULB)            |  7,902 | 181,219 |  6,535 |  **27.7** |  56,256 |     65.8% |             13.0% |      58 | Latin      |
+| `es-419_ulb` (Spanish ULB)        |  7,959 | 178,640 | 12,962 |      13.8 |  71,263 |     73.1% |             18.2% |      69 | Latin      |
+| `acz_reg` (Garme; Tibeto-Burman)  |  7,439 | 186,146 | 19,163 |       9.7 |  83,603 |     77.8% |             30.2% |      85 | Latin      |
+| `anl-x-khawngtu_reg` (Khawng-Tu)  |  7,953 | 243,040 |  6,424 |  **37.8** |  48,176 | **62.2%** |             19.9% |      51 | Latin      |
+| `bap-x-rai_reg` (Rai; Devanagari) |  7,949 | 135,759 | 22,819 |       6.0 |  91,080 | **85.7%** |             26.9% |      74 | Devanagari |
+| `bem_reg` (Bemba; Bantu)          |  7,951 | 140,114 | 23,414 |       6.0 |  85,869 |     84.8% |             19.8% |      57 | Latin      |
+| `fij-x-saqani_reg` (Saqani)       |  7,947 | 228,387 | 10,208 |  **22.4** |  57,615 |     70.3% |             28.5% |      58 | Latin      |
 
 ‡`tok/type` is `tokens / types` — i.e. **tokens-per-type**. High = repetitive
 vocabulary (analytic). Low = many distinct surface forms (agglutinative).
@@ -56,13 +56,13 @@ Some literature inverts the ratio and calls it "type-token ratio"; we use
 
 **Source-language pairings** (per project manifests):
 
-| Target | Gateway source(s) | Notes |
-|---|---|---|
-| `acz_reg` (Garme) | English ULB 21-05 / 24-02; Arabic NAV 2012; Arabic AVD 2015 | Multi-source — both English and Arabic gateway used |
-| `anl-x-khawngtu_reg` | Burmese (`my`) Judson 1835 | Tibeto-Burman → Tibeto-Burman; older translation |
-| `bap-x-rai_reg` | Nepali (`ne`) ULB 12.1 | Indo-Aryan source for Tibeto-Burman target |
-| `bem_reg` (Bemba) | English ULB 21-05 / 24-02 | English source |
-| `fij-x-saqani_reg` (Saqani) | English ULB 21-05 / 24-02 | English source |
+| Target                      | Gateway source(s)                                           | Notes                                               |
+| --------------------------- | ----------------------------------------------------------- | --------------------------------------------------- |
+| `acz_reg` (Garme)           | English ULB 21-05 / 24-02; Arabic NAV 2012; Arabic AVD 2015 | Multi-source — both English and Arabic gateway used |
+| `anl-x-khawngtu_reg`        | Burmese (`my`) Judson 1835                                  | Tibeto-Burman → Tibeto-Burman; older translation    |
+| `bap-x-rai_reg`             | Nepali (`ne`) ULB 12.1                                      | Indo-Aryan source for Tibeto-Burman target          |
+| `bem_reg` (Bemba)           | English ULB 21-05 / 24-02                                   | English source                                      |
+| `fij-x-saqani_reg` (Saqani) | English ULB 21-05 / 24-02                                   | English source                                      |
 
 Of these, only the English and (planned) Spanish sources are checked in.
 **Source-relative experiments are immediately viable for `bem`, `fij`, and
@@ -72,11 +72,11 @@ those projects can use source-relative scoring.
 
 **Sid coverage against English ULB (full Bible):**
 
-| Target → Source | target sids | intersect | coverage | target-only |
-|---|---:|---:|---:|---:|
-| `bem_reg` → `en_ulb` | 7,951 | 7,899 | 99.3% | 52 |
-| `fij-x-saqani_reg` → `en_ulb` | 7,947 | 7,895 | 99.3% | 52 |
-| `acz_reg` → `en_ulb` | 7,439 | 7,385 | 99.3% | 54 |
+| Target → Source               | target sids | intersect | coverage | target-only |
+| ----------------------------- | ----------: | --------: | -------: | ----------: |
+| `bem_reg` → `en_ulb`          |       7,951 |     7,899 |    99.3% |          52 |
+| `fij-x-saqani_reg` → `en_ulb` |       7,947 |     7,895 |    99.3% |          52 |
+| `acz_reg` → `en_ulb`          |       7,439 |     7,385 |    99.3% |          54 |
 
 Coverage is uniformly excellent (99.3%). The ~50 target-only sids per
 project are versification quirks (translations sometimes split or merge
@@ -86,11 +86,11 @@ scoring.
 
 **Three regimes are visible in the data:**
 
-| Regime | tok/type | bg-hap% | Examples | Strongest cross-token signal |
-|---|---|---|---|---|
-| **Analytic** | ≥ 22 | < 72% | English (27.7), Khawng-Tu (37.8), Saqani (22.4) | Word-bigram KN works directly |
-| **Mildly fusional** | 9–22 | 72–80% | Spanish (13.8), Garme (9.7) | Gated word-bigram + source-relative |
-| **Highly agglutinative** | < 9 | > 80% | Bemba (6.0), Rai (6.0) | Source-relative dominant; char-KN; gated bigram only on hi-freq pairs |
+| Regime                   | tok/type | bg-hap% | Examples                                        | Strongest cross-token signal                                          |
+| ------------------------ | -------- | ------- | ----------------------------------------------- | --------------------------------------------------------------------- |
+| **Analytic**             | ≥ 22     | < 72%   | English (27.7), Khawng-Tu (37.8), Saqani (22.4) | Word-bigram KN works directly                                         |
+| **Mildly fusional**      | 9–22     | 72–80%  | Spanish (13.8), Garme (9.7)                     | Gated word-bigram + source-relative                                   |
+| **Highly agglutinative** | < 9      | > 80%   | Bemba (6.0), Rai (6.0)                          | Source-relative dominant; char-KN; gated bigram only on hi-freq pairs |
 
 (Regime thresholds tightened slightly from the bash-probe estimate after
 the USFM-aware run; `fij` shifted from "very analytic, 28.7" to "analytic,
@@ -136,11 +136,11 @@ For Latin-script comparisons it's still informative.
 
 **Three regimes are visible in the data:**
 
-| Regime | tok/type | bg-hap% | Examples | Strongest cross-token signal |
-|---|---|---|---|---|
-| **Analytic** | ≥ 25 | < 70% | English, Khawng-Tu, Saqani | Word-bigram KN works directly |
-| **Mildly fusional** | 10–25 | 70–80% | Spanish, Garme | Gated word-bigram + source-relative |
-| **Highly agglutinative** | < 10 | > 80% | Bemba, Rai | Source-relative dominant; char-KN; gated bigram only on hi-freq pairs |
+| Regime                   | tok/type | bg-hap% | Examples                   | Strongest cross-token signal                                          |
+| ------------------------ | -------- | ------- | -------------------------- | --------------------------------------------------------------------- |
+| **Analytic**             | ≥ 25     | < 70%   | English, Khawng-Tu, Saqani | Word-bigram KN works directly                                         |
+| **Mildly fusional**      | 10–25    | 70–80%  | Spanish, Garme             | Gated word-bigram + source-relative                                   |
+| **Highly agglutinative** | < 10     | > 80%   | Bemba, Rai                 | Source-relative dominant; char-KN; gated bigram only on hi-freq pairs |
 
 **Two findings stand out hard, and they invert the default NLP intuition
 that "minority language = morphologically rich = harder":**
@@ -598,10 +598,10 @@ Behaviour:
   casing-anomaly suspicion downweighted to near zero**, regardless of
   rarity. The glossary asserts they're correct.
 - Tokens listed under `term` participate in a `glossary-required-term`
-  consistency check (`SCC-LIST-001`): if the source token appears in a
+  consistency check (`SSC-LIST-001`): if the source token appears in a
   verse and the target token does not, flag the verse.
 - Tokens NOT in the glossary but present in `banned`: hard-flag any
-  occurrence (`SCC-LIST-002`).
+  occurrence (`SSC-LIST-002`).
 - Glossary is **not** required. Without one, the engine works fine; with
   one, suspicion ranks become much cleaner.
 
@@ -761,11 +761,11 @@ all rules. It is the cache that makes the pipeline fast.
 
 ### 5.7 Rule implementations as `Signal` consumers
 
-Each `SCC-*` rule from `VISION.md` §8 reduces to: ask one or more signals
+Each `SSC-*` rule from `VISION.md` §8 reduces to: ask one or more signals
 for their scores, optionally combine them, emit `Finding`s. The rule
 becomes ~50 lines.
 
-E.g. `SCC-LEX-HAPAX-001`:
+E.g. `SSC-LEX-HAPAX-001`:
 
 ```rust
 fn run(ctx: &AnalysisContext) -> Vec<Finding> {
@@ -1151,7 +1151,7 @@ let config = match cli_args.use_recommended {
 };
 ```
 
-The CLI's `scc profile <project>` subcommand prints the profile and the
+The CLI's `ssc profile <project>` subcommand prints the profile and the
 recommendation without running analyses — useful as a diagnostic and as
 the first thing a user sees when onboarding a new project.
 

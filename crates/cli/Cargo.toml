@@ -1,5 +1,5 @@
 [package]
-name = "scc-cli"
+name = "ssc-cli"
 version.workspace = true
 edition.workspace = true
 
@@ -20,7 +20,9 @@ name = "plot-calibration"
 path = "src/bin/plot_calibration.rs"
 
 [dependencies]
-scc-core = { workspace = true }
-scc-ingest = { workspace = true }
+ssc-core = { workspace = true }
+ssc-ingest = { workspace = true }
 usfm_onion = { workspace = true }
 plotters = { workspace = true }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"

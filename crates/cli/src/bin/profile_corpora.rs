@@ -12,7 +12,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use scc_core::profile::{Coverage, VerseMap, profile_verses, sid_coverage};
+use ssc_core::profile::{Coverage, VerseMap, profile_verses, sid_coverage};
 use usfm_onion::Usfm;
 
 fn main() {
@@ -47,7 +47,17 @@ fn main() {
 
     println!(
         "{:<28} {:>8} {:>8} {:>7} {:>7} {:>9} {:>8} {:>8} {:>8} {:>10} {:>10}",
-        "corpus", "verses", "tokens", "types", "tok/typ", "bigrams", "bg-hap%", "avg-len", "charvoc", "ct-hap%", "script"
+        "corpus",
+        "verses",
+        "tokens",
+        "types",
+        "tok/typ",
+        "bigrams",
+        "bg-hap%",
+        "avg-len",
+        "charvoc",
+        "ct-hap%",
+        "script"
     );
     println!("{}", "-".repeat(120));
 
