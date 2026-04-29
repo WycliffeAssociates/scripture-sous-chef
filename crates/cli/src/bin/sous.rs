@@ -4,14 +4,12 @@
 //! and writes a JSON dump to `debug/<corpus-name>.json` for review.
 
 use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Instant;
 
-use ssc_core::analyze;
+use ssc_core::analyze_with_stats;
 use ssc_core::config::{Config, ExceptionSet};
-use ssc_core::diagnostics::Diagnostics;
 use ssc_ingest::{build, usfm};
 
 mod config_loader {
@@ -19,7 +17,7 @@ mod config_loader {
 }
 
 fn usage() -> ExitCode {
-    eprintln!("usage: sous check [--nt-only] [--config <path>] <corpus-dir>");
+    eprintln!("usage: sous check [--nt-only] [--config <path>] [--source <dir>] <corpus-dir>");
     ExitCode::from(2)
 }
 
@@ -36,6 +34,7 @@ fn main() -> ExitCode {
 
     let mut nt_only = false;
     let mut config_path: Option<PathBuf> = None;
+    let mut source_path: Option<PathBuf> = None;
     let mut path: Option<PathBuf> = None;
     let mut args_iter = iter.peekable();
     while let Some(a) = args_iter.next() {
@@ -47,6 +46,13 @@ fn main() -> ExitCode {
                     return usage();
                 };
                 config_path = Some(PathBuf::from(p));
+            }
+            "--source" => {
+                let Some(p) = args_iter.next() else {
+                    eprintln!("--source requires a path argument");
+                    return usage();
+                };
+                source_path = Some(PathBuf::from(p));
             }
             other if other.starts_with("--") => {
                 eprintln!("unknown flag: {other}");
@@ -105,10 +111,30 @@ fn main() -> ExitCode {
         }
     };
 
-    let project = build::project_from_raw_map(name.clone(), raw, None, config, exceptions);
+    // Load source corpus if --source is provided
+    let source = match source_path {
+        Some(src_path) => {
+            let src_name = src_path
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("?")
+                .to_string();
+            let src_raw = match usfm::read_usfm_dir(&src_path, nt_only) {
+                Ok(m) => m,
+                Err(e) => {
+                    eprintln!("read failed for source: {e}");
+                    return ExitCode::from(1);
+                }
+            };
+            Some((src_name, src_raw))
+        }
+        None => None,
+    };
+
+    let project = build::project_from_raw_map(name.clone(), raw, source, config, exceptions);
 
     let start = Instant::now();
-    let diags = analyze(&project);
+    let (diags, stats) = analyze_with_stats(&project);
     let elapsed_us = start.elapsed().as_micros();
 
     eprintln!(
@@ -127,60 +153,29 @@ fn main() -> ExitCode {
     }
 
     let json_path = Path::new("debug").join(format!("{name}.json"));
-    if let Err(e) = write_diagnostics_json(&json_path, &name, &diags) {
+    if let Err(e) = write_json(&json_path, &diags) {
         eprintln!("warning: could not write {}: {}", json_path.display(), e);
     } else {
         eprintln!("wrote {}", json_path.display());
     }
 
+    let stats_path = Path::new("debug").join(format!("{name}.stats.json"));
+    if let Err(e) = write_json(&stats_path, &stats) {
+        eprintln!("warning: could not write {}: {}", stats_path.display(), e);
+    } else {
+        eprintln!("wrote {}", stats_path.display());
+    }
+
     ExitCode::SUCCESS
 }
 
-/// Hand-rolled JSON. Adding serde just to dump diagnostics would push
-/// dependencies into core; this stays in the CLI and keeps core lean.
-fn write_diagnostics_json(
-    path: &Path,
-    corpus: &str,
-    diags: &Diagnostics<'_>,
-) -> std::io::Result<()> {
+/// Serde-based JSON dump. `ssc-core` now has optional `serde` feature
+/// enabled by the CLI; we use it for all JSON output.
+fn write_json<T: serde::Serialize>(path: &Path, value: &T) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    let mut f = fs::File::create(path)?;
-    writeln!(f, "{{")?;
-    writeln!(f, "  \"corpus\": \"{}\",", esc(corpus))?;
-    writeln!(f, "  \"findings\": [")?;
-    let n = diags.findings.len();
-    for (i, finding) in diags.findings.iter().enumerate() {
-        let comma = if i + 1 < n { "," } else { "" };
-        writeln!(
-            f,
-            "    {{\"rule\": \"{}\", \"sid\": \"{}\", \"severity\": \"{:?}\", \"span\": \"{}\", \"message\": \"{}\"}}{}",
-            esc(finding.rule_id.0),
-            finding.sid,
-            finding.severity,
-            esc(finding.span),
-            esc(&finding.message),
-            comma,
-        )?;
-    }
-    writeln!(f, "  ]")?;
-    writeln!(f, "}}")?;
-    Ok(())
-}
-
-fn esc(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
-            c => out.push(c),
-        }
-    }
-    out
+    let json = serde_json::to_string_pretty(value)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+    fs::write(path, json)
 }

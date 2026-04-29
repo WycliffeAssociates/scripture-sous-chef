@@ -429,6 +429,7 @@ name = "ssc-core"
 version = "0.1.0"
 dependencies = [
  "icu_segmenter",
+ "serde",
  "unicode-normalization",
  "unicode-segmentation",
 ]

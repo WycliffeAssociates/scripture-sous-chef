@@ -43,7 +43,11 @@ impl Rule for TabInBody {
     fn id(&self) -> RuleId {
         TAB_IN_BODY
     }
-    fn check<'src>(&self, project: &'src Project<'src>) -> Vec<Finding<'src>> {
+    fn check<'src>(
+        &self,
+        project: &'src Project<'src>,
+        _stats: &mut crate::diagnostics::AnalyzeStats,
+    ) -> Vec<Finding<'src>> {
         project
             .target
             .verses
@@ -84,7 +88,11 @@ impl Rule for ControlChars {
     fn id(&self) -> RuleId {
         CONTROL_CHARS
     }
-    fn check<'src>(&self, project: &'src Project<'src>) -> Vec<Finding<'src>> {
+    fn check<'src>(
+        &self,
+        project: &'src Project<'src>,
+        _stats: &mut crate::diagnostics::AnalyzeStats,
+    ) -> Vec<Finding<'src>> {
         project
             .target
             .verses
@@ -133,7 +141,11 @@ impl Rule for ZeroWidthMisuse {
     fn id(&self) -> RuleId {
         ZERO_WIDTH_MISUSE
     }
-    fn check<'src>(&self, project: &'src Project<'src>) -> Vec<Finding<'src>> {
+    fn check<'src>(
+        &self,
+        project: &'src Project<'src>,
+        _stats: &mut crate::diagnostics::AnalyzeStats,
+    ) -> Vec<Finding<'src>> {
         project
             .target
             .verses
@@ -212,7 +224,11 @@ impl Rule for EmptyVerse {
     fn id(&self) -> RuleId {
         EMPTY_VERSE
     }
-    fn check<'src>(&self, project: &'src Project<'src>) -> Vec<Finding<'src>> {
+    fn check<'src>(
+        &self,
+        project: &'src Project<'src>,
+        _stats: &mut crate::diagnostics::AnalyzeStats,
+    ) -> Vec<Finding<'src>> {
         project
             .target
             .verses

@@ -4,6 +4,12 @@
       "enabled": true,
       "severity": "error",
       "exceptions": []
+    },
+    "src.proportionality": {
+      "enabled": true,
+      "params": {
+        "z_threshold": 5.0
+      }
     }
   }
 }

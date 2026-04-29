@@ -81,6 +81,12 @@
 //!    can do so within its `check` body — that's its call, not the
 //!    engine's.
 //!
+//!    **Caveat:** the `stats: &mut AnalyzeStats` argument is
+//!    sequential-only. When parallel dispatch lands, the trait shape
+//!    flips so each rule returns its stats contribution and the
+//!    engine merges after fork-join. The `AnalyzeStats` *struct*
+//!    survives that change; only `Rule::check`'s signature flips.
+//!
 //! ### What `Rule: Sync` commits us to
 //!
 //! Don't put non-`Sync` state in a rule struct. No `Rc`, no `Cell`,
@@ -92,25 +98,37 @@
 //! are already `Send + Sync` (only owned `String`s, `Vec`s, `BTreeMap`s,
 //! `Copy` types). Don't introduce non-thread-safe types into them.
 
-use crate::diagnostics::{Finding, RuleId};
+use crate::diagnostics::{AnalyzeStats, Finding, RuleId};
 use crate::project::Project;
 use crate::signals;
 
 /// A single signal. Implementations are typically zero-sized unit
 /// structs (hygiene, simple statistical rules) or small structs
 /// holding precomputed state (eventually).
+///
+/// `stats` is a shared sink. Stat-bearing rules write into their own
+/// named slot on `AnalyzeStats`; hygiene rules ignore it. By
+/// convention a rule writes ONLY its own slot — nothing in the type
+/// system stops a misbehaving rule from stomping someone else's.
 pub trait Rule: Sync {
     fn id(&self) -> RuleId;
-    fn check<'src>(&self, project: &'src Project<'src>) -> Vec<Finding<'src>>;
+    fn check<'src>(
+        &self,
+        project: &'src Project<'src>,
+        stats: &mut AnalyzeStats,
+    ) -> Vec<Finding<'src>>;
 }
 
 /// All rules wired in by default. The dogfood CLI's config can disable
 /// individual rules; this list is the universe of what's available.
 pub fn default_rules() -> Vec<Box<dyn Rule>> {
     vec![
+        // Hygiene
         Box::new(signals::hygiene::TabInBody),
         Box::new(signals::hygiene::ControlChars),
         Box::new(signals::hygiene::ZeroWidthMisuse),
         Box::new(signals::hygiene::EmptyVerse),
+        // Source-relative
+        Box::new(signals::source_relative::Proportionality),
     ]
 }

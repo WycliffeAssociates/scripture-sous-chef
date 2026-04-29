@@ -28,6 +28,8 @@ pub struct RuleEntry {
     pub severity: Option<String>,
     /// Per-verse exceptions for this rule (e.g., ["GEN 1:1", "2TH 1:1"]).
     pub exceptions: Vec<String>,
+    /// Numeric parameters for the rule (e.g., {"z_threshold": 4.0}).
+    pub params: std::collections::HashMap<String, f64>,
 }
 
 /// Load and validate a JSON config file. Returns (config, exceptions, warnings).
@@ -81,11 +83,18 @@ pub fn load_config(
             }
         }
 
+        // Convert params HashMap<String, f64> to Vec<(&'static str, f64)>
+        let params: Vec<(&'static str, f64)> = entry
+            .params
+            .into_iter()
+            .map(|(k, v)| (&*Box::leak(k.into_boxed_str()), v))
+            .collect();
+
         config.rules.push(RuleConfig {
             id: rule_id,
             enabled: entry.enabled.unwrap_or(true),
             severity,
-            params: Vec::new(),
+            params,
         });
     }
 

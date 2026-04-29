@@ -7,6 +7,7 @@ use std::fmt;
 /// bytes so the type is `Copy` and equality is a single 24-bit compare.
 /// Validation (membership in the 66-book canon) is the ingest layer's job.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct BookId(pub [u8; 3]);
 
 impl BookId {
@@ -46,6 +47,7 @@ impl fmt::Display for BookId {
 /// Scripture verse identifier. 6 bytes, `Copy`, hashable, totally ordered
 /// by (book, chapter, verse).
 #[derive(Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct Sid {
     pub book: BookId,
     pub chapter: u16,
@@ -54,7 +56,11 @@ pub struct Sid {
 
 impl Sid {
     pub const fn new(book: BookId, chapter: u16, verse: u16) -> Self {
-        Self { book, chapter, verse }
+        Self {
+            book,
+            chapter,
+            verse,
+        }
     }
 
     /// Parse `"GEN 1:1"` or `"GEN 1.1"`. Lenient on whitespace and the
@@ -73,7 +79,13 @@ impl Sid {
 
 impl fmt::Debug for Sid {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Sid({} {}:{})", self.book.as_str(), self.chapter, self.verse)
+        write!(
+            f,
+            "Sid({} {}:{})",
+            self.book.as_str(),
+            self.chapter,
+            self.verse
+        )
     }
 }
 

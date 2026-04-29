@@ -20,7 +20,7 @@ name = "plot-calibration"
 path = "src/bin/plot_calibration.rs"
 
 [dependencies]
-ssc-core = { workspace = true }
+ssc-core = { workspace = true, features = ["serde"] }
 ssc-ingest = { workspace = true }
 usfm_onion = { workspace = true }
 plotters = { workspace = true }

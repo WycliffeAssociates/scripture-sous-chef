@@ -19,32 +19,38 @@ pub mod unicode;
 pub mod verse;
 
 pub use config::{Config, ExceptionSet};
-pub use diagnostics::{Diagnostics, Finding, RuleId, Severity};
+pub use diagnostics::{AnalyzeStats, Diagnostics, Finding, RuleId, Severity};
 pub use project::{NamedCorpus, Project};
 pub use sid::{BookId, Sid};
 pub use verse::{Token, TokenKind, Verse};
 
-/// Run all enabled rules against `project` and return the accumulated
-/// diagnostics. Borrows from each verse's precomputed views, so the
-/// result is bounded by `'src` (the lifetime of the ingested verse
-/// text).
-///
-/// Walks `rule::default_rules()`. For a custom rule set (testing,
-/// embedding), call `analyze_with` instead.
+/// Run all enabled rules against `project` and return diagnostics.
+/// Stats are computed but discarded — call `analyze_with_stats` to
+/// keep them.
 ///
 /// Currently sequential. Parallel rule dispatch is forward-compatible
 /// via the `Rule: Sync` bound — see `rule.rs` for the three-layer
 /// parallelism note.
 pub fn analyze<'src>(project: &'src Project<'src>) -> Diagnostics<'src> {
-    analyze_with(project, &rule::default_rules())
+    run(project, &rule::default_rules()).0
 }
 
-/// Like `analyze`, but with a caller-supplied rule registry.
-pub fn analyze_with<'src>(
+/// Like `analyze`, but also returns per-rule debug statistics.
+/// Opt-in: callers that don't want the overhead of moving stats
+/// around (e.g. across a network boundary later) call `analyze`
+/// instead.
+pub fn analyze_with_stats<'src>(
+    project: &'src Project<'src>,
+) -> (Diagnostics<'src>, AnalyzeStats) {
+    run(project, &rule::default_rules())
+}
+
+fn run<'src>(
     project: &'src Project<'src>,
     rules: &[Box<dyn rule::Rule>],
-) -> Diagnostics<'src> {
+) -> (Diagnostics<'src>, AnalyzeStats) {
     let mut diags = Diagnostics::default();
+    let mut stats = AnalyzeStats::default();
 
     let enabled: std::collections::HashMap<RuleId, bool> = project
         .config
@@ -64,7 +70,7 @@ pub fn analyze_with<'src>(
         if enabled.get(&id) == Some(&false) {
             continue;
         }
-        for mut f in r.check(project) {
+        for mut f in r.check(project, &mut stats) {
             if project.exceptions.contains(f.rule_id, f.sid) {
                 continue;
             }
@@ -74,5 +80,5 @@ pub fn analyze_with<'src>(
             diags.push(f);
         }
     }
-    diags
+    (diags, stats)
 }

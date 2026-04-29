@@ -7,3 +7,4 @@ edition.workspace = true
 unicode-segmentation = { workspace = true }
 unicode-normalization = { workspace = true }
 icu_segmenter = { workspace = true }
+serde = { version = "1.0", features = ["derive"], optional = true }

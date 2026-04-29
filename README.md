@@ -54,3 +54,27 @@ cargo check --workspace
 on every run, alongside the stdout summary. The directory is
 git-ignored — review the JSON file directly when iterating on rules
 instead of scrolling terminal output.
+
+
+
+## About proportionality
+
+Reading an example finding: 
+Info  src.proportionality  1CO 2:13  length ratio 1.50 (book z=+3.50, corpus z=+3.77)
+
+1CO 2:13 has 50% more graphemes in Spanish than in English.
+
+Z-score interpretation:
+
+book z = +3.50: This verse is 3.5 standard deviations above the 1 Corinthians median (1.087). Since MAD = 0.079, each "standard deviation" unit is ~0.12. So this verse runs long even for 1CO, where verses typically run ~8.7% longer than English.
+corpus z = +3.77: This verse is also 3.77 standard deviations above the whole-NT median (~1.02). It's unusual globally, not just within 1CO.
+Why both matter:
+
+Book z catches verses that are anomalous for their specific book (maybe 1CO has theological terms that inflate Spanish length generally)
+Corpus z catches verses that are unusual across the entire New Testament
+Mental model:
+
+typical 1CO verse:  1.09× English length (9% longer)
+this verse:         1.50× English length (50% longer)
+difference:         0.41× above typical = 3.5 MAD units → z = +3.5
+The Spanish translator may have expanded significantly here — worth checking if it's intentional amplification or a gloss that could be tightened.
