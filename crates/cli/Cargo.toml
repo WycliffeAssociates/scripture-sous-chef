@@ -1,0 +1,26 @@
+[package]
+name = "scc-cli"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "sous"
+path = "src/bin/sous.rs"
+
+[[bin]]
+name = "profile-corpora"
+path = "src/bin/profile_corpora.rs"
+
+[[bin]]
+name = "profile-ebible"
+path = "src/bin/profile_ebible.rs"
+
+[[bin]]
+name = "plot-calibration"
+path = "src/bin/plot_calibration.rs"
+
+[dependencies]
+scc-core = { workspace = true }
+scc-ingest = { workspace = true }
+usfm_onion = { workspace = true }
+plotters = { workspace = true }

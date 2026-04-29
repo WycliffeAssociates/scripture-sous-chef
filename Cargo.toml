@@ -1,0 +1,21 @@
+[workspace]
+resolver = "2"
+members = ["crates/core", "crates/ingest", "crates/cli"]
+
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+
+[workspace.dependencies]
+scc-core = { path = "crates/core" }
+scc-ingest = { path = "crates/ingest" }
+unicode-segmentation = "1.12"
+unicode-normalization = "0.1"
+icu_segmenter = "2.2"
+usfm_onion = { git = "https://github.com/WycliffeAssociates/usfm-onion.git", rev = "4e3759370d0cc7510c49d096749751c31c55614d" }
+plotters = { version = "0.3", default-features = false, features = [
+  "svg_backend",
+  "all_series",
+  "all_elements",
+] }
