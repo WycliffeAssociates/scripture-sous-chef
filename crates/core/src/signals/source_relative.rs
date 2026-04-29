@@ -81,7 +81,10 @@ pub struct ProportionalityStats {
     /// rule disabled itself.
     pub corpus: Option<MadStats>,
 
-    pub z_threshold: f64,
+    /// Z-score threshold for longer verses (positive z). Default 3.0.
+    pub z_upper: f64,
+    /// Z-score threshold for shorter verses (negative z). Default 3.0.
+    pub z_lower: f64,
     /// Per-book median + MAD. Empty when the rule disabled itself.
     #[cfg_attr(feature = "serde", serde(serialize_with = "serialize_by_book"))]
     pub by_book: HashMap<BookId, MadStats>,
@@ -99,20 +102,24 @@ impl Rule for Proportionality {
         let Some(source) = project.source.as_ref() else {
             return Vec::new();
         };
-        // Read threshold from config params, default to 3.0
-        let threshold = project
+        // Read thresholds from config params
+        let rule_cfg = project
             .config
             .rules
             .iter()
-            .find(|r| r.id == PROPORTIONALITY)
-            .and_then(|r| {
-                r.params
-                    .iter()
-                    .find(|(k, _)| *k == "z_threshold")
-                    .map(|(_, v)| *v)
-            })
+            .find(|r| r.id == PROPORTIONALITY);
+        let get_param = |name: &str| {
+            rule_cfg.and_then(|r| r.params.iter().find(|(k, _)| *k == name).map(|(_, v)| *v))
+        };
+        // Support legacy z_threshold for both, or independent z_upper/z_lower
+        let z_upper = get_param("z_upper")
+            .or_else(|| get_param("z_threshold"))
             .unwrap_or(Z_THRESHOLD);
-        let (findings, prop_stats) = scan_proportionality(&project.target, source, threshold);
+        let z_lower = get_param("z_lower")
+            .or_else(|| get_param("z_threshold"))
+            .unwrap_or(Z_THRESHOLD);
+        let (findings, prop_stats) =
+            scan_proportionality(&project.target, source, z_upper, z_lower);
         stats.proportionality = Some(prop_stats);
         findings
     }
@@ -125,11 +132,13 @@ impl Rule for Proportionality {
 pub fn scan_proportionality<'a>(
     target: &'a NamedCorpus<'a>,
     source: &NamedCorpus<'_>,
-    threshold: f64,
+    z_upper: f64,
+    z_lower: f64,
 ) -> (Vec<Finding<'a>>, ProportionalityStats) {
     let mut findings = Vec::new();
     let mut stats = ProportionalityStats::default();
-    stats.z_threshold = threshold;
+    stats.z_upper = z_upper;
+    stats.z_lower = z_lower;
 
     // Pass 1: collect ratios per Sid, bucketed by book.
     let mut ratios: Vec<(Sid, f64)> = Vec::new();
@@ -182,8 +191,12 @@ pub fn scan_proportionality<'a>(
             .get(&sid.book)
             .map(|s| s.z(*ratio))
             .unwrap_or(0.0);
-        let trip_corpus = corpus_z.is_finite() && corpus_z.abs() >= threshold;
-        let trip_book = book_z.is_finite() && book_z.abs() >= threshold;
+        // Check directional thresholds: positive z uses z_upper, negative z uses z_lower
+        let trip_corpus = corpus_z.is_finite()
+            && ((corpus_z > 0.0 && corpus_z >= z_upper)
+                || (corpus_z < 0.0 && corpus_z.abs() >= z_lower));
+        let trip_book = book_z.is_finite()
+            && ((book_z > 0.0 && book_z >= z_upper) || (book_z < 0.0 && book_z.abs() >= z_lower));
         // Treat ±∞ from a degenerate (constant) reference as a hit too —
         // means the verse genuinely deviates from a reference that has
         // zero spread.
@@ -272,7 +285,7 @@ mod tests {
 
         let target = corpus("t", t_verses);
         let source = corpus("s", s_verses);
-        let (findings, stats) = scan_proportionality(&target, &source, Z_THRESHOLD);
+        let (findings, stats) = scan_proportionality(&target, &source, Z_THRESHOLD, Z_THRESHOLD);
 
         assert_eq!(findings.len(), 1, "got: {:?}", findings);
         assert_eq!(findings[0].sid, outlier);
@@ -298,7 +311,7 @@ mod tests {
         }
         let target = corpus("t", t);
         let source = corpus("s", s);
-        let (findings, _stats) = scan_proportionality(&target, &source, Z_THRESHOLD);
+        let (findings, _stats) = scan_proportionality(&target, &source, Z_THRESHOLD, Z_THRESHOLD);
         assert!(findings.is_empty());
     }
 
@@ -318,7 +331,7 @@ mod tests {
         ];
         let target = corpus("t", t);
         let source = corpus("s", s);
-        let (findings, stats) = scan_proportionality(&target, &source, Z_THRESHOLD);
+        let (findings, stats) = scan_proportionality(&target, &source, Z_THRESHOLD, Z_THRESHOLD);
         assert!(findings.is_empty());
         assert!(stats.disabled);
         assert!(stats.coverage < 0.5);
@@ -355,7 +368,7 @@ mod tests {
 
         let target = corpus("t", t);
         let source = corpus("s", s);
-        let (findings, stats) = scan_proportionality(&target, &source, Z_THRESHOLD);
+        let (findings, stats) = scan_proportionality(&target, &source, Z_THRESHOLD, Z_THRESHOLD);
 
         assert!(
             findings.iter().any(|f| f.sid == outlier),

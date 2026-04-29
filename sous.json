@@ -8,7 +8,8 @@
     "src.proportionality": {
       "enabled": true,
       "params": {
-        "z_threshold": 5.0
+        "z_upper": 5.0,
+        "z_lower": 3.0
       }
     }
   }
