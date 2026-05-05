@@ -5,32 +5,29 @@
 //!
 //! ## Scoring model
 //!
-//! `score = sum(rule_weight × finding.evidence) × product(matching
-//! pair multipliers)`.
+//! `score = noisy_or(rule_weight × finding.evidence)`, with optional
+//! pair multipliers applied in odds space.
 //!
 //! Three independent levers:
 //!
-//! - **Per-rule weight** (policy data) — how much one rule is worth
-//!   in principle. Hygiene-class rules get high weights so they
-//!   surface alone; sparse statistical rules get sub-1.0 weights so
-//!   they stay below threshold until corroborated.
+//! - **Per-rule weight** (policy data) — the initial precision estimate
+//!   for that rule before we have learned posteriors. Hygiene-class rules
+//!   sit near 1.0; sparse statistical rules sit below 1.0 so they need
+//!   corroboration.
 //! - **Per-finding evidence** (from the rule, in `[0, 1]`) — how
 //!   strong this *particular* hit is. A Dunning-graded rule firing on
 //!   a g2=6677 word emits ~1.0; one at the g2=11 borderline emits
 //!   ~0.5. Hygiene rules (no grading) emit 1.0. See
 //!   `analysis::evidence`.
 //! - **Pair multipliers** (policy data) — known-good co-occurrence
-//!   patterns. When both rules of a declared pair fire, the
-//!   multiplier scales the cluster's whole evidence sum. Multiple
-//!   matching pairs compound. A pair contributes its multiplier
-//!   exactly once when both of its rules appear, regardless of how
-//!   many findings each rule emitted.
+//!   patterns. When both rules of a declared pair fire, the multiplier
+//!   boosts the cluster odds. Odds-space keeps the final score inside
+//!   `[0, 1]`, unlike the old weighted sum.
 //!
-//! No matches → product is 1.0 → score is the plain sum. This is the
-//! key property: *we never throw away a finding for being uncoupled.*
-//! Three weak signals co-locating still surface even if no pair was
-//! formally declared between them; their weighted evidence simply
-//! adds up.
+//! No matches → multiplier product is 1.0 → score is plain Noisy-OR.
+//! We never throw away a finding for being uncoupled. Three weak signals
+//! co-locating can still surface even if no pair was formally declared;
+//! their independent probabilities compound.
 //!
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -46,9 +43,12 @@ pub const DEFAULT_WEIGHT: f64 = 1.0;
 /// Default multiplier for the SSC + UnexpectedSentenceEnd pair.
 pub const DEFAULT_PAIR_MULTIPLIER: f64 = 2.0;
 
-/// Score at or above which clusters are tagged `surfaced`. The line
-/// for "one default-weight tick or equivalent." Tune per deployment.
-pub const DEFAULT_MIN_SURFACE_SCORE: f64 = 1.0;
+/// Score at or above which clusters are tagged `surfaced`.
+///
+/// With Noisy-OR, two independent 0.5 signals combine to 0.75. That is
+/// the first useful "weak corroboration" threshold; one deterministic
+/// hygiene hit still scores 1.0 and surfaces alone.
+pub const DEFAULT_MIN_SURFACE_SCORE: f64 = 0.75;
 
 /// One aggregated group of findings. Clusters are sorted by `score`
 /// descending in the output of `aggregate`.
@@ -81,8 +81,12 @@ pub struct Cluster<'a> {
     pub score_breakdown: ScoreBreakdown,
 }
 
-/// Audit trail for `Cluster::score`. Mirrors the formula:
-/// `score = sum(components.contribution) × product(multipliers.value)`.
+/// Audit trail for `Cluster::score`.
+///
+/// `base_sum` is retained for JSON compatibility with earlier debug files,
+/// but under Noisy-OR it means "base probability before odds multipliers",
+/// not arithmetic sum. `components.contribution` is each finding's clamped
+/// probability contribution.
 #[derive(Debug, Clone, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct ScoreBreakdown {
@@ -197,11 +201,11 @@ pub fn aggregate<'a>(diags: &'a Diagnostics<'a>, policy: &AggregationPolicy) -> 
         let cluster = &mut clusters[index];
         cluster.byte_range = merged_range(cluster.byte_range, f.byte_range);
         let weight = policy.weight_for(f.rule_id);
-        let contribution = weight * f.evidence;
+        let contribution = probability(weight * f.evidence);
         cluster.findings.push(f);
         cluster.rules_fired.insert(f.rule_id);
-        cluster.score += contribution;
-        cluster.score_breakdown.base_sum += contribution;
+        cluster.score = noisy_or_push(cluster.score, contribution);
+        cluster.score_breakdown.base_sum = cluster.score;
         cluster.score_breakdown.components.push(ScoreComponent {
             rule_id: f.rule_id,
             weight,
@@ -224,7 +228,7 @@ pub fn aggregate<'a>(diags: &'a Diagnostics<'a>, policy: &AggregationPolicy) -> 
                 });
             }
         }
-        cluster.score *= multiplier_product;
+        cluster.score = apply_odds_multiplier(cluster.score, multiplier_product);
         cluster.surfaced = cluster.score >= policy.min_surface_score;
         cluster.score_breakdown.multiplier_product = multiplier_product;
         cluster.score_breakdown.final_score = cluster.score;
@@ -277,14 +281,39 @@ fn merge_overlapping_clusters(clusters: &mut Vec<Cluster<'_>>) {
 
 fn merge_cluster<'a>(target: &mut Cluster<'a>, other: Cluster<'a>) {
     target.byte_range = merged_range(target.byte_range, other.byte_range);
-    target.score += other.score;
+    target.score = noisy_or_push(target.score, other.score);
     target.rules_fired.extend(other.rules_fired);
     target.findings.extend(other.findings);
-    target.score_breakdown.base_sum += other.score_breakdown.base_sum;
+    target.score_breakdown.base_sum = target.score;
     target
         .score_breakdown
         .components
         .extend(other.score_breakdown.components);
+}
+
+fn probability(value: f64) -> f64 {
+    if value.is_nan() {
+        0.0
+    } else {
+        value.clamp(0.0, 1.0)
+    }
+}
+
+fn noisy_or_push(current: f64, next: f64) -> f64 {
+    1.0 - (1.0 - probability(current)) * (1.0 - probability(next))
+}
+
+fn apply_odds_multiplier(score: f64, multiplier: f64) -> f64 {
+    let p = probability(score);
+    if p <= 0.0 || multiplier <= 0.0 {
+        return 0.0;
+    }
+    if p >= 1.0 {
+        return 1.0;
+    }
+    let odds = p / (1.0 - p);
+    let boosted = odds * multiplier;
+    boosted / (1.0 + boosted)
 }
 
 fn is_whole_verse(range: ByteRange) -> bool {
@@ -353,7 +382,7 @@ mod tests {
             default_weight: 1.0,
             rule_weights: BTreeMap::new(),
             correlated_pairs: vec![],
-            min_surface_score: 1.0,
+            min_surface_score: DEFAULT_MIN_SURFACE_SCORE,
         }
     }
 
@@ -373,7 +402,7 @@ mod tests {
         let clusters = aggregate(&diags, &empty_policy());
         assert_eq!(clusters.len(), 2);
         assert_eq!(clusters[0].sid, s1);
-        assert_eq!(clusters[0].score, 2.0);
+        assert_eq!(clusters[0].score, 1.0);
         assert_eq!(clusters[1].sid, s2);
         assert_eq!(clusters[1].score, 1.0);
     }
@@ -403,8 +432,7 @@ mod tests {
             min_surface_score: 1.0,
         };
         let clusters = aggregate(&diags, &policy);
-        // base 3.0 × multiplier 2.0
-        assert_eq!(clusters[0].score, 6.0);
+        assert_eq!(clusters[0].score, 1.0);
         assert_eq!(clusters[0].matched_correlations, vec!["r1-r2"]);
         assert!(clusters[0].surfaced);
     }
@@ -442,8 +470,7 @@ mod tests {
             min_surface_score: 1.0,
         };
         let clusters = aggregate(&diags, &policy);
-        // base 3.0 × 2.0 × 1.5 = 9.0
-        assert_eq!(clusters[0].score, 9.0);
+        assert_eq!(clusters[0].score, 1.0);
         assert_eq!(clusters[0].matched_correlations.len(), 2);
     }
 
@@ -468,7 +495,7 @@ mod tests {
         };
         let clusters = aggregate(&diags, &policy);
         // Only r1 fires; multiplier doesn't apply.
-        assert_eq!(clusters[0].score, 2.0);
+        assert_eq!(clusters[0].score, 1.0);
         assert!(clusters[0].matched_correlations.is_empty());
     }
 
@@ -490,7 +517,7 @@ mod tests {
             min_surface_score: 1.0,
         };
         let clusters = aggregate(&diags, &policy);
-        assert_eq!(clusters[0].score, 5.5);
+        assert_eq!(clusters[0].score, 1.0);
     }
 
     #[test]
@@ -518,8 +545,8 @@ mod tests {
 
     #[test]
     fn per_finding_evidence_scales_contribution() {
-        // Two findings of the same rule, one with strong evidence,
-        // one weak. Cluster score = weight × (e1 + e2).
+        // One certain finding saturates the cluster. The weak second
+        // finding cannot push a probability above 1.0.
         let s1 = sid("GEN", 1, 1);
         let r = RuleId("r");
         let diags = Diagnostics {
@@ -530,14 +557,13 @@ mod tests {
         };
         let policy = empty_policy();
         let clusters = aggregate(&diags, &policy);
-        // weight 1.0 × (1.0 + 0.3) = 1.3
-        assert!((clusters[0].score - 1.3).abs() < 1e-9);
+        assert_eq!(clusters[0].score, 1.0);
     }
 
     #[test]
     fn weak_evidence_below_threshold_unsurfaced() {
         // Single finding at evidence 0.4, weight 1.0 → score 0.4 →
-        // below 1.0 threshold → unsurfaced.
+        // below the default weak-corroboration threshold → unsurfaced.
         let s1 = sid("GEN", 1, 1);
         let r = RuleId("r");
         let diags = Diagnostics {
@@ -566,10 +592,10 @@ mod tests {
             default_weight: 1.0,
             rule_weights: weights,
             correlated_pairs: vec![],
-            min_surface_score: 1.0,
+            min_surface_score: DEFAULT_MIN_SURFACE_SCORE,
         };
         let clusters = aggregate(&diags, &policy);
-        assert_eq!(clusters[0].score, 1.0);
+        assert_eq!(clusters[0].score, 0.75);
         assert!(clusters[0].surfaced);
     }
 
@@ -608,7 +634,7 @@ mod tests {
 
         assert_eq!(clusters.len(), 1);
         assert_eq!(clusters[0].byte_range, ByteRange { start: 0, end: 5 });
-        assert_eq!(clusters[0].score, 2.0);
+        assert_eq!(clusters[0].score, 1.0);
     }
 
     #[test]
@@ -629,6 +655,6 @@ mod tests {
 
         assert_eq!(clusters.len(), 1);
         assert_eq!(clusters[0].byte_range, ByteRange { start: 0, end: 10 });
-        assert_eq!(clusters[0].score, 3.0);
+        assert_eq!(clusters[0].score, 1.0);
     }
 }
