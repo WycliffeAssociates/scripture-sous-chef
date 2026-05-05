@@ -8,7 +8,9 @@ use std::collections::HashMap;
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::analysis::mad::MadStats;
-use crate::diagnostics::{AnalyzeStats, Finding, RuleId, Severity};
+use crate::diagnostics::{
+    AnalyzeStats, ByteRange, ClusterKey, Finding, FindingId, RuleId, Severity,
+};
 use crate::project::{NamedCorpus, Project};
 use crate::rule::Rule;
 use crate::sid::{BookId, Sid};
@@ -212,7 +214,10 @@ pub fn scan_proportionality<'a>(
             sid: *sid,
             severity: Severity::Info,
             // Whole-verse finding; no specific substring to point at.
+            byte_range: ByteRange { start: 0, end: 0 },
             span: &verse.nfc[0..0],
+            cluster_key: ClusterKey::rule_level(PROPORTIONALITY),
+            finding_id: FindingId::default(),
             message: format!(
                 "length ratio {:.2} (book z={:+.2}, corpus z={:+.2})",
                 ratio, book_z, corpus_z

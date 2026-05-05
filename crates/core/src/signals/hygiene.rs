@@ -22,7 +22,7 @@
 
 use std::collections::HashMap;
 
-use crate::diagnostics::{Finding, RuleId, Severity};
+use crate::diagnostics::{ByteRange, ClusterKey, Finding, FindingId, RuleId, Severity};
 use crate::project::Project;
 use crate::rule::Rule;
 use crate::script::script_of;
@@ -67,7 +67,13 @@ pub fn scan_tab_in_body(verse: &Verse) -> Vec<Finding<'_>> {
             rule_id: TAB_IN_BODY,
             sid: verse.sid,
             severity: Severity::Warn,
+            byte_range: ByteRange {
+                start: i,
+                end: i + 1,
+            },
             span: &verse.nfc[i..i + 1],
+            cluster_key: ClusterKey::rule_level(TAB_IN_BODY),
+            finding_id: FindingId::default(),
             message: "tab character in verse body".to_string(),
             evidence: 1.0,
         });
@@ -119,7 +125,10 @@ pub fn scan_control_chars(verse: &Verse) -> Vec<Finding<'_>> {
             rule_id: CONTROL_CHARS,
             sid: verse.sid,
             severity: Severity::Warn,
+            byte_range: ByteRange { start: i, end },
             span: &verse.nfc[i..end],
+            cluster_key: ClusterKey(format!("U+{:04X}", c as u32)),
+            finding_id: FindingId::default(),
             message: format!("control character U+{:04X} in verse body", c as u32),
             evidence: 1.0,
         });
@@ -176,7 +185,10 @@ pub fn scan_zero_width_misuse(verse: &Verse) -> Vec<Finding<'_>> {
             rule_id: ZERO_WIDTH_MISUSE,
             sid: verse.sid,
             severity: Severity::Warn,
+            byte_range: ByteRange { start: i, end },
             span: &verse.nfc[i..end],
+            cluster_key: ClusterKey(format!("U+{:04X}", c as u32)),
+            finding_id: FindingId::default(),
             message: format!("zero-width character U+{:04X} in verse body", c as u32),
             evidence: 1.0,
         });
@@ -251,7 +263,10 @@ pub fn scan_empty_verse(verse: &Verse) -> Vec<Finding<'_>> {
             rule_id: EMPTY_VERSE,
             sid: verse.sid,
             severity: Severity::Info,
+            byte_range: ByteRange { start: 0, end: 0 },
             span: &verse.nfc[0..0],
+            cluster_key: ClusterKey::rule_level(EMPTY_VERSE),
+            finding_id: FindingId::default(),
             message: "verse is empty".to_string(),
             evidence: 1.0,
         }]

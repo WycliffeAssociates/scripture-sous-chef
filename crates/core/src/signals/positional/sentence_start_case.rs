@@ -23,7 +23,9 @@ use crate::analysis::dunning::Table2;
 use crate::analysis::evidence::{DEFAULT_G2_SIGMOID_SCALE, evidence_from_g2};
 use crate::analysis::lexicon::Lexicon;
 use crate::context::AnalysisContext;
-use crate::diagnostics::{AnalyzeStats, Finding, RuleId, Severity};
+use crate::diagnostics::{
+    AnalyzeStats, ByteRange, ClusterKey, Finding, FindingId, RuleId, Severity,
+};
 use crate::discourse::{Discourse, SpanIndex};
 use crate::project::{NamedCorpus, Project};
 use crate::rule::Rule;
@@ -352,7 +354,13 @@ fn scan_sentence_start_case_inner<'a>(
             rule_id: SENTENCE_START_CASE,
             sid,
             severity: Severity::Info,
+            byte_range: ByteRange {
+                start: verse_off,
+                end: verse_off + len,
+            },
             span: &verse.nfc[verse_off..verse_off + len],
+            cluster_key: ClusterKey(p.to_string()),
+            finding_id: FindingId::default(),
             message: format!("expected uppercase after '{}'", p),
             evidence,
         });
@@ -392,7 +400,10 @@ fn apply_terminal_override(
             p_upper: 0.0,
             g2: 0.0,
             is_trigger: true,
-            pattern: format!("after '{}' — declared in config (no observed data)", cluster),
+            pattern: format!(
+                "after '{}' — declared in config (no observed data)",
+                cluster
+            ),
         });
     }
     triggers
@@ -509,9 +520,7 @@ fn best_span_case_split(
         }
         let short_n = short_upper + short_lower;
         let long_n = long_upper + long_lower;
-        if short_n < SPAN_MODEL_MIN_BUCKET_OBS as u64
-            || long_n < SPAN_MODEL_MIN_BUCKET_OBS as u64
-        {
+        if short_n < SPAN_MODEL_MIN_BUCKET_OBS as u64 || long_n < SPAN_MODEL_MIN_BUCKET_OBS as u64 {
             continue;
         }
         let short_p_upper = short_upper as f64 / short_n as f64;
@@ -541,8 +550,8 @@ fn best_span_case_split(
         if bimodality > prior_bimodality {
             best_pre_rate_attempt = Some(attempt.clone());
         }
-        let rates_pass =
-            short_p_upper <= SPAN_MODEL_SHORT_UPPER_MAX && long_p_upper >= SPAN_MODEL_LONG_UPPER_MIN;
+        let rates_pass = short_p_upper <= SPAN_MODEL_SHORT_UPPER_MAX
+            && long_p_upper >= SPAN_MODEL_LONG_UPPER_MIN;
         if !rates_pass {
             continue;
         }

@@ -5,7 +5,7 @@
 
 use std::collections::HashSet;
 
-use crate::diagnostics::RuleId;
+use crate::diagnostics::{Finding, FindingId, RuleId};
 use crate::sid::Sid;
 
 #[derive(Debug, Clone, Default)]
@@ -67,17 +67,75 @@ pub struct RuleConfig {
     pub weight: Option<f64>,
 }
 
-/// Suppress findings the project owner has accepted. Membership test is
-/// a single hash lookup keyed by `(rule_id, sid)`.
+/// Suppress findings the project owner has accepted.
+///
+/// Runtime suppression is keyed by `FindingId` so one finding can be
+/// dismissed without hiding every same-rule finding in the verse.
+///
+/// TODO(phase-a-cleanup): remove `legacy_rule_sid` after the CLI config
+/// schema accepts concrete finding IDs. It exists only so older `sous.json`
+/// files keep working while Phase A rolls through the engine.
 #[derive(Debug, Clone, Default)]
-pub struct ExceptionSet(pub HashSet<(RuleId, Sid)>);
+pub struct ExceptionSet {
+    pub finding_ids: HashSet<FindingId>,
+    pub legacy_rule_sid: HashSet<(RuleId, Sid)>,
+}
 
 impl ExceptionSet {
-    pub fn contains(&self, rule: RuleId, sid: Sid) -> bool {
-        self.0.contains(&(rule, sid))
+    pub fn contains(&self, finding: &Finding<'_>) -> bool {
+        self.finding_ids.contains(&finding.finding_id)
+            || self
+                .legacy_rule_sid
+                .contains(&(finding.rule_id, finding.sid))
     }
 
-    pub fn insert(&mut self, rule: RuleId, sid: Sid) -> bool {
-        self.0.insert((rule, sid))
+    pub fn insert_finding_id(&mut self, id: FindingId) -> bool {
+        self.finding_ids.insert(id)
+    }
+
+    pub fn insert_legacy_rule_sid(&mut self, rule: RuleId, sid: Sid) -> bool {
+        self.legacy_rule_sid.insert((rule, sid))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::diagnostics::{ByteRange, ClusterKey, FindingId, Severity};
+    use crate::sid::BookId;
+
+    fn sid() -> Sid {
+        Sid::new(BookId::from_str("GEN").unwrap(), 1, 1)
+    }
+
+    fn finding(id: FindingId) -> Finding<'static> {
+        Finding {
+            rule_id: RuleId("hyg.example"),
+            sid: sid(),
+            severity: Severity::Warn,
+            byte_range: ByteRange { start: 0, end: 1 },
+            span: "x",
+            cluster_key: ClusterKey("x".to_string()),
+            finding_id: id,
+            message: String::new(),
+            evidence: 1.0,
+        }
+    }
+
+    #[test]
+    fn finding_id_suppresses_one_concrete_finding() {
+        let mut exceptions = ExceptionSet::default();
+        exceptions.insert_finding_id(FindingId(42));
+
+        assert!(exceptions.contains(&finding(FindingId(42))));
+        assert!(!exceptions.contains(&finding(FindingId(7))));
+    }
+
+    #[test]
+    fn legacy_rule_sid_still_filters_old_config_shape() {
+        let mut exceptions = ExceptionSet::default();
+        exceptions.insert_legacy_rule_sid(RuleId("hyg.example"), sid());
+
+        assert!(exceptions.contains(&finding(FindingId(7))));
     }
 }

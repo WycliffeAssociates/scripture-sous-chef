@@ -18,7 +18,9 @@ pub mod verse;
 
 pub use config::{Config, ExceptionSet};
 pub use context::AnalysisContext;
-pub use diagnostics::{AnalyzeStats, Diagnostics, Finding, RuleId, Severity};
+pub use diagnostics::{
+    AnalyzeStats, ByteRange, ClusterKey, Diagnostics, Finding, FindingId, RuleId, Severity,
+};
 pub use project::{NamedCorpus, Project};
 pub use sid::{BookId, Sid};
 pub use verse::{Token, TokenKind, Verse};
@@ -56,20 +58,25 @@ fn run<'src>(
         .filter_map(|r| r.severity.map(|s| (r.id, s)))
         .collect();
 
+    let mut raw = Diagnostics::default();
     for r in rules {
         let id = r.id();
         if enabled.get(&id) == Some(&false) {
             continue;
         }
         for mut f in r.check(project, &context, &mut stats) {
-            if project.exceptions.contains(f.rule_id, f.sid) {
-                continue;
-            }
             if let Some(&sev) = severity_override.get(&f.rule_id) {
                 f.severity = sev;
             }
-            diags.push(f);
+            raw.push(f);
         }
+    }
+    raw.assign_finding_ids();
+    for f in raw.findings {
+        if project.exceptions.contains(&f) {
+            continue;
+        }
+        diags.push(f);
     }
     (diags, stats)
 }

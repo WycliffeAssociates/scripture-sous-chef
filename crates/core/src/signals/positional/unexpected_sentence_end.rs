@@ -28,7 +28,9 @@ use crate::analysis::dunning::Table2;
 use crate::analysis::evidence::{DEFAULT_G2_SIGMOID_SCALE, evidence_from_g2};
 use crate::analysis::lexicon::{CaseClass, Lexicon};
 use crate::context::AnalysisContext;
-use crate::diagnostics::{AnalyzeStats, Finding, RuleId, Severity};
+use crate::diagnostics::{
+    AnalyzeStats, ByteRange, ClusterKey, Finding, FindingId, RuleId, Severity,
+};
 use crate::discourse::Discourse;
 use crate::project::{NamedCorpus, Project};
 use crate::rule::Rule;
@@ -329,7 +331,13 @@ fn scan_unexpected_sentence_end_from_transitions<'a>(
             rule_id: UNEXPECTED_SENTENCE_END,
             sid,
             severity: Severity::Info,
+            byte_range: ByteRange {
+                start: verse_off,
+                end: span_end,
+            },
             span: &verse.nfc[verse_off..span_end],
+            cluster_key: ClusterKey(word.to_string()),
+            finding_id: FindingId::default(),
             message: format!(
                 "'{}' is rarely sentence-final in this corpus, but appears before '{}'",
                 word, succ

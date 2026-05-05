@@ -219,7 +219,7 @@ pub fn aggregate<'a>(diags: &'a Diagnostics<'a>, policy: &AggregationPolicy) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::diagnostics::{Finding, Severity};
+    use crate::diagnostics::{ByteRange, ClusterKey, Finding, FindingId, Severity};
     use crate::sid::BookId;
 
     fn sid(book: &str, ch: u16, vs: u16) -> Sid {
@@ -240,7 +240,10 @@ mod tests {
             rule_id,
             sid,
             severity: Severity::Info,
+            byte_range: ByteRange { start: 0, end: 0 },
             span,
+            cluster_key: ClusterKey::rule_level(rule_id),
+            finding_id: FindingId::default(),
             message: String::new(),
             evidence,
         }

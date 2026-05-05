@@ -237,6 +237,10 @@ fn main() -> ExitCode {
 struct DiagFinding {
     rule_id: String,
     severity: Severity,
+    finding_id: u64,
+    cluster_key: String,
+    byte_start: usize,
+    byte_end: usize,
     span: String,
     message: String,
     evidence: f64,
@@ -281,6 +285,10 @@ fn write_diagnostics_json(
         by_sid.entry(f.sid).or_default().push(DiagFinding {
             rule_id: f.rule_id.0.to_string(),
             severity: f.severity,
+            finding_id: f.finding_id.0,
+            cluster_key: f.cluster_key.to_string(),
+            byte_start: f.byte_range.start,
+            byte_end: f.byte_range.end,
             span: f.span.to_string(),
             message: f.message.clone(),
             evidence: f.evidence,
@@ -351,6 +359,10 @@ struct ClusterOut {
 struct ClusterFinding {
     rule_id: String,
     severity: Severity,
+    finding_id: u64,
+    cluster_key: String,
+    byte_start: usize,
+    byte_end: usize,
     span: String,
     message: String,
     evidence: f64,
@@ -386,6 +398,10 @@ fn write_clusters_json(
                     .map(|f| ClusterFinding {
                         rule_id: f.rule_id.0.to_string(),
                         severity: f.severity,
+                        finding_id: f.finding_id.0,
+                        cluster_key: f.cluster_key.to_string(),
+                        byte_start: f.byte_range.start,
+                        byte_end: f.byte_range.end,
                         span: f.span.to_string(),
                         message: f.message.clone(),
                         evidence: f.evidence,

@@ -103,7 +103,7 @@ pub fn load_config(
         for sid_str in &entry.exceptions {
             match Sid::parse(sid_str) {
                 Some(sid) => {
-                    exceptions.insert(rule_id, sid);
+                    exceptions.insert_legacy_rule_sid(rule_id, sid);
                 }
                 None => {
                     warnings.push(format!(

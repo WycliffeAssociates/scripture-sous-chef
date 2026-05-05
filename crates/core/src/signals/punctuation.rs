@@ -9,7 +9,9 @@
 //! convention to short-circuit the observation step.
 
 use crate::context::AnalysisContext;
-use crate::diagnostics::{AnalyzeStats, Finding, RuleId, Severity};
+use crate::diagnostics::{
+    AnalyzeStats, ByteRange, ClusterKey, Finding, FindingId, RuleId, Severity,
+};
 use crate::discourse::{PairAnomaly, PairAnomalyKind};
 use crate::project::Project;
 use crate::rule::Rule;
@@ -73,7 +75,13 @@ pub fn scan_paired_punct_balance<'src>(
             rule_id: PAIRED_PUNCT_BALANCE,
             sid,
             severity: Severity::Warn,
+            byte_range: ByteRange {
+                start: verse_off,
+                end: verse_off + span.len(),
+            },
             span,
+            cluster_key: ClusterKey(anomaly.punct.to_string()),
+            finding_id: FindingId::default(),
             message: paired_message(anomaly, &context_snippet),
             evidence: 1.0,
         });
@@ -139,15 +147,26 @@ fn snippet_around(text: &str, byte_offset: usize, punct_len: usize) -> String {
     let before = text[before_start..before_end].trim_start();
     let punct = &text[before_end..(before_end + punct_len).min(text.len())];
     let after = text[after_start..after_end].trim_end();
-    let prefix = if before_start > 0 && !before.is_empty() { "…" } else { "" };
-    let suffix = if after_end < text.len() && !after.is_empty() { "…" } else { "" };
+    let prefix = if before_start > 0 && !before.is_empty() {
+        "…"
+    } else {
+        ""
+    };
+    let suffix = if after_end < text.len() && !after.is_empty() {
+        "…"
+    } else {
+        ""
+    };
     format!("{prefix}{before}{punct}{after}{suffix}")
 }
 
 fn paired_message(anomaly: &PairAnomaly, ctx: &str) -> String {
     match anomaly.kind {
         PairAnomalyKind::UnexpectedClose => {
-            format!("unexpected closing punctuation '{}' near {ctx}", anomaly.punct)
+            format!(
+                "unexpected closing punctuation '{}' near {ctx}",
+                anomaly.punct
+            )
         }
         PairAnomalyKind::MismatchedClose => match (anomaly.expected_open, anomaly.start_sid) {
             (Some(open), Some(open_sid)) => format!(
