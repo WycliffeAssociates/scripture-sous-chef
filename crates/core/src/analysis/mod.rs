@@ -3,7 +3,7 @@
 //! signals compose these into actual rules.
 
 pub mod bktree;
-pub mod dunning;
+pub mod association;
 pub mod evidence;
 pub mod kn;
 pub mod lexicon;

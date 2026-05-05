@@ -19,8 +19,8 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use crate::analysis::dunning::Table2;
-use crate::analysis::evidence::{DEFAULT_G2_SIGMOID_SCALE, evidence_from_g2};
+use crate::analysis::association::Table2;
+use crate::analysis::evidence::{DEFAULT_G2_SIGMOID_SCALE, evidence_from_association_score};
 use crate::analysis::lexicon::Lexicon;
 use crate::context::AnalysisContext;
 use crate::diagnostics::{
@@ -337,10 +337,11 @@ fn scan_sentence_start_case_inner<'a>(
         let len = bad.len_utf8();
         // Per-finding evidence comes from the trigger cluster's g2:
         // a violation after `. ` (g2 in the thousands) is
-        // higher-confidence than a violation after a marginal
-        // trigger. Scaled with `DEFAULT_G2_SIGMOID_SCALE` so g2 just
-        // above threshold ≈ 0.5, very high g2 ≈ 1.0.
-        let mut evidence = evidence_from_g2(trig.g2, g2_min, DEFAULT_G2_SIGMOID_SCALE);
+        // User-facing copy should say "strong evidence" rather than
+        // expose raw scores first. This numeric value is for ranking:
+        // just above threshold ≈ 0.5, very high association ≈ 1.0.
+        let mut evidence =
+            evidence_from_association_score(trig.g2, g2_min, DEFAULT_G2_SIGMOID_SCALE);
         if let Some(span) = span_start_for_transition(discourse, transition, span_index)
             .or_else(|| span_end_for_transition(discourse, transition, span_index))
         {
@@ -531,7 +532,7 @@ fn best_span_case_split(
             total_upper.saturating_sub(short_upper),
             total_lower.saturating_sub(short_lower),
         )
-        .g2();
+        .association_score();
         let attempt = SpanCaseSplitAttempt {
             split_token_distance: split,
             short_n: short_n as usize,

@@ -8,7 +8,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 
-use crate::analysis::dunning::Table2;
+use crate::analysis::association::Table2;
 use crate::analysis::lexicon::{CaseClass, Lexicon};
 use crate::unicode::is_cased;
 
@@ -242,7 +242,7 @@ pub fn learn_non_terminal_clusters(
             total_lower.saturating_sub(lower_after),
             total_upper.saturating_sub(upper_after),
         )
-        .g2();
+        .association_score();
         let p_upper = if n_after > 0 {
             upper_after as f64 / n_after as f64
         } else {
@@ -350,7 +350,8 @@ pub fn learn_triggers(
         let n_after = upper_after + lower_after;
         let upper_other = total_upper.saturating_sub(upper_after);
         let lower_other = total_lower.saturating_sub(lower_after);
-        let g2 = Table2::new(upper_after, lower_after, upper_other, lower_other).g2();
+        let g2 =
+            Table2::new(upper_after, lower_after, upper_other, lower_other).association_score();
         let p_upper = if n_after > 0 {
             upper_after as f64 / n_after as f64
         } else {

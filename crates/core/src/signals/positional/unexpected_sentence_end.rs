@@ -24,8 +24,8 @@
 
 use std::collections::{BTreeSet, HashMap};
 
-use crate::analysis::dunning::Table2;
-use crate::analysis::evidence::{DEFAULT_G2_SIGMOID_SCALE, evidence_from_g2};
+use crate::analysis::association::Table2;
+use crate::analysis::evidence::{DEFAULT_G2_SIGMOID_SCALE, evidence_from_association_score};
 use crate::analysis::lexicon::{CaseClass, Lexicon};
 use crate::context::AnalysisContext;
 use crate::diagnostics::{
@@ -266,7 +266,8 @@ fn scan_unexpected_sentence_end_from_transitions<'a>(
         let other_before = total_before_terminal.saturating_sub(n_before);
         let other_not_before = total_not_before_terminal.saturating_sub(n_not_before);
 
-        let g2 = Table2::new(n_before, n_not_before, other_before, other_not_before).g2();
+        let g2 = Table2::new(n_before, n_not_before, other_before, other_not_before)
+            .association_score();
         let p_terminal = n_before as f64 / n_total as f64;
         let is_never_terminal = g2 >= g2_min && p_terminal <= never_terminal_rate_max;
 
@@ -326,7 +327,7 @@ fn scan_unexpected_sentence_end_from_transitions<'a>(
         if span_end > verse.nfc.len() {
             continue;
         }
-        let evidence = evidence_from_g2(g2, g2_min, DEFAULT_G2_SIGMOID_SCALE);
+        let evidence = evidence_from_association_score(g2, g2_min, DEFAULT_G2_SIGMOID_SCALE);
         findings.push(Finding {
             rule_id: UNEXPECTED_SENTENCE_END,
             sid,
