@@ -430,6 +430,7 @@ version = "0.1.0"
 dependencies = [
  "icu_segmenter",
  "serde",
+ "serde_json",
  "unicode-normalization",
  "unicode-segmentation",
 ]

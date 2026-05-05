@@ -32,6 +32,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+#[cfg(feature = "serde")]
+use crate::analysis::posterior::PosteriorStore;
 use crate::diagnostics::{ByteRange, Diagnostics, Finding, RuleId};
 use crate::sid::Sid;
 use crate::signals;
@@ -176,6 +178,84 @@ impl AggregationPolicy {
 /// findings (`0..0`) are allowed to join any same-Sid local cluster because
 /// they intentionally describe the verse as a unit.
 pub fn aggregate<'a>(diags: &'a Diagnostics<'a>, policy: &AggregationPolicy) -> Vec<Cluster<'a>> {
+    aggregate_with_posteriors(diags, policy, None)
+}
+
+/// Like [`aggregate`], but consults project feedback posteriors for the
+/// per-finding precision used by Noisy-OR.
+///
+/// This is the F-lite plumbing: with an empty log, posterior precision equals
+/// the prior and behavior remains conservative. After explicit accept/dismiss
+/// events, only matching `(rule, cluster)` findings move.
+#[cfg(feature = "serde")]
+pub fn aggregate_with_posteriors<'a>(
+    diags: &'a Diagnostics<'a>,
+    policy: &AggregationPolicy,
+    posteriors: Option<&PosteriorStore>,
+) -> Vec<Cluster<'a>> {
+    aggregate_inner(diags, policy, posteriors)
+}
+
+#[cfg(not(feature = "serde"))]
+fn aggregate_with_posteriors<'a>(
+    diags: &'a Diagnostics<'a>,
+    policy: &AggregationPolicy,
+    _posteriors: Option<&()>,
+) -> Vec<Cluster<'a>> {
+    aggregate_inner(diags, policy)
+}
+
+#[cfg(feature = "serde")]
+fn aggregate_inner<'a>(
+    diags: &'a Diagnostics<'a>,
+    policy: &AggregationPolicy,
+    posteriors: Option<&PosteriorStore>,
+) -> Vec<Cluster<'a>> {
+    let mut clusters: Vec<Cluster<'a>> = Vec::new();
+
+    for f in &diags.findings {
+        let index = clusters
+            .iter()
+            .position(|cluster| cluster_accepts(cluster, f))
+            .unwrap_or_else(|| {
+                clusters.push(Cluster {
+                    sid: f.sid,
+                    byte_range: f.byte_range,
+                    score: 0.0,
+                    surfaced: false,
+                    rules_fired: BTreeSet::new(),
+                    findings: Vec::new(),
+                    matched_correlations: Vec::new(),
+                    score_breakdown: ScoreBreakdown {
+                        min_surface_score: policy.min_surface_score,
+                        ..Default::default()
+                    },
+                });
+                clusters.len() - 1
+            });
+        let cluster = &mut clusters[index];
+        cluster.byte_range = merged_range(cluster.byte_range, f.byte_range);
+        let weight = posteriors
+            .map(|store| store.precision_for(f))
+            .unwrap_or_else(|| policy.weight_for(f.rule_id));
+        let contribution = probability(weight * f.evidence);
+        cluster.findings.push(f);
+        cluster.rules_fired.insert(f.rule_id);
+        cluster.score = noisy_or_push(cluster.score, contribution);
+        cluster.score_breakdown.base_sum = cluster.score;
+        cluster.score_breakdown.components.push(ScoreComponent {
+            rule_id: f.rule_id,
+            weight,
+            evidence: f.evidence,
+            contribution,
+        });
+    }
+
+    finalize_clusters(clusters, policy)
+}
+
+#[cfg(not(feature = "serde"))]
+fn aggregate_inner<'a>(diags: &'a Diagnostics<'a>, policy: &AggregationPolicy) -> Vec<Cluster<'a>> {
     let mut clusters: Vec<Cluster<'a>> = Vec::new();
 
     for f in &diags.findings {
@@ -214,6 +294,13 @@ pub fn aggregate<'a>(diags: &'a Diagnostics<'a>, policy: &AggregationPolicy) -> 
         });
     }
 
+    finalize_clusters(clusters, policy)
+}
+
+fn finalize_clusters<'a>(
+    mut clusters: Vec<Cluster<'a>>,
+    policy: &AggregationPolicy,
+) -> Vec<Cluster<'a>> {
     merge_overlapping_clusters(&mut clusters);
 
     for cluster in &mut clusters {
@@ -597,6 +684,33 @@ mod tests {
         let clusters = aggregate(&diags, &policy);
         assert_eq!(clusters[0].score, 0.75);
         assert!(clusters[0].surfaced);
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn posterior_precision_replaces_static_rule_weight() {
+        use crate::analysis::posterior::{
+            BetaPosterior, FeedbackEvent, FeedbackKind, PosteriorStore, PriorTable,
+        };
+
+        let s1 = sid("GEN", 1, 1);
+        let r = RuleId("r");
+        let mut diags = Diagnostics {
+            findings: vec![finding_with_evidence(r, s1, "x", 1.0)],
+        };
+        diags.assign_finding_ids();
+        let f = diags.findings[0].clone();
+        let mut store = PosteriorStore::new(PriorTable::with_default(BetaPosterior::new(1.0, 1.0)));
+        store.record(&FeedbackEvent::explicit(
+            FeedbackKind::Dismissed,
+            &f,
+            "2026-05-05T00:00:00Z".to_string(),
+            None,
+        ));
+
+        let clusters = aggregate_with_posteriors(&diags, &empty_policy(), Some(&store));
+
+        assert!((clusters[0].score - (1.0 / 3.0)).abs() < 1e-9);
     }
 
     #[test]

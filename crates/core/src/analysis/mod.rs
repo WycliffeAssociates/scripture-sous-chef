@@ -2,9 +2,11 @@
 //! testable in isolation against a textbook or a paper's worked example;
 //! signals compose these into actual rules.
 
-pub mod bktree;
 pub mod association;
+pub mod bktree;
 pub mod evidence;
 pub mod kn;
 pub mod lexicon;
 pub mod mad;
+#[cfg(feature = "serde")]
+pub mod posterior;

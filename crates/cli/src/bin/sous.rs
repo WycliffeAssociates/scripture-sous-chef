@@ -8,7 +8,8 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Instant;
 
-use ssc_core::aggregate::{AggregationPolicy, aggregate};
+use ssc_core::aggregate::{aggregate_with_posteriors, AggregationPolicy};
+use ssc_core::analysis::posterior::{BetaPosterior, PosteriorStore, PriorTable};
 use ssc_core::analyze_with_stats;
 use ssc_core::config::{Config, ExceptionSet};
 use ssc_core::diagnostics::{Diagnostics, Severity};
@@ -138,30 +139,39 @@ fn main() -> ExitCode {
         None => None,
     };
 
+    // γ aggregation. Build the policy from defaults, then merge any
+    // overrides supplied via `sous.json` so users can tune surfacing
+    // and rule trustworthiness without touching code.
+    let policy = aggregation_policy_from_config(&config);
+
+    // GUI/editor integrations can write explicit accept/dismiss events here.
+    // The dogfood CLI only reads them today; it is not the intended UX for
+    // collecting feedback.
+    let events_path = path.join(".sous").join("events.jsonl");
+    let posteriors = match PosteriorStore::from_event_log(&events_path, priors_from_policy(&policy))
+    {
+        Ok(store) => store,
+        Err(e) => {
+            eprintln!(
+                "feedback warning: could not read {}: {}",
+                events_path.display(),
+                e
+            );
+            PosteriorStore::new(priors_from_policy(&policy))
+        }
+    };
+    let mut exceptions = exceptions;
+    for finding_id in posteriors.dismissed_finding_ids() {
+        exceptions.insert_finding_id(finding_id);
+    }
+
     let project = build::project_from_raw_map(name.clone(), raw, source, config, exceptions);
 
     let start = Instant::now();
     let (diags, stats) = analyze_with_stats(&project);
     let elapsed_us = start.elapsed().as_micros();
 
-    // γ aggregation. Build the policy from defaults, then merge any
-    // overrides supplied via `sous.json` so users can tune surfacing
-    // and rule trustworthiness without touching code.
-    let mut policy = AggregationPolicy::default();
-    if let Some(agg) = &project.config.aggregation {
-        if let Some(v) = agg.min_surface_score {
-            policy.min_surface_score = v;
-        }
-        if let Some(v) = agg.default_weight {
-            policy.default_weight = v;
-        }
-    }
-    for rc in &project.config.rules {
-        if let Some(w) = rc.weight {
-            policy.rule_weights.insert(rc.id, w);
-        }
-    }
-    let clusters = aggregate(&diags, &policy);
+    let clusters = aggregate_with_posteriors(&diags, &policy, Some(&posteriors));
     let n_surfaced = clusters.iter().filter(|c| c.surfaced).count();
     let n_multi_rule = clusters.iter().filter(|c| c.rules_fired.len() >= 2).count();
 
@@ -230,6 +240,42 @@ fn main() -> ExitCode {
     );
 
     ExitCode::SUCCESS
+}
+
+fn aggregation_policy_from_config(config: &Config) -> AggregationPolicy {
+    let mut policy = AggregationPolicy::default();
+    if let Some(agg) = &config.aggregation {
+        if let Some(v) = agg.min_surface_score {
+            policy.min_surface_score = v;
+        }
+        if let Some(v) = agg.default_weight {
+            policy.default_weight = v;
+        }
+    }
+    for rc in &config.rules {
+        if let Some(w) = rc.weight {
+            policy.rule_weights.insert(rc.id, w);
+        }
+    }
+    policy
+}
+
+fn priors_from_policy(policy: &AggregationPolicy) -> PriorTable {
+    let mut priors = PriorTable::with_default(prior_with_mean(policy.default_weight));
+    for (rule_id, weight) in &policy.rule_weights {
+        priors.insert_rule(*rule_id, prior_with_mean(*weight));
+    }
+    priors
+}
+
+fn prior_with_mean(mean: f64) -> BetaPosterior {
+    const PRIOR_STRENGTH: f64 = 2.0;
+    let mean = if mean.is_nan() {
+        0.5
+    } else {
+        mean.clamp(0.0, 1.0)
+    };
+    BetaPosterior::new(mean * PRIOR_STRENGTH, (1.0 - mean) * PRIOR_STRENGTH)
 }
 
 /// One finding within a grouped SID entry — no redundant sid/verse fields.
