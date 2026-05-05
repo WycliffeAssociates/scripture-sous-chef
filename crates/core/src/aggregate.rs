@@ -35,7 +35,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::diagnostics::{Diagnostics, Finding, RuleId};
+use crate::diagnostics::{ByteRange, Diagnostics, Finding, RuleId};
 use crate::sid::Sid;
 use crate::signals;
 
@@ -56,6 +56,13 @@ pub const DEFAULT_MIN_SURFACE_SCORE: f64 = 1.0;
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct Cluster<'a> {
     pub sid: Sid,
+    /// Minimal byte range covering the local findings in this cluster.
+    ///
+    /// This is not finding identity. It exists so aggregation can keep two
+    /// unrelated errors in one long verse from teaching the future posterior
+    /// layer that their rules corroborated each other. A `0..0` finding means
+    /// whole-verse evidence and may join any local cluster in the same Sid.
+    pub byte_range: ByteRange,
     pub score: f64,
     /// `true` iff `score >= policy.min_surface_score`. Consumers
     /// (UIs, CLIs) typically print only surfaced clusters by default
@@ -156,24 +163,39 @@ impl AggregationPolicy {
     }
 }
 
-/// Group findings by `Sid`, score each cluster, sort high-to-low.
-/// Stable: clusters with equal score keep their `Sid` order.
+/// Group findings by local span, score each cluster, sort high-to-low.
+///
+/// Phase A used to group by `Sid` only. That was fine for "show the worst
+/// verses first" but wrong for learning: two independent typos in a long verse
+/// would look like corroborating evidence. This pass keeps findings together
+/// only when their byte ranges overlap within the same Sid. Whole-verse
+/// findings (`0..0`) are allowed to join any same-Sid local cluster because
+/// they intentionally describe the verse as a unit.
 pub fn aggregate<'a>(diags: &'a Diagnostics<'a>, policy: &AggregationPolicy) -> Vec<Cluster<'a>> {
-    let mut by_sid: BTreeMap<Sid, Cluster<'a>> = BTreeMap::new();
+    let mut clusters: Vec<Cluster<'a>> = Vec::new();
 
     for f in &diags.findings {
-        let cluster = by_sid.entry(f.sid).or_insert_with(|| Cluster {
-            sid: f.sid,
-            score: 0.0,
-            surfaced: false,
-            rules_fired: BTreeSet::new(),
-            findings: Vec::new(),
-            matched_correlations: Vec::new(),
-            score_breakdown: ScoreBreakdown {
-                min_surface_score: policy.min_surface_score,
-                ..Default::default()
-            },
-        });
+        let index = clusters
+            .iter()
+            .position(|cluster| cluster_accepts(cluster, f))
+            .unwrap_or_else(|| {
+                clusters.push(Cluster {
+                    sid: f.sid,
+                    byte_range: f.byte_range,
+                    score: 0.0,
+                    surfaced: false,
+                    rules_fired: BTreeSet::new(),
+                    findings: Vec::new(),
+                    matched_correlations: Vec::new(),
+                    score_breakdown: ScoreBreakdown {
+                        min_surface_score: policy.min_surface_score,
+                        ..Default::default()
+                    },
+                });
+                clusters.len() - 1
+            });
+        let cluster = &mut clusters[index];
+        cluster.byte_range = merged_range(cluster.byte_range, f.byte_range);
         let weight = policy.weight_for(f.rule_id);
         let contribution = weight * f.evidence;
         cluster.findings.push(f);
@@ -188,7 +210,9 @@ pub fn aggregate<'a>(diags: &'a Diagnostics<'a>, policy: &AggregationPolicy) -> 
         });
     }
 
-    for cluster in by_sid.values_mut() {
+    merge_overlapping_clusters(&mut clusters);
+
+    for cluster in &mut clusters {
         let mut multiplier_product = 1.0;
         for pair in &policy.correlated_pairs {
             if cluster.rules_fired.contains(&pair.a) && cluster.rules_fired.contains(&pair.b) {
@@ -206,14 +230,78 @@ pub fn aggregate<'a>(diags: &'a Diagnostics<'a>, policy: &AggregationPolicy) -> 
         cluster.score_breakdown.final_score = cluster.score;
     }
 
-    let mut out: Vec<Cluster<'a>> = by_sid.into_values().collect();
-    out.sort_by(|a, b| {
+    clusters.sort_by(|a, b| {
         b.score
             .partial_cmp(&a.score)
             .unwrap_or(std::cmp::Ordering::Equal)
             .then(a.sid.cmp(&b.sid))
+            .then(a.byte_range.start.cmp(&b.byte_range.start))
+            .then(a.byte_range.end.cmp(&b.byte_range.end))
     });
-    out
+    clusters
+}
+
+fn cluster_accepts(cluster: &Cluster<'_>, finding: &Finding<'_>) -> bool {
+    cluster.sid == finding.sid
+        && (is_whole_verse(cluster.byte_range)
+            || is_whole_verse(finding.byte_range)
+            || ranges_overlap(cluster.byte_range, finding.byte_range))
+}
+
+fn ranges_overlap(a: ByteRange, b: ByteRange) -> bool {
+    a.start < b.end && b.start < a.end
+}
+
+fn clusters_overlap(a: &Cluster<'_>, b: &Cluster<'_>) -> bool {
+    a.sid == b.sid
+        && (is_whole_verse(a.byte_range)
+            || is_whole_verse(b.byte_range)
+            || ranges_overlap(a.byte_range, b.byte_range))
+}
+
+fn merge_overlapping_clusters(clusters: &mut Vec<Cluster<'_>>) {
+    let mut i = 0;
+    while i < clusters.len() {
+        let mut j = i + 1;
+        while j < clusters.len() {
+            if clusters_overlap(&clusters[i], &clusters[j]) {
+                let other = clusters.remove(j);
+                merge_cluster(&mut clusters[i], other);
+            } else {
+                j += 1;
+            }
+        }
+        i += 1;
+    }
+}
+
+fn merge_cluster<'a>(target: &mut Cluster<'a>, other: Cluster<'a>) {
+    target.byte_range = merged_range(target.byte_range, other.byte_range);
+    target.score += other.score;
+    target.rules_fired.extend(other.rules_fired);
+    target.findings.extend(other.findings);
+    target.score_breakdown.base_sum += other.score_breakdown.base_sum;
+    target
+        .score_breakdown
+        .components
+        .extend(other.score_breakdown.components);
+}
+
+fn is_whole_verse(range: ByteRange) -> bool {
+    range.start == 0 && range.end == 0
+}
+
+fn merged_range(a: ByteRange, b: ByteRange) -> ByteRange {
+    if is_whole_verse(a) {
+        return b;
+    }
+    if is_whole_verse(b) {
+        return a;
+    }
+    ByteRange {
+        start: a.start.min(b.start),
+        end: a.end.max(b.end),
+    }
 }
 
 #[cfg(test)]
@@ -236,11 +324,22 @@ mod tests {
         span: &'a str,
         evidence: f64,
     ) -> Finding<'a> {
+        finding_with_range(rule_id, sid, span, evidence, 0, span.len())
+    }
+
+    fn finding_with_range<'a>(
+        rule_id: RuleId,
+        sid: Sid,
+        span: &'a str,
+        evidence: f64,
+        start: usize,
+        end: usize,
+    ) -> Finding<'a> {
         Finding {
             rule_id,
             sid,
             severity: Severity::Info,
-            byte_range: ByteRange { start: 0, end: 0 },
+            byte_range: ByteRange { start, end },
             span,
             cluster_key: ClusterKey::rule_level(rule_id),
             finding_id: FindingId::default(),
@@ -472,5 +571,64 @@ mod tests {
         let clusters = aggregate(&diags, &policy);
         assert_eq!(clusters[0].score, 1.0);
         assert!(clusters[0].surfaced);
+    }
+
+    #[test]
+    fn non_overlapping_findings_in_same_sid_form_separate_clusters() {
+        let s1 = sid("GEN", 1, 1);
+        let r1 = RuleId("r1");
+        let r2 = RuleId("r2");
+        let diags = Diagnostics {
+            findings: vec![
+                finding_with_range(r1, s1, "alpha", 1.0, 0, 5),
+                finding_with_range(r2, s1, "omega", 1.0, 40, 45),
+            ],
+        };
+
+        let clusters = aggregate(&diags, &empty_policy());
+
+        assert_eq!(clusters.len(), 2);
+        assert_eq!(clusters[0].byte_range, ByteRange { start: 0, end: 5 });
+        assert_eq!(clusters[1].byte_range, ByteRange { start: 40, end: 45 });
+    }
+
+    #[test]
+    fn overlapping_findings_in_same_sid_form_one_cluster() {
+        let s1 = sid("GEN", 1, 1);
+        let r1 = RuleId("r1");
+        let r2 = RuleId("r2");
+        let diags = Diagnostics {
+            findings: vec![
+                finding_with_range(r1, s1, "alpha", 1.0, 0, 5),
+                finding_with_range(r2, s1, "ph", 1.0, 2, 4),
+            ],
+        };
+
+        let clusters = aggregate(&diags, &empty_policy());
+
+        assert_eq!(clusters.len(), 1);
+        assert_eq!(clusters[0].byte_range, ByteRange { start: 0, end: 5 });
+        assert_eq!(clusters[0].score, 2.0);
+    }
+
+    #[test]
+    fn bridging_range_merges_existing_local_clusters() {
+        let s1 = sid("GEN", 1, 1);
+        let r1 = RuleId("r1");
+        let r2 = RuleId("r2");
+        let r3 = RuleId("r3");
+        let diags = Diagnostics {
+            findings: vec![
+                finding_with_range(r1, s1, "a", 1.0, 0, 2),
+                finding_with_range(r2, s1, "b", 1.0, 8, 10),
+                finding_with_range(r3, s1, "bridge", 1.0, 1, 9),
+            ],
+        };
+
+        let clusters = aggregate(&diags, &empty_policy());
+
+        assert_eq!(clusters.len(), 1);
+        assert_eq!(clusters[0].byte_range, ByteRange { start: 0, end: 10 });
+        assert_eq!(clusters[0].score, 3.0);
     }
 }
