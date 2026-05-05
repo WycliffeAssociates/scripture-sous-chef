@@ -32,8 +32,9 @@ impl std::fmt::Display for RuleId {
 /// - a casing rule might use the predecessor punctuation cluster.
 /// - whole-verse proportionality can use a fixed rule-level key.
 ///
-/// The initial rollout defaults this to the rule ID so Phase A can land
-/// without forcing every signal to define perfect NLP clusters up front.
+/// Rules that don't yet have a meaningful sub-key default to the rule ID,
+/// which means "one bucket per rule." Refining a rule's clustering later
+/// is a local change.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct ClusterKey(pub String);
@@ -143,9 +144,15 @@ impl<'a> Diagnostics<'a> {
 
         let mut seen: BTreeMap<(RuleId, Sid, ClusterKey, String), u32> = BTreeMap::new();
         for finding in &mut self.findings {
-            if finding.cluster_key.0.is_empty() {
-                finding.cluster_key = ClusterKey::rule_level(finding.rule_id);
-            }
+            // Every rule must declare a cluster_key — even one as coarse as
+            // `ClusterKey::rule_level(rule_id)`. An empty key is a rule bug:
+            // it would silently merge unrelated findings into one posterior
+            // bucket. Fail loud in dev.
+            debug_assert!(
+                !finding.cluster_key.0.is_empty(),
+                "rule {} emitted a finding with an empty cluster_key",
+                finding.rule_id.0,
+            );
             let key = (
                 finding.rule_id,
                 finding.sid,
@@ -212,7 +219,7 @@ fn hash_u32(hash: &mut u64, value: u32) {
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct AnalyzeStats {
     pub bootstrap: Option<BootstrapStats>,
-    pub ncd_texture: Option<crate::analysis::compression::NcdStats>,
+    pub compression_texture: Option<crate::analysis::compression::CompressionTextureStats>,
     pub proportionality: Option<ProportionalityStats>,
     pub sentence_start_case: Option<SentenceStartCaseStats>,
     pub unexpected_sentence_end: Option<UnexpectedSentenceEndStats>,

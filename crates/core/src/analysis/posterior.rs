@@ -11,6 +11,22 @@
 //! - `beta` means "this rule/cluster has been dismissed here."
 //! - `mean()` is the precision estimate Noisy-OR uses as rule trust.
 //! - no events means posterior == prior.
+//!
+//! Worked example with the default flat prior `Beta(1, 1)`:
+//!
+//! - Start: alpha=1, beta=1 → mean = 1/(1+1) = 0.5. The rule is treated
+//!   as 50/50 trustworthy.
+//! - User dismisses one finding from this (rule, cluster) with weight 1.0:
+//!   alpha=1, beta=2 → mean = 1/3 ≈ 0.33.
+//! - Five dismissals later: alpha=1, beta=6 → mean = 1/7 ≈ 0.14. The
+//!   rule's contribution to Noisy-OR for this cluster is now small.
+//! - One accept along the way: alpha=2, beta=6 → mean = 2/8 = 0.25.
+//!   Accepts and dismissals tug in opposite directions; the magnitude
+//!   of each tug shrinks as evidence accumulates (the Beta is "stiffer"
+//!   when alpha+beta is large).
+//!
+//! That's the whole arithmetic. No special cases for first feedback,
+//! no decay, no provenance weighting beyond `event.weight`.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, OpenOptions};
@@ -19,6 +35,7 @@ use std::path::Path;
 
 use crate::diagnostics::{ClusterKey, Finding, FindingId, RuleId};
 use crate::sid::Sid;
+use crate::signals::ALL_RULE_IDS;
 
 pub const DEFAULT_PRIOR_ALPHA: f64 = 1.0;
 pub const DEFAULT_PRIOR_BETA: f64 = 1.0;
@@ -146,15 +163,11 @@ impl From<&FeedbackEvent> for FeedbackEventRecord {
     }
 }
 
-impl TryFrom<FeedbackEventRecord> for FeedbackEvent {
-    type Error = String;
-
-    fn try_from(record: FeedbackEventRecord) -> Result<Self, Self::Error> {
+impl FeedbackEvent {
+    fn from_record(record: FeedbackEventRecord) -> Result<Self, String> {
         let sid = Sid::parse(&record.sid).ok_or_else(|| format!("invalid sid {}", record.sid))?;
-        // Rule IDs in the engine are static strings. Event logs are tiny and
-        // loaded once per process, so leaking this owned rule name is an
-        // acceptable bridge until rule IDs become owned or interned globally.
-        let rule_id = RuleId(Box::leak(record.rule_id.into_boxed_str()));
+        let rule_id = lookup_known_rule_id(&record.rule_id)
+            .ok_or_else(|| format!("unknown rule id {}", record.rule_id))?;
         Ok(Self {
             v: record.v,
             ts: record.ts,
@@ -168,6 +181,17 @@ impl TryFrom<FeedbackEventRecord> for FeedbackEvent {
             reason: record.reason,
         })
     }
+}
+
+/// Resolve a rule name from an event log to the engine's interned `RuleId`.
+///
+/// Engine `RuleId`s are `&'static str` referencing the constants in
+/// `signals::*`. Event logs carry plain strings written by external tools.
+/// Looking the name up against `ALL_RULE_IDS` keeps the engine leak-free
+/// during replay; events for rules we no longer recognise are surfaced by
+/// the caller rather than silently retained.
+fn lookup_known_rule_id(name: &str) -> Option<RuleId> {
+    ALL_RULE_IDS.iter().copied().find(|id| id.0 == name)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -239,9 +263,10 @@ impl PosteriorStore {
             let record: FeedbackEventRecord = serde_json::from_str(&line).map_err(|e| {
                 io::Error::new(io::ErrorKind::InvalidData, format!("bad event JSONL: {e}"))
             })?;
-            let event = FeedbackEvent::try_from(record)
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-            store.record(&event);
+            match FeedbackEvent::from_record(record) {
+                Ok(event) => store.record(&event),
+                Err(e) => eprintln!("feedback warning: skipping event ({e})"),
+            }
         }
         Ok(store)
     }
@@ -294,8 +319,9 @@ mod tests {
     }
 
     fn finding() -> Finding<'static> {
+        // Use a real rule id so JSONL round-trip can resolve it via ALL_RULE_IDS.
         Finding {
-            rule_id: RuleId("hyg.example"),
+            rule_id: crate::signals::hygiene::TAB_IN_BODY,
             sid: sid(),
             severity: Severity::Warn,
             byte_range: ByteRange { start: 0, end: 1 },

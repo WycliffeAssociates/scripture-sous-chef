@@ -89,7 +89,11 @@ impl Table2 {
             AssociationTest::DunningG2 => self.g2(),
             AssociationTest::FisherExact => {
                 let p = self.fisher_two_sided_p();
-                if p <= 0.0 { f64::INFINITY } else { -2.0 * p.ln() }
+                if p <= 0.0 {
+                    f64::INFINITY
+                } else {
+                    -2.0 * p.ln()
+                }
             }
         }
     }
@@ -170,47 +174,9 @@ fn hypergeom_ln_p(a: u64, row1: u64, col1: u64, n: u64) -> f64 {
 
 fn ln_choose(n: u64, k: u64) -> f64 {
     if k > n {
-        f64::NEG_INFINITY
-    } else {
-        ln_factorial(n) - ln_factorial(k) - ln_factorial(n - k)
+        return f64::NEG_INFINITY;
     }
-}
-
-fn ln_factorial(n: u64) -> f64 {
-    ln_gamma((n as f64) + 1.0)
-}
-
-/// Lanczos approximation for `ln Γ(z)`.
-///
-/// Rust std does not expose `lgamma`, and pulling in a stats crate would make
-/// this small primitive harder to audit. The coefficients below are the common
-/// Numerical Recipes / Wikipedia set, accurate enough for ranking and tests at
-/// the corpus counts this engine uses.
-fn ln_gamma(z: f64) -> f64 {
-    const COEFFS: [f64; 8] = [
-        676.5203681218851,
-        -1259.1392167224028,
-        771.3234287776531,
-        -176.6150291621406,
-        12.507343278686905,
-        -0.13857109526572012,
-        9.984369578019572e-6,
-        1.5056327351493116e-7,
-    ];
-
-    if z < 0.5 {
-        return std::f64::consts::PI.ln()
-            - (std::f64::consts::PI * z).sin().ln()
-            - ln_gamma(1.0 - z);
-    }
-
-    let z = z - 1.0;
-    let mut x = 0.9999999999998099;
-    for (i, coeff) in COEFFS.iter().enumerate() {
-        x += coeff / (z + (i as f64) + 1.0);
-    }
-    let t = z + 7.5;
-    0.5 * (2.0 * std::f64::consts::PI).ln() + (z + 0.5) * t.ln() - t + x.ln()
+    statrs::function::factorial::ln_binomial(n, k)
 }
 
 #[cfg(test)]

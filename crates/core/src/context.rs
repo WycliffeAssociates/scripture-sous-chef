@@ -5,7 +5,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::analysis::compression::{NcdConfig, NcdModel};
+use crate::analysis::compression::{CompressionTextureConfig, CompressionTextureModel};
 use crate::analysis::lemma_cluster::{LemmaClusterConfig, LemmaClusterStats, LemmaClusters};
 use crate::analysis::lexicon::{Lexicon, LexiconConfig};
 use crate::diagnostics::RuleId;
@@ -39,7 +39,7 @@ pub struct AnalysisContext {
     pub strict_lexicon: Lexicon,
     pub lexicon: Lexicon,
     pub span_index: SpanIndex,
-    pub ncd_model: NcdModel,
+    pub texture_model: CompressionTextureModel,
     pub lemma_clusters: LemmaClusters,
     pub morphology: MorphologyStats,
     pub bootstrap_stats: BootstrapStats,
@@ -66,7 +66,7 @@ impl AnalysisContext {
         let span_index = discourse.span_index_with_config(SpanIndexConfig {
             max_span_sids: config.max_span_sids,
         });
-        let ncd_model = NcdModel::build(&project.target, config.ncd);
+        let texture_model = CompressionTextureModel::build(&project.target, config.texture);
         let lemma_clusters = LemmaClusters::build(&project.target, config.lemma_clusters);
         let morphology = MorphologyStats::from_project(project);
         let lemma_cluster_stats = lemma_clusters.stats();
@@ -105,7 +105,7 @@ impl AnalysisContext {
             strict_lexicon,
             lexicon,
             span_index,
-            ncd_model,
+            texture_model,
             lemma_clusters,
             morphology,
             bootstrap_stats,
@@ -179,7 +179,7 @@ struct BootstrapConfig {
     non_terminal_upper_rate_max: f64,
     g2_threshold: f64,
     max_span_sids: usize,
-    ncd: NcdConfig,
+    texture: CompressionTextureConfig,
     lemma_clusters: LemmaClusterConfig,
 }
 
@@ -202,10 +202,10 @@ impl BootstrapConfig {
             max_span_sids: param(project, "max_span_sids")
                 .map(|v| v as usize)
                 .unwrap_or(DEFAULT_MAX_SPAN_SIDS),
-            ncd: NcdConfig {
-                max_training_bytes: param(project, "ncd_max_training_bytes")
+            texture: CompressionTextureConfig {
+                dict_size: param(project, "compression_texture_dict_size")
                     .map(|v| v as usize)
-                    .unwrap_or(crate::analysis::compression::DEFAULT_TRAINING_BYTES),
+                    .unwrap_or(crate::analysis::compression::DEFAULT_DICT_SIZE),
             },
             lemma_clusters: LemmaClusterConfig {
                 min_family_size: param(project, "lemma_min_family_size")

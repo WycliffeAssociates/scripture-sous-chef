@@ -1,5 +1,3 @@
-> **ARCHIVED** — Early refactor plan, written before full synthesis. `latest-agent-reports/synthesis.md` §6–7 is the current phase plan.
-
 # v1 refactor plan
 
 Concrete execution path from current state to a calibrated, label-
@@ -20,19 +18,19 @@ Phase 0 ──► Phase A ──► Phase B ──► Phase C
 Phase I (morpho_probe) is independent; can land any time after Phase 0.
 ```
 
-| Phase | Scope | Estimate |
-|-------|-------|----------|
-| 0 | pre-work, baselines, hygiene | 0.5d |
-| A | content-addressed finding identity (foundation) | 2d |
-| B | within-Sid span clustering | 0.5d |
-| C | Noisy-OR aggregator | 1d |
-| D | Fisher's exact + Dunning fast path | 2d |
-| E | eBible sweep + Empirical-Bayes priors | 2–3d |
-| F | posterior store + JSONL event log | 3d |
-| G | implicit feedback (explicit/watcher/git mine) | 6d |
-| H | NCD module + adaptive char/word weighting | 3d |
-| H2 | lemma-cluster induction (audit §3.1) | 3–4d |
-| I | optional `morpho_probe` research binary | hours |
+| Phase | Scope                                           | Estimate |
+| ----- | ----------------------------------------------- | -------- |
+| 0     | pre-work, baselines, hygiene                    | 0.5d     |
+| A     | content-addressed finding identity (foundation) | 2d       |
+| B     | within-Sid span clustering                      | 0.5d     |
+| C     | Noisy-OR aggregator                             | 1d       |
+| D     | Fisher's exact + Dunning fast path              | 2d       |
+| E     | eBible sweep + Empirical-Bayes priors           | 2–3d     |
+| F     | posterior store + JSONL event log               | 3d       |
+| G     | implicit feedback (explicit/watcher/git mine)   | 6d       |
+| H     | NCD module + adaptive char/word weighting       | 3d       |
+| H2    | lemma-cluster induction (audit §3.1)            | 3–4d     |
+| I     | optional `morpho_probe` research binary         | hours    |
 
 Plus small SIL-audit lifts (punctuation clinging table, JSD,
 mixed-script, charset-divergence, extended edit metric) folded into
@@ -124,16 +122,16 @@ ingest in `verse.rs`).
 
 Document in `documentation/rule_playbook.md`:
 
-| Rule | Cluster key |
-|------|-------------|
-| `hyg.tab-in-body` | rule-id (single cluster) |
-| `hyg.control-chars` | rule-id |
-| `hyg.zero-width-misuse` | codepoint name (`"ZWJ"`) |
-| `hyg.empty-verse` | rule-id |
-| `pos.sentence-start-case` | discourse-position bucket label |
+| Rule                          | Cluster key                     |
+| ----------------------------- | ------------------------------- |
+| `hyg.tab-in-body`             | rule-id (single cluster)        |
+| `hyg.control-chars`           | rule-id                         |
+| `hyg.zero-width-misuse`       | codepoint name (`"ZWJ"`)        |
+| `hyg.empty-verse`             | rule-id                         |
+| `pos.sentence-start-case`     | discourse-position bucket label |
 | `pos.unexpected-sentence-end` | discourse-position bucket label |
-| `punct.paired-balance` | unmatched punctuation character |
-| `src.proportionality` | rule-id |
+| `punct.paired-balance`        | unmatched punctuation character |
+| `src.proportionality`         | rule-id                         |
 
 Hygiene rules with one global cluster use rule-id as cluster_key.
 Anything where clustering matters for calibration declares specific
@@ -219,53 +217,40 @@ thing.
 
 ## Phase B — Within-Sid span clustering
 
-`aggregate.rs` groups by `Sid`. Two unrelated findings in a long
-verse get scored as if they corroborate each other. Phase B adds a
-proximity-based clustering step.
+`aggregate.rs` used to group by `Sid` only. Two unrelated findings in
+a long verse would score as if they corroborated each other. Phase B
+groups findings into clusters by **strict byte-range overlap** within
+the same Sid.
 
-### B.1 Algorithm
+### B.1 Overlap rule (chosen) and proximity (rejected)
 
-DSU over byte ranges, sorted by start. Threshold N = 8 NFC chars,
-configurable via `AggregationPolicy::span_cluster_proximity`:
+Findings cluster only when their byte ranges overlap. Whole-verse
+findings (`0..0`) are allowed to join any same-Sid local cluster
+because they intentionally describe the verse as a unit.
 
-```rust
-fn cluster_within_sid(findings: &[&Finding]) -> Vec<Vec<&Finding>> {
-    let mut sorted: Vec<_> = findings.iter().copied().collect();
-    sorted.sort_by_key(|f| f.byte_range.0);
-    let mut groups: Vec<Vec<&Finding>> = Vec::new();
-    let mut current_end = 0;
-    for f in sorted {
-        let (start, end) = f.byte_range;
-        if let Some(last) = groups.last_mut() {
-            if start <= current_end + PROXIMITY {
-                last.push(f);
-                current_end = current_end.max(end);
-                continue;
-            }
-        }
-        groups.push(vec![f]);
-        current_end = end;
-    }
-    groups
-}
-```
+An earlier draft of this plan proposed proximity-based clustering
+(merge within `N=8` NFC chars). **Rejected** for v1: without a
+labelled fixture, "8 chars" is a guess, and the failure mode for a
+proximity-too-loose run is exactly the "cluster things that aren't
+related" case the layer is meant to prevent. Stay conservative;
+revisit when we have a labelled corpus to compare on.
 
 ### B.2 Cluster identity
 
-Cluster identified by `(Sid, ClusterIndex)`. Findings sorted
-deterministically so indices are stable.
+Identified by `(Sid, ClusterIndex)`. Findings sorted deterministically
+so indices are stable.
 
 ### B.3 Whole-verse findings
 
-Proportionality, empty-verse emit zero-width spans. Belong to a
-verse-wide cluster (`cluster_index = usize::MAX`). Co-occur with
-every other cluster for pair-correlation purposes.
+Proportionality and empty-verse emit zero-width spans (`0..0`). Belong
+to a verse-wide cluster, co-occur with every other same-Sid cluster
+for pair-correlation purposes.
 
 ### B.4 Tests
 
-(10,14)+(30,35) → 2 clusters; (10,14)+(15,20) → 1; trio
-(10,14)+(16,20)+(30,35) → 2; verse-wide finding co-occurs with
-every cluster.
+(10,14)+(30,35) → 2 clusters; (10,14)+(15,20) → 1 (overlap); trio
+with a bridging range merges; verse-wide finding co-occurs with every
+cluster.
 
 
 ---
@@ -287,19 +272,26 @@ Phase E, read from prior. After Phase F, posterior mean.
 ### C.2 Pair multipliers → precision boosts
 
 Pair multipliers stop multiplying score. Instead, when a declared
-pair co-occurs in a cluster:
+pair co-occurs in a cluster, each member's effective precision is
+boosted *before* the Noisy-OR product:
 
 ```
 precision_effective = clamp(precision_base + pair_bonus, 0.0, 1.0)
 ```
 
-Keep the existing SSC + USE pair, `pair_bonus = 0.3` (tunable).
-Hardcode bonuses; Phase E learns them.
+The renamed field on `CorrelatedPair` is `precision_bonus`; the SSC
++ USE default is `0.3`. Bonuses are hardcoded today; an empirically-
+fitted prior layer can replace them later without touching the
+aggregator's math.
 
 ### C.3 Surface threshold
 
 Score is a probability in [0,1]. Default surface threshold becomes
-`0.5` instead of `1.0`. Update `DEFAULT_MIN_SURFACE_SCORE`.
+`0.75` (the "two independent 0.5 signals" tier) instead of the old
+`1.0`. The plan's earlier draft suggested `0.5`; landed at `0.75`
+because a single mid-evidence signal alone surfacing too eagerly
+hurt review confidence on Phase 0 fixtures. C.6 still holds: tune
+in `[0.65, 0.85]` if calibration drifts.
 
 ### C.4 ScoreBreakdown
 
@@ -621,32 +613,106 @@ synthetic DL-1 typo fix in git mining produces one event.
 
 ## Phase H — NCD module + adaptive weighting
 
-### H.1 NCD module
+### H.1 NCD with preset compression dictionaries
 
-`crates/core/src/analysis/ncd.rs`:
+The naive NCD formula (`C(xy) - min(C(x),C(y)) / max(C(x),C(y))`)
+forces the compressor to rebuild its dictionary from the reference
+on every verse. With ~8000 verses, that's 8000 redundant
+dictionary-builds — slow enough that a previous attempt left
+NCD opt-in.
+
+The fix: train a compression dictionary once per reference, then
+compress just each verse against the warmed dictionary.
 
 ```rust
-pub fn ncd(reference: &[u8], target: &[u8]) -> f64 {
-    let cx = compress_size(reference);
-    let cy = compress_size(target);
-    let mut combined = Vec::with_capacity(reference.len() + target.len());
-    combined.extend_from_slice(reference);
-    combined.extend_from_slice(target);
-    let cxy = compress_size(&combined);
-    (cxy as f64 - cx.min(cy) as f64) / cx.max(cy) as f64
+pub fn ncd_with_dict(dict: &CompressionDict, target: &[u8]) -> f64 {
+    let c_target_alone = compress_size_no_dict(target);
+    let c_target_given_dict = compress_size_with_dict(dict, target);
+    (c_target_given_dict as f64) / (c_target_alone as f64)
 }
 ```
 
-`compress_size` uses `flate2` at default level. `zstd` is faster
-and friendlier to streaming references — benchmark and decide.
+Use the `zstd` crate. `zstd::dict::from_samples` trains a small
+dictionary from a list of byte slices in milliseconds. Per-verse
+compression with a preset dict is microseconds.
 
-### H.2 Reference corpus
+### H.2 Reference scope: project-wide dict, not per-book
 
-Per project, reference = concatenation of all drafted verses except
-the one being scored. Per-verse NCD becomes another rule output,
-feeding the aggregator like any other evidence.
+Train one zstd dictionary from every verse in the project. Score
+every verse against that single dict.
 
-### H.3 Adaptive weighting
+The earlier draft of this plan argued for per-book scope on two
+grounds, both of which fall apart on closer look:
+
+1. **The 32KB "window" number was a red herring.** That's the gzip
+   *streaming compression window* — how far back the encoder can
+   reference during sequential compression. zstd dicts are
+   pre-trained tables that extract common substrings across all
+   training samples regardless of position; default dict size is
+   100KB and they go larger. A whole-corpus dict is well within
+   zstd's design envelope.
+2. **"Per-book is more meaningful" doesn't hold for substring-level
+   patterns.** NCD operates at the substring level — morphemes,
+   character clusters, frequent affixes. Those overlap massively
+   across books in a single translation, even when surface
+   vocabulary differs (Pentateuch vs Paul). The "different
+   vocabulary" argument only matters at the lexical level; NCD
+   doesn't see that level.
+
+The bigger problem with per-book is that **per-book scope lengthens
+the long tail.** A book has ~16k tokens; the whole NT has 150–250k.
+The per-book dict has fewer training samples, so common substrings
+cross the frequency threshold less reliably. More verses then have
+"novel" substrings against a sparser dict — falsely-elevated NCD.
+This hurts agglutinative languages most, exactly where NCD is
+supposed to help.
+
+zstd dicts can't be merged after the fact (cover/fastcover algorithms
+aren't compositional), but you don't need to merge anything —
+`from_samples` takes a list of sample byte slices and trains one
+dict from the union. That gives the maximum data, captures the most
+reliable common substrings.
+
+```rust
+let project_dict = train_project_dict(project.all_verses());
+
+let findings: Vec<Finding> = project.verses()
+    .par_iter()
+    .filter_map(|verse| {
+        let score = ncd_against(&project_dict, verse.text.as_bytes());
+        score_to_finding(verse, score)
+    })
+    .collect();
+```
+
+One dict, one parallel verse-loop. Simpler than the per-book version
+and a stronger signal.
+
+**Per-book or per-section as a future config option.** If a project
+genuinely has different translators or stylistic registers across
+books (more common in scholarly editions than church-led work), a
+project-wide dict could smear together norms that should be
+separate. Revisit only if a real project shows mixed-register
+problems. Not a v1 default.
+
+### H.3 Persistence — defer
+
+Eventually it'll be worth caching the trained dictionary at
+`<project>/.sous/dict.zstd` keyed by git HEAD, regenerating on
+commit. **Not in v1.** In-memory training every run is expected to
+be ~milliseconds-per-book; total NCD pass on a parallelized 8000-
+verse NT should be a few seconds. Measure on the agglutinative
+fixture first; add persistence only if measurement says it's a
+real bottleneck. Persistence is a half-day of work when needed.
+
+### H.4 NCD as a default rule
+
+With dict-warmed compression and parallelism, NCD is cheap enough
+to be on by default. Per-verse NCD output goes through the same
+evidence transform as any other rule, feeds the Noisy-OR aggregator,
+and gets calibrated by the eBible sweep priors like everything else.
+
+### H.5 Adaptive weighting
 
 In `Project` or `AnalysisContext`:
 
@@ -661,18 +727,21 @@ fn corpus_shape(verses: &[Verse]) -> CorpusShape;
 
 If TTR > 0.10 OR hapax > 0.60, classify as high-morphology. Adjust:
 
-| Rule type | Default | High-morphology |
-|-----------|---------|-----------------|
-| Word-level n-gram | 1.0 | 0.2 |
-| Character-level KN/NCD | 0.6 | 1.0 |
+| Rule type              | Default | High-morphology |
+| ---------------------- | ------- | --------------- |
+| Word-level n-gram      | 1.0     | 0.2             |
+| Character-level KN/NCD | 0.6     | 1.0             |
 
 `AggregationPolicy::for_corpus(shape)` returns a modified copy.
 Document thresholds in the rule playbook.
 
-### H.4 Tests
+### H.6 Tests
 
 NCD identical ≈ 0; NCD unrelated ≈ 1; NCD on Bemba ≠ Indonesian
-(sanity); adaptive weighting kicks in on agglutinative fixture.
+(sanity); per-verse parallelization scales near-linearly to 8 cores;
+total NCD pass on the largest fixture under 10s on a single core
+(parallelism is gravy, not load-bearing); adaptive weighting
+kicks in on agglutinative fixture.
 
 
 ---
@@ -867,7 +936,8 @@ biggest piece.
 ## Open decisions
 
 Hash function: `xxhash` (stable) vs `ahash` (faster). Cluster
-proximity (B): start 8 NFC chars; revisit. Curated gold subset (E):
+cluster relation (B): strict overlap; revisit if a labelled fixture
+shows proximity merging would help. Curated gold subset (E):
 only if simple median+trim breaks. Compression (H): `flate2` default,
 benchmark `zstd`. Watcher (G): `notify` crate; editor integration may
 obviate. JSONL→SQLite (F): migrate at ~10k events. Coarse
@@ -914,13 +984,13 @@ A simple letter-doubling typo. Walk through which rules fire, where
 each one's noise comes from, and how multi-signal combination
 mitigates that noise.
 
-| Signal | Why it fires | Where the noise is | What mitigates it |
-|---|---|---|---|
-| **Hapax** (`signals/lexical.rs`) | "markket" never seen before in this corpus | New loan words, proper nouns, and rare-but-correct vocab also fire this | Lemma cluster (H2): if "markket" clusters with "market" via Dam-Lev≤2 + LCS≥0.6, hapax evidence demoted |
-| **Char-KN surprisal** (`analysis/kn.rs`) | The trigram "rkk" has near-zero probability in the corpus's character model | Character KN flags any rare orthography, including correct rare letters in transliterations | Multi-signal corroboration — KN alone weights low |
-| **NCD** (Phase H) | "markket" forces the compressor to spend extra bytes on an unseen sequence | NCD spikes for any unfamiliar substring; foreign loanwords look the same | Verse-level NCD is one signal among many; pair multiplier with hapax is < 1.0 since they correlate on rare strings |
-| **Similar-token cluster** (`SSC-CONS-001`) | Damerau-Levenshtein 1 from "market" (which appears 47×) | Any short word is 1 edit from another short word; doesn't always mean typo | Frequency asymmetry guard: "markket" has count 1, "market" has count 47 — large ratio is the signal |
-| **Affix anomaly** (later, audit §3.2) | After lemma-clustering, "markket" doesn't decompose into a known stem+affix | Agglutinative corpora invent affixes coincidentally; high false-positive rate alone | Sub-1.0 weight; never surfaces alone |
+| Signal                                     | Why it fires                                                                | Where the noise is                                                                          | What mitigates it                                                                                                  |
+| ------------------------------------------ | --------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| **Hapax** (`signals/lexical.rs`)           | "markket" never seen before in this corpus                                  | New loan words, proper nouns, and rare-but-correct vocab also fire this                     | Lemma cluster (H2): if "markket" clusters with "market" via Dam-Lev≤2 + LCS≥0.6, hapax evidence demoted            |
+| **Char-KN surprisal** (`analysis/kn.rs`)   | The trigram "rkk" has near-zero probability in the corpus's character model | Character KN flags any rare orthography, including correct rare letters in transliterations | Multi-signal corroboration — KN alone weights low                                                                  |
+| **NCD** (Phase H)                          | "markket" forces the compressor to spend extra bytes on an unseen sequence  | NCD spikes for any unfamiliar substring; foreign loanwords look the same                    | Verse-level NCD is one signal among many; pair multiplier with hapax is < 1.0 since they correlate on rare strings |
+| **Similar-token cluster** (`SSC-CONS-001`) | Damerau-Levenshtein 1 from "market" (which appears 47×)                     | Any short word is 1 edit from another short word; doesn't always mean typo                  | Frequency asymmetry guard: "markket" has count 1, "market" has count 47 — large ratio is the signal                |
+| **Affix anomaly** (later, audit §3.2)      | After lemma-clustering, "markket" doesn't decompose into a known stem+affix | Agglutinative corpora invent affixes coincidentally; high false-positive rate alone         | Sub-1.0 weight; never surfaces alone                                                                               |
 
 **Aggregate behavior under Phase C Noisy-OR:**
 
@@ -951,13 +1021,13 @@ score. Five such dismissals and hapax stops surfacing alone.
 Same dynamics, with one extra wrinkle from the morphologically rich
 language:
 
-| Signal | Detail |
-|---|---|
-| **Hapax** | "ἀγροάν" never seen; "ἀγοράν", "ἀγορᾶς", "ἀγορά" all attested. Fires. |
-| **Char-KN** | "ροά" trigram is unusual after "γ"; KN surprisal moderate. Fires weakly. |
-| **Similar-token cluster** | "ἀγροάν" is Dam-Lev 1 from "ἀγοράν" which appears 8×. Fires. |
-| **Lemma-cluster** | Source-anchored Dunning links English "marketplace" to ἀγορά forms. After lemma-clustering, "ἀγροάν" *might* be absorbed (LCS fraction with ἀγοράν is 4/6 ≈ 0.67). **This is where we have to be careful.** |
-| **Affix anomaly** | Greek has rich case-suffix paradigms. PoorMans (audit §3.2, deferred) would notice that the "-άν" suffix decomposes against an unknown stem "ἀγρο-" — Greek doesn't have "ἀγρο-" as a productive stem in this corpus. |
+| Signal                    | Detail                                                                                                                                                                                                                |
+| ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Hapax**                 | "ἀγροάν" never seen; "ἀγοράν", "ἀγορᾶς", "ἀγορά" all attested. Fires.                                                                                                                                                 |
+| **Char-KN**               | "ροά" trigram is unusual after "γ"; KN surprisal moderate. Fires weakly.                                                                                                                                              |
+| **Similar-token cluster** | "ἀγροάν" is Dam-Lev 1 from "ἀγοράν" which appears 8×. Fires.                                                                                                                                                          |
+| **Lemma-cluster**         | Source-anchored Dunning links English "marketplace" to ἀγορά forms. After lemma-clustering, "ἀγροάν" *might* be absorbed (LCS fraction with ἀγοράν is 4/6 ≈ 0.67). **This is where we have to be careful.**           |
+| **Affix anomaly**         | Greek has rich case-suffix paradigms. PoorMans (audit §3.2, deferred) would notice that the "-άν" suffix decomposes against an unknown stem "ἀγρο-" — Greek doesn't have "ἀγρο-" as a productive stem in this corpus. |
 
 The wrinkle: lemma-clustering is *aggressive* in agglutinative /
 fusional languages. It's the right answer for ἀγορά → ἀγοράν →
@@ -982,13 +1052,13 @@ forms like ἀγροάν if we're not careful with the LCS threshold.
 Spanish is intermediate — fewer surface forms per lemma than Greek,
 more than English. The rule firings are essentially English's:
 
-| Signal | Detail |
-|---|---|
-| Hapax | "mercaado" novel; "mercado" appears N×. Fires. |
-| Char-KN | "caa" trigram low-prob. Fires. |
-| Similar-token | Dam-Lev 1 from "mercado". Fires. |
+| Signal        | Detail                                                                                                                                                                |
+| ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Hapax         | "mercaado" novel; "mercado" appears N×. Fires.                                                                                                                        |
+| Char-KN       | "caa" trigram low-prob. Fires.                                                                                                                                        |
+| Similar-token | Dam-Lev 1 from "mercado". Fires.                                                                                                                                      |
 | Lemma-cluster | If source-anchored to English "market", absorbs "mercados", "mercado" — and possibly "mercaado". LCS fraction here is 7/8 = 0.88, well above threshold. **Absorbed.** |
-| NCD | Fires weakly. |
+| NCD           | Fires weakly.                                                                                                                                                         |
 
 Notice: lemma-cluster absorbs "mercaado" even though it's a typo,
 because the LCS fraction is high. **This is a real failure mode of

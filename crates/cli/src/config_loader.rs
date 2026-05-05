@@ -103,7 +103,7 @@ pub fn load_config(
         for sid_str in &entry.exceptions {
             match Sid::parse(sid_str) {
                 Some(sid) => {
-                    exceptions.insert_legacy_rule_sid(rule_id, sid);
+                    exceptions.insert_rule_sid(rule_id, sid);
                 }
                 None => {
                     warnings.push(format!(
@@ -156,14 +156,22 @@ fn parse_severity(s: &str) -> Option<Severity> {
     }
 }
 
-/// Look for `sous.json` next to the corpus directory.
+/// Find the nearest `sous.jsonc` or `sous.json`, starting at the corpus
+/// directory and walking up to the filesystem root. `.jsonc` wins when
+/// both exist in the same directory; comments are stripped before parsing
+/// either, so the file extension is purely a convention for editors.
 pub fn discover_config(corpus_dir: &Path) -> Option<std::path::PathBuf> {
-    let candidate = corpus_dir.join("sous.json");
-    if candidate.exists() {
-        Some(candidate)
-    } else {
-        None
+    let mut dir = Some(corpus_dir);
+    while let Some(d) = dir {
+        for name in ["sous.jsonc", "sous.json"] {
+            let candidate = d.join(name);
+            if candidate.exists() {
+                return Some(candidate);
+            }
+        }
+        dir = d.parent();
     }
+    None
 }
 
 /// Strip `//` line comments and `/* */` block comments from a JSONC

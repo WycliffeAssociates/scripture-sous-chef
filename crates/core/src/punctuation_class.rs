@@ -2,7 +2,7 @@
 //! enclosed spans (quotes, brackets) and surrounding whitespace.
 //!
 //! The taxonomy is borrowed from SIL's `silnlp/common/normalizer.py`
-//! (see `research/sil_audit.md` §1.4): every tracked punctuation
+//! (see `research/proposed/sil-audit/sil_audit.md` §1.4): every tracked punctuation
 //! character has a *clinging class* — left-clinging marks bind to the
 //! token following them (and want whitespace before), right-clinging
 //! marks bind to the token preceding them (and want whitespace after),
@@ -74,35 +74,57 @@ pub fn clinging_class(c: char) -> Option<ClingingClass> {
         // Curly double quotes. Both LEFT DOUBLE and DOUBLE-LOW-9
         // openers close with the same RIGHT DOUBLE — the German
         // „..." style and English "..." style share a closer.
-        '\u{201C}' => LeftClinging { closers: &['\u{201D}'] },
-        '\u{201E}' => LeftClinging { closers: &['\u{201D}'] },
+        '\u{201C}' => LeftClinging {
+            closers: &['\u{201D}'],
+        },
+        '\u{201E}' => LeftClinging {
+            closers: &['\u{201D}'],
+        },
         '\u{201D}' => RightClinging,
 
         // Guillemets.
-        '\u{00AB}' => LeftClinging { closers: &['\u{00BB}'] },
+        '\u{00AB}' => LeftClinging {
+            closers: &['\u{00BB}'],
+        },
         '\u{00BB}' => RightClinging,
-        '\u{2039}' => LeftClinging { closers: &['\u{203A}'] },
+        '\u{2039}' => LeftClinging {
+            closers: &['\u{203A}'],
+        },
         '\u{203A}' => RightClinging,
 
         // CJK brackets.
-        '\u{300C}' => LeftClinging { closers: &['\u{300D}'] },
+        '\u{300C}' => LeftClinging {
+            closers: &['\u{300D}'],
+        },
         '\u{300D}' => RightClinging,
-        '\u{300E}' => LeftClinging { closers: &['\u{300F}'] },
+        '\u{300E}' => LeftClinging {
+            closers: &['\u{300F}'],
+        },
         '\u{300F}' => RightClinging,
-        '\u{3008}' => LeftClinging { closers: &['\u{3009}'] },
+        '\u{3008}' => LeftClinging {
+            closers: &['\u{3009}'],
+        },
         '\u{3009}' => RightClinging,
-        '\u{300A}' => LeftClinging { closers: &['\u{300B}'] },
+        '\u{300A}' => LeftClinging {
+            closers: &['\u{300B}'],
+        },
         '\u{300B}' => RightClinging,
-        '\u{3010}' => LeftClinging { closers: &['\u{3011}'] },
+        '\u{3010}' => LeftClinging {
+            closers: &['\u{3011}'],
+        },
         '\u{3011}' => RightClinging,
 
         // Japanese double-prime quotes — opener closes with either
         // of two distinct codepoints in real-world data.
-        '\u{301D}' => LeftClinging { closers: &['\u{301E}', '\u{301F}'] },
+        '\u{301D}' => LeftClinging {
+            closers: &['\u{301E}', '\u{301F}'],
+        },
         '\u{301E}' | '\u{301F}' => RightClinging,
 
         // Halfwidth corner brackets.
-        '\u{FF62}' => LeftClinging { closers: &['\u{FF63}'] },
+        '\u{FF62}' => LeftClinging {
+            closers: &['\u{FF63}'],
+        },
         '\u{FF63}' => RightClinging,
 
         // Em / en dashes — spaces-both-sides convention.
@@ -247,12 +269,21 @@ mod tests {
     #[test]
     fn straight_quote_and_apostrophe_are_ambiguous() {
         assert_eq!(clinging_class('"'), Some(ClingingClass::AmbiguousSymmetric));
-        assert_eq!(clinging_class('\''), Some(ClingingClass::AmbiguousSymmetric));
+        assert_eq!(
+            clinging_class('\''),
+            Some(ClingingClass::AmbiguousSymmetric)
+        );
     }
 
     #[test]
     fn em_and_en_dash_are_left_right_clinging() {
-        assert_eq!(clinging_class('\u{2014}'), Some(ClingingClass::LeftRightClinging));
-        assert_eq!(clinging_class('\u{2013}'), Some(ClingingClass::LeftRightClinging));
+        assert_eq!(
+            clinging_class('\u{2014}'),
+            Some(ClingingClass::LeftRightClinging)
+        );
+        assert_eq!(
+            clinging_class('\u{2013}'),
+            Some(ClingingClass::LeftRightClinging)
+        );
     }
 }

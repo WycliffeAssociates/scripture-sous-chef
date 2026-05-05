@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Instant;
 
-use ssc_core::aggregate::{aggregate_with_posteriors, AggregationPolicy};
+use ssc_core::aggregate::{AggregationPolicy, aggregate_with_posteriors};
 use ssc_core::analysis::posterior::{BetaPosterior, PosteriorStore, PriorTable};
 use ssc_core::analyze_with_stats;
 use ssc_core::config::{Config, ExceptionSet};
@@ -148,8 +148,10 @@ fn main() -> ExitCode {
     // The dogfood CLI only reads them today; it is not the intended UX for
     // collecting feedback.
     let events_path = path.join(".sous").join("events.jsonl");
-    let posteriors = match PosteriorStore::from_event_log(&events_path, priors_from_policy(&policy))
-    {
+    let posteriors = match PosteriorStore::from_event_log(
+        &events_path,
+        placeholder_priors_from_policy_weights(&policy),
+    ) {
         Ok(store) => store,
         Err(e) => {
             eprintln!(
@@ -157,7 +159,7 @@ fn main() -> ExitCode {
                 events_path.display(),
                 e
             );
-            PosteriorStore::new(priors_from_policy(&policy))
+            PosteriorStore::new(placeholder_priors_from_policy_weights(&policy))
         }
     };
     let mut exceptions = exceptions;
@@ -169,7 +171,7 @@ fn main() -> ExitCode {
 
     let start = Instant::now();
     let (diags, stats) = analyze_with_stats(&project);
-    let elapsed_us = start.elapsed().as_micros();
+    let elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;
 
     let clusters = aggregate_with_posteriors(&diags, &policy, Some(&posteriors));
     let n_surfaced = clusters.iter().filter(|c| c.surfaced).count();
@@ -228,15 +230,14 @@ fn main() -> ExitCode {
         eprintln!("wrote {}", clusters_path.display());
     }
     eprintln!(
-        "[{}] {} verses, {} findings, {} clusters ({} surfaced, {} multi-rule), {}.{:03} µs",
+        "[{}] {} verses, {} findings, {} clusters ({} surfaced, {} multi-rule), {:.3} ms",
         name,
         project.target.verses.len(),
         diags.findings.len(),
         clusters.len(),
         n_surfaced,
         n_multi_rule,
-        elapsed_us / 1000,
-        elapsed_us % 1000
+        elapsed_ms,
     );
 
     ExitCode::SUCCESS
@@ -260,7 +261,22 @@ fn aggregation_policy_from_config(config: &Config) -> AggregationPolicy {
     policy
 }
 
-fn priors_from_policy(policy: &AggregationPolicy) -> PriorTable {
+/// TODO: replace with priors loaded from a checked-in `priors.json` once
+/// an offline eBible sweep produces empirically-fitted noise floors. For
+/// now we synthesise a Beta from the policy's per-rule weight just so
+/// the posterior store has a non-flat starting point.
+///
+/// This conflates two different things:
+/// - **policy weight** is a hand-tuned trust scalar in `[0, 1]` that
+///   controls how much a rule's evidence contributes before any feedback
+///   exists.
+/// - **noise-floor prior** is an empirically fitted Beta describing how
+///   often this rule fires on diverse, reasonably-clean corpora.
+///
+/// They aren't the same thing. When a real prior table exists, delete
+/// this helper, load it once at startup, and pass that `PriorTable` in
+/// instead. The posterior store and `Beta` arithmetic do not change.
+fn placeholder_priors_from_policy_weights(policy: &AggregationPolicy) -> PriorTable {
     let mut priors = PriorTable::with_default(prior_with_mean(policy.default_weight));
     for (rule_id, weight) in &policy.rule_weights {
         priors.insert_rule(*rule_id, prior_with_mean(*weight));

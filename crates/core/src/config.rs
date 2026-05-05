@@ -69,32 +69,30 @@ pub struct RuleConfig {
 
 /// Suppress findings the project owner has accepted.
 ///
-/// Runtime suppression is keyed by `FindingId` so one finding can be
-/// dismissed without hiding every same-rule finding in the verse.
-///
-/// TODO(phase-a-cleanup): remove `legacy_rule_sid` after the CLI config
-/// schema accepts concrete finding IDs. It exists only so older `sous.json`
-/// files keep working while Phase A rolls through the engine.
+/// Two layers, both first-class:
+/// - `finding_ids` — the authoritative content-addressed dismissal. One
+///   finding off, others in the verse stay.
+/// - `by_rule_sid` — coarse shorthand "suppress everything from rule X in
+///   verse Y." Hand-authored configs use this. It does **not** generate
+///   Bayesian labels; only `finding_ids` flows into posteriors.
 #[derive(Debug, Clone, Default)]
 pub struct ExceptionSet {
     pub finding_ids: HashSet<FindingId>,
-    pub legacy_rule_sid: HashSet<(RuleId, Sid)>,
+    pub by_rule_sid: HashSet<(RuleId, Sid)>,
 }
 
 impl ExceptionSet {
     pub fn contains(&self, finding: &Finding<'_>) -> bool {
         self.finding_ids.contains(&finding.finding_id)
-            || self
-                .legacy_rule_sid
-                .contains(&(finding.rule_id, finding.sid))
+            || self.by_rule_sid.contains(&(finding.rule_id, finding.sid))
     }
 
     pub fn insert_finding_id(&mut self, id: FindingId) -> bool {
         self.finding_ids.insert(id)
     }
 
-    pub fn insert_legacy_rule_sid(&mut self, rule: RuleId, sid: Sid) -> bool {
-        self.legacy_rule_sid.insert((rule, sid))
+    pub fn insert_rule_sid(&mut self, rule: RuleId, sid: Sid) -> bool {
+        self.by_rule_sid.insert((rule, sid))
     }
 }
 
@@ -132,9 +130,9 @@ mod tests {
     }
 
     #[test]
-    fn legacy_rule_sid_still_filters_old_config_shape() {
+    fn by_rule_sid_filters_every_finding_for_rule_in_sid() {
         let mut exceptions = ExceptionSet::default();
-        exceptions.insert_legacy_rule_sid(RuleId("hyg.example"), sid());
+        exceptions.insert_rule_sid(RuleId("hyg.example"), sid());
 
         assert!(exceptions.contains(&finding(FindingId(7))));
     }

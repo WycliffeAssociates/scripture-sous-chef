@@ -5,29 +5,32 @@
 //!
 //! ## Scoring model
 //!
-//! `score = noisy_or(rule_weight × finding.evidence)`, with optional
-//! pair multipliers applied in odds space.
+//! `score = 1 − ∏ (1 − rule_precision × finding.evidence)`, with
+//! per-rule precision possibly boosted when a declared pair co-fires.
 //!
 //! Three independent levers:
 //!
-//! - **Per-rule weight** (policy data) — the initial precision estimate
-//!   for that rule before we have learned posteriors. Hygiene-class rules
-//!   sit near 1.0; sparse statistical rules sit below 1.0 so they need
-//!   corroboration.
+//! - **Per-rule precision** (policy data, or posterior mean once feedback
+//!   exists) — the initial trust estimate for that rule. Hygiene-class
+//!   rules sit near 1.0; sparse statistical rules sit below 1.0 so they
+//!   need corroboration.
 //! - **Per-finding evidence** (from the rule, in `[0, 1]`) — how
 //!   strong this *particular* hit is. A Dunning-graded rule firing on
 //!   a g2=6677 word emits ~1.0; one at the g2=11 borderline emits
 //!   ~0.5. Hygiene rules (no grading) emit 1.0. See
 //!   `analysis::evidence`.
-//! - **Pair multipliers** (policy data) — known-good co-occurrence
-//!   patterns. When both rules of a declared pair fire, the multiplier
-//!   boosts the cluster odds. Odds-space keeps the final score inside
-//!   `[0, 1]`, unlike the old weighted sum.
+//! - **Pair precision bonuses** (policy data) — known-good co-occurrence
+//!   patterns. When both rules of a declared pair fire in the same
+//!   cluster, each member's effective precision becomes
+//!   `clamp(precision_base + bonus, 0, 1)` *before* the Noisy-OR product.
+//!   The boost lives in precision, not in a post-hoc score multiplier,
+//!   so a learned-prior layer can replace these constants with empirically
+//!   fitted values without changing the aggregator's math.
 //!
-//! No matches → multiplier product is 1.0 → score is plain Noisy-OR.
-//! We never throw away a finding for being uncoupled. Three weak signals
-//! co-locating can still surface even if no pair was formally declared;
-//! their independent probabilities compound.
+//! No declared pair matches → no precision change → plain Noisy-OR over
+//! the per-finding contributions. Three weak signals co-locating can
+//! still surface even when no pair is declared; their independent
+//! probabilities compound.
 //!
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -42,8 +45,16 @@ use crate::signals;
 /// `AggregationPolicy::rule_weights`.
 pub const DEFAULT_WEIGHT: f64 = 1.0;
 
-/// Default multiplier for the SSC + UnexpectedSentenceEnd pair.
-pub const DEFAULT_PAIR_MULTIPLIER: f64 = 2.0;
+/// Default precision bonus added to each member of the SSC +
+/// UnexpectedSentenceEnd pair when both fire in the same cluster.
+///
+/// Pair effects act on per-finding precision, not on the finished cluster
+/// score: when a declared pair both-fires, each member's effective
+/// precision becomes `clamp(precision_base + bonus, 0, 1)`. Keeping the
+/// boost in precision space means a future empirically-fitted prior can
+/// replace these hardcoded bonuses with a learned Beta shift without
+/// changing the aggregator.
+pub const DEFAULT_PAIR_PRECISION_BONUS: f64 = 0.3;
 
 /// Score at or above which clusters are tagged `surfaced`.
 ///
@@ -85,19 +96,18 @@ pub struct Cluster<'a> {
 
 /// Audit trail for `Cluster::score`.
 ///
-/// `base_sum` is retained for JSON compatibility with earlier debug files,
-/// but under Noisy-OR it means "base probability before odds multipliers",
-/// not arithmetic sum. `components.contribution` is each finding's clamped
-/// probability contribution.
+/// `final_score` is the cluster's Noisy-OR probability after pair-bonus
+/// precision boosts, in `[0, 1]`. `components` records each finding's
+/// (weight, evidence, contribution) in the order it was folded into the
+/// product. `pair_bonuses` lists the precision deltas applied because of
+/// declared rule pairs that co-fired in this cluster.
 #[derive(Debug, Clone, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct ScoreBreakdown {
-    pub base_sum: f64,
-    pub multiplier_product: f64,
     pub final_score: f64,
     pub min_surface_score: f64,
     pub components: Vec<ScoreComponent>,
-    pub multipliers: Vec<MatchedMultiplier>,
+    pub pair_bonuses: Vec<MatchedPairBonus>,
 }
 
 #[derive(Debug, Clone)]
@@ -111,18 +121,19 @@ pub struct ScoreComponent {
 
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
-pub struct MatchedMultiplier {
+pub struct MatchedPairBonus {
     pub label: String,
-    pub value: f64,
+    pub bonus: f64,
 }
 
 #[derive(Debug, Clone)]
 pub struct CorrelatedPair {
     pub a: RuleId,
     pub b: RuleId,
-    /// Multiplier applied to the cluster's base score when both
-    /// rules fire. Compounds with other matched pairs.
-    pub multiplier: f64,
+    /// Precision delta added to each member's effective precision when
+    /// both rules fire in the same cluster. Multiple pairs that name the
+    /// same rule add their bonuses (clamped to `[0, 1]` overall).
+    pub precision_bonus: f64,
     pub label: &'static str,
 }
 
@@ -152,7 +163,7 @@ impl Default for AggregationPolicy {
             correlated_pairs: vec![CorrelatedPair {
                 a: signals::positional::SENTENCE_START_CASE,
                 b: signals::positional::UNEXPECTED_SENTENCE_END,
-                multiplier: DEFAULT_PAIR_MULTIPLIER,
+                precision_bonus: DEFAULT_PAIR_PRECISION_BONUS,
                 label: "sentence-boundary-double-signal",
             }],
             min_surface_score: DEFAULT_MIN_SURFACE_SCORE,
@@ -171,45 +182,37 @@ impl AggregationPolicy {
 
 /// Group findings by local span, score each cluster, sort high-to-low.
 ///
-/// Phase A used to group by `Sid` only. That was fine for "show the worst
-/// verses first" but wrong for learning: two independent typos in a long verse
-/// would look like corroborating evidence. This pass keeps findings together
-/// only when their byte ranges overlap within the same Sid. Whole-verse
-/// findings (`0..0`) are allowed to join any same-Sid local cluster because
-/// they intentionally describe the verse as a unit.
+/// Findings cluster only when their byte ranges overlap within the same
+/// Sid. Pure per-Sid grouping was wrong for learning: two independent
+/// typos in a long verse would look like corroborating evidence. Whole-
+/// verse findings (`0..0`) are allowed to join any same-Sid local cluster
+/// because they intentionally describe the verse as a unit.
 pub fn aggregate<'a>(diags: &'a Diagnostics<'a>, policy: &AggregationPolicy) -> Vec<Cluster<'a>> {
-    aggregate_with_posteriors(diags, policy, None)
+    aggregate_inner(diags, policy, |f| policy.weight_for(f.rule_id))
 }
 
 /// Like [`aggregate`], but consults project feedback posteriors for the
 /// per-finding precision used by Noisy-OR.
 ///
-/// This is the F-lite plumbing: with an empty log, posterior precision equals
-/// the prior and behavior remains conservative. After explicit accept/dismiss
-/// events, only matching `(rule, cluster)` findings move.
+/// With an empty log, posterior precision equals the prior and behaviour
+/// matches the no-feedback path. After explicit accept/dismiss events,
+/// only matching `(rule, cluster)` findings move.
 #[cfg(feature = "serde")]
 pub fn aggregate_with_posteriors<'a>(
     diags: &'a Diagnostics<'a>,
     policy: &AggregationPolicy,
     posteriors: Option<&PosteriorStore>,
 ) -> Vec<Cluster<'a>> {
-    aggregate_inner(diags, policy, posteriors)
+    aggregate_inner(diags, policy, |f| match posteriors {
+        Some(store) => store.precision_for(f),
+        None => policy.weight_for(f.rule_id),
+    })
 }
 
-#[cfg(not(feature = "serde"))]
-fn aggregate_with_posteriors<'a>(
-    diags: &'a Diagnostics<'a>,
-    policy: &AggregationPolicy,
-    _posteriors: Option<&()>,
-) -> Vec<Cluster<'a>> {
-    aggregate_inner(diags, policy)
-}
-
-#[cfg(feature = "serde")]
 fn aggregate_inner<'a>(
     diags: &'a Diagnostics<'a>,
     policy: &AggregationPolicy,
-    posteriors: Option<&PosteriorStore>,
+    weight_for: impl Fn(&Finding<'a>) -> f64,
 ) -> Vec<Cluster<'a>> {
     let mut clusters: Vec<Cluster<'a>> = Vec::new();
 
@@ -235,57 +238,13 @@ fn aggregate_inner<'a>(
             });
         let cluster = &mut clusters[index];
         cluster.byte_range = merged_range(cluster.byte_range, f.byte_range);
-        let weight = posteriors
-            .map(|store| store.precision_for(f))
-            .unwrap_or_else(|| policy.weight_for(f.rule_id));
+        let weight = weight_for(f);
+        // We record each finding's component but defer the Noisy-OR product
+        // until `finalize_clusters` so pair-bonus precision boosts can apply
+        // to whichever rules end up co-firing in the same cluster.
         let contribution = probability(weight * f.evidence);
         cluster.findings.push(f);
         cluster.rules_fired.insert(f.rule_id);
-        cluster.score = noisy_or_push(cluster.score, contribution);
-        cluster.score_breakdown.base_sum = cluster.score;
-        cluster.score_breakdown.components.push(ScoreComponent {
-            rule_id: f.rule_id,
-            weight,
-            evidence: f.evidence,
-            contribution,
-        });
-    }
-
-    finalize_clusters(clusters, policy)
-}
-
-#[cfg(not(feature = "serde"))]
-fn aggregate_inner<'a>(diags: &'a Diagnostics<'a>, policy: &AggregationPolicy) -> Vec<Cluster<'a>> {
-    let mut clusters: Vec<Cluster<'a>> = Vec::new();
-
-    for f in &diags.findings {
-        let index = clusters
-            .iter()
-            .position(|cluster| cluster_accepts(cluster, f))
-            .unwrap_or_else(|| {
-                clusters.push(Cluster {
-                    sid: f.sid,
-                    byte_range: f.byte_range,
-                    score: 0.0,
-                    surfaced: false,
-                    rules_fired: BTreeSet::new(),
-                    findings: Vec::new(),
-                    matched_correlations: Vec::new(),
-                    score_breakdown: ScoreBreakdown {
-                        min_surface_score: policy.min_surface_score,
-                        ..Default::default()
-                    },
-                });
-                clusters.len() - 1
-            });
-        let cluster = &mut clusters[index];
-        cluster.byte_range = merged_range(cluster.byte_range, f.byte_range);
-        let weight = policy.weight_for(f.rule_id);
-        let contribution = probability(weight * f.evidence);
-        cluster.findings.push(f);
-        cluster.rules_fired.insert(f.rule_id);
-        cluster.score = noisy_or_push(cluster.score, contribution);
-        cluster.score_breakdown.base_sum = cluster.score;
         cluster.score_breakdown.components.push(ScoreComponent {
             rule_id: f.rule_id,
             weight,
@@ -304,20 +263,44 @@ fn finalize_clusters<'a>(
     merge_overlapping_clusters(&mut clusters);
 
     for cluster in &mut clusters {
-        let mut multiplier_product = 1.0;
+        // Pair-bonus precision boosts. When a declared pair both-fires in
+        // this cluster, each member's effective precision becomes
+        // `clamp(base + bonus, 0, 1)` and we rebuild the Noisy-OR product
+        // from those boosted contributions. Keeping the boost in precision
+        // space (not as a post-hoc score multiplier) lets a future
+        // empirically-fitted prior replace these constants without touching
+        // the aggregator math.
+        let mut active_bonus_per_rule: BTreeMap<RuleId, f64> = BTreeMap::new();
         for pair in &policy.correlated_pairs {
             if cluster.rules_fired.contains(&pair.a) && cluster.rules_fired.contains(&pair.b) {
-                multiplier_product *= pair.multiplier;
+                *active_bonus_per_rule.entry(pair.a).or_insert(0.0) += pair.precision_bonus;
+                *active_bonus_per_rule.entry(pair.b).or_insert(0.0) += pair.precision_bonus;
                 cluster.matched_correlations.push(pair.label.to_string());
-                cluster.score_breakdown.multipliers.push(MatchedMultiplier {
-                    label: pair.label.to_string(),
-                    value: pair.multiplier,
-                });
+                cluster
+                    .score_breakdown
+                    .pair_bonuses
+                    .push(MatchedPairBonus {
+                        label: pair.label.to_string(),
+                        bonus: pair.precision_bonus,
+                    });
             }
         }
-        cluster.score = apply_odds_multiplier(cluster.score, multiplier_product);
+
+        let mut score = 0.0;
+        for component in &mut cluster.score_breakdown.components {
+            let bonus = active_bonus_per_rule
+                .get(&component.rule_id)
+                .copied()
+                .unwrap_or(0.0);
+            if bonus > 0.0 {
+                let effective = (component.weight + bonus).clamp(0.0, 1.0);
+                component.weight = effective;
+                component.contribution = probability(effective * component.evidence);
+            }
+            score = noisy_or_push(score, component.contribution);
+        }
+        cluster.score = score;
         cluster.surfaced = cluster.score >= policy.min_surface_score;
-        cluster.score_breakdown.multiplier_product = multiplier_product;
         cluster.score_breakdown.final_score = cluster.score;
     }
 
@@ -368,14 +351,14 @@ fn merge_overlapping_clusters(clusters: &mut Vec<Cluster<'_>>) {
 
 fn merge_cluster<'a>(target: &mut Cluster<'a>, other: Cluster<'a>) {
     target.byte_range = merged_range(target.byte_range, other.byte_range);
-    target.score = noisy_or_push(target.score, other.score);
     target.rules_fired.extend(other.rules_fired);
     target.findings.extend(other.findings);
-    target.score_breakdown.base_sum = target.score;
     target
         .score_breakdown
         .components
         .extend(other.score_breakdown.components);
+    // Score is rebuilt from components in `finalize_clusters` after merging
+    // and pair-bonus application, so we don't compose the partial scores here.
 }
 
 fn probability(value: f64) -> f64 {
@@ -388,19 +371,6 @@ fn probability(value: f64) -> f64 {
 
 fn noisy_or_push(current: f64, next: f64) -> f64 {
     1.0 - (1.0 - probability(current)) * (1.0 - probability(next))
-}
-
-fn apply_odds_multiplier(score: f64, multiplier: f64) -> f64 {
-    let p = probability(score);
-    if p <= 0.0 || multiplier <= 0.0 {
-        return 0.0;
-    }
-    if p >= 1.0 {
-        return 1.0;
-    }
-    let odds = p / (1.0 - p);
-    let boosted = odds * multiplier;
-    boosted / (1.0 + boosted)
 }
 
 fn is_whole_verse(range: ByteRange) -> bool {
@@ -513,7 +483,7 @@ mod tests {
             correlated_pairs: vec![CorrelatedPair {
                 a: r1,
                 b: r2,
-                multiplier: 2.0,
+                precision_bonus: 0.3,
                 label: "r1-r2",
             }],
             min_surface_score: 1.0,
@@ -544,13 +514,13 @@ mod tests {
                 CorrelatedPair {
                     a: r1,
                     b: r2,
-                    multiplier: 2.0,
+                    precision_bonus: 0.3,
                     label: "r1-r2",
                 },
                 CorrelatedPair {
                     a: r2,
                     b: r3,
-                    multiplier: 1.5,
+                    precision_bonus: 0.2,
                     label: "r2-r3",
                 },
             ],
@@ -575,7 +545,7 @@ mod tests {
             correlated_pairs: vec![CorrelatedPair {
                 a: r1,
                 b: r2,
-                multiplier: 5.0,
+                precision_bonus: 0.5,
                 label: "r1-r2",
             }],
             min_surface_score: 1.0,

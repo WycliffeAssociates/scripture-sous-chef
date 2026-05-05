@@ -266,8 +266,8 @@ fn scan_unexpected_sentence_end_from_transitions<'a>(
         let other_before = total_before_terminal.saturating_sub(n_before);
         let other_not_before = total_not_before_terminal.saturating_sub(n_not_before);
 
-        let g2 = Table2::new(n_before, n_not_before, other_before, other_not_before)
-            .association_score();
+        let g2 =
+            Table2::new(n_before, n_not_before, other_before, other_not_before).association_score();
         let p_terminal = n_before as f64 / n_total as f64;
         let is_never_terminal = g2 >= g2_min && p_terminal <= never_terminal_rate_max;
 

@@ -23,10 +23,10 @@
 use std::collections::BTreeMap;
 
 use crate::project::NamedCorpus;
-use crate::sid::Sid;
 use crate::punctuation_class::{
     AmbiguousResolution, ClingingClass, clinging_class, resolve_ambiguous,
 };
+use crate::sid::Sid;
 
 /// Single-character separator inserted between concatenated verses.
 /// Single ASCII space is *neutral* — the convention-learning rules
@@ -160,9 +160,7 @@ impl Discourse {
     /// supplied cursor. Both inputs and the underlying `sid_index`
     /// are sorted by start byte, so amortised O(1) walk.
     fn sid_position_at(&self, byte_offset: usize, cursor: &mut usize) -> Option<usize> {
-        while *cursor + 1 < self.sid_index.len()
-            && byte_offset >= self.sid_index[*cursor + 1].1
-        {
+        while *cursor + 1 < self.sid_index.len() && byte_offset >= self.sid_index[*cursor + 1].1 {
             *cursor += 1;
         }
         if *cursor < self.sid_index.len() {
@@ -295,8 +293,7 @@ impl SpanIndex {
                 }
 
                 Some(ClingingClass::RightClinging) => {
-                    let close_sid =
-                        discourse.and_then(|d| d.sid_at_position(current_sid_position));
+                    let close_sid = discourse.and_then(|d| d.sid_at_position(current_sid_position));
                     let Some(open) = stack.pop() else {
                         anomalies.push(PairAnomaly {
                             kind: PairAnomalyKind::UnexpectedClose,
@@ -324,8 +321,7 @@ impl SpanIndex {
                             byte_offset: idx,
                             punct: c,
                             expected_open: Some(open.punct),
-                            start_sid: discourse
-                                .and_then(|d| d.sid_at_position(open.sid_position)),
+                            start_sid: discourse.and_then(|d| d.sid_at_position(open.sid_position)),
                             end_sid: close_sid,
                         });
                     }
@@ -378,8 +374,8 @@ impl SpanIndex {
                                 // or stray apostrophe — no anomaly.
                             } else {
                                 // Strict: orphan double-quote.
-                                let close_sid = discourse
-                                    .and_then(|d| d.sid_at_position(current_sid_position));
+                                let close_sid =
+                                    discourse.and_then(|d| d.sid_at_position(current_sid_position));
                                 anomalies.push(PairAnomaly {
                                     kind: PairAnomalyKind::UnexpectedClose,
                                     byte_offset: idx,
@@ -738,7 +734,10 @@ mod tests {
         // the anomaly should anchor inside 2SA, not bleed across
         // book boundaries.
         let c = corpus(vec![
-            (sid("2SA", 24, 24), "He bought the threshing floor (for fifty"),
+            (
+                sid("2SA", 24, 24),
+                "He bought the threshing floor (for fifty",
+            ),
             (sid("2TH", 3, 1), "Finally brothers pray for us."),
         ]);
         let d = Discourse::build(&c);
@@ -759,9 +758,8 @@ mod tests {
         // space). Without stack support, `'` must NOT emit an
         // `UnexpectedClose` — it's far more often a possessive
         // marker than a stray quote.
-        let index = SpanIndex::build(
-            "Their fathers' houses for their fathers' houses. Moses' hands.",
-        );
+        let index =
+            SpanIndex::build("Their fathers' houses for their fathers' houses. Moses' hands.");
         assert!(index.spans_by_start.is_empty());
         assert!(index.anomalies.is_empty());
     }
@@ -818,8 +816,7 @@ mod tests {
         // `UnexpectedClose` and is *not* pushed as a phantom opener
         // — that's the false-positive cascade we're fixing.
         // The legitimate `"goodbye"` pair following resolves cleanly.
-        let index =
-            SpanIndex::build("He said hello\" and then \"goodbye\" walked away.");
+        let index = SpanIndex::build("He said hello\" and then \"goodbye\" walked away.");
         assert_eq!(index.anomalies.len(), 1);
         assert_eq!(index.anomalies[0].kind, PairAnomalyKind::UnexpectedClose);
         assert_eq!(index.anomalies[0].punct, '"');

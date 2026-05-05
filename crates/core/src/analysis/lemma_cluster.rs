@@ -1,6 +1,6 @@
 //! Conservative lemma-family induction for low-resource corpora.
 //!
-//! Phase H2 is **not** a full morphology engine. It is a low-risk bridge:
+//! Not a full morphology engine. A low-risk bridge:
 //! group word forms that probably share a stem so future lexical typo rules
 //! stop treating every inflected form as unrelated.
 //!

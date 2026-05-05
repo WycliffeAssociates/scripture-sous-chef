@@ -1,7 +1,12 @@
 # Posterior feedback plumbing
 
-This is the small version of phases E/F/G. It exists to collect real
-project feedback before we pretend to know the final statistical model.
+How `<corpus>/.sous/events.jsonl` becomes per-cluster trust. Sibling to
+[`outputs.md`](outputs.md) (which describes file paths and shapes); this
+doc covers the math and replay model.
+
+A deliberately small loop. Real labelled corpora don't exist yet, so
+the engine starts from conservative priors and only moves once a project
+records feedback events.
 
 ## What exists now
 
