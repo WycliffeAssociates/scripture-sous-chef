@@ -1,4 +1,4 @@
-//! Lexical signals (METHODS.md §3.2). Token-level.
+//! Lexical signals. Token-level.
 //!
 //! ## Relationship to char-LM
 //!
@@ -30,29 +30,12 @@
 
 use crate::diagnostics::RuleId;
 
-/// A token whose word-bigram context is rare *given a common left
-/// neighbour*. Rare-word-after-common-word is the signature of in-context
-/// typos. Sparse on small corpora — designed to co-fire with
-/// `orth.char-lm-surprisal`, not stand alone.
-///
-/// TODO:
-/// - [ ] Compute per-corpus type counts; collect candidate hapaxes /
-///       low-count types.
-/// - [ ] For each occurrence, compute Dunning LLR for its (left-token,
-///       target-token) bigram against the (left-token, *) marginal —
-///       common prefix + rare target = high LLR = suspicious.
-/// - [ ] Emit `evidence_score` (per γ score combination) rather than
-///       a hard Warn — pair with char-LM evidence at the meta-rule pass.
-/// - [ ] Sigmoid-weight the candidate-collection threshold by
-///       `morphology_score`: agglutinative languages have legitimately
-///       huge hapax counts.
+/// A token whose word-bigram context is rare given a common left neighbour.
+/// Rare-word-after-common-word is the signature of in-context typos.
+/// Designed to co-fire with `orth.char-lm-surprisal`. Not yet implemented.
 pub const WORD_HAPAX_BURST: RuleId = RuleId("lex.word-hapax-burst");
 
-/// Damerau-Levenshtein-clusters of rare words around a more-common
-/// neighbour, with frequency disparity ≥ 10×. The asymmetric variant
-/// of `edit.variant-clusters`: this one only fires when there's a
-/// clear "canonical" form the rare types are likely typos of.
-///
-/// TODO: see `edit.variant-clusters` for the BK-tree machinery; this
-/// rule is a frequency-asymmetry filter on top of that output.
+/// Rare-word clusters: groups where one member is clearly "canonical"
+/// (high-frequency) and the others are likely typos of it. Asymmetric
+/// variant of `edit.variant-clusters`. Not yet implemented.
 pub const RARE_WORD_CLUSTER: RuleId = RuleId("lex.rare-word-cluster");

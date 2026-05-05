@@ -32,22 +32,6 @@
 //! formally declared between them; their weighted evidence simply
 //! adds up.
 //!
-//! ## What's deferred
-//!
-//! - **Within-Sid byte-range proximity.** v0 groups by `Sid` only.
-//!   Verses are short enough that one Sid usually represents one
-//!   logical span; sub-clustering by byte distance is the next step
-//!   when long-Sid corpora show unrelated findings co-clustering.
-//! - **Three-way (or higher-order) correlations.** Pairs cover the
-//!   architectural intent. If a triple is qualitatively different
-//!   from the pairwise product, lift to `CorrelatedTuple { rules:
-//!   BTreeSet<RuleId>, multiplier }` later.
-//! - **Cross-Sid correlation.** Today rules handle cross-verse
-//!   boundaries internally via the discourse stream; lift here if
-//!   that stops being sufficient.
-//! - **Per-rule self-declared weight via trait method.** Today weight
-//!   lives in policy data — easier to swap per-deployment, doesn't
-//!   couple the rule to its own calibration.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -60,8 +44,6 @@ use crate::signals;
 pub const DEFAULT_WEIGHT: f64 = 1.0;
 
 /// Default multiplier for the SSC + UnexpectedSentenceEnd pair.
-/// Calibration is future work — pick a sane scaling once we have
-/// human-labelled data on a few corpora.
 pub const DEFAULT_PAIR_MULTIPLIER: f64 = 2.0;
 
 /// Score at or above which clusters are tagged `surfaced`. The line

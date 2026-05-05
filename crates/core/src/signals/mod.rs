@@ -1,9 +1,8 @@
 //! Signal families. One module per family.
 //!
-//! Each module enumerates its planned rules as `RuleId` constants and
-//! a short doc comment. Bodies are TODO; this scaffold exists so we
-//! can see the full surface area at once and so a `RuleId` can be
-//! referred to by name from `Config` long before the rule lands.
+//! Each module exports `RuleId` constants for its rules. Constants for
+//! rules that aren't yet implemented still exist so they can be named in
+//! `Config` and `ALL_RULE_IDS` before the implementation lands.
 
 pub mod edit_distance;
 pub mod glossary;
@@ -15,12 +14,7 @@ pub mod punctuation;
 pub mod source_relative;
 
 /// Every `RuleId` known to the engine, in family order. Useful for
-/// generating default config, validating user-supplied rule names, and
-/// emitting "unknown rule id" diagnostics on config load.
-///
-/// TODO: keep this in sync as rules land. A small unit test should
-/// walk each module's exported constants and confirm they all appear
-/// here.
+/// generating default config and validating user-supplied rule names.
 pub const ALL_RULE_IDS: &[crate::diagnostics::RuleId] = &[
     // Hygiene — invariant, never-ok-anywhere
     hygiene::TAB_IN_BODY,

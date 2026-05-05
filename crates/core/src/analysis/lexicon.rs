@@ -53,26 +53,6 @@
 //! script. We observe that some words are first-char-uppercase in
 //! mid-flow positions and surface them; downstream rules use that.
 //!
-//! ## TODO: case-consistency-anomaly rule
-//!
-//! A future signal should catch per-occurrence casing inconsistencies
-//! — e.g. "Jehoshaphat" appears 2× capitalised and 1× lowercase, the
-//! lone lowercase token is probably a typo. The lexicon already
-//! tracks the per-word counts that rule needs (title/lower/all-upper/
-//! mixed). The rule will fire on the *minority-case occurrence* when
-//! the minority count is small in absolute terms (1–2) AND the
-//! majority case rate is dominant — that distinguishes Jehoshaphat
-//! (genuine error) from "god/God" (substantial counts in both,
-//! legitimate variant).
-//!
-//! ## TODO: top-level `[lexicon]` config section
-//!
-//! Today the thresholds are read from `signals::positional` rule
-//! params, since that's the only consumer. When a second rule needs
-//! the lexicon (case-consistency, hapax-surprisal, …), lift these
-//! into a top-level `[lexicon]` config section and add per-word
-//! allow/deny lists for hand-curated proper-noun overrides. Don't
-//! bloat config now.
 
 use std::collections::{BTreeSet, HashMap};
 

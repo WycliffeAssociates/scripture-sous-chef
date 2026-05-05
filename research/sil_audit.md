@@ -1,3 +1,5 @@
+> **ARCHIVED / SPECULATIVE** — This audit predates the agent-report synthesis (see `latest-agent-reports/synthesis.md`). Useful for historical context; do not treat recommendations here as current direction.
+
 # SIL Repositories — Audit & Synthesis
 
 Companion to `VISION.md` and `METHODS.md`. This document captures everything

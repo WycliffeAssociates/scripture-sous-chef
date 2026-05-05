@@ -1,3 +1,5 @@
+> **ARCHIVED** — Original research prompt sent to external agents. See `latest-agent-reports/synthesis.md` for the resulting synthesis.
+
 # Research Request: Soundness, Feasibility, and Architectural Review
 
 ## What this is

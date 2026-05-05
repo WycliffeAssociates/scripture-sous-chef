@@ -1,7 +1,7 @@
-//! Positional / discourse signals (METHODS.md §3.3). Operate over the
-//! discourse stream (`crate::discourse`). Findings are mapped back to
-//! a Sid at emit time so consumers see the same `Finding<'a>` shape
-//! regardless of whether the rule worked on flowing text or per-verse.
+//! Positional / discourse signals. Operate over the discourse stream
+//! (`crate::discourse`). Findings are mapped back to a Sid at emit time
+//! so consumers see the same `Finding<'a>` shape regardless of whether
+//! the rule worked on flowing text or per-verse.
 
 // Shared infrastructure
 mod shared;

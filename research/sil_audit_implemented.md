@@ -1,3 +1,5 @@
+> **ARCHIVED** — Implementation log for the SIL audit. Items listed here may have been superseded by subsequent refactoring. See `latest-agent-reports/synthesis.md` for current direction.
+
 # SIL Audit — Implementation Log
 
 Companion to `sil_audit.md`. Tracks which audit items have actually

@@ -1,6 +1,6 @@
 # scripture-sous-chef — Statistical & Linguistic Methods
 
-Companion to `VISION.md`. This document specifies the **math, the signal
+Companion to `vision.md`. This document specifies the **math, the signal
 families, and the implementation sketch** for the analysis layer of the
 engine. It is written to be readable without a stats background: every
 formula is preceded by a plain-language description of what it computes and
@@ -15,7 +15,7 @@ It is also written for the actual data scale we have:
 - **Optionally, a small number of additional parallel NTs** as references.
 - **No labelled gold data, no annotated error corpus, no field study yet.**
 
-The research literature surveyed in `addl-research.md` largely assumes
+The research literature surveyed in preparing this document largely assumes
 otherwise — large multilingual corpora, neural rerankers, hundreds of
 adjudicated alerts. We are not building that. We are building a **layered
 statistical-linguistic detector that gets useful signal out of one NT**,
@@ -406,7 +406,7 @@ gated-bigram, weighted per §4.
 **Notes.**
 - We do NOT need a separate "rare word detector." Rare-word information
   is already in the unigram KN model via the continuation distribution.
-- `hapax-suspicion` from `VISION.md` §8 is the multi-signal *combination*
+- `hapax-suspicion` from `vision.md` §8 is the multi-signal *combination*
   in the ranker; the lexical signal family produces its raw ingredients
   but does not decide on its own.
 - Modified KN is still the right smoothing for the unigram and (gated)
@@ -459,7 +459,7 @@ tables fit in memory trivially.
 shape what we'd expect?"
 
 **Tools:** Dunning -2 log λ on per-verse-pair co-occurrence, plus the
-length-ratio outlier from `VISION.md`.
+length-ratio outlier from `vision.md`.
 
 For agglutinative targets where word bigrams are nearly useless (§0),
 this signal family is the **single most informative cross-token signal we
@@ -575,7 +575,7 @@ a frequent word is *also* contextually surprising.
 
 ### 3.7 Structural — "does the corpus shape match expectations?"
 
-Existing rules from `VISION.md` §8.2: empty verse, missing verse, extra
+Existing rules from `vision.md` §8.2: empty verse, missing verse, extra
 verse, verse out of order, source-marker leftover. These don't need
 statistical machinery — they need direct comparison of `Sid` sets between
 target and source / references.
@@ -645,7 +645,7 @@ the prerequisite.
 
 ### 4.3 The noise-kill / abstention layer
 
-Already specced in `VISION.md` §5.3: a rule firing > N per chapter on a
+Already specced in `vision.md` §5.3: a rule firing > N per chapter on a
 clean corpus is auto-suppressed with one meta-diagnostic per book.
 Conformal prediction is the principled long-term answer; the simple
 threshold is fine for v1 and v2.
@@ -761,7 +761,7 @@ all rules. It is the cache that makes the pipeline fast.
 
 ### 5.7 Rule implementations as `Signal` consumers
 
-Each `SSC-*` rule from `VISION.md` §8 reduces to: ask one or more signals
+Each `SSC-*` rule from `vision.md` §8 reduces to: ask one or more signals
 for their scores, optionally combine them, emit `Finding`s. The rule
 becomes ~50 lines.
 

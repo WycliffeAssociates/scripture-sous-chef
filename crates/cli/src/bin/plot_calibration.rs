@@ -1,6 +1,5 @@
 //! Render a 2D scatter of (morphology_score, orthographic_complexity) for the
-//! ebible calibration corpus, plus marginal histograms. Used as a sanity-
-//! check fixture for the two-axis recommendation in METHODS.md §5.9.2.
+//! ebible calibration corpus, plus marginal histograms.
 //!
 //! Usage:
 //!   cargo run --release --bin plot-calibration -- \

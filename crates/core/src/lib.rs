@@ -1,9 +1,4 @@
 //! `ssc-core` — public engine contract.
-//!
-//! Locked types only. Bodies are deliberately `todo!()` until we commit to
-//! implementation. The shape here is what every signal in METHODS.md §3 will
-//! consume; if a rule cannot be expressed against these types, the API is
-//! wrong and should be revised before we build behind it.
 
 pub mod aggregate;
 pub mod analysis;
@@ -29,20 +24,12 @@ pub use sid::{BookId, Sid};
 pub use verse::{Token, TokenKind, Verse};
 
 /// Run all enabled rules against `project` and return diagnostics.
-/// Stats are computed but discarded — call `analyze_with_stats` to
-/// keep them.
-///
-/// Currently sequential. Parallel rule dispatch is forward-compatible
-/// via the `Rule: Sync` bound — see `rule.rs` for the three-layer
-/// parallelism note.
+/// Stats are discarded — call `analyze_with_stats` to keep them.
 pub fn analyze<'src>(project: &'src Project<'src>) -> Diagnostics<'src> {
     run(project, &rule::default_rules()).0
 }
 
 /// Like `analyze`, but also returns per-rule debug statistics.
-/// Opt-in: callers that don't want the overhead of moving stats
-/// around (e.g. across a network boundary later) call `analyze`
-/// instead.
 pub fn analyze_with_stats<'src>(project: &'src Project<'src>) -> (Diagnostics<'src>, AnalyzeStats) {
     run(project, &rule::default_rules())
 }

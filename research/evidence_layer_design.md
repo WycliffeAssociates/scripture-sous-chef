@@ -1,3 +1,5 @@
+> **ARCHIVED** — Early design sketch, superseded by `latest-agent-reports/synthesis.md` (Phases A–F). Read for historical context only.
+
 # Evidence Layer Design — Bootstrapping Bayesian Calibration Without UI
 
 A design doc, not yet a plan. Captures the thinking behind a unified

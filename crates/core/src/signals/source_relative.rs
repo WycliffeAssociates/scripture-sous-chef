@@ -1,7 +1,7 @@
-//! Source-relative signals (METHODS.md §3.4). Run only when the project
-//! has a `source` corpus. Per the locked policy: source-relative output
-//! upgrades or downgrades suspicion of *other* signals; it never makes
-//! a hard claim on its own. v1 emits Info severity only.
+//! Source-relative signals. Run only when the project has a `source`
+//! corpus. Source-relative output upgrades or downgrades suspicion of
+//! other signals; it never makes a hard claim on its own. v1 emits
+//! Info severity only.
 
 use std::collections::HashMap;
 

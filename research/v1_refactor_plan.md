@@ -1,3 +1,5 @@
+> **ARCHIVED** — Early refactor plan, written before full synthesis. `latest-agent-reports/synthesis.md` §6–7 is the current phase plan.
+
 # v1 refactor plan
 
 Concrete execution path from current state to a calibrated, label-

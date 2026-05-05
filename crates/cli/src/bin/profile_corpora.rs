@@ -2,7 +2,7 @@
 //!
 //! Reads a directory of USFM files, extracts a Sid -> verse-text map via
 //! usfm_onion (which properly skips notes, comments, and milestones), and
-//! reports the profile metrics described in METHODS.md §0 / §5.9.
+//! reports the profile metrics described in `documentation/methods.md`.
 //!
 //! Usage:
 //!   cargo run --release --bin profile-corpora -- corpora/bem_reg [more dirs...]

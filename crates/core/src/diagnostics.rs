@@ -82,20 +82,8 @@ impl<'a> Diagnostics<'a> {
 /// source corpus, coverage gate tripped, etc.). Hygiene rules don't
 /// contribute — they're deterministic, no statistics behind them.
 ///
-/// **Convention (not enforced):** a rule writes only its own field. The
-/// engine relies on this; nothing in the type system stops a misbehaving
-/// rule from stomping someone else's slot.
-///
-/// **Parallelism note:** consumed by rules through a single `&mut`
-/// reference, which is sequential by construction. When parallel rule
-/// dispatch lands (see `crate::rule`), the trait shape will change so
-/// each rule returns its contribution and the engine merges into
-/// `AnalyzeStats` after the fork-join. The `AnalyzeStats` *struct*
-/// survives that rework; only the trait method's signature flips.
-///
-/// Ownership: all fields hold owned data (`MadStats` is `Copy`,
-/// `BookId` is `Copy`, `HashMap` owns its entries). No borrowed slices
-/// from `Verse` or `Project`. Safe to outlive the analysis call.
+/// A rule writes only its own slot by convention; nothing in the type
+/// system enforces this.
 #[derive(Debug, Clone, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct AnalyzeStats {

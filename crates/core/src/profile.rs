@@ -1,6 +1,5 @@
 //! Calibration-time corpus profiling. Used by the `profile-corpora` and
-//! `profile-ebible` CLIs to derive the sigmoid centers in METHODS.md
-//! §5.9.2; not on the engine's hot path.
+//! `profile-ebible` CLIs. Not on the engine's hot path.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 

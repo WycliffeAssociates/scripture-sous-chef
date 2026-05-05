@@ -6,9 +6,8 @@
 //! qualifying corpus, and emits a CSV plus a per-language-family summary.
 //!
 //! Output is calibration data — NOT engine input, NOT a pretraining
-//! corpus. We use it once to fit the regime thresholds in METHODS.md
-//! §5.9.2 against a wide morphological-typology spread, then bake the
-//! thresholds into `core::profile::defaults`.
+//! corpus. Used to fit regime thresholds against a wide
+//! morphological-typology spread, then bake into `core::profile::defaults`.
 //!
 //! Usage:
 //!   cargo run --release --bin profile-ebible -- \

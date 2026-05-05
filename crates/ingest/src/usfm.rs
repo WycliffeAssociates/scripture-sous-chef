@@ -15,8 +15,7 @@ use usfm_onion::Usfm;
 /// USFM book code.
 ///
 /// Sids that fail to parse (unexpected key shape from `usfm_onion`)
-/// are silently skipped — they're vanishingly rare and an error log
-/// would just noise. TODO: surface them as ingest diagnostics.
+/// are silently skipped — vanishingly rare in practice.
 pub fn read_usfm_dir(dir: &Path, nt_only: bool) -> io::Result<BTreeMap<Sid, String>> {
     let mut out: BTreeMap<Sid, String> = BTreeMap::new();
     let mut files: Vec<PathBuf> = fs::read_dir(dir)?

@@ -1,3 +1,5 @@
+> **ARCHIVED** — Early GPT deep-research response. Superseded by the three-agent review in `latest-agent-reports/`. Read for historical context only.
+
 # Deep Research Assessment of Scripture Sous-Chef
 
 ## Executive Summary
