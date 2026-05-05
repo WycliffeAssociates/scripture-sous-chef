@@ -4,5 +4,7 @@
 
 pub mod bktree;
 pub mod dunning;
+pub mod evidence;
 pub mod kn;
+pub mod lexicon;
 pub mod mad;

@@ -97,6 +97,7 @@ impl Rule for Proportionality {
     fn check<'src>(
         &self,
         project: &'src Project<'src>,
+        _context: &crate::context::AnalysisContext,
         stats: &mut AnalyzeStats,
     ) -> Vec<Finding<'src>> {
         let Some(source) = project.source.as_ref() else {
@@ -216,6 +217,10 @@ pub fn scan_proportionality<'a>(
                 "length ratio {:.2} (book z={:+.2}, corpus z={:+.2})",
                 ratio, book_z, corpus_z
             ),
+            // Proportionality could grade by max(|z|) once we have a
+            // calibrated mapping; for now keep at full strength so
+            // it ranks above sparse statistical findings.
+            evidence: 1.0,
         });
     }
 
@@ -402,7 +407,8 @@ mod tests {
             exceptions: ExceptionSet::default(),
         };
         let mut stats = AnalyzeStats::default();
-        let findings = Proportionality.check(&project, &mut stats);
+        let context = crate::context::AnalysisContext::build(&project);
+        let findings = Proportionality.check(&project, &context, &mut stats);
         assert!(findings.is_empty());
         assert!(stats.proportionality.is_none());
     }

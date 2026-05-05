@@ -65,8 +65,10 @@ impl Table2 {
             return 0.0;
         }
         2.0 * (xlogx(a) + xlogx(b) + xlogx(c) + xlogx(d)
-            - xlogx(r1) - xlogx(r2)
-            - xlogx(c1) - xlogx(c2)
+            - xlogx(r1)
+            - xlogx(r2)
+            - xlogx(c1)
+            - xlogx(c2)
             + xlogx(n))
     }
 }

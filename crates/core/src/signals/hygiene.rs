@@ -46,6 +46,7 @@ impl Rule for TabInBody {
     fn check<'src>(
         &self,
         project: &'src Project<'src>,
+        _context: &crate::context::AnalysisContext,
         _stats: &mut crate::diagnostics::AnalyzeStats,
     ) -> Vec<Finding<'src>> {
         project
@@ -68,6 +69,7 @@ pub fn scan_tab_in_body(verse: &Verse) -> Vec<Finding<'_>> {
             severity: Severity::Warn,
             span: &verse.nfc[i..i + 1],
             message: "tab character in verse body".to_string(),
+            evidence: 1.0,
         });
     }
     findings
@@ -91,6 +93,7 @@ impl Rule for ControlChars {
     fn check<'src>(
         &self,
         project: &'src Project<'src>,
+        _context: &crate::context::AnalysisContext,
         _stats: &mut crate::diagnostics::AnalyzeStats,
     ) -> Vec<Finding<'src>> {
         project
@@ -118,6 +121,7 @@ pub fn scan_control_chars(verse: &Verse) -> Vec<Finding<'_>> {
             severity: Severity::Warn,
             span: &verse.nfc[i..end],
             message: format!("control character U+{:04X} in verse body", c as u32),
+            evidence: 1.0,
         });
     }
     findings
@@ -144,6 +148,7 @@ impl Rule for ZeroWidthMisuse {
     fn check<'src>(
         &self,
         project: &'src Project<'src>,
+        _context: &crate::context::AnalysisContext,
         _stats: &mut crate::diagnostics::AnalyzeStats,
     ) -> Vec<Finding<'src>> {
         project
@@ -173,6 +178,7 @@ pub fn scan_zero_width_misuse(verse: &Verse) -> Vec<Finding<'_>> {
             severity: Severity::Warn,
             span: &verse.nfc[i..end],
             message: format!("zero-width character U+{:04X} in verse body", c as u32),
+            evidence: 1.0,
         });
     }
     findings
@@ -227,6 +233,7 @@ impl Rule for EmptyVerse {
     fn check<'src>(
         &self,
         project: &'src Project<'src>,
+        _context: &crate::context::AnalysisContext,
         _stats: &mut crate::diagnostics::AnalyzeStats,
     ) -> Vec<Finding<'src>> {
         project
@@ -246,6 +253,7 @@ pub fn scan_empty_verse(verse: &Verse) -> Vec<Finding<'_>> {
             severity: Severity::Info,
             span: &verse.nfc[0..0],
             message: "verse is empty".to_string(),
+            evidence: 1.0,
         }]
     } else {
         Vec::new()

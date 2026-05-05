@@ -45,11 +45,41 @@
 //!
 //! ## Score combination (γ from the prior design notes)
 //!
-//! Still leaning γ: each rule emits an optional `evidence_score` along
-//! with its `Finding`s, a meta-pass fuses correlated findings, the UI
-//! sees a single per-Sid sigmoid score. Touches the `Finding` shape
-//! when it lands. Defer until ~5 statistical rules exist and we can
-//! see what their evidence streams actually look like.
+//! **Rules emit independent, equal-weight ticks.** No rule consults
+//! another rule's signal in its own logic. If two rules should be
+//! "always considered together," that policy lives in the aggregator,
+//! not in either rule's body or signature — otherwise rule-to-rule
+//! coupling spreads through the engine and there's no single place to
+//! reason about it.
+//!
+//! **The aggregation layer (deferred).** Runs after all rules
+//! complete. Groups findings by `Sid` *and* by byte-range proximity
+//! within a Sid — many rule pairs naturally fire at adjacent
+//! positions on the same boundary (e.g. a never-terminal word at
+//! offset N and a missing-capitalisation finding at offset N+k), and
+//! that adjacency is the signal. Per cluster: tick count, set of
+//! rule IDs that fired, any policy-derived confidence boost.
+//!
+//! **Policy as data, not code.** Correlated-rule pairs / triples are
+//! a declarative table — start as a const in `core`, lift to config
+//! when worth tuning. Rules don't know they're in the table.
+//!
+//! **Two tiers of evidence weight.** Some rules fire on findings
+//! that are *intrinsically* high-confidence regardless of
+//! corroboration: hygiene-class anomalies (merge-conflict markers
+//! `>>>>>>> HEAD`, keyboard-vomit runs, abnormally long tokens, all-
+//! hapax sequences, gross duplications). Those should rise to the
+//! top of the ranking even when they're a single tick. Statistical
+//! rules (sparse-data convention learners like
+//! `pos.unexpected-sentence-end`) need fusion to be confident — a
+//! single tick is weak signal. The aggregator distinguishes these
+//! tiers; the simplest first cut is per-rule intrinsic-weight as
+//! data alongside the correlation policy.
+//!
+//! Defer the implementation until ~5 statistical rules exist and we
+//! can calibrate against real findings. The current shape is
+//! forward-compatible: `Finding` stays the same, `AnalyzeStats`
+//! grows a sibling field, no rule signatures change.
 //!
 //! ## Parallelism (forward-compatibility note)
 //!
@@ -97,7 +127,12 @@
 //! `Project`, `NamedCorpus`, `Verse`, `Sid`, `Finding`, `Diagnostics`
 //! are already `Send + Sync` (only owned `String`s, `Vec`s, `BTreeMap`s,
 //! `Copy` types). Don't introduce non-thread-safe types into them.
+//!
+//! The same shape applies to corpus-derived caches like `Lexicon` —
+//! build once in the engine when a second rule needs it, threaded
+//! through `Project` or a future `AnalysisContext` (METHODS.md §5.6).
 
+use crate::context::AnalysisContext;
 use crate::diagnostics::{AnalyzeStats, Finding, RuleId};
 use crate::project::Project;
 use crate::signals;
@@ -115,6 +150,7 @@ pub trait Rule: Sync {
     fn check<'src>(
         &self,
         project: &'src Project<'src>,
+        context: &AnalysisContext,
         stats: &mut AnalyzeStats,
     ) -> Vec<Finding<'src>>;
 }
@@ -130,5 +166,9 @@ pub fn default_rules() -> Vec<Box<dyn Rule>> {
         Box::new(signals::hygiene::EmptyVerse),
         // Source-relative
         Box::new(signals::source_relative::Proportionality),
+        // Positional / discourse
+        Box::new(signals::positional::SentenceStartCase),
+        Box::new(signals::positional::UnexpectedSentenceEnd),
+        Box::new(signals::punctuation::PairedPunctBalance),
     ]
 }

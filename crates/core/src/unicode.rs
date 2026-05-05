@@ -53,6 +53,15 @@ pub fn is_c1_control(c: char) -> bool {
     matches!(c as u32, 0x7F..=0x9F)
 }
 
+/// True if `c` has a Unicode case distinction (uppercase or lowercase).
+/// Used by rules that observe capitalisation conventions; caseless
+/// scripts (Devanagari, CJK, Arabic, Hebrew, Thai, …) return `false`,
+/// which lets convention-learning rules self-disable for those
+/// scripts naturally.
+pub fn is_cased(c: char) -> bool {
+    c.is_uppercase() || c.is_lowercase()
+}
+
 /// Zero-width and formatting-control codepoints that should not appear
 /// in scripture body. Excludes legitimately-used joiners — callers
 /// supply their own script-aware allow-list for ZWNJ / ZWJ.

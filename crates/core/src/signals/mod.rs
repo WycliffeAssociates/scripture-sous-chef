@@ -35,6 +35,7 @@ pub const ALL_RULE_IDS: &[crate::diagnostics::RuleId] = &[
     lexical::RARE_WORD_CLUSTER,
     positional::SENTENCE_START_CASE,
     positional::SENTENCE_FINAL_PUNCT,
+    positional::UNEXPECTED_SENTENCE_END,
     source_relative::PROPORTIONALITY,
     source_relative::COPY_THROUGH,
     punctuation::SPACING_CONVENTION,

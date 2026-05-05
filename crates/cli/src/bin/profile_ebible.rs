@@ -46,7 +46,9 @@ fn main() {
         match a.as_str() {
             "--ebible-dir" => ebible_dir = iter.next().map(PathBuf::from),
             "--out" => out_path = iter.next().map(PathBuf::from),
-            "--min-nt-verses" => min_nt = iter.next().and_then(|s| s.parse().ok()).unwrap_or(min_nt),
+            "--min-nt-verses" => {
+                min_nt = iter.next().and_then(|s| s.parse().ok()).unwrap_or(min_nt)
+            }
             _ => {
                 eprintln!("unknown arg: {a}");
                 std::process::exit(2);
@@ -77,7 +79,11 @@ fn main() {
         })
         .collect();
     let nt_lines = nt_mask.iter().filter(|b| **b).count();
-    eprintln!("[ebible] vref.txt has {} lines; {} are NT", vref.len(), nt_lines);
+    eprintln!(
+        "[ebible] vref.txt has {} lines; {} are NT",
+        vref.len(),
+        nt_lines
+    );
 
     eprintln!("[ebible] loading metadata");
     let lang_details = read_lang_details(&metadata_dir.join("lang_details.tsv"));
@@ -107,9 +113,7 @@ fn main() {
         }
         // also try matching by suffix after first dash (paratext id alone)
         for (file, entry) in meta_by_file.iter_mut() {
-            if file.ends_with(&format!("-{}.txt", translation_id))
-                && entry.script_meta.is_empty()
-            {
+            if file.ends_with(&format!("-{}.txt", translation_id)) && entry.script_meta.is_empty() {
                 entry.script_meta = script_meta.clone();
                 entry.direction = direction.clone();
             }
@@ -142,7 +146,11 @@ fn main() {
     let mut script_rollup: BTreeMap<String, Vec<Profile>> = BTreeMap::new();
 
     for path in &corpus_files {
-        let fname = path.file_name().and_then(|s| s.to_str()).unwrap_or("").to_string();
+        let fname = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_string();
         let meta = meta_by_file.get(&fname).cloned().unwrap_or_default();
 
         if meta.nt_verses_expected < min_nt {
@@ -194,10 +202,7 @@ fn main() {
         } else {
             meta.family.clone()
         };
-        family_rollup
-            .entry(family_key)
-            .or_default()
-            .push(p.clone());
+        family_rollup.entry(family_key).or_default().push(p.clone());
         script_rollup
             .entry(p.script_majority.clone())
             .or_default()
@@ -246,11 +251,17 @@ fn main() {
     );
 
     eprintln!();
-    eprintln!("=== Per-family rollup ({} families) ===", family_rollup.len());
+    eprintln!(
+        "=== Per-family rollup ({} families) ===",
+        family_rollup.len()
+    );
     print_rollup(&family_rollup, "family");
 
     eprintln!();
-    eprintln!("=== Per-script rollup ({} scripts) ===", script_rollup.len());
+    eprintln!(
+        "=== Per-script rollup ({} scripts) ===",
+        script_rollup.len()
+    );
     print_rollup(&script_rollup, "script");
 
     eprintln!();
@@ -421,7 +432,11 @@ fn print_rollup(rollup: &BTreeMap<String, Vec<Profile>>, kind: &str) {
         let n = profiles.len() as f64;
         let tpt: f64 = profiles.iter().map(|p| p.tokens_per_type).sum::<f64>() / n;
         let bg: f64 = profiles.iter().map(|p| p.bigram_hapax_ratio).sum::<f64>() / n;
-        let ct: f64 = profiles.iter().map(|p| p.char_trigram_hapax_ratio).sum::<f64>() / n;
+        let ct: f64 = profiles
+            .iter()
+            .map(|p| p.char_trigram_hapax_ratio)
+            .sum::<f64>()
+            / n;
         let mut analytic = 0;
         let mut fusional = 0;
         let mut agglutinative = 0;
@@ -451,6 +466,9 @@ fn truncate(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         s.to_string()
     } else {
-        s.chars().take(max - 1).chain(std::iter::once('…')).collect()
+        s.chars()
+            .take(max - 1)
+            .chain(std::iter::once('…'))
+            .collect()
     }
 }

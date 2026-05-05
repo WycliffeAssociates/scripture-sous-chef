@@ -2,7 +2,10 @@
 //! text — no heap copy of the matched substring, and the consumer can
 //! highlight it directly without recomputing offsets.
 
+use crate::analysis::lexicon::LexiconStats;
+use crate::context::BootstrapStats;
 use crate::sid::Sid;
+use crate::signals::positional::{SentenceStartCaseStats, UnexpectedSentenceEndStats};
 use crate::signals::source_relative::ProportionalityStats;
 
 /// Stable rule identifier. Static string so `(RuleId, Sid)` tuples are
@@ -48,6 +51,14 @@ pub struct Finding<'a> {
     pub span: &'a str,
     /// Human-readable. Signals should keep this terse — UI layers format.
     pub message: String,
+    /// Per-finding evidence in [0, 1]. Statistical rules grade their
+    /// own findings — a Dunning LLR finding with g2=6677 emits
+    /// evidence near 1.0; one at the threshold emits ~0.5. Hygiene
+    /// rules (intrinsic, no grading) emit 1.0. The aggregator
+    /// multiplies this by the rule's policy weight, so per-finding
+    /// confidence translates directly into per-cluster ranking.
+    /// See `analysis::evidence` for helpers.
+    pub evidence: f64,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -88,7 +99,11 @@ impl<'a> Diagnostics<'a> {
 #[derive(Debug, Clone, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct AnalyzeStats {
+    pub bootstrap: Option<BootstrapStats>,
     pub proportionality: Option<ProportionalityStats>,
+    pub sentence_start_case: Option<SentenceStartCaseStats>,
+    pub unexpected_sentence_end: Option<UnexpectedSentenceEndStats>,
+    pub lexicon: Option<LexiconStats>,
     // Add a field per stat-bearing rule. Hygiene rules do not appear
     // here; they never populate stats.
 }

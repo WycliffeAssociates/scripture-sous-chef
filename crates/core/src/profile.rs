@@ -184,5 +184,9 @@ pub fn sid_coverage(source: &VerseMap, target: &VerseMap) -> Coverage {
 }
 
 fn ratio(num: usize, denom: usize) -> f64 {
-    if denom == 0 { 0.0 } else { num as f64 / denom as f64 }
+    if denom == 0 {
+        0.0
+    } else {
+        num as f64 / denom as f64
+    }
 }

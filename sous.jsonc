@@ -1,0 +1,210 @@
+{
+	// ─────────────────────────────────────────────────────────────────
+	// Top-level sibling 1 of 3: γ aggregation layer.
+	//
+	// Controls how individual rule "ticks" are combined into per-Sid
+	// clusters and ranked. Anything you don't override falls back to
+	// the engine's compiled-in default.
+	// ─────────────────────────────────────────────────────────────────
+	"aggregation": {
+		// Score at or above which a cluster is tagged `surfaced` and
+		// shown in the CLI's default output. Below this, the cluster
+		// still appears in the JSON (with `surfaced: false`) for audit,
+		// but is hidden from the human-facing list.
+		//
+		// Raise this to be more selective ("show me only high-confidence
+		// findings"); lower it to see weaker single-rule signals.
+		"min_surface_score": 1.0,
+
+		// Default per-finding weight for any rule not in
+		// `rules.<id>.weight`. Almost always leave at 1.0; tune the
+		// per-rule weight instead.
+		"default_weight": 1.0
+	},
+
+	// ─────────────────────────────────────────────────────────────────
+	// Top-level sibling 2 of 3: discourse-convention overrides.
+	//
+	// If your translation project already knows its conventions, you
+	// can declare them here. The engine then skips the relevant
+	// statistical learning step and uses your declarations as ground
+	// truth. The learned values still appear in the stats JSON so you
+	// can see whether the corpus's data agrees with you.
+	// ─────────────────────────────────────────────────────────────────
+	"discourse": {
+		// Punctuation clusters (single chars or short strings like
+		// ". ", "?", "!\" ") to treat as sentence terminators without
+		// statistical learning. When set, both `pos.sentence-start-case`
+		// and `pos.unexpected-sentence-end` use this set directly.
+		//
+		// Default: not set (engine learns from corpus).
+		// Common English: [". ", "! ", "? ", ".\" ", "?\" ", "!\" "]
+		"terminal_punctuation": null,
+
+		// Punctuation clusters after which a lowercase follower is
+		// *intentional* (typically dialogue tags like
+		// `said, "X," she replied` where the lowercase "she" is normal).
+		// Suppresses `pos.sentence-start-case` findings whose
+		// predecessor cluster matches one of these strings.
+		//
+		// Default: not set.
+		// Common English: [",\" ", ",' "]
+		"dialogue_tag_punctuation": null
+	},
+
+	// ─────────────────────────────────────────────────────────────────
+	// Top-level sibling 3 of 3: per-rule configuration.
+	//
+	// Each top-level key is a rule ID. Common fields (any rule):
+	//   "enabled": true | false
+	//   "severity": "info" | "warn" | "error"  (overrides rule default)
+	//   "exceptions": ["GEN 1:1", "REV 22:21"]  (suppress for these Sids)
+	//   "weight": 1.0   (per-rule aggregation weight override)
+	//   "params": { ... }  (rule-specific numeric thresholds)
+	// ─────────────────────────────────────────────────────────────────
+	"rules": {
+		// ─── Hygiene rules ─────────────────────────────────────────────
+		// Always-wrong patterns. No corpus statistics, no params.
+		// Maximum-weight findings; surface alone.
+
+		"hyg.tab-in-body": {
+			"enabled": true,
+			"severity": "warn",
+			"exceptions": []
+		},
+		"hyg.control-chars": {
+			"enabled": true,
+			"severity": "warn",
+			"exceptions": []
+		},
+		"hyg.zero-width-misuse": {
+			"enabled": true,
+			"severity": "warn",
+			"exceptions": []
+		},
+		"hyg.empty-verse": {
+			"enabled": true,
+			"severity": "warn",
+			"exceptions": []
+		},
+
+		// ─── Source-relative rules ─────────────────────────────────────
+		// Run only when --source <dir> is supplied to the CLI.
+
+		"src.proportionality": {
+			"enabled": true,
+			"params": {
+				// MAD-based robust z-score thresholds. A target verse whose
+				// length-ratio (target / source) deviates from the per-book
+				// OR per-corpus median by more than these many MAD-units is
+				// flagged. Higher = stricter (fewer findings).
+				//
+				// Use `z_threshold` to set both at once, or split them when
+				// you want different sensitivity for "too long" vs "too short."
+				"z_upper": 3.0,
+				"z_lower": 3.0
+			}
+		},
+
+		// ─── Positional / discourse rules ──────────────────────────────
+
+		"pos.sentence-start-case": {
+			"enabled": true,
+			"severity": "info",
+			"weight": 1.0,
+			"params": {
+				// Of the word-starts preceded by a candidate trigger
+				// cluster, this fraction must be uppercase for the cluster
+				// to qualify as a learned trigger. **The single most
+				// impactful knob for tuning false positives.** Bump toward
+				// 0.95 to be stricter; lower toward 0.7 to surface weaker
+				// signals.
+				"trigger_upper_rate_min": 0.85,
+
+				// Dunning −2 log λ minimum for a candidate trigger to be
+				// considered statistically real. 10.83 corresponds to
+				// p < 0.001 under χ²₁. Almost always leave alone — change
+				// `trigger_upper_rate_min` instead.
+				"g2_threshold": 10.83,
+
+				// ── Lexicon thresholds (shared with USE) ──
+				// The lexicon classifies each word as a proper-noun
+				// candidate (IntrinsicUpper), case-neutral (IntrinsicLower),
+				// ambiguous, or indeterminate. SSC and USE both filter their
+				// Dunning input through this classification.
+
+				// Minimum mid-flow observations before classifying a word.
+				// Below this, the word is `Indeterminate` and excluded
+				// from all downstream Dunning math.
+				"intrinsic_min_obs": 5,
+
+				// Mid-flow upper-initial rate at or above which a word is
+				// `IntrinsicUpper` (a proper-noun candidate).
+				"intrinsic_upper_rate_min": 0.95,
+
+				// Mid-flow upper-initial rate at or below which a word is
+				// `IntrinsicLower` (case-neutral).
+				"intrinsic_lower_rate_max": 0.05,
+
+				// ── Span-pairing corruption guard ──
+				// Maximum number of Sid (verse) boundaries an unresolved
+				// open punctuation may span before being silently pruned
+				// as corruption. Surfaces as an `UnclosedOpen` anomaly
+				// anchored to start_sid → end_sid in the message.
+				// Real quotes spanning more than ~30 verses don't exist
+				// in scripture; lowering this aggressively (e.g. 5) is
+				// safer if your corpus has straight-quote ambiguity.
+				"max_span_sids": 30,
+
+				// ── Anti-trigger learning (for relaxed lexicon pass) ──
+				// Maximum upper-rate after a punctuation cluster for the
+				// cluster to be classified "non-terminal" and admitted
+				// back into the lexicon's counted pool. Lower = stricter.
+				"non_terminal_upper_rate_max": 0.15
+			}
+		},
+
+		"pos.unexpected-sentence-end": {
+			"enabled": true,
+			"severity": "info",
+			// Sub-1.0 weight: a USE finding alone sits below the
+			// surface threshold; it surfaces only when corroborated
+			// by another rule firing in the same Sid.
+			"weight": 0.5,
+			"params": {
+				// Zipf gate. Only evaluate words with this many or more
+				// total occurrences. Targets the head of the distribution —
+				// function words — where "never terminal" is a reliable
+				// claim. Below this, the rule skips the word entirely.
+				"min_observations": 20,
+
+				// Maximum `p_terminal` (fraction of occurrences immediately
+				// before a learned terminal) for a word to qualify as
+				// "never-terminal." Low = stricter. The learned word list
+				// and the actual rates are visible under
+				// `unexpected_sentence_end.never_terminal_words` in the
+				// stats JSON.
+				"never_terminal_rate_max": 0.001,
+
+				// Same Dunning gate as SSC — see above.
+				"g2_threshold": 10.83,
+
+				// The trigger rate that defines "terminal" — same gate as
+				// SSC. Both rules consume the same trigger set so their
+				// notion of "what counts as a sentence terminator" stays
+				// consistent.
+				"trigger_upper_rate_min": 0.85
+			}
+		},
+
+		// ─── Punctuation rules ─────────────────────────────────────────
+
+		"punct.paired-balance": {
+			// Surfaces orphaned/mismatched/unclosed open punctuation
+			// (parens, quotes, brackets) discovered during the single-pass
+			// SpanIndex build. Reads from the index — no separate scan.
+			"enabled": true,
+			"severity": "warn"
+		}
+	}
+}
