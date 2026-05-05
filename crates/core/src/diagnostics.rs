@@ -212,6 +212,7 @@ fn hash_u32(hash: &mut u64, value: u32) {
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct AnalyzeStats {
     pub bootstrap: Option<BootstrapStats>,
+    pub ncd_texture: Option<crate::analysis::compression::NcdStats>,
     pub proportionality: Option<ProportionalityStats>,
     pub sentence_start_case: Option<SentenceStartCaseStats>,
     pub unexpected_sentence_end: Option<UnexpectedSentenceEndStats>,

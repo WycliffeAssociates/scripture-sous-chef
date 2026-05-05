@@ -4,8 +4,10 @@
 
 pub mod association;
 pub mod bktree;
+pub mod compression;
 pub mod evidence;
 pub mod kn;
+pub mod lemma_cluster;
 pub mod lexicon;
 pub mod mad;
 #[cfg(feature = "serde")]

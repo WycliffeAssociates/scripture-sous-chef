@@ -43,6 +43,8 @@ pub fn default_rules() -> Vec<Box<dyn Rule>> {
         Box::new(signals::hygiene::ControlChars),
         Box::new(signals::hygiene::ZeroWidthMisuse),
         Box::new(signals::hygiene::EmptyVerse),
+        // Orthographic / character-level
+        Box::new(signals::orthographic::NcdTexture),
         // Source-relative
         Box::new(signals::source_relative::Proportionality),
         // Positional / discourse

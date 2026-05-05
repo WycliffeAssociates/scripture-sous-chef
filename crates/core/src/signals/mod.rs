@@ -23,6 +23,7 @@ pub const ALL_RULE_IDS: &[crate::diagnostics::RuleId] = &[
     hygiene::EMPTY_VERSE,
     // Statistical — corpus-calibrated, observe-then-flag
     orthographic::CHAR_LM_SURPRISAL,
+    orthographic::NCD_TEXTURE,
     orthographic::NFC_SANITY,
     orthographic::SCRIPT_MIXING,
     lexical::WORD_HAPAX_BURST,

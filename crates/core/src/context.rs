@@ -3,6 +3,10 @@
 //! Keep expensive discourse/lexicon/bootstrap work here instead of
 //! letting each positional rule rebuild its own private view.
 
+use std::collections::BTreeMap;
+
+use crate::analysis::compression::{NcdConfig, NcdModel};
+use crate::analysis::lemma_cluster::{LemmaClusterConfig, LemmaClusterStats, LemmaClusters};
 use crate::analysis::lexicon::{Lexicon, LexiconConfig};
 use crate::diagnostics::RuleId;
 use crate::discourse::{DEFAULT_MAX_SPAN_SIDS, Discourse, SpanIndex, SpanIndexConfig};
@@ -24,6 +28,8 @@ pub struct BootstrapStats {
     pub n_safe_clusters: usize,
     pub safe_clusters: Vec<TriggerStats>,
     pub evaluated_clusters: Vec<TriggerStats>,
+    pub morphology: MorphologyStats,
+    pub lemma_clusters: LemmaClusterStats,
 }
 
 #[derive(Debug, Clone)]
@@ -33,6 +39,9 @@ pub struct AnalysisContext {
     pub strict_lexicon: Lexicon,
     pub lexicon: Lexicon,
     pub span_index: SpanIndex,
+    pub ncd_model: NcdModel,
+    pub lemma_clusters: LemmaClusters,
+    pub morphology: MorphologyStats,
     pub bootstrap_stats: BootstrapStats,
 }
 
@@ -57,6 +66,10 @@ impl AnalysisContext {
         let span_index = discourse.span_index_with_config(SpanIndexConfig {
             max_span_sids: config.max_span_sids,
         });
+        let ncd_model = NcdModel::build(&project.target, config.ncd);
+        let lemma_clusters = LemmaClusters::build(&project.target, config.lemma_clusters);
+        let morphology = MorphologyStats::from_project(project);
+        let lemma_cluster_stats = lemma_clusters.stats();
 
         let mut evaluated_clusters: Vec<_> = clusters.into_values().collect();
         evaluated_clusters.sort_by(|a, b| {
@@ -82,6 +95,8 @@ impl AnalysisContext {
             n_safe_clusters: safe_cluster_stats.len(),
             safe_clusters: safe_cluster_stats,
             evaluated_clusters,
+            morphology: morphology.clone(),
+            lemma_clusters: lemma_cluster_stats,
         };
 
         Self {
@@ -90,7 +105,70 @@ impl AnalysisContext {
             strict_lexicon,
             lexicon,
             span_index,
+            ncd_model,
+            lemma_clusters,
+            morphology,
             bootstrap_stats,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+pub struct MorphologyStats {
+    pub n_word_tokens: usize,
+    pub n_word_types: usize,
+    pub n_hapax_types: usize,
+    pub type_token_ratio: f64,
+    pub hapax_ratio: f64,
+    pub char_signal_weight: f64,
+    pub word_signal_weight: f64,
+}
+
+impl MorphologyStats {
+    /// Infer how much the engine should trust word-level vs character-level
+    /// evidence for this corpus.
+    ///
+    /// In a highly inflected/agglutinative corpus, many perfectly valid word
+    /// forms appear once. Word n-gram "rarity" becomes a property of the
+    /// language, not a typo signal. Character-level rules (NCD, char-LM) keep
+    /// more usable evidence because affixes and spelling habits repeat inside
+    /// words even when whole surface forms do not.
+    pub fn from_project(project: &Project<'_>) -> Self {
+        let mut counts: BTreeMap<String, u32> = BTreeMap::new();
+        for verse in project.target.verses.values() {
+            for (_, token_text) in verse.tokens_of(crate::verse::TokenKind::Word) {
+                let word: String = token_text
+                    .chars()
+                    .filter(|c| c.is_alphabetic())
+                    .flat_map(char::to_lowercase)
+                    .collect();
+                if !word.is_empty() {
+                    *counts.entry(word).or_default() += 1;
+                }
+            }
+        }
+
+        let n_word_tokens = counts.values().map(|count| *count as usize).sum();
+        let n_word_types = counts.len();
+        let n_hapax_types = counts.values().filter(|count| **count == 1).count();
+        let type_token_ratio = ratio(n_word_types, n_word_tokens);
+        let hapax_ratio = ratio(n_hapax_types, n_word_types);
+        let morphologically_sparse = type_token_ratio > 0.10 && hapax_ratio > 0.60;
+        let (char_signal_weight, word_signal_weight) = if morphologically_sparse {
+            (1.25, 0.65)
+        } else {
+            (1.0, 1.0)
+        };
+
+        Self {
+            n_word_tokens,
+            n_word_types,
+            n_hapax_types,
+            type_token_ratio,
+            hapax_ratio,
+            char_signal_weight,
+            word_signal_weight,
         }
     }
 }
@@ -101,6 +179,8 @@ struct BootstrapConfig {
     non_terminal_upper_rate_max: f64,
     g2_threshold: f64,
     max_span_sids: usize,
+    ncd: NcdConfig,
+    lemma_clusters: LemmaClusterConfig,
 }
 
 impl BootstrapConfig {
@@ -122,7 +202,31 @@ impl BootstrapConfig {
             max_span_sids: param(project, "max_span_sids")
                 .map(|v| v as usize)
                 .unwrap_or(DEFAULT_MAX_SPAN_SIDS),
+            ncd: NcdConfig {
+                max_training_bytes: param(project, "ncd_max_training_bytes")
+                    .map(|v| v as usize)
+                    .unwrap_or(crate::analysis::compression::DEFAULT_TRAINING_BYTES),
+            },
+            lemma_clusters: LemmaClusterConfig {
+                min_family_size: param(project, "lemma_min_family_size")
+                    .map(|v| v as usize)
+                    .unwrap_or(crate::analysis::lemma_cluster::DEFAULT_MIN_FAMILY_SIZE),
+                min_stem_chars: param(project, "lemma_min_stem_chars")
+                    .map(|v| v as usize)
+                    .unwrap_or(crate::analysis::lemma_cluster::DEFAULT_MIN_STEM_CHARS),
+                min_token_count: param(project, "lemma_min_token_count")
+                    .map(|v| v as u32)
+                    .unwrap_or(crate::analysis::lemma_cluster::DEFAULT_MIN_TOKEN_COUNT),
+            },
         }
+    }
+}
+
+fn ratio(num: usize, denom: usize) -> f64 {
+    if denom == 0 {
+        0.0
+    } else {
+        num as f64 / denom as f64
     }
 }
 

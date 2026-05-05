@@ -78,5 +78,6 @@ fn run<'src>(
         }
         diags.push(f);
     }
+    stats.lexicon = Some(context.lexicon.stats());
     (diags, stats)
 }
