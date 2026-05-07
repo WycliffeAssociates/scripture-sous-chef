@@ -2,52 +2,60 @@
 //!
 //! Per ADR 0003 / 0007 and §3.2 of the plan: when a project has a
 //! source corpus loaded, ask "is this rare target token *explained*
-//! by something on the source side?" Bibles especially have their
-//! false-positive mass dominated by transliterated proper nouns
-//! (`Davidi` ↔ `David`), place names, and theological loanwords.
-//! Catching them here prevents the engine from drowning the user in
-//! proper-noun candidates the very first time triage runs, before
-//! any labelled-snowball loop has had a chance to learn.
+//! by something rare on the source side?" The shape of the question
+//! is "we've never seen this target word before — is there anything
+//! rare and similar in the corresponding source verse?" If yes, the
+//! target rarity is partially explained by the parallel source
+//! rarity (technical term, theological vocabulary, transliterated
+//! rare proper noun); the rule downweights its suspicion.
+//!
+//! # Scope (clarified 2026-05-07)
+//!
+//! This rule is **rare-meets-rare**. Both the target token and the
+//! candidate matching token in the source verse must be rare in
+//! their respective corpora. It catches:
+//!
+//! - Rare proper nouns aligned across corpora (Bezaleel-class):
+//!   `Bezaleel` appears once in source, target has a transliterated
+//!   form once in target, BK ≤ 2 apart.
+//! - Theological/technical vocabulary that's parallel-rare on both
+//!   sides.
+//!
+//! It deliberately **does not** catch the common-proper-noun
+//! consistency case (target `Davidi` ↔ well-attested source
+//! `David`). That belongs to a separate "proper-noun consistency"
+//! rule which observes that David is overwhelmingly attested in
+//! source and asks whether each David-occurrence has a corresponding
+//! target-side proper noun. That rule is future work.
 //!
 //! # Per-verse states (placeholders, see plan §8 #1)
 //!
 //! For each rare target token's verse occurrence we map the
 //! corresponding source verse to one of three states:
 //!
-//! | Source verse state                                           | Suspicion factor |
-//! | ------------------------------------------------------------ | ---------------- |
-//! | Target uppercase-shaped + capitalized source token at BK ≤ 2 | 0.0              |
-//! | Source verse has any rare source token (no BK match above)   | 0.3              |
-//! | Source verse unremarkable (no rare tokens, no BK match)      | 0.7              |
-//!
-//! "Uppercase-shaped" means the surface form starts with an uppercase
-//! character in the verse text — NOT the lexicon's
-//! `CaseClass::IntrinsicUpper`, which requires ≥5 observations
-//! (`intrinsic_min_obs`) to fire and would never classify a hapax as
-//! a proper noun. Surface uppercase is what we actually want here:
-//! `Davidi` is a hapax but it's still capitalized in the verse text,
-//! and `David` is well-attested in source but still capitalized.
+//! | Source verse state                                       | Suspicion factor |
+//! | -------------------------------------------------------- | ---------------- |
+//! | Rare source token present at BK-distance ≤ 2 to target   | 0.0              |
+//! | Source verse has any rare token (no BK match above)      | 0.3              |
+//! | Source verse unremarkable (no rare tokens)               | 0.7              |
 //!
 //! Aggregation across multiple verse occurrences of the same target
-//! form: **min** (most-exonerating wins). A single `Davidi` ↔ `David`
-//! match in any verse is enough to exonerate the target form across
-//! the project. Real proper nouns appear consistently; this is the
-//! right policy.
+//! form: **min** (most-exonerating wins). A single rare-meets-rare
+//! BK match in any verse is enough to exonerate the target form.
 //!
 //! # Abstain semantics (ADR 0003)
 //!
 //! No source corpus loaded → factor is dropped from the per-token
-//! Noisy-OR product entirely (returns 0.0, the Noisy-OR identity).
-//! It does NOT return 0.7. Returning 0.7 unconditionally for every
-//! token in non-source projects would floor every score at ≥0.7 once
-//! Noisy-OR'd against the other factors.
+//! Noisy-OR product entirely (returns absence, the Noisy-OR
+//! identity). It does NOT return 0.7. Returning 0.7 unconditionally
+//! for every token in non-source projects would floor every score
+//! at ≥0.7 once Noisy-OR'd against the other factors.
 //!
 //! # Edit-distance match (ADR 0007 amendment)
 //!
-//! `strsim::damerau_levenshtein` against the per-source-verse set of
-//! capitalized tokens. No BK-tree built; the per-verse candidate set
-//! is too small for the BK-tree's sublinear-query advantage to
-//! matter.
+//! `strsim::damerau_levenshtein` against the per-source-verse rare
+//! token set. No BK-tree built; the per-verse candidate set is too
+//! small for the BK-tree's sublinear-query advantage to matter.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -56,21 +64,18 @@ use crate::project::{NamedCorpus, Project};
 use crate::sid::Sid;
 use crate::verse::TokenKind;
 
+/// Per-source-verse snapshot used during the per-target-token lookup.
 #[derive(Debug, Clone, Default)]
 struct SourceVerseSnapshot {
     /// Lowercased source tokens that are rare per `rare_count_max`.
     rare_lower: BTreeSet<String>,
-    /// Source tokens whose surface form starts with an uppercase
-    /// character (BK-match candidates for proper-noun pairing). Stored
-    /// lowercased because BK comparison is case-insensitive.
-    capitalized_lower: BTreeSet<String>,
 }
 
 /// Compute per-form source co-rarity factors. Returns a map keyed by
 /// lowercased target form. Forms not in the map are the caller's
-/// responsibility to handle as "abstain" (factor 0.0) — that's the
-/// case both for "no source loaded" and for "this form has no
-/// verse-level evidence yet."
+/// responsibility to handle as "abstain" (factor dropped from
+/// Noisy-OR) — that's the case both for "no source loaded" and for
+/// "this form has no verse-level evidence yet."
 pub fn compute_factors_per_form(
     project: &Project<'_>,
     rare_target_forms: &BTreeSet<String>,
@@ -91,11 +96,9 @@ pub fn compute_factors_per_form(
 
     let mut per_form_min: HashMap<String, f64> = HashMap::new();
     for (sid, target_verse) in &project.target.verses {
-        // Only verses that have a corresponding source verse contribute.
-        // Target verses with no source pair leave the form's factor
-        // untouched; if no other verse contributes, the form ends up
-        // with no entry, which the caller treats as abstain.
         if !source.verses.contains_key(sid) {
+            // Target verse has no source pair. Forms occurring only
+            // in such verses end up with no entry → caller abstains.
             continue;
         }
         let source_snapshot = per_source_verse.get(sid).cloned().unwrap_or_default();
@@ -104,12 +107,7 @@ pub fn compute_factors_per_form(
             if !rare_target_forms.contains(&form_lower) {
                 continue;
             }
-            let target_uppercase_shaped = first_grapheme_is_uppercase(token_text);
-            let factor = factor_for_verse(
-                &form_lower,
-                target_uppercase_shaped,
-                &source_snapshot,
-            );
+            let factor = factor_for_verse(&form_lower, &source_snapshot);
             per_form_min
                 .entry(form_lower)
                 .and_modify(|v| {
@@ -123,23 +121,16 @@ pub fn compute_factors_per_form(
     per_form_min
 }
 
-fn factor_for_verse(
-    target_form_lower: &str,
-    target_uppercase_shaped: bool,
-    source: &SourceVerseSnapshot,
-) -> f64 {
-    if target_uppercase_shaped {
-        for source_capitalized in &source.capitalized_lower {
-            if strsim::damerau_levenshtein(target_form_lower, source_capitalized) <= 2 {
-                return 0.0;
-            }
+fn factor_for_verse(target_form_lower: &str, source: &SourceVerseSnapshot) -> f64 {
+    if source.rare_lower.is_empty() {
+        return 0.7;
+    }
+    for source_rare in &source.rare_lower {
+        if strsim::damerau_levenshtein(target_form_lower, source_rare) <= 2 {
+            return 0.0;
         }
     }
-    if source.rare_lower.is_empty() {
-        0.7
-    } else {
-        0.3
-    }
+    0.3
 }
 
 fn snapshot_source_verses(
@@ -155,9 +146,6 @@ fn snapshot_source_verses(
             if form_lower.is_empty() {
                 continue;
             }
-            if first_grapheme_is_uppercase(token_text) {
-                snapshot.capitalized_lower.insert(form_lower.clone());
-            }
             let count = source_lexicon
                 .words
                 .get(&form_lower)
@@ -167,20 +155,11 @@ fn snapshot_source_verses(
                 snapshot.rare_lower.insert(form_lower);
             }
         }
-        if !snapshot.rare_lower.is_empty() || !snapshot.capitalized_lower.is_empty() {
+        if !snapshot.rare_lower.is_empty() {
             out.insert(*sid, snapshot);
         }
     }
     out
-}
-
-fn first_grapheme_is_uppercase(text: &str) -> bool {
-    use unicode_segmentation::UnicodeSegmentation;
-    text.graphemes(true)
-        .next()
-        .and_then(|g| g.chars().next())
-        .map(|c| c.is_uppercase())
-        .unwrap_or(false)
 }
 
 fn lowercase_normalize(text: &str) -> String {
@@ -236,8 +215,8 @@ mod tests {
 
     /// Body verses use a fixed phrase so non-outlier tokens are
     /// well-attested in BOTH corpora. The outlier verse pair contains
-    /// the rare target token on one side and the proper-noun match on
-    /// the other.
+    /// the rare target token on one side and the rare match on the
+    /// other.
     fn body(name: &str, count: u16, body_text: &str, outlier_sid: Sid, outlier_text: &str)
         -> NamedCorpus<'static>
     {
@@ -249,10 +228,13 @@ mod tests {
         corpus(name, verses)
     }
 
-    /// Surface-form uppercase target token + capitalized source token
-    /// at BK distance 1 (`Davidi` ↔ `David`). Factor saturates to 0.0.
+    /// Both target form and a source token in the corresponding source
+    /// verse are rare; their Damerau-Levenshtein distance is ≤ 2. The
+    /// factor saturates to 0.0 (rare-meets-rare alignment exonerates).
+    /// This is the Bezaleel-class case from the doc — a rare proper
+    /// noun appearing once on each side, transliterated.
     #[test]
-    fn proper_noun_bk_match_emits_zero() {
+    fn rare_meets_rare_bk_match_emits_zero() {
         let outlier = sid("GEN", 5, 1);
         let target = body("t", 200, "the lord said unto the people", outlier, "Davidi went forth in the morning");
         let source = body("s", 200, "the lord said unto the people", outlier, "David went forth in the morning");
@@ -263,15 +245,12 @@ mod tests {
         assert_eq!(factors.get("davidi"), Some(&0.0));
     }
 
-    /// Target rare token has no proper-noun shape (lowercase) in target
-    /// verse text. Source verse has rare tokens but no BK match. Factor
-    /// = 0.3 — co-rarity present, no proper-noun exoneration.
+    /// Source verse has rare tokens but none match the target via
+    /// BK-distance ≤ 2. Factor = 0.3 (co-rare context, no alignment).
     #[test]
-    fn co_rare_no_proper_noun_match_emits_three_tenths() {
+    fn co_rare_no_bk_match_emits_three_tenths() {
         let outlier = sid("GEN", 5, 1);
         let target = body("t", 200, "the lord said unto the people", outlier, "qzxqzx walked at dawn");
-        // Source outlier: "kabsheel" is rare and lowercase (no proper-
-        // noun shape, no BK candidate); the rest are well-attested.
         let source = body("s", 200, "the lord said unto the people", outlier, "kabsheel the lord said unto");
         let project = project_of(target, Some(source));
         let mut rare = BTreeSet::new();
@@ -295,7 +274,7 @@ mod tests {
     }
 
     /// No source loaded → returns empty map. Caller treats absent
-    /// entries as abstain (factor 0.0 / dropped from Noisy-OR).
+    /// entries as abstain (factor dropped from Noisy-OR product).
     #[test]
     fn empty_when_no_source_loaded() {
         let target = corpus("t", vec![(sid("GEN", 1, 1), "Davidi went forth")]);

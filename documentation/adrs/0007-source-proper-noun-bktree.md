@@ -6,6 +6,10 @@
 
 ## Amendment 2026-05-07 (during Phase A #4 implementation)
 
+Two corrections from the original ADR.
+
+### 1. Brute force, not BK-tree
+
 The original ADR specified a BK-tree over rare uppercase source tokens
 ("the codebase already has `analysis/bktree.rs`"). Implementation review
 revealed `analysis/bktree.rs` is a doc stub — "Not yet implemented." The
@@ -14,14 +18,43 @@ codebase actually does its existing edit-distance work (in
 directly, no BK-tree.
 
 At this scale, brute-force is the right tool: per-target-token query
-runs against the *intersection* of (a) rare uppercase source tokens
-and (b) tokens present in the corresponding source verse. That set is
-typically 0–3 tokens; the BK-tree's sublinear advantage matters only
-when querying against thousands of candidates per call.
+runs against the per-source-verse rare token set, typically 0–3 tokens.
+The BK-tree's sublinear advantage matters only when querying against
+thousands of candidates per call.
 
 **Revised decision:** use `strsim::damerau_levenshtein` directly,
-brute-forcing over the per-source-verse rare-uppercase token set. No
-BK-tree built. The original semantic threshold (≤ 2) is unchanged.
+brute-forcing over the per-source-verse rare token set. No BK-tree
+built. The original semantic threshold (≤ 2) is unchanged.
+
+### 2. Scope clarification — rare-meets-rare, not common-source-proper-noun
+
+The original ADR's worked example (`Davidi` ↔ `David`) implied the rule
+should match well-attested source proper nouns. Discussion during
+implementation clarified that this conflates two distinct workflows:
+
+- **Workflow 1 — Proper-noun consistency.** "We have a known proper
+  noun (David, Jesus, Moses) that's overwhelmingly attested and
+  capitalized in source. For each occurrence, does target have a
+  corresponding consistent transliteration?" This is the David/Davidi
+  case. It needs the source lexicon's `IntrinsicUpper` classification
+  (≥5 observations) and a verse-by-verse target-side audit. **It is a
+  separate future rule, NOT source_co_rarity.**
+
+- **Workflow 2 — Rare-meets-rare exoneration.** "Target has a rare token
+  in some verse. Is there anything rare and similar in the corresponding
+  source verse? If yes, the parallel rarity exonerates — technical
+  vocabulary, theological term, rare proper noun like Bezaleel." This
+  is what source_co_rarity actually implements.
+
+**Revised decision:** the rule's BK match is between **rare target
+form** and **rare source token** (any case), not between target and a
+classified-or-uppercase candidate. The original ADR's surface-uppercase
+requirement is dropped. Common-proper-noun consistency (David/Davidi)
+is out of scope for this rule and remains future work.
+
+The Bezaleel-class case (rare-source-proper-noun ↔ rare-target-form) is
+covered by the new scope: both sides are rare, BK ≤ 2 → 0.0 saturated
+downweight.
 
 ## Context
 
