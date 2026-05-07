@@ -439,9 +439,24 @@ struct FormSnapshot {
 /// sigmoid centred on the corpus median, with the slope set by the
 /// median absolute deviation.
 ///
-/// At-or-below median: `~0.0..0.5`. Several MADs above: approaches 1.0.
-/// MAD-of-zero (degenerate flat distribution) collapses to 0.5 so we
-/// don't divide by zero or claim spurious confidence.
+/// Temperature applied to the z-score before the logistic. Small
+/// alphabets and tight MAD distributions push z-scores high quickly;
+/// without softening, char_anomaly saturates at 1.0 on extreme
+/// agglutinative corpora (bap-x-rai during Phase A checkpoint). Same
+/// pattern as `analysis::char_ngrams::NGRAM_SIGMOID_TEMPERATURE`.
+const CHAR_ANOMALY_SIGMOID_TEMPERATURE: f64 = 0.5;
+
+/// Hard cap on `sigmoid_against_corpus` output. Mirrors
+/// `analysis::char_ngrams::NGRAM_FACTOR_CAP`: no single Noisy-OR
+/// factor should be able to claim "I'm certain this is suspicious"
+/// on its own. Confidence comes from corroboration; a single factor
+/// at ~1.0 collapses Noisy-OR's ability to differentiate.
+const CHAR_ANOMALY_FACTOR_CAP: f64 = 0.9;
+
+/// At-or-below median: `~0.0..0.5`. Several MADs above: approaches
+/// `CHAR_ANOMALY_FACTOR_CAP` (not 1.0).  MAD-of-zero (degenerate flat
+/// distribution) collapses to 0.5 so we don't divide by zero or claim
+/// spurious confidence.
 fn sigmoid_against_corpus(value: f64, median: f64, mad: f64) -> f64 {
     if !value.is_finite() || !median.is_finite() {
         return 0.0;
@@ -450,7 +465,9 @@ fn sigmoid_against_corpus(value: f64, median: f64, mad: f64) -> f64 {
         return 0.5;
     }
     let z = (value - median) / mad;
-    1.0 / (1.0 + (-z).exp())
+    let scaled = z * CHAR_ANOMALY_SIGMOID_TEMPERATURE;
+    let v = 1.0 / (1.0 + (-scaled).exp());
+    v.clamp(0.0, CHAR_ANOMALY_FACTOR_CAP)
 }
 
 fn noisy_or(values: &[f64]) -> f64 {
