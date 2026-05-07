@@ -9,6 +9,7 @@ use std::process::ExitCode;
 use std::time::Instant;
 
 use ssc_core::aggregate::{AggregationPolicy, aggregate_with_posteriors};
+use ssc_core::analysis::char_ngrams::CharNgramStats;
 use ssc_core::analysis::candidate_families::{
     CandidateFamiliesConfig, CandidateFamily, CandidateFamilies, GeneratorKind,
 };
@@ -735,11 +736,13 @@ fn run_triage(args: Vec<String>) -> ExitCode {
     let discourse = Discourse::build(&project.target);
     let lexicon = Lexicon::build(&discourse, LexiconConfig::default());
     let texture = CompressionTextureModel::build(&project.target, CompressionTextureConfig::default());
+    let ngrams = CharNgramStats::build(lexicon.words.keys().map(String::as_str));
     let clusters = LemmaClusters::build(&project.target, LemmaClusterConfig::default());
 
     let analysis = RareWordsAnalysis::build_with_labels(
         &lexicon,
         &texture,
+        &ngrams,
         Some(&labels),
         RareWordsConfig::default(),
     );

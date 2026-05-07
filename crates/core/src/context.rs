@@ -5,6 +5,7 @@
 
 use std::collections::BTreeMap;
 
+use crate::analysis::char_ngrams::CharNgramStats;
 use crate::analysis::compression::{
     BucketedTextureBaseline, CompressionTextureConfig, CompressionTextureModel,
 };
@@ -45,6 +46,7 @@ pub struct AnalysisContext {
     pub texture_baseline: Option<BucketedTextureBaseline>,
     pub source_texture_model: Option<CompressionTextureModel>,
     pub source_texture_baseline: Option<BucketedTextureBaseline>,
+    pub char_ngram_stats: CharNgramStats,
     pub lemma_clusters: LemmaClusters,
     pub morphology: MorphologyStats,
     pub bootstrap_stats: BootstrapStats,
@@ -81,6 +83,7 @@ impl AnalysisContext {
             }
             None => (None, None),
         };
+        let char_ngram_stats = CharNgramStats::build(lexicon.words.keys().map(String::as_str));
         let lemma_clusters = LemmaClusters::build(&project.target, config.lemma_clusters);
         let morphology = MorphologyStats::from_project(project);
         let lemma_cluster_stats = lemma_clusters.stats();
@@ -123,6 +126,7 @@ impl AnalysisContext {
             texture_baseline,
             source_texture_model,
             source_texture_baseline,
+            char_ngram_stats,
             lemma_clusters,
             morphology,
             bootstrap_stats,

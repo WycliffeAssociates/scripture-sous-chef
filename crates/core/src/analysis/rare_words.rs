@@ -48,6 +48,7 @@
 //! `<corpus>/.sous/events.jsonl`) are the source of truth. This module
 //! only orders the questions.
 
+use crate::analysis::char_ngrams::CharNgramStats;
 use crate::analysis::compression::CompressionTextureModel;
 use crate::analysis::lemma_feedback::LabelledLemmaIndex;
 use crate::analysis::lexicon::{CaseClass, Lexicon};
@@ -119,10 +120,12 @@ pub struct TriageCandidate {
 pub struct TriageEvidence {
     /// Compression-texture ratio normalised against the corpus's
     /// per-token median. Sigmoid-shaped; ~0.5 at the median, climbing
-    /// toward 1.0 for unfamiliar character textures. Currently the
-    /// only signal feeding the suspicion score; more signals will join
-    /// it (source-relative, position) in later passes.
+    /// toward 1.0 for unfamiliar character textures.
     pub character_anomaly: f64,
+    /// Per-token character n-gram backoff: how surprising is this
+    /// token's bigram (and trigram, as tiebreaker) profile against the
+    /// corpus distribution? See `analysis::char_ngrams` and ADR 0004.
+    pub char_ngram_backoff: f64,
     /// Raw compression-texture ratio for the form (pre-normalisation),
     /// recorded so the UI can display it without re-running the model.
     pub raw_compression_ratio: f64,
@@ -160,15 +163,16 @@ impl RareWordsAnalysis {
     pub fn build(
         lexicon: &Lexicon,
         texture: &CompressionTextureModel,
+        ngrams: &CharNgramStats,
         config: RareWordsConfig,
     ) -> Self {
         #[cfg(feature = "serde")]
         {
-            Self::build_with_labels(lexicon, texture, None, config)
+            Self::build_with_labels(lexicon, texture, ngrams, None, config)
         }
         #[cfg(not(feature = "serde"))]
         {
-            Self::build_inner(lexicon, texture, config, &[], &[])
+            Self::build_inner(lexicon, texture, ngrams, config, &[], &[])
         }
     }
 
@@ -187,6 +191,7 @@ impl RareWordsAnalysis {
     pub fn build_with_labels(
         lexicon: &Lexicon,
         texture: &CompressionTextureModel,
+        ngrams: &CharNgramStats,
         index: Option<&LabelledLemmaIndex>,
         config: RareWordsConfig,
     ) -> Self {
@@ -197,12 +202,13 @@ impl RareWordsAnalysis {
             ),
             None => (Vec::new(), Vec::new()),
         };
-        Self::build_inner(lexicon, texture, config, &known_good, &known_bad)
+        Self::build_inner(lexicon, texture, ngrams, config, &known_good, &known_bad)
     }
 
     fn build_inner(
         lexicon: &Lexicon,
         texture: &CompressionTextureModel,
+        ngrams: &CharNgramStats,
         config: RareWordsConfig,
         known_good: &[String],
         known_bad: &[String],
@@ -299,10 +305,12 @@ impl RareWordsAnalysis {
                 .copied()
                 .unwrap_or((global_median, global_mad));
             let character_anomaly = sigmoid_against_corpus(cand.compression, m, d);
-            // Single-signal Noisy-OR collapses to the signal itself,
-            // but keeping it expressed this way means new signals can
-            // drop in without restructuring (just append to the slice).
-            let suspicion = noisy_or(&[character_anomaly]);
+            let char_ngram_backoff = ngrams.factor(&cand.form);
+            // Per ADR 0001 the per-token Noisy-OR is the chassis. The
+            // independence note in plan §3.1 acknowledges character
+            // anomaly and char-ngram backoff overlap somewhat; that's
+            // accepted for Phase A and revisited at the checkpoint.
+            let suspicion = noisy_or(&[character_anomaly, char_ngram_backoff]);
 
             candidates.push(TriageCandidate {
                 form: cand.form.clone(),
@@ -310,6 +318,7 @@ impl RareWordsAnalysis {
                 suspicion,
                 evidence: TriageEvidence {
                     character_anomaly,
+                    char_ngram_backoff,
                     raw_compression_ratio: cand.compression,
                 },
                 case_class: cand.case_class,
@@ -454,7 +463,8 @@ mod tests {
         let d = Discourse::build(&c);
         let lex = Lexicon::build(&d, LexiconConfig::default());
         let texture = CompressionTextureModel::build(&c, CompressionTextureConfig::default());
-        let analysis = RareWordsAnalysis::build(&lex, &texture, RareWordsConfig::default());
+        let ngrams = CharNgramStats::build(lex.words.keys().map(String::as_str));
+        let analysis = RareWordsAnalysis::build(&lex, &texture, &ngrams, RareWordsConfig::default());
         assert!(analysis.stats.disabled);
         assert!(analysis.candidates.is_empty());
     }
@@ -506,7 +516,8 @@ mod tests {
         let d = Discourse::build(&c);
         let lex = Lexicon::build(&d, LexiconConfig::default());
         let texture = CompressionTextureModel::build(&c, CompressionTextureConfig::default());
-        let analysis = RareWordsAnalysis::build(&lex, &texture, RareWordsConfig::default());
+        let ngrams = CharNgramStats::build(lex.words.keys().map(String::as_str));
+        let analysis = RareWordsAnalysis::build(&lex, &texture, &ngrams, RareWordsConfig::default());
         assert!(!analysis.stats.disabled, "expected non-disabled analysis");
         let by_form: BTreeMap<&str, &TriageCandidate> = analysis
             .candidates
@@ -568,14 +579,15 @@ mod tests {
             include_proper_noun_candidates: false,
             ..Default::default()
         };
-        let strict = RareWordsAnalysis::build(&lex, &texture, strict_cfg);
+        let ngrams = CharNgramStats::build(lex.words.keys().map(String::as_str));
+        let strict = RareWordsAnalysis::build(&lex, &texture, &ngrams, strict_cfg);
 
         let inclusive_cfg = RareWordsConfig {
             rare_count_max: 5,
             include_proper_noun_candidates: true,
             ..Default::default()
         };
-        let inclusive = RareWordsAnalysis::build(&lex, &texture, inclusive_cfg);
+        let inclusive = RareWordsAnalysis::build(&lex, &texture, &ngrams, inclusive_cfg);
 
         // The strict run should not exceed the inclusive run in
         // candidate count.

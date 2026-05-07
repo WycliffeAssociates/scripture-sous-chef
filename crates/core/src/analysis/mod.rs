@@ -5,6 +5,7 @@
 pub mod association;
 pub mod bktree;
 pub mod candidate_families;
+pub mod char_ngrams;
 pub mod compression;
 pub mod evidence;
 pub mod kn;
