@@ -25,7 +25,7 @@ path = "src/bin/vref_dump.rs"
 
 [dependencies]
 ssc-core = { workspace = true, features = ["serde"] }
-ssc-ingest = { workspace = true }
+ssc-ingest = { workspace = true, features = ["usfm"] }
 usfm_onion = { workspace = true }
 plotters = { workspace = true }
 serde = { version = "1.0", features = ["derive"] }

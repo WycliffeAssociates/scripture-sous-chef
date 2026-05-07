@@ -7,4 +7,5 @@
 //! without churning the engine.
 
 pub mod build;
+#[cfg(feature = "usfm")]
 pub mod usfm;

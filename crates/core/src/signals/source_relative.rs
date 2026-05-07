@@ -128,6 +128,40 @@ impl Rule for Proportionality {
     }
 }
 
+/// Run only the proportionality rule against a fully-built `Project`,
+/// honoring `z_upper` / `z_lower` (or legacy `z_threshold`) from the
+/// project's `Config` exactly as `Rule::check` does. Returns an empty
+/// `findings` list and a default `ProportionalityStats` (with `disabled`
+/// untouched — `false`) when the project has no source corpus.
+///
+/// Provided for callers that want just this one signal without paying
+/// for the full `analyze_with_stats` pipeline (clusters, γ aggregation,
+/// posteriors, etc.). The returned `Finding<'a>`s borrow from
+/// `project`; collect them into an owned form before letting `project`
+/// drop.
+pub fn run_proportionality_only<'a>(
+    project: &'a Project<'a>,
+) -> (Vec<Finding<'a>>, ProportionalityStats) {
+    let Some(source) = project.source.as_ref() else {
+        return (Vec::new(), ProportionalityStats::default());
+    };
+    let rule_cfg = project
+        .config
+        .rules
+        .iter()
+        .find(|r| r.id == PROPORTIONALITY);
+    let get_param = |name: &str| {
+        rule_cfg.and_then(|r| r.params.iter().find(|(k, _)| *k == name).map(|(_, v)| *v))
+    };
+    let z_upper = get_param("z_upper")
+        .or_else(|| get_param("z_threshold"))
+        .unwrap_or(Z_THRESHOLD);
+    let z_lower = get_param("z_lower")
+        .or_else(|| get_param("z_threshold"))
+        .unwrap_or(Z_THRESHOLD);
+    scan_proportionality(&project.target, source, z_upper, z_lower)
+}
+
 /// Per-(target, source) scan. Public for unit-testing without
 /// constructing a whole `Project`. Returns findings and the typed
 /// stats blob; the `Rule::check` impl just wires the stats blob into
