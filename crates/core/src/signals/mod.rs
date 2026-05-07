@@ -10,6 +10,7 @@ pub mod hygiene;
 pub mod lexical;
 pub mod orthographic;
 pub mod positional;
+pub mod proper_noun_consistency;
 pub mod punctuation;
 pub mod source_relative;
 
@@ -28,6 +29,7 @@ pub const ALL_RULE_IDS: &[crate::diagnostics::RuleId] = &[
     orthographic::SCRIPT_MIXING,
     lexical::WORD_HAPAX_BURST,
     lexical::RARE_WORD_CLUSTER,
+    proper_noun_consistency::PROPER_NOUN_CONSISTENCY,
     positional::SENTENCE_START_CASE,
     positional::SENTENCE_FINAL_PUNCT,
     positional::UNEXPECTED_SENTENCE_END,

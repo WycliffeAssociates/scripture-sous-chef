@@ -51,5 +51,7 @@ pub fn default_rules() -> Vec<Box<dyn Rule>> {
         Box::new(signals::positional::SentenceStartCase),
         Box::new(signals::positional::UnexpectedSentenceEnd),
         Box::new(signals::punctuation::PairedPunctBalance),
+        // Lexical / case consistency
+        Box::new(signals::proper_noun_consistency::ProperNounConsistency),
     ]
 }
