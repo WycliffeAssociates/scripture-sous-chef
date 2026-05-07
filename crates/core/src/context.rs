@@ -5,7 +5,9 @@
 
 use std::collections::BTreeMap;
 
-use crate::analysis::compression::{CompressionTextureConfig, CompressionTextureModel};
+use crate::analysis::compression::{
+    BucketedTextureBaseline, CompressionTextureConfig, CompressionTextureModel,
+};
 use crate::analysis::lemma_cluster::{LemmaClusterConfig, LemmaClusterStats, LemmaClusters};
 use crate::analysis::lexicon::{Lexicon, LexiconConfig};
 use crate::diagnostics::RuleId;
@@ -40,6 +42,9 @@ pub struct AnalysisContext {
     pub lexicon: Lexicon,
     pub span_index: SpanIndex,
     pub texture_model: CompressionTextureModel,
+    pub texture_baseline: Option<BucketedTextureBaseline>,
+    pub source_texture_model: Option<CompressionTextureModel>,
+    pub source_texture_baseline: Option<BucketedTextureBaseline>,
     pub lemma_clusters: LemmaClusters,
     pub morphology: MorphologyStats,
     pub bootstrap_stats: BootstrapStats,
@@ -67,6 +72,15 @@ impl AnalysisContext {
             max_span_sids: config.max_span_sids,
         });
         let texture_model = CompressionTextureModel::build(&project.target, config.texture);
+        let texture_baseline = BucketedTextureBaseline::build(&texture_model, &project.target);
+        let (source_texture_model, source_texture_baseline) = match project.source.as_ref() {
+            Some(source) => {
+                let model = CompressionTextureModel::build(source, config.texture);
+                let baseline = BucketedTextureBaseline::build(&model, source);
+                (Some(model), baseline)
+            }
+            None => (None, None),
+        };
         let lemma_clusters = LemmaClusters::build(&project.target, config.lemma_clusters);
         let morphology = MorphologyStats::from_project(project);
         let lemma_cluster_stats = lemma_clusters.stats();
@@ -106,6 +120,9 @@ impl AnalysisContext {
             lexicon,
             span_index,
             texture_model,
+            texture_baseline,
+            source_texture_model,
+            source_texture_baseline,
             lemma_clusters,
             morphology,
             bootstrap_stats,

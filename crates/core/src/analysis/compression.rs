@@ -52,6 +52,8 @@
 //! can't be merged after the fact, but `from_samples` trains one dict
 //! from the union of all verses, which is what we want.
 
+use crate::analysis::length_buckets::{GraphemeCount, LengthBucket, LengthBucketBoundaries};
+use crate::analysis::mad::MadStats;
 use crate::project::NamedCorpus;
 
 /// Default target dict size. zstd recommends ~100× more training material
@@ -171,6 +173,88 @@ impl CompressionTextureModel {
             return 0.0;
         }
         (with_dict / without_dict).max(0.0)
+    }
+}
+
+/// Per-bucket compression-texture baselines.
+///
+/// One [`MadStats`] per length-quintile; verses are scored as a robust
+/// z-score against their own bucket's median and MAD, not against a single
+/// global distribution. This is what stops "Jesus wept" from looking
+/// anomalous: it's only short, and short verses share an elevated baseline.
+///
+/// See `documentation/adrs/0006-verse-length-quintiles.md` and §3.3/§4.1
+/// of `research/proposed/2026-05-06_signal-architecture/plan.md`.
+#[derive(Debug, Clone)]
+pub struct BucketedTextureBaseline {
+    boundaries: LengthBucketBoundaries,
+    per_bucket: [MadStats; 5],
+    counts: [usize; 5],
+}
+
+impl BucketedTextureBaseline {
+    /// Score every verse in the corpus against the model, group by
+    /// grapheme-count quintile, then compute median+MAD per bucket.
+    ///
+    /// Returns `None` when the model is empty or the corpus is empty —
+    /// callers fall back to the unbucketed path or skip the rule.
+    pub fn build(model: &CompressionTextureModel, corpus: &NamedCorpus<'_>) -> Option<Self> {
+        if model.dict_bytes() == 0 || corpus.verses.is_empty() {
+            return None;
+        }
+        let scored: Vec<(GraphemeCount, f64)> = corpus
+            .verses
+            .values()
+            .map(|verse| {
+                let nfc = verse.nfc.as_str();
+                (GraphemeCount::of(nfc), model.score(nfc))
+            })
+            .collect();
+        let lengths: Vec<GraphemeCount> = scored.iter().map(|(g, _)| *g).collect();
+        let boundaries = LengthBucketBoundaries::compute(&lengths);
+
+        let mut per_bucket_scores: [Vec<f64>; 5] = Default::default();
+        for (count, score) in &scored {
+            let bucket = boundaries.bucket_for(*count);
+            per_bucket_scores[bucket.index()].push(*score);
+        }
+
+        let mut per_bucket: [MadStats; 5] = [MadStats {
+            median: f64::NAN,
+            mad: f64::NAN,
+        }; 5];
+        let mut counts = [0usize; 5];
+        for bucket in LengthBucket::ALL {
+            let scores = &per_bucket_scores[bucket.index()];
+            counts[bucket.index()] = scores.len();
+            per_bucket[bucket.index()] = MadStats::from_slice(scores);
+        }
+
+        Some(Self {
+            boundaries,
+            per_bucket,
+            counts,
+        })
+    }
+
+    /// Robust z-score for a verse against its length-cohort baseline.
+    /// Returns `f64::NAN` when the relevant bucket is empty or its MAD
+    /// is undefined; the rule treats NaN as "no baseline" and skips.
+    pub fn z_for(&self, count: GraphemeCount, score: f64) -> f64 {
+        let bucket = self.boundaries.bucket_for(count);
+        self.per_bucket[bucket.index()].z(score)
+    }
+
+    pub fn boundaries(&self) -> LengthBucketBoundaries {
+        self.boundaries
+    }
+
+    pub fn stats(&self, bucket: LengthBucket) -> MadStats {
+        self.per_bucket[bucket.index()]
+    }
+
+    pub fn count(&self, bucket: LengthBucket) -> usize {
+        self.counts[bucket.index()]
     }
 }
 

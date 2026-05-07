@@ -8,6 +8,7 @@ pub mod candidate_families;
 pub mod compression;
 pub mod evidence;
 pub mod kn;
+pub mod length_buckets;
 pub mod lemma_feedback;
 pub mod lemma_cluster;
 pub mod lexicon;

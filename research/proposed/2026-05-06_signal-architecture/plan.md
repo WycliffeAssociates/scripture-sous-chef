@@ -556,11 +556,11 @@ What remains is genuinely open.
    *cross-factor* overlap question. The *within-`char_ngram_backoff`*
    question — should bigrams and trigrams be one factor or two — was
    resolved: one factor, see §3.2 amendment.)
-4. **Phase B ordering and necessity.** #6 (Morfessor signal) and #8
+3. **Phase B ordering and necessity.** #6 (Morfessor signal) and #8
    (adaptive weighting) are both conditional on Phase A's checkpoint.
    Order may swap, or either may be dropped, depending on what the
    checkpoint shows.
-5. **Trust-weight ladder α:β split.** §2.4 specifies α + β totals but
+4. **Trust-weight ladder α:β split.** §2.4 specifies α + β totals but
    not the split. Concrete priors will need both numbers. Defer until
    Phase B #10 (sub-cluster routing) makes the split load-bearing.
 
