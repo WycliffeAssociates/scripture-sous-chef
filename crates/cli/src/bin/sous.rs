@@ -37,7 +37,7 @@ fn usage() -> ExitCode {
     eprintln!(
         "usage:\n  \
          sous check       [--nt-only] [--config <path>] [--source <dir>] [--all] <corpus-dir>\n  \
-         sous triage      [--nt-only] [--config <path>] [--out markdown|html] [--limit N] <corpus-dir>\n  \
+         sous triage      [--nt-only] [--config <path>] [--source <dir>] [--out markdown|html] [--limit N] <corpus-dir>\n  \
          sous dump-words  [--nt-only] <corpus-dir>   write debug/<name>.words.tsv (form\\tcount)"
     );
     ExitCode::from(2)
@@ -613,6 +613,7 @@ enum TriageOutput {
 fn run_triage(args: Vec<String>) -> ExitCode {
     let mut nt_only = false;
     let mut config_path: Option<PathBuf> = None;
+    let mut source_path: Option<PathBuf> = None;
     let mut path: Option<PathBuf> = None;
     let mut output = TriageOutput::Markdown;
     let mut limit: usize = 50;
@@ -626,6 +627,13 @@ fn run_triage(args: Vec<String>) -> ExitCode {
                     return usage();
                 };
                 config_path = Some(PathBuf::from(p));
+            }
+            "--source" => {
+                let Some(p) = args_iter.next() else {
+                    eprintln!("--source requires a path argument");
+                    return usage();
+                };
+                source_path = Some(PathBuf::from(p));
             }
             "--out" => {
                 let Some(o) = args_iter.next() else {
@@ -722,12 +730,33 @@ fn run_triage(args: Vec<String>) -> ExitCode {
         LabelledLemmaIndex::default()
     });
 
+    // Optional source corpus for source_co_rarity. When absent, the
+    // factor abstains (drops from Noisy-OR product per ADR 0003).
+    let source = match source_path {
+        Some(src_path) => {
+            let src_name = src_path
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("?")
+                .to_string();
+            let src_raw = match usfm::read_usfm_dir(&src_path, nt_only) {
+                Ok(m) => m,
+                Err(e) => {
+                    eprintln!("read failed for source: {e}");
+                    return ExitCode::from(1);
+                }
+            };
+            Some((src_name, src_raw))
+        }
+        None => None,
+    };
+
     // Build a minimal project so we can construct a discourse and the
     // analysis primitives. We don't need the full check pipeline here.
     let project = build::project_from_raw_map_with_labels(
         name.clone(),
         raw,
-        None,
+        source,
         Config::default(),
         ExceptionSet::default(),
         labels.clone(),
@@ -905,10 +934,17 @@ fn render_triage_markdown(
             .flat_map(|fam| fam.forms.iter())
             .filter(|f| f.form != candidate.form)
             .count();
+        let source_co_rarity_str = candidate
+            .evidence
+            .source_co_rarity
+            .map(|f| format!("{:.2}", f))
+            .unwrap_or_else(|| "abstain".to_string());
         let _ = writeln!(
             out,
-            "Character anomaly: {:.2} · Compression ratio: {:.3} · Neighbours surfaced: {}",
+            "char-anomaly: {:.2} · char-ngram: {:.2} · source-co-rarity: {} · compression: {:.3} · neighbours: {}",
             candidate.evidence.character_anomaly,
+            candidate.evidence.char_ngram_backoff,
+            source_co_rarity_str,
             candidate.evidence.raw_compression_ratio,
             neighbour_count,
         );
