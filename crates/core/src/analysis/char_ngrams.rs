@@ -50,6 +50,27 @@ use crate::analysis::mad::MadStats;
 /// factor.
 const TRIGRAM_TIEBREAKER_WEIGHT: f64 = 0.25;
 
+/// Sigmoid temperature: scales z before the logistic. The corpus
+/// bigram distribution is dominated by a small number of very common
+/// pairs, so per-token mean-nlp z-scores are easy to push high.
+/// Without softening, even modestly-rare-bigram tokens saturate at
+/// factor ~1.0, drowning out downweights from other Noisy-OR factors.
+const NGRAM_SIGMOID_TEMPERATURE: f64 = 0.5;
+
+/// Hard cap on the factor's output. Even after temperature scaling,
+/// extreme z-scores (Bemba's heavy nasal-prefix paradigms produce
+/// z>12 on non-paradigmatic 3-char tokens) saturate the sigmoid past
+/// this. Capping at `0.9` leaves headroom for other Noisy-OR factors
+/// (source co-rarity, character anomaly) to actually differentiate
+/// between "saturated by ngram alone" and "saturated by ngram +
+/// corroborating evidence."
+///
+/// Architectural rationale: no single factor should be able to claim
+/// "I'm certain this is suspicious" on its own. The Noisy-OR chassis
+/// is built on the assumption that confidence comes from
+/// corroboration; a single factor at ~1.0 collapses that.
+const NGRAM_FACTOR_CAP: f64 = 0.9;
+
 /// Per-corpus character bigram + trigram statistics. Used to score how
 /// surprising a token's character composition is against the corpus
 /// distribution.
@@ -168,7 +189,7 @@ impl CharNgramStats {
         // small weight. Bigrams primary; trigrams nudge.
         let mixed = bigram_factor * (1.0 - TRIGRAM_TIEBREAKER_WEIGHT)
             + trigram_factor * TRIGRAM_TIEBREAKER_WEIGHT;
-        mixed.clamp(0.0, 1.0)
+        mixed.clamp(0.0, NGRAM_FACTOR_CAP)
     }
 
     pub fn char_total(&self) -> f64 {
@@ -254,13 +275,18 @@ impl TrigramScorer<'_> {
     }
 }
 
-/// Map a robust-z score to `[0, 1]` via a logistic. `z = 0` → 0.5;
-/// large positive z → near 1; large negative z → near 0.
+/// Map a robust-z score to `[0, 1]` via a temperature-scaled logistic.
+/// Temperature `< 1.0` flattens the sigmoid so saturated z-scores still
+/// leave headroom for other Noisy-OR factors to differentiate. See
+/// `NGRAM_SIGMOID_TEMPERATURE`.
+///
+/// `z = 0` → 0.5; large positive z → near 1; large negative z → near 0.
 fn sigmoid_z(z: f64) -> f64 {
     if !z.is_finite() {
         return if z.is_sign_negative() { 0.0 } else { 1.0 };
     }
-    let v = 1.0 / (1.0 + (-z).exp());
+    let scaled = z * NGRAM_SIGMOID_TEMPERATURE;
+    let v = 1.0 / (1.0 + (-scaled).exp());
     v.clamp(0.0, 1.0)
 }
 
