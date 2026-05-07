@@ -1,8 +1,27 @@
-# ADR 0007: Source proper-noun match uses BK-tree edit-distance ≤ 2 within the same verse
+# ADR 0007: Source proper-noun match uses Damerau-Levenshtein ≤ 2 within the same verse
 
-- **Date:** 2026-05-07
-- **Status:** Accepted
+- **Date:** 2026-05-07 (originally specified BK-tree; superseded same day by amendment below)
+- **Status:** Accepted (amended)
 - **Plan reference:** `research/proposed/2026-05-06_signal-architecture/plan.md` §3.2 amendment (flavour 1)
+
+## Amendment 2026-05-07 (during Phase A #4 implementation)
+
+The original ADR specified a BK-tree over rare uppercase source tokens
+("the codebase already has `analysis/bktree.rs`"). Implementation review
+revealed `analysis/bktree.rs` is a doc stub — "Not yet implemented." The
+codebase actually does its existing edit-distance work (in
+`analysis/candidate_families.rs:311`) via `strsim::damerau_levenshtein`
+directly, no BK-tree.
+
+At this scale, brute-force is the right tool: per-target-token query
+runs against the *intersection* of (a) rare uppercase source tokens
+and (b) tokens present in the corresponding source verse. That set is
+typically 0–3 tokens; the BK-tree's sublinear advantage matters only
+when querying against thousands of candidates per call.
+
+**Revised decision:** use `strsim::damerau_levenshtein` directly,
+brute-forcing over the per-source-verse rare-uppercase token set. No
+BK-tree built. The original semantic threshold (≤ 2) is unchanged.
 
 ## Context
 

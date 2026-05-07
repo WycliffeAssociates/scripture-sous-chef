@@ -740,6 +740,7 @@ fn run_triage(args: Vec<String>) -> ExitCode {
     let clusters = LemmaClusters::build(&project.target, LemmaClusterConfig::default());
 
     let analysis = RareWordsAnalysis::build_with_labels(
+        &project,
         &lexicon,
         &texture,
         &ngrams,

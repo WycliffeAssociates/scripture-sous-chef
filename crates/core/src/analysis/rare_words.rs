@@ -52,6 +52,8 @@ use crate::analysis::char_ngrams::CharNgramStats;
 use crate::analysis::compression::CompressionTextureModel;
 use crate::analysis::lemma_feedback::LabelledLemmaIndex;
 use crate::analysis::lexicon::{CaseClass, Lexicon};
+use crate::analysis::source_co_rarity;
+use crate::project::Project;
 
 /// Default cap for "rare" — forms appearing this many times or fewer.
 /// Hapax + dis-legomena. Configurable.
@@ -126,6 +128,13 @@ pub struct TriageEvidence {
     /// token's bigram (and trigram, as tiebreaker) profile against the
     /// corpus distribution? See `analysis::char_ngrams` and ADR 0004.
     pub char_ngram_backoff: f64,
+    /// Source-relative co-rarity factor (`0.0` = saturated downweight
+    /// from a proper-noun BK match, `0.3` = co-rare source without BK
+    /// match, `0.7` = source unremarkable, `None` = no source loaded
+    /// or no verse-level evidence; abstains by being absent from the
+    /// Noisy-OR product). See `analysis::source_co_rarity` and
+    /// ADR 0003 / 0007.
+    pub source_co_rarity: Option<f64>,
     /// Raw compression-texture ratio for the form (pre-normalisation),
     /// recorded so the UI can display it without re-running the model.
     pub raw_compression_ratio: f64,
@@ -161,6 +170,7 @@ impl RareWordsAnalysis {
     /// Build the triage queue without consulting any feedback labels.
     /// Equivalent to `build_with_labels(.., None, ..)`.
     pub fn build(
+        project: &Project<'_>,
         lexicon: &Lexicon,
         texture: &CompressionTextureModel,
         ngrams: &CharNgramStats,
@@ -168,11 +178,11 @@ impl RareWordsAnalysis {
     ) -> Self {
         #[cfg(feature = "serde")]
         {
-            Self::build_with_labels(lexicon, texture, ngrams, None, config)
+            Self::build_with_labels(project, lexicon, texture, ngrams, None, config)
         }
         #[cfg(not(feature = "serde"))]
         {
-            Self::build_inner(lexicon, texture, ngrams, config, &[], &[])
+            Self::build_inner(project, lexicon, texture, ngrams, config, &[], &[])
         }
     }
 
@@ -189,6 +199,7 @@ impl RareWordsAnalysis {
     /// `None` is a no-op equivalent to `build`.
     #[cfg(feature = "serde")]
     pub fn build_with_labels(
+        project: &Project<'_>,
         lexicon: &Lexicon,
         texture: &CompressionTextureModel,
         ngrams: &CharNgramStats,
@@ -202,10 +213,11 @@ impl RareWordsAnalysis {
             ),
             None => (Vec::new(), Vec::new()),
         };
-        Self::build_inner(lexicon, texture, ngrams, config, &known_good, &known_bad)
+        Self::build_inner(project, lexicon, texture, ngrams, config, &known_good, &known_bad)
     }
 
     fn build_inner(
+        project: &Project<'_>,
         lexicon: &Lexicon,
         texture: &CompressionTextureModel,
         ngrams: &CharNgramStats,
@@ -293,6 +305,19 @@ impl RareWordsAnalysis {
         // the analysis output so callers can route them.
         let known_bad_forms: Vec<String> = known_bad.to_vec();
 
+        // Source-relative co-rarity is computed once over the rare
+        // candidate set. When no source corpus is loaded, the returned
+        // map is empty and per-candidate lookups produce `None`, which
+        // means the factor abstains (drops from the Noisy-OR product
+        // per ADR 0003).
+        let rare_form_set: BTreeSet<String> =
+            candidates_in.iter().map(|c| c.form.clone()).collect();
+        let source_co_rarity_factors = source_co_rarity::compute_factors_per_form(
+            project,
+            &rare_form_set,
+            config.rare_count_max,
+        );
+
         // Score each candidate. Neighbour-based signals are computed
         // by `analysis::candidate_families` over only the displayed
         // top-N seeds, not here — running BK-distance on every rare
@@ -306,11 +331,18 @@ impl RareWordsAnalysis {
                 .unwrap_or((global_median, global_mad));
             let character_anomaly = sigmoid_against_corpus(cand.compression, m, d);
             let char_ngram_backoff = ngrams.factor(&cand.form);
-            // Per ADR 0001 the per-token Noisy-OR is the chassis. The
-            // independence note in plan §3.1 acknowledges character
-            // anomaly and char-ngram backoff overlap somewhat; that's
-            // accepted for Phase A and revisited at the checkpoint.
-            let suspicion = noisy_or(&[character_anomaly, char_ngram_backoff]);
+            let source_co_rarity_factor = source_co_rarity_factors.get(&cand.form).copied();
+            // Per ADR 0001 the per-token Noisy-OR is the chassis.
+            // - char_anomaly and char_ngram_backoff overlap on
+            //   character-level texture (plan §3.1 independence note);
+            //   accepted for Phase A.
+            // - source_co_rarity abstains when no source is loaded by
+            //   being absent here (ADR 0003).
+            let mut factors = vec![character_anomaly, char_ngram_backoff];
+            if let Some(f) = source_co_rarity_factor {
+                factors.push(f);
+            }
+            let suspicion = noisy_or(&factors);
 
             candidates.push(TriageCandidate {
                 form: cand.form.clone(),
@@ -319,6 +351,7 @@ impl RareWordsAnalysis {
                 evidence: TriageEvidence {
                     character_anomaly,
                     char_ngram_backoff,
+                    source_co_rarity: source_co_rarity_factor,
                     raw_compression_ratio: cand.compression,
                 },
                 case_class: cand.case_class,
@@ -434,10 +467,21 @@ mod tests {
     use super::*;
     use crate::analysis::compression::{CompressionTextureConfig, CompressionTextureModel};
     use crate::analysis::lexicon::{Lexicon, LexiconConfig};
+    use crate::config::{Config, ExceptionSet};
     use crate::discourse::Discourse;
     use crate::project::NamedCorpus;
     use crate::sid::{BookId, Sid};
     use crate::verse::build_verse;
+
+    fn project_of(target: NamedCorpus<'static>) -> Project<'static> {
+        Project {
+            target,
+            source: None,
+            config: Config::default(),
+            exceptions: ExceptionSet::default(),
+            lemma_labels: Default::default(),
+        }
+    }
     use std::collections::BTreeMap;
     use std::marker::PhantomData;
 
@@ -459,12 +503,14 @@ mod tests {
 
     #[test]
     fn small_corpus_self_disables() {
-        let c = corpus(vec![(sid(1), "alpha beta gamma")]);
-        let d = Discourse::build(&c);
+        let project = project_of(corpus(vec![(sid(1), "alpha beta gamma")]));
+        let d = Discourse::build(&project.target);
         let lex = Lexicon::build(&d, LexiconConfig::default());
-        let texture = CompressionTextureModel::build(&c, CompressionTextureConfig::default());
+        let texture =
+            CompressionTextureModel::build(&project.target, CompressionTextureConfig::default());
         let ngrams = CharNgramStats::build(lex.words.keys().map(String::as_str));
-        let analysis = RareWordsAnalysis::build(&lex, &texture, &ngrams, RareWordsConfig::default());
+        let analysis =
+            RareWordsAnalysis::build(&project, &lex, &texture, &ngrams, RareWordsConfig::default());
         assert!(analysis.stats.disabled);
         assert!(analysis.candidates.is_empty());
     }
@@ -512,12 +558,14 @@ mod tests {
             verses.push((sid(300 + i), format!("token{a}{b} token{a}{b} token{a}{b}")));
         }
 
-        let c = corpus(verses);
-        let d = Discourse::build(&c);
+        let project = project_of(corpus(verses));
+        let d = Discourse::build(&project.target);
         let lex = Lexicon::build(&d, LexiconConfig::default());
-        let texture = CompressionTextureModel::build(&c, CompressionTextureConfig::default());
+        let texture =
+            CompressionTextureModel::build(&project.target, CompressionTextureConfig::default());
         let ngrams = CharNgramStats::build(lex.words.keys().map(String::as_str));
-        let analysis = RareWordsAnalysis::build(&lex, &texture, &ngrams, RareWordsConfig::default());
+        let analysis =
+            RareWordsAnalysis::build(&project, &lex, &texture, &ngrams, RareWordsConfig::default());
         assert!(!analysis.stats.disabled, "expected non-disabled analysis");
         let by_form: BTreeMap<&str, &TriageCandidate> = analysis
             .candidates
@@ -569,10 +617,11 @@ mod tests {
         for v in 300..400u16 {
             verses.push((sid(v), format!("filler{v} {}", v % 5)));
         }
-        let c = corpus(verses);
-        let d = Discourse::build(&c);
+        let project = project_of(corpus(verses));
+        let d = Discourse::build(&project.target);
         let lex = Lexicon::build(&d, LexiconConfig::default());
-        let texture = CompressionTextureModel::build(&c, CompressionTextureConfig::default());
+        let texture =
+            CompressionTextureModel::build(&project.target, CompressionTextureConfig::default());
 
         let strict_cfg = RareWordsConfig {
             rare_count_max: 5,
@@ -580,14 +629,14 @@ mod tests {
             ..Default::default()
         };
         let ngrams = CharNgramStats::build(lex.words.keys().map(String::as_str));
-        let strict = RareWordsAnalysis::build(&lex, &texture, &ngrams, strict_cfg);
+        let strict = RareWordsAnalysis::build(&project, &lex, &texture, &ngrams, strict_cfg);
 
         let inclusive_cfg = RareWordsConfig {
             rare_count_max: 5,
             include_proper_noun_candidates: true,
             ..Default::default()
         };
-        let inclusive = RareWordsAnalysis::build(&lex, &texture, &ngrams, inclusive_cfg);
+        let inclusive = RareWordsAnalysis::build(&project, &lex, &texture, &ngrams, inclusive_cfg);
 
         // The strict run should not exceed the inclusive run in
         // candidate count.

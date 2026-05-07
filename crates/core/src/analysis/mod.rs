@@ -16,5 +16,6 @@ pub mod lexicon;
 pub mod morphology;
 pub mod mad;
 pub mod rare_words;
+pub mod source_co_rarity;
 #[cfg(feature = "serde")]
 pub mod posterior;
