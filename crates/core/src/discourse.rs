@@ -231,17 +231,27 @@ impl SpanIndex {
         // update it at the END of each iteration so an `AmbiguousSymmetric`
         // dispatch sees the char that came immediately before it.
         let mut prev: Option<char> = None;
-        let mut iter = text.char_indices().peekable();
+        // Walk by grapheme cluster (UAX #29) so combining marks ride with
+        // their base in mark-using scripts (Devanagari, Arabic, Hebrew, NFD
+        // Latin). For non-wordy clusters (punctuation/whitespace) the
+        // cluster is almost always one char and the inner per-char logic
+        // is unchanged.
+        use unicode_segmentation::UnicodeSegmentation;
+        let graphemes: Vec<(usize, &str)> = text.grapheme_indices(true).collect();
 
-        while let Some((idx, c)) = iter.next() {
-            let next: Option<char> = iter.peek().map(|&(_, ch)| ch);
+        for g_idx in 0..graphemes.len() {
+            let (idx, cluster) = graphemes[g_idx];
+            let Some(c) = cluster.chars().next() else { continue };
+            let next: Option<char> = graphemes
+                .get(g_idx + 1)
+                .and_then(|(_, g)| g.chars().next());
 
             if c.is_alphabetic() {
                 if !in_word {
                     token_index += 1;
                 }
                 in_word = true;
-                prev = Some(c);
+                prev = cluster.chars().last();
                 continue;
             }
             in_word = false;

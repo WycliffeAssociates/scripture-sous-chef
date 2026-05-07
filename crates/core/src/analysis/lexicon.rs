@@ -55,10 +55,28 @@
 //!
 
 use std::collections::{BTreeSet, HashMap};
+use unicode_segmentation::UnicodeSegmentation;
 
 use crate::discourse::Discourse;
 use crate::signals::positional::PunctCluster;
 use crate::unicode::is_cased;
+
+/// A grapheme cluster is "wordy" — i.e., part of a token rather than
+/// inter-token punctuation/whitespace — when its base character has the
+/// Alphabetic property.
+///
+/// Walking by grapheme cluster (UAX #29) instead of by `char` is what
+/// keeps Devanagari/Arabic/Hebrew vowel marks and combining diacritics
+/// attached to their base consonant. The base character (the cluster's
+/// first `char`) carries the alphabetic property; trailing combining
+/// marks ride along inside the same cluster.
+fn grapheme_is_wordy(cluster: &str) -> bool {
+    cluster
+        .chars()
+        .next()
+        .map(|c| c.is_alphabetic())
+        .unwrap_or(false)
+}
 
 /// Minimum counted-pool observations a word needs before the lexicon
 /// will classify it. Below this, `Indeterminate`.
@@ -199,25 +217,38 @@ impl Lexicon {
 
         let mut i = 0;
         while i < text.len() {
-            // Walk the predecessor cluster, recording whether it
-            // contains any non-whitespace (i.e. any punctuation).
+            // Walk the predecessor cluster of non-wordy graphemes, then
+            // a maximal run of wordy graphemes for the word slice.
+            // Grapheme-cluster iteration (vs. char iteration) is what
+            // keeps combining marks attached to their base in mark-using
+            // scripts (Devanagari, Arabic, Hebrew, Latin with diacritics).
+            let prefix = &text[i..];
             let mut prev_cluster = PunctCluster::new();
-            let mut word_start = None;
-            for (off, c) in text[i..].char_indices() {
-                if c.is_alphabetic() {
-                    word_start = Some(i + off);
-                    break;
-                }
-                prev_cluster.push(c);
-            }
-            let Some(ws) = word_start else { break };
+            let mut graphemes = prefix.grapheme_indices(true).peekable();
 
-            // Maximal alphabetic run.
-            let word_end = text[ws..]
-                .char_indices()
-                .find(|(_, c)| !c.is_alphabetic())
-                .map(|(off, _)| ws + off)
-                .unwrap_or(text.len());
+            let word_start_rel = loop {
+                match graphemes.peek().copied() {
+                    Some((off, g)) if grapheme_is_wordy(g) => break Some(off),
+                    Some((_, g)) => {
+                        for c in g.chars() {
+                            prev_cluster.push(c);
+                        }
+                        graphemes.next();
+                    }
+                    None => break None,
+                }
+            };
+            let Some(ws_rel) = word_start_rel else { break };
+            let ws = i + ws_rel;
+
+            let word_end_rel = loop {
+                match graphemes.next() {
+                    Some((off, g)) if !grapheme_is_wordy(g) => break off,
+                    Some(_) => continue,
+                    None => break prefix.len(),
+                }
+            };
+            let word_end = i + word_end_rel;
             let word_slice = &text[ws..word_end];
 
             // Skip caseless scripts entirely.
@@ -603,5 +634,48 @@ mod tests {
             },
         );
         assert_eq!(strict.classify("foo"), CaseClass::Ambiguous);
+    }
+
+    /// A Latin word with a combining mark must remain a single token in
+    /// the lexicon, not fragment into "cafe" at the combining-mark
+    /// boundary. Under the old char-level walker, the combining acute is
+    /// not alphabetic and would split the word into "cafe" plus a
+    /// stranded mark. The grapheme-cluster walker keeps them together.
+    ///
+    /// Note: `build_verse` NFC-normalises text on ingest, so the input
+    /// "cafe\u{0301}" (NFD) is composed to "café" (U+00E9) before
+    /// tokenisation. Either form on input must yield the composed form
+    /// in the lexicon's keys, with no fragmented "cafe" entry.
+    #[test]
+    fn combining_marks_stay_attached_to_their_base_grapheme() {
+        let nfd_input = "cafe\u{0301}";
+        let mut verses = Vec::new();
+        for v in 1..=10u16 {
+            verses.push((sid("GEN", 1, v), format!("Le {nfd_input} est ouvert")));
+        }
+        let c = {
+            let mut map: BTreeMap<Sid, Verse> = BTreeMap::new();
+            for (s, t) in verses {
+                map.insert(s, build_verse(s, t));
+            }
+            NamedCorpus {
+                name: "t".into(),
+                verses: map,
+                _src: PhantomData,
+            }
+        };
+        let lex = build(&c);
+        // NFC-composed lowercase "café" (U+00E9) is what the lexicon
+        // should hold after NFC normalisation + the grapheme walker.
+        assert!(
+            lex.words.contains_key("café"),
+            "expected lexicon to contain composed 'café'; keys: {:?}",
+            lex.words.keys().collect::<Vec<_>>()
+        );
+        assert!(
+            !lex.words.contains_key("cafe"),
+            "lexicon must NOT have a fragmented 'cafe' entry; keys: {:?}",
+            lex.words.keys().collect::<Vec<_>>()
+        );
     }
 }

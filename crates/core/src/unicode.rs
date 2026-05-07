@@ -78,3 +78,4 @@ pub fn is_zero_width_or_format(c: char) -> bool {
         0x200B..=0x200F | 0x202A..=0x202E | 0x2060..=0x206F | 0xFEFF
     )
 }
+

@@ -404,9 +404,19 @@ pub fn collect_transitions(text: &str) -> Vec<Transition> {
             if !in_word {
                 // Compute the word slice: maximal alphabetic run
                 // starting at idx.
+                // Find the word end at grapheme-cluster granularity so
+                // combining marks ride with their base (Devanagari, Arabic,
+                // Hebrew, NFD Latin). A cluster is wordy iff its base char
+                // is alphabetic.
+                use unicode_segmentation::UnicodeSegmentation;
                 let word_end = text[idx..]
-                    .char_indices()
-                    .find(|(_, ch)| !ch.is_alphabetic())
+                    .grapheme_indices(true)
+                    .find(|(_, g)| {
+                        !g.chars()
+                            .next()
+                            .map(|c| c.is_alphabetic())
+                            .unwrap_or(false)
+                    })
                     .map(|(off, _)| idx + off)
                     .unwrap_or(text.len());
                 let cluster = if current_cluster.is_empty() {

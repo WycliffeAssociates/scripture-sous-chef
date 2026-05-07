@@ -156,9 +156,15 @@ impl LemmaClusters {
 }
 
 fn normalize_word(text: &str) -> String {
-    text.chars()
-        .filter(|c| c.is_alphabetic())
-        .flat_map(char::to_lowercase)
+    use unicode_segmentation::UnicodeSegmentation;
+    text.graphemes(true)
+        .filter(|g| {
+            g.chars()
+                .next()
+                .map(|c| c.is_alphabetic())
+                .unwrap_or(false)
+        })
+        .flat_map(|g| g.chars().flat_map(char::to_lowercase))
         .collect()
 }
 

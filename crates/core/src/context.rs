@@ -152,13 +152,19 @@ impl MorphologyStats {
     /// more usable evidence because affixes and spelling habits repeat inside
     /// words even when whole surface forms do not.
     pub fn from_project(project: &Project<'_>) -> Self {
+        use unicode_segmentation::UnicodeSegmentation;
         let mut counts: BTreeMap<String, u32> = BTreeMap::new();
         for verse in project.target.verses.values() {
             for (_, token_text) in verse.tokens_of(crate::verse::TokenKind::Word) {
                 let word: String = token_text
-                    .chars()
-                    .filter(|c| c.is_alphabetic())
-                    .flat_map(char::to_lowercase)
+                    .graphemes(true)
+                    .filter(|g| {
+                        g.chars()
+                            .next()
+                            .map(|c| c.is_alphabetic())
+                            .unwrap_or(false)
+                    })
+                    .flat_map(|g| g.chars().flat_map(char::to_lowercase))
                     .collect();
                 if !word.is_empty() {
                     *counts.entry(word).or_default() += 1;
