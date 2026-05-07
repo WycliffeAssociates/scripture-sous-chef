@@ -768,11 +768,13 @@ fn run_triage(args: Vec<String>) -> ExitCode {
     let ngrams = CharNgramStats::build(lexicon.words.keys().map(String::as_str));
     let clusters = LemmaClusters::build(&project.target, LemmaClusterConfig::default());
 
+    let morphology = ssc_core::context::MorphologyStats::from_project(&project);
     let analysis = RareWordsAnalysis::build_with_labels(
         &project,
         &lexicon,
         &texture,
         &ngrams,
+        &morphology,
         Some(&labels),
         RareWordsConfig::default(),
     );

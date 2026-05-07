@@ -53,6 +53,7 @@ use crate::analysis::compression::CompressionTextureModel;
 use crate::analysis::lemma_feedback::LabelledLemmaIndex;
 use crate::analysis::lexicon::{CaseClass, Lexicon};
 use crate::analysis::source_co_rarity;
+use crate::context::MorphologyStats;
 use crate::project::Project;
 
 /// Default cap for "rare" — forms appearing this many times or fewer.
@@ -174,15 +175,16 @@ impl RareWordsAnalysis {
         lexicon: &Lexicon,
         texture: &CompressionTextureModel,
         ngrams: &CharNgramStats,
+        morphology: &MorphologyStats,
         config: RareWordsConfig,
     ) -> Self {
         #[cfg(feature = "serde")]
         {
-            Self::build_with_labels(project, lexicon, texture, ngrams, None, config)
+            Self::build_with_labels(project, lexicon, texture, ngrams, morphology, None, config)
         }
         #[cfg(not(feature = "serde"))]
         {
-            Self::build_inner(project, lexicon, texture, ngrams, config, &[], &[])
+            Self::build_inner(project, lexicon, texture, ngrams, morphology, config, &[], &[])
         }
     }
 
@@ -203,6 +205,7 @@ impl RareWordsAnalysis {
         lexicon: &Lexicon,
         texture: &CompressionTextureModel,
         ngrams: &CharNgramStats,
+        morphology: &MorphologyStats,
         index: Option<&LabelledLemmaIndex>,
         config: RareWordsConfig,
     ) -> Self {
@@ -213,7 +216,16 @@ impl RareWordsAnalysis {
             ),
             None => (Vec::new(), Vec::new()),
         };
-        Self::build_inner(project, lexicon, texture, ngrams, config, &known_good, &known_bad)
+        Self::build_inner(
+            project,
+            lexicon,
+            texture,
+            ngrams,
+            morphology,
+            config,
+            &known_good,
+            &known_bad,
+        )
     }
 
     fn build_inner(
@@ -221,6 +233,7 @@ impl RareWordsAnalysis {
         lexicon: &Lexicon,
         texture: &CompressionTextureModel,
         ngrams: &CharNgramStats,
+        morphology: &MorphologyStats,
         config: RareWordsConfig,
         known_good: &[String],
         known_bad: &[String],
@@ -332,17 +345,25 @@ impl RareWordsAnalysis {
             let character_anomaly = sigmoid_against_corpus(cand.compression, m, d);
             let char_ngram_backoff = ngrams.factor(&cand.form);
             let source_co_rarity_factor = source_co_rarity_factors.get(&cand.form).copied();
-            // Per ADR 0001 the per-token Noisy-OR is the chassis.
-            // - char_anomaly and char_ngram_backoff overlap on
-            //   character-level texture (plan §3.1 independence note);
-            //   accepted for Phase A.
+            // Per ADR 0001 the per-token Noisy-OR is the chassis. B8
+            // adaptive weighting (plan §4.3): char-level factors get
+            // power-weighted by `triage_char_factor_weight` so
+            // morphologically-sparse corpora downweight their
+            // over-firing tendency. source_co_rarity stays at weight
+            // 1.0 (cross-lingual; not affected by target regime).
+            // - char_anomaly and char_ngram_backoff still overlap
+            //   somewhat (plan §3.1 independence note); accepted.
             // - source_co_rarity abstains when no source is loaded by
             //   being absent here (ADR 0003).
-            let mut factors = vec![character_anomaly, char_ngram_backoff];
+            let char_w = morphology.triage_char_factor_weight;
+            let mut factors: Vec<(f64, f64)> = vec![
+                (character_anomaly, char_w),
+                (char_ngram_backoff, char_w),
+            ];
             if let Some(f) = source_co_rarity_factor {
-                factors.push(f);
+                factors.push((f, 1.0));
             }
-            let suspicion = noisy_or(&factors);
+            let suspicion = noisy_or_weighted(&factors);
 
             candidates.push(TriageCandidate {
                 form: cand.form.clone(),
@@ -470,6 +491,7 @@ fn sigmoid_against_corpus(value: f64, median: f64, mad: f64) -> f64 {
     v.clamp(0.0, CHAR_ANOMALY_FACTOR_CAP)
 }
 
+#[cfg(test)]
 fn noisy_or(values: &[f64]) -> f64 {
     let mut p = 0.0_f64;
     for &v in values {
@@ -477,6 +499,23 @@ fn noisy_or(values: &[f64]) -> f64 {
         p = 1.0 - (1.0 - p) * (1.0 - v);
     }
     p
+}
+
+/// Power-weighted Noisy-OR: `1 − ∏ (1 − pᵢ)^wᵢ`.
+///
+/// Per ADR 0001 + plan §3.1 amendment: weight 0 cleanly disables a
+/// factor (`(1 − p)^0 = 1`), weight 1 is unchanged, weight `>1`
+/// amplifies, weight `<1` softens. Used by B8 adaptive weighting to
+/// downweight char-level factors in morphologically-sparse corpora
+/// where they over-fire.
+fn noisy_or_weighted(values: &[(f64, f64)]) -> f64 {
+    let mut product = 1.0_f64;
+    for &(p, w) in values {
+        let p = if p.is_finite() { p.clamp(0.0, 1.0) } else { 0.0 };
+        let w = if w.is_finite() { w.max(0.0) } else { 0.0 };
+        product *= (1.0 - p).powf(w);
+    }
+    (1.0 - product).clamp(0.0, 1.0)
 }
 
 #[cfg(test)]
@@ -526,8 +565,15 @@ mod tests {
         let texture =
             CompressionTextureModel::build(&project.target, CompressionTextureConfig::default());
         let ngrams = CharNgramStats::build(lex.words.keys().map(String::as_str));
-        let analysis =
-            RareWordsAnalysis::build(&project, &lex, &texture, &ngrams, RareWordsConfig::default());
+        let morphology = MorphologyStats::from_project(&project);
+        let analysis = RareWordsAnalysis::build(
+            &project,
+            &lex,
+            &texture,
+            &ngrams,
+            &morphology,
+            RareWordsConfig::default(),
+        );
         assert!(analysis.stats.disabled);
         assert!(analysis.candidates.is_empty());
     }
@@ -581,8 +627,15 @@ mod tests {
         let texture =
             CompressionTextureModel::build(&project.target, CompressionTextureConfig::default());
         let ngrams = CharNgramStats::build(lex.words.keys().map(String::as_str));
-        let analysis =
-            RareWordsAnalysis::build(&project, &lex, &texture, &ngrams, RareWordsConfig::default());
+        let morphology = MorphologyStats::from_project(&project);
+        let analysis = RareWordsAnalysis::build(
+            &project,
+            &lex,
+            &texture,
+            &ngrams,
+            &morphology,
+            RareWordsConfig::default(),
+        );
         assert!(!analysis.stats.disabled, "expected non-disabled analysis");
         let by_form: BTreeMap<&str, &TriageCandidate> = analysis
             .candidates
@@ -646,14 +699,29 @@ mod tests {
             ..Default::default()
         };
         let ngrams = CharNgramStats::build(lex.words.keys().map(String::as_str));
-        let strict = RareWordsAnalysis::build(&project, &lex, &texture, &ngrams, strict_cfg);
+        let morphology = MorphologyStats::from_project(&project);
+        let strict = RareWordsAnalysis::build(
+            &project,
+            &lex,
+            &texture,
+            &ngrams,
+            &morphology,
+            strict_cfg,
+        );
 
         let inclusive_cfg = RareWordsConfig {
             rare_count_max: 5,
             include_proper_noun_candidates: true,
             ..Default::default()
         };
-        let inclusive = RareWordsAnalysis::build(&project, &lex, &texture, &ngrams, inclusive_cfg);
+        let inclusive = RareWordsAnalysis::build(
+            &project,
+            &lex,
+            &texture,
+            &ngrams,
+            &morphology,
+            inclusive_cfg,
+        );
 
         // The strict run should not exceed the inclusive run in
         // candidate count.
