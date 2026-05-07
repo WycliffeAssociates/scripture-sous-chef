@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 
+use crate::analysis::lemma_feedback::LabelledLemmaIndex;
 use crate::config::{Config, ExceptionSet};
 use crate::sid::Sid;
 use crate::verse::Verse;
@@ -25,4 +26,8 @@ pub struct Project<'src> {
     pub source: Option<NamedCorpus<'src>>,
     pub config: Config,
     pub exceptions: ExceptionSet,
+    /// Replayed lemma-family feedback. `Default` is the empty index;
+    /// the dogfood CLI populates this from
+    /// `<corpus>/.sous/events.jsonl` on each run.
+    pub lemma_labels: LabelledLemmaIndex,
 }

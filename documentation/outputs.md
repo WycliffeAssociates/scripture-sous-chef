@@ -1,5 +1,20 @@
 # Engine outputs
 
+The CLI exposes three subcommands and each one writes (or reads) files
+in two locations:
+
+- **`debug/<corpus-name>.*`** — one set of files per corpus, generated
+  on every run. Safe to delete; regenerate by re-running.
+- **`<corpus-dir>/.sous/`** — per-project state. The engine *reads*
+  most of these; only some are engine-generated. Hand-edited files
+  here drive the feedback loop.
+
+| Subcommand | Inputs read | Files written |
+|---|---|---|
+| `sous check <corpus>` | `<corpus>/.sous/events.jsonl` (replay) | `debug/<name>.json`, `.stats.json`, `.clusters.json` |
+| `sous triage <corpus>` | `<corpus>/.sous/events.jsonl` (replay), `<corpus>/.sous/segmentation.json` (optional) | `debug/<name>.triage.json`, `.triage.md` *or* `.triage.html` |
+| `sous dump-words <corpus>` | (corpus only) | `debug/<name>.words.tsv` |
+
 `sous check <corpus-dir>` writes three JSON files under `debug/`
 (relative to the current working directory) and reads one JSONL file
 from inside the corpus directory.
@@ -135,6 +150,64 @@ Replay rules:
    `debug/<corpus>.json` and from the CLI's surfaced list, and the
    posterior precision for that `(rule_id, cluster_key)` has moved
    one beta-step toward 0.
+
+## `debug/<corpus-name>.triage.json` / `.triage.md` / `.triage.html`
+
+Output of `sous triage`. The JSON is the full ranked queue plus
+candidate families; the markdown / HTML is a human-friendly view of
+the top-N suspect rare-word families.
+
+The triage CLI proposes candidate families using up to four
+generators (each tagged on the family record):
+
+- `surface` — family of one (the form itself).
+- `bk≤2` — Damerau–Levenshtein neighbours within the radius. Sorted
+  by neighbour frequency descending.
+- `prefix` — `analysis::lemma_cluster`'s 4-character prefix grouping.
+- `stem` — morpheme-stem grouping, *only when*
+  `<corpus>/.sous/segmentation.json` exists.
+
+Each family carries pre-formatted `lemma_family_confirm` and
+`lemma_family_reject` event templates the user can paste into
+`events.jsonl`. The next run replays them, drops confirmed forms from
+the queue, and (for `reject`) elevates them as candidate findings.
+
+## `debug/<corpus-name>.words.tsv`
+
+Output of `sous dump-words`. Format: `lowercased_form\tcount`, one
+type per line, sorted by count descending. Used as input to external
+segmenters or other word-level tooling.
+
+**Caveat for caseless scripts** (Devanagari, Arabic, Hebrew):
+`dump-words` goes through the case-tracking lexicon, which only keeps
+cased word starts. Words from caseless scripts are silently dropped.
+The Python harness in `experiments/segmenter_benchmark/parse_usfm.py`
+handles caseless scripts directly; use that for benchmarks on those
+corpora.
+
+## `<corpus>/.sous/segmentation.json` (optional input)
+
+Pre-computed morphological segmentation, produced by
+`experiments/segmenter_benchmark/dump_segmentation.py`. Schema:
+
+```json
+{
+  "segmenter": "morfessor-2.0",
+  "training_seconds": 11.7,
+  "word_bigram_hapax_ratio": 0.84,
+  "by_form": {
+    "kuli": ["ku", "li"],
+    "kabili": ["kabili"]
+  }
+}
+```
+
+When present, the `sous triage` candidate-family proposer adds a
+`stem`-tagged family for every seed form whose stem (per the
+segmentation) is shared by at least one other form in the corpus.
+
+Missing or invalid → no morphology contribution to triage; the engine
+still works without it.
 
 ## Config discovery
 

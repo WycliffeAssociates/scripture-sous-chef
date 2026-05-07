@@ -5,6 +5,7 @@
 use std::collections::BTreeMap;
 use std::marker::PhantomData;
 
+use ssc_core::analysis::lemma_feedback::LabelledLemmaIndex;
 use ssc_core::config::{Config, ExceptionSet};
 use ssc_core::project::{NamedCorpus, Project};
 use ssc_core::sid::Sid;
@@ -16,6 +17,24 @@ pub fn project_from_raw_map(
     source: Option<(String, BTreeMap<Sid, String>)>,
     config: Config,
     exceptions: ExceptionSet,
+) -> Project<'static> {
+    project_from_raw_map_with_labels(
+        target_name,
+        target_raw,
+        source,
+        config,
+        exceptions,
+        LabelledLemmaIndex::default(),
+    )
+}
+
+pub fn project_from_raw_map_with_labels(
+    target_name: String,
+    target_raw: BTreeMap<Sid, String>,
+    source: Option<(String, BTreeMap<Sid, String>)>,
+    config: Config,
+    exceptions: ExceptionSet,
+    lemma_labels: LabelledLemmaIndex,
 ) -> Project<'static> {
     let target = NamedCorpus {
         name: target_name,
@@ -32,5 +51,6 @@ pub fn project_from_raw_map(
         source,
         config,
         exceptions,
+        lemma_labels,
     }
 }

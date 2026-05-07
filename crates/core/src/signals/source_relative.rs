@@ -410,6 +410,7 @@ mod tests {
             source: None,
             config: Config::default(),
             exceptions: ExceptionSet::default(),
+            lemma_labels: Default::default(),
         };
         let mut stats = AnalyzeStats::default();
         let context = crate::context::AnalysisContext::build(&project);
@@ -436,6 +437,7 @@ mod tests {
             source: Some(corpus("s", s)),
             config: Config::default(),
             exceptions: ExceptionSet::default(),
+            lemma_labels: Default::default(),
         };
         let (_diags, stats) = analyze_with_stats(&project);
         let prop = stats

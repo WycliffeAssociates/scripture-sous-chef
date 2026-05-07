@@ -260,9 +260,13 @@ impl PosteriorStore {
             if line.trim().is_empty() {
                 continue;
             }
-            let record: FeedbackEventRecord = serde_json::from_str(&line).map_err(|e| {
-                io::Error::new(io::ErrorKind::InvalidData, format!("bad event JSONL: {e}"))
-            })?;
+            // Forward-compat: lemma-family events live in the same
+            // file but use kinds this reader doesn't understand. A
+            // serde error here means "not a finding-level event"; skip
+            // silently so the two readers can share one log.
+            let Ok(record) = serde_json::from_str::<FeedbackEventRecord>(&line) else {
+                continue;
+            };
             match FeedbackEvent::from_record(record) {
                 Ok(event) => store.record(&event),
                 Err(e) => eprintln!("feedback warning: skipping event ({e})"),

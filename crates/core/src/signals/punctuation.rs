@@ -239,6 +239,7 @@ mod tests {
             source: None,
             config: Config::default(),
             exceptions: ExceptionSet::default(),
+            lemma_labels: Default::default(),
         };
         let context = AnalysisContext::build(&project);
         let findings = scan_paired_punct_balance(&project, &context);
