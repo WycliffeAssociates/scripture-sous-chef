@@ -29,7 +29,7 @@ use crate::analysis::evidence::{DEFAULT_G2_SIGMOID_SCALE, evidence_from_associat
 use crate::analysis::lexicon::{CaseClass, Lexicon};
 use crate::context::AnalysisContext;
 use crate::diagnostics::{
-    AnalyzeStats, ByteRange, ClusterKey, Finding, FindingId, RuleId, Severity,
+    AnalyzeStats, ByteRange, ClusterKey, Finding, FindingId, Lane, RuleId, Severity,
 };
 use crate::discourse::Discourse;
 use crate::project::{NamedCorpus, Project};
@@ -332,6 +332,7 @@ fn scan_unexpected_sentence_end_from_transitions<'a>(
             rule_id: UNEXPECTED_SENTENCE_END,
             sid,
             severity: Severity::Info,
+            lane: Lane::IndependentFlag,
             byte_range: ByteRange {
                 start: verse_off,
                 end: span_end,

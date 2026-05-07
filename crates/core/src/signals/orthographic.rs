@@ -3,7 +3,7 @@
 use crate::analysis::length_buckets::GraphemeCount;
 use crate::context::AnalysisContext;
 use crate::diagnostics::{
-    AnalyzeStats, ByteRange, ClusterKey, Finding, FindingId, RuleId, Severity,
+    AnalyzeStats, ByteRange, ClusterKey, Finding, FindingId, Lane, RuleId, Severity,
 };
 use crate::project::Project;
 use crate::rule::Rule;
@@ -113,6 +113,7 @@ impl Rule for CompressionTexture {
                 rule_id: COMPRESSION_TEXTURE,
                 sid: *sid,
                 severity: Severity::Info,
+                lane: Lane::VerseAnomaly,
                 // Whole-verse finding; UI renders as a verse-level badge.
                 byte_range: ByteRange { start: 0, end: 0 },
                 span: &verse.nfc[0..0],

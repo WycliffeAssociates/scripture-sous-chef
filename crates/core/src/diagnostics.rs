@@ -87,6 +87,39 @@ where
     serializer.serialize_str(span)
 }
 
+/// Which scoring lane this finding belongs to. Per ADR 0001 / 0008,
+/// lanes are scored independently and surfaced as multi-provenance per
+/// verse rather than combined into a single Noisy-OR.
+///
+/// - [`Lane::VerseAnomaly`]: whole-verse anomaly signals
+///   (`orth.ncd-texture` and similar). Emit one finding per verse that
+///   trips the rule.
+/// - [`Lane::PerTokenSuspicion`]: rare-word triage. Currently flows
+///   through `RareWordsAnalysis::candidates`, not through `Finding`,
+///   but this variant is reserved for when token-level suspicions
+///   surface as findings.
+/// - [`Lane::FamilyCoherence`]: lemma-cluster / candidate-family
+///   findings. Currently a separate diagnostic stream; this variant
+///   is reserved for future Finding-based wiring.
+/// - [`Lane::IndependentFlag`]: boolean-check rules (hygiene,
+///   punctuation, positional, source-relative proportionality). The
+///   plain "this verse trips this rule" signals that don't participate
+///   in the per-token Noisy-OR. This is the default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+pub enum Lane {
+    /// Whole-verse anomaly signal. Currently only `orth.ncd-texture`.
+    VerseAnomaly,
+    /// Per-token rare-word suspicion. Reserved.
+    PerTokenSuspicion,
+    /// Lemma-family / candidate-family coherence. Reserved.
+    FamilyCoherence,
+    /// Boolean-check independent flag. Default for rules that aren't
+    /// part of the Noisy-OR chassis.
+    #[default]
+    IndependentFlag,
+}
+
 /// One signal hit. `span` is a slice into the verse's NFC text, valid for
 /// `'a`. Convert to owned via `.to_owned()` when serialising to JSON.
 #[derive(Debug, Clone)]
@@ -95,6 +128,10 @@ pub struct Finding<'a> {
     pub rule_id: RuleId,
     pub sid: Sid,
     pub severity: Severity,
+    /// Which scoring lane this finding belongs to (ADR 0001 / 0008).
+    /// Defaults to [`Lane::IndependentFlag`] for boolean-check rules.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub lane: Lane,
     /// Highlight range in the verse's NFC text. Whole-verse findings use
     /// `0..0` because there is no smaller text span to point at.
     pub byte_range: ByteRange,
@@ -242,6 +279,7 @@ mod tests {
             rule_id: RuleId("hyg.example"),
             sid: sid(),
             severity: Severity::Warn,
+            lane: Lane::IndependentFlag,
             byte_range: ByteRange {
                 start,
                 end: start + span.len(),

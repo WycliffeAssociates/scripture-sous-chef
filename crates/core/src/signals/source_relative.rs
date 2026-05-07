@@ -9,7 +9,7 @@ use unicode_segmentation::UnicodeSegmentation;
 
 use crate::analysis::mad::MadStats;
 use crate::diagnostics::{
-    AnalyzeStats, ByteRange, ClusterKey, Finding, FindingId, RuleId, Severity,
+    AnalyzeStats, ByteRange, ClusterKey, Finding, FindingId, Lane, RuleId, Severity,
 };
 use crate::project::{NamedCorpus, Project};
 use crate::rule::Rule;
@@ -213,6 +213,7 @@ pub fn scan_proportionality<'a>(
             rule_id: PROPORTIONALITY,
             sid: *sid,
             severity: Severity::Info,
+            lane: Lane::IndependentFlag,
             // Whole-verse finding; no specific substring to point at.
             byte_range: ByteRange { start: 0, end: 0 },
             span: &verse.nfc[0..0],

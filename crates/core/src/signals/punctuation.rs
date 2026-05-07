@@ -10,7 +10,7 @@
 
 use crate::context::AnalysisContext;
 use crate::diagnostics::{
-    AnalyzeStats, ByteRange, ClusterKey, Finding, FindingId, RuleId, Severity,
+    AnalyzeStats, ByteRange, ClusterKey, Finding, FindingId, Lane, RuleId, Severity,
 };
 use crate::discourse::{PairAnomaly, PairAnomalyKind};
 use crate::project::Project;
@@ -75,6 +75,7 @@ pub fn scan_paired_punct_balance<'src>(
             rule_id: PAIRED_PUNCT_BALANCE,
             sid,
             severity: Severity::Warn,
+            lane: Lane::IndependentFlag,
             byte_range: ByteRange {
                 start: verse_off,
                 end: verse_off + span.len(),

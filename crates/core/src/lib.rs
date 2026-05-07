@@ -19,7 +19,7 @@ pub mod verse;
 pub use config::{Config, ExceptionSet};
 pub use context::AnalysisContext;
 pub use diagnostics::{
-    AnalyzeStats, ByteRange, ClusterKey, Diagnostics, Finding, FindingId, RuleId, Severity,
+    AnalyzeStats, ByteRange, ClusterKey, Diagnostics, Finding, FindingId, Lane, RuleId, Severity,
 };
 pub use project::{NamedCorpus, Project};
 pub use sid::{BookId, Sid};

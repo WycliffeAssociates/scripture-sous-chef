@@ -328,6 +328,7 @@ mod tests {
             rule_id: crate::signals::hygiene::TAB_IN_BODY,
             sid: sid(),
             severity: Severity::Warn,
+            lane: crate::diagnostics::Lane::IndependentFlag,
             byte_range: ByteRange { start: 0, end: 1 },
             span: "x",
             cluster_key: ClusterKey("x".to_string()),

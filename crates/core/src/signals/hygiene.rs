@@ -22,7 +22,7 @@
 
 use std::collections::HashMap;
 
-use crate::diagnostics::{ByteRange, ClusterKey, Finding, FindingId, RuleId, Severity};
+use crate::diagnostics::{ByteRange, ClusterKey, Finding, FindingId, Lane, RuleId, Severity};
 use crate::project::Project;
 use crate::rule::Rule;
 use crate::script::script_of;
@@ -67,6 +67,7 @@ pub fn scan_tab_in_body(verse: &Verse) -> Vec<Finding<'_>> {
             rule_id: TAB_IN_BODY,
             sid: verse.sid,
             severity: Severity::Warn,
+            lane: Lane::IndependentFlag,
             byte_range: ByteRange {
                 start: i,
                 end: i + 1,
@@ -125,6 +126,7 @@ pub fn scan_control_chars(verse: &Verse) -> Vec<Finding<'_>> {
             rule_id: CONTROL_CHARS,
             sid: verse.sid,
             severity: Severity::Warn,
+            lane: Lane::IndependentFlag,
             byte_range: ByteRange { start: i, end },
             span: &verse.nfc[i..end],
             cluster_key: ClusterKey(format!("U+{:04X}", c as u32)),
@@ -185,6 +187,7 @@ pub fn scan_zero_width_misuse(verse: &Verse) -> Vec<Finding<'_>> {
             rule_id: ZERO_WIDTH_MISUSE,
             sid: verse.sid,
             severity: Severity::Warn,
+            lane: Lane::IndependentFlag,
             byte_range: ByteRange { start: i, end },
             span: &verse.nfc[i..end],
             cluster_key: ClusterKey(format!("U+{:04X}", c as u32)),
@@ -263,6 +266,7 @@ pub fn scan_empty_verse(verse: &Verse) -> Vec<Finding<'_>> {
             rule_id: EMPTY_VERSE,
             sid: verse.sid,
             severity: Severity::Info,
+            lane: Lane::IndependentFlag,
             byte_range: ByteRange { start: 0, end: 0 },
             span: &verse.nfc[0..0],
             cluster_key: ClusterKey::rule_level(EMPTY_VERSE),

@@ -111,6 +111,7 @@ mod tests {
             rule_id: RuleId("hyg.example"),
             sid: sid(),
             severity: Severity::Warn,
+            lane: crate::diagnostics::Lane::IndependentFlag,
             byte_range: ByteRange { start: 0, end: 1 },
             span: "x",
             cluster_key: ClusterKey("x".to_string()),

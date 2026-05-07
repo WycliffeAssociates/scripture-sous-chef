@@ -24,7 +24,7 @@ use crate::analysis::evidence::{DEFAULT_G2_SIGMOID_SCALE, evidence_from_associat
 use crate::analysis::lexicon::Lexicon;
 use crate::context::AnalysisContext;
 use crate::diagnostics::{
-    AnalyzeStats, ByteRange, ClusterKey, Finding, FindingId, RuleId, Severity,
+    AnalyzeStats, ByteRange, ClusterKey, Finding, FindingId, Lane, RuleId, Severity,
 };
 use crate::discourse::{Discourse, SpanIndex};
 use crate::project::{NamedCorpus, Project};
@@ -355,6 +355,7 @@ fn scan_sentence_start_case_inner<'a>(
             rule_id: SENTENCE_START_CASE,
             sid,
             severity: Severity::Info,
+            lane: Lane::IndependentFlag,
             byte_range: ByteRange {
                 start: verse_off,
                 end: verse_off + len,

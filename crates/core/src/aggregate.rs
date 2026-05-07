@@ -425,6 +425,7 @@ mod tests {
             rule_id,
             sid,
             severity: Severity::Info,
+            lane: crate::diagnostics::Lane::IndependentFlag,
             byte_range: ByteRange { start, end },
             span,
             cluster_key: ClusterKey::rule_level(rule_id),
