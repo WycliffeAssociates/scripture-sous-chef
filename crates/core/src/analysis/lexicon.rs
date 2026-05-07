@@ -251,34 +251,40 @@ impl Lexicon {
             let word_end = i + word_end_rel;
             let word_slice = &text[ws..word_end];
 
-            // Skip caseless scripts entirely.
+            // Cased scripts: collect full case-profile evidence
+            // (uppercase rate, deferred vs counted, spelling buckets).
+            // Caseless scripts (Devanagari, Arabic, Hebrew, CJK):
+            // record the form and increment a single counted-lowercase
+            // observation so frequency tracking (n_total, hapax,
+            // rare-word triage) works. The case-profile-specific
+            // counters stay at their zero defaults, which is the
+            // correct degenerate value for a caseless script.
             let first = word_slice.chars().next();
-            if !first.map(is_cased).unwrap_or(false) {
-                i = word_end.max(ws + 1);
-                continue;
-            }
-            let first_char_upper = first.map(|c| c.is_uppercase()).unwrap_or(false);
-
+            let first_is_cased = first.map(is_cased).unwrap_or(false);
             let key = word_slice.to_lowercase();
             let entry = words.entry(key).or_default();
-            let prev_is_counted = prev_cluster.is_empty()
-                || !prev_cluster.as_str().bytes().any(|b| b != b' ')
-                || counted_clusters.contains(&prev_cluster);
 
-            match (prev_is_counted, first_char_upper) {
-                (true, true) => entry.counted_upper_initial += 1,
-                (true, false) => entry.counted_lower_initial += 1,
-                (false, true) => entry.deferred_upper_initial += 1,
-                (false, false) => entry.deferred_lower_initial += 1,
-            }
+            if first_is_cased {
+                let first_char_upper = first.map(|c| c.is_uppercase()).unwrap_or(false);
+                let prev_is_counted = prev_cluster.is_empty()
+                    || !prev_cluster.as_str().bytes().any(|b| b != b' ')
+                    || counted_clusters.contains(&prev_cluster);
 
-            // Spelling-variant tally over the original (pre-lowercase)
-            // slice. Each occurrence falls into exactly one bucket.
-            match classify_spelling(word_slice) {
-                Spelling::Title => entry.title_case += 1,
-                Spelling::AllLower => entry.all_lower += 1,
-                Spelling::AllUpper => entry.all_upper += 1,
-                Spelling::Mixed => entry.mixed_case += 1,
+                match (prev_is_counted, first_char_upper) {
+                    (true, true) => entry.counted_upper_initial += 1,
+                    (true, false) => entry.counted_lower_initial += 1,
+                    (false, true) => entry.deferred_upper_initial += 1,
+                    (false, false) => entry.deferred_lower_initial += 1,
+                }
+                match classify_spelling(word_slice) {
+                    Spelling::Title => entry.title_case += 1,
+                    Spelling::AllLower => entry.all_lower += 1,
+                    Spelling::AllUpper => entry.all_upper += 1,
+                    Spelling::Mixed => entry.mixed_case += 1,
+                }
+            } else {
+                entry.counted_lower_initial += 1;
+                entry.all_lower += 1;
             }
 
             i = word_end;
@@ -634,6 +640,45 @@ mod tests {
             },
         );
         assert_eq!(strict.classify("foo"), CaseClass::Ambiguous);
+    }
+
+    /// Caseless scripts (Devanagari, Arabic, Hebrew, CJK) used to be
+    /// skipped entirely by the lexicon walker, leaving `lex.words`
+    /// empty. That blocked rare-word triage on those scripts entirely.
+    /// The fix: case-profile evidence is still gated on `is_cased`, but
+    /// frequency tracking populates `lex.words` for all scripts.
+    #[test]
+    fn caseless_scripts_populate_word_frequency() {
+        // Devanagari fragment with combining marks. Repeated enough
+        // that we have two distinct types with known counts.
+        let mut verses = Vec::new();
+        for v in 1..=10u16 {
+            verses.push((sid("GEN", 1, v), "क्षत्रिय राजा"));
+        }
+        let c = {
+            let mut map: BTreeMap<Sid, Verse> = BTreeMap::new();
+            for (s, t) in verses {
+                map.insert(s, build_verse(s, t.to_string()));
+            }
+            NamedCorpus {
+                name: "t".into(),
+                verses: map,
+                _src: PhantomData,
+            }
+        };
+        let lex = build(&c);
+        assert!(
+            lex.words.contains_key("क्षत्रिय"),
+            "expected lexicon to contain Devanagari token; keys: {:?}",
+            lex.words.keys().collect::<Vec<_>>()
+        );
+        assert!(
+            lex.words.contains_key("राजा"),
+            "expected lexicon to contain Devanagari token; keys: {:?}",
+            lex.words.keys().collect::<Vec<_>>()
+        );
+        let entry = lex.words.get("क्षत्रिय").unwrap();
+        assert_eq!(entry.n_total(), 10);
     }
 
     /// A Latin word with a combining mark must remain a single token in
