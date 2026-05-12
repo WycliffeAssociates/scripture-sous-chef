@@ -23,6 +23,10 @@ path = "src/bin/plot_calibration.rs"
 name = "vref-dump"
 path = "src/bin/vref_dump.rs"
 
+[[bin]]
+name = "playground"
+path = "src/bin/playground.rs"
+
 [dependencies]
 ssc-core = { workspace = true, features = ["serde"] }
 ssc-ingest = { workspace = true, features = ["usfm"] }
