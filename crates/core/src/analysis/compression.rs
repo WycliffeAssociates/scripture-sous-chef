@@ -202,9 +202,14 @@ impl BucketedTextureBaseline {
         if model.dict_bytes() == 0 || corpus.verses.is_empty() {
             return None;
         }
-        let scored: Vec<(GraphemeCount, f64)> = corpus
-            .verses
-            .values()
+        // Per-verse scoring is the dominant cost of the baseline build
+        // (a zstd-with-dict round-trip per verse). Each score is
+        // independent and `CompressionTextureModel` is Send + Sync via
+        // its `Arc<Vec<u8>>` dict, so parallelise the score collection.
+        use rayon::prelude::*;
+        let verses: Vec<&crate::verse::Verse> = corpus.verses.values().collect();
+        let scored: Vec<(GraphemeCount, f64)> = verses
+            .par_iter()
             .map(|verse| {
                 let nfc = verse.nfc.as_str();
                 (GraphemeCount::of(nfc), model.score(nfc))

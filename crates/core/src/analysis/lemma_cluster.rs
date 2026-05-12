@@ -81,16 +81,37 @@ impl LemmaClusters {
     /// baseline. For that reason a form must appear at least
     /// `min_token_count` times before it can anchor or join a family.
     pub fn build(corpus: &NamedCorpus<'_>, config: LemmaClusterConfig) -> Self {
-        let mut counts: BTreeMap<String, u32> = BTreeMap::new();
-        for verse in corpus.verses.values() {
-            for (token, text) in verse.tokens_of(TokenKind::Word) {
-                let _ = token;
-                let form = normalize_word(text);
-                if form.chars().count() >= config.min_stem_chars {
-                    *counts.entry(form).or_default() += 1;
+        use rayon::prelude::*;
+        use std::collections::HashMap;
+
+        // Parallel per-verse word counting, merged via reduce.
+        // HashMap is faster for the merge; the BTreeMap ordering only
+        // matters for the downstream `by_stem` traversal, which we
+        // reconstruct after.
+        let min_stem_chars = config.min_stem_chars;
+        let verses: Vec<_> = corpus.verses.values().collect();
+        let counts_hash: HashMap<String, u32> = verses
+            .par_iter()
+            .fold(HashMap::<String, u32>::new, |mut local, verse| {
+                for (token, text) in verse.tokens_of(TokenKind::Word) {
+                    let _ = token;
+                    let form = normalize_word(text);
+                    if form.chars().count() >= min_stem_chars {
+                        *local.entry(form).or_insert(0) += 1;
+                    }
                 }
-            }
-        }
+                local
+            })
+            .reduce(HashMap::new, |mut a, mut b| {
+                if a.len() < b.len() {
+                    std::mem::swap(&mut a, &mut b);
+                }
+                for (k, v) in b {
+                    *a.entry(k).or_insert(0) += v;
+                }
+                a
+            });
+        let counts: BTreeMap<String, u32> = counts_hash.into_iter().collect();
 
         let n_word_types = counts.len();
         let eligible: Vec<(String, u32)> = counts

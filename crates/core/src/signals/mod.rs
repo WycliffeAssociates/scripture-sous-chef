@@ -27,6 +27,7 @@ pub const ALL_RULE_IDS: &[crate::diagnostics::RuleId] = &[
     orthographic::COMPRESSION_TEXTURE,
     orthographic::NFC_SANITY,
     orthographic::SCRIPT_MIXING,
+    lexical::DUPLICATE_WORD_RUN,
     lexical::WORD_HAPAX_BURST,
     lexical::RARE_WORD_CLUSTER,
     proper_noun_consistency::PROPER_NOUN_CONSISTENCY,

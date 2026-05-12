@@ -3,8 +3,6 @@
 //! Keep expensive discourse/lexicon/bootstrap work here instead of
 //! letting each positional rule rebuild its own private view.
 
-use std::collections::BTreeMap;
-
 use crate::analysis::char_ngrams::CharNgramStats;
 use crate::analysis::compression::{
     BucketedTextureBaseline, CompressionTextureConfig, CompressionTextureModel,
@@ -162,25 +160,44 @@ impl MorphologyStats {
     /// more usable evidence because affixes and spelling habits repeat inside
     /// words even when whole surface forms do not.
     pub fn from_project(project: &Project<'_>) -> Self {
+        use rayon::prelude::*;
+        use std::collections::HashMap;
         use unicode_segmentation::UnicodeSegmentation;
-        let mut counts: BTreeMap<String, u32> = BTreeMap::new();
-        for verse in project.target.verses.values() {
-            for (_, token_text) in verse.tokens_of(crate::verse::TokenKind::Word) {
-                let word: String = token_text
-                    .graphemes(true)
-                    .filter(|g| {
-                        g.chars()
-                            .next()
-                            .map(|c| c.is_alphabetic())
-                            .unwrap_or(false)
-                    })
-                    .flat_map(|g| g.chars().flat_map(char::to_lowercase))
-                    .collect();
-                if !word.is_empty() {
-                    *counts.entry(word).or_default() += 1;
+
+        // Per-verse word counting runs in parallel and merges via
+        // reduce. HashMap (vs BTreeMap) is faster for the merge; we
+        // only need ordering on the final result, which we don't
+        // actually expose — only the counts.
+        let verses: Vec<_> = project.target.verses.values().collect();
+        let counts: HashMap<String, u32> = verses
+            .par_iter()
+            .fold(HashMap::<String, u32>::new, |mut local, verse| {
+                for (_, token_text) in verse.tokens_of(crate::verse::TokenKind::Word) {
+                    let word: String = token_text
+                        .graphemes(true)
+                        .filter(|g| {
+                            g.chars()
+                                .next()
+                                .map(|c| c.is_alphabetic())
+                                .unwrap_or(false)
+                        })
+                        .flat_map(|g| g.chars().flat_map(char::to_lowercase))
+                        .collect();
+                    if !word.is_empty() {
+                        *local.entry(word).or_insert(0) += 1;
+                    }
                 }
-            }
-        }
+                local
+            })
+            .reduce(HashMap::new, |mut a, mut b| {
+                if a.len() < b.len() {
+                    std::mem::swap(&mut a, &mut b);
+                }
+                for (k, v) in b {
+                    *a.entry(k).or_insert(0) += v;
+                }
+                a
+            });
 
         let n_word_tokens = counts.values().map(|count| *count as usize).sum();
         let n_word_types = counts.len();
