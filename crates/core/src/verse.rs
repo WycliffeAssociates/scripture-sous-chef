@@ -23,6 +23,7 @@ use std::collections::BTreeMap;
 
 use icu_segmenter::options::WordBreakInvariantOptions;
 use icu_segmenter::{WordSegmenter, WordSegmenterBorrowed};
+use rayon::prelude::*;
 use unicode_normalization::UnicodeNormalization;
 
 use crate::sid::Sid;
@@ -103,11 +104,19 @@ pub fn build_verse(sid: Sid, raw: String) -> Verse {
     }
 }
 
-/// Batch build with a shared segmenter.
+/// Batch build with a shared segmenter, parallelised across rayon
+/// workers. The segmenter handle (`WordSegmenterBorrowed<'static>`)
+/// is `Copy + Send + Sync` — backed by baked static data — so every
+/// worker gets a free copy. NFC + ICU segmentation per verse is
+/// embarrassingly parallel: each verse is independent.
 pub fn build_verses(items: impl IntoIterator<Item = (Sid, String)>) -> BTreeMap<Sid, Verse> {
     let segmenter = WordSegmenter::new_auto(WordBreakInvariantOptions::default());
-    items
-        .into_iter()
+    // Materialise into a Vec first so we get a parallel iterator;
+    // many `IntoIterator` shapes (BTreeMap, HashMap) don't expose one
+    // directly.
+    let inputs: Vec<(Sid, String)> = items.into_iter().collect();
+    inputs
+        .into_par_iter()
         .map(|(sid, raw)| {
             let nfc: String = raw.nfc().collect();
             let tokens = tokenise(&nfc, segmenter);

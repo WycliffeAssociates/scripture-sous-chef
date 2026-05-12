@@ -735,6 +735,7 @@ dependencies = [
 name = "ssc-ingest"
 version = "0.1.0"
 dependencies = [
+ "rayon",
  "ssc-core",
  "usfm_onion",
 ]
@@ -847,7 +848,7 @@ checksum = "9629274872b2bfaf8d66f5f15725007f635594914870f65218920345aa11aa8c"
 [[package]]
 name = "usfm_onion"
 version = "0.1.0"
-source = "git+https://github.com/WycliffeAssociates/usfm-onion.git?rev=4e3759370d0cc7510c49d096749751c31c55614d#4e3759370d0cc7510c49d096749751c31c55614d"
+source = "git+https://github.com/WycliffeAssociates/usfm-onion.git?tag=v0.0.1#aaf77701ad8653524619189a8b7b0f31f220f70e"
 dependencies = [
  "logos",
  "quick-xml",

@@ -16,7 +16,7 @@ unicode-script = "0.5"
 icu_segmenter = "2.2"
 zstd = "0.13"
 rayon = "1.10"
-usfm_onion = { git = "https://github.com/WycliffeAssociates/usfm-onion.git", rev = "4e3759370d0cc7510c49d096749751c31c55614d" }
+usfm_onion = { git = "https://github.com/WycliffeAssociates/usfm-onion.git", tag = "v0.0.1" }
 plotters = { version = "0.3", default-features = false, features = [
   "svg_backend",
   "all_series",

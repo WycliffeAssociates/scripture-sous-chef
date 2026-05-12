@@ -6,6 +6,7 @@ edition.workspace = true
 [dependencies]
 ssc-core = { workspace = true }
 usfm_onion = { workspace = true, optional = true }
+rayon = { workspace = true }
 
 [features]
 default = []
