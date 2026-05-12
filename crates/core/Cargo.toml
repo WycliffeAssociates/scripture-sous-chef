@@ -6,6 +6,7 @@ edition.workspace = true
 [dependencies]
 unicode-segmentation = { workspace = true }
 unicode-normalization = { workspace = true }
+unicode-script = { workspace = true }
 icu_segmenter = { workspace = true }
 zstd = { workspace = true }
 rayon = { workspace = true }

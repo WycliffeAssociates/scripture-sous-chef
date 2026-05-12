@@ -1,43 +1,75 @@
-//! Coarse Unicode block → script-name lookup, plus the NT book table.
-//! Used by the calibration profiler and (eventually) by signals that
-//! gate behaviour on script identity.
+//! Per-character script identity, plus the NT book table.
+//!
+//! Backed by the `unicode-script` crate (UAX #24). See ADR 0009 for
+//! the reasoning behind delegating to a crate rather than maintaining
+//! hand-rolled codepoint ranges.
 
+use unicode_script::{Script, UnicodeScript};
+
+/// Coarse script identity for a single character. Returns `None` for
+/// characters that have no script identity worth tracking here —
+/// digits, punctuation, whitespace (UCD `Common`), combining marks
+/// (`Inherited`), and unassigned codepoints. Callers that need to
+/// special-case digits do so explicitly; see
+/// `signals::orthographic::classify_script`.
 pub fn script_of(c: char) -> Option<&'static str> {
-    let cp = c as u32;
-    Some(match cp {
-        0x0000..=0x024F => "Latin",
-        0x0370..=0x03FF => "Greek",
-        0x0400..=0x04FF => "Cyrillic",
-        0x0530..=0x058F => "Armenian",
-        0x0590..=0x05FF => "Hebrew",
-        0x0600..=0x06FF | 0x0750..=0x077F | 0x08A0..=0x08FF | 0xFB50..=0xFDFF | 0xFE70..=0xFEFF => {
-            "Arabic"
-        }
-        0x0700..=0x074F => "Syriac",
-        0x0780..=0x07BF => "Thaana",
-        0x07C0..=0x07FF => "Nko",
-        0x0900..=0x097F => "Devanagari",
-        0x0980..=0x09FF => "Bengali",
-        0x0A00..=0x0A7F => "Gurmukhi",
-        0x0A80..=0x0AFF => "Gujarati",
-        0x0B00..=0x0B7F => "Oriya",
-        0x0B80..=0x0BFF => "Tamil",
-        0x0C00..=0x0C7F => "Telugu",
-        0x0C80..=0x0CFF => "Kannada",
-        0x0D00..=0x0D7F => "Malayalam",
-        0x0D80..=0x0DFF => "Sinhala",
-        0x0E00..=0x0E7F => "Thai",
-        0x0E80..=0x0EFF => "Lao",
-        0x0F00..=0x0FFF => "Tibetan",
-        0x1000..=0x109F => "Myanmar",
-        0x10A0..=0x10FF => "Georgian",
-        0x1100..=0x11FF | 0xAC00..=0xD7AF => "Hangul",
-        0x1200..=0x137F => "Ethiopic",
-        0x13A0..=0x13FF => "Cherokee",
-        0x1400..=0x167F => "CanadianAboriginal",
-        0x1780..=0x17FF => "Khmer",
-        0x1800..=0x18AF => "Mongolian",
-        0x3040..=0x309F | 0x30A0..=0x30FF | 0x4E00..=0x9FFF => "CJK",
+    // Mathematical Alphanumeric Symbols are `Common` in the UCD —
+    // they have no script identity by spec. For homoglyph detection
+    // that's exactly the wrong answer: U+1D400 (math-bold M) inside a
+    // Latin token is the homoglyph mistake we want to flag. Override
+    // ahead of the crate so the script-mixing rule sees a distinct
+    // pseudo-script for the whole block. See ADR 0009.
+    if matches!(c as u32, 0x1D400..=0x1D7FF) {
+        return Some("MathAlphanumeric");
+    }
+    script_name(c.script())
+}
+
+/// Map a `Script` variant to the short name string the engine has
+/// used since day one. Keeping the strings stable lets historical
+/// calibration dumps (which include script-count histograms) stay
+/// comparable across the migration.
+///
+/// Variants not listed here intentionally collapse to `None`:
+/// `Common`, `Inherited`, `Unknown`, and any script the engine has
+/// not yet exercised. A rule that cares about an additional script
+/// can add a row to this table.
+fn script_name(s: Script) -> Option<&'static str> {
+    Some(match s {
+        Script::Latin => "Latin",
+        Script::Greek => "Greek",
+        Script::Cyrillic => "Cyrillic",
+        Script::Armenian => "Armenian",
+        Script::Hebrew => "Hebrew",
+        Script::Arabic => "Arabic",
+        Script::Syriac => "Syriac",
+        Script::Thaana => "Thaana",
+        Script::Nko => "Nko",
+        Script::Devanagari => "Devanagari",
+        Script::Bengali => "Bengali",
+        Script::Gurmukhi => "Gurmukhi",
+        Script::Gujarati => "Gujarati",
+        Script::Oriya => "Oriya",
+        Script::Tamil => "Tamil",
+        Script::Telugu => "Telugu",
+        Script::Kannada => "Kannada",
+        Script::Malayalam => "Malayalam",
+        Script::Sinhala => "Sinhala",
+        Script::Thai => "Thai",
+        Script::Lao => "Lao",
+        Script::Tibetan => "Tibetan",
+        Script::Myanmar => "Myanmar",
+        Script::Georgian => "Georgian",
+        Script::Hangul => "Hangul",
+        Script::Ethiopic => "Ethiopic",
+        Script::Cherokee => "Cherokee",
+        Script::Canadian_Aboriginal => "CanadianAboriginal",
+        Script::Khmer => "Khmer",
+        Script::Mongolian => "Mongolian",
+        // Collapse Hiragana / Katakana / Han into one identity to
+        // match the prior block-based behaviour; downstream histograms
+        // already key off `"CJK"`.
+        Script::Hiragana | Script::Katakana | Script::Han => "CJK",
         _ => return None,
     })
 }
@@ -73,4 +105,53 @@ pub fn is_nt_book(book: &str) -> bool {
             | "JUD"
             | "REV"
     )
+}
+// @ai -> While we drive, avoid any shims or legacy code. This is all pre-alpha. If we need to get rid of stuff, feel free to do that and so we can get into the best shape possible.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ascii_digit_is_not_latin() {
+        // The old hand-rolled table attributed ASCII digits to Latin
+        // because 0x0030..0x0039 fell in the 0x0000..=0x024F range.
+        // UCD says digits are Common; we honour that and return None.
+        assert_eq!(script_of('2'), None);
+    }
+
+    #[test]
+    fn ascii_punctuation_is_not_latin() {
+        assert_eq!(script_of('.'), None);
+        assert_eq!(script_of(','), None);
+    }
+
+    #[test]
+    fn polytonic_greek_is_greek() {
+        // U+1F08 GREEK CAPITAL LETTER ALPHA WITH PSILI — Greek Extended
+        // block, missed entirely by the old 0x0370..=0x03FF range.
+        assert_eq!(script_of('\u{1F08}'), Some("Greek"));
+    }
+
+    #[test]
+    fn latin_supplement_is_latin() {
+        // U+00E9 (é) — Latin-1 Supplement, covered both before and now.
+        assert_eq!(script_of('\u{00E9}'), Some("Latin"));
+    }
+
+    #[test]
+    fn cyrillic_a_is_cyrillic() {
+        // The canonical homoglyph for Latin 'a'.
+        assert_eq!(script_of('\u{0430}'), Some("Cyrillic"));
+    }
+
+    #[test]
+    fn math_bold_m_overrides_common() {
+        assert_eq!(script_of('\u{1D400}'), Some("MathAlphanumeric"));
+    }
+
+    #[test]
+    fn combining_mark_is_scriptless() {
+        // U+0301 COMBINING ACUTE ACCENT — Inherited.
+        assert_eq!(script_of('\u{0301}'), None);
+    }
 }

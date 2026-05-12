@@ -12,6 +12,7 @@ ssc-core = { path = "crates/core" }
 ssc-ingest = { path = "crates/ingest" }
 unicode-segmentation = "1.12"
 unicode-normalization = "0.1"
+unicode-script = "0.5"
 icu_segmenter = "2.2"
 zstd = "0.13"
 rayon = "1.10"
