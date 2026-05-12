@@ -70,49 +70,57 @@ impl Rule for CompressionTexture {
         let z_threshold = param(project, "compression_texture_z_threshold")
             .unwrap_or(DEFAULT_TEXTURE_Z_THRESHOLD);
 
-        let mut findings = Vec::new();
-        for (sid, verse) in &project.target.verses {
-            let target_score = context.texture_model.score(&verse.nfc);
-            let target_z = target_baseline.z_for(GraphemeCount::of(&verse.nfc), target_score);
-            if !target_z.is_finite() {
-                continue;
-            }
-
-            let source_z = source_mirror
-                .and_then(|(model, baseline)| {
-                    let source_verse = project.source.as_ref()?.verses.get(sid)?;
-                    let z = baseline.z_for(
-                        GraphemeCount::of(&source_verse.nfc),
-                        model.score(&source_verse.nfc),
-                    );
-                    z.is_finite().then_some(z)
+        // Per-verse scoring is dominated by per-call zstd-compress
+        // (one round-trip per verse against the trained dict).
+        // CompressionTextureModel is Send + Sync via Arc<Vec<u8>>; the
+        // texture baselines are plain copies; the source corpus
+        // lookup is a BTreeMap read. Parallelise over verses.
+        use rayon::prelude::*;
+        let verses: Vec<(&crate::sid::Sid, &crate::verse::Verse)> =
+            project.target.verses.iter().collect();
+        let findings: Vec<Finding<'src>> = verses
+            .par_iter()
+            .filter_map(|(sid, verse)| {
+                let target_score = context.texture_model.score(&verse.nfc);
+                let target_z =
+                    target_baseline.z_for(GraphemeCount::of(&verse.nfc), target_score);
+                if !target_z.is_finite() {
+                    return None;
+                }
+                let source_z = source_mirror
+                    .and_then(|(model, baseline)| {
+                        let source_verse = project.source.as_ref()?.verses.get(sid)?;
+                        let z = baseline.z_for(
+                            GraphemeCount::of(&source_verse.nfc),
+                            model.score(&source_verse.nfc),
+                        );
+                        z.is_finite().then_some(z)
+                    })
+                    .unwrap_or(0.0);
+                let mirrored_z = target_z - source_z;
+                if mirrored_z <= z_threshold {
+                    return None;
+                }
+                let excess = ((mirrored_z - z_threshold) / z_threshold).clamp(0.0, 1.0);
+                Some(Finding {
+                    rule_id: COMPRESSION_TEXTURE,
+                    sid: **sid,
+                    severity: Severity::Info,
+                    lane: Lane::VerseAnomaly,
+                    // Whole-verse finding; UI renders as a verse-level badge.
+                    byte_range: ByteRange { start: 0, end: 0 },
+                    span: &verse.nfc[0..0],
+                    cluster_key: ClusterKey("compression-texture".to_string()),
+                    finding_id: FindingId::default(),
+                    message: format!(
+                        "verse texture is unusual for its length cohort (z {:.2} vs threshold {:.2})",
+                        mirrored_z, z_threshold
+                    ),
+                    evidence: ((0.5 + 0.5 * excess) * context.morphology.char_signal_weight)
+                        .clamp(0.0, 1.0),
                 })
-                .unwrap_or(0.0);
-
-            let mirrored_z = target_z - source_z;
-            if mirrored_z <= z_threshold {
-                continue;
-            }
-
-            let excess = ((mirrored_z - z_threshold) / z_threshold).clamp(0.0, 1.0);
-            findings.push(Finding {
-                rule_id: COMPRESSION_TEXTURE,
-                sid: *sid,
-                severity: Severity::Info,
-                lane: Lane::VerseAnomaly,
-                // Whole-verse finding; UI renders as a verse-level badge.
-                byte_range: ByteRange { start: 0, end: 0 },
-                span: &verse.nfc[0..0],
-                cluster_key: ClusterKey("compression-texture".to_string()),
-                finding_id: FindingId::default(),
-                message: format!(
-                    "verse texture is unusual for its length cohort (z {:.2} vs threshold {:.2})",
-                    mirrored_z, z_threshold
-                ),
-                evidence: ((0.5 + 0.5 * excess) * context.morphology.char_signal_weight)
-                    .clamp(0.0, 1.0),
-            });
-        }
+            })
+            .collect();
 
         findings
     }

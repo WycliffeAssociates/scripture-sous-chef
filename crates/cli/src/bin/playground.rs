@@ -47,7 +47,7 @@ fn main() {
     // run_ingest(corpus_path, source_path, 1);
     // run_context_build(corpus_path, source_path, 1);
     // run_analyze(corpus_path, source_path, 1);
-    run_full_check(corpus_path, source_path, 1);
+    run_full_check(corpus_path, source_path, 3);
 
     // Multi-iter sampling (no output writing; just exercise the path):
     // run_full_check(corpus_path, source_path, 5);
@@ -95,10 +95,7 @@ fn run_full_check(corpus: &PathBuf, source: Option<&std::path::Path>, iters: usi
 
 // ---- helpers -------------------------------------------------------------
 
-fn build_project(
-    corpus: &PathBuf,
-    source: Option<&std::path::Path>,
-) -> Project<'static> {
+fn build_project(corpus: &PathBuf, source: Option<&std::path::Path>) -> Project<'static> {
     let name = corpus
         .file_name()
         .and_then(|s| s.to_str())
@@ -116,7 +113,13 @@ fn build_project(
             .unwrap_or_else(|e| panic!("read source {} failed: {e}", src_path.display()));
         (src_name, src_raw)
     });
-    build::project_from_raw_map(name, raw, source_pair, Config::default(), ExceptionSet::default())
+    build::project_from_raw_map(
+        name,
+        raw,
+        source_pair,
+        Config::default(),
+        ExceptionSet::default(),
+    )
 }
 
 fn time_op<F>(label: &str, iters: usize, mut f: F)
@@ -133,7 +136,11 @@ where
 
 fn print_timing(label: &str, iters: usize, elapsed: Duration) {
     let secs = elapsed.as_secs_f64();
-    let per_iter_ms = if iters > 0 { secs * 1000.0 / iters as f64 } else { 0.0 };
+    let per_iter_ms = if iters > 0 {
+        secs * 1000.0 / iters as f64
+    } else {
+        0.0
+    };
     println!(
         "{label:<14} iters={iters:<3} elapsed={:>9.3?}  per-iter={per_iter_ms:>8.1} ms",
         elapsed
