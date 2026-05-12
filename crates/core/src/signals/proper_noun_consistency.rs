@@ -1,19 +1,50 @@
 //! Proper-noun case consistency.
 //!
-//! A target-side check: when a token is observed capitalized in
-//! mid-flow position at least `MIN_UPPER_OBS` times, it's almost
-//! certainly intended to be a proper noun. Any *lowercase* mid-flow
-//! occurrence of the same lexeme is then a likely casing inconsistency
-//! — the translator typed `david` where they meant `David`.
+//! A target-side check: when a token's lexicon profile classifies as
+//! `IntrinsicUpper` (rate-based, see `LexiconConfig`) *and* its
+//! uppercase evidence is dominated by Title-Case form rather than
+//! ALL-CAPS form, it's a per-token proper noun. Any *lowercase*
+//! mid-flow occurrence of the same lexeme is then a likely casing
+//! inconsistency — the translator typed `david` where they meant
+//! `David`.
 //!
 //! "Mid-flow" means: predecessor cluster contains no terminal
 //! punctuation. Sentence-initial occurrences (whether uppercase or
 //! lowercase) are excluded from both sides of the comparison because
 //! sentence-initial casing is forced by sentence position, not by the
-//! word's own case identity. The lexicon's existing
-//! counted-vs-deferred split already encodes this distinction: this
-//! rule reads `counted_upper_initial` and `counted_lower_initial`
-//! only.
+//! word's own case identity. The lexicon's existing counted-vs-
+//! deferred split already encodes this distinction.
+//!
+//! # Three guards (language-agnostic)
+//!
+//! 1. **Rate, not count.** Gate on `CaseProfile::classify()` returning
+//!    `IntrinsicUpper` — that combines a minimum sample size
+//!    (`intrinsic_min_obs`, default 5) with a rate threshold
+//!    (`intrinsic_upper_rate_min`, default 0.95). A token observed
+//!    uppercase 9 times and lowercase 5000 times has a 0.18% upper
+//!    rate; it is *not* a proper noun, regardless of the raw 9.
+//! 2. **Title-Case dominance over ALL-CAPS.** Reject if the token's
+//!    `all_upper` (ALL-CAPS form) count exceeds its `title_case`
+//!    count. ALL-CAPS observations are almost always *span*-level
+//!    convention — titulus stretches (Vietnamese `GIÊ-HÔ-VA`,
+//!    English KJV `LORD`), section headers, all-caps emphasis —
+//!    not evidence about the token's identity. A genuine proper
+//!    noun (`David`, `Mark`) is mostly Title-Case in cased scripts.
+//! 3. **Lowercase mid-flow exists.** If the token's
+//!    `counted_lower_initial == 0`, there's nothing to flag —
+//!    the token is overwhelmingly uppercase in every observed
+//!    position (the `LORD`/`JESUS` titulus shape).
+//!
+//! # Why this passes vi_ulb
+//!
+//! Vietnamese romanises Yahweh as `GIÊ-HÔ-VA`. ICU's word segmenter
+//! splits the hyphens, so `HÔ` accumulates ~100+ mid-flow uppercase
+//! observations from spans across the corpus. The old rule (raw
+//! `counted_upper_initial >= 3`) treated those as per-token proper-
+//! noun evidence and fired on every lowercase `hô` (the verb "cry
+//! out"). Guard 2 catches this: `hô`'s `all_upper` count is large
+//! and its `title_case` count is small (standalone `Hô` is rare),
+//! so the rule does not classify it as a per-token proper noun.
 //!
 //! # Scope and complement to source_co_rarity
 //!
@@ -25,12 +56,9 @@
 //! flagged when it appears lowercase. It catches typos like `david`
 //! mid-sentence in a corpus where `David` appears 100 times.
 //!
-//! It does NOT cross-reference source. A token that appears
-//! sometimes lowercase as a deliberate stylistic choice (e.g., a
-//! common noun that English would lowercase but the translator
-//! happens to capitalize for emphasis) will surface; the labelling-
-//! snowball is the right place to learn that.
+//! It does NOT cross-reference source.
 
+use crate::analysis::lexicon::CaseClass;
 use crate::context::AnalysisContext;
 use crate::diagnostics::{
     AnalyzeStats, ByteRange, ClusterKey, Finding, FindingId, Lane, RuleId, Severity,
@@ -40,18 +68,7 @@ use crate::rule::Rule;
 use crate::verse::TokenKind;
 use unicode_segmentation::UnicodeSegmentation;
 
-/// `lex.proper-noun-consistency`: a token whose lexicon profile shows
-/// `counted_upper_initial >= MIN_UPPER_OBS` is appearing lowercase in
-/// mid-flow position.
 pub const PROPER_NOUN_CONSISTENCY: RuleId = RuleId("lex.proper-noun-consistency");
-
-/// Minimum mid-flow uppercase observations required before lowercase
-/// mid-flow occurrences are flagged as inconsistent. The user's
-/// intent: "if I have a [proper] noun that seems to get used a fair
-/// number of times" — three observations is enough to say "this is
-/// probably a proper noun" without being so strict that we miss
-/// lower-frequency proper nouns.
-pub const DEFAULT_MIN_UPPER_OBS: u32 = 3;
 
 #[derive(Debug, Clone, Copy)]
 pub struct ProperNounConsistency;
@@ -67,9 +84,7 @@ impl Rule for ProperNounConsistency {
         context: &AnalysisContext,
         _stats: &mut AnalyzeStats,
     ) -> Vec<Finding<'src>> {
-        let min_upper = param(project, "proper_noun_min_upper_obs")
-            .map(|v| v as u32)
-            .unwrap_or(DEFAULT_MIN_UPPER_OBS);
+        let lexicon_config = context.lexicon.config;
 
         let mut findings = Vec::new();
         for (sid, verse) in &project.target.verses {
@@ -86,13 +101,21 @@ impl Rule for ProperNounConsistency {
                 let Some(profile) = context.lexicon.words.get(&form_lower) else {
                     continue;
                 };
-                if profile.counted_upper_initial < min_upper {
+                // Guard 1 + Guard 3: rate-based proper-noun gate with
+                // minimum-sample-size floor, via the lexicon's existing
+                // classify(). Raw counts are not sufficient (see file
+                // docstring).
+                if profile.classify(&lexicon_config) != CaseClass::IntrinsicUpper {
+                    continue;
+                }
+                // Guard 2: span-convention filter. ALL-CAPS dominance
+                // signals titulus / section header / emphasis, not
+                // per-token identity. A real proper noun is mostly
+                // Title-Case.
+                if profile.title_case <= profile.all_upper {
                     continue;
                 }
                 if profile.counted_lower_initial == 0 {
-                    // Token is overwhelmingly upper; the only lowercase
-                    // occurrences would be deferred (sentence-initial),
-                    // which we don't flag.
                     continue;
                 }
 
@@ -109,8 +132,8 @@ impl Rule for ProperNounConsistency {
                     cluster_key: ClusterKey(form_lower.clone()),
                     finding_id: FindingId::default(),
                     message: format!(
-                        "'{token_text}' is observed {} times capitalised mid-flow; \
-                         lowercase here may be unintentional",
+                        "'{token_text}' is observed {} times capitalised mid-flow \
+                         (Title-Case dominant); lowercase here may be unintentional",
                         profile.counted_upper_initial
                     ),
                     evidence: 1.0,
@@ -133,21 +156,9 @@ fn lowercase_normalize(text: &str) -> String {
         .collect()
 }
 
-fn param(project: &Project<'_>, name: &str) -> Option<f64> {
-    project.config.rules.iter().find_map(|rule| {
-        if rule.id != PROPER_NOUN_CONSISTENCY {
-            return None;
-        }
-        rule.params
-            .iter()
-            .find_map(|(param_name, value)| (*param_name == name).then_some(*value))
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::analysis::lexicon::LexiconConfig;
     use crate::config::{Config, ExceptionSet};
     use crate::project::NamedCorpus;
     use crate::sid::{BookId, Sid};
@@ -182,31 +193,31 @@ mod tests {
         }
     }
 
-    /// Aaron appears 5 times capitalised mid-flow ("the prophet
-    /// Aaron walked"); once lowercase mid-flow ("the prophet aaron
-    /// rested"). The rule flags the lowercase verse only.
+    /// 20 uppercase Title-Case observations of `Aaron` + 1 lowercase.
+    /// Rate is 20/21 ≈ 95.2% — over `intrinsic_upper_rate_min`
+    /// (0.95). Title-Case dominates ALL-CAPS (all_upper=0). The
+    /// single lowercase mid-flow occurrence fires.
     #[test]
-    fn flags_lowercase_when_uppercase_observations_meet_threshold() {
+    fn flags_lowercase_when_title_case_proper_noun() {
         let mut verses = Vec::new();
-        for v in 1..=5u16 {
+        for v in 1..=20u16 {
             verses.push((sid(v), "the prophet Aaron walked far"));
         }
-        // The inconsistency:
-        verses.push((sid(10), "the prophet aaron rested"));
+        verses.push((sid(50), "the prophet aaron rested"));
         let project = project_of(corpus(verses));
         let context = AnalysisContext::build(&project);
         let mut stats = AnalyzeStats::default();
         let findings = ProperNounConsistency.check(&project, &context, &mut stats);
         assert_eq!(findings.len(), 1);
-        assert_eq!(findings[0].sid, sid(10));
+        assert_eq!(findings[0].sid, sid(50));
         assert_eq!(findings[0].rule_id, PROPER_NOUN_CONSISTENCY);
     }
 
-    /// Token doesn't meet the mid-flow uppercase threshold (3) →
-    /// silent. Two capitalised observations isn't enough to call
-    /// something a proper noun.
+    /// Guard 1 + 3: rate-based + min-observation gate. Two
+    /// observations isn't a proper-noun classification regardless
+    /// of how cleanly they're upper-cased.
     #[test]
-    fn does_not_flag_under_threshold() {
+    fn does_not_flag_under_min_observations() {
         let mut verses = Vec::new();
         for v in 1..=2u16 {
             verses.push((sid(v), "the prophet Aaron walked far"));
@@ -219,13 +230,55 @@ mod tests {
         assert!(findings.is_empty());
     }
 
-    /// All lowercase occurrences are sentence-initial (deferred); no
-    /// counted_lower_initial. Don't flag — sentence-initial casing
-    /// doesn't reveal anything about case identity.
+    /// Guard 1: rate, not count. Token observed Title-Case 5 times
+    /// mid-flow and lowercase 50 times mid-flow has 9% upper rate —
+    /// not a proper noun regardless of the raw 5. (The old rule
+    /// fired here because `counted_upper_initial >= 3`.)
+    #[test]
+    fn does_not_flag_when_uppercase_rate_too_low() {
+        let mut verses = Vec::new();
+        for v in 1..=5u16 {
+            verses.push((sid(v), "the prophet Lord walked"));
+        }
+        for v in 100..=149u16 {
+            verses.push((sid(v), "the prophet lord walked"));
+        }
+        let project = project_of(corpus(verses));
+        let context = AnalysisContext::build(&project);
+        let mut stats = AnalyzeStats::default();
+        let findings = ProperNounConsistency.check(&project, &context, &mut stats);
+        assert!(findings.is_empty());
+    }
+
+    /// Guard 2: ALL-CAPS-dominant tokens are span-convention, not
+    /// per-token identity. `HÔ` observed 20 times mid-flow as
+    /// ALL-CAPS (simulating embedding in `GIÊ-HÔ-VA` after ICU
+    /// hyphen-splitting), `hô` once lowercase mid-flow. Rate is
+    /// IntrinsicUpper at 95.2% but all_upper >> title_case, so the
+    /// rule does not classify it as a per-token proper noun.
+    #[test]
+    fn does_not_flag_when_all_caps_dominant() {
+        let mut verses = Vec::new();
+        for v in 1..=20u16 {
+            verses.push((sid(v), "the prophet HÔ walked far"));
+        }
+        verses.push((sid(50), "the prophet hô walked"));
+        let project = project_of(corpus(verses));
+        let context = AnalysisContext::build(&project);
+        let mut stats = AnalyzeStats::default();
+        let findings = ProperNounConsistency.check(&project, &context, &mut stats);
+        assert!(findings.is_empty());
+    }
+
+    /// Guard 3: no counted-mid-flow lowercase to flag. All lowercase
+    /// occurrences are sentence-initial (deferred); the only place
+    /// `aaron` appears with lower-case `a` is right after a terminal
+    /// punctuation. Sentence-initial casing doesn't reveal case
+    /// identity.
     #[test]
     fn does_not_flag_when_only_sentence_initial_lowercase() {
         let mut verses = Vec::new();
-        for v in 1..=5u16 {
+        for v in 1..=20u16 {
             verses.push((sid(v), "the prophet Aaron walked far. Aaron rested"));
         }
         let project = project_of(corpus(verses));
