@@ -1,4 +1,13 @@
-//! Orthographic signals. Operate on `Verse.nfc`; never on `Verse.raw`.
+//! `orth.ncd-texture` — whole-verse compression-texture outlier.
+//!
+//! This is not a highlighter; it is a "this verse does not fit the
+//! local texture" signal. Token-level rules (char-LM, lemma-family)
+//! point at individual spans; this rule contributes an independent
+//! holistic cue to the aggregator.
+//!
+//! The string `orth.ncd-texture` is preserved as a historical
+//! shorthand — see `analysis::compression` for why this isn't
+//! classical NCD.
 
 use crate::analysis::length_buckets::GraphemeCount;
 use crate::context::AnalysisContext;
@@ -8,30 +17,6 @@ use crate::diagnostics::{
 use crate::project::Project;
 use crate::rule::Rule;
 
-/// Character-LM surprisal: a token whose character n-gram probability
-/// under a corpus-trained KN model is far below expectation. Catches
-/// misspelled tokens and accidental script switches. Not yet implemented.
-pub const CHAR_LM_SURPRISAL: RuleId = RuleId("orth.char-lm-surprisal");
-
-/// NFC sanity: any verse where `raw != nfc` reveals un-normalised input.
-/// Almost always a paste-from-Word artefact. Not yet implemented.
-pub const NFC_SANITY: RuleId = RuleId("orth.nfc-sanity");
-
-/// Script mixing: a single word token containing characters from more
-/// than one script (e.g. Latin `o` glued into a Cyrillic word). Almost
-/// always a homoglyph confusion. Not yet implemented.
-pub const SCRIPT_MIXING: RuleId = RuleId("orth.script-mixing");
-
-/// Compression-texture outlier: a verse whose character-level shape costs
-/// unusually many bytes after a compressor has seen this corpus.
-///
-/// Whole-verse on purpose: this is not a highlighter, it is a "this verse
-/// does not fit the local texture" signal. Token-level rules (char-LM,
-/// lemma-family) can point at individual spans; this rule contributes an
-/// independent holistic cue to the aggregator.
-///
-/// The string `orth.ncd-texture` is preserved as a historical shorthand —
-/// see `analysis::compression` for why this isn't classical NCD.
 pub const COMPRESSION_TEXTURE: RuleId = RuleId("orth.ncd-texture");
 
 /// Default robust-z threshold (in 1.4826·MAD units) above which a verse
@@ -88,8 +73,7 @@ impl Rule for CompressionTexture {
         let mut findings = Vec::new();
         for (sid, verse) in &project.target.verses {
             let target_score = context.texture_model.score(&verse.nfc);
-            let target_z =
-                target_baseline.z_for(GraphemeCount::of(&verse.nfc), target_score);
+            let target_z = target_baseline.z_for(GraphemeCount::of(&verse.nfc), target_score);
             if !target_z.is_finite() {
                 continue;
             }
@@ -97,8 +81,10 @@ impl Rule for CompressionTexture {
             let source_z = source_mirror
                 .and_then(|(model, baseline)| {
                     let source_verse = project.source.as_ref()?.verses.get(sid)?;
-                    let z = baseline
-                        .z_for(GraphemeCount::of(&source_verse.nfc), model.score(&source_verse.nfc));
+                    let z = baseline.z_for(
+                        GraphemeCount::of(&source_verse.nfc),
+                        model.score(&source_verse.nfc),
+                    );
                     z.is_finite().then_some(z)
                 })
                 .unwrap_or(0.0);
@@ -194,6 +180,7 @@ mod tests {
             config: Config::default(),
             exceptions: ExceptionSet::default(),
             lemma_labels: Default::default(),
+            rules_config: Default::default(),
         }
     }
 
@@ -285,11 +272,8 @@ mod tests {
 
         let context_with_source = AnalysisContext::build(&target_with_source);
         let mut stats = AnalyzeStats::default();
-        let findings_with_source = CompressionTexture.check(
-            &target_with_source,
-            &context_with_source,
-            &mut stats,
-        );
+        let findings_with_source =
+            CompressionTexture.check(&target_with_source, &context_with_source, &mut stats);
         assert!(
             !findings_with_source.iter().any(|f| f.sid == outlier),
             "outlier should be exonerated when source is equally anomalous; got {:?}",

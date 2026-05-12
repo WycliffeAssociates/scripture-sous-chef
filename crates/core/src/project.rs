@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 
 use crate::analysis::lemma_feedback::LabelledLemmaIndex;
 use crate::config::{Config, ExceptionSet};
+use crate::config_rules::RulesConfig;
 use crate::sid::Sid;
 use crate::verse::Verse;
 
@@ -30,4 +31,8 @@ pub struct Project<'src> {
     /// the dogfood CLI populates this from
     /// `<corpus>/.sous/events.jsonl` on each run.
     pub lemma_labels: LabelledLemmaIndex,
+    /// Per-rule registry loaded from `<corpus>/.sous/rules.json`. The
+    /// `Default` is the empty registry, which means every rule is
+    /// enabled and no ignore patches apply.
+    pub rules_config: RulesConfig,
 }

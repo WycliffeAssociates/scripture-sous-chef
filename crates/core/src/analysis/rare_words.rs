@@ -2,16 +2,22 @@
 //!
 //! Counting alone tells you the long tail is huge; it does not tell you
 //! which forms inside it are likely typos versus rare-but-correct words.
-//! This module ranks them by a combined suspicion score, so a human
-//! reviewer only sees the top suspects.
+//! This module ranks them by an **advisory** score, so a human reviewer
+//! only sees the top suspects. The output is *not* a finding — see plan
+//! §1.3: without labels, the per-token Noisy-OR over correlated factors
+//! was theater. The aggregator is now `max(...)` of the available
+//! per-token signals, with `source_co_rarity` heavily down-weighted
+//! until alignment data exists (§7).
 //!
 //! ## Mental model
 //!
 //! For each "rare" surface form (count below a configurable threshold),
-//! compute per-type evidence on multiple independent signals, combine via
-//! Noisy-OR (the same chassis [`crate::aggregate`] uses for clusters),
-//! and rank the result. Each signal returns a probability in `[0, 1]`
-//! meaning "this form is suspicious by this signal."
+//! compute per-type evidence on multiple signals, then take the
+//! maximum (with `source_co_rarity` multiplied by
+//! [`SOURCE_CO_RARITY_ADVISORY_WEIGHT`] before the max). Each signal
+//! returns a probability in `[0, 1]` meaning "this form is suspicious
+//! by this signal." Promotion path: labels → logistic regression, or
+//! eBible priors → ECDF-percentile-rank (plan §6.2 / §10.B).
 //!
 //! Signals in this first pass:
 //! - **Character anomaly** — how unusual is the form's character texture
@@ -53,7 +59,6 @@ use crate::analysis::compression::CompressionTextureModel;
 use crate::analysis::lemma_feedback::LabelledLemmaIndex;
 use crate::analysis::lexicon::{CaseClass, Lexicon};
 use crate::analysis::source_co_rarity;
-use crate::context::MorphologyStats;
 use crate::project::Project;
 
 /// Default cap for "rare" — forms appearing this many times or fewer.
@@ -105,11 +110,14 @@ pub struct TriageCandidate {
     /// Lowercased surface form, as keyed in [`Lexicon::words`].
     pub form: String,
     pub count: u32,
-    /// Combined Noisy-OR suspicion score in `[0, 1]`. Higher = more
-    /// suspicious.
+    /// Advisory suspicion score in `[0, 1]`. The max of per-signal
+    /// evidence (with `source_co_rarity` down-weighted before the
+    /// max). Higher = more suspicious. **Advisory, not a finding** —
+    /// per plan §1.3 this ranking is for routing reviewer attention,
+    /// not a labelled flag.
     pub suspicion: f64,
-    /// Per-signal evidence values that fed Noisy-OR. Useful for the
-    /// triage UI to explain *why* a form scored high.
+    /// Per-signal evidence values that fed the advisory score. Useful
+    /// for the triage UI to explain *why* a form scored high.
     pub evidence: TriageEvidence,
     /// Lexicon's case classification. `IntrinsicUpper` candidates are
     /// pre-filtered out by default; this field is preserved so callers
@@ -132,9 +140,12 @@ pub struct TriageEvidence {
     /// Source-relative co-rarity factor (`0.0` = saturated downweight
     /// from a proper-noun BK match, `0.3` = co-rare source without BK
     /// match, `0.7` = source unremarkable, `None` = no source loaded
-    /// or no verse-level evidence; abstains by being absent from the
-    /// Noisy-OR product). See `analysis::source_co_rarity` and
-    /// ADR 0003 / 0007.
+    /// or no verse-level evidence). The factor is multiplied by
+    /// [`SOURCE_CO_RARITY_ADVISORY_WEIGHT`] before entering the max,
+    /// reflecting that the underlying signal is uncalibrated theater
+    /// until alignment data lands (plan §1.3, §7). When `None` the
+    /// factor abstains from the max entirely. See
+    /// `analysis::source_co_rarity` and ADR 0003 / 0007.
     pub source_co_rarity: Option<f64>,
     /// Raw compression-texture ratio for the form (pre-normalisation),
     /// recorded so the UI can display it without re-running the model.
@@ -175,16 +186,15 @@ impl RareWordsAnalysis {
         lexicon: &Lexicon,
         texture: &CompressionTextureModel,
         ngrams: &CharNgramStats,
-        morphology: &MorphologyStats,
         config: RareWordsConfig,
     ) -> Self {
         #[cfg(feature = "serde")]
         {
-            Self::build_with_labels(project, lexicon, texture, ngrams, morphology, None, config)
+            Self::build_with_labels(project, lexicon, texture, ngrams, None, config)
         }
         #[cfg(not(feature = "serde"))]
         {
-            Self::build_inner(project, lexicon, texture, ngrams, morphology, config, &[], &[])
+            Self::build_inner(project, lexicon, texture, ngrams, config, &[], &[])
         }
     }
 
@@ -205,7 +215,6 @@ impl RareWordsAnalysis {
         lexicon: &Lexicon,
         texture: &CompressionTextureModel,
         ngrams: &CharNgramStats,
-        morphology: &MorphologyStats,
         index: Option<&LabelledLemmaIndex>,
         config: RareWordsConfig,
     ) -> Self {
@@ -221,7 +230,6 @@ impl RareWordsAnalysis {
             lexicon,
             texture,
             ngrams,
-            morphology,
             config,
             &known_good,
             &known_bad,
@@ -233,7 +241,6 @@ impl RareWordsAnalysis {
         lexicon: &Lexicon,
         texture: &CompressionTextureModel,
         ngrams: &CharNgramStats,
-        morphology: &MorphologyStats,
         config: RareWordsConfig,
         known_good: &[String],
         known_bad: &[String],
@@ -345,25 +352,20 @@ impl RareWordsAnalysis {
             let character_anomaly = sigmoid_against_corpus(cand.compression, m, d);
             let char_ngram_backoff = ngrams.factor(&cand.form);
             let source_co_rarity_factor = source_co_rarity_factors.get(&cand.form).copied();
-            // Per ADR 0001 the per-token Noisy-OR is the chassis. B8
-            // adaptive weighting (plan §4.3): char-level factors get
-            // power-weighted by `triage_char_factor_weight` so
-            // morphologically-sparse corpora downweight their
-            // over-firing tendency. source_co_rarity stays at weight
-            // 1.0 (cross-lingual; not affected by target regime).
-            // - char_anomaly and char_ngram_backoff still overlap
-            //   somewhat (plan §3.1 independence note); accepted.
-            // - source_co_rarity abstains when no source is loaded by
-            //   being absent here (ADR 0003).
-            let char_w = morphology.triage_char_factor_weight;
-            let mut factors: Vec<(f64, f64)> = vec![
-                (character_anomaly, char_w),
-                (char_ngram_backoff, char_w),
-            ];
-            if let Some(f) = source_co_rarity_factor {
-                factors.push((f, 1.0));
-            }
-            let suspicion = noisy_or_weighted(&factors);
+            // Per plan §1.3 theater removal: the per-token aggregator
+            // is `max(...)`, not Noisy-OR. Independence between
+            // char_anomaly and char_ngram_backoff was never real, and
+            // there are no labels to tune a probabilistic combiner
+            // against. Max correctly says "ranked by the
+            // single-most-suspicious signal" — promotion path is
+            // labels → logistic regression, or eBible priors → ECDF
+            // (§6.2 / §10.B). source_co_rarity stays in the mix but
+            // multiplied by SOURCE_CO_RARITY_ADVISORY_WEIGHT because
+            // its 0.0/0.3/0.7 ladder is uncalibrated until alignment
+            // data lands (§7). `None` source factor abstains from the
+            // max entirely (ADR 0003).
+            let suspicion =
+                advisory_score(character_anomaly, char_ngram_backoff, source_co_rarity_factor);
 
             candidates.push(TriageCandidate {
                 form: cand.form.clone(),
@@ -491,31 +493,23 @@ fn sigmoid_against_corpus(value: f64, median: f64, mad: f64) -> f64 {
     v.clamp(0.0, CHAR_ANOMALY_FACTOR_CAP)
 }
 
-#[cfg(test)]
-fn noisy_or(values: &[f64]) -> f64 {
-    let mut p = 0.0_f64;
-    for &v in values {
-        let v = if v.is_finite() { v.clamp(0.0, 1.0) } else { 0.0 };
-        p = 1.0 - (1.0 - p) * (1.0 - v);
-    }
-    p
-}
+/// Multiplier applied to `source_co_rarity` before it enters the
+/// advisory max. The underlying 0.0/0.3/0.7 ladder in
+/// `analysis::source_co_rarity` is uncalibrated theater until
+/// alignment data lands (plan §1.3, §7); down-weighting keeps the
+/// signal visible in the ranking without letting it dominate.
+pub const SOURCE_CO_RARITY_ADVISORY_WEIGHT: f64 = 0.3;
 
-/// Power-weighted Noisy-OR: `1 − ∏ (1 − pᵢ)^wᵢ`.
-///
-/// Per ADR 0001 + plan §3.1 amendment: weight 0 cleanly disables a
-/// factor (`(1 − p)^0 = 1`), weight 1 is unchanged, weight `>1`
-/// amplifies, weight `<1` softens. Used by B8 adaptive weighting to
-/// downweight char-level factors in morphologically-sparse corpora
-/// where they over-fire.
-fn noisy_or_weighted(values: &[(f64, f64)]) -> f64 {
-    let mut product = 1.0_f64;
-    for &(p, w) in values {
-        let p = if p.is_finite() { p.clamp(0.0, 1.0) } else { 0.0 };
-        let w = if w.is_finite() { w.max(0.0) } else { 0.0 };
-        product *= (1.0 - p).powf(w);
+/// Combine per-signal evidence into a single advisory score in `[0, 1]`.
+/// `max` of the three factors, with `source_co_rarity` multiplied by
+/// [`SOURCE_CO_RARITY_ADVISORY_WEIGHT`] first; `None` source abstains.
+fn advisory_score(char_anomaly: f64, char_ngram: f64, source_co_rarity: Option<f64>) -> f64 {
+    let clamp01 = |v: f64| if v.is_finite() { v.clamp(0.0, 1.0) } else { 0.0 };
+    let mut best = clamp01(char_anomaly).max(clamp01(char_ngram));
+    if let Some(s) = source_co_rarity {
+        best = best.max(clamp01(s) * SOURCE_CO_RARITY_ADVISORY_WEIGHT);
     }
-    (1.0 - product).clamp(0.0, 1.0)
+    best.clamp(0.0, 1.0)
 }
 
 #[cfg(test)]
@@ -536,6 +530,7 @@ mod tests {
             config: Config::default(),
             exceptions: ExceptionSet::default(),
             lemma_labels: Default::default(),
+            rules_config: Default::default(),
         }
     }
     use std::collections::BTreeMap;
@@ -565,13 +560,11 @@ mod tests {
         let texture =
             CompressionTextureModel::build(&project.target, CompressionTextureConfig::default());
         let ngrams = CharNgramStats::build(lex.words.keys().map(String::as_str));
-        let morphology = MorphologyStats::from_project(&project);
         let analysis = RareWordsAnalysis::build(
             &project,
             &lex,
             &texture,
             &ngrams,
-            &morphology,
             RareWordsConfig::default(),
         );
         assert!(analysis.stats.disabled);
@@ -627,13 +620,11 @@ mod tests {
         let texture =
             CompressionTextureModel::build(&project.target, CompressionTextureConfig::default());
         let ngrams = CharNgramStats::build(lex.words.keys().map(String::as_str));
-        let morphology = MorphologyStats::from_project(&project);
         let analysis = RareWordsAnalysis::build(
             &project,
             &lex,
             &texture,
             &ngrams,
-            &morphology,
             RareWordsConfig::default(),
         );
         assert!(!analysis.stats.disabled, "expected non-disabled analysis");
@@ -699,13 +690,11 @@ mod tests {
             ..Default::default()
         };
         let ngrams = CharNgramStats::build(lex.words.keys().map(String::as_str));
-        let morphology = MorphologyStats::from_project(&project);
         let strict = RareWordsAnalysis::build(
             &project,
             &lex,
             &texture,
             &ngrams,
-            &morphology,
             strict_cfg,
         );
 
@@ -719,7 +708,6 @@ mod tests {
             &lex,
             &texture,
             &ngrams,
-            &morphology,
             inclusive_cfg,
         );
 
@@ -729,15 +717,35 @@ mod tests {
     }
 
     #[test]
-    fn noisy_or_combines_independent_signals() {
-        // 0.5 ⊕ 0.5 = 0.75 (the "two-independent-weak-signals" tier).
-        let p = noisy_or(&[0.5, 0.5]);
-        assert!((p - 0.75).abs() < 1e-9);
-        // NaN → 0 (no contribution); 0.7 stays.
-        let p = noisy_or(&[f64::NAN, 0.7]);
+    fn advisory_score_takes_max_of_char_factors() {
+        // Char factors win on max.
+        let p = advisory_score(0.5, 0.8, None);
+        assert!((p - 0.8).abs() < 1e-9);
+        // NaN char factor is treated as 0.
+        let p = advisory_score(f64::NAN, 0.7, None);
         assert!((p - 0.7).abs() < 1e-9);
-        // Above-1 inputs clamp to 1; the result saturates.
-        let p = noisy_or(&[0.3, 1.5]);
+        // Above-1 char factor clamps to 1.
+        let p = advisory_score(0.3, 1.5, None);
         assert!((p - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn advisory_score_downweights_source_co_rarity_before_max() {
+        // A 0.7 source factor enters the max as 0.7 * 0.3 = 0.21.
+        // With char factors at 0.5, the char max wins.
+        let p = advisory_score(0.5, 0.4, Some(0.7));
+        assert!((p - 0.5).abs() < 1e-9);
+        // When char factors are weak (0.1) and source is high (0.9),
+        // the down-weighted source (0.27) still wins.
+        let p = advisory_score(0.1, 0.1, Some(0.9));
+        assert!((p - 0.27).abs() < 1e-9);
+    }
+
+    #[test]
+    fn advisory_score_abstains_when_source_is_none() {
+        // None source factor must not contribute zero to the max; it
+        // simply abstains. char factors carry the result alone.
+        let p = advisory_score(0.4, 0.3, None);
+        assert!((p - 0.4).abs() < 1e-9);
     }
 }

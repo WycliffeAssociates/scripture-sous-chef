@@ -210,6 +210,7 @@ mod tests {
             config: Config::default(),
             exceptions: ExceptionSet::default(),
             lemma_labels: Default::default(),
+            rules_config: Default::default(),
         }
     }
 

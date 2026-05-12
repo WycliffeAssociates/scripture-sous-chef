@@ -2,6 +2,8 @@
 //!
 //! Loads a USFM corpus, runs `analyze()`, prints findings to stdout
 //! and writes a JSON dump to `debug/<corpus-name>.json` for review.
+//!
+// TODO -> This is giant but we'll this isn't a proper CLI. This is just for agent feedback.. We'll kill it and make something correct in terms of GUI or whatnot later.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -9,21 +11,20 @@ use std::process::ExitCode;
 use std::time::Instant;
 
 use ssc_core::aggregate::{AggregationPolicy, aggregate_with_posteriors};
-use ssc_core::analysis::char_ngrams::CharNgramStats;
 use ssc_core::analysis::candidate_families::{
-    CandidateFamiliesConfig, CandidateFamily, CandidateFamilies, GeneratorKind,
+    CandidateFamilies, CandidateFamiliesConfig, CandidateFamily, GeneratorKind,
 };
+use ssc_core::analysis::char_ngrams::CharNgramStats;
 use ssc_core::analysis::compression::{CompressionTextureConfig, CompressionTextureModel};
 use ssc_core::analysis::lemma_cluster::{LemmaClusterConfig, LemmaClusters};
 use ssc_core::analysis::lemma_feedback::LabelledLemmaIndex;
 use ssc_core::analysis::lexicon::{Lexicon, LexiconConfig};
 use ssc_core::analysis::morphology::SegmentedCorpus;
 use ssc_core::analysis::posterior::{BetaPosterior, PosteriorStore, PriorTable};
-use ssc_core::analysis::rare_words::{
-    RareWordsAnalysis, RareWordsConfig, TriageCandidate,
-};
+use ssc_core::analysis::rare_words::{RareWordsAnalysis, RareWordsConfig, TriageCandidate};
 use ssc_core::analyze_with_stats;
 use ssc_core::config::{Config, ExceptionSet};
+use ssc_core::config_rules::RulesConfig;
 use ssc_core::diagnostics::{Diagnostics, Severity};
 use ssc_core::discourse::Discourse;
 use ssc_core::project::Project;
@@ -31,6 +32,21 @@ use ssc_ingest::{build, usfm};
 
 mod config_loader {
     include!("../config_loader.rs");
+}
+
+/// Load `<corpus>/.sous/rules.json` if present. Parse errors are
+/// surfaced as warnings on stderr and downgraded to the empty
+/// registry (so a malformed file doesn't crash the CLI mid-run).
+fn load_rules_config_or_warn(corpus_dir: &Path) -> RulesConfig {
+    let path = corpus_dir.join(".sous").join("rules.json");
+    match RulesConfig::load_optional(&path) {
+        Ok(Some(cfg)) => cfg,
+        Ok(None) => RulesConfig::default(),
+        Err(e) => {
+            eprintln!("rules.json warning: {} ({})", e, path.display());
+            RulesConfig::default()
+        }
+    }
 }
 
 fn usage() -> ExitCode {
@@ -202,13 +218,15 @@ fn run_check(args: Vec<String>) -> ExitCode {
         LabelledLemmaIndex::default()
     });
 
-    let project = build::project_from_raw_map_with_labels(
+    let rules_config = load_rules_config_or_warn(&path);
+    let project = build::project_from_raw_map_with_rules(
         name.clone(),
         raw,
         source,
         config,
         exceptions,
         lemma_labels,
+        rules_config,
     );
 
     let start = Instant::now();
@@ -764,17 +782,16 @@ fn run_triage(args: Vec<String>) -> ExitCode {
 
     let discourse = Discourse::build(&project.target);
     let lexicon = Lexicon::build(&discourse, LexiconConfig::default());
-    let texture = CompressionTextureModel::build(&project.target, CompressionTextureConfig::default());
+    let texture =
+        CompressionTextureModel::build(&project.target, CompressionTextureConfig::default());
     let ngrams = CharNgramStats::build(lexicon.words.keys().map(String::as_str));
     let clusters = LemmaClusters::build(&project.target, LemmaClusterConfig::default());
 
-    let morphology = ssc_core::context::MorphologyStats::from_project(&project);
     let analysis = RareWordsAnalysis::build_with_labels(
         &project,
         &lexicon,
         &texture,
         &ngrams,
-        &morphology,
         Some(&labels),
         RareWordsConfig::default(),
     );
@@ -902,7 +919,15 @@ fn render_triage_markdown(
 ) -> String {
     let mut out = String::new();
     use std::fmt::Write;
-    let _ = writeln!(out, "# Triage queue — `{name}`");
+    let _ = writeln!(out, "# Triage queue — `{name}` (advisory)");
+    let _ = writeln!(out);
+    let _ = writeln!(
+        out,
+        "**Advisory, not findings.** This ranking routes reviewer attention; it does \
+         not flag forms as wrong. The advisory score is `max(char_anomaly, char_ngram, \
+         source_co_rarity · 0.3)` — uncalibrated until labels or eBible priors land \
+         (plan §1.3)."
+    );
     let _ = writeln!(out);
     let _ = writeln!(
         out,
@@ -924,7 +949,7 @@ fn render_triage_markdown(
     for (i, candidate) in top.iter().enumerate() {
         let _ = writeln!(
             out,
-            "### {}. `{}` (count {}, suspicion {:.2})",
+            "### {}. `{}` (count {}, advisory {:.2})",
             i + 1,
             candidate.form,
             candidate.count,
@@ -954,11 +979,13 @@ fn render_triage_markdown(
 
         let proposed = families.families_for(&candidate.form);
         if proposed.is_empty() {
-            let _ = writeln!(out, "_No candidate family proposed beyond surface-identity._");
+            let _ = writeln!(
+                out,
+                "_No candidate family proposed beyond surface-identity._"
+            );
         } else {
             for family in &proposed {
-                let tags: Vec<String> =
-                    family.proposed_by.iter().map(generator_label).collect();
+                let tags: Vec<String> = family.proposed_by.iter().map(generator_label).collect();
                 let _ = writeln!(
                     out,
                     "- **Family `{}`** [{}]",
@@ -993,13 +1020,28 @@ fn render_triage_html(
     let mut out = String::new();
     use std::fmt::Write;
     let _ = writeln!(out, "<!doctype html>");
-    let _ = writeln!(out, "<html><head><meta charset=\"utf-8\"><title>Triage — {}</title>", html_escape(name));
+    let _ = writeln!(
+        out,
+        "<html><head><meta charset=\"utf-8\"><title>Triage — {}</title>",
+        html_escape(name)
+    );
     let _ = writeln!(
         out,
         "<style>body{{font-family:system-ui,-apple-system,sans-serif;max-width:780px;margin:2em auto;padding:0 1em;line-height:1.5}}h1,h2,h3{{font-weight:600}}.meta{{color:#666;font-size:0.9em}}.candidate{{margin:1.5em 0;padding:1em;border:1px solid #ddd;border-radius:8px}}.family{{margin:0.6em 0;padding:0.6em;background:#f6f6f6;border-radius:6px}}.tag{{display:inline-block;padding:0.1em 0.5em;margin-right:0.3em;background:#dde;border-radius:4px;font-size:0.8em}}pre{{background:#fff;border:1px solid #ddd;padding:0.5em;border-radius:4px;font-size:0.85em;overflow-x:auto}}</style>"
     );
     let _ = writeln!(out, "</head><body>");
-    let _ = writeln!(out, "<h1>Triage queue — <code>{}</code></h1>", html_escape(name));
+    let _ = writeln!(
+        out,
+        "<h1>Triage queue — <code>{}</code> <span class=\"meta\">(advisory)</span></h1>",
+        html_escape(name)
+    );
+    let _ = writeln!(
+        out,
+        "<p><strong>Advisory, not findings.</strong> This ranking routes reviewer attention; \
+         it does not flag forms as wrong. The advisory score is \
+         <code>max(char_anomaly, char_ngram, source_co_rarity · 0.3)</code> — \
+         uncalibrated until labels or eBible priors land (plan §1.3).</p>"
+    );
     let _ = writeln!(
         out,
         "<p class=\"meta\">{} word types · {} rare ({} after filter) · median compression {:.3}, MAD {:.3}</p>",
@@ -1017,7 +1059,7 @@ fn render_triage_html(
         let _ = writeln!(out, "<section class=\"candidate\">");
         let _ = writeln!(
             out,
-            "<h3>{}. <code>{}</code> <span class=\"meta\">count {} · suspicion {:.2}</span></h3>",
+            "<h3>{}. <code>{}</code> <span class=\"meta\">count {} · advisory {:.2}</span></h3>",
             i + 1,
             html_escape(&candidate.form),
             candidate.count,
@@ -1074,7 +1116,11 @@ fn render_triage_html(
 }
 
 fn family_event_template(kind: &str, family: &CandidateFamily) -> String {
-    let forms: Vec<String> = family.forms.iter().map(|f| format!("\"{}\"", f.form)).collect();
+    let forms: Vec<String> = family
+        .forms
+        .iter()
+        .map(|f| format!("\"{}\"", f.form))
+        .collect();
     format!(
         "{{\"v\":1,\"ts\":\"<TS>\",\"kind\":\"{}\",\"family_id\":{},\"forms\":[{}]}}",
         kind,

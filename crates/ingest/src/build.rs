@@ -52,5 +52,29 @@ pub fn project_from_raw_map_with_labels(
         config,
         exceptions,
         lemma_labels,
+        rules_config: Default::default(),
     }
+}
+
+/// Like [`project_from_raw_map_with_labels`] but also accepts a
+/// `RulesConfig` (loaded from `<corpus>/.sous/rules.json` by the CLI).
+pub fn project_from_raw_map_with_rules(
+    target_name: String,
+    target_raw: BTreeMap<Sid, String>,
+    source: Option<(String, BTreeMap<Sid, String>)>,
+    config: Config,
+    exceptions: ExceptionSet,
+    lemma_labels: LabelledLemmaIndex,
+    rules_config: ssc_core::config_rules::RulesConfig,
+) -> Project<'static> {
+    let mut project = project_from_raw_map_with_labels(
+        target_name,
+        target_raw,
+        source,
+        config,
+        exceptions,
+        lemma_labels,
+    );
+    project.rules_config = rules_config;
+    project
 }

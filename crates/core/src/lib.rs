@@ -3,6 +3,7 @@
 pub mod aggregate;
 pub mod analysis;
 pub mod config;
+pub mod config_rules;
 pub mod context;
 pub mod diagnostics;
 pub mod discourse;
@@ -17,6 +18,7 @@ pub mod unicode;
 pub mod verse;
 
 pub use config::{Config, ExceptionSet};
+pub use config_rules::{IgnorePatches, RuleEntry, RulesConfig};
 pub use context::AnalysisContext;
 pub use diagnostics::{
     AnalyzeStats, ByteRange, ClusterKey, Diagnostics, Finding, FindingId, Lane, RuleId, Severity,
@@ -64,6 +66,11 @@ fn run<'src>(
         if enabled.get(&id) == Some(&false) {
             continue;
         }
+        // `.sous/rules.json` is the new gate. Disabling here is a hard
+        // silence: the rule does not run, no findings are produced.
+        if !project.rules_config.enabled(id) {
+            continue;
+        }
         for mut f in r.check(project, &context, &mut stats) {
             if let Some(&sev) = severity_override.get(&f.rule_id) {
                 f.severity = sev;
@@ -74,6 +81,13 @@ fn run<'src>(
     raw.assign_finding_ids();
     for f in raw.findings {
         if project.exceptions.contains(&f) {
+            continue;
+        }
+        // `ignore.verse_sids` from `.sous/rules.json` is a per-rule,
+        // per-sid suppression applied at the same stage as
+        // `ExceptionSet`. Other ignore facets (tokens, codepoints,
+        // lemmas) are consulted by individual rules.
+        if project.rules_config.ignores_sid(f.rule_id, f.sid) {
             continue;
         }
         diags.push(f);

@@ -30,6 +30,15 @@
 
 use crate::diagnostics::RuleId;
 
+mod duplicate_word_run;
+
+pub use duplicate_word_run::{DUPLICATE_WORD_RUN, DuplicateWordRun, DuplicateWordRunKnobs};
+
+// ─────────────────────────────────────────────────────────────────────
+// Future rules — RuleId constants declared so `signals::ALL_RULE_IDS`
+// and configs can name them before the implementation lands.
+// ─────────────────────────────────────────────────────────────────────
+
 /// A token whose word-bigram context is rare given a common left neighbour.
 /// Rare-word-after-common-word is the signature of in-context typos.
 /// Designed to co-fire with `orth.char-lm-surprisal`. Not yet implemented.

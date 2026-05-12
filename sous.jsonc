@@ -88,6 +88,39 @@
 			"exceptions": []
 		},
 
+		// ─── Orthographic rules ────────────────────────────────────────
+
+		"orth.script-mixing": {
+			// A token containing characters from more than one script —
+			// canonical homoglyph attack vector ("Mаrk" with Cyrillic
+			// `а`). Rule-specific knobs (`allowed_scripts`,
+			// `allow_digits`) live in `<corpus>/.sous/rules.json` (the
+			// new registry) because they are typed beyond what
+			// sous.jsonc's `params: HashMap<String, f64>` supports.
+			// `documentation/configuration/rules.md` has the worked
+			// example.
+			"enabled": true,
+			"severity": "warn",
+			"exceptions": []
+		},
+
+		// ─── Lexical rules ─────────────────────────────────────────────
+
+		"lex.duplicate-word-run": {
+			// Two adjacent word tokens with the same casefolded surface
+			// form. The corpus learns conventions automatically: a form
+			// appearing as a duplicate ≥ `min_corpus_occurrences` times
+			// (default 3) is silenced as a learned convention — that's
+			// what keeps Vietnamese `đời đời` (390 occurrences in
+			// vi_ulb, meaning "forever") from drowning the queue.
+			// Rule-specific knobs (`case_sensitive`,
+			// `punctuation_aware`, `allow_list`, `min_corpus_occurrences`)
+			// live in `<corpus>/.sous/rules.json`.
+			"enabled": true,
+			"severity": "warn",
+			"exceptions": []
+		},
+
 		// ─── Source-relative rules ─────────────────────────────────────
 		// Run only when --source <dir> is supplied to the CLI.
 

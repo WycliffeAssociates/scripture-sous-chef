@@ -45,12 +45,15 @@ pub fn default_rules() -> Vec<Box<dyn Rule>> {
         Box::new(signals::hygiene::EmptyVerse),
         // Orthographic / character-level
         Box::new(signals::orthographic::CompressionTexture),
+        Box::new(signals::orthographic::ScriptMixing),
         // Source-relative
         Box::new(signals::source_relative::Proportionality),
         // Positional / discourse
         Box::new(signals::positional::SentenceStartCase),
         Box::new(signals::positional::UnexpectedSentenceEnd),
         Box::new(signals::punctuation::PairedPunctBalance),
+        // Lexical
+        Box::new(signals::lexical::DuplicateWordRun),
         // Lexical / case consistency
         Box::new(signals::proper_noun_consistency::ProperNounConsistency),
     ]

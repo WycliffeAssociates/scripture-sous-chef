@@ -150,14 +150,6 @@ pub struct MorphologyStats {
     /// morphologically-sparse corpora because word-level rarity is a
     /// language property there, not a typo signal.
     pub word_signal_weight: f64,
-    /// Power-weight on rare-word triage's *char-level Noisy-OR
-    /// factors* (`char_anomaly`, `char_ngram_backoff`). Inverted from
-    /// `char_signal_weight`'s direction: in morphologically-sparse
-    /// corpora, char-level rarity is corpus-typical (every long form
-    /// is a hapax), so per-token char signals over-fire. Downweighting
-    /// brings them in line with other Noisy-OR factors.
-    /// 1.0 in analytic corpora; ~0.65 in agglutinative.
-    pub triage_char_factor_weight: f64,
 }
 
 impl MorphologyStats {
@@ -196,12 +188,11 @@ impl MorphologyStats {
         let type_token_ratio = ratio(n_word_types, n_word_tokens);
         let hapax_ratio = ratio(n_hapax_types, n_word_types);
         let morphologically_sparse = type_token_ratio > 0.10 && hapax_ratio > 0.60;
-        let (char_signal_weight, word_signal_weight, triage_char_factor_weight) =
-            if morphologically_sparse {
-                (1.25, 0.65, 0.65)
-            } else {
-                (1.0, 1.0, 1.0)
-            };
+        let (char_signal_weight, word_signal_weight) = if morphologically_sparse {
+            (1.25, 0.65)
+        } else {
+            (1.0, 1.0)
+        };
 
         Self {
             n_word_tokens,
@@ -211,7 +202,6 @@ impl MorphologyStats {
             hapax_ratio,
             char_signal_weight,
             word_signal_weight,
-            triage_char_factor_weight,
         }
     }
 }

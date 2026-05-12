@@ -16,4 +16,5 @@ statrs = "0.18.0"
 strsim = "0.11.1"
 
 [features]
+default = ["serde"]
 serde = ["dep:serde", "dep:serde_json"]
