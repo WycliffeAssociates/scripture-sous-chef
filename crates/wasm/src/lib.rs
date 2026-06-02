@@ -9,22 +9,33 @@
 
 use std::collections::BTreeMap;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use ssc_core::{Severity, Sid, VerseMap, analyze};
+use tsify::Tsify;
 use wasm_bindgen::prelude::*;
 
+/// `{ sid -> text }` as it arrives from JS. TS: `Record<string, string>`.
+#[derive(Deserialize, Tsify)]
+#[tsify(from_wasm_abi)]
+pub struct VrefMap(pub BTreeMap<String, String>);
+
 /// A finding as the editor sees it: UTF-16 ranges, string code/severity.
-#[derive(Serialize)]
-struct WasmFinding {
-    sid: String,
-    code: &'static str,
-    severity: &'static str,
+#[derive(Serialize, Tsify)]
+#[tsify(into_wasm_abi)]
+pub struct Finding {
+    pub sid: String,
+    pub code: String,
+    pub severity: String,
     /// UTF-16 code-unit offsets into the verse text.
-    start: u32,
-    end: u32,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    score: Option<f32>,
+    pub start: u32,
+    pub end: u32,
+    pub score: Option<f32>,
 }
+
+/// The return type. TS: `Finding[]`.
+#[derive(Serialize, Tsify)]
+#[tsify(into_wasm_abi)]
+pub struct Findings(pub Vec<Finding>);
 
 fn severity_str(s: Severity) -> &'static str {
     match s {
@@ -41,42 +52,29 @@ fn to_verse_map(m: &BTreeMap<String, String>) -> VerseMap {
 }
 
 /// Analyze a vref text map. `target` is `{ sid -> text }`; `source` is an
-/// optional parallel map (pass `null`/`undefined` when absent). Returns
-/// an array of findings with UTF-16 ranges.
+/// optional parallel map. Returns findings with UTF-16 ranges.
 #[wasm_bindgen]
-pub fn analyze_vref(target: JsValue, source: JsValue) -> Result<JsValue, JsValue> {
-    let target_raw: BTreeMap<String, String> = serde_wasm_bindgen::from_value(target)
-        .map_err(|e| JsValue::from_str(&format!("target: {e}")))?;
-    let source_raw: Option<BTreeMap<String, String>> = if source.is_undefined() || source.is_null()
-    {
-        None
-    } else {
-        Some(
-            serde_wasm_bindgen::from_value(source)
-                .map_err(|e| JsValue::from_str(&format!("source: {e}")))?,
-        )
-    };
-
-    let target_vm = to_verse_map(&target_raw);
-    let source_vm = source_raw.as_ref().map(to_verse_map);
+pub fn analyze_vref(target: VrefMap, source: Option<VrefMap>) -> Findings {
+    let target_vm = to_verse_map(&target.0);
+    let source_vm = source.as_ref().map(|s| to_verse_map(&s.0));
 
     let findings = analyze(&target_vm, source_vm.as_ref());
 
-    let out: Vec<WasmFinding> = findings
-        .iter()
-        .map(|f| {
-            let text = target_vm.get(&f.sid).map(String::as_str).unwrap_or("");
-            let u16 = f.range.to_utf16(text);
-            WasmFinding {
-                sid: f.sid.to_string(),
-                code: f.code.0,
-                severity: severity_str(f.severity),
-                start: u16.start as u32,
-                end: u16.end as u32,
-                score: f.score,
-            }
-        })
-        .collect();
-
-    serde_wasm_bindgen::to_value(&out).map_err(|e| JsValue::from_str(&e.to_string()))
+    Findings(
+        findings
+            .iter()
+            .map(|f| {
+                let text = target_vm.get(&f.sid).map(String::as_str).unwrap_or("");
+                let u16 = f.range.to_utf16(text);
+                Finding {
+                    sid: f.sid.to_string(),
+                    code: f.code.0.to_string(),
+                    severity: severity_str(f.severity).to_string(),
+                    start: u16.start as u32,
+                    end: u16.end as u32,
+                    score: f.score,
+                }
+            })
+            .collect(),
+    )
 }

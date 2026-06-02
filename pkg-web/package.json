@@ -1,0 +1,15 @@
+{
+  "name": "ssc-wasm",
+  "type": "module",
+  "version": "0.1.0",
+  "files": [
+    "sous_chef_web_bg.wasm",
+    "sous_chef_web.js",
+    "sous_chef_web.d.ts"
+  ],
+  "main": "sous_chef_web.js",
+  "types": "sous_chef_web.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ]
+}

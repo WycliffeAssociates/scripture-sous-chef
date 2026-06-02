@@ -1,0 +1,35 @@
+{
+  "name": "scripture-sous-chef-web",
+  "version": "0.0.1",
+  "description": "WebAssembly bindings for scripture-sous-chef — a pure, addressable content analyzer for scripture text",
+  "license": "MIT",
+  "type": "module",
+  "sideEffects": [
+    "./pkg-bundler/sous_chef_web.js",
+    "./pkg-web/sous_chef_web.js"
+  ],
+  "files": [
+    "pkg-bundler",
+    "pkg-web",
+    "README.md",
+    "LICENSE*"
+  ],
+  "exports": {
+    ".": {
+      "types": "./pkg-bundler/sous_chef_web.d.ts",
+      "default": "./pkg-bundler/sous_chef_web.js"
+    },
+    "./web": {
+      "types": "./pkg-web/sous_chef_web.d.ts",
+      "default": "./pkg-web/sous_chef_web.js"
+    }
+  },
+  "types": "./pkg-bundler/sous_chef_web.d.ts",
+  "scripts": {
+    "build": "npm run build:wasm",
+    "build:wasm": "npm run build:wasm:bundler && npm run build:wasm:web",
+    "build:wasm:bundler": "wasm-pack build crates/wasm --target bundler --release --out-dir ../../pkg-bundler --out-name sous_chef_web && node scripts/restore-wasm-package-layout.mjs",
+    "build:wasm:web": "wasm-pack build crates/wasm --target web --release --out-dir ../../pkg-web --out-name sous_chef_web && node scripts/restore-wasm-package-layout.mjs",
+    "check:wasm": "cargo check --manifest-path crates/wasm/Cargo.toml --target wasm32-unknown-unknown"
+  }
+}
