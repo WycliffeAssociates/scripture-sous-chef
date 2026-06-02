@@ -25,6 +25,8 @@ isn't visible from the code alone.
 | 0006 | 2026-05-07 | [Verse length bucketing: graphemes, empirical quintiles](0006-verse-length-quintiles.md) | Accepted |
 | 0007 | 2026-05-07 | [Source proper-noun match via BK-tree edit-distance](0007-source-proper-noun-bktree.md) | Accepted |
 | 0008 | 2026-05-07 | [Multi-provenance surfacing: one verse entry, lanes in metadata](0008-multi-provenance-surfacing.md) | Accepted |
+| 0009 | 2026-05-12 | [Delegate per-character script identity to `unicode-script`](0009-unicode-script-crate.md) | Accepted |
+| 0010 | 2026-06-02 | [Reset master to a pure, addressable analyzer contract](0010-pure-analyzer-contract-v1-reset.md) | Accepted |
 
 ## Format
 
