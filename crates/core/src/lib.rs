@@ -1,97 +1,90 @@
-//! `ssc-core` — public engine contract.
+//! `ssc-core` — a pure, addressable content analyzer.
+//!
+//! sous receives verse *text* (onion's lossless vref projection) and
+//! returns *ranges into that text*. It reads no files, calls no onion,
+//! and runs no segmentation of its own — onion is the single segmenter
+//! of record. Mapping a returned range back to a DOM node or source
+//! offset is the orchestrator's job, via onion's `segments`. See
+//! ADR 0010 and `documentation/v1-reset-design.md`.
 
-pub mod aggregate;
-pub mod analysis;
-pub mod config;
-pub mod config_rules;
-pub mod context;
 pub mod diagnostics;
-pub mod discourse;
-pub mod profile;
-pub mod project;
-pub mod punctuation_class;
 pub mod rule;
 pub mod script;
 pub mod sid;
 pub mod signals;
+pub mod span;
 pub mod unicode;
 pub mod verse;
 
-pub use config::{Config, ExceptionSet};
-pub use config_rules::{IgnorePatches, RuleEntry, RulesConfig};
-pub use context::AnalysisContext;
-pub use diagnostics::{
-    AnalyzeStats, ByteRange, ClusterKey, Diagnostics, Finding, FindingId, Lane, RuleId, Severity,
-};
-pub use project::{NamedCorpus, Project};
+pub use diagnostics::{Finding, RuleId, Severity};
 pub use sid::{BookId, Sid};
-pub use verse::{Token, TokenKind, Verse};
+pub use span::{GraphemeSpan, Span, Utf16Span};
+pub use verse::VerseMap;
 
-/// Run all enabled rules against `project` and return diagnostics.
-/// Stats are discarded — call `analyze_with_stats` to keep them.
-pub fn analyze<'src>(project: &'src Project<'src>) -> Diagnostics<'src> {
-    run(project, &rule::default_rules()).0
-}
+/// Analyze a corpus and return every finding, merged across rules.
+///
+/// `target` is the verses to check; `source` is an optional parallel
+/// corpus for source-relative rules (none ship in v1, but the parameter
+/// keeps that capability open — ADR 0010). The map's scope is the
+/// analysis scope: pass a verse, a book, or a whole project.
+pub fn analyze(target: &VerseMap, source: Option<&VerseMap>) -> Vec<Finding> {
+    let mut out = Vec::new();
 
-/// Like `analyze`, but also returns per-rule debug statistics.
-pub fn analyze_with_stats<'src>(project: &'src Project<'src>) -> (Diagnostics<'src>, AnalyzeStats) {
-    run(project, &rule::default_rules())
-}
-
-fn run<'src>(
-    project: &'src Project<'src>,
-    rules: &[Box<dyn rule::Rule>],
-) -> (Diagnostics<'src>, AnalyzeStats) {
-    let mut diags = Diagnostics::default();
-    let mut stats = AnalyzeStats::default();
-    let context = AnalysisContext::build(project);
-    stats.bootstrap = Some(context.bootstrap_stats.clone());
-
-    let enabled: std::collections::HashMap<RuleId, bool> = project
-        .config
-        .rules
-        .iter()
-        .map(|r| (r.id, r.enabled))
-        .collect();
-    let severity_override: std::collections::HashMap<RuleId, Severity> = project
-        .config
-        .rules
-        .iter()
-        .filter_map(|r| r.severity.map(|s| (r.id, s)))
-        .collect();
-
-    let mut raw = Diagnostics::default();
-    for r in rules {
-        let id = r.id();
-        if enabled.get(&id) == Some(&false) {
-            continue;
-        }
-        // `.sous/rules.json` is the new gate. Disabling here is a hard
-        // silence: the rule does not run, no findings are produced.
-        if !project.rules_config.enabled(id) {
-            continue;
-        }
-        for mut f in r.check(project, &context, &mut stats) {
-            if let Some(&sev) = severity_override.get(&f.rule_id) {
-                f.severity = sev;
+    let per_verse = rule::per_verse_rules();
+    for (sid, text) in target {
+        for r in &per_verse {
+            let code = r.id();
+            let severity = r.severity();
+            for range in r.check(text) {
+                out.push(Finding {
+                    sid: *sid,
+                    code,
+                    severity,
+                    range,
+                    score: None,
+                });
             }
-            raw.push(f);
         }
     }
-    raw.assign_finding_ids();
-    for f in raw.findings {
-        if project.exceptions.contains(&f) {
-            continue;
-        }
-        // `ignore.verse_sids` from `.sous/rules.json` is a per-rule,
-        // per-sid suppression applied at the same stage as
-        // `ExceptionSet`. Other ignore facets (tokens, codepoints,
-        // lemmas) are consulted by individual rules.
-        if project.rules_config.ignores_sid(f.rule_id, f.sid) {
-            continue;
-        }
-        diags.push(f);
+
+    for r in rule::project_rules() {
+        out.extend(r.check(target, source));
     }
-    stats.lexicon = Some(context.lexicon.stats());
-    (diags, stats)
+
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sid::BookId;
+
+    fn map(pairs: &[(&str, &str)]) -> VerseMap {
+        pairs
+            .iter()
+            .enumerate()
+            .map(|(i, (_label, text))| {
+                (
+                    Sid::new(BookId::from_str("GEN").unwrap(), 1, (i + 1) as u16),
+                    text.to_string(),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn analyze_flags_double_space() {
+        let target = map(&[("v1", "a  b")]);
+        let findings = analyze(&target, None);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].code, signals::whitespace::EXCESS_H_WHITESPACE);
+        // The range slices the offending run out of that verse's text.
+        let text = target.values().next().unwrap();
+        assert_eq!(findings[0].range.slice(text), "  ");
+    }
+
+    #[test]
+    fn analyze_clean_corpus_is_empty() {
+        assert!(analyze(&map(&[("v1", "a b c")]), None).is_empty());
+    }
 }

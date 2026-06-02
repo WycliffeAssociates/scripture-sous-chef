@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/core", "crates/ingest", "crates/cli"]
+members = ["crates/core", "crates/wasm"]
 
 
 [workspace.package]
@@ -9,16 +9,5 @@ edition = "2024"
 
 [workspace.dependencies]
 ssc-core = { path = "crates/core" }
-ssc-ingest = { path = "crates/ingest" }
 unicode-segmentation = "1.12"
-unicode-normalization = "0.1"
 unicode-script = "0.5"
-icu_segmenter = "2.2"
-zstd = "0.13"
-rayon = "1.10"
-usfm_onion = { git = "https://github.com/WycliffeAssociates/usfm-onion.git", tag = "v0.0.1" }
-plotters = { version = "0.3", default-features = false, features = [
-  "svg_backend",
-  "all_series",
-  "all_elements",
-] }

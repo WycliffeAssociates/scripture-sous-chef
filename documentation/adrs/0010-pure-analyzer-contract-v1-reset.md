@@ -199,5 +199,4 @@ highlightable). Each returns behind the contract above.
   `usfm_onion/src/lint_impl.rs`
 - consumer i18n precedent:
   `scripture-editor-proto-2/src/app/ui/i18n/usfmOnionLocalization.ts`
-</content>
 </invoke>

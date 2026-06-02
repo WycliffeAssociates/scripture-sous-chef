@@ -205,4 +205,3 @@ Each returns re-shaped to `analyze`, emitting the v1 `Finding` (filling
   mirroring `usfm-onion-web`).
 - Add `.npmignore`/`files` allowlist so the packed git dep is just the wasm
   pkg + types (hygiene; not load-bearing given the repo is already light).
-</content>
