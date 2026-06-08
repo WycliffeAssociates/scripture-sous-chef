@@ -27,6 +27,7 @@ isn't visible from the code alone.
 | 0008 | 2026-05-07 | [Multi-provenance surfacing: one verse entry, lanes in metadata](0008-multi-provenance-surfacing.md) | Accepted |
 | 0009 | 2026-05-12 | [Delegate per-character script identity to `unicode-script`](0009-unicode-script-crate.md) | Accepted |
 | 0010 | 2026-06-02 | [Reset master to a pure, addressable analyzer contract](0010-pure-analyzer-contract-v1-reset.md) | Accepted |
+| 0011 | 2026-06-08 | [Statefulness, incrementality, and the consumer boundary for stateful rules](0011-statefulness-incrementality-strategy.md) | Accepted |
 
 ## Format
 

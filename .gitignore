@@ -10,3 +10,4 @@ notes.md
 profile.json.gz
 *.profile.json
 *.profile.json.gz
+.codegraph/
