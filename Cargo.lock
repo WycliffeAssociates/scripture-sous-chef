@@ -176,8 +176,11 @@ name = "ssc-core"
 version = "0.1.0"
 dependencies = [
  "serde",
+ "serde_json",
+ "tsify",
  "unicode-script",
  "unicode-segmentation",
+ "wasm-bindgen",
 ]
 
 [[package]]

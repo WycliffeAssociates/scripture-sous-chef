@@ -2,13 +2,15 @@
 
 /**
  * Analyze a vref text map. `target` is `{ sid -> text }`; `source` is an
- * optional parallel map. Returns findings with UTF-16 ranges.
+ * optional parallel map; `config` optionally disables rules (omitted ⇒
+ * all rules run). Returns findings with UTF-16 ranges.
  * @param {VrefMap} target
  * @param {VrefMap | null} [source]
+ * @param {SousConfig | null} [config]
  * @returns {Findings}
  */
-export function analyze_vref(target, source) {
-    const ret = wasm.analyze_vref(target, isLikeNone(source) ? 0 : addToExternrefTable0(source));
+export function analyze_vref(target, source, config) {
+    const ret = wasm.analyze_vref(target, isLikeNone(source) ? 0 : addToExternrefTable0(source), isLikeNone(config) ? 0 : addToExternrefTable0(config));
     return ret;
 }
 function __wbg_get_imports() {

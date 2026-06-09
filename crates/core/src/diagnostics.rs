@@ -11,23 +11,71 @@
 use crate::sid::Sid;
 use crate::span::Span;
 
-/// Stable, machine-readable rule identity. A pointer to a once-allocated
-/// static string — zero per-finding allocation; serialised to a string
-/// (or an int) only at the wasm/IPC boundary.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize))]
-pub struct RuleId(pub &'static str);
+/// Defines the closed `RuleId` set from a single list, so a rule's
+/// variant, its `serde` rename (the wire / localisation code), its
+/// `RuleId::ALL` membership, and its `code()` arm **cannot drift**.
+///
+/// Adding a rule is exactly one line here; the enum, `ALL`, and `code()`
+/// all derive from it (and the `Tsify` string union with them). See
+/// ADR 0012. The compiler still forces every rule's `PerVerseRule` /
+/// `ProjectRule` impl; this macro only owns the identity↔code mapping.
+macro_rules! define_rule_ids {
+    ($( $(#[$vmeta:meta])* $variant:ident => $code:literal ),+ $(,)?) => {
+        /// Stable, machine-readable rule identity — a **closed set**.
+        /// Internally a cheap enum discriminant (zero per-finding
+        /// allocation); each variant serialises to its dotted code string
+        /// (e.g. `"lex.excess-h-whitespace"`) only at the wasm/IPC
+        /// boundary. The closed set is the typed surface consumers key
+        /// config and localisation off: Rust via [`RuleId::ALL`] +
+        /// exhaustive `match`; TS via the `Tsify` string union.
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+        #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+        #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+        pub enum RuleId {
+            $(
+                $(#[$vmeta])*
+                #[cfg_attr(feature = "serde", serde(rename = $code))]
+                $variant,
+            )+
+        }
+
+        impl RuleId {
+            /// Every rule identity — the full closed set, for exhaustive
+            /// iteration when a consumer builds a config or localisation
+            /// map. Stays complete by construction (macro-generated).
+            pub const ALL: &'static [RuleId] = &[ $( RuleId::$variant ),+ ];
+
+            /// The stable code string — the wasm/IPC wire form and the
+            /// localisation key. Macro-generated from the same list as the
+            /// `serde` rename, so the two are identical by construction.
+            pub fn code(self) -> &'static str {
+                match self {
+                    $( RuleId::$variant => $code, )+
+                }
+            }
+        }
+    };
+}
+
+define_rule_ids! {
+    ExcessHWhitespace => "lex.excess-h-whitespace",
+    TabInBody         => "hyg.tab-in-body",
+    ControlChars      => "hyg.control-chars",
+    ZeroWidthMisuse   => "hyg.zero-width-misuse",
+    EmptyVerse        => "hyg.empty-verse",
+}
 
 impl std::fmt::Display for RuleId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.0)
+        f.write_str(self.code())
     }
 }
 
 /// How loud a finding is. Maps 1:1 to the editor's annotation severity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "lowercase"))]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum Severity {
     Error,
     Warning,

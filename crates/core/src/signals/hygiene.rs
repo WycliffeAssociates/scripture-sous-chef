@@ -22,7 +22,7 @@ use crate::unicode::{ZWJ, ZWNJ, is_c0_control, is_c1_control, is_zero_width_or_f
 
 /// Literal tab character anywhere in verse body. USFM doesn't use tabs
 /// and they're never the intent.
-pub const TAB_IN_BODY: RuleId = RuleId("hyg.tab-in-body");
+pub const TAB_IN_BODY: RuleId = RuleId::TabInBody;
 
 pub struct TabInBody;
 
@@ -54,7 +54,7 @@ pub fn scan_tab_in_body(text: &str) -> Vec<Span> {
 /// C0/C1 control characters inside verse body. Tab is excluded (handled
 /// by `TAB_IN_BODY`); newline is excluded (a projection may legitimately
 /// preserve line breaks).
-pub const CONTROL_CHARS: RuleId = RuleId("hyg.control-chars");
+pub const CONTROL_CHARS: RuleId = RuleId::ControlChars;
 
 pub struct ControlChars;
 
@@ -93,7 +93,7 @@ pub fn scan_control_chars(text: &str) -> Vec<Span> {
 /// are not flagged when the verse's majority script is one of those.
 /// Other zero-width chars (BOM, RLM, LRM, the formatting-control range)
 /// are flagged unconditionally.
-pub const ZERO_WIDTH_MISUSE: RuleId = RuleId("hyg.zero-width-misuse");
+pub const ZERO_WIDTH_MISUSE: RuleId = RuleId::ZeroWidthMisuse;
 
 pub struct ZeroWidthMisuse;
 
@@ -165,7 +165,7 @@ fn script_allows_joiners(majority: Option<&'static str>) -> bool {
 /// Verse text empty (or whitespace-only). Often legitimate (`<range>`
 /// continuation, deliberately-elided verse), so severity is Info —
 /// surfaced for confirmation, not flagged as wrong.
-pub const EMPTY_VERSE: RuleId = RuleId("hyg.empty-verse");
+pub const EMPTY_VERSE: RuleId = RuleId::EmptyVerse;
 
 pub struct EmptyVerse;
 

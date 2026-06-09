@@ -15,7 +15,7 @@ use crate::diagnostics::{RuleId, Severity};
 use crate::rule::PerVerseRule;
 use crate::span::Span;
 
-pub const EXCESS_H_WHITESPACE: RuleId = RuleId("lex.excess-h-whitespace");
+pub const EXCESS_H_WHITESPACE: RuleId = RuleId::ExcessHWhitespace;
 
 pub struct ExcessHWhitespace;
 

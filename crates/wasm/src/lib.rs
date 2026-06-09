@@ -10,7 +10,7 @@
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
-use ssc_core::{Severity, Sid, VerseMap, analyze};
+use ssc_core::{Config, RuleId, Severity, Sid, VerseMap, analyze_with_config};
 use tsify::Tsify;
 use wasm_bindgen::prelude::*;
 
@@ -19,13 +19,28 @@ use wasm_bindgen::prelude::*;
 #[tsify(from_wasm_abi)]
 pub struct VrefMap(pub BTreeMap<String, String>);
 
-/// A finding as the editor sees it: UTF-16 ranges, string code/severity.
+/// Which rules to run. `rules` maps a rule code to a flag; omit a rule to
+/// keep it enabled (default-on). TS: `{ rules?: Partial<Record<RuleId,
+/// boolean>> }` — `RuleId` is the same closed union carried on findings,
+/// so the consumer's config and localisation maps key off one set.
+#[derive(Deserialize, Tsify, Default)]
+#[tsify(from_wasm_abi)]
+pub struct SousConfig {
+    #[serde(default)]
+    #[tsify(optional, type = "Partial<Record<RuleId, boolean>>")]
+    pub rules: Option<BTreeMap<RuleId, bool>>,
+}
+
+/// A finding as the editor sees it: UTF-16 ranges; `code`/`severity` are
+/// the closed `RuleId`/`Severity` string unions (a new rule shows up as a
+/// new union member, so exhaustive consumer maps fail to typecheck until
+/// they handle it).
 #[derive(Serialize, Tsify)]
 #[tsify(into_wasm_abi)]
 pub struct Finding {
     pub sid: String,
-    pub code: String,
-    pub severity: String,
+    pub code: RuleId,
+    pub severity: Severity,
     /// UTF-16 code-unit offsets into the verse text.
     pub start: u32,
     pub end: u32,
@@ -37,14 +52,6 @@ pub struct Finding {
 #[tsify(into_wasm_abi)]
 pub struct Findings(pub Vec<Finding>);
 
-fn severity_str(s: Severity) -> &'static str {
-    match s {
-        Severity::Error => "error",
-        Severity::Warning => "warning",
-        Severity::Info => "info",
-    }
-}
-
 fn to_verse_map(m: &BTreeMap<String, String>) -> VerseMap {
     m.iter()
         .filter_map(|(k, v)| Sid::parse(k).map(|sid| (sid, v.clone())))
@@ -52,13 +59,18 @@ fn to_verse_map(m: &BTreeMap<String, String>) -> VerseMap {
 }
 
 /// Analyze a vref text map. `target` is `{ sid -> text }`; `source` is an
-/// optional parallel map. Returns findings with UTF-16 ranges.
+/// optional parallel map; `config` optionally disables rules (omitted ⇒
+/// all rules run). Returns findings with UTF-16 ranges.
 #[wasm_bindgen]
-pub fn analyze_vref(target: VrefMap, source: Option<VrefMap>) -> Findings {
+pub fn analyze_vref(target: VrefMap, source: Option<VrefMap>, config: Option<SousConfig>) -> Findings {
     let target_vm = to_verse_map(&target.0);
     let source_vm = source.as_ref().map(|s| to_verse_map(&s.0));
+    let cfg = config
+        .and_then(|c| c.rules)
+        .map(Config::with_overrides)
+        .unwrap_or_default();
 
-    let findings = analyze(&target_vm, source_vm.as_ref());
+    let findings = analyze_with_config(&target_vm, source_vm.as_ref(), &cfg);
 
     Findings(
         findings
@@ -68,8 +80,8 @@ pub fn analyze_vref(target: VrefMap, source: Option<VrefMap>) -> Findings {
                 let u16 = f.range.to_utf16(text);
                 Finding {
                     sid: f.sid.to_string(),
-                    code: f.code.0.to_string(),
-                    severity: severity_str(f.severity).to_string(),
+                    code: f.code,
+                    severity: f.severity,
                     start: u16.start as u32,
                     end: u16.end as u32,
                     score: f.score,

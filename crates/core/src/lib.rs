@@ -7,6 +7,7 @@
 //! offset is the orchestrator's job, via onion's `segments`. See
 //! ADR 0010 and `documentation/v1-reset-design.md`.
 
+pub mod config;
 pub mod diagnostics;
 pub mod rule;
 pub mod script;
@@ -16,21 +17,38 @@ pub mod span;
 pub mod unicode;
 pub mod verse;
 
+pub use config::Config;
 pub use diagnostics::{Finding, RuleId, Severity};
 pub use sid::{BookId, Sid};
 pub use span::{GraphemeSpan, Span, Utf16Span};
 pub use verse::VerseMap;
 
-/// Analyze a corpus and return every finding, merged across rules.
+/// Analyze a corpus with every rule enabled.
 ///
-/// `target` is the verses to check; `source` is an optional parallel
-/// corpus for source-relative rules (none ship in v1, but the parameter
-/// keeps that capability open — ADR 0010). The map's scope is the
-/// analysis scope: pass a verse, a book, or a whole project.
+/// Convenience over [`analyze_with_config`] with [`Config::all`]. `target`
+/// is the verses to check; `source` is an optional parallel corpus for
+/// source-relative rules (none ship in v1, but the parameter keeps that
+/// capability open — ADR 0010). The map's scope is the analysis scope:
+/// pass a verse, a book, or a whole project.
 pub fn analyze(target: &VerseMap, source: Option<&VerseMap>) -> Vec<Finding> {
+    analyze_with_config(target, source, &Config::all())
+}
+
+/// Analyze a corpus, running only the rules `config` enables.
+///
+/// A rule the config disables is skipped *before it runs* — disabling
+/// saves the compute, it isn't a post-filter on findings (ADR 0012).
+pub fn analyze_with_config(
+    target: &VerseMap,
+    source: Option<&VerseMap>,
+    config: &Config,
+) -> Vec<Finding> {
     let mut out = Vec::new();
 
-    let per_verse = rule::per_verse_rules();
+    let per_verse: Vec<_> = rule::per_verse_rules()
+        .into_iter()
+        .filter(|r| config.is_enabled(r.id()))
+        .collect();
     for (sid, text) in target {
         for r in &per_verse {
             let code = r.id();
@@ -48,6 +66,9 @@ pub fn analyze(target: &VerseMap, source: Option<&VerseMap>) -> Vec<Finding> {
     }
 
     for r in rule::project_rules() {
+        if !config.is_enabled(r.id()) {
+            continue;
+        }
         out.extend(r.check(target, source));
     }
 
@@ -86,5 +107,32 @@ mod tests {
     #[test]
     fn analyze_clean_corpus_is_empty() {
         assert!(analyze(&map(&[("v1", "a b c")]), None).is_empty());
+    }
+
+    #[test]
+    fn disabled_rule_does_not_fire() {
+        let target = map(&[("v1", "a  b")]);
+        let config = Config::disabling(&[signals::whitespace::EXCESS_H_WHITESPACE]);
+        assert!(analyze_with_config(&target, None, &config).is_empty());
+        // Other rules still run under the same config.
+        let tabbed = map(&[("v1", "a\tb")]);
+        let findings = analyze_with_config(&tabbed, None, &config);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].code, signals::hygiene::TAB_IN_BODY);
+    }
+
+    /// Guards the `RuleId` wire format: the serde rename must match
+    /// `code()` and must not drift from the v0.0.1 strings the consumer
+    /// keys config/localisation off.
+    #[test]
+    fn rule_id_wire_strings_are_stable() {
+        for &id in RuleId::ALL {
+            let json = serde_json::to_string(&id).unwrap();
+            assert_eq!(json, format!("\"{}\"", id.code()));
+        }
+        assert_eq!(
+            serde_json::to_string(&RuleId::ExcessHWhitespace).unwrap(),
+            "\"lex.excess-h-whitespace\""
+        );
     }
 }
