@@ -29,6 +29,7 @@ isn't visible from the code alone.
 | 0010 | 2026-06-02 | [Reset master to a pure, addressable analyzer contract](0010-pure-analyzer-contract-v1-reset.md) | Accepted |
 | 0011 | 2026-06-08 | [Statefulness, incrementality, and the consumer boundary for stateful rules](0011-statefulness-incrementality-strategy.md) | Accepted |
 | 0012 | 2026-06-09 | [`RuleId` is a closed enum — the typed config & localization surface](0012-ruleid-closed-enum-config-surface.md) | Accepted |
+| 0013 | 2026-06-09 | [Proportionality — the first cross-map rule, and the contract surface it grows](0013-proportionality-first-cross-map-rule.md) | Accepted |
 
 ## Format
 

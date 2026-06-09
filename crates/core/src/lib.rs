@@ -17,8 +17,8 @@ pub mod span;
 pub mod unicode;
 pub mod verse;
 
-pub use config::Config;
-pub use diagnostics::{Finding, RuleId, Severity};
+pub use config::{Config, ProportionalityConfig};
+pub use diagnostics::{Finding, FindingArgs, RuleId, Severity};
 pub use sid::{BookId, Sid};
 pub use span::{GraphemeSpan, Span, Utf16Span};
 pub use verse::VerseMap;
@@ -60,12 +60,13 @@ pub fn analyze_with_config(
                     severity,
                     range,
                     score: None,
+                    args: None,
                 });
             }
         }
     }
 
-    for r in rule::project_rules() {
+    for r in rule::project_rules(config) {
         if !config.is_enabled(r.id()) {
             continue;
         }
@@ -119,6 +120,54 @@ mod tests {
         let findings = analyze_with_config(&tabbed, None, &config);
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].code, signals::hygiene::TAB_IN_BODY);
+    }
+
+    /// Proportionality runs through the entry like any other rule: fires
+    /// against a reference, honours enable/disable and its typed knobs.
+    #[test]
+    fn proportionality_runs_through_analyze() {
+        let mut target = VerseMap::new();
+        let mut source = VerseMap::new();
+        for v in 1..=60u16 {
+            let sid = Sid::new(BookId::from_str("GEN").unwrap(), 1, v);
+            let base = "word ".repeat(8 + (v as usize % 3));
+            source.insert(sid, base.clone());
+            // Mild target-side jitter keeps the book's MAD nonzero.
+            let jittered = format!("{base}{}", "x".repeat(v as usize % 5));
+            target.insert(sid, if v == 7 { base.repeat(4) } else { jittered });
+        }
+
+        let findings = analyze(&target, Some(&source));
+        let prop: Vec<_> = findings
+            .iter()
+            .filter(|f| f.code == RuleId::ProjectLengthRatio)
+            .collect();
+        assert_eq!(prop.len(), 1);
+        assert_eq!(prop[0].sid.verse, 7);
+        assert!(prop[0].score.is_some());
+        assert!(matches!(prop[0].args, Some(FindingArgs::LengthRatio { .. })));
+
+        // Disabled ⇒ silent.
+        let off = Config::disabling(&[RuleId::ProjectLengthRatio]);
+        assert!(
+            analyze_with_config(&target, Some(&source), &off)
+                .iter()
+                .all(|f| f.code != RuleId::ProjectLengthRatio)
+        );
+
+        // min_verses above the corpus size ⇒ book skipped.
+        let strict = Config {
+            proportionality: ProportionalityConfig {
+                min_verses: 1000,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert!(
+            analyze_with_config(&target, Some(&source), &strict)
+                .iter()
+                .all(|f| f.code != RuleId::ProjectLengthRatio)
+        );
     }
 
     /// Guards the `RuleId` wire format: the serde rename must match

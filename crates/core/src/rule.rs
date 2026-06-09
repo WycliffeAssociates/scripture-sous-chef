@@ -6,14 +6,15 @@
 //!   stateless majority (whitespace, hygiene). It returns bare `Span`s;
 //!   the runner stamps `sid` + `code` + `severity`.
 //! - [`ProjectRule`] needs the whole corpus (and optionally a parallel
-//!   `source` corpus) and emits full `Finding`s itself. None ship in v1;
-//!   the trait exists so corpus/statistical rules graduate from `labs`
-//!   without reshaping the entry.
+//!   `source` corpus) and emits full `Finding`s itself. Knob-bearing
+//!   project rules are *constructed from* the caller's `Config` in
+//!   [`project_rules`], so `check` stays a pure function of the maps.
 //!
 //! Whether a rule is per-verse or project is the *rule's* property;
 //! execution cadence (every keystroke vs on save) is the orchestrator's.
 //! There is deliberately no hot/cold tier in the type system.
 
+use crate::config::Config;
 use crate::diagnostics::{Finding, RuleId, Severity};
 use crate::signals;
 use crate::span::Span;
@@ -41,7 +42,11 @@ pub fn per_verse_rules() -> Vec<Box<dyn PerVerseRule>> {
     ]
 }
 
-/// Every project-scoped rule wired in by default. Empty in v1.
-pub fn project_rules() -> Vec<Box<dyn ProjectRule>> {
-    Vec::new()
+/// Every project-scoped rule wired in by default. Knob-bearing rules are
+/// constructed from `config`'s typed sub-configs here, once per analyze
+/// call — `ProjectRule::check` itself never sees the `Config`.
+pub fn project_rules(config: &Config) -> Vec<Box<dyn ProjectRule>> {
+    vec![Box::new(signals::proportionality::ProjectLengthRatio {
+        cfg: config.proportionality,
+    })]
 }

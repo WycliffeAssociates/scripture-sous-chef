@@ -16,12 +16,26 @@ export interface Finding {
     start: number;
     end: number;
     score: number | null;
+    /**
+     * Structured args for the consumer\'s interpolated message (the
+     * `FindingArgs` closed union); `None` for no-interpolation rules.
+     */
+    args: FindingArgs | null;
 }
 
 /**
  * How loud a finding is. Maps 1:1 to the editor\'s annotation severity.
  */
 export type Severity = "error" | "warning" | "info";
+
+/**
+ * Partial overrides for `prop.length-ratio`\'s knobs. Omitted fields keep
+ * core\'s calibrated defaults (`z_threshold` 3.5, `min_verses` 50).
+ */
+export interface ProportionalityOverrides {
+    z_threshold?: number;
+    min_verses?: number;
+}
 
 /**
  * Stable, machine-readable rule identity — a **closed set**.
@@ -32,7 +46,16 @@ export type Severity = "error" | "warning" | "info";
  * config and localisation off: Rust via [`RuleId::ALL`] +
  * exhaustive `match`; TS via the `Tsify` string union.
  */
-export type RuleId = "lex.excess-h-whitespace" | "hyg.tab-in-body" | "hyg.control-chars" | "hyg.zero-width-misuse" | "hyg.empty-verse";
+export type RuleId = "lex.excess-h-whitespace" | "hyg.tab-in-body" | "hyg.control-chars" | "hyg.zero-width-misuse" | "hyg.empty-verse" | "prop.length-ratio";
+
+/**
+ * Structured message arguments — the additive payload ADR 0010 §6
+ * anticipated. A **closed** discriminated union, like `RuleId`: rules
+ * whose localised message interpolates values add a variant here, and
+ * the consumer\'s ICU layer renders from it. Never a rendered string.
+ * Deterministic no-interpolation rules carry `None` on the finding.
+ */
+export type FindingArgs = { kind: "length-ratio"; ratio_pct: number; robust_z: number };
 
 /**
  * The return type. TS: `Finding[]`.
@@ -40,13 +63,15 @@ export type RuleId = "lex.excess-h-whitespace" | "hyg.tab-in-body" | "hyg.contro
 export type Findings = Finding[];
 
 /**
- * Which rules to run. `rules` maps a rule code to a flag; omit a rule to
- * keep it enabled (default-on). TS: `{ rules?: Partial<Record<RuleId,
- * boolean>> }` — `RuleId` is the same closed union carried on findings,
- * so the consumer\'s config and localisation maps key off one set.
+ * Which rules to run, plus per-rule knobs. `rules` maps a rule code to a
+ * flag; omit a rule to keep it enabled (default-on). TS: `{ rules?:
+ * Partial<Record<RuleId, boolean>>, proportionality?: … }` — `RuleId` is
+ * the same closed union carried on findings, so the consumer\'s config
+ * and localisation maps key off one set.
  */
 export interface SousConfig {
     rules?: Partial<Record<RuleId, boolean>>;
+    proportionality?: ProportionalityOverrides;
 }
 
 /**

@@ -58,11 +58,12 @@ macro_rules! define_rule_ids {
 }
 
 define_rule_ids! {
-    ExcessHWhitespace => "lex.excess-h-whitespace",
-    TabInBody         => "hyg.tab-in-body",
-    ControlChars      => "hyg.control-chars",
-    ZeroWidthMisuse   => "hyg.zero-width-misuse",
-    EmptyVerse        => "hyg.empty-verse",
+    ExcessHWhitespace  => "lex.excess-h-whitespace",
+    TabInBody          => "hyg.tab-in-body",
+    ControlChars       => "hyg.control-chars",
+    ZeroWidthMisuse    => "hyg.zero-width-misuse",
+    EmptyVerse         => "hyg.empty-verse",
+    ProjectLengthRatio => "prop.length-ratio",
 }
 
 impl std::fmt::Display for RuleId {
@@ -82,6 +83,23 @@ pub enum Severity {
     Info,
 }
 
+/// Structured message arguments — the additive payload ADR 0010 §6
+/// anticipated. A **closed** discriminated union, like `RuleId`: rules
+/// whose localised message interpolates values add a variant here, and
+/// the consumer's ICU layer renders from it. Never a rendered string.
+/// Deterministic no-interpolation rules carry `None` on the finding.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(tag = "kind"))]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+pub enum FindingArgs {
+    /// `prop.length-ratio`: the verse's length relative to the reference
+    /// (`ratio_pct`, e.g. `312.0` = 312% of the reference length) and the
+    /// robust z-score that flagged it within its book's distribution.
+    #[cfg_attr(feature = "serde", serde(rename = "length-ratio"))]
+    LengthRatio { ratio_pct: f32, robust_z: f32 },
+}
+
 /// One addressable content finding in one verse.
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
@@ -97,4 +115,8 @@ pub struct Finding {
     /// fill it when they graduate from `labs`.
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub score: Option<f32>,
+    /// Structured args for the consumer's interpolated message. `None`
+    /// for rules whose message needs no interpolation.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub args: Option<FindingArgs>,
 }

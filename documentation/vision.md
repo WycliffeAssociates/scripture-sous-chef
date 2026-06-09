@@ -491,7 +491,7 @@ Families: `LEX` (lexical), `PUNCT` (punctuation), `CASE` (casing), `WS`
 | `SSC-LEX-HAPAX-001` | hapax-suspicion       | LEX      | scored 0–1       | info        | Multi-signal score for hapax tokens (§5.4). Surfaces above threshold.                                                                               |
 | `SSC-PUNCT-001`     | intermedial-punct     | PUNCT    | binary 1.0       | warn        | Punctuation between letters in a token, where the char is not in the allow-list. Allow-list can be corpus-derived.                                  |
 | `SSC-CASE-001`      | mixed-casing-in-token | CASE     | binary 1.0       | info        | Uppercase letter mid-token in a corpus that is otherwise predominantly lowercase. Opt-out for transliteration conventions.                          |
-| `SSC-PROP-001`      | length-ratio-outlier  | PROP     | normalised \|z\| | warn        | Per-verse target/reference length ratio outside per-book mean by configured z-score. Catches misplaced verse numbers, gross over/under-translation. |
+| `SSC-PROP-001`      | length-ratio-outlier  | PROP     | normalised \|z\| | warn        | Per-verse target/reference length ratio outside per-book mean by configured z-score. Catches misplaced verse numbers, gross over/under-translation. **Shipped v0.0.3** as `prop.length-ratio` (median+MAD per book, grapheme length; ADR 0013). |
 | `SSC-UNI-001`       | unicode-anomaly       | UNI      | binary 1.0       | warn        | Combining marks without base, mixed scripts within token, suspicious zero-width chars (ZWNJ/ZWJ unexpectedly, BOM mid-text, soft hyphens).          |
 | `SSC-WS-001`        | whitespace-anomaly    | WS       | binary 1.0       | info        | Leading/trailing whitespace inside verse, double whitespace, non-breaking spaces where regular spaces expected.                                     |
 
@@ -573,7 +573,9 @@ All concentrated in `core::defaults` so they are easy to find and tune.
 Starting set ("moderate" baseline):
 
 - N-gram orders for analysis: `{2, 3, 4}`.
-- Length-ratio z-score cutoff: `|z| > 2.5`.
+- Length-ratio z-score cutoff: `|z| > 3.5` (first guess was 2.5;
+  calibrated 2026-06-09 — verse-length ratios are fat-tailed, see
+  `calibration/2026-06-09-proportionality.md`).
 - Min verses per book before activating distribution-based rules: `50`.
 - Hapax-suspicion surfacing threshold: `0.6`.
 - Hapax-suspicion default weights: `{ frequency: 0.3, ngram_rarity: 0.4,

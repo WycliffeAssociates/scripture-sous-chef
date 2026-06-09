@@ -10,7 +10,7 @@
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
-use ssc_core::{Config, RuleId, Severity, Sid, VerseMap, analyze_with_config};
+use ssc_core::{Config, FindingArgs, RuleId, Severity, Sid, VerseMap, analyze_with_config};
 use tsify::Tsify;
 use wasm_bindgen::prelude::*;
 
@@ -19,16 +19,33 @@ use wasm_bindgen::prelude::*;
 #[tsify(from_wasm_abi)]
 pub struct VrefMap(pub BTreeMap<String, String>);
 
-/// Which rules to run. `rules` maps a rule code to a flag; omit a rule to
-/// keep it enabled (default-on). TS: `{ rules?: Partial<Record<RuleId,
-/// boolean>> }` — `RuleId` is the same closed union carried on findings,
-/// so the consumer's config and localisation maps key off one set.
+/// Partial overrides for `prop.length-ratio`'s knobs. Omitted fields keep
+/// core's calibrated defaults (`z_threshold` 3.5, `min_verses` 50).
+#[derive(Deserialize, Tsify, Default)]
+#[tsify(from_wasm_abi)]
+pub struct ProportionalityOverrides {
+    #[serde(default)]
+    #[tsify(optional)]
+    pub z_threshold: Option<f32>,
+    #[serde(default)]
+    #[tsify(optional)]
+    pub min_verses: Option<usize>,
+}
+
+/// Which rules to run, plus per-rule knobs. `rules` maps a rule code to a
+/// flag; omit a rule to keep it enabled (default-on). TS: `{ rules?:
+/// Partial<Record<RuleId, boolean>>, proportionality?: … }` — `RuleId` is
+/// the same closed union carried on findings, so the consumer's config
+/// and localisation maps key off one set.
 #[derive(Deserialize, Tsify, Default)]
 #[tsify(from_wasm_abi)]
 pub struct SousConfig {
     #[serde(default)]
     #[tsify(optional, type = "Partial<Record<RuleId, boolean>>")]
     pub rules: Option<BTreeMap<RuleId, bool>>,
+    #[serde(default)]
+    #[tsify(optional)]
+    pub proportionality: Option<ProportionalityOverrides>,
 }
 
 /// A finding as the editor sees it: UTF-16 ranges; `code`/`severity` are
@@ -45,6 +62,9 @@ pub struct Finding {
     pub start: u32,
     pub end: u32,
     pub score: Option<f32>,
+    /// Structured args for the consumer's interpolated message (the
+    /// `FindingArgs` closed union); `None` for no-interpolation rules.
+    pub args: Option<FindingArgs>,
 }
 
 /// The return type. TS: `Finding[]`.
@@ -66,8 +86,18 @@ pub fn analyze_vref(target: VrefMap, source: Option<VrefMap>, config: Option<Sou
     let target_vm = to_verse_map(&target.0);
     let source_vm = source.as_ref().map(|s| to_verse_map(&s.0));
     let cfg = config
-        .and_then(|c| c.rules)
-        .map(Config::with_overrides)
+        .map(|c| {
+            let mut out = Config::with_overrides(c.rules.unwrap_or_default());
+            if let Some(p) = c.proportionality {
+                if let Some(z) = p.z_threshold {
+                    out.proportionality.z_threshold = z;
+                }
+                if let Some(m) = p.min_verses {
+                    out.proportionality.min_verses = m;
+                }
+            }
+            out
+        })
         .unwrap_or_default();
 
     let findings = analyze_with_config(&target_vm, source_vm.as_ref(), &cfg);
@@ -85,6 +115,7 @@ pub fn analyze_vref(target: VrefMap, source: Option<VrefMap>, config: Option<Sou
                     start: u16.start as u32,
                     end: u16.end as u32,
                     score: f.score,
+                    args: f.args,
                 }
             })
             .collect(),
