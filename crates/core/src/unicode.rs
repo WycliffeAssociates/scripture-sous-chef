@@ -62,6 +62,31 @@ pub fn is_cased(c: char) -> bool {
     c.is_uppercase() || c.is_lowercase()
 }
 
+/// Combining mark (General_Category group Mark: Mn / Mc / Me). Backed by
+/// `unicode-properties` — we deliberately do not hand-roll mark ranges.
+pub fn is_combining_mark(c: char) -> bool {
+    use unicode_properties::{GeneralCategoryGroup, UnicodeGeneralCategory};
+    c.general_category_group() == GeneralCategoryGroup::Mark
+}
+
+/// Punctuation (General_Category group P).
+pub fn is_punctuation(c: char) -> bool {
+    use unicode_properties::{GeneralCategoryGroup, UnicodeGeneralCategory};
+    c.general_category_group() == GeneralCategoryGroup::Punctuation
+}
+
+/// Symbol (General_Category group S) — math signs, currency, modifiers.
+pub fn is_symbol(c: char) -> bool {
+    use unicode_properties::{GeneralCategoryGroup, UnicodeGeneralCategory};
+    c.general_category_group() == GeneralCategoryGroup::Symbol
+}
+
+/// Decimal digit (General_Category Nd) — any script's positional digits.
+pub fn is_decimal_digit(c: char) -> bool {
+    use unicode_properties::{GeneralCategory, UnicodeGeneralCategory};
+    c.general_category() == GeneralCategory::DecimalNumber
+}
+
 /// Zero-width and formatting-control codepoints that should not appear
 /// in scripture body. Excludes legitimately-used joiners — callers
 /// supply their own script-aware allow-list for ZWNJ / ZWJ.

@@ -79,26 +79,29 @@ fn to_verse_map(m: &BTreeMap<String, String>) -> VerseMap {
 }
 
 /// Analyze a vref text map. `target` is `{ sid -> text }`; `source` is an
-/// optional parallel map; `config` optionally disables rules (omitted ⇒
-/// all rules run). Returns findings with UTF-16 ranges.
+/// optional parallel map; `config` overrides the shipped defaults
+/// (omitted ⇒ `Config::v1_defaults()`: language-agnostic rules on,
+/// convention-dependent rules off). Returns findings with UTF-16 ranges.
 #[wasm_bindgen]
 pub fn analyze_vref(target: VrefMap, source: Option<VrefMap>, config: Option<SousConfig>) -> Findings {
     let target_vm = to_verse_map(&target.0);
     let source_vm = source.as_ref().map(|s| to_verse_map(&s.0));
-    let cfg = config
-        .map(|c| {
-            let mut out = Config::with_overrides(c.rules.unwrap_or_default());
-            if let Some(p) = c.proportionality {
-                if let Some(z) = p.z_threshold {
-                    out.proportionality.z_threshold = z;
-                }
-                if let Some(m) = p.min_verses {
-                    out.proportionality.min_verses = m;
-                }
+    // Base = the shipped defaults (P2 rules off); the caller's explicit
+    // per-rule entries and knob overrides land on top.
+    let mut cfg = Config::v1_defaults();
+    if let Some(c) = config {
+        if let Some(rules) = c.rules {
+            cfg.rules.extend(rules);
+        }
+        if let Some(p) = c.proportionality {
+            if let Some(z) = p.z_threshold {
+                cfg.proportionality.z_threshold = z;
             }
-            out
-        })
-        .unwrap_or_default();
+            if let Some(m) = p.min_verses {
+                cfg.proportionality.min_verses = m;
+            }
+        }
+    }
 
     let findings = analyze_with_config(&target_vm, source_vm.as_ref(), &cfg);
 

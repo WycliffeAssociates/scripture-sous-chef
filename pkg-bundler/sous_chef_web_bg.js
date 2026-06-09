@@ -1,7 +1,8 @@
 /**
  * Analyze a vref text map. `target` is `{ sid -> text }`; `source` is an
- * optional parallel map; `config` optionally disables rules (omitted ⇒
- * all rules run). Returns findings with UTF-16 ranges.
+ * optional parallel map; `config` overrides the shipped defaults
+ * (omitted ⇒ `Config::v1_defaults()`: language-agnostic rules on,
+ * convention-dependent rules off). Returns findings with UTF-16 ranges.
  * @param {VrefMap} target
  * @param {VrefMap | null} [source]
  * @param {SousConfig | null} [config]

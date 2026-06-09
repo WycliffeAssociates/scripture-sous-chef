@@ -14,7 +14,10 @@ use crate::diagnostics::{RuleId, Severity};
 use crate::rule::PerVerseRule;
 use crate::script::script_of;
 use crate::span::Span;
-use crate::unicode::{ZWJ, ZWNJ, is_c0_control, is_c1_control, is_zero_width_or_format};
+use crate::unicode::{
+    ZWJ, ZWNJ, is_c0_control, is_c1_control, is_combining_mark, is_decimal_digit, is_punctuation,
+    is_symbol, is_zero_width_or_format,
+};
 
 // ─────────────────────────────────────────────────────────────────────
 // Tab in body
@@ -194,6 +197,187 @@ pub fn scan_empty_verse(text: &str) -> Vec<Span> {
 }
 
 // ─────────────────────────────────────────────────────────────────────
+// Combining mark without base
+// ─────────────────────────────────────────────────────────────────────
+
+/// A combining mark with nothing to combine with: at verse start, or
+/// directly after whitespace or punctuation. Always an encoding/editing
+/// error — a mark's base was deleted out from under it.
+pub const COMBINING_MARK_WITHOUT_BASE: RuleId = RuleId::CombiningMarkWithoutBase;
+
+pub struct CombiningMarkWithoutBase;
+
+impl PerVerseRule for CombiningMarkWithoutBase {
+    fn id(&self) -> RuleId {
+        COMBINING_MARK_WITHOUT_BASE
+    }
+    fn severity(&self) -> Severity {
+        Severity::Warning
+    }
+    fn check(&self, text: &str) -> Vec<Span> {
+        scan_combining_mark_without_base(text)
+    }
+}
+
+pub fn scan_combining_mark_without_base(text: &str) -> Vec<Span> {
+    let mut spans = Vec::new();
+    let mut prev: Option<char> = None;
+    for (i, c) in text.char_indices() {
+        if is_combining_mark(c) {
+            let baseless = match prev {
+                None => true,
+                Some(p) => p.is_whitespace() || is_punctuation(p) || is_symbol(p),
+            };
+            if baseless {
+                spans.push(Span {
+                    start: i,
+                    end: i + c.len_utf8(),
+                });
+            }
+        }
+        prev = Some(c);
+    }
+    spans
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Mixed script in token
+// ─────────────────────────────────────────────────────────────────────
+
+/// One token mixing two or more scripts (Latin+Cyrillic homoglyphs,
+/// math-alphanumeric look-alikes). Common/Inherited characters carry no
+/// script identity and never count. Catches paste/encoding errors that
+/// render invisibly.
+pub const MIXED_SCRIPT_IN_TOKEN: RuleId = RuleId::MixedScriptInToken;
+
+pub struct MixedScriptInToken;
+
+impl PerVerseRule for MixedScriptInToken {
+    fn id(&self) -> RuleId {
+        MIXED_SCRIPT_IN_TOKEN
+    }
+    fn severity(&self) -> Severity {
+        Severity::Warning
+    }
+    fn check(&self, text: &str) -> Vec<Span> {
+        scan_mixed_script_in_token(text)
+    }
+}
+
+pub fn scan_mixed_script_in_token(text: &str) -> Vec<Span> {
+    let mut spans = Vec::new();
+    for token in crate::token::tokenize(text) {
+        let mut first: Option<&'static str> = None;
+        let mut mixed = false;
+        for c in token.span.slice(text).chars() {
+            let Some(name) = script_of(c) else { continue };
+            match first {
+                None => first = Some(name),
+                Some(f) if f != name => {
+                    mixed = true;
+                    break;
+                }
+                Some(_) => {}
+            }
+        }
+        if mixed {
+            spans.push(token.span);
+        }
+    }
+    spans
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Mixed numeral systems
+// ─────────────────────────────────────────────────────────────────────
+
+/// A verse mixing decimal digits from two numeral systems (ASCII `7`
+/// next to Devanagari `७`, …). The minority-system digit runs are
+/// flagged; the majority system is taken as the verse's convention.
+pub const MIXED_NUMERAL_SYSTEMS: RuleId = RuleId::MixedNumeralSystems;
+
+pub struct MixedNumeralSystems;
+
+impl PerVerseRule for MixedNumeralSystems {
+    fn id(&self) -> RuleId {
+        MIXED_NUMERAL_SYSTEMS
+    }
+    fn severity(&self) -> Severity {
+        Severity::Warning
+    }
+    fn check(&self, text: &str) -> Vec<Span> {
+        scan_mixed_numeral_systems(text)
+    }
+}
+
+/// Numeral-system identity of a decimal digit: the zero codepoint of its
+/// contiguous Nd block (every Unicode decimal-digit block is a run of
+/// ten starting at its zero).
+fn numeral_system(c: char) -> Option<u32> {
+    if !is_decimal_digit(c) {
+        return None;
+    }
+    let v = c.to_digit(10).unwrap_or_else(|| {
+        // Non-ASCII Nd: derive the digit value from the block offset is
+        // impossible without the zero — but Rust's to_digit handles only
+        // ASCII. Walk back to the block zero instead: Nd blocks are
+        // aligned runs of ten, so the zero is the largest codepoint
+        // `z <= c` where `(c as u32 - z) < 10` and `z` is Nd with the
+        // nine following codepoints Nd. Simpler: scan back up to 9.
+        let cu = c as u32;
+        for back in 1..=9 {
+            if let Some(z) = char::from_u32(cu - back)
+                && !is_decimal_digit(z)
+            {
+                return back - 1;
+            }
+        }
+        9
+    });
+    Some(c as u32 - v)
+}
+
+pub fn scan_mixed_numeral_systems(text: &str) -> Vec<Span> {
+    use std::collections::HashMap;
+
+    let mut counts: HashMap<u32, usize> = HashMap::new();
+    for c in text.chars() {
+        if let Some(sys) = numeral_system(c) {
+            *counts.entry(sys).or_default() += 1;
+        }
+    }
+    if counts.len() < 2 {
+        return Vec::new();
+    }
+    // Majority system; deterministic tie-break on the lower zero point.
+    let majority = counts
+        .iter()
+        .max_by_key(|&(&sys, &n)| (n, std::cmp::Reverse(sys)))
+        .map(|(&sys, _)| sys)
+        .unwrap();
+
+    // Flag maximal runs of minority-system digits.
+    let mut spans = Vec::new();
+    let mut run_start: Option<usize> = None;
+    let mut run_end = 0usize;
+    for (i, c) in text.char_indices() {
+        let minority = numeral_system(c).is_some_and(|sys| sys != majority);
+        if minority {
+            if run_start.is_none() {
+                run_start = Some(i);
+            }
+            run_end = i + c.len_utf8();
+        } else if let Some(start) = run_start.take() {
+            spans.push(Span { start, end: run_end });
+        }
+    }
+    if let Some(start) = run_start {
+        spans.push(Span { start, end: run_end });
+    }
+    spans
+}
+
+// ─────────────────────────────────────────────────────────────────────
 // Tests
 // ─────────────────────────────────────────────────────────────────────
 
@@ -257,5 +441,69 @@ mod tests {
     #[test]
     fn empty_verse_quiet_on_real_content() {
         assert!(scan_empty_verse("hello").is_empty());
+    }
+
+    #[test]
+    fn combining_mark_after_space_flagged() {
+        // "a ́b" — acute with only a space to attach to.
+        let text = "a \u{0301}b";
+        let f = scan_combining_mark_without_base(text);
+        assert_eq!(f.len(), 1);
+        assert_eq!(f[0].slice(text), "\u{0301}");
+    }
+
+    #[test]
+    fn combining_mark_at_start_and_after_punct_flagged() {
+        assert_eq!(scan_combining_mark_without_base("\u{0301}abc").len(), 1);
+        assert_eq!(scan_combining_mark_without_base("word.\u{0301} x").len(), 1);
+    }
+
+    #[test]
+    fn combining_mark_on_base_is_clean() {
+        assert!(scan_combining_mark_without_base("ne\u{0301}e").is_empty());
+        // Devanagari matras on consonants.
+        assert!(scan_combining_mark_without_base("परमेश्वर").is_empty());
+    }
+
+    #[test]
+    fn mixed_script_homoglyph_flagged() {
+        // Latin word with a Cyrillic 'а' in the middle.
+        let text = "p\u{0430}ul said";
+        let f = scan_mixed_script_in_token(text);
+        assert_eq!(f.len(), 1);
+        assert_eq!(f[0].slice(text), "p\u{0430}ul");
+    }
+
+    #[test]
+    fn mixed_script_math_bold_flagged() {
+        // U+1D400 MATHEMATICAL BOLD CAPITAL A inside a Latin token.
+        let f = scan_mixed_script_in_token("\u{1D400}men");
+        assert_eq!(f.len(), 1);
+    }
+
+    #[test]
+    fn single_script_tokens_clean() {
+        assert!(scan_mixed_script_in_token("an ordinary verse").is_empty());
+        assert!(scan_mixed_script_in_token("परमेश्वर ने कहा").is_empty());
+        // Digits/punct are Common — never count as a second script.
+        assert!(scan_mixed_script_in_token("40days a.m.").is_empty());
+        // Two scripts in two separate tokens is fine (quotation, gloss).
+        assert!(scan_mixed_script_in_token("word शब्द").is_empty());
+    }
+
+    #[test]
+    fn mixed_numerals_flag_minority_run() {
+        // Two ASCII digits (majority), one Devanagari run (minority).
+        let text = "12 men and ४५ women";
+        let f = scan_mixed_numeral_systems(text);
+        assert_eq!(f.len(), 1);
+        assert_eq!(f[0].slice(text), "४५");
+    }
+
+    #[test]
+    fn single_numeral_system_clean() {
+        assert!(scan_mixed_numeral_systems("12 men and 45 women").is_empty());
+        assert!(scan_mixed_numeral_systems("१२ and ४५").is_empty());
+        assert!(scan_mixed_numeral_systems("no digits at all").is_empty());
     }
 }

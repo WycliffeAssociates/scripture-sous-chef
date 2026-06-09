@@ -14,6 +14,7 @@ pub mod script;
 pub mod sid;
 pub mod signals;
 pub mod span;
+pub mod token;
 pub mod unicode;
 pub mod verse;
 
@@ -23,15 +24,15 @@ pub use sid::{BookId, Sid};
 pub use span::{GraphemeSpan, Span, Utf16Span};
 pub use verse::VerseMap;
 
-/// Analyze a corpus with every rule enabled.
+/// Analyze a corpus with the shipped default rule set.
 ///
-/// Convenience over [`analyze_with_config`] with [`Config::all`]. `target`
-/// is the verses to check; `source` is an optional parallel corpus for
-/// source-relative rules (none ship in v1, but the parameter keeps that
-/// capability open — ADR 0010). The map's scope is the analysis scope:
-/// pass a verse, a book, or a whole project.
+/// Convenience over [`analyze_with_config`] with [`Config::v1_defaults`]
+/// (language-agnostic rules on; convention-dependent rules off, opt-in).
+/// `target` is the verses to check; `source` is an optional parallel
+/// corpus for source-relative rules (proportionality). The map's scope is
+/// the analysis scope: pass a verse, a book, or a whole project.
 pub fn analyze(target: &VerseMap, source: Option<&VerseMap>) -> Vec<Finding> {
-    analyze_with_config(target, source, &Config::all())
+    analyze_with_config(target, source, &Config::v1_defaults())
 }
 
 /// Analyze a corpus, running only the rules `config` enables.
@@ -168,6 +169,26 @@ mod tests {
                 .iter()
                 .all(|f| f.code != RuleId::ProjectLengthRatio)
         );
+    }
+
+    /// The shipped defaults keep convention-dependent (P2) rules off;
+    /// an explicit config entry opts in.
+    #[test]
+    fn p2_rules_are_default_disabled_and_opt_in() {
+        let target = map(&[("v1", "word ,word")]);
+        assert!(analyze(&target, None).is_empty());
+
+        let mut on = Config::v1_defaults();
+        on.rules.insert(RuleId::SpaceBeforePunct, true);
+        let findings = analyze_with_config(&target, None, &on);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].code, RuleId::SpaceBeforePunct);
+
+        let casing = map(&[("v1", "He spoke. then they went.")]);
+        assert!(analyze(&casing, None).is_empty());
+        let mut on = Config::v1_defaults();
+        on.rules.insert(RuleId::SentenceInitialLowercase, true);
+        assert_eq!(analyze_with_config(&casing, None, &on).len(), 1);
     }
 
     /// Guards the `RuleId` wire format: the serde rename must match

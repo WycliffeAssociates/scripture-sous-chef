@@ -46,7 +46,7 @@ export interface ProportionalityOverrides {
  * config and localisation off: Rust via [`RuleId::ALL`] +
  * exhaustive `match`; TS via the `Tsify` string union.
  */
-export type RuleId = "lex.excess-h-whitespace" | "hyg.tab-in-body" | "hyg.control-chars" | "hyg.zero-width-misuse" | "hyg.empty-verse" | "prop.length-ratio";
+export type RuleId = "lex.excess-h-whitespace" | "hyg.tab-in-body" | "hyg.control-chars" | "hyg.zero-width-misuse" | "hyg.empty-verse" | "prop.length-ratio" | "struct.source-marker-leftover" | "punct.repeated-punct" | "lex.duplicate-word" | "lex.punct-only-token" | "uni.combining-mark-without-base" | "uni.mixed-script-in-token" | "lex.repeated-character-run" | "uni.mixed-numeral-systems" | "punct.placeholder-leftover" | "punct.bracket-balance" | "punct.space-before-punct" | "case.sentence-initial-lowercase";
 
 /**
  * Structured message arguments — the additive payload ADR 0010 §6
@@ -82,8 +82,9 @@ export type VrefMap = Record<string, string>;
 
 /**
  * Analyze a vref text map. `target` is `{ sid -> text }`; `source` is an
- * optional parallel map; `config` optionally disables rules (omitted ⇒
- * all rules run). Returns findings with UTF-16 ranges.
+ * optional parallel map; `config` overrides the shipped defaults
+ * (omitted ⇒ `Config::v1_defaults()`: language-agnostic rules on,
+ * convention-dependent rules off). Returns findings with UTF-16 ranges.
  */
 export function analyze_vref(target: VrefMap, source?: VrefMap | null, config?: SousConfig | null): Findings;
 

@@ -7,8 +7,11 @@
 //! else. Production consumers get verse text from onion.
 //!
 //! Usage:
+//!   # proportionality (target vs reference):
 //!   cargo run --release -p ssc-core --example calibrate -- \
 //!       corpora/bem_reg corpora/en_ulb
+//!   # per-verse batch (one corpus, default config):
+//!   cargo run --release -p ssc-core --example calibrate -- corpora/en_ulb
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -17,15 +20,19 @@ use std::path::Path;
 use ssc_core::config::ProportionalityConfig;
 use ssc_core::rule::ProjectRule;
 use ssc_core::signals::proportionality::ProjectLengthRatio;
-use ssc_core::{BookId, FindingArgs, Sid, VerseMap};
+use ssc_core::{BookId, FindingArgs, RuleId, Sid, VerseMap, analyze};
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let (target_dir, source_dir, z_threshold) = match args.as_slice() {
+        [t] => {
+            batch(Path::new(t));
+            return;
+        }
         [t, s] => (t, s, ProportionalityConfig::default().z_threshold),
         [t, s, z] => (t, s, z.parse().expect("z threshold")),
         _ => {
-            eprintln!("usage: calibrate <target-corpus-dir> <source-corpus-dir> [z]");
+            eprintln!("usage: calibrate <target-corpus-dir> [<source-corpus-dir> [z]]");
             std::process::exit(2);
         }
     };
@@ -86,6 +93,44 @@ fn print_findings<'a>(
             ratio_pct,
             preview
         );
+    }
+}
+
+/// Per-verse batch over one corpus with the shipped defaults: counts per
+/// rule, worst book per rule, and a few sample slices per rule.
+fn batch(dir: &Path) {
+    let target = load_corpus(dir);
+    eprintln!("{} verses", target.len());
+    let findings = analyze(&target, None);
+
+    let mut by_rule: BTreeMap<RuleId, Vec<&ssc_core::Finding>> = BTreeMap::new();
+    for f in &findings {
+        by_rule.entry(f.code).or_default().push(f);
+    }
+    println!("total findings: {}\n", findings.len());
+    for (rule, fs) in &by_rule {
+        let mut per_book: BTreeMap<BookId, usize> = BTreeMap::new();
+        for f in fs {
+            *per_book.entry(f.sid.book).or_default() += 1;
+        }
+        let (worst_book, worst) = per_book
+            .iter()
+            .max_by_key(|&(_, n)| *n)
+            .map(|(b, n)| (*b, *n))
+            .unwrap();
+        println!("{rule}: {} (worst book {worst_book}: {worst})", fs.len());
+        for f in fs.iter().take(5) {
+            let text = &target[&f.sid];
+            let slice: String = f.range.slice(text).chars().take(40).collect();
+            let ctx_start = text[..f.range.start]
+                .char_indices()
+                .rev()
+                .nth(19)
+                .map(|(i, _)| i)
+                .unwrap_or(0);
+            let ctx: String = text[ctx_start..].chars().take(60).collect();
+            println!("    {:<10} [{slice}] …{ctx}", f.sid.to_string());
+        }
     }
 }
 

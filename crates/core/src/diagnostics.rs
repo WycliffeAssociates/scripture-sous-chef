@@ -58,12 +58,24 @@ macro_rules! define_rule_ids {
 }
 
 define_rule_ids! {
-    ExcessHWhitespace  => "lex.excess-h-whitespace",
-    TabInBody          => "hyg.tab-in-body",
-    ControlChars       => "hyg.control-chars",
-    ZeroWidthMisuse    => "hyg.zero-width-misuse",
-    EmptyVerse         => "hyg.empty-verse",
-    ProjectLengthRatio => "prop.length-ratio",
+    ExcessHWhitespace        => "lex.excess-h-whitespace",
+    TabInBody                => "hyg.tab-in-body",
+    ControlChars             => "hyg.control-chars",
+    ZeroWidthMisuse          => "hyg.zero-width-misuse",
+    EmptyVerse               => "hyg.empty-verse",
+    ProjectLengthRatio       => "prop.length-ratio",
+    SourceMarkerLeftover     => "struct.source-marker-leftover",
+    RepeatedPunct            => "punct.repeated-punct",
+    DuplicateWord            => "lex.duplicate-word",
+    PunctOnlyToken           => "lex.punct-only-token",
+    CombiningMarkWithoutBase => "uni.combining-mark-without-base",
+    MixedScriptInToken       => "uni.mixed-script-in-token",
+    RepeatedCharacterRun     => "lex.repeated-character-run",
+    MixedNumeralSystems      => "uni.mixed-numeral-systems",
+    PlaceholderLeftover      => "punct.placeholder-leftover",
+    BracketBalance           => "punct.bracket-balance",
+    SpaceBeforePunct         => "punct.space-before-punct",
+    SentenceInitialLowercase => "case.sentence-initial-lowercase",
 }
 
 impl std::fmt::Display for RuleId {

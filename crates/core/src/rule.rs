@@ -31,7 +31,9 @@ pub trait ProjectRule: Sync {
     fn check(&self, target: &VerseMap, source: Option<&VerseMap>) -> Vec<Finding>;
 }
 
-/// Every per-verse rule wired in by default.
+/// Every per-verse rule wired in. The registry is complete — including
+/// rules `Config::v1_defaults` disables by default — so an explicit
+/// enable in config is all it takes to run one.
 pub fn per_verse_rules() -> Vec<Box<dyn PerVerseRule>> {
     vec![
         Box::new(signals::whitespace::ExcessHWhitespace),
@@ -39,6 +41,18 @@ pub fn per_verse_rules() -> Vec<Box<dyn PerVerseRule>> {
         Box::new(signals::hygiene::ControlChars),
         Box::new(signals::hygiene::ZeroWidthMisuse),
         Box::new(signals::hygiene::EmptyVerse),
+        Box::new(signals::hygiene::CombiningMarkWithoutBase),
+        Box::new(signals::hygiene::MixedScriptInToken),
+        Box::new(signals::hygiene::MixedNumeralSystems),
+        Box::new(signals::structural::SourceMarkerLeftover),
+        Box::new(signals::punctuation::RepeatedPunct),
+        Box::new(signals::punctuation::PlaceholderLeftover),
+        Box::new(signals::punctuation::BracketBalance),
+        Box::new(signals::punctuation::SpaceBeforePunct),
+        Box::new(signals::lexical::DuplicateWord),
+        Box::new(signals::lexical::PunctOnlyToken),
+        Box::new(signals::lexical::RepeatedCharacterRun),
+        Box::new(signals::casing::SentenceInitialLowercase),
     ]
 }
 

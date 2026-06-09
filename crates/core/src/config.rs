@@ -54,9 +54,24 @@ pub struct Config {
 }
 
 impl Config {
-    /// All rules enabled (the default).
+    /// Literally every rule enabled, including the language-sensitive
+    /// ones `v1_defaults` turns off.
     pub fn all() -> Self {
         Self::default()
+    }
+
+    /// The shipped defaults: deterministic, language-agnostic rules on;
+    /// the convention-dependent rules off, opt-in via config. This is
+    /// what [`analyze`](crate::analyze) and the wasm boundary use — see
+    /// the deterministic-batch ADR. `DuplicateWord` is here because
+    /// reduplication is grammar, not typo, in much of the audience
+    /// (calibration: 600+ legitimate doublings per reduplicative NT).
+    pub fn v1_defaults() -> Self {
+        Self::disabling(&[
+            RuleId::DuplicateWord,
+            RuleId::SpaceBeforePunct,
+            RuleId::SentenceInitialLowercase,
+        ])
     }
 
     /// Build from explicit per-rule overrides (absent ⇒ enabled).
