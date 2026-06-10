@@ -28,6 +28,16 @@ use usfm_naive::load_corpus;
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let (target_dir, source_dir, z_threshold) = match args.as_slice() {
+        // Dump a corpus as `{ "GEN 1:1": text, … }` JSON on stdout —
+        // input for the wasm-side bench (scripts/bench-wasm.mjs).
+        [flag, t] if flag == "--json" => {
+            let map: BTreeMap<String, String> = load_corpus(Path::new(t))
+                .iter()
+                .map(|(sid, text)| (sid.to_string(), text.clone()))
+                .collect();
+            println!("{}", serde_json::to_string(&map).unwrap());
+            return;
+        }
         [t] => {
             batch(Path::new(t));
             return;
