@@ -12,11 +12,11 @@ use std::collections::HashMap;
 
 use crate::diagnostics::{RuleId, Severity};
 use crate::rule::PerVerseRule;
-use crate::script::script_of;
+use crate::script::{ScriptTag, script_of};
 use crate::span::Span;
 use crate::unicode::{
-    ZWJ, ZWNJ, is_c0_control, is_c1_control, is_combining_mark, is_decimal_digit, is_punctuation,
-    is_symbol, is_zero_width_or_format,
+    ZWJ, ZWNJ, is_c0_control, is_c1_control, is_combining_mark, is_decimal_digit,
+    is_invalid_text_codepoint, is_punctuation, is_symbol, is_zero_width_or_format,
 };
 
 // ─────────────────────────────────────────────────────────────────────
@@ -114,12 +114,18 @@ impl PerVerseRule for ZeroWidthMisuse {
 
 pub fn scan_zero_width_misuse(text: &str) -> Vec<Span> {
     let mut spans = Vec::new();
-    let allows_joiners = script_allows_joiners(majority_script(text));
+    // The joiner allow-list only matters once we actually meet a ZWNJ/ZWJ,
+    // and computing it walks every character. The vast majority of verses
+    // carry no zero-width chars at all, so defer it: compute at most once,
+    // lazily, on the first joiner encountered.
+    let mut allows_joiners: Option<bool> = None;
     for (i, c) in text.char_indices() {
         if !is_zero_width_or_format(c) {
             continue;
         }
-        if allows_joiners && (c == ZWNJ || c == ZWJ) {
+        if (c == ZWNJ || c == ZWJ)
+            && *allows_joiners.get_or_insert_with(|| script_allows_joiners(majority_script(text)))
+        {
             continue;
         }
         spans.push(Span {
@@ -130,33 +136,34 @@ pub fn scan_zero_width_misuse(text: &str) -> Vec<Span> {
     spans
 }
 
-fn majority_script(s: &str) -> Option<&'static str> {
-    let mut counts: HashMap<&'static str, usize> = HashMap::new();
+fn majority_script(s: &str) -> Option<ScriptTag> {
+    let mut counts: HashMap<ScriptTag, usize> = HashMap::new();
     for c in s.chars() {
-        if let Some(name) = script_of(c) {
-            *counts.entry(name).or_default() += 1;
+        if let Some(tag) = script_of(c) {
+            *counts.entry(tag).or_default() += 1;
         }
     }
-    counts.into_iter().max_by_key(|(_, c)| *c).map(|(n, _)| n)
+    counts.into_iter().max_by_key(|(_, c)| *c).map(|(t, _)| t)
 }
 
-fn script_allows_joiners(majority: Option<&'static str>) -> bool {
+fn script_allows_joiners(majority: Option<ScriptTag>) -> bool {
+    use crate::script::ScriptTag as S;
     matches!(
         majority,
         Some(
-            "Devanagari"
-                | "Bengali"
-                | "Gurmukhi"
-                | "Gujarati"
-                | "Oriya"
-                | "Tamil"
-                | "Telugu"
-                | "Kannada"
-                | "Malayalam"
-                | "Sinhala"
-                | "Arabic"
-                | "Myanmar"
-                | "Thaana"
+            S::Devanagari
+                | S::Bengali
+                | S::Gurmukhi
+                | S::Gujarati
+                | S::Oriya
+                | S::Tamil
+                | S::Telugu
+                | S::Kannada
+                | S::Malayalam
+                | S::Sinhala
+                | S::Arabic
+                | S::Myanmar
+                | S::Thaana
         )
     )
 }
@@ -194,6 +201,43 @@ pub fn scan_empty_verse(text: &str) -> Vec<Span> {
     } else {
         Vec::new()
     }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Invalid codepoint
+// ─────────────────────────────────────────────────────────────────────
+
+/// Codepoints that can never validly appear in interchange text:
+/// U+FFFD (decode failure), Unicode noncharacters, and the
+/// U+FFF9..=U+FFFC special-format leftovers. Always corruption,
+/// regardless of language or script — see [`is_invalid_text_codepoint`].
+pub const INVALID_CODEPOINT: RuleId = RuleId::InvalidCodepoint;
+
+pub struct InvalidCodepoint;
+
+impl PerVerseRule for InvalidCodepoint {
+    fn id(&self) -> RuleId {
+        INVALID_CODEPOINT
+    }
+    fn severity(&self) -> Severity {
+        Severity::Warning
+    }
+    fn check(&self, text: &str) -> Vec<Span> {
+        scan_invalid_codepoint(text)
+    }
+}
+
+pub fn scan_invalid_codepoint(text: &str) -> Vec<Span> {
+    let mut spans = Vec::new();
+    for (i, c) in text.char_indices() {
+        if is_invalid_text_codepoint(c) {
+            spans.push(Span {
+                start: i,
+                end: i + c.len_utf8(),
+            });
+        }
+    }
+    spans
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -267,13 +311,13 @@ impl PerVerseRule for MixedScriptInToken {
 pub fn scan_mixed_script_in_token(text: &str) -> Vec<Span> {
     let mut spans = Vec::new();
     for token in crate::token::tokenize(text) {
-        let mut first: Option<&'static str> = None;
+        let mut first: Option<ScriptTag> = None;
         let mut mixed = false;
         for c in token.span.slice(text).chars() {
-            let Some(name) = script_of(c) else { continue };
+            let Some(tag) = script_of(c) else { continue };
             match first {
-                None => first = Some(name),
-                Some(f) if f != name => {
+                None => first = Some(tag),
+                Some(f) if f != tag => {
                     mixed = true;
                     break;
                 }
@@ -441,6 +485,44 @@ mod tests {
     #[test]
     fn empty_verse_quiet_on_real_content() {
         assert!(scan_empty_verse("hello").is_empty());
+    }
+
+    #[test]
+    fn invalid_codepoint_flags_replacement_char() {
+        let f = scan_invalid_codepoint("god\u{FFFD}created");
+        assert_eq!(f.len(), 1);
+        assert_eq!("god\u{FFFD}created"[f[0].start..f[0].end].chars().next(), Some('\u{FFFD}'));
+    }
+
+    #[test]
+    fn invalid_codepoint_flags_noncharacters() {
+        // U+FDD0 (Arabic-block noncharacter) and U+FFFE (plane-end pair).
+        assert_eq!(scan_invalid_codepoint("a\u{FDD0}b").len(), 1);
+        assert_eq!(scan_invalid_codepoint("a\u{FFFE}b").len(), 1);
+        assert_eq!(scan_invalid_codepoint("a\u{FFFF}b").len(), 1);
+        // Plane-end noncharacters in a higher plane (U+1FFFF).
+        assert_eq!(scan_invalid_codepoint("a\u{1FFFF}b").len(), 1);
+    }
+
+    #[test]
+    fn invalid_codepoint_flags_special_format_leftovers() {
+        // U+FFFC object replacement, U+FFF9 interlinear-annotation anchor.
+        assert_eq!(scan_invalid_codepoint("a\u{FFFC}b").len(), 1);
+        assert_eq!(scan_invalid_codepoint("a\u{FFF9}b").len(), 1);
+    }
+
+    #[test]
+    fn invalid_codepoint_clean_text_quiet() {
+        assert!(scan_invalid_codepoint("In the beginning God created").is_empty());
+        assert!(scan_invalid_codepoint("परमेश्वर ने कहा").is_empty());
+    }
+
+    #[test]
+    fn invalid_codepoint_respects_range_edges() {
+        // U+FDEF is the last noncharacter; U+FDF0 just past it is valid.
+        let f = scan_invalid_codepoint("\u{FDEF}\u{FDF0}");
+        assert_eq!(f.len(), 1);
+        assert_eq!(f[0], Span { start: 0, end: 3 });
     }
 
     #[test]

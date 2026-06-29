@@ -162,7 +162,7 @@ fn batch(dir: &Path) {
 fn z_of(f: &ssc_core::Finding) -> f32 {
     match f.args {
         Some(FindingArgs::LengthRatio { robust_z, .. }) => robust_z,
-        None => 0.0,
+        _ => 0.0,
     }
 }
 

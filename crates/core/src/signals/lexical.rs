@@ -110,7 +110,16 @@ pub fn scan_punct_only_token(text: &str) -> Vec<Span> {
         // split_whitespace loses offsets; recover via scan-from.
         let start = offset + text[offset..].find(chunk).expect("chunk in text");
         offset = start + chunk.len();
-        let mut chars = chunk.chars();
+        // Cheap gate first: only an all-punctuation/symbol chunk can ever
+        // flag. This short-circuits on the first letter of any ordinary
+        // word, so the allocation-heavy `core` analysis below runs only
+        // for the rare punctuation-only chunk — not once per word.
+        if !chunk
+            .chars()
+            .all(|c| crate::unicode::is_punctuation(c) || crate::unicode::is_symbol(c))
+        {
+            continue;
+        }
         // Quotes and closing brackets ride along with whatever they
         // close ("।”", "।)"), so they don't count toward the verdict.
         let core: Vec<char> = chunk
@@ -130,9 +139,7 @@ pub fn scan_punct_only_token(text: &str) -> Vec<Span> {
                     || core.iter().collect::<String>() == "..."
             }
         };
-        if !legitimate
-            && chars.all(|c| crate::unicode::is_punctuation(c) || crate::unicode::is_symbol(c))
-        {
+        if !legitimate {
             spans.push(Span {
                 start,
                 end: start + chunk.len(),

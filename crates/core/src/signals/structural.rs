@@ -83,12 +83,75 @@ pub fn scan_source_marker_leftover(text: &str) -> Vec<Span> {
     spans
 }
 
+// ─────────────────────────────────────────────────────────────────────
+// Merge conflict markers
+// ─────────────────────────────────────────────────────────────────────
+
+/// Git merge-conflict markers committed into verse text: a run of three
+/// or more `<`, `=`, or `>` — the heads of `<<<<<<< HEAD`, `=======`,
+/// `>>>>>>> branch`. A resolved merge never leaves these; their presence
+/// means a conflict was saved unresolved. We deliberately *don't* match
+/// git's exact seven-char, line-anchored form: a non-default
+/// `conflict-marker-size`, a truncated paste, or a projection that
+/// collapsed the marker's newlines would all slip past it. No scripture
+/// body legitimately repeats one of these characters three times, so the
+/// low bar costs nothing in false positives. The diff3 base marker
+/// (`|||||||`) is intentionally absent: any pipe already trips
+/// [`SOURCE_MARKER_LEFTOVER`] as a USFM attribute remnant, so flagging it
+/// here too would only double-report. Language-blind: the run is ASCII
+/// punctuation, never script.
+pub const MERGE_CONFLICT_MARKER: RuleId = RuleId::MergeConflictMarker;
+
+pub struct MergeConflictMarker;
+
+impl PerVerseRule for MergeConflictMarker {
+    fn id(&self) -> RuleId {
+        MERGE_CONFLICT_MARKER
+    }
+    fn severity(&self) -> Severity {
+        Severity::Warning
+    }
+    fn check(&self, text: &str) -> Vec<Span> {
+        scan_merge_conflict_marker(text)
+    }
+}
+
+pub fn scan_merge_conflict_marker(text: &str) -> Vec<Span> {
+    /// Shortest run no legitimate scripture text would contain.
+    const MIN_RUN: usize = 3;
+    let bytes = text.as_bytes();
+    let mut spans = Vec::new();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let c = bytes[i];
+        if matches!(c, b'<' | b'=' | b'>') {
+            let start = i;
+            while i < bytes.len() && bytes[i] == c {
+                i += 1;
+            }
+            if i - start >= MIN_RUN {
+                spans.push(Span { start, end: i });
+            }
+        } else {
+            i += 1;
+        }
+    }
+    spans
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn slices<'a>(text: &'a str) -> Vec<&'a str> {
         scan_source_marker_leftover(text)
+            .iter()
+            .map(|s| s.slice(text))
+            .collect()
+    }
+
+    fn conflict_slices<'a>(text: &'a str) -> Vec<&'a str> {
+        scan_merge_conflict_marker(text)
             .iter()
             .map(|s| s.slice(text))
             .collect()
@@ -136,5 +199,44 @@ mod tests {
         let spans = scan_source_marker_leftover(text);
         assert_eq!(spans[0].slice(text), r"\add");
         assert_eq!(spans[1].slice(text), r"\add*");
+    }
+
+    #[test]
+    fn flags_a_full_conflict_block() {
+        // The marker run is flagged, not the label after it.
+        let text = "<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> feature/x";
+        assert_eq!(conflict_slices(text), vec!["<<<<<<<", "=======", ">>>>>>>"]);
+    }
+
+    #[test]
+    fn ignores_diff3_base_pipes() {
+        // Pipes are source-marker-leftover's job, not ours.
+        assert!(conflict_slices("||||||| merged common ancestors").is_empty());
+    }
+
+    #[test]
+    fn fires_below_git_default_size() {
+        // Non-default conflict-marker-size / truncated paste: still caught.
+        assert_eq!(conflict_slices("<<<"), vec!["<<<"]);
+        assert_eq!(conflict_slices(">>>>"), vec![">>>>"]);
+    }
+
+    #[test]
+    fn fires_when_newlines_were_collapsed() {
+        // Projection dropped the marker's line breaks — no anchor, no space.
+        assert_eq!(conflict_slices("ours=======theirs"), vec!["======="]);
+    }
+
+    #[test]
+    fn requires_at_least_three() {
+        // One or two are ordinary text (`<<` quotes, `==` rule fragment).
+        assert!(conflict_slices("a < b").is_empty());
+        assert!(conflict_slices("a << b == c").is_empty());
+    }
+
+    #[test]
+    fn clean_verse_has_no_conflict_markers() {
+        assert!(conflict_slices("In the beginning God created the heavens.").is_empty());
+        assert!(conflict_slices("5 < 7 and 7 > 5").is_empty());
     }
 }

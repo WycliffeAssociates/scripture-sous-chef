@@ -180,62 +180,6 @@ pub fn scan_placeholder_leftover(text: &str) -> Vec<Span> {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Bracket balance
-// ─────────────────────────────────────────────────────────────────────
-
-/// Unbalanced `()` `[]` `{}` within a verse: an unmatched closer or a
-/// never-closed opener. Quotes are deliberately excluded — quotations
-/// legitimately span verses (book-scope quote balance is deferred per
-/// ADR 0011). Parenthetical asides span verses too, less often (~24
-/// across the English ULB), which is why this is Info, not Warning —
-/// see the deterministic-batch calibration report.
-pub const BRACKET_BALANCE: RuleId = RuleId::BracketBalance;
-
-pub struct BracketBalance;
-
-impl PerVerseRule for BracketBalance {
-    fn id(&self) -> RuleId {
-        BRACKET_BALANCE
-    }
-    fn severity(&self) -> Severity {
-        Severity::Info
-    }
-    fn check(&self, text: &str) -> Vec<Span> {
-        scan_bracket_balance(text)
-    }
-}
-
-pub fn scan_bracket_balance(text: &str) -> Vec<Span> {
-    let close_of = |c: char| match c {
-        '(' => ')',
-        '[' => ']',
-        '{' => '}',
-        _ => unreachable!(),
-    };
-    let mut stack: Vec<(char, usize)> = Vec::new();
-    let mut spans = Vec::new();
-    for (i, c) in text.char_indices() {
-        match c {
-            '(' | '[' | '{' => stack.push((c, i)),
-            ')' | ']' | '}' => match stack.last() {
-                Some(&(open, _)) if close_of(open) == c => {
-                    stack.pop();
-                }
-                // Mismatched or stray closer.
-                _ => spans.push(Span { start: i, end: i + 1 }),
-            },
-            _ => {}
-        }
-    }
-    // Never-closed openers.
-    for (_, i) in stack {
-        spans.push(Span { start: i, end: i + 1 });
-    }
-    spans.sort();
-    spans
-}
-
-// ─────────────────────────────────────────────────────────────────────
 // Space before punctuation (P2 — ships default-disabled)
 // ─────────────────────────────────────────────────────────────────────
 
@@ -358,22 +302,6 @@ mod tests {
         assert!(ph("an ordinary verse, with [brackets] and a question?").is_empty());
         // ?? (two) is repeated-punct's business, not a placeholder.
         assert!(ph("really?? now").is_empty());
-    }
-
-    fn bb<'a>(text: &'a str) -> Vec<&'a str> {
-        scan_bracket_balance(text).iter().map(|s| s.slice(text)).collect()
-    }
-
-    #[test]
-    fn balanced_brackets_clean() {
-        assert!(bb("a (b [c] {d}) e").is_empty());
-    }
-
-    #[test]
-    fn unmatched_flagged() {
-        assert_eq!(bb("a (b c"), vec!["("]);
-        assert_eq!(bb("a b) c"), vec![")"]);
-        assert_eq!(bb("a [b) c"), vec!["[", ")"]);
     }
 
     fn sb<'a>(text: &'a str) -> Vec<&'a str> {

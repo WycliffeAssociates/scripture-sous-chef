@@ -18,7 +18,7 @@ pub mod token;
 pub mod unicode;
 pub mod verse;
 
-pub use config::{Config, ProportionalityConfig};
+pub use config::{BracketBalanceConfig, Config, ProportionalityConfig};
 pub use diagnostics::{Finding, FindingArgs, RuleId, Severity};
 pub use sid::{BookId, Sid};
 pub use span::{GraphemeSpan, Span, Utf16Span};

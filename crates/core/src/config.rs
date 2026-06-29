@@ -40,6 +40,30 @@ impl Default for ProportionalityConfig {
     }
 }
 
+/// Knobs for `punct.bracket-balance`. The rule matches brackets at **book**
+/// scope (a parenthetical aside legitimately spans verses); the window is a
+/// circuit-breaker, not an aside detector.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
+pub struct BracketBalanceConfig {
+    /// How many verses an opener may stay unmatched before it is reported
+    /// as orphaned and dropped (so a single missing closer can't poison the
+    /// rest of the book). Default 16: prose asides span ≤3 verses, but the
+    /// ULB also wraps whole disputed passages in editorial `[ ]` — the
+    /// *pericope adulterae* (JHN 7:53–8:11) and the longer ending of Mark
+    /// (MRK 16:9–20) run 11–12 verses — so the floor is set by those, not
+    /// the asides. 16 clears them with margin; its job is bounding a
+    /// runaway's blast radius, not catching asides. See ADR 0016.
+    pub window_verses: u16,
+}
+
+impl Default for BracketBalanceConfig {
+    fn default() -> Self {
+        Self { window_verses: 16 }
+    }
+}
+
 /// Which rules to run, plus per-rule knobs. A rule **absent** from
 /// `rules` is enabled (default-on); map it to `false` to disable.
 /// Disabled rules are skipped before they run, not filtered after — so
@@ -51,6 +75,8 @@ pub struct Config {
     pub rules: BTreeMap<RuleId, bool>,
     #[cfg_attr(feature = "serde", serde(default))]
     pub proportionality: ProportionalityConfig,
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub bracket_balance: BracketBalanceConfig,
 }
 
 impl Config {

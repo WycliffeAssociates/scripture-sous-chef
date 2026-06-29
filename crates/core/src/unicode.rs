@@ -62,27 +62,73 @@ pub fn is_cased(c: char) -> bool {
     c.is_uppercase() || c.is_lowercase()
 }
 
+// ASCII fast paths: `unicode-properties` resolves every General Category
+// query through a binary search over range tables, even for the ASCII
+// codepoints that dominate most text. We know ASCII's categories at
+// compile time, so branch them out ahead of the bsearch. The non-ASCII
+// arm is unchanged, so behaviour is identical — only faster for c < 0x80.
+
 /// Combining mark (General_Category group Mark: Mn / Mc / Me). Backed by
 /// `unicode-properties` — we deliberately do not hand-roll mark ranges.
 pub fn is_combining_mark(c: char) -> bool {
+    if c.is_ascii() {
+        return false; // No ASCII codepoint is a combining mark.
+    }
     use unicode_properties::{GeneralCategoryGroup, UnicodeGeneralCategory};
     c.general_category_group() == GeneralCategoryGroup::Mark
 }
 
 /// Punctuation (General_Category group P).
 pub fn is_punctuation(c: char) -> bool {
+    if c.is_ascii() {
+        // ASCII General_Category P* (Po/Ps/Pe/Pd/Pc). Note this is
+        // narrower than `char::is_ascii_punctuation`, which also counts
+        // `$ + < = > ^ \` | ~` — those are Symbol, not Punctuation.
+        return matches!(
+            c,
+            '!' | '"'
+                | '#'
+                | '%'
+                | '&'
+                | '\''
+                | '('
+                | ')'
+                | '*'
+                | ','
+                | '-'
+                | '.'
+                | '/'
+                | ':'
+                | ';'
+                | '?'
+                | '@'
+                | '['
+                | '\\'
+                | ']'
+                | '_'
+                | '{'
+                | '}'
+        );
+    }
     use unicode_properties::{GeneralCategoryGroup, UnicodeGeneralCategory};
     c.general_category_group() == GeneralCategoryGroup::Punctuation
 }
 
 /// Symbol (General_Category group S) — math signs, currency, modifiers.
 pub fn is_symbol(c: char) -> bool {
+    if c.is_ascii() {
+        // ASCII General_Category S* (Sm/Sc/Sk).
+        return matches!(c, '$' | '+' | '<' | '=' | '>' | '^' | '`' | '|' | '~');
+    }
     use unicode_properties::{GeneralCategoryGroup, UnicodeGeneralCategory};
     c.general_category_group() == GeneralCategoryGroup::Symbol
 }
 
 /// Decimal digit (General_Category Nd) — any script's positional digits.
 pub fn is_decimal_digit(c: char) -> bool {
+    if c.is_ascii() {
+        return c.is_ascii_digit();
+    }
     use unicode_properties::{GeneralCategory, UnicodeGeneralCategory};
     c.general_category() == GeneralCategory::DecimalNumber
 }
@@ -102,5 +148,24 @@ pub fn is_zero_width_or_format(c: char) -> bool {
         c as u32,
         0x200B..=0x200F | 0x202A..=0x202E | 0x2060..=0x206F | 0xFEFF
     )
+}
+
+/// Codepoints that can never validly appear in interchange text, so their
+/// presence is always corruption — independent of language or script:
+///
+/// - **U+FFFD** REPLACEMENT CHARACTER: a decoder hit bytes it couldn't
+///   interpret and left this in their place. Pure decode failure.
+/// - **Noncharacters** (U+FDD0..=U+FDEF and the `…FFFE`/`…FFFF` pair at
+///   the end of every plane): permanently reserved as invalid for
+///   interchange by the standard.
+/// - **U+FFF9..=U+FFFC**: interlinear-annotation anchors and the
+///   object-replacement character — special-purpose format leftovers,
+///   the same family as the U+2060..=U+206F range above.
+pub fn is_invalid_text_codepoint(c: char) -> bool {
+    let cp = c as u32;
+    cp == 0xFFFD
+        || (0xFDD0..=0xFDEF).contains(&cp)
+        || (cp & 0xFFFE) == 0xFFFE
+        || (0xFFF9..=0xFFFC).contains(&cp)
 }
 

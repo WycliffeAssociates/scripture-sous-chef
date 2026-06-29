@@ -118,7 +118,7 @@ pub fn analyze_vref(target: VrefMap, source: Option<VrefMap>, config: Option<Sou
                     start: u16.start as u32,
                     end: u16.end as u32,
                     score: f.score,
-                    args: f.args,
+                    args: f.args.clone(),
                 }
             })
             .collect(),

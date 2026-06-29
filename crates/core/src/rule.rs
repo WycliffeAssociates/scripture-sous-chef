@@ -41,13 +41,14 @@ pub fn per_verse_rules() -> Vec<Box<dyn PerVerseRule>> {
         Box::new(signals::hygiene::ControlChars),
         Box::new(signals::hygiene::ZeroWidthMisuse),
         Box::new(signals::hygiene::EmptyVerse),
+        Box::new(signals::hygiene::InvalidCodepoint),
         Box::new(signals::hygiene::CombiningMarkWithoutBase),
         Box::new(signals::hygiene::MixedScriptInToken),
         Box::new(signals::hygiene::MixedNumeralSystems),
         Box::new(signals::structural::SourceMarkerLeftover),
+        Box::new(signals::structural::MergeConflictMarker),
         Box::new(signals::punctuation::RepeatedPunct),
         Box::new(signals::punctuation::PlaceholderLeftover),
-        Box::new(signals::punctuation::BracketBalance),
         Box::new(signals::punctuation::SpaceBeforePunct),
         Box::new(signals::lexical::DuplicateWord),
         Box::new(signals::lexical::PunctOnlyToken),
@@ -60,7 +61,12 @@ pub fn per_verse_rules() -> Vec<Box<dyn PerVerseRule>> {
 /// constructed from `config`'s typed sub-configs here, once per analyze
 /// call — `ProjectRule::check` itself never sees the `Config`.
 pub fn project_rules(config: &Config) -> Vec<Box<dyn ProjectRule>> {
-    vec![Box::new(signals::proportionality::ProjectLengthRatio {
-        cfg: config.proportionality,
-    })]
+    vec![
+        Box::new(signals::proportionality::ProjectLengthRatio {
+            cfg: config.proportionality,
+        }),
+        Box::new(signals::bracket_balance::BracketBalance {
+            cfg: config.bracket_balance,
+        }),
+    ]
 }

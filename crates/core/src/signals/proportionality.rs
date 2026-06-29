@@ -219,9 +219,10 @@ mod tests {
         assert_eq!(f.range, Span { start: 0, end: target[&f.sid].len() });
         // A 5× outlier saturates the confidence scale.
         assert_eq!(f.score, Some(1.0));
-        let Some(FindingArgs::LengthRatio { ratio_pct, robust_z }) = f.args else {
+        let Some(FindingArgs::LengthRatio { ratio_pct, robust_z }) = &f.args else {
             panic!("expected LengthRatio args");
         };
+        let (ratio_pct, robust_z) = (*ratio_pct, *robust_z);
         assert!((ratio_pct - 500.0).abs() < 15.0, "ratio_pct = {ratio_pct}");
         assert!(robust_z > 2.5, "robust_z = {robust_z}");
     }
