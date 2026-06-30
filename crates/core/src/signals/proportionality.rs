@@ -86,15 +86,20 @@ impl StatefulRule for ProjectLengthRatio {
 
     fn reduce(&self, target: &VerseMap, source: Option<&VerseMap>) -> RuleStats {
         let mut stats = ProportionalityStats::default();
-        // No reference, no ratios — the rule needs `source`.
-        let Some(source) = source else {
-            return RuleStats::Proportionality(stats);
-        };
         // Ratios for target ∩ source, grouped by book ("length" is grapheme
         // count — vision §12.5; empty sides carry no signal and would divide
         // by zero).
         for (sid, text) in target {
-            let Some(src_text) = source.get(sid) else {
+            // Every book present in `target` gets a (possibly empty) bucket,
+            // so on merge it *supersedes* any prior entry — even when it now
+            // has no usable ratios (source gone, or empty sides). Without
+            // this, an edited book that lost its ratios would keep
+            // re-emitting the prior reduction's stale findings.
+            let bucket = stats
+                .per_book
+                .entry(sid.book.as_str().to_string())
+                .or_default();
+            let Some(src_text) = source.and_then(|s| s.get(sid)) else {
                 continue;
             };
             let t = text.graphemes(true).count();
@@ -102,15 +107,11 @@ impl StatefulRule for ProjectLengthRatio {
             if t == 0 || s == 0 {
                 continue;
             }
-            stats
-                .per_book
-                .entry(sid.book.as_str().to_string())
-                .or_default()
-                .push(RatioObs {
-                    sid: sid.to_string(),
-                    ratio: (t as f64 / s as f64) as f32,
-                    len: text.len() as u32,
-                });
+            bucket.push(RatioObs {
+                sid: sid.to_string(),
+                ratio: (t as f64 / s as f64) as f32,
+                len: text.len() as u32,
+            });
         }
         RuleStats::Proportionality(stats)
     }
@@ -193,7 +194,10 @@ impl StatefulRule for ProjectLengthRatio {
 /// judge (`< min_verses`) or has zero spread (a book of identical ratios has
 /// no outliers, and a zero MAD would make every deviation infinite).
 fn dist(ratios: &[f64], min_verses: usize) -> Option<(f64, f64)> {
-    if ratios.len() < min_verses {
+    // Guard empty independently of `min_verses`: that knob is caller-supplied
+    // (wasm config) and a `min_verses = 0` would otherwise let an empty slice
+    // through to `median([])`, which traps.
+    if ratios.is_empty() || ratios.len() < min_verses {
         return None;
     }
     let med = median(ratios.iter().copied());
@@ -425,6 +429,41 @@ mod tests {
         target.insert(sid("GEN", 3), "abcdefghij ".repeat(4));
         let merged = prior.merge(r.reduce(&target, Some(&source)));
         assert!(r.judge(&merged).is_empty());
+    }
+
+    #[test]
+    fn re_reducing_a_book_with_no_usable_ratios_clears_stale_findings() {
+        // A book that loses its source must supersede its prior ratios to
+        // *empty* — not leave the prior reduction's stale findings standing.
+        let r = rule();
+        let (mut target, source) = corpus(60, Some(3), 5);
+        for (i, (_, t)) in target.iter_mut().enumerate() {
+            if i % 2 == 0 {
+                t.push('x');
+            }
+        }
+        let prior = r.reduce(&target, Some(&source));
+        assert_eq!(r.judge(&prior).len(), 1);
+
+        // Re-supply the same book with the reference gone: the fresh reduction
+        // carries an empty GEN bucket, which supersedes the prior's ratios.
+        let merged = prior.merge(r.reduce(&target, None));
+        assert!(r.judge(&merged).is_empty());
+    }
+
+    #[test]
+    fn min_verses_zero_does_not_panic_on_an_empty_book() {
+        // `min_verses` is caller-supplied (wasm config); 0 must not let an
+        // empty ratio set reach `median([])`.
+        let r = ProjectLengthRatio {
+            cfg: ProportionalityConfig {
+                min_verses: 0,
+                ..Default::default()
+            },
+        };
+        let (target, _) = corpus(3, None, 1);
+        // No source ⇒ every book bucket is empty; judging must not trap.
+        assert!(r.judge(&r.reduce(&target, None)).is_empty());
     }
 
     #[test]

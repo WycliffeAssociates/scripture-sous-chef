@@ -37,9 +37,12 @@ impl RuleStats {
             (RuleStats::Proportionality(a), RuleStats::Proportionality(b)) => {
                 RuleStats::Proportionality(a.merge(b))
             }
-            // Mismatched variants can't occur — `analyze_stateful` keys the
-            // prior and fresh stats by the same `RuleId`.
-            (a, _) => a,
+            // Mismatched variants can't occur via `analyze_stateful` (it keys
+            // prior and fresh by the same `RuleId`). For malformed cached
+            // input the **fresh** reduction wins — never the stale prior.
+            // Enumerated rather than `_`, so a new variant forces these arms.
+            (RuleStats::Casing(_), fresh @ RuleStats::Proportionality(_)) => fresh,
+            (RuleStats::Proportionality(_), fresh @ RuleStats::Casing(_)) => fresh,
         }
     }
 

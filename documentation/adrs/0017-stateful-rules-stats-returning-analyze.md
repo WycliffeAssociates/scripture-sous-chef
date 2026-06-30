@@ -116,8 +116,9 @@ expose the learned statistics so the caller can cache and re-supply them —
   whole-corpus re-judge from cached observations.
 - `case.sentence-initial-lowercase` is the first consumer (observe-then-judge,
   corpus-wide pool, `T ≈ 0.99`, default-off); `prop.length-ratio` is migrated
-  to the same shape, gaining caller-chosen pooling, with per-book output
-  preserved as the `scope = book` subset.
-- Per-verse rules are unaffected in behaviour (degenerate `Stats`).
+  to the same shape, gaining judge-time surface-both pooling (§8), with
+  per-book output preserved as the `scope = Book`/`Both` subset.
+- Per-verse rules are unaffected — they stay on `PerVerseRule`/`check`,
+  outside the stateful trait (no `Stats` wrapper; see Decision 6).
 - Detail captured in the two phase plans
   (`stateful-rules-architecture-plan.md`, `casing-sentence-initial-redesign-plan.md`).
