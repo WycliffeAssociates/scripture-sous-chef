@@ -13,16 +13,21 @@
 //! `reduce` records the raw per-book ratios (the sufficient statistic for an
 //! order rule — Phase 1 §7); `judge` derives the median/MAD late and flags
 //! outliers. `merge` is book-level supersede, so an edit re-reduces only its
-//! book. Pooling is currently **per-book**; project-wide + surface-both is
-//! the documented next step (ADR 0017 §8). Output is identical to the prior
-//! Mode-A `ProjectRule` — the structural migration is behaviour-preserving.
+//! book.
+//!
+//! **Surface both** (ADR 0017 §8): `judge` measures each verse against two
+//! distributions — its own book and the whole project (all books pooled) —
+//! and flags it once if it is an outlier in *either*, tagging the finding's
+//! `scope` (`Book` / `Project` / `Both`) with the z-score(s) that fired. The
+//! book-scope output matches the prior Mode-A `ProjectRule`; project-scope is
+//! additive (e.g. a verse a short book can't judge alone but the project can).
 
 use std::collections::BTreeMap;
 
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::config::ProportionalityConfig;
-use crate::diagnostics::{Finding, FindingArgs, RuleId, Severity};
+use crate::diagnostics::{Finding, FindingArgs, LengthRatioScope, RuleId, Severity};
 use crate::rule::StatefulRule;
 use crate::sid::Sid;
 use crate::span::Span;
@@ -114,26 +119,51 @@ impl StatefulRule for ProjectLengthRatio {
         let RuleStats::Proportionality(stats) = stats else {
             return Vec::new();
         };
+        let t = f64::from(self.cfg.z_threshold);
+
+        // Two pooling scopes (ADR 0017 §8): the verse's own book, and the
+        // whole project (all books concatenated — the order statistic is
+        // derived here, late, from the superseded ratios).
+        let all: Vec<f64> = stats
+            .per_book
+            .values()
+            .flatten()
+            .map(|o| f64::from(o.ratio))
+            .collect();
+        let project = dist(&all, self.cfg.min_verses);
 
         let mut out = Vec::new();
         for obs in stats.per_book.values() {
-            // Too few verses to estimate a distribution — skip the book
-            // (vision §9).
-            if obs.len() < self.cfg.min_verses {
-                continue;
-            }
-            let med = median(obs.iter().map(|o| f64::from(o.ratio)));
-            let mad = median(obs.iter().map(|o| (f64::from(o.ratio) - med).abs()));
-            // A book of (near-)identical ratios has no outliers; a zero MAD
-            // would make every deviation infinitely surprising.
-            if mad == 0.0 {
-                continue;
-            }
+            let book = dist(
+                &obs.iter().map(|o| f64::from(o.ratio)).collect::<Vec<_>>(),
+                self.cfg.min_verses,
+            );
             for o in obs {
-                let z = MAD_TO_SIGMA * (f64::from(o.ratio) - med) / mad;
-                if z.abs() <= f64::from(self.cfg.z_threshold) {
-                    continue;
-                }
+                let r = f64::from(o.ratio);
+                let book_z = book.map(|(med, mad)| MAD_TO_SIGMA * (r - med) / mad);
+                let project_z = project.map(|(med, mad)| MAD_TO_SIGMA * (r - med) / mad);
+                let book_fires = book_z.is_some_and(|z| z.abs() > t);
+                let project_fires = project_z.is_some_and(|z| z.abs() > t);
+
+                let scope = match (book_fires, project_fires) {
+                    (true, true) => LengthRatioScope::Both {
+                        book_z: book_z.unwrap() as f32,
+                        project_z: project_z.unwrap() as f32,
+                    },
+                    (true, false) => LengthRatioScope::Book {
+                        z: book_z.unwrap() as f32,
+                    },
+                    (false, true) => LengthRatioScope::Project {
+                        z: project_z.unwrap() as f32,
+                    },
+                    (false, false) => continue, // outlier in neither scope
+                };
+                // Confidence: the strongest firing z.
+                let mag = book_fires
+                    .then(|| book_z.unwrap().abs())
+                    .into_iter()
+                    .chain(project_fires.then(|| project_z.unwrap().abs()))
+                    .fold(0.0_f64, f64::max);
                 let Some(sid) = Sid::parse(&o.sid) else {
                     continue;
                 };
@@ -146,10 +176,10 @@ impl StatefulRule for ProjectLengthRatio {
                         start: 0,
                         end: o.len as usize,
                     },
-                    score: Some(score_from_z(z.abs(), self.cfg.z_threshold)),
+                    score: Some(score_from_z(mag, self.cfg.z_threshold)),
                     args: Some(FindingArgs::LengthRatio {
-                        ratio_pct: f64::from(o.ratio) as f32 * 100.0,
-                        robust_z: z as f32,
+                        ratio_pct: r as f32 * 100.0,
+                        scope,
                     }),
                 });
             }
@@ -157,6 +187,21 @@ impl StatefulRule for ProjectLengthRatio {
         out.sort_by_key(|f| (f.sid, f.range.start));
         out
     }
+}
+
+/// Median + MAD of the ratios, or `None` when the sample is too small to
+/// judge (`< min_verses`) or has zero spread (a book of identical ratios has
+/// no outliers, and a zero MAD would make every deviation infinite).
+fn dist(ratios: &[f64], min_verses: usize) -> Option<(f64, f64)> {
+    if ratios.len() < min_verses {
+        return None;
+    }
+    let med = median(ratios.iter().copied());
+    let mad = median(ratios.iter().map(|&r| (r - med).abs()));
+    if mad == 0.0 {
+        return None;
+    }
+    Some((med, mad))
 }
 
 /// Map `|z|` to a bounded confidence: 0.5 at the firing threshold,
@@ -273,12 +318,52 @@ mod tests {
         assert_eq!(f.range, Span { start: 0, end: target[&f.sid].len() });
         // A 5× outlier saturates the confidence scale.
         assert_eq!(f.score, Some(1.0));
-        let Some(FindingArgs::LengthRatio { ratio_pct, robust_z }) = &f.args else {
+        let Some(FindingArgs::LengthRatio { ratio_pct, scope }) = f.args else {
             panic!("expected LengthRatio args");
         };
-        let (ratio_pct, robust_z) = (*ratio_pct, *robust_z);
         assert!((ratio_pct - 500.0).abs() < 15.0, "ratio_pct = {ratio_pct}");
-        assert!(robust_z > 2.5, "robust_z = {robust_z}");
+        // A single-book corpus: the book and project distributions coincide,
+        // so the verse is an outlier in both.
+        let LengthRatioScope::Both { book_z, project_z } = scope else {
+            panic!("expected Both scope, got {scope:?}");
+        };
+        assert!(book_z > 2.5, "book_z = {book_z}");
+        assert!((book_z - project_z).abs() < 0.01, "single book ⇒ z should match");
+    }
+
+    #[test]
+    fn project_scope_flags_verses_a_small_book_cannot_judge_alone() {
+        // GEN: 60 ~equal verses (a valid book distribution, no outlier).
+        // EXO: 3 verses 5× longer — too few for a book distribution of their
+        // own, but gross outliers against the pooled project. They fire on
+        // Project scope only.
+        let base = "abcdefghij ".repeat(4); // 44 graphemes
+        let mut target = VerseMap::new();
+        let mut source = VerseMap::new();
+        for v in 1..=60 {
+            source.insert(sid("GEN", v), base.clone());
+            let mut t = base.clone();
+            if v % 2 == 0 {
+                t.push('x'); // jitter so GEN's MAD > 0
+            }
+            target.insert(sid("GEN", v), t);
+        }
+        for v in 1..=3 {
+            source.insert(sid("EXO", v), base.clone());
+            target.insert(sid("EXO", v), base.repeat(5));
+        }
+        let findings = run(&rule(), &target, Some(&source));
+        assert_eq!(findings.len(), 3);
+        for f in &findings {
+            assert_eq!(f.sid.book, BookId::from_str("EXO").unwrap());
+            let Some(FindingArgs::LengthRatio { scope, .. }) = f.args else {
+                panic!("expected LengthRatio args");
+            };
+            assert!(
+                matches!(scope, LengthRatioScope::Project { .. }),
+                "expected Project scope, got {scope:?}"
+            );
+        }
     }
 
     #[test]

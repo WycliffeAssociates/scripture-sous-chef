@@ -133,6 +133,19 @@ pub struct DelimObservation {
 ///
 /// Not `Copy`: the `BracketWindow` payload owns a `Vec`. Findings are
 /// collected into `Vec`s and never copied on a hot path, so this costs
+/// Which distribution flagged a `prop.length-ratio` verse, with the robust
+/// z-score(s) that did. Modelled so a scope cannot exist without its
+/// score(s): `Both` carries both, the single scopes carry one. The sign of
+/// `z` is informative (negative = shorter than the median).
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+pub enum LengthRatioScope {
+    Book { z: f32 },
+    Project { z: f32 },
+    Both { book_z: f32, project_z: f32 },
+}
+
 /// nothing real (ADR 0016).
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -140,10 +153,15 @@ pub struct DelimObservation {
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum FindingArgs {
     /// `prop.length-ratio`: the verse's length relative to the reference
-    /// (`ratio_pct`, e.g. `312.0` = 312% of the reference length) and the
-    /// robust z-score that flagged it within its book's distribution.
+    /// (`ratio_pct`, e.g. `312.0` = 312% of the reference length) plus the
+    /// robust z-score(s) that flagged it — within its book, the whole
+    /// project, or both (ADR 0017 §8). The scope variant carries exactly the
+    /// z-scores it has, so a finding can't claim a scope without its score.
     #[cfg_attr(feature = "serde", serde(rename = "length-ratio"))]
-    LengthRatio { ratio_pct: f32, robust_z: f32 },
+    LengthRatio {
+        ratio_pct: f32,
+        scope: LengthRatioScope,
+    },
     /// `punct.bracket-balance`: every delimiter the matcher saw within the
     /// window around the orphan, so the consumer can render the full
     /// bracket context. The finding's `range` anchors the orphan itself.

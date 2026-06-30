@@ -186,31 +186,32 @@ anger across more projects.
 
 ---
 
-# Tier 2 — `prop.length-ratio` revised
+# Tier 2 — `prop.length-ratio` revised — **implemented**
 
-The existing rule (`crates/core/src/signals/proportionality.rs`) already
-*is* observe-then-judge (per-book median/MAD reduce → z-score judge), but
-it's Mode A (rebuilds every call) and **hardwired to per-book pooling**.
-
-Revision under Phase 1's architecture:
+The existing rule was Mode A (rebuilt every call) and hardwired to per-book
+pooling. Now migrated under Phase 1's architecture:
 
 - **`Stats` = the raw ratios** (sufficient statistic for an order rule),
   keyed by book — supersede-`merge` replaces an edited book's ratios; `judge`
   concatenates the books it pools and derives median/MAD late (Phase 1 §7).
   Enables incremental: edit a book → recompute its ratios → re-judge.
-- **Pooling is a `judge`-time aggregation choice** (the motivating need):
-  per-book, project-wide, or both — *which* retained books `judge` folds —
-  not a caller merge or a per-rule config flag (Phase 1 §8).
-- **Default: surface both** (per-book *and* project). A verse can be an
-  outlier within its book, within the whole project, or both; findings carry
-  which scope flagged them. (Today's per-book-only output is the subset where
-  `scope = book`.)
+- **Pooling is a `judge`-time aggregation choice** (Phase 1 §8): `judge`
+  measures each verse against both its **book** and the whole **project**
+  (all books pooled), not a caller merge or config flag.
+- **Surface both:** a verse is flagged once if it is an outlier in either
+  scope, and the finding's `args` carry `scope ∈ {Book, Project, Both}` with
+  the z-score(s) that fired — modelled as
+  `LengthRatioScope::{ Book{z} | Project{z} | Both{book_z, project_z} }` so a
+  scope can't exist without its score. Book-scope output matches the prior
+  rule (the `scope = Book`/`Both` subset); project-scope is additive (e.g. a
+  verse a short book can't judge alone but the project can — tested).
 
 ## Decisions (cross-tier)
 
 1. **Threshold `T` (casing): ≈ 0.99** — confirmed by the precision spot-check.
-2. **Proportionality default pooling: surface both** (per-book + project).
+2. **Proportionality default pooling: surface both** (per-book + project) —
+   implemented, `scope`-tagged with per-scope z-scores.
 3. **Casing: default-off** for now.
 
-All Phase-2 questions are now settled; remaining work is implementation on
-top of the Phase-1 architecture (see `stateful-rules-architecture-plan.md`).
+Both tiers are implemented on the Phase-1 architecture (see
+`stateful-rules-architecture-plan.md`).

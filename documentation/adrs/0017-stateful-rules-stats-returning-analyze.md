@@ -97,8 +97,10 @@ expose the learned statistics so the caller can cache and re-supply them —
 
 8. **Pooling scope is a `judge`-time aggregation choice** — *which* retained
    books `judge` folds together — not a per-rule merge flag. Casing folds all
-   books (corpus-wide); `prop.length-ratio` will **surface both** per-book
-   and project by default, findings tagged with the scope that flagged them.
+   books (corpus-wide); `prop.length-ratio` **surfaces both** per-book and
+   project, flagging a verse once with `scope ∈ {Book, Project, Both}` and the
+   z-score(s) that fired (`LengthRatioScope`, modelled so a scope can't exist
+   without its score).
 
 9. **`Stats` crosses the wasm boundary strongly typed** (a Tsify closed
    union, like `FindingArgs`), and **caller-opaque**: the shell holds and

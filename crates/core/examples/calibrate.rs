@@ -19,7 +19,7 @@ use std::path::Path;
 use ssc_core::config::ProportionalityConfig;
 use ssc_core::rule::StatefulRule;
 use ssc_core::signals::proportionality::ProjectLengthRatio;
-use ssc_core::{BookId, FindingArgs, RuleId, VerseMap, analyze};
+use ssc_core::{BookId, FindingArgs, LengthRatioScope, RuleId, VerseMap, analyze};
 
 #[path = "../dev/usfm_naive.rs"]
 mod usfm_naive;
@@ -96,9 +96,10 @@ fn print_findings<'a>(
     findings: impl Iterator<Item = &'a ssc_core::Finding>,
 ) {
     for f in findings {
-        let Some(FindingArgs::LengthRatio { ratio_pct, robust_z }) = f.args else {
+        let Some(FindingArgs::LengthRatio { ratio_pct, scope }) = f.args else {
             continue;
         };
+        let robust_z = scope_z(&scope);
         let text = &target[&f.sid];
         let preview: String = text.chars().take(60).collect();
         println!(
@@ -160,9 +161,18 @@ fn batch(dir: &Path) {
 }
 
 fn z_of(f: &ssc_core::Finding) -> f32 {
-    match f.args {
-        Some(FindingArgs::LengthRatio { robust_z, .. }) => robust_z,
+    match &f.args {
+        Some(FindingArgs::LengthRatio { scope, .. }) => scope_z(scope),
         _ => 0.0,
+    }
+}
+
+/// A single representative z for display: the book z, or the project z for a
+/// project-only outlier.
+fn scope_z(scope: &LengthRatioScope) -> f32 {
+    match scope {
+        LengthRatioScope::Book { z } | LengthRatioScope::Project { z } => *z,
+        LengthRatioScope::Both { book_z, .. } => *book_z,
     }
 }
 

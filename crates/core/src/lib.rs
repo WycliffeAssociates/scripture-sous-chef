@@ -20,7 +20,7 @@ pub mod unicode;
 pub mod verse;
 
 pub use config::{BracketBalanceConfig, CasingConfig, Config, ProportionalityConfig};
-pub use diagnostics::{Finding, FindingArgs, RuleId, Severity};
+pub use diagnostics::{Finding, FindingArgs, LengthRatioScope, RuleId, Severity};
 pub use sid::{BookId, Sid};
 pub use span::{GraphemeSpan, Span, Utf16Span};
 pub use stats::{RuleStats, Stats};
