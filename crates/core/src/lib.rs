@@ -14,14 +14,16 @@ pub mod script;
 pub mod sid;
 pub mod signals;
 pub mod span;
+pub mod stats;
 pub mod token;
 pub mod unicode;
 pub mod verse;
 
-pub use config::{BracketBalanceConfig, Config, ProportionalityConfig};
+pub use config::{BracketBalanceConfig, CasingConfig, Config, ProportionalityConfig};
 pub use diagnostics::{Finding, FindingArgs, RuleId, Severity};
 pub use sid::{BookId, Sid};
 pub use span::{GraphemeSpan, Span, Utf16Span};
+pub use stats::{RuleStats, Stats};
 pub use verse::VerseMap;
 
 /// Analyze a corpus with the shipped default rule set.
@@ -44,6 +46,32 @@ pub fn analyze_with_config(
     source: Option<&VerseMap>,
     config: &Config,
 ) -> Vec<Finding> {
+    // The one-shot sugar over the stateful entry point: no prior, discard
+    // the returned stats (ADR 0017).
+    analyze_stateful(target, source, config, None).0
+}
+
+/// Analyze, returning the corpus [`Stats`] so a caller can cache it and feed
+/// it back as `prior` for incremental re-analysis (ADR 0017).
+///
+/// `target` is the verses provided **this call**. With `prior = None` it is
+/// the whole corpus; with `prior = Some`, the books present in `target`
+/// **supersede** their prior entries (book granularity) and all other books
+/// carry forward — so an edit re-supplies only its book.
+///
+/// **All returned findings cover exactly `target`'s verses** — a single
+/// coherent scope the caller replaces wholesale for those sids. Stateful
+/// rules judge against the *whole* merged corpus (so `target`'s verdicts
+/// reflect corpus-wide statistics) but emit only for `target`; a pooled
+/// statistic shifting a verdict in an untouched book surfaces when that book
+/// is next supplied. (This also keeps every finding projectable: the caller
+/// need only hand in the text for the verses it asked about.)
+pub fn analyze_stateful(
+    target: &VerseMap,
+    source: Option<&VerseMap>,
+    config: &Config,
+    prior: Option<Stats>,
+) -> (Vec<Finding>, Stats) {
     let mut out = Vec::new();
 
     let per_verse: Vec<_> = rule::per_verse_rules()
@@ -74,7 +102,30 @@ pub fn analyze_with_config(
         out.extend(r.check(target, source));
     }
 
-    out
+    // Stateful rules: reduce this call's verses, supersede the prior cache at
+    // book granularity, judge the whole merged corpus from the cache.
+    let mut stats = prior.unwrap_or_default();
+    for r in rule::stateful_rules(config) {
+        if !config.is_enabled(r.id()) {
+            continue;
+        }
+        let fresh = r.reduce(target, source);
+        let merged = match stats.take(r.id()) {
+            Some(prev) => prev.merge(fresh),
+            None => fresh,
+        };
+        // Judge against the whole merged corpus, but emit only for `target`
+        // — keeping the returned findings to one scope and projectable
+        // against the text the caller supplied this call.
+        out.extend(
+            r.judge(&merged)
+                .into_iter()
+                .filter(|f| target.contains_key(&f.sid)),
+        );
+        stats.insert(r.id(), merged);
+    }
+
+    (out, stats)
 }
 
 #[cfg(test)]
@@ -93,6 +144,30 @@ mod tests {
                 )
             })
             .collect()
+    }
+
+    /// Verses 1.. of a named book.
+    fn mk(book: &str, verses: &[&str]) -> VerseMap {
+        verses
+            .iter()
+            .enumerate()
+            .map(|(i, t)| {
+                (
+                    Sid::new(BookId::from_str(book).unwrap(), 1, (i + 1) as u16),
+                    t.to_string(),
+                )
+            })
+            .collect()
+    }
+
+    fn casing_on(threshold: f32, min_samples: u32) -> Config {
+        let mut cfg = Config::v1_defaults();
+        cfg.rules.insert(RuleId::SentenceInitialLowercase, true);
+        cfg.casing = CasingConfig {
+            threshold,
+            min_samples,
+        };
+        cfg
     }
 
     #[test]
@@ -184,11 +259,95 @@ mod tests {
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].code, RuleId::SpaceBeforePunct);
 
-        let casing = map(&[("v1", "He spoke. then they went.")]);
+        // Casing is corpus-observed (ADR 0017): default-off, and once opted
+        // in it fires only where enough observations establish a
+        // high-precision boundary — never from a lone verse.
+        let casing = map(&[
+            ("v1", "He spoke. Then he left."),
+            ("v2", "He spoke. Then he left."),
+            ("v3", "He spoke. then he left."),
+        ]);
         assert!(analyze(&casing, None).is_empty());
         let mut on = Config::v1_defaults();
         on.rules.insert(RuleId::SentenceInitialLowercase, true);
-        assert_eq!(analyze_with_config(&casing, None, &on).len(), 1);
+        on.casing = CasingConfig {
+            threshold: 0.5,
+            min_samples: 1,
+        };
+        assert!(
+            analyze_with_config(&casing, None, &on)
+                .iter()
+                .any(|f| f.code == RuleId::SentenceInitialLowercase)
+        );
+    }
+
+    /// `Stats` survives a strongly-typed serde round-trip (the wasm-boundary
+    /// contract, ADR 0017), and re-supplying the same books as `prior`
+    /// supersedes them — yielding identical findings.
+    #[test]
+    fn stateful_stats_round_trip_and_supersede() {
+        let mut cfg = Config::v1_defaults();
+        cfg.rules.insert(RuleId::SentenceInitialLowercase, true);
+        cfg.casing = CasingConfig {
+            threshold: 0.5,
+            min_samples: 1,
+        };
+
+        let mut pairs: Vec<(&str, &str)> = (0..10).map(|_| ("v", "He spoke. Then he left.")).collect();
+        pairs.push(("v", "He spoke. then he left."));
+        let target = map(&pairs);
+
+        let (f1, stats) = analyze_stateful(&target, None, &cfg, None);
+        assert!(f1.iter().any(|f| f.code == RuleId::SentenceInitialLowercase));
+
+        let json = serde_json::to_string(&stats).unwrap();
+        let back: Stats = serde_json::from_str(&json).unwrap();
+
+        let (f2, _) = analyze_stateful(&target, None, &cfg, Some(back));
+        assert_eq!(f1, f2);
+    }
+
+    /// All returned findings cover exactly `target` (ADR 0017). An
+    /// incremental call for one book never returns another book's findings —
+    /// the wasm boundary can then always project them (no out-of-bounds slice
+    /// against an empty/absent verse).
+    #[test]
+    fn incremental_findings_are_scoped_to_target() {
+        let cfg = casing_on(0.5, 1);
+        let anomalous = ["He spoke. Then he left.", "He spoke. Then he left.", "He spoke. then he left."];
+        let mut full = mk("GEN", &anomalous);
+        full.extend(mk("EXO", &anomalous));
+        let gen_id = BookId::from_str("GEN").unwrap();
+        let exo = BookId::from_str("EXO").unwrap();
+
+        let (f_full, stats) = analyze_stateful(&full, None, &cfg, None);
+        assert!(f_full.iter().any(|f| f.sid.book == gen_id && f.code == RuleId::SentenceInitialLowercase));
+        assert!(f_full.iter().any(|f| f.sid.book == exo && f.code == RuleId::SentenceInitialLowercase));
+
+        let (f_inc, _) = analyze_stateful(&mk("EXO", &anomalous), None, &cfg, Some(stats));
+        assert!(!f_inc.is_empty());
+        assert!(f_inc.iter().all(|f| f.sid.book == exo)); // nothing from GEN
+    }
+
+    /// `Stats::remove_book` drops a book's contribution to the corpus
+    /// aggregate, not just its findings: here EXO's anomaly only clears
+    /// `min_samples` while GEN is cached, so removing GEN silences it.
+    #[test]
+    fn remove_book_drops_contribution_to_corpus_stats() {
+        let cfg = casing_on(0.5, 5);
+        let gen_map = mk("GEN", &["He spoke. Then he left.", "He spoke. Then he left.", "He spoke. Then he left.", "He spoke. Then he left."]);
+        let exo_anom = ["He spoke. Then.", "He spoke. then."];
+        let mut full = gen_map.clone();
+        full.extend(mk("EXO", &exo_anom));
+        let exo = BookId::from_str("EXO").unwrap();
+
+        let (f_full, mut stats) = analyze_stateful(&full, None, &cfg, None);
+        assert!(f_full.iter().any(|f| f.sid.book == exo)); // fires on combined samples
+
+        stats.remove_book(BookId::from_str("GEN").unwrap());
+        let (f_after, _) = analyze_stateful(&mk("EXO", &exo_anom), None, &cfg, Some(stats));
+        // EXO's own samples are below min_samples now, so it no longer fires.
+        assert!(f_after.iter().all(|f| f.code != RuleId::SentenceInitialLowercase));
     }
 
     /// Guards the `RuleId` wire format: the serde rename must match

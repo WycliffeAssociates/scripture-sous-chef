@@ -3,8 +3,9 @@
 //! The typed surface a consumer uses to choose which rules run.
 //! Enable/disable is a `BTreeMap<RuleId, bool>`; knob-bearing rules grow
 //! a typed sub-config alongside it, **additively** — one small struct per
-//! rule that has knobs (today: proportionality), not a generic per-rule
-//! value type. See ADR 0011 (graduation order), ADR 0012, ADR 0013.
+//! rule that has knobs (today: proportionality and casing), not a generic
+//! per-rule value type. See ADR 0011 (graduation order), ADR 0012, ADR 0013,
+//! ADR 0017.
 //!
 //! Both consumers share this set: Rust builds a `Config` directly (with
 //! [`RuleId::ALL`](crate::RuleId::ALL) for exhaustiveness); the wasm
@@ -64,6 +65,36 @@ impl Default for BracketBalanceConfig {
     }
 }
 
+/// Knobs for `case.sentence-initial-lowercase`. The rule observes the
+/// corpus-wide `P(uppercase-follows | terminal glyph)` and flags a
+/// lowercase token only where that probability is high enough to make
+/// lowercase surprising — so these two values are the whole judgment
+/// surface (ADR 0017, casing redesign plan).
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
+pub struct CasingConfig {
+    /// Observed `P(upper | glyph)` above which a lowercase token after that
+    /// glyph is flagged. The single dial: lower it to engage lower-precision
+    /// terminals (`?`, `!`) at the cost of more benign hits. 0.99 is the
+    /// conservative default calibrated across 106 projects — it engages only
+    /// the strong-casing-convention contexts (the bare period) and silences
+    /// the rest, including caseless and weak-casing languages.
+    pub threshold: f32,
+    /// Minimum observations of a glyph before its `P(upper)` is trusted —
+    /// too few and the probability is noise, not a convention.
+    pub min_samples: u32,
+}
+
+impl Default for CasingConfig {
+    fn default() -> Self {
+        Self {
+            threshold: 0.99,
+            min_samples: 200,
+        }
+    }
+}
+
 /// Which rules to run, plus per-rule knobs. A rule **absent** from
 /// `rules` is enabled (default-on); map it to `false` to disable.
 /// Disabled rules are skipped before they run, not filtered after — so
@@ -77,6 +108,8 @@ pub struct Config {
     pub proportionality: ProportionalityConfig,
     #[cfg_attr(feature = "serde", serde(default))]
     pub bracket_balance: BracketBalanceConfig,
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub casing: CasingConfig,
 }
 
 impl Config {

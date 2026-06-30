@@ -1,7 +1,7 @@
 # ADR 0011: Statefulness, incrementality, and the consumer boundary for stateful rules
 
 - **Date:** 2026-06-08
-- **Status:** Accepted
+- **Status:** Accepted — Mode B realised by [ADR 0017](0017-stateful-rules-stats-returning-analyze.md) (2026-06-30)
 
 ## Context
 
