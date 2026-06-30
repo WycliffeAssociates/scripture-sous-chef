@@ -76,21 +76,21 @@ pub fn per_verse_rules() -> Vec<Box<dyn PerVerseRule>> {
 /// constructed from `config`'s typed sub-configs here, once per analyze
 /// call — `ProjectRule::check` itself never sees the `Config`.
 pub fn project_rules(config: &Config) -> Vec<Box<dyn ProjectRule>> {
-    vec![
-        Box::new(signals::proportionality::ProjectLengthRatio {
-            cfg: config.proportionality,
-        }),
-        Box::new(signals::bracket_balance::BracketBalance {
-            cfg: config.bracket_balance,
-        }),
-    ]
+    vec![Box::new(signals::bracket_balance::BracketBalance {
+        cfg: config.bracket_balance,
+    })]
 }
 
 /// Every stateful (observe-then-judge) rule wired in, constructed from
 /// `config`'s typed sub-configs (ADR 0017). Like the project registry, this
 /// is complete — including rules `v1_defaults` disables.
 pub fn stateful_rules(config: &Config) -> Vec<Box<dyn StatefulRule>> {
-    vec![Box::new(signals::casing::SentenceInitialLowercase {
-        cfg: config.casing,
-    })]
+    vec![
+        Box::new(signals::casing::SentenceInitialLowercase {
+            cfg: config.casing,
+        }),
+        Box::new(signals::proportionality::ProjectLengthRatio {
+            cfg: config.proportionality,
+        }),
+    ]
 }

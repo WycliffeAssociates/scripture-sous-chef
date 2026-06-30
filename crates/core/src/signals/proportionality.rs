@@ -1,4 +1,5 @@
-//! Proportionality — the first cross-map (project-scoped) rule.
+//! Proportionality — the first cross-map rule, migrated to the stateful
+//! (observe-then-judge) shape (ADR 0017).
 //!
 //! For each verse present in **both** the target and the reference
 //! (`source`), the target/reference grapheme-length ratio is informative:
@@ -9,12 +10,12 @@
 //! `z = 0.6745 · (ratio − median) / MAD` (median+MAD, not mean+stddev, so
 //! one bad verse can't poison the threshold — methods §3.4).
 //!
-//! Deterministic (a formula, not a learned model). Ships in Mode A per
-//! ADR 0011: the reference is passed each call and the per-book
-//! distribution is rebuilt each call — microseconds for a book. Resident
-//! reference (A+) / incremental target (B) stay future, gated on
-//! measurement. Everything here is `sid`-keyed and grouped by `BookId`,
-//! which is the only shape the resident path later needs. See ADR 0013.
+//! `reduce` records the raw per-book ratios (the sufficient statistic for an
+//! order rule — Phase 1 §7); `judge` derives the median/MAD late and flags
+//! outliers. `merge` is book-level supersede, so an edit re-reduces only its
+//! book. Pooling is currently **per-book**; project-wide + surface-both is
+//! the documented next step (ADR 0017 §8). Output is identical to the prior
+//! Mode-A `ProjectRule` — the structural migration is behaviour-preserving.
 
 use std::collections::BTreeMap;
 
@@ -22,9 +23,10 @@ use unicode_segmentation::UnicodeSegmentation;
 
 use crate::config::ProportionalityConfig;
 use crate::diagnostics::{Finding, FindingArgs, RuleId, Severity};
-use crate::rule::ProjectRule;
-use crate::sid::BookId;
+use crate::rule::StatefulRule;
+use crate::sid::Sid;
 use crate::span::Span;
+use crate::stats::RuleStats;
 use crate::verse::VerseMap;
 
 pub const PROJECT_LENGTH_RATIO: RuleId = RuleId::ProjectLengthRatio;
@@ -33,25 +35,59 @@ pub const PROJECT_LENGTH_RATIO: RuleId = RuleId::ProjectLengthRatio;
 /// `z_threshold` reads in familiar z-score units.
 const MAD_TO_SIGMA: f64 = 0.6745;
 
+/// One verse's target/reference ratio, retained so `judge` can derive the
+/// distribution and emit findings without the text. Wire-friendly (canonical
+/// `sid` string, `f32` ratio, `u32` byte length for the finding range).
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+struct RatioObs {
+    sid: String,
+    ratio: f32,
+    len: u32,
+}
+
+/// Cached proportionality statistics: the raw ratios keyed by book code, so
+/// an edit supersedes only its book and the median/MAD is derived at `judge`.
+#[derive(Debug, Clone, Default, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+pub struct ProportionalityStats {
+    per_book: BTreeMap<String, Vec<RatioObs>>,
+}
+
+impl ProportionalityStats {
+    /// Book-level supersede: books in `other` replace those in `self`.
+    pub(crate) fn merge(mut self, other: ProportionalityStats) -> ProportionalityStats {
+        for (book, obs) in other.per_book {
+            self.per_book.insert(book, obs);
+        }
+        self
+    }
+
+    pub(crate) fn remove_book(&mut self, book: &str) {
+        self.per_book.remove(book);
+    }
+}
+
 pub struct ProjectLengthRatio {
     pub cfg: ProportionalityConfig,
 }
 
-impl ProjectRule for ProjectLengthRatio {
+impl StatefulRule for ProjectLengthRatio {
     fn id(&self) -> RuleId {
         PROJECT_LENGTH_RATIO
     }
 
-    fn check(&self, target: &VerseMap, source: Option<&VerseMap>) -> Vec<Finding> {
+    fn reduce(&self, target: &VerseMap, source: Option<&VerseMap>) -> RuleStats {
+        let mut stats = ProportionalityStats::default();
         // No reference, no ratios — the rule needs `source`.
         let Some(source) = source else {
-            return Vec::new();
+            return RuleStats::Proportionality(stats);
         };
-
-        // Ratios for target ∩ source, grouped by book ("length" is
-        // grapheme count — vision §12.5; empty sides carry no signal and
-        // would divide by zero).
-        let mut books: BTreeMap<BookId, Vec<(crate::sid::Sid, f64)>> = BTreeMap::new();
+        // Ratios for target ∩ source, grouped by book ("length" is grapheme
+        // count — vision §12.5; empty sides carry no signal and would divide
+        // by zero).
         for (sid, text) in target {
             let Some(src_text) = source.get(sid) else {
                 continue;
@@ -61,50 +97,64 @@ impl ProjectRule for ProjectLengthRatio {
             if t == 0 || s == 0 {
                 continue;
             }
-            books
-                .entry(sid.book)
+            stats
+                .per_book
+                .entry(sid.book.as_str().to_string())
                 .or_default()
-                .push((*sid, t as f64 / s as f64));
+                .push(RatioObs {
+                    sid: sid.to_string(),
+                    ratio: (t as f64 / s as f64) as f32,
+                    len: text.len() as u32,
+                });
         }
+        RuleStats::Proportionality(stats)
+    }
+
+    fn judge(&self, stats: &RuleStats) -> Vec<Finding> {
+        let RuleStats::Proportionality(stats) = stats else {
+            return Vec::new();
+        };
 
         let mut out = Vec::new();
-        for ratios in books.values() {
+        for obs in stats.per_book.values() {
             // Too few verses to estimate a distribution — skip the book
             // (vision §9).
-            if ratios.len() < self.cfg.min_verses {
+            if obs.len() < self.cfg.min_verses {
                 continue;
             }
-            let med = median(ratios.iter().map(|&(_, r)| r));
-            let mad = median(ratios.iter().map(|&(_, r)| (r - med).abs()));
-            // A book of (near-)identical ratios has no outliers; a zero
-            // MAD would make every deviation infinitely surprising.
+            let med = median(obs.iter().map(|o| f64::from(o.ratio)));
+            let mad = median(obs.iter().map(|o| (f64::from(o.ratio) - med).abs()));
+            // A book of (near-)identical ratios has no outliers; a zero MAD
+            // would make every deviation infinitely surprising.
             if mad == 0.0 {
                 continue;
             }
-            for &(sid, ratio) in ratios {
-                let z = MAD_TO_SIGMA * (ratio - med) / mad;
+            for o in obs {
+                let z = MAD_TO_SIGMA * (f64::from(o.ratio) - med) / mad;
                 if z.abs() <= f64::from(self.cfg.z_threshold) {
                     continue;
                 }
-                let text = &target[&sid];
+                let Some(sid) = Sid::parse(&o.sid) else {
+                    continue;
+                };
                 out.push(Finding {
                     sid,
                     code: PROJECT_LENGTH_RATIO,
                     severity: Severity::Warning,
-                    // The finding anchors the whole verse; `sid` carries
-                    // identity.
+                    // The finding anchors the whole verse; `sid` carries identity.
                     range: Span {
                         start: 0,
-                        end: text.len(),
+                        end: o.len as usize,
                     },
                     score: Some(score_from_z(z.abs(), self.cfg.z_threshold)),
                     args: Some(FindingArgs::LengthRatio {
-                        ratio_pct: (ratio * 100.0) as f32,
+                        ratio_pct: f64::from(o.ratio) as f32 * 100.0,
                         robust_z: z as f32,
                     }),
                 });
             }
         }
+        out.sort_by_key(|f| (f.sid, f.range.start));
         out
     }
 }
@@ -134,7 +184,7 @@ fn median(values: impl Iterator<Item = f64>) -> f64 {
 mod tests {
     use super::*;
     use crate::config::ProportionalityConfig;
-    use crate::sid::Sid;
+    use crate::sid::BookId;
 
     fn sid(book: &str, verse: u16) -> Sid {
         Sid::new(BookId::from_str(book).unwrap(), 1, verse)
@@ -173,17 +223,21 @@ mod tests {
         }
     }
 
+    fn run(rule: &ProjectLengthRatio, target: &VerseMap, source: Option<&VerseMap>) -> Vec<Finding> {
+        rule.judge(&rule.reduce(target, source))
+    }
+
     #[test]
     fn uniform_ratios_produce_nothing() {
         // Identical ratios everywhere → MAD == 0 → skip, no findings.
         let (target, source) = corpus(60, None, 1);
-        assert!(rule().check(&target, Some(&source)).is_empty());
+        assert!(run(&rule(), &target, Some(&source)).is_empty());
     }
 
     #[test]
     fn no_source_produces_nothing() {
         let (target, _) = corpus(60, Some(3), 5);
-        assert!(rule().check(&target, None).is_empty());
+        assert!(run(&rule(), &target, None).is_empty());
     }
 
     #[test]
@@ -197,7 +251,7 @@ mod tests {
         for (i, (_, s)) in source.iter_mut().enumerate() {
             s.push_str(&"y".repeat(i / 2));
         }
-        assert!(rule().check(&target, Some(&source)).is_empty());
+        assert!(run(&rule(), &target, Some(&source)).is_empty());
     }
 
     #[test]
@@ -209,7 +263,7 @@ mod tests {
                 t.push('x');
             }
         }
-        let findings = rule().check(&target, Some(&source));
+        let findings = run(&rule(), &target, Some(&source));
         assert_eq!(findings.len(), 1);
         let f = &findings[0];
         assert_eq!(f.sid, sid("GEN", 3));
@@ -237,7 +291,7 @@ mod tests {
         }
         // A target-only verse with absurd length: no ratio, no finding.
         target.insert(sid("GEN", 200), "z".repeat(10_000));
-        assert!(rule().check(&target, Some(&source)).is_empty());
+        assert!(run(&rule(), &target, Some(&source)).is_empty());
     }
 
     #[test]
@@ -252,7 +306,7 @@ mod tests {
         source.insert(sid("GEN", 61), "abc".into());
         target.insert(sid("GEN", 62), "abc".into());
         source.insert(sid("GEN", 62), String::new());
-        assert!(rule().check(&target, Some(&source)).is_empty());
+        assert!(run(&rule(), &target, Some(&source)).is_empty());
     }
 
     #[test]
@@ -263,9 +317,29 @@ mod tests {
                 t.push('x');
             }
         }
-        let findings = small_book_rule().check(&target, Some(&source));
+        let findings = run(&small_book_rule(), &target, Some(&source));
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].sid, sid("GEN", 3));
+    }
+
+    #[test]
+    fn editing_a_book_supersedes_its_prior_ratios() {
+        // Reduce a corpus with an outlier, then a corrected edit; merging
+        // supersedes the book so the outlier disappears.
+        let r = rule();
+        let (mut target, source) = corpus(60, Some(3), 5);
+        for (i, (_, t)) in target.iter_mut().enumerate() {
+            if i % 2 == 0 {
+                t.push('x');
+            }
+        }
+        let prior = r.reduce(&target, Some(&source));
+        assert_eq!(r.judge(&prior).len(), 1);
+
+        // Fix verse 3 to a normal length, re-reduce, merge (supersede GEN).
+        target.insert(sid("GEN", 3), "abcdefghij ".repeat(4));
+        let merged = prior.merge(r.reduce(&target, Some(&source)));
+        assert!(r.judge(&merged).is_empty());
     }
 
     #[test]

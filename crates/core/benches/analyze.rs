@@ -27,7 +27,7 @@ use std::path::Path;
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use rayon::prelude::*;
 use ssc_core::config::ProportionalityConfig;
-use ssc_core::rule::{ProjectRule, per_verse_rules};
+use ssc_core::rule::{StatefulRule, per_verse_rules};
 use ssc_core::script::is_nt_book;
 use ssc_core::signals::proportionality::ProjectLengthRatio;
 use ssc_core::{Config, Finding, VerseMap, analyze};
@@ -123,7 +123,7 @@ fn bench_proportionality(c: &mut Criterion) {
     let mut g = c.benchmark_group("proportionality");
     g.throughput(Throughput::Elements(target.len() as u64));
     g.bench_function("nt_vs_bible", |b| {
-        b.iter(|| rule.check(black_box(&target), Some(black_box(&source))))
+        b.iter(|| rule.judge(&rule.reduce(black_box(&target), Some(black_box(&source)))))
     });
     g.finish();
 }

@@ -14,6 +14,7 @@ use std::collections::BTreeMap;
 use crate::diagnostics::RuleId;
 use crate::sid::BookId;
 use crate::signals::casing::CasingStats;
+use crate::signals::proportionality::ProportionalityStats;
 
 /// Per-rule cached statistics — a **closed** union like `FindingArgs`, one
 /// variant per stateful rule. The orchestration treats it opaquely; each
@@ -23,6 +24,7 @@ use crate::signals::casing::CasingStats;
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum RuleStats {
     Casing(CasingStats),
+    Proportionality(ProportionalityStats),
 }
 
 impl RuleStats {
@@ -32,6 +34,12 @@ impl RuleStats {
     pub(crate) fn merge(self, other: RuleStats) -> RuleStats {
         match (self, other) {
             (RuleStats::Casing(a), RuleStats::Casing(b)) => RuleStats::Casing(a.merge(b)),
+            (RuleStats::Proportionality(a), RuleStats::Proportionality(b)) => {
+                RuleStats::Proportionality(a.merge(b))
+            }
+            // Mismatched variants can't occur — `analyze_stateful` keys the
+            // prior and fresh stats by the same `RuleId`.
+            (a, _) => a,
         }
     }
 
@@ -39,6 +47,7 @@ impl RuleStats {
     fn remove_book(&mut self, book: &str) {
         match self {
             RuleStats::Casing(c) => c.remove_book(book),
+            RuleStats::Proportionality(p) => p.remove_book(book),
         }
     }
 }

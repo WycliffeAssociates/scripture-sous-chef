@@ -17,7 +17,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use ssc_core::config::ProportionalityConfig;
-use ssc_core::rule::ProjectRule;
+use ssc_core::rule::StatefulRule;
 use ssc_core::signals::proportionality::ProjectLengthRatio;
 use ssc_core::{BookId, FindingArgs, RuleId, VerseMap, analyze};
 
@@ -65,7 +65,7 @@ fn main() {
         },
     };
     let t0 = std::time::Instant::now();
-    let findings = rule.check(&target, Some(&source));
+    let findings = rule.judge(&rule.reduce(&target, Some(&source)));
     eprintln!("proportionality check: {:?}", t0.elapsed());
 
     let mut per_book: BTreeMap<BookId, usize> = BTreeMap::new();

@@ -134,7 +134,9 @@ impl StatefulRule for SentenceInitialLowercase {
     }
 
     fn judge(&self, stats: &RuleStats) -> Vec<Finding> {
-        let RuleStats::Casing(stats) = stats;
+        let RuleStats::Casing(stats) = stats else {
+            return Vec::new();
+        };
 
         // Emergent gate: a corpus with no cased letters has no casing
         // convention to violate — say nothing.
