@@ -163,7 +163,7 @@ impl StatefulRule for PunctuationAdjacencyAnomaly {
 }
 
 /// Reduce one book: count per-lead run-start opportunities and accumulate
-/// per-pattern counts + capped site spans.
+/// every per-pattern site span (no cap — see the struct doc).
 fn reduce_book(verses: &[(Sid, &str)]) -> BookPunctuationAdjacency {
     let mut lead_opportunities: BTreeMap<char, u64> = BTreeMap::new();
     let mut patterns: BTreeMap<String, PunctuationObservations> = BTreeMap::new();

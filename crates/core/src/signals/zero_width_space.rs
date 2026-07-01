@@ -228,7 +228,7 @@ impl StatefulRule for ZeroWidthSpaceAnomaly {
 }
 
 /// Reduce one book: count boundary opportunities and ZWSP occurrences, and
-/// accumulate per-context counts + capped site spans.
+/// accumulate every per-context site span (no cap — see the struct doc).
 fn reduce_book(verses: &[(Sid, &str)], graphemes: &mut Vec<GSpan>) -> BookZeroWidthSpace {
     let mut contexts: BTreeMap<ZwspContext, Vec<ObservedSite>> = BTreeMap::new();
     let mut boundary_opportunities: u64 = 0;

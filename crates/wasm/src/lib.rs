@@ -71,7 +71,7 @@ pub struct ZeroWidthSpaceOverrides {
 
 /// Partial overrides for `punct.adjacency-anomaly`'s knobs. Omitted fields
 /// keep core's defaults (`convention_rate` 0.5, `confidence_z` 1.96,
-/// `emit_score_min` 0.2). See ADR 0024.
+/// `emit_score_min` 0.5). See ADR 0024.
 #[derive(Deserialize, Tsify, Default)]
 #[tsify(from_wasm_abi)]
 pub struct PunctuationAdjacencyOverrides {
@@ -270,4 +270,55 @@ pub fn stats_remove_book(mut stats: Stats, book: String) -> Stats {
         stats.remove_book(b);
     }
     stats
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every override field must reach the corresponding `Config` knob — guards
+    /// the wasm boundary the editor tunes through (the core-side tests exercise
+    /// `Config` directly, not this deserialize→build_config mapping).
+    #[test]
+    fn build_config_maps_every_override() {
+        let cfg = build_config(Some(SousConfig {
+            rules: Some([(RuleId::ZeroWidthSpaceAnomaly, true)].into_iter().collect()),
+            proportionality: Some(ProportionalityOverrides { z_threshold: Some(2.5), min_verses: Some(10) }),
+            casing: Some(CasingOverrides { threshold: Some(0.8), min_samples: Some(5) }),
+            zero_width_space: Some(ZeroWidthSpaceOverrides {
+                global_convention_rate: Some(0.01),
+                context_convention_rate: Some(0.03),
+                confidence_z: Some(2.0),
+                emit_score_min: Some(0.9),
+            }),
+            punctuation_adjacency: Some(PunctuationAdjacencyOverrides {
+                convention_rate: Some(0.4),
+                confidence_z: Some(2.1),
+                emit_score_min: Some(0.7),
+            }),
+        }));
+
+        assert!(cfg.is_enabled(RuleId::ZeroWidthSpaceAnomaly));
+        assert_eq!(cfg.proportionality.z_threshold, 2.5);
+        assert_eq!(cfg.proportionality.min_verses, 10);
+        assert_eq!(cfg.casing.threshold, 0.8);
+        assert_eq!(cfg.casing.min_samples, 5);
+        assert_eq!(cfg.zero_width_space.global_convention_rate, 0.01);
+        assert_eq!(cfg.zero_width_space.context_convention_rate, 0.03);
+        assert_eq!(cfg.zero_width_space.confidence_z, 2.0);
+        assert_eq!(cfg.zero_width_space.emit_score_min, 0.9);
+        assert_eq!(cfg.punctuation_adjacency.convention_rate, 0.4);
+        assert_eq!(cfg.punctuation_adjacency.confidence_z, 2.1);
+        assert_eq!(cfg.punctuation_adjacency.emit_score_min, 0.7);
+    }
+
+    /// Omitted overrides keep core's defaults (and ZWSP stays default-off).
+    #[test]
+    fn build_config_omitted_keeps_defaults() {
+        let cfg = build_config(None);
+        let d = Config::v1_defaults();
+        assert_eq!(cfg.punctuation_adjacency.emit_score_min, d.punctuation_adjacency.emit_score_min);
+        assert_eq!(cfg.zero_width_space.emit_score_min, d.zero_width_space.emit_score_min);
+        assert!(!cfg.is_enabled(RuleId::ZeroWidthSpaceAnomaly));
+    }
 }

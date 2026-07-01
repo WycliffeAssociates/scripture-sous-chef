@@ -243,7 +243,7 @@ export interface ProportionalityOverrides {
 /**
  * Partial overrides for `punct.adjacency-anomaly`\'s knobs. Omitted fields
  * keep core\'s defaults (`convention_rate` 0.5, `confidence_z` 1.96,
- * `emit_score_min` 0.2). See ADR 0024.
+ * `emit_score_min` 0.5). See ADR 0024.
  */
 export interface PunctuationAdjacencyOverrides {
     convention_rate?: number;
