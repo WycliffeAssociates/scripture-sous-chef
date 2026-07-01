@@ -46,30 +46,6 @@ export interface LowerSite {
 }
 
 /**
- * A retained finding site in one verse: the `Sid` plus a byte span into that
- * verse\'s text, so a stateful rule\'s `judge` can emit a `Finding` without the
- * text. Shared by the corpus-relative anomaly rules whose sites carry nothing
- * but location (the context/pattern lives once on the containing map entry);
- * casing keeps its own `LowerSite` because it also stores the terminal glyph.
- * `sid` crosses the wire as the canonical `\"GEN 1:1\"` string, materialised
- * only when serde runs.
- */
-export interface ObservedSite {
-    sid: string;
-    start: number;
-    end: number;
-}
-
-/**
- * Cached ZWSP statistics, keyed by book code so an edit supersedes only its
- * book. Corpus-wide `N`, `Z`, and per-context counts are the sums over books,
- * derived at `judge`.
- */
-export interface ZeroWidthSpaceStats {
-    per_book: Record<string, BookZeroWidthSpace>;
-}
-
-/**
  * Cached casing statistics, keyed by book code (e.g. `\"GEN\"`) so an edit
  * supersedes only its book. The corpus-wide `P(upper | glyph)` is the sum
  * of the per-book counts, derived at `judge` time.
@@ -84,15 +60,6 @@ export interface CasingStats {
  */
 export interface ProportionalityStats {
     per_book: Record<string, RatioObs[]>;
-}
-
-/**
- * Cached punctuation-adjacency statistics, keyed by book code so an edit
- * supersedes only its book. Corpus-wide `k` (per pattern) and `N_start` (per
- * lead glyph) are the sums over books, derived at `judge`.
- */
-export interface PunctuationAdjacencyStats {
-    per_book: Record<string, BookPunctuationAdjacency>;
 }
 
 /**
@@ -139,18 +106,6 @@ export interface Analysis {
 export type Severity = "error" | "warning" | "info";
 
 /**
- * One book\'s contribution: its boundary-opportunity total, its ZWSP total, and
- * the per-context observations. A `Vec` (not a map keyed by `ZwspContext`)
- * because a struct key does not round-trip as a JSON/tsify map key; the vec is
- * kept in `ZwspContext` order so serialisation is deterministic.
- */
-export interface BookZeroWidthSpace {
-    boundary_opportunities: number;
-    total: number;
-    contexts: ZwspContextObservations[];
-}
-
-/**
  * One book\'s contribution: the per-glyph counts, the lowercase flag
  * candidates, and the cased-letter tally that drives the emergent gate.
  */
@@ -159,27 +114,6 @@ export interface BookCasing {
     lower_sites: LowerSite[];
     cased_letters: number;
     total_letters: number;
-}
-
-/**
- * One book\'s contribution: the per-lead-glyph run-start opportunity counts and
- * the per-exact-pattern observations. Patterns are keyed by their exact run
- * string (`\",,\"`, `\"?!?\"`, `\"፤፤\"`), so `??`, `???` and `????` stay distinct.
- */
-export interface BookPunctuationAdjacency {
-    lead_opportunities: Record<string, number>;
-    patterns: Record<string, PunctuationObservations>;
-}
-
-/**
- * One context\'s contribution within a book: every [`ObservedSite`] for that
- * context (the context lives once here, not per site; each site\'s span is the
- * exact U+200B scalar). Sites are retained in full so `judge` emits a finding
- * for every occurrence that clears the floor — the count is `sites.len()`.
- */
-export interface ZwspContextObservations {
-    context: ZwspContext;
-    sites: ObservedSite[];
 }
 
 /**
@@ -197,17 +131,6 @@ export interface DelimObservation {
     glyph: string;
     role: DelimRole;
     matched: boolean;
-}
-
-/**
- * One exact pattern\'s contribution within a book: every [`ObservedSite`] for
- * that pattern (each site\'s span is the complete candidate run; the pattern
- * string is the map key, not repeated per site). Sites are retained in full so
- * `judge` emits a finding for every occurrence that clears the floor — the
- * count is `sites.len()`.
- */
-export interface PunctuationObservations {
-    sites: ObservedSite[];
 }
 
 /**
@@ -267,8 +190,15 @@ export interface ZeroWidthSpaceOverrides {
  * Per-rule cached statistics — a **closed** union like `FindingArgs`, one
  * variant per stateful rule. The orchestration treats it opaquely; each
  * rule reduces into / judges from its own variant.
+ *
+ * Only rules whose observations are *sparse* (casing\'s lowercase sites,
+ * proportionality\'s per-verse ratios) are stateful. The corpus-relative
+ * anomaly rules (`uni.zero-width-space-anomaly`, `punct.adjacency-anomaly`) are
+ * **not** here: their candidate class is dense (every occurrence), so caching
+ * per-occurrence sites would dominate the wire size — they recompute over the
+ * supplied map in one pass instead (project rules).
  */
-export type RuleStats = { Casing: CasingStats } | { Proportionality: ProportionalityStats } | { ZeroWidthSpace: ZeroWidthSpaceStats } | { PunctuationAdjacency: PunctuationAdjacencyStats };
+export type RuleStats = { Casing: CasingStats } | { Proportionality: ProportionalityStats };
 
 /**
  * Stable, machine-readable rule identity — a **closed set**.
@@ -293,21 +223,6 @@ export type RuleId = "lex.excess-h-whitespace" | "hyg.tab-in-body" | "hyg.contro
  * nothing real (ADR 0016).
  */
 export type FindingArgs = { kind: "length-ratio"; ratio_pct: number; scope: LengthRatioScope } | { kind: "bracket-window"; window: DelimObservation[] } | { kind: "duplicate-word"; first_sid: string };
-
-/**
- * The immediate neighbour of a ZWSP, projected from one grapheme cluster.
- * Ordered pairs of these are the corpus-observed context; a script shift
- * (Khmer→Latin) is a different, learnable context from Khmer→Khmer.
- */
-export type ZwspNeighbor = { Script: ScriptTag } | "Whitespace" | "Punctuation" | "Symbol" | "Numeric" | "ZeroWidthSpace" | "Other" | "Boundary";
-
-/**
- * The ordered `(left, right)` grapheme context immediately around a ZWSP.
- */
-export interface ZwspContext {
-    left: ZwspNeighbor;
-    right: ZwspNeighbor;
-}
 
 /**
  * The return type. TS: `Finding[]`.

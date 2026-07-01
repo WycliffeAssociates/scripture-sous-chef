@@ -1,32 +1,32 @@
 //! Punctuation signals.
 //!
-//! `punct.adjacency-anomaly` is stateful and corpus-relative (ADR 0017 shape,
-//! ADR: punctuation adjacency anomaly); `punct.placeholder-leftover` and
-//! `punct.space-before-punct` remain deterministic per-verse rules. Spans
-//! always slice the offending characters out of the verse text.
+//! `punct.adjacency-anomaly` is corpus-relative, computed over the supplied map
+//! in one pass (a project rule; **not** stateful — see the ZWSP rule for the
+//! start-simple rationale); `punct.placeholder-leftover` and
+//! `punct.space-before-punct` remain deterministic per-verse rules. Spans always
+//! slice the offending characters out of the verse text.
 
-use std::collections::BTreeMap;
+use std::collections::HashMap;
 
 use crate::config::PunctuationAdjacencyConfig;
 use crate::diagnostics::{Finding, RuleId, Severity};
-use crate::rule::{PerVerseRule, StatefulRule};
+use crate::rule::{PerVerseRule, ProjectRule};
 use crate::shrinkage::{clamp_rate, clamp_unit, clamp_z, strength};
 use crate::sid::Sid;
 use crate::span::Span;
-use crate::stats::{ObservedSite, RuleStats};
 use crate::unicode::is_punctuation;
-use crate::verse::{self, VerseMap};
+use crate::verse::VerseMap;
 
 // ─────────────────────────────────────────────────────────────────────
-// Punctuation adjacency anomaly (stateful, corpus-relative)
+// Punctuation adjacency anomaly (corpus-relative, over the supplied map)
 // ─────────────────────────────────────────────────────────────────────
 
 /// A repeated or mixed punctuation cluster is not inherently a typo — `፤፤`
 /// (Ethiopic) and `۔۔` (Arabic) are established conventions in their corpora.
 /// So this rule keeps the prior **conservative candidate extraction** (see
 /// [`adjacency_candidates`]) but replaces the fixed allow-list verdict with a
-/// corpus-rate one: each exact candidate pattern's project-wide count `k` is
-/// judged against `N_start(a)`, the project-wide number of positions where the
+/// corpus-rate one: each exact candidate pattern's count `k` over the supplied
+/// map is judged against `N_start(a)`, the number of positions where the
 /// pattern's lead glyph `a` begins a maximal same-glyph run. A pattern that is
 /// a meaningful share of its lead glyph's opportunities is an established
 /// convention and goes silent; a rare one surfaces at `Severity::Info` with a
@@ -35,152 +35,60 @@ use crate::verse::{self, VerseMap};
 /// limitation).
 pub const PUNCTUATION_ADJACENCY_ANOMALY: RuleId = RuleId::PunctuationAdjacencyAnomaly;
 
-/// One exact pattern's contribution within a book: every [`ObservedSite`] for
-/// that pattern (each site's span is the complete candidate run; the pattern
-/// string is the map key, not repeated per site). Sites are retained in full so
-/// `judge` emits a finding for every occurrence that clears the floor — the
-/// count is `sites.len()`.
-#[derive(Debug, Clone, Default, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
-struct PunctuationObservations {
-    sites: Vec<ObservedSite>,
-}
-
-/// One book's contribution: the per-lead-glyph run-start opportunity counts and
-/// the per-exact-pattern observations. Patterns are keyed by their exact run
-/// string (`",,"`, `"?!?"`, `"፤፤"`), so `??`, `???` and `????` stay distinct.
-#[derive(Debug, Clone, Default, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
-struct BookPunctuationAdjacency {
-    lead_opportunities: BTreeMap<char, u64>,
-    patterns: BTreeMap<String, PunctuationObservations>,
-}
-
-/// Cached punctuation-adjacency statistics, keyed by book code so an edit
-/// supersedes only its book. Corpus-wide `k` (per pattern) and `N_start` (per
-/// lead glyph) are the sums over books, derived at `judge`.
-#[derive(Debug, Clone, Default, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
-pub struct PunctuationAdjacencyStats {
-    per_book: BTreeMap<String, BookPunctuationAdjacency>,
-}
-
-impl PunctuationAdjacencyStats {
-    /// Book-level supersede: books in `other` replace those in `self`.
-    pub(crate) fn merge(mut self, other: PunctuationAdjacencyStats) -> PunctuationAdjacencyStats {
-        for (book, b) in other.per_book {
-            self.per_book.insert(book, b);
-        }
-        self
-    }
-
-    pub(crate) fn remove_book(&mut self, book: &str) {
-        self.per_book.remove(book);
-    }
-}
-
 pub struct PunctuationAdjacencyAnomaly {
     pub cfg: PunctuationAdjacencyConfig,
 }
 
-impl StatefulRule for PunctuationAdjacencyAnomaly {
+impl ProjectRule for PunctuationAdjacencyAnomaly {
     fn id(&self) -> RuleId {
         PUNCTUATION_ADJACENCY_ANOMALY
     }
 
-    fn reduce(&self, map: &VerseMap, _source: Option<&VerseMap>) -> RuleStats {
-        let mut stats = PunctuationAdjacencyStats::default();
-        for (book, verses) in verse::by_book(map) {
-            stats
-                .per_book
-                .insert(book.as_str().to_string(), reduce_book(&verses));
+    fn check(&self, target: &VerseMap, _source: Option<&VerseMap>) -> Vec<Finding> {
+        // One pass: `N_start` per lead glyph, and each exact pattern's
+        // occurrence spans. Nothing is retained past the call.
+        let mut lead: HashMap<char, u64> = HashMap::new();
+        let mut patterns: HashMap<String, Vec<(Sid, u32, u32)>> = HashMap::new();
+        for (&sid, text) in target {
+            count_lead_opportunities(text, &mut lead);
+            for span in adjacency_candidates(text) {
+                patterns
+                    .entry(span.slice(text).to_string())
+                    .or_default()
+                    .push((sid, span.start as u32, span.end as u32));
+            }
         }
-        RuleStats::PunctuationAdjacency(stats)
-    }
-
-    fn judge(&self, stats: &RuleStats) -> Vec<Finding> {
-        let RuleStats::PunctuationAdjacency(stats) = stats else {
+        if patterns.is_empty() {
             return Vec::new();
-        };
-
-        // Corpus-wide aggregates — per-lead run-start opportunities and
-        // per-pattern counts (not a walk over sites).
-        let mut lead: BTreeMap<char, u64> = BTreeMap::new();
-        let mut pattern_k: BTreeMap<&str, u64> = BTreeMap::new();
-        for book in stats.per_book.values() {
-            for (&c, &n) in &book.lead_opportunities {
-                *lead.entry(c).or_default() += n;
-            }
-            for (p, obs) in &book.patterns {
-                *pattern_k.entry(p.as_str()).or_default() += obs.sites.len() as u64;
-            }
         }
 
         let rate = clamp_rate(self.cfg.convention_rate);
         let z = clamp_z(self.cfg.confidence_z);
-        let floor = clamp_unit(self.cfg.emit_score_min);
-
-        // Evidence depends only on the pattern, so compute it once per pattern.
-        let evidence: BTreeMap<&str, f64> = pattern_k
-            .iter()
-            .map(|(&p, &k)| {
-                // A pattern is a non-empty run; its first scalar is its lead
-                // glyph, whose run-start count is the denominator.
-                let a = p.chars().next().expect("candidate pattern is non-empty");
-                let n = lead.get(&a).copied().unwrap_or(0);
-                (p, 1.0 - strength(k, n, rate, z))
-            })
-            .collect();
+        let floor = f64::from(clamp_unit(self.cfg.emit_score_min));
 
         let mut out = Vec::new();
-        for book in stats.per_book.values() {
-            for (p, obs) in &book.patterns {
-                let ev = evidence.get(p.as_str()).copied().unwrap_or(1.0);
-                if ev < f64::from(floor) {
-                    continue;
-                }
-                for site in &obs.sites {
-                    out.push(Finding {
-                        sid: site.sid,
-                        code: PUNCTUATION_ADJACENCY_ANOMALY,
-                        severity: Severity::Info,
-                        range: Span {
-                            start: site.start as usize,
-                            end: site.end as usize,
-                        },
-                        score: Some(ev as f32),
-                        args: None,
-                    });
-                }
+        for (p, occ) in &patterns {
+            // A pattern is a non-empty run; its first scalar is its lead glyph,
+            // whose run-start count is the denominator.
+            let a = p.chars().next().expect("candidate pattern is non-empty");
+            let n = lead.get(&a).copied().unwrap_or(0);
+            let ev = 1.0 - strength(occ.len() as u64, n, rate, z);
+            if ev < floor {
+                continue;
+            }
+            for &(sid, start, end) in occ {
+                out.push(Finding {
+                    sid,
+                    code: PUNCTUATION_ADJACENCY_ANOMALY,
+                    severity: Severity::Info,
+                    range: Span { start: start as usize, end: end as usize },
+                    score: Some(ev as f32),
+                    args: None,
+                });
             }
         }
         out.sort_by_key(|f| (f.sid, f.range.start));
         out
-    }
-}
-
-/// Reduce one book: count per-lead run-start opportunities and accumulate
-/// every per-pattern site span (no cap — see the struct doc).
-fn reduce_book(verses: &[(Sid, &str)]) -> BookPunctuationAdjacency {
-    let mut lead_opportunities: BTreeMap<char, u64> = BTreeMap::new();
-    let mut patterns: BTreeMap<String, PunctuationObservations> = BTreeMap::new();
-
-    for (sid, text) in verses {
-        count_lead_opportunities(text, &mut lead_opportunities);
-        for span in adjacency_candidates(text) {
-            patterns.entry(span.slice(text).to_string()).or_default().sites.push(ObservedSite {
-                sid: *sid,
-                start: span.start as u32,
-                end: span.end as u32,
-            });
-        }
-    }
-    BookPunctuationAdjacency {
-        lead_opportunities,
-        patterns,
     }
 }
 
@@ -192,7 +100,7 @@ fn reduce_book(verses: &[(Sid, &str)]) -> BookPunctuationAdjacency {
 /// runs never inflate their own denominator. Excluded candidate patterns
 /// (`...`, `--`) still count here as lead-glyph opportunities — they are
 /// suppressed from *extraction*, not from the opportunity pool.
-fn count_lead_opportunities(text: &str, out: &mut BTreeMap<char, u64>) {
+fn count_lead_opportunities(text: &str, out: &mut HashMap<char, u64>) {
     let mut prev: Option<char> = None;
     for c in text.chars() {
         if is_punctuation(c) && prev != Some(c) {
@@ -483,13 +391,13 @@ mod tests {
         PunctuationAdjacencyConfig { emit_score_min: 0.0, ..Default::default() }
     }
     fn run(map: &VerseMap, r: &PunctuationAdjacencyAnomaly) -> Vec<Finding> {
-        r.judge(&r.reduce(map, None))
+        r.check(map, None)
     }
-    fn stats_of(r: &PunctuationAdjacencyAnomaly, map: &VerseMap) -> PunctuationAdjacencyStats {
-        match r.reduce(map, None) {
-            RuleStats::PunctuationAdjacency(s) => s,
-            _ => panic!("wrong variant"),
-        }
+    /// The `N_start` count for one glyph over a verse (for structural asserts).
+    fn n_start(text: &str, glyph: char) -> u64 {
+        let mut lead = std::collections::HashMap::new();
+        count_lead_opportunities(text, &mut lead);
+        lead.get(&glyph).copied().unwrap_or(0)
     }
     /// Score of the pattern occurrence at a given verse, if emitted.
     fn score_at(f: &[Finding], sid: Sid) -> Option<f32> {
@@ -567,19 +475,13 @@ mod tests {
 
     #[test]
     fn exact_run_lengths_are_distinct_patterns_one_event_each() {
-        // `??`, `???`, `????` are three patterns; one `????` run is one event.
-        let vm = book("GEN", &[
-            (1, "a?? b".to_string()),
-            (2, "c??? d".to_string()),
-            (3, "e???? f".to_string()),
-        ]);
-        let s = stats_of(&default_rule(), &vm);
-        let pats = &s.per_book["GEN"].patterns;
-        assert_eq!(pats["??"].sites.len(), 1);
-        assert_eq!(pats["???"].sites.len(), 1);
-        assert_eq!(pats["????"].sites.len(), 1, "one long run is a single event, not three");
-        // `?` run-starts: one per verse = 3.
-        assert_eq!(s.per_book["GEN"].lead_opportunities[&'?'], 3);
+        // Each maximal run is one candidate; the exact strings stay distinct,
+        // and one long run is a single event (not one-per-adjacent-pair).
+        assert_eq!(rp("a?? b"), vec!["??"]);
+        assert_eq!(rp("c??? d"), vec!["???"]);
+        assert_eq!(rp("e???? f"), vec!["????"]);
+        // A `?`-run counts once toward N_start('?'), regardless of length.
+        assert_eq!(n_start("e???? f", '?'), 1);
     }
 
     // (The single-formula "no k=4/k=5 discontinuity" property is a pure
@@ -601,10 +503,10 @@ mod tests {
             book("GEN", &v)
         };
 
-        // Observed rate is exactly 1.0 (lead glyph exclusive to the pattern).
-        let s = stats_of(&default_rule(), &novelty(3));
-        assert_eq!(s.per_book["GEN"].patterns["※※"].sites.len(), 3);
-        assert_eq!(s.per_book["GEN"].lead_opportunities[&'※'], 3);
+        // Observed rate is exactly 1.0: `※` only ever begins a `※※` run, so
+        // each verse contributes k=1 (a `※※` candidate) and N_start('※')=1.
+        assert_eq!(rp("word ※※ word"), vec!["※※"]);
+        assert_eq!(n_start("word ※※ word", '※'), 1);
 
         // Evidence FALLS as the exclusive pattern recurs (more confident it is a
         // convention) — the opposite of a common-glyph pattern.
@@ -633,61 +535,34 @@ mod tests {
     }
 
     #[test]
-    fn quotes_and_brackets_do_not_enter_stats_as_patterns() {
-        // Quote runs and lone brackets are outside the candidate domain.
-        let vm = book("GEN", &[(1, "(word) [x] ''y'' \"\"z\"\" said".to_string())]);
-        let s = stats_of(&default_rule(), &vm);
-        assert!(s.per_book["GEN"].patterns.is_empty(), "no spurious quote/bracket patterns");
+    fn quotes_and_brackets_do_not_enter_the_candidate_domain() {
+        // Quote runs and lone brackets never become candidates, so they never
+        // enter the aggregates or emit.
+        let text = "(word) [x] ''y'' \"\"z\"\" said";
+        assert!(rp(text).is_empty(), "no spurious quote/bracket candidates");
+        assert!(run(&book("GEN", &[(1, text.to_string())]), &default_rule()).is_empty());
     }
 
     #[test]
-    fn full_and_incremental_judgments_agree() {
-        // GEN establishes many period-starts; EXO carries a rare `.,`.
+    fn spans_multiple_books_corpus_wide() {
+        // The rule pools over the whole supplied map: a rare `.,` in EXO is
+        // scored against period opportunities established across GEN too.
         let mut full = periods_and_commas(200, 0);
         full.insert(sid("EXO", 1), "word., word".to_string());
-        let r = default_rule();
-        let full_stats = r.reduce(&full, None);
-        let gen_only: VerseMap = full.iter().filter(|(s, _)| s.book == BookId::from_str("GEN").unwrap()).map(|(s, t)| (*s, t.clone())).collect();
-        let exo_only: VerseMap = full.iter().filter(|(s, _)| s.book == BookId::from_str("EXO").unwrap()).map(|(s, t)| (*s, t.clone())).collect();
-        let inc = r.reduce(&gen_only, None).merge(r.reduce(&exo_only, None));
-        assert_eq!(r.judge(&full_stats), r.judge(&inc));
-        assert!(r.judge(&full_stats).iter().any(|f| f.sid.book == BookId::from_str("EXO").unwrap()));
+        let f = run(&full, &default_rule());
+        assert_eq!(f.len(), 1);
+        assert_eq!(f[0].sid.book, BookId::from_str("EXO").unwrap());
+        assert!(f[0].score.unwrap() > 0.9);
     }
 
     #[test]
-    fn removing_a_book_drops_its_opportunities_patterns_and_sites() {
-        let mut vm = periods_and_commas(200, 0);
-        vm.insert(sid("EXO", 1), "word., word".to_string());
-        let r = default_rule();
-        let RuleStats::PunctuationAdjacency(mut stats) = r.reduce(&vm, None) else { panic!() };
-        assert!(stats.per_book.contains_key("EXO"));
-        stats.remove_book("EXO");
-        assert!(!stats.per_book.contains_key("EXO"));
-        assert!(r.judge(&RuleStats::PunctuationAdjacency(stats)).iter().all(|f| f.sid.book != BookId::from_str("EXO").unwrap()));
-    }
-
-    #[test]
-    fn every_site_is_retained_so_emission_is_complete() {
-        // Many separate `,,` runs (one per "x,," chunk) in one verse: all are
-        // stored (no lossy cap), so a rare-but-frequent anomaly emits in full.
-        let n = 900usize;
-        let text = "x,,".repeat(n);
-        let vm = book("GEN", &[(1, text)]);
-        let s = stats_of(&default_rule(), &vm);
-        let obs = &s.per_book["GEN"].patterns[",,"];
-        assert_eq!(obs.sites.len(), n, "all sites retained, nothing dropped");
-    }
-
-    #[cfg(feature = "serde")]
-    #[test]
-    fn stats_round_trip_through_serde() {
-        let mut vm = periods_and_commas(10, 3);
-        vm.insert(sid("EXO", 1), "a?!? b".to_string());
-        let stats = default_rule().reduce(&vm, None);
-        let json = serde_json::to_string(&stats).unwrap();
-        let back: RuleStats = serde_json::from_str(&json).unwrap();
-        assert_eq!(stats, back);
-        assert_eq!(default_rule().judge(&stats), default_rule().judge(&back));
+    fn every_above_floor_occurrence_is_emitted_no_cap() {
+        // No cap (the old lossy 512 cap is gone): a rare pattern that recurs
+        // *more than 512 times* still emits a finding for every occurrence.
+        // 600 `.,` among ~2400 period run-starts stays anomalous (≈0.53).
+        let vm = periods_and_commas(900, 600);
+        let f = run(&vm, &default_rule());
+        assert_eq!(f.len(), 600, "all 600 `.,` occurrences surface — no 512 cap");
     }
 
     #[test]

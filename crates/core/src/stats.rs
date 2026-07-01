@@ -12,41 +12,26 @@
 use std::collections::BTreeMap;
 
 use crate::diagnostics::RuleId;
-use crate::sid::{BookId, Sid};
+use crate::sid::BookId;
 use crate::signals::casing::CasingStats;
 use crate::signals::proportionality::ProportionalityStats;
-use crate::signals::punctuation::PunctuationAdjacencyStats;
-use crate::signals::zero_width_space::ZeroWidthSpaceStats;
-
-/// A retained finding site in one verse: the `Sid` plus a byte span into that
-/// verse's text, so a stateful rule's `judge` can emit a `Finding` without the
-/// text. Shared by the corpus-relative anomaly rules whose sites carry nothing
-/// but location (the context/pattern lives once on the containing map entry);
-/// casing keeps its own `LowerSite` because it also stores the terminal glyph.
-/// `sid` crosses the wire as the canonical `"GEN 1:1"` string, materialised
-/// only when serde runs.
-#[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
-pub(crate) struct ObservedSite {
-    #[cfg_attr(feature = "serde", serde(with = "crate::sid::sid_as_string"))]
-    #[cfg_attr(feature = "wasm", tsify(type = "string"))]
-    pub sid: Sid,
-    pub start: u32,
-    pub end: u32,
-}
 
 /// Per-rule cached statistics — a **closed** union like `FindingArgs`, one
 /// variant per stateful rule. The orchestration treats it opaquely; each
 /// rule reduces into / judges from its own variant.
+///
+/// Only rules whose observations are *sparse* (casing's lowercase sites,
+/// proportionality's per-verse ratios) are stateful. The corpus-relative
+/// anomaly rules (`uni.zero-width-space-anomaly`, `punct.adjacency-anomaly`) are
+/// **not** here: their candidate class is dense (every occurrence), so caching
+/// per-occurrence sites would dominate the wire size — they recompute over the
+/// supplied map in one pass instead (project rules).
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum RuleStats {
     Casing(CasingStats),
     Proportionality(ProportionalityStats),
-    ZeroWidthSpace(ZeroWidthSpaceStats),
-    PunctuationAdjacency(PunctuationAdjacencyStats),
 }
 
 impl RuleStats {
@@ -59,25 +44,12 @@ impl RuleStats {
             (RuleStats::Proportionality(a), RuleStats::Proportionality(b)) => {
                 RuleStats::Proportionality(a.merge(b))
             }
-            (RuleStats::ZeroWidthSpace(a), RuleStats::ZeroWidthSpace(b)) => {
-                RuleStats::ZeroWidthSpace(a.merge(b))
-            }
-            (RuleStats::PunctuationAdjacency(a), RuleStats::PunctuationAdjacency(b)) => {
-                RuleStats::PunctuationAdjacency(a.merge(b))
-            }
             // Mismatched variants can't occur via `analyze_stateful` (it keys
-            // prior and fresh by the same `RuleId`). For malformed cached input
-            // the **fresh** reduction wins — never the stale prior. The left
-            // pattern lists every current variant explicitly (not `_`), so a
-            // new variant makes this match non-exhaustive until its own
-            // same-type merge arm is added above.
-            (
-                RuleStats::Casing(_)
-                | RuleStats::Proportionality(_)
-                | RuleStats::ZeroWidthSpace(_)
-                | RuleStats::PunctuationAdjacency(_),
-                fresh,
-            ) => fresh,
+            // prior and fresh by the same `RuleId`). For malformed cached
+            // input the **fresh** reduction wins — never the stale prior.
+            // Enumerated rather than `_`, so a new variant forces these arms.
+            (RuleStats::Casing(_), fresh @ RuleStats::Proportionality(_)) => fresh,
+            (RuleStats::Proportionality(_), fresh @ RuleStats::Casing(_)) => fresh,
         }
     }
 
@@ -86,8 +58,6 @@ impl RuleStats {
         match self {
             RuleStats::Casing(c) => c.remove_book(book),
             RuleStats::Proportionality(p) => p.remove_book(book),
-            RuleStats::ZeroWidthSpace(z) => z.remove_book(book),
-            RuleStats::PunctuationAdjacency(p) => p.remove_book(book),
         }
     }
 }

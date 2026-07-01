@@ -19,7 +19,7 @@ use std::path::Path;
 use ssc_core::config::{
     ProportionalityConfig, PunctuationAdjacencyConfig, ZeroWidthSpaceConfig,
 };
-use ssc_core::rule::StatefulRule;
+use ssc_core::rule::{ProjectRule, StatefulRule};
 use ssc_core::signals::proportionality::ProjectLengthRatio;
 use ssc_core::signals::punctuation::PunctuationAdjacencyAnomaly;
 use ssc_core::signals::zero_width_space::ZeroWidthSpaceAnomaly;
@@ -199,29 +199,14 @@ fn zwsp_calib(dir: &Path) {
         .count();
     println!("hyg.zero-width-misuse: {hyg_total} total controls, of which U+200B: {hyg_zwsp} (must be 0)");
 
-    // ZWSP rule at floor 0 → every scored site.
+    // ZWSP rule at floor 0 → every scored site. One-pass project rule (no state).
     let rule = ZeroWidthSpaceAnomaly {
         cfg: ZeroWidthSpaceConfig { emit_score_min: 0.0, ..Default::default() },
     };
     let t0 = std::time::Instant::now();
-    let stats = rule.reduce(&target, None);
-    let findings = rule.judge(&stats);
-    eprintln!("zwsp reduce+judge: {:?}", t0.elapsed());
+    let findings = rule.check(&target, None);
+    eprintln!("zwsp check (full-map scan): {:?}", t0.elapsed());
     report_scored("uni.zero-width-space-anomaly", &target, &findings);
-
-    // Incremental judge cost: re-judge from the cached stats alone.
-    let t1 = std::time::Instant::now();
-    let _ = rule.judge(&stats);
-    eprintln!("zwsp re-judge (incremental cost): {:?}", t1.elapsed());
-    report_stats_size(&stats);
-}
-
-/// Serialized `RuleStats` wire size — what a caller round-trips each incremental
-/// call. The per-context/per-pattern site cap is what bounds this on a pervasive
-/// corpus (§14).
-fn report_stats_size(stats: &ssc_core::RuleStats) {
-    let bytes = serde_json::to_string(stats).map(|s| s.len()).unwrap_or(0);
-    println!("serialized RuleStats: {} bytes ({:.1} KiB)", bytes, bytes as f64 / 1024.0);
 }
 
 /// Punctuation adjacency calibration (ADR 0024) at floor 0.
@@ -232,11 +217,9 @@ fn punct_calib(dir: &Path) {
         cfg: PunctuationAdjacencyConfig { emit_score_min: 0.0, ..Default::default() },
     };
     let t0 = std::time::Instant::now();
-    let stats = rule.reduce(&target, None);
-    let findings = rule.judge(&stats);
-    eprintln!("punct reduce+judge: {:?}", t0.elapsed());
+    let findings = rule.check(&target, None);
+    eprintln!("punct check (full-map scan): {:?}", t0.elapsed());
     report_scored("punct.adjacency-anomaly", &target, &findings);
-    report_stats_size(&stats);
 
     // How many the shipped default config surfaces (default-on rule).
     let shipped = analyze_with_config(&target, None, &Config::v1_defaults());

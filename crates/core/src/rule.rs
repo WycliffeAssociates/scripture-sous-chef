@@ -119,9 +119,19 @@ pub fn token_rules() -> Vec<Box<dyn TokenRule>> {
 /// constructed from `config`'s typed sub-configs here, once per analyze
 /// call — `ProjectRule::check` itself never sees the `Config`.
 pub fn project_rules(config: &Config) -> Vec<Box<dyn ProjectRule>> {
-    vec![Box::new(signals::bracket_balance::BracketBalance {
-        cfg: config.bracket_balance,
-    })]
+    vec![
+        Box::new(signals::bracket_balance::BracketBalance {
+            cfg: config.bracket_balance,
+        }),
+        // Corpus-relative anomaly rules: computed over the supplied map in one
+        // pass (not stateful — dense candidate class, see `stats::RuleStats`).
+        Box::new(signals::zero_width_space::ZeroWidthSpaceAnomaly {
+            cfg: config.zero_width_space,
+        }),
+        Box::new(signals::punctuation::PunctuationAdjacencyAnomaly {
+            cfg: config.punctuation_adjacency,
+        }),
+    ]
 }
 
 /// Project-scoped rules that also consult per-verse tokens.
@@ -139,12 +149,6 @@ pub fn stateful_rules(config: &Config) -> Vec<Box<dyn StatefulRule>> {
         }),
         Box::new(signals::proportionality::ProjectLengthRatio {
             cfg: config.proportionality,
-        }),
-        Box::new(signals::zero_width_space::ZeroWidthSpaceAnomaly {
-            cfg: config.zero_width_space,
-        }),
-        Box::new(signals::punctuation::PunctuationAdjacencyAnomaly {
-            cfg: config.punctuation_adjacency,
         }),
     ]
 }

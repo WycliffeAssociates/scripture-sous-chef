@@ -517,12 +517,13 @@ mod tests {
         assert!(f_after.iter().all(|f| f.code != RuleId::SentenceInitialLowercase));
     }
 
-    /// The ZWSP anomaly runs through the stateful entry like casing: default
-    /// off, opt-in, and once on it emits Info findings scoped to `target`, with
-    /// an incremental one-book call agreeing with the full analysis. Also
-    /// round-trips its `Stats` through the typed serde boundary.
+    /// The ZWSP anomaly runs through `analyze` like any project rule: default
+    /// off, opt-in, and once on it emits Info findings scored corpus-relative to
+    /// the supplied map (pervasive Khmer→Khmer silent; one Khmer→Latin slip in
+    /// another book surfaces). It is a project rule (not stateful), so it is
+    /// scored over whatever map it is given.
     #[test]
-    fn zero_width_space_runs_through_analyze_stateful() {
+    fn zero_width_space_runs_through_analyze() {
         const ZW: &str = "\u{200B}";
         let mut cfg = Config::v1_defaults();
         cfg.rules.insert(RuleId::ZeroWidthSpaceAnomaly, true);
@@ -538,24 +539,11 @@ mod tests {
         // Default (rule off) says nothing about ZWSP.
         assert!(analyze(&full, None).iter().all(|f| f.code != RuleId::ZeroWidthSpaceAnomaly));
 
-        let (f_full, stats) = analyze_stateful(&full, None, &cfg, None);
-        let zwsp: Vec<_> = f_full.iter().filter(|f| f.code == RuleId::ZeroWidthSpaceAnomaly).collect();
+        let f = analyze_with_config(&full, None, &cfg);
+        let zwsp: Vec<_> = f.iter().filter(|f| f.code == RuleId::ZeroWidthSpaceAnomaly).collect();
         assert_eq!(zwsp.len(), 1, "only the EXO minority context surfaces");
         assert_eq!(zwsp[0].sid.book, exo);
         assert_eq!(zwsp[0].severity, Severity::Info);
-
-        // Round-trip the stats, then an incremental call for EXO alone agrees
-        // and returns nothing from GEN.
-        let back: Stats = serde_json::from_str(&serde_json::to_string(&stats).unwrap()).unwrap();
-        let exo_map: VerseMap = full
-            .iter()
-            .filter(|(s, _)| s.book == exo)
-            .map(|(s, t)| (*s, t.clone()))
-            .collect();
-        let (f_inc, _) = analyze_stateful(&exo_map, None, &cfg, Some(back));
-        let zwsp_inc: Vec<_> = f_inc.iter().filter(|f| f.code == RuleId::ZeroWidthSpaceAnomaly).collect();
-        assert_eq!(zwsp_inc.len(), 1);
-        assert!(f_inc.iter().all(|f| f.sid.book == exo));
     }
 
     /// Guards the `RuleId` wire format: the serde rename must match
