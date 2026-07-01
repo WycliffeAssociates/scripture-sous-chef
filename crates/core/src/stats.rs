@@ -15,6 +15,7 @@ use crate::diagnostics::RuleId;
 use crate::sid::BookId;
 use crate::signals::casing::CasingStats;
 use crate::signals::proportionality::ProportionalityStats;
+use crate::signals::punctuation::PunctuationAdjacencyStats;
 use crate::signals::zero_width_space::ZeroWidthSpaceStats;
 
 /// Per-rule cached statistics — a **closed** union like `FindingArgs`, one
@@ -27,6 +28,7 @@ pub enum RuleStats {
     Casing(CasingStats),
     Proportionality(ProportionalityStats),
     ZeroWidthSpace(ZeroWidthSpaceStats),
+    PunctuationAdjacency(PunctuationAdjacencyStats),
 }
 
 impl RuleStats {
@@ -42,6 +44,9 @@ impl RuleStats {
             (RuleStats::ZeroWidthSpace(a), RuleStats::ZeroWidthSpace(b)) => {
                 RuleStats::ZeroWidthSpace(a.merge(b))
             }
+            (RuleStats::PunctuationAdjacency(a), RuleStats::PunctuationAdjacency(b)) => {
+                RuleStats::PunctuationAdjacency(a.merge(b))
+            }
             // Mismatched variants can't occur via `analyze_stateful` (it keys
             // prior and fresh by the same `RuleId`). For malformed cached input
             // the **fresh** reduction wins — never the stale prior. The left
@@ -49,7 +54,10 @@ impl RuleStats {
             // new variant makes this match non-exhaustive until its own
             // same-type merge arm is added above.
             (
-                RuleStats::Casing(_) | RuleStats::Proportionality(_) | RuleStats::ZeroWidthSpace(_),
+                RuleStats::Casing(_)
+                | RuleStats::Proportionality(_)
+                | RuleStats::ZeroWidthSpace(_)
+                | RuleStats::PunctuationAdjacency(_),
                 fresh,
             ) => fresh,
         }
@@ -61,6 +69,7 @@ impl RuleStats {
             RuleStats::Casing(c) => c.remove_book(book),
             RuleStats::Proportionality(p) => p.remove_book(book),
             RuleStats::ZeroWidthSpace(z) => z.remove_book(book),
+            RuleStats::PunctuationAdjacency(p) => p.remove_book(book),
         }
     }
 }

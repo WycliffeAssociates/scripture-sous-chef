@@ -95,6 +95,45 @@ impl Default for CasingConfig {
     }
 }
 
+/// Knobs for `punct.adjacency-anomaly`. The rule keeps the prior conservative
+/// candidate extraction (identical and mixed punctuation runs, minus the
+/// known-safe `...`/`--`/`?!`/`!?` set) but replaces the fixed allow-list
+/// *verdict* with a corpus-rate one: each exact candidate pattern is scored
+/// against its lead glyph's corpus-wide run-start opportunities, at
+/// `Severity::Info` (ADR: punctuation adjacency anomaly). Ships **default-on**
+/// (the deterministic predecessor was on). Scores are always finite: `judge`
+/// clamps out-of-range / NaN input here.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
+pub struct PunctuationAdjacencyConfig {
+    /// The share-of-lead-glyph-opportunities above which an exact pattern is
+    /// taken to be an established convention (and so falls below the floor). A
+    /// doubled Ethiopic `፤፤` that is most of the corpus's `፤` run-starts clears
+    /// this; a `.,` that is a sliver of all period run-starts does not. Coarse
+    /// by design (see `confidence_z`).
+    pub convention_rate: f32,
+    /// Confidence `z` for the Wilson lower bound. Load-bearing at the anomaly
+    /// end: a pattern whose lead glyph is *exclusive* to it has observed rate
+    /// pinned at 1.0, so only this `z` (via the sample size) separates a novel
+    /// mark seen twice from an entrenched convention seen thousands of times.
+    /// Calibrate this before the rate knob. `1.96` ≈ 95%.
+    pub confidence_z: f32,
+    /// Minimum `evidence` a site must reach to be emitted — keeps an
+    /// established convention (e.g. `፤፤`, `۔۔`) from serialising as findings.
+    pub emit_score_min: f32,
+}
+
+impl Default for PunctuationAdjacencyConfig {
+    fn default() -> Self {
+        Self {
+            convention_rate: 0.5,
+            confidence_z: 1.96,
+            emit_score_min: 0.5,
+        }
+    }
+}
+
 /// Knobs for `uni.zero-width-space-anomaly`. The rule learns, corpus-wide,
 /// whether ZWSP is used at all and which immediate grapheme contexts surround
 /// it, then scores each occurrence's *conformance surprise* at `Severity::Info`
@@ -159,6 +198,8 @@ pub struct Config {
     pub casing: CasingConfig,
     #[cfg_attr(feature = "serde", serde(default))]
     pub zero_width_space: ZeroWidthSpaceConfig,
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub punctuation_adjacency: PunctuationAdjacencyConfig,
 }
 
 impl Config {

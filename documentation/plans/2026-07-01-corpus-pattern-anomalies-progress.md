@@ -140,3 +140,31 @@ noted).
   emit-floor gating; full-vs-incremental equivalence; remove_book; site cap;
   serde round-trip; NaN-config → finite scores. Plus a lib.rs integration test
   through `analyze_stateful`. 152 core tests pass; full workspace builds.
+
+## 2026-07-01 — checkpoint C shipped (punctuation adjacency)
+
+- `RuleId::RepeatedPunct` → `PunctuationAdjacencyAnomaly` (`punct.repeated-punct`
+  → `punct.adjacency-anomaly`); pre-alpha, no alias. Moved from `per_verse_rules`
+  to `stateful_rules`; stays **default-on** (deterministic predecessor was on).
+- `adjacency_candidates` preserves the prior extraction **verbatim** (identical +
+  mixed runs, `...`/`--`/`?!`/`!?` exclusions) — verdict model changes, candidate
+  domain does not. The `..,,`-style overlap (both `..`,`,,` and `..,,`) is
+  inherited as-is; not "fixed" mid-migration.
+- `count_lead_opportunities` implements the pinned `N_start(a)`: maximal
+  same-glyph run-starts over raw text, so `.,` counts one `.`-start and one
+  `,`-start, `...` counts one, independent of candidate boundaries (R1-2/R2-3).
+  Excluded patterns still count as lead opportunities (R1-3: a lone `...` raises
+  `N_start('.')` but never becomes a flaggable pattern — documented).
+- Findings now `Severity::Info` + score (conformance surprise, not correctness).
+- Per-pattern per-book site cap (512), same as ZWSP.
+- Tests (18 new): candidate extraction preserved (migrated names); rare-mixed
+  stays high; realizable monotonicity (adding `.,` lowers its evidence; a common
+  same-lead `..` doesn't drag down a rare `.,`); dominant `፤፤`/`۔۔` below floor;
+  exact-length patterns distinct + one-event-per-run; **exclusive-lead-glyph
+  `※※` governed by z** (R1-1: pins that a 2–3× novelty sits below the default
+  floor / silent, unlike a common-glyph rarity — z, not the rate knob, is the
+  lever); quotes/brackets don't enter stats; no-discontinuity; full-vs-
+  incremental; remove_book; site cap; serde; NaN-config → finite.
+- 165 core tests pass (serial + parallel); wasm checks; full workspace builds
+  and tests. `strength`/`wilson_lower_bound`/`clamp_*` are currently duplicated
+  between the two rules — checkpoint D decides the hoist.

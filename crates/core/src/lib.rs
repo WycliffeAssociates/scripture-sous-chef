@@ -26,7 +26,8 @@ pub mod unicode;
 pub mod verse;
 
 pub use config::{
-    BracketBalanceConfig, CasingConfig, Config, ProportionalityConfig, ZeroWidthSpaceConfig,
+    BracketBalanceConfig, CasingConfig, Config, ProportionalityConfig,
+    PunctuationAdjacencyConfig, ZeroWidthSpaceConfig,
 };
 pub use diagnostics::{Finding, FindingArgs, LengthRatioScope, RuleId, Severity};
 pub use sid::{BookId, Sid};

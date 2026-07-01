@@ -67,7 +67,7 @@ define_rule_ids! {
     ProjectLengthRatio       => "prop.length-ratio",
     SourceMarkerLeftover     => "struct.source-marker-leftover",
     MergeConflictMarker      => "struct.merge-conflict-marker",
-    RepeatedPunct            => "punct.repeated-punct",
+    PunctuationAdjacencyAnomaly => "punct.adjacency-anomaly",
     DuplicateWord            => "lex.duplicate-word",
     PunctOnlyToken           => "lex.punct-only-token",
     CombiningMarkWithoutBase => "uni.combining-mark-without-base",
