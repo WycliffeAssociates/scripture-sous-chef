@@ -62,18 +62,26 @@ legitimately carry line breaks (ADR 0010).
 
 > **Severity** Warning · **Default** on · **Scope** per-verse · **Knobs** none
 
-**Flags** — Zero-width / format characters in scripts that don't use them:
+**Flags** — Zero-width / bidi / format characters in scripts that don't use them:
 - `foo<BOM>bar` → the BOM (`U+FEFF`) in a Latin verse
 - `fo<ZWNJ>o` → a zero-width non-joiner inside a Latin word
 
 **Clean** — `एक<ZWNJ>क`: a ZWNJ in a Devanagari verse is a legitimate
-letterform control, not misuse.
+letterform control, not misuse. **`a<ZWSP>b`** — U+200B is never flagged here
+(see below).
 
-**Why it matters** — BOM, zero-width space, RLM/LRM and the rest of the
-format-control range are invisible and break layout and search, and the
+**Why it matters** — BOM, RLM/LRM, the bidi embeddings/overrides and the rest
+of the format-control range are invisible and break layout and search, and the
 translator can't see them on screen. **But** ZWNJ/ZWJ are *required* to spell
 words correctly in many Indic and Arabic-family scripts — so blanket-flagging
 them would be wrong.
+
+**U+200B is not judged here (ADR 0023).** ZERO WIDTH SPACE is an
+orthography-dependent word/line-break aid (Khmer, Lao, Thai, Myanmar, optionally
+Japanese); a fixed predicate can't tell a convention from a slip. Its
+corpus-relative context surprise is scored by
+[`uni.zero-width-space-anomaly`](uni.md) at Info instead. This rule skips it and
+keeps every other zero-width/bidi/format finding.
 
 **Config** — On/off only.
 

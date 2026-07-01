@@ -337,6 +337,56 @@ unjustifiably hide real signal. Just use Dunning.
 - **Conformal prediction abstention.** Promising long-term, but premature
   before we have any labels at all.
 
+### 2.5 Corpus-relative rate shrinkage (the conformance-surprise rules)
+
+The two corpus-relative anomaly rules shipped in the v1-reset core —
+`uni.zero-width-space-anomaly` (ADR 0023) and `punct.adjacency-anomaly`
+(ADR 0024) — do **not** use anything above. There is no Kneser–Ney model, no
+Good–Turing mass, no Dunning log-likelihood ratio, and no correctness inference.
+They are corpus-conditioned **rate estimators**, and their output is a
+*conformance surprise*, not a probability that something is an error.
+
+The whole method is one function, `strength(k, n, convention_rate, z)`
+(`crate::shrinkage`):
+
+```text
+observed_rate     = k / n
+conservative_rate = wilson_lower_bound(k, n, z)      // shrinks small samples toward 0
+convention        = clamp(conservative_rate / convention_rate, 0, 1)
+```
+
+`k` and `n` are rule-specific counts (for punctuation, `k` = a pattern's
+project count and `n = N_start(lead glyph)`; for ZWSP the two factors use
+`(Z, N)` and `(C(ctx), Z)`). A rule composes these into
+`evidence = 1 - convention` (or a product of two conventions), emits at
+`Severity::Info` with `score = evidence`, and serialises only sites at or above
+`emit_score_min`.
+
+Why this shape:
+
+- **Wilson lower bound, not a raw rate or a significance test.** It is monotone
+  and has one formula across all support levels (no `k = 4`/`k = 5` model
+  switch). It supplies the conservative shrinkage the design wants — a rare
+  pattern's rate is pulled toward 0, so it stays anomalous — without claiming an
+  iid significance interpretation.
+- **`z` is load-bearing at the anomaly end, the rate knob is coarse.** When a
+  pattern's opportunity glyph is exclusive to it (observed rate pinned at 1.0),
+  only the sample size, through `z`, separates a novelty seen twice from an
+  entrenched convention seen thousands of times. Calibration targets `z` and
+  the small-`k` behaviour first; `*_convention_rate` only sets "how small a
+  share still counts as established."
+- **Monotonicity is over realizable corpus edits, not free `(k, n)` moves.**
+  `strength` is non-decreasing in `k` and non-increasing in `n`, but a real edit
+  moves them together (adding an occurrence of a pattern raises both `k` and its
+  denominator). The invariant the rules actually rely on is: adding an
+  occurrence of a pattern never *raises* that pattern's evidence, and raises a
+  competing same-denominator pattern's evidence.
+
+This is deliberately *not* a language model. It cannot tell a systematic
+widespread typo from a convention — both go silent when common — and it never
+asserts correctness; it only reports how unlike the rest of the corpus a given
+occurrence is.
+
 ---
 
 ## 3. Signal families

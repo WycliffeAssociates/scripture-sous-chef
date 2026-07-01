@@ -1,9 +1,9 @@
 # `punct.*` — Punctuation integrity
 
 The `punct.` namespace spans two source files: `punctuation.rs`
-(`repeated-punct`, `placeholder-leftover`, `space-before-punct` — small
-deterministic scans with built-in allow-lists) and `bracket_balance.rs`
-(`bracket-balance`, the windowed book-scope matcher).
+(`adjacency-anomaly` — corpus-relative and stateful; `placeholder-leftover` and
+`space-before-punct` — small deterministic scans with built-in allow-lists) and
+`bracket_balance.rs` (`bracket-balance`, the windowed book-scope matcher).
 
 ---
 
@@ -53,15 +53,49 @@ rare mis-pair near a genuine missing closer.
 
 ---
 
-## `punct.repeated-punct` — *(write-up pending discussion)*
+## `punct.adjacency-anomaly` — corpus-relative repeated / mixed punctuation
 
-> **Severity** Warning · **Default** on · **Scope** per-verse · **Knobs** none · **Source** `punctuation.rs`
+> **Severity** Info · **Default** on · **Scope** project (stateful) · **Knobs** `convention_rate`, `confidence_z`, `emit_score_min` · **Source** `punctuation.rs` · **ADR** 0024
 
-In the "needs discussion" set. Flags identical runs (`,,` `..` `;;`) and
-disallowed mixed sentence-punct runs (`.,` `?!?`), with a built-in allow-list
-(`...`, `--`, `?!`/`!?`) and a quote-class exemption (`''` / `""` are
-published conventions, not typos). The discussion is about that allow-list and
-the quote exemption. Full write-up to follow.
+**Flags** — A repeated or mixed punctuation run that is **rare relative to its
+lead glyph's opportunities** in the corpus, with a continuous `score`:
+- `end., next` in an English corpus of clean periods → high score
+- `wait,, what`, `what?!? yes` where the corpus doesn't otherwise double/mix
+
+**Clean (learned silent)** — `፤፤` (Ethiopic) or `۔۔` (Arabic) in a corpus that
+doubles them corpus-wide: they are most of their lead glyph's run-starts, so
+they read as an established convention and fall below the emission floor. Also
+the known-safe `...` / `--` / `?!` / `!?` set and quote runs (`''`, `""`), which
+never enter the candidate domain.
+
+**Why it matters** — A doubled or mixed cluster is *sometimes* a typo and
+*sometimes* an orthographic convention; only the corpus can say which. The rule
+keeps the prior conservative candidate extraction but replaces the fixed
+Latin-centric allow-list verdict with a corpus-rate one: each exact pattern's
+project count `k` is judged against `N_start(a)`, the number of positions where
+its lead glyph `a` begins a maximal same-glyph run (a single clean period, a
+`..`, and the `.` of a `.,` each count once toward `.`). A pattern that is a
+meaningful share of its lead glyph's opportunities is a convention and goes
+silent; a rare one surfaces at Info.
+
+**Config** — `convention_rate` (share of lead-glyph opportunities above which a
+pattern is "established"; coarse), `confidence_z` (Wilson lower-bound
+confidence — the load-bearing knob at the anomaly end, where a pattern whose
+lead glyph is exclusive to it has observed rate pinned at 1.0), `emit_score_min`
+(surfacing floor). All provisional until calibration.
+
+**Nuance & ADR ties** — Exact run strings are distinct patterns (`??` ≠ `???` ≠
+`????`); one long run is one event. A **systematic widespread typo** is
+suppressed exactly like a convention (corpus counts can't distinguish them —
+documented limitation, never raised to error). The `...`/`--`/`?!`/`!?`
+exclusions stay hardcoded in v1: a stray `...` in a never-otherwise-ellipsis
+corpus is unflaggable (it never enters stats as a pattern). Severity is **Info**
+with a score, not a Warning verdict. See ADR 0024.
+
+**Open issues / future work** — Broadening the candidate domain (quotes,
+brackets, cross-glyph families) and removing/relaxing the hardcoded exclusions
+are deferred, calibration-backed changes. A pattern-family abstraction (grouping
+run lengths while keeping exact length as a feature) may follow.
 
 ---
 

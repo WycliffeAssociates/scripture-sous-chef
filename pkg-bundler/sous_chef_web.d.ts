@@ -46,6 +46,30 @@ export interface LowerSite {
 }
 
 /**
+ * A retained finding site in one verse: the `Sid` plus a byte span into that
+ * verse\'s text, so a stateful rule\'s `judge` can emit a `Finding` without the
+ * text. Shared by the corpus-relative anomaly rules whose sites carry nothing
+ * but location (the context/pattern lives once on the containing map entry);
+ * casing keeps its own `LowerSite` because it also stores the terminal glyph.
+ * `sid` crosses the wire as the canonical `\"GEN 1:1\"` string, materialised
+ * only when serde runs.
+ */
+export interface ObservedSite {
+    sid: string;
+    start: number;
+    end: number;
+}
+
+/**
+ * Cached ZWSP statistics, keyed by book code so an edit supersedes only its
+ * book. Corpus-wide `N`, `Z`, and per-context counts are the sums over books,
+ * derived at `judge`.
+ */
+export interface ZeroWidthSpaceStats {
+    per_book: Record<string, BookZeroWidthSpace>;
+}
+
+/**
  * Cached casing statistics, keyed by book code (e.g. `\"GEN\"`) so an edit
  * supersedes only its book. The corpus-wide `P(upper | glyph)` is the sum
  * of the per-book counts, derived at `judge` time.
@@ -61,6 +85,34 @@ export interface CasingStats {
 export interface ProportionalityStats {
     per_book: Record<string, RatioObs[]>;
 }
+
+/**
+ * Cached punctuation-adjacency statistics, keyed by book code so an edit
+ * supersedes only its book. Corpus-wide `k` (per pattern) and `N_start` (per
+ * lead glyph) are the sums over books, derived at `judge`.
+ */
+export interface PunctuationAdjacencyStats {
+    per_book: Record<string, BookPunctuationAdjacency>;
+}
+
+/**
+ * Coarse script identity for a single character — a small `Copy` tag,
+ * not a string. Rules count, compare, and match on these directly, so
+ * the hot paths never hash or compare script *names* (see ADR 0015).
+ *
+ * Variants the engine tracks; everything else (`Common`, `Inherited`,
+ * `Unknown`, unexercised scripts) collapses to `None` from `script_of`.
+ *
+ * `#[repr(u8)]` with `Latin = 1` (0 reserved for `None`) so the tag packs
+ * into one byte of the fused [`Class`](crate::charclass) table — see
+ * [`to_repr`] / [`from_repr`] and ADR 0022.
+ *
+ * `Ord`/serde/`Tsify` are here for the ZWSP context key (ADR: zero-width-space
+ * anomaly), which composes two script tags into a corpus-observed context and
+ * round-trips it through `Stats`. Fieldless enum ⇒ serde uses the variant name
+ * (`\"Khmer\"`), so the wire form is legible and stable.
+ */
+export type ScriptTag = "Latin" | "Greek" | "Cyrillic" | "Armenian" | "Hebrew" | "Arabic" | "Syriac" | "Thaana" | "Nko" | "Devanagari" | "Bengali" | "Gurmukhi" | "Gujarati" | "Oriya" | "Tamil" | "Telugu" | "Kannada" | "Malayalam" | "Sinhala" | "Thai" | "Lao" | "Tibetan" | "Myanmar" | "Georgian" | "Hangul" | "Ethiopic" | "Cherokee" | "CanadianAboriginal" | "Khmer" | "Mongolian" | "Cjk" | "MathAlphanumeric";
 
 /**
  * Counts behind `P(upper | glyph) = upper / total` for one terminal glyph.
@@ -87,6 +139,18 @@ export interface Analysis {
 export type Severity = "error" | "warning" | "info";
 
 /**
+ * One book\'s contribution: its boundary-opportunity total, its ZWSP total, and
+ * the per-context observations. A `Vec` (not a map keyed by `ZwspContext`)
+ * because a struct key does not round-trip as a JSON/tsify map key; the vec is
+ * kept in `ZwspContext` order so serialisation is deterministic.
+ */
+export interface BookZeroWidthSpace {
+    boundary_opportunities: number;
+    total: number;
+    contexts: ZwspContextObservations[];
+}
+
+/**
  * One book\'s contribution: the per-glyph counts, the lowercase flag
  * candidates, and the cased-letter tally that drives the emergent gate.
  */
@@ -95,6 +159,27 @@ export interface BookCasing {
     lower_sites: LowerSite[];
     cased_letters: number;
     total_letters: number;
+}
+
+/**
+ * One book\'s contribution: the per-lead-glyph run-start opportunity counts and
+ * the per-exact-pattern observations. Patterns are keyed by their exact run
+ * string (`\",,\"`, `\"?!?\"`, `\"፤፤\"`), so `??`, `???` and `????` stay distinct.
+ */
+export interface BookPunctuationAdjacency {
+    lead_opportunities: Record<string, number>;
+    patterns: Record<string, PunctuationObservations>;
+}
+
+/**
+ * One context\'s contribution within a book: its exact occurrence count and up
+ * to [`MAX_SITES_PER_CONTEXT`] retained [`ObservedSite`]s (the context lives
+ * once here, not per site; each site\'s span is the exact U+200B scalar).
+ */
+export interface ZwspContextObservations {
+    context: ZwspContext;
+    count: number;
+    sites: ObservedSite[];
 }
 
 /**
@@ -112,6 +197,17 @@ export interface DelimObservation {
     glyph: string;
     role: DelimRole;
     matched: boolean;
+}
+
+/**
+ * One exact pattern\'s contribution within a book: its occurrence count and up
+ * to [`MAX_SITES_PER_PATTERN`] retained [`ObservedSite`]s (each site\'s span is
+ * the complete candidate run; the pattern string is the map key, not repeated
+ * per site).
+ */
+export interface PunctuationObservations {
+    count: number;
+    sites: ObservedSite[];
 }
 
 /**
@@ -149,7 +245,7 @@ export interface ProportionalityOverrides {
  * variant per stateful rule. The orchestration treats it opaquely; each
  * rule reduces into / judges from its own variant.
  */
-export type RuleStats = { Casing: CasingStats } | { Proportionality: ProportionalityStats };
+export type RuleStats = { Casing: CasingStats } | { Proportionality: ProportionalityStats } | { ZeroWidthSpace: ZeroWidthSpaceStats } | { PunctuationAdjacency: PunctuationAdjacencyStats };
 
 /**
  * Stable, machine-readable rule identity — a **closed set**.
@@ -160,7 +256,7 @@ export type RuleStats = { Casing: CasingStats } | { Proportionality: Proportiona
  * config and localisation off: Rust via [`RuleId::ALL`] +
  * exhaustive `match`; TS via the `Tsify` string union.
  */
-export type RuleId = "lex.excess-h-whitespace" | "hyg.tab-in-body" | "hyg.control-chars" | "hyg.zero-width-misuse" | "hyg.empty-verse" | "hyg.invalid-codepoint" | "prop.length-ratio" | "struct.source-marker-leftover" | "struct.merge-conflict-marker" | "punct.repeated-punct" | "lex.duplicate-word" | "lex.punct-only-token" | "uni.combining-mark-without-base" | "uni.mixed-script-in-token" | "lex.repeated-character-run" | "uni.mixed-numeral-systems" | "punct.placeholder-leftover" | "punct.bracket-balance" | "punct.space-before-punct" | "case.sentence-initial-lowercase";
+export type RuleId = "lex.excess-h-whitespace" | "hyg.tab-in-body" | "hyg.control-chars" | "hyg.zero-width-misuse" | "hyg.empty-verse" | "hyg.invalid-codepoint" | "prop.length-ratio" | "struct.source-marker-leftover" | "struct.merge-conflict-marker" | "punct.adjacency-anomaly" | "lex.duplicate-word" | "lex.punct-only-token" | "uni.combining-mark-without-base" | "uni.zero-width-space-anomaly" | "uni.mixed-script-in-token" | "lex.repeated-character-run" | "uni.mixed-numeral-systems" | "punct.placeholder-leftover" | "punct.bracket-balance" | "punct.space-before-punct" | "case.sentence-initial-lowercase";
 
 /**
  * Structured message arguments — the additive payload ADR 0010 §6
@@ -174,6 +270,21 @@ export type RuleId = "lex.excess-h-whitespace" | "hyg.tab-in-body" | "hyg.contro
  * nothing real (ADR 0016).
  */
 export type FindingArgs = { kind: "length-ratio"; ratio_pct: number; scope: LengthRatioScope } | { kind: "bracket-window"; window: DelimObservation[] } | { kind: "duplicate-word"; first_sid: string };
+
+/**
+ * The immediate neighbour of a ZWSP, projected from one grapheme cluster.
+ * Ordered pairs of these are the corpus-observed context; a script shift
+ * (Khmer→Latin) is a different, learnable context from Khmer→Khmer.
+ */
+export type ZwspNeighbor = { Script: ScriptTag } | "Whitespace" | "Punctuation" | "Symbol" | "Numeric" | "ZeroWidthSpace" | "Other" | "Boundary";
+
+/**
+ * The ordered `(left, right)` grapheme context immediately around a ZWSP.
+ */
+export interface ZwspContext {
+    left: ZwspNeighbor;
+    right: ZwspNeighbor;
+}
 
 /**
  * The return type. TS: `Finding[]`.

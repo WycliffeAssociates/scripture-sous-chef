@@ -1,15 +1,18 @@
 # `uni.*` — Unicode script & numeral integrity
 
-Script- and numeral-identity checks. Like the hygiene rules they live in
-`hygiene.rs` and carry no knobs beyond on/off, but they reason about Unicode
-**script identity** rather than raw codepoints. Per-character script identity
-is delegated to the `unicode-script` crate (ADR 0009) via the `ScriptTag`
-enum (ADR 0015 for the perf representation). **Common** and **Inherited**
-characters — ASCII digits, punctuation, most combining marks — carry no
-script identity and never, on their own, trigger these rules. All ship on by
-default (ADR 0014).
+Script- and numeral-identity checks. Most live in `hygiene.rs` and carry no
+knobs beyond on/off, but they reason about Unicode **script identity** rather
+than raw codepoints. Per-character script identity is delegated to the
+`unicode-script` crate (ADR 0009) via the `ScriptTag` enum (ADR 0015 for the
+perf representation). **Common** and **Inherited** characters — ASCII digits,
+punctuation, most combining marks — carry no script identity and never, on
+their own, trigger these rules. The deterministic ones ship on by default
+(ADR 0014); the one **stateful, corpus-relative** member of this namespace,
+`uni.zero-width-space-anomaly`, lives in `zero_width_space.rs`, carries knobs,
+and ships **default-off** pending calibration (ADR 0023).
 
-Source: `crates/core/src/signals/hygiene.rs`.
+Source: `crates/core/src/signals/hygiene.rs`,
+`crates/core/src/signals/zero_width_space.rs`.
 
 ---
 
@@ -79,6 +82,50 @@ that stale example. Neither knob exists in the current implementation; if a
 corpus genuinely needs intra-word mixing, a knob would have to come back
 (it would graduate this out of pure hygiene). *(Doc-debt: that config example
 should be updated to a real current rule.)*
+
+---
+
+## `uni.zero-width-space-anomaly` — a ZWSP in an unusual context for this corpus
+
+> **Severity** Info · **Default** OFF · **Scope** project (stateful) · **Knobs** `global_convention_rate`, `context_convention_rate`, `confidence_z`, `emit_score_min` · **Source** `zero_width_space.rs` · **ADR** 0023
+
+**Flags** — A U+200B ZERO WIDTH SPACE whose *conformance surprise* is high, with
+a continuous `score`:
+- a lone ZWSP in a Latin corpus that otherwise never uses one → high
+- a Khmer→Latin ZWSP context in a corpus whose ZWSP is otherwise all Khmer→Khmer
+
+**Clean (learned silent)** — the pervasive Khmer→Khmer word-boundary ZWSPs in a
+Khmer corpus, or a Japanese corpus's optional-use ZWSP: the corpus taught the
+engine these are ordinary, so they fall below the emission floor.
+
+**Why it matters** — U+200B is a legitimate, orthography-dependent word/line
+break aid (Khmer, Lao, Thai, Myanmar, optionally Japanese) — deterministic
+hygiene (ADR 0023) can't judge it. This rule learns, corpus-wide, whether ZWSP
+is used at all and which immediate grapheme contexts surround it, then composes
+`evidence = 1 - global_strength · context_strength`: **both** the corpus's
+overall ZWSP familiarity and this context's typicality must be high to suppress.
+
+**Config** — `global_convention_rate` is a low "uses-ZWSP-at-all" gate (an
+optional-use language saturates it so discrimination falls to context; a
+ZWSP-free corpus keeps it near zero and surfaces the lone occurrence);
+`context_convention_rate` is a coarse "how small a share still counts as
+established"; `confidence_z` is the load-bearing knob at the anomaly end;
+`emit_score_min` is the surfacing floor. All provisional until calibration.
+
+**Nuance & ADR ties** — Context is the ordered `(left, right)` grapheme classes:
+the first script-bearing scalar of each neighbour (so a trailing combining mark
+can't hide its base script), else a category (whitespace / punctuation / symbol /
+numeral / another ZWSP / other), with `Boundary` at a verse edge — so adjacent
+ZWSPs and verse-edge ZWSPs are learnable contexts, not special cases. Untracked
+scripts collapse to `Other`; `ScriptTag` is not expanded for this rule. Severity
+is **Info** with a score; corpus counts can't distinguish a systematic misuse
+from a convention (both go silent when common). See ADR 0023.
+
+**Open issues / future work** — Ships default-off; graduation to default-on is a
+deliberate post-calibration decision. `boundary_opportunities` includes both
+verse edges (documented rate basis). Serialised-site storage is bounded by a
+per-context per-book cap; if judge time ever binds at graduation, the sanctioned
+fix is passing target scope into `judge`, not pruning sites.
 
 ---
 

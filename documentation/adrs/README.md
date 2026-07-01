@@ -30,7 +30,17 @@ isn't visible from the code alone.
 | 0011 | 2026-06-08 | [Statefulness, incrementality, and the consumer boundary for stateful rules](0011-statefulness-incrementality-strategy.md) | Accepted |
 | 0012 | 2026-06-09 | [`RuleId` is a closed enum — the typed config & localization surface](0012-ruleid-closed-enum-config-surface.md) | Accepted |
 | 0013 | 2026-06-09 | [Proportionality — the first cross-map rule, and the contract surface it grows](0013-proportionality-first-cross-map-rule.md) | Accepted |
-| 0014 | 2026-06-09 | [The deterministic rule batch — tokenizer, eleven rules, and shipped defaults](0014-deterministic-rule-batch.md) | Accepted |
+| 0014 | 2026-06-09 | [The deterministic rule batch — tokenizer, eleven rules, and shipped defaults](0014-deterministic-rule-batch.md) | Accepted (punct.repeated-punct amended by 0024) |
+| 0015 | 2026-06-09 | [Script identity is a `Copy` tag enum, not a `&'static str`](0015-script-tag-enum-perf.md) | Accepted |
+| 0016 | 2026-06-09 | [Bracket balance — book-scope, windowed, with a delimiter inventory](0016-bracket-balance-book-scope-windowed.md) | Accepted |
+| 0017 | 2026-06-30 | [Stateful rules — reduce/merge/judge and a stats-returning `analyze`](0017-stateful-rules-stats-returning-analyze.md) | Accepted |
+| 0018 | 2026-06-30 | [Parallelism behind a cargo feature, gated on feature not target](0018-parallelism-behind-a-feature.md) | Accepted |
+| 0019 | 2026-06-30 | [Shared tokenization, token-rule traits, and the per-character cost of non-Latin scripts](0019-shared-tokenization-and-per-char-cost.md) | Accepted |
+| 0020 | 2026-06-30 | [Per-character classification via a fused `ClassBits` lookup](0020-char-classification-fused-classbits-table.md) | Accepted (amended by 0021, 0022) |
+| 0021 | 2026-07-01 | [Domain-tailored grapheme segmenter over one fused static table](0021-grapheme-segmenter-fast-path-fused-static-table.md) | Accepted |
+| 0022 | 2026-07-01 | [Extend the fused table to General_Category groups and script](0022-fused-table-category-and-script.md) | Accepted |
+| 0023 | 2026-07-01 | [U+200B is orthography-dependent — a corpus-relative anomaly, not hygiene](0023-zero-width-space-corpus-relative-anomaly.md) | Accepted |
+| 0024 | 2026-07-01 | [Repeated/mixed punctuation is judged corpus-relative, not by a fixed allow-list](0024-punctuation-adjacency-corpus-relative.md) | Accepted |
 
 ## Format
 
