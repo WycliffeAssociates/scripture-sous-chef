@@ -16,7 +16,7 @@ use crate::token::Token;
 use crate::script::{ScriptTag, script_of};
 use crate::span::Span;
 use crate::unicode::{
-    ZWJ, ZWNJ, is_c0_control, is_c1_control, is_combining_mark, is_decimal_digit,
+    ZWJ, ZWNJ, ZWSP, is_c0_control, is_c1_control, is_combining_mark, is_decimal_digit,
     is_invalid_text_codepoint, is_punctuation, is_symbol, is_zero_width_or_format,
 };
 
@@ -92,11 +92,18 @@ pub fn scan_control_chars(text: &str) -> Vec<Span> {
 // Zero-width misuse
 // ─────────────────────────────────────────────────────────────────────
 
-/// Zero-width characters in scripts that don't legitimately use them.
-/// ZWNJ/ZWJ are meaningful in many Indic and Arabic-family scripts and
-/// are not flagged when the verse's majority script is one of those.
-/// Other zero-width chars (BOM, RLM, LRM, the formatting-control range)
-/// are flagged unconditionally.
+/// Zero-width and bidi/format controls that don't belong in scripture body.
+/// ZWNJ/ZWJ are meaningful in many Indic and Arabic-family scripts and are
+/// not flagged when the verse's majority script is one of those. BOM, RLM,
+/// LRM, the bidi embeddings/overrides, the word joiner and the rest of the
+/// formatting-control range are flagged unconditionally.
+///
+/// **U+200B ZERO WIDTH SPACE is not judged here.** It is a legitimate,
+/// orthography-dependent word/line-break aid in Khmer, Lao, Thai, Myanmar and
+/// (optionally) Japanese; a fixed predicate cannot tell a convention from a
+/// slip. Its corpus-relative context surprise is scored at `Severity::Info` by
+/// [`uni.zero-width-space-anomaly`](crate::signals::zero_width_space), leaving
+/// this deterministic rule to the controls that genuinely never belong.
 pub const ZERO_WIDTH_MISUSE: RuleId = RuleId::ZeroWidthMisuse;
 
 pub struct ZeroWidthMisuse;
@@ -122,6 +129,11 @@ pub fn scan_zero_width_misuse(text: &str) -> Vec<Span> {
     let mut allows_joiners: Option<bool> = None;
     for (i, c) in text.char_indices() {
         if !is_zero_width_or_format(c) {
+            continue;
+        }
+        // U+200B is orthography-dependent, never a deterministic error —
+        // `uni.zero-width-space-anomaly` scores it corpus-relative instead.
+        if c == ZWSP {
             continue;
         }
         if (c == ZWNJ || c == ZWJ)
@@ -471,6 +483,27 @@ mod tests {
     fn zero_width_flags_zwnj_in_latin() {
         let f = scan_zero_width_misuse("fo\u{200C}o");
         assert_eq!(f.len(), 1);
+    }
+
+    #[test]
+    fn zero_width_no_longer_flags_zwsp() {
+        // U+200B is orthography-dependent (Khmer/Lao/…), scored corpus-relative
+        // by uni.zero-width-space-anomaly — deterministic hygiene stays silent
+        // regardless of surrounding script.
+        assert!(scan_zero_width_misuse("a\u{200B}b").is_empty());
+        assert!(scan_zero_width_misuse("ក\u{200B}ខ").is_empty()); // Khmer
+        assert!(scan_zero_width_misuse("\u{200B}").is_empty());
+    }
+
+    #[test]
+    fn zero_width_still_flags_other_controls_beside_zwsp() {
+        // A verse carrying ZWSP *and* a BOM, word joiner, and bidi override:
+        // only the three genuine controls are flagged; the ZWSP is skipped.
+        let f = scan_zero_width_misuse("a\u{200B}b\u{FEFF}c\u{2060}d\u{202E}e");
+        assert_eq!(f.len(), 3);
+        let text = "a\u{200B}b\u{FEFF}c\u{2060}d\u{202E}e";
+        let flagged: Vec<char> = f.iter().map(|s| text[s.start..s.end].chars().next().unwrap()).collect();
+        assert_eq!(flagged, vec!['\u{FEFF}', '\u{2060}', '\u{202E}']);
     }
 
     #[test]

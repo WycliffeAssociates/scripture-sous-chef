@@ -13,7 +13,10 @@
 // Named codepoints
 // ─────────────────────────────────────────────────────────────────────
 
-/// ZERO WIDTH SPACE — never legitimate in scripture body.
+/// ZERO WIDTH SPACE — an orthography-dependent word/line-break aid (Khmer,
+/// Lao, Thai, Myanmar, optionally Japanese), not inherently misuse. Its
+/// corpus-relative context surprise is scored by `uni.zero-width-space-anomaly`;
+/// deterministic hygiene does not judge it.
 pub const ZWSP: char = '\u{200B}';
 /// ZERO WIDTH NON-JOINER — legitimate in some Indic / Arabic scripts.
 pub const ZWNJ: char = '\u{200C}';
@@ -80,9 +83,11 @@ pub fn is_decimal_digit(c: char) -> bool {
     crate::charclass::class_of(c).is_decimal_digit()
 }
 
-/// Zero-width and formatting-control codepoints that should not appear
-/// in scripture body. Excludes legitimately-used joiners — callers
-/// supply their own script-aware allow-list for ZWNJ / ZWJ.
+/// Zero-width and formatting-control codepoints — the **candidate** set for
+/// zero-width scrutiny. This predicate identifies candidates; the *caller*
+/// decides which are legitimate. Hygiene skips the script-aware joiners
+/// (ZWNJ/ZWJ) and U+200B (orthography-dependent, scored corpus-relative
+/// elsewhere) and flags the rest; it is not an "always invalid" predicate.
 ///
 /// Coverage:
 /// - U+200B..=U+200F: ZWSP, ZWNJ, ZWJ, LRM, RLM
