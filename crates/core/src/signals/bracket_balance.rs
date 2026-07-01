@@ -15,14 +15,12 @@
 //! in the book. Each finding carries the full delimiter inventory of its
 //! window so a reviewer sees the whole context, not just the lone orphan.
 
-use std::collections::BTreeMap;
-
 use crate::config::BracketBalanceConfig;
 use crate::diagnostics::{DelimObservation, DelimRole, Finding, FindingArgs, RuleId, Severity};
 use crate::rule::ProjectRule;
-use crate::sid::{BookId, Sid};
+use crate::sid::Sid;
 use crate::span::Span;
-use crate::verse::VerseMap;
+use crate::verse::{self, VerseMap};
 
 pub const BRACKET_BALANCE: RuleId = RuleId::BracketBalance;
 
@@ -65,15 +63,8 @@ impl ProjectRule for BracketBalance {
 
     // Brackets are intrinsic to the target; the reference is irrelevant.
     fn check(&self, target: &VerseMap, _source: Option<&VerseMap>) -> Vec<Finding> {
-        // Group by book, preserving canonical (chapter, verse) order — the
-        // `BTreeMap<Sid, _>` iteration already yields it (verse.rs, sid.rs).
-        let mut books: BTreeMap<BookId, Vec<(Sid, &str)>> = BTreeMap::new();
-        for (sid, text) in target {
-            books.entry(sid.book).or_default().push((*sid, text.as_str()));
-        }
-
         let mut out = Vec::new();
-        for verses in books.values() {
+        for verses in verse::by_book(target).values() {
             self.check_book(verses, &mut out);
         }
         out
@@ -174,6 +165,7 @@ impl BracketBalance {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sid::BookId;
 
     fn rule(window_verses: u16) -> BracketBalance {
         BracketBalance {

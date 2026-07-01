@@ -7,6 +7,7 @@
 //! offset is the orchestrator's job, via onion's `segments`. See
 //! ADR 0010 and `documentation/v1-reset-design.md`.
 
+pub mod charclass;
 pub mod config;
 pub mod diagnostics;
 pub mod rule;
@@ -35,6 +36,73 @@ pub use verse::VerseMap;
 /// the analysis scope: pass a verse, a book, or a whole project.
 pub fn analyze(target: &VerseMap, source: Option<&VerseMap>) -> Vec<Finding> {
     analyze_with_config(target, source, &Config::v1_defaults())
+}
+
+/// Tokenize every verse once, keyed by `Sid`, so token-consuming rules share
+/// a single UAX #29 word scan instead of each repeating it.
+fn build_token_cache(target: &VerseMap) -> rule::TokenCache {
+    #[cfg(feature = "parallel")]
+    {
+        use rayon::prelude::*;
+        target
+            .par_iter()
+            .map(|(&sid, text)| (sid, crate::token::tokenize(text)))
+            .collect()
+    }
+    #[cfg(not(feature = "parallel"))]
+    {
+        target
+            .iter()
+            .map(|(&sid, text)| (sid, crate::token::tokenize(text)))
+            .collect()
+    }
+}
+
+/// All findings for one verse from the per-verse, token, and char-class rules.
+/// Token rules read the shared [`rule::TokenCache`] when present (else tokenize
+/// inline); char-class rules read the shared [`crate::charclass::CharClass`],
+/// which is always present when any char-class rule is enabled.
+fn verse_findings(
+    sid: Sid,
+    text: &str,
+    per_verse: &[Box<dyn rule::PerVerseRule>],
+    token_rules: &[Box<dyn rule::TokenRule>],
+    token_cache: &Option<rule::TokenCache>,
+    char_class: &[Box<dyn rule::CharClassRule>],
+    char_class_table: Option<&crate::charclass::CharClass>,
+) -> Vec<Finding> {
+    let mut out = Vec::new();
+    for r in per_verse {
+        let (code, severity) = (r.id(), r.severity());
+        for range in r.check(text) {
+            out.push(Finding { sid, code, severity, range, score: None, args: None });
+        }
+    }
+    if let Some(cc) = char_class_table {
+        for r in char_class {
+            let (code, severity) = (r.id(), r.severity());
+            for range in r.check(text, cc) {
+                out.push(Finding { sid, code, severity, range, score: None, args: None });
+            }
+        }
+    }
+    if !token_rules.is_empty() {
+        let owned;
+        let tokens: &[crate::token::Token] = match token_cache {
+            Some(c) => c.get(&sid).map(Vec::as_slice).unwrap_or(&[]),
+            None => {
+                owned = crate::token::tokenize(text);
+                &owned
+            }
+        };
+        for r in token_rules {
+            let (code, severity) = (r.id(), r.severity());
+            for range in r.check(text, tokens) {
+                out.push(Finding { sid, code, severity, range, score: None, args: None });
+            }
+        }
+    }
+    out
 }
 
 /// Analyze a corpus, running only the rules `config` enables.
@@ -72,44 +140,103 @@ pub fn analyze_stateful(
     config: &Config,
     prior: Option<Stats>,
 ) -> (Vec<Finding>, Stats) {
-    let mut out = Vec::new();
-
     let per_verse: Vec<_> = rule::per_verse_rules()
         .into_iter()
         .filter(|r| config.is_enabled(r.id()))
         .collect();
-    for (sid, text) in target {
-        for r in &per_verse {
-            let code = r.id();
-            let severity = r.severity();
-            for range in r.check(text) {
-                out.push(Finding {
-                    sid: *sid,
-                    code,
-                    severity,
-                    range,
-                    score: None,
-                    args: None,
-                });
-            }
-        }
-    }
+    let token_rules: Vec<_> = rule::token_rules()
+        .into_iter()
+        .filter(|r| config.is_enabled(r.id()))
+        .collect();
+    let project: Vec<_> = rule::project_rules(config)
+        .into_iter()
+        .filter(|r| config.is_enabled(r.id()))
+        .collect();
+    let project_token: Vec<_> = rule::project_token_rules()
+        .into_iter()
+        .filter(|r| config.is_enabled(r.id()))
+        .collect();
+    let char_class: Vec<_> = rule::char_class_rules()
+        .into_iter()
+        .filter(|r| config.is_enabled(r.id()))
+        .collect();
+    let stateful: Vec<_> = rule::stateful_rules(config)
+        .into_iter()
+        .filter(|r| config.is_enabled(r.id()))
+        .collect();
 
-    for r in rule::project_rules(config) {
-        if !config.is_enabled(r.id()) {
-            continue;
+    // One fused char-classification table (ADR 0020), built per analyze over
+    // this call's text and shared by every char-walking rule (casing,
+    // repeated-character-run) so each does one table lookup per char instead
+    // of ~five std predicate calls. A few KB for a single-script corpus;
+    // skipped entirely when nothing consumes it.
+    let char_class_table: Option<crate::charclass::CharClass> = (!char_class.is_empty()
+        || !stateful.is_empty())
+    .then(|| crate::charclass::CharClass::build(target.values().map(String::as_str)));
+
+    // Tokenize the corpus once and share it whenever ≥2 rules would otherwise
+    // each re-tokenize every verse — the UAX #29 word scan is a top cost on
+    // space-free / non-Latin scripts. With 0–1 token consumers the lone rule
+    // tokenizes inline, so default configs pay no cache overhead.
+    let token_cache: Option<rule::TokenCache> =
+        (token_rules.len() + project_token.len() >= 2).then(|| build_token_cache(target));
+
+    // The per-verse phase is embarrassingly parallel — each verse is judged
+    // from its own text by `Sync` rules. Under the `parallel` feature it fans
+    // out over rayon (ADR 0018); otherwise it stays serial. Output is the same
+    // either way: `out` is sorted before return, so order never depends on the
+    // feature.
+    #[cfg(feature = "parallel")]
+    let mut out: Vec<Finding> = {
+        use rayon::prelude::*;
+        target
+            .par_iter()
+            .flat_map_iter(|(&sid, text)| {
+                verse_findings(
+                    sid,
+                    text,
+                    &per_verse,
+                    &token_rules,
+                    &token_cache,
+                    &char_class,
+                    char_class_table.as_ref(),
+                )
+            })
+            .collect()
+    };
+    #[cfg(not(feature = "parallel"))]
+    let mut out: Vec<Finding> = {
+        let mut out = Vec::new();
+        for (&sid, text) in target {
+            out.extend(verse_findings(
+                sid,
+                text,
+                &per_verse,
+                &token_rules,
+                &token_cache,
+                &char_class,
+                char_class_table.as_ref(),
+            ));
         }
+        out
+    };
+
+    for r in &project {
         out.extend(r.check(target, source));
+    }
+    for r in &project_token {
+        out.extend(r.check(target, source, token_cache.as_ref()));
     }
 
     // Stateful rules: reduce this call's verses, supersede the prior cache at
-    // book granularity, judge the whole merged corpus from the cache.
+    // book granularity, judge the whole merged corpus from the cache. The
+    // char-class table is present whenever any stateful rule is (built above).
     let mut stats = prior.unwrap_or_default();
-    for r in rule::stateful_rules(config) {
-        if !config.is_enabled(r.id()) {
-            continue;
-        }
-        let fresh = r.reduce(target, source);
+    for r in &stateful {
+        let fresh = match char_class_table.as_ref() {
+            Some(cc) => r.reduce(target, source, cc),
+            None => continue, // unreachable: table is built when `stateful` is non-empty
+        };
         let merged = match stats.take(r.id()) {
             Some(prev) => prev.merge(fresh),
             None => fresh,
@@ -124,6 +251,14 @@ pub fn analyze_stateful(
         );
         stats.insert(r.id(), merged);
     }
+
+    // Deterministic order, independent of the `parallel` feature (ADR 0018):
+    // the parallel per-verse phase collects in nondeterministic order, so sort
+    // by (sid, range start, rule) to make feature-on output byte-identical to
+    // serial. Cheap against the analysis: one O(n log n) over the findings.
+    out.sort_by(|a, b| {
+        (a.sid, a.range.start, a.code).cmp(&(b.sid, b.range.start, b.code))
+    });
 
     (out, stats)
 }
@@ -168,6 +303,30 @@ mod tests {
             min_samples,
         };
         cfg
+    }
+
+    /// Findings come back in a stable `(sid, range.start, code)` order
+    /// regardless of the `parallel` feature (ADR 0018), and analysis is
+    /// deterministic across runs. Under `--features parallel` this is the
+    /// real guard that the end-of-pipeline sort tames rayon's nondeterministic
+    /// collection order; under the serial default it pins the contract. The
+    /// cross-*build* equality (feature-on findings == feature-off findings) is
+    /// asserted in CI by running the suite under both feature sets.
+    #[test]
+    fn findings_are_sorted_and_deterministic() {
+        // A multi-verse, multi-book corpus that trips several default rules.
+        let mut target = mk("GEN", &["a  b", "x\ty", "p  q  r"]);
+        target.extend(mk("EXO", &["m  n", "\u{200b}lead"]));
+
+        let a = analyze(&target, None);
+        let b = analyze(&target, None);
+        assert_eq!(a, b, "analysis must be deterministic across runs");
+        assert!(a.len() >= 5, "expected several findings, got {}", a.len());
+
+        let keys: Vec<_> = a.iter().map(|f| (f.sid, f.range.start, f.code)).collect();
+        let mut sorted = keys.clone();
+        sorted.sort();
+        assert_eq!(keys, sorted, "findings must be in (sid, start, code) order");
     }
 
     #[test]

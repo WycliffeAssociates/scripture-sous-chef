@@ -5,5 +5,5 @@ import { __wbg_set_wasm } from "./sous_chef_web_bg.js";
 __wbg_set_wasm(wasm);
 wasm.__wbindgen_start();
 export {
-    analyze_vref
+    analyze_vref, analyze_vref_stateful, stats_remove_book
 } from "./sous_chef_web_bg.js";

@@ -83,11 +83,14 @@ fn bench_analyze(c: &mut Criterion) {
     g.finish();
 }
 
-/// What `analyze` would look like with the per-verse loop fanned out
-/// over rayon. Lives in the bench, not the library: the editor's wasm
-/// target is single-threaded, and serial Mode A is already inside every
-/// budget — this exists purely to quantify the native headroom (finding
-/// order differs; per-verse rules are `Sync` by contract).
+/// What `analyze` looks like with the per-verse loop fanned out over rayon —
+/// a perf probe quantifying native headroom (per-verse rules are `Sync` by
+/// contract). This now exists in the library proper behind the `parallel`
+/// feature (ADR 0018); it measures only the per-verse phase and asserts no
+/// correctness, so it can't drift the way a consumer copy did.
+// TODO: once a bench can build core with `--features parallel`, retire this
+// and bench `analyze` directly under the feature instead of mirroring the
+// phase here.
 fn analyze_par(target: &VerseMap, config: &Config) -> Vec<Finding> {
     let rules: Vec<_> = per_verse_rules()
         .into_iter()
@@ -122,8 +125,11 @@ fn bench_proportionality(c: &mut Criterion) {
 
     let mut g = c.benchmark_group("proportionality");
     g.throughput(Throughput::Elements(target.len() as u64));
+    // Proportionality ignores the char-class table; an empty one satisfies the
+    // signature without affecting the measurement.
+    let cc = ssc_core::charclass::CharClass::build(std::iter::empty::<&str>());
     g.bench_function("nt_vs_bible", |b| {
-        b.iter(|| rule.judge(&rule.reduce(black_box(&target), Some(black_box(&source)))))
+        b.iter(|| rule.judge(&rule.reduce(black_box(&target), Some(black_box(&source)), &cc)))
     });
     g.finish();
 }

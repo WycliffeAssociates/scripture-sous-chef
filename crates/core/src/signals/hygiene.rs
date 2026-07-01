@@ -11,7 +11,8 @@
 use std::collections::HashMap;
 
 use crate::diagnostics::{RuleId, Severity};
-use crate::rule::PerVerseRule;
+use crate::rule::{PerVerseRule, TokenRule};
+use crate::token::Token;
 use crate::script::{ScriptTag, script_of};
 use crate::span::Span;
 use crate::unicode::{
@@ -296,21 +297,21 @@ pub const MIXED_SCRIPT_IN_TOKEN: RuleId = RuleId::MixedScriptInToken;
 
 pub struct MixedScriptInToken;
 
-impl PerVerseRule for MixedScriptInToken {
+impl TokenRule for MixedScriptInToken {
     fn id(&self) -> RuleId {
         MIXED_SCRIPT_IN_TOKEN
     }
     fn severity(&self) -> Severity {
         Severity::Warning
     }
-    fn check(&self, text: &str) -> Vec<Span> {
-        scan_mixed_script_in_token(text)
+    fn check(&self, text: &str, tokens: &[Token]) -> Vec<Span> {
+        scan_mixed_script_in_token(text, tokens)
     }
 }
 
-pub fn scan_mixed_script_in_token(text: &str) -> Vec<Span> {
+pub fn scan_mixed_script_in_token(text: &str, tokens: &[Token]) -> Vec<Span> {
     let mut spans = Vec::new();
-    for token in crate::token::tokenize(text) {
+    for token in tokens {
         let mut first: Option<ScriptTag> = None;
         let mut mixed = false;
         for c in token.span.slice(text).chars() {
@@ -547,11 +548,17 @@ mod tests {
         assert!(scan_combining_mark_without_base("परमेश्वर").is_empty());
     }
 
+    /// Tokenize then scan — the runner now hands `scan_mixed_script_in_token`
+    /// its tokens, so the tests share one tokenization too.
+    fn mixed(text: &str) -> Vec<Span> {
+        scan_mixed_script_in_token(text, &crate::token::tokenize(text))
+    }
+
     #[test]
     fn mixed_script_homoglyph_flagged() {
         // Latin word with a Cyrillic 'а' in the middle.
         let text = "p\u{0430}ul said";
-        let f = scan_mixed_script_in_token(text);
+        let f = mixed(text);
         assert_eq!(f.len(), 1);
         assert_eq!(f[0].slice(text), "p\u{0430}ul");
     }
@@ -559,18 +566,18 @@ mod tests {
     #[test]
     fn mixed_script_math_bold_flagged() {
         // U+1D400 MATHEMATICAL BOLD CAPITAL A inside a Latin token.
-        let f = scan_mixed_script_in_token("\u{1D400}men");
+        let f = mixed("\u{1D400}men");
         assert_eq!(f.len(), 1);
     }
 
     #[test]
     fn single_script_tokens_clean() {
-        assert!(scan_mixed_script_in_token("an ordinary verse").is_empty());
-        assert!(scan_mixed_script_in_token("परमेश्वर ने कहा").is_empty());
+        assert!(mixed("an ordinary verse").is_empty());
+        assert!(mixed("परमेश्वर ने कहा").is_empty());
         // Digits/punct are Common — never count as a second script.
-        assert!(scan_mixed_script_in_token("40days a.m.").is_empty());
+        assert!(mixed("40days a.m.").is_empty());
         // Two scripts in two separate tokens is fine (quotation, gloss).
-        assert!(scan_mixed_script_in_token("word शब्द").is_empty());
+        assert!(mixed("word शब्द").is_empty());
     }
 
     #[test]

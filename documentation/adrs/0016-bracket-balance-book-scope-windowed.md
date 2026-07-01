@@ -79,6 +79,9 @@ here. Brackets are the warm-up for that engine.
   deleted (no compat shim — pre-alpha). The rule moves to its own module
   `signals/bracket_balance.rs`, mirroring `proportionality.rs`'s split as
   the first cross-map rule; `punctuation.rs` stays pure per-verse.
+- The book-grouping walk this rule introduced is extracted to
+  `verse::by_book(map) -> BTreeMap<BookId, Vec<(Sid, &str)>>` once a second
+  consumer appears (see the amendment below).
 - `RuleId::BracketBalance` / `"punct.bracket-balance"` identity is
   unchanged — only the scope and payload change.
 - The `FindingArgs` union and the `DelimObservation`/`DelimRole` types
@@ -87,3 +90,44 @@ here. Brackets are the warm-up for that engine.
 - Sets the template for book-scope **quote** balance (ADR 0011, deferred):
   same windowed walk, plus the direction heuristic quotes need and
   brackets don't.
+
+## Amendment (2026-06-30): `lex.duplicate-word` generalizes the book-scope move
+
+The reasoning above is not specific to brackets — it is the general claim that
+**the book is the true closure unit and the verse is an orthogonal
+versification overlay**. `lex.duplicate-word` had the same defect: a doubled
+word straddling a verse boundary (`\v 1 …the thing \v 2 thing was…`) is a
+real typo the per-verse rule could never see, and the verse split is arbitrary
+relative to the sentence. So the rule graduates the same way bracket-balance
+did, with two refinements specific to it:
+
+1. **`DuplicateWord` becomes a `ProjectRule`** that walks each book's verses in
+   canonical order via the now-shared `verse::by_book`. No window and no stack
+   are needed — duplication is strictly *adjacency of two word tokens*, so the
+   walk carries only the previous verse's last word token (its text + trailing
+   offset + sid). Far lighter than the bracket matcher.
+
+2. **Reset the carry at *chapter* boundaries, not just book boundaries.**
+   Bracket nesting legitimately spans chapters, so bracket-balance resets only
+   per book. Lexical adjacency does not: a word repeating across a `\c` break
+   is discourse reset, not a typo. So duplicate-word breaks its one-token carry
+   at every chapter boundary (and book boundaries fall out for free from the
+   per-book iteration).
+
+3. **Cross-verse findings anchor like bracket orphans.** The deletable token is
+   the *second* occurrence, so the `Finding`'s `sid`/`range` point at the second
+   word in its own verse and the first occurrence's verse rides in a new
+   `FindingArgs::DuplicateWord { first_sid }` (a `String`, exactly as
+   `DelimObservation.sid` is, because the partner lives in a different verse).
+   The common **within-verse** case is unchanged: one `range` spans both words
+   (`the the` highlighted whole), `args = None`.
+
+The gap test carries over for free: the whitespace-only-gap invariant that
+keeps `truly, truly` clean within a verse also keeps anadiplosis
+(`…the Lord. / The Lord is…`) clean across a boundary — the trailing `.` makes
+the gap non-whitespace. No config levers are added: the rule's precision rests
+on two baked invariants (whitespace-only gap, default-off enablement), and
+every candidate lever (case-sensitivity, cross-punctuation, reduplication
+allowlists) was rejected as either duplicating the punctuation gate or eroding
+the "every en/es ULB hit is a real typo" property; the per-project on/off
+switch is the only lever.

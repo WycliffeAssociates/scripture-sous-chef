@@ -3,11 +3,13 @@
 
 use unicode_segmentation::UnicodeSegmentation;
 
-use crate::diagnostics::{RuleId, Severity};
-use crate::rule::PerVerseRule;
+use crate::charclass::CharClass;
+use crate::diagnostics::{Finding, FindingArgs, RuleId, Severity};
+use crate::rule::{CharClassRule, PerVerseRule, ProjectTokenRule, TokenCache};
+use crate::sid::Sid;
 use crate::span::Span;
-use crate::token::tokenize;
-use crate::unicode::is_decimal_digit;
+use crate::token::{Token, tokenize};
+use crate::verse::{self, VerseMap};
 
 // ─────────────────────────────────────────────────────────────────────
 // Duplicate word
@@ -21,24 +23,147 @@ use crate::unicode::is_decimal_digit;
 /// hits per NT), so it ships **default-disabled**: enable it per
 /// project where doubling is unusual. See the deterministic-batch
 /// calibration report.
+///
+/// **Book scope, chapter reset (ADR 0016 amendment).** A doubled word can
+/// straddle a verse boundary (`\v 1 …the thing \v 2 thing was…`), which a
+/// per-verse matcher can never see, so the rule is a `ProjectRule` that
+/// walks each book's verses in canonical order via [`verse::by_book`]. It
+/// carries only the previous verse's last word token (adjacency is all
+/// duplication needs — no window, no stack), and **resets the carry at
+/// every chapter boundary**: a word repeating across a `\c` break is
+/// discourse reset, not a typo. The whitespace-only-gap invariant that
+/// keeps `truly, truly` clean within a verse also keeps anadiplosis
+/// (`…the Lord. / The Lord is…`) clean across a boundary — the trailing
+/// `.` makes the gap non-whitespace.
 pub const DUPLICATE_WORD: RuleId = RuleId::DuplicateWord;
 
 pub struct DuplicateWord;
 
-impl PerVerseRule for DuplicateWord {
+/// The previous verse's trailing word, carried across a verse boundary so
+/// the doubling check can straddle it. All borrows are into the `VerseMap`.
+struct Tail<'a> {
+    sid: Sid,
+    chapter: u16,
+    /// The verse's full text — needed to slice the gap after `last_end`.
+    text: &'a str,
+    /// Byte offset where the last word token ends.
+    last_end: usize,
+    /// The last word token's slice.
+    last_word: &'a str,
+}
+
+impl ProjectTokenRule for DuplicateWord {
     fn id(&self) -> RuleId {
         DUPLICATE_WORD
     }
-    fn severity(&self) -> Severity {
-        Severity::Warning
-    }
-    fn check(&self, text: &str) -> Vec<Span> {
-        scan_duplicate_word(text)
+
+    // Duplication is intrinsic to the target; the reference is irrelevant.
+    fn check(
+        &self,
+        target: &VerseMap,
+        _source: Option<&VerseMap>,
+        tokens: Option<&TokenCache>,
+    ) -> Vec<Finding> {
+        let mut out = Vec::new();
+        for verses in verse::by_book(target).values() {
+            check_book(verses, tokens, &mut out);
+        }
+        out
     }
 }
 
-pub fn scan_duplicate_word(text: &str) -> Vec<Span> {
-    let tokens = tokenize(text);
+/// Case-insensitive word equality **without allocating**. The old form
+/// `a.to_lowercase() == b.to_lowercase()` heap-allocated two `String`s for
+/// every adjacent pair; this folds case lazily and short-circuits on the
+/// first divergence (the common non-duplicate case).
+///
+/// - Byte-identical tokens (the overwhelming majority of real duplicates,
+///   any script) need no folding at all.
+/// - Pure-ASCII pairs fold via `eq_ignore_ascii_case`.
+/// - Otherwise compare the simple-lowercase char mappings element-wise.
+///   This matches `str::to_lowercase` except for the Greek final-sigma
+///   positional rule (Σ→ς vs σ), which can only change the result for two
+///   otherwise-identical words differing solely by sigma position — a case
+///   duplicate detection does not encounter.
+fn eq_ignore_case(a: &str, b: &str) -> bool {
+    if a == b {
+        return true;
+    }
+    if a.is_ascii() && b.is_ascii() {
+        return a.eq_ignore_ascii_case(b);
+    }
+    a.chars()
+        .flat_map(char::to_lowercase)
+        .eq(b.chars().flat_map(char::to_lowercase))
+}
+
+fn check_book(verses: &[(Sid, &str)], cache: Option<&TokenCache>, out: &mut Vec<Finding>) {
+    let mut tail: Option<Tail> = None;
+    for &(sid, text) in verses {
+        // Use the shared per-verse tokens when the runner built a cache;
+        // otherwise tokenize this verse ourselves (single-consumer case).
+        let owned;
+        let tokens: &[Token] = match cache {
+            Some(c) => c.get(&sid).map(Vec::as_slice).unwrap_or(&[]),
+            None => {
+                owned = tokenize(text);
+                &owned
+            }
+        };
+
+        // Cross-verse boundary: the carried last word meeting this verse's
+        // first word, with only whitespace (or a bare verse break) between
+        // them. Gated to the same chapter — adjacency does not cross `\c`.
+        if let (Some(t), Some(first)) = (&tail, tokens.first())
+            && t.chapter == sid.chapter
+        {
+            let prev_tail = &t.text[t.last_end..];
+            let head = &text[..first.span.start];
+            let gap_ws = prev_tail.chars().all(char::is_whitespace)
+                && head.chars().all(char::is_whitespace);
+            if gap_ws && eq_ignore_case(t.last_word, first.span.slice(text)) {
+                // Anchor the deletable second occurrence; the first lives in
+                // another verse, so it rides in args (ADR 0016 amendment).
+                out.push(Finding {
+                    sid,
+                    code: DUPLICATE_WORD,
+                    severity: Severity::Warning,
+                    range: first.span,
+                    score: None,
+                    args: Some(FindingArgs::DuplicateWord {
+                        first_sid: t.sid.to_string(),
+                    }),
+                });
+            }
+        }
+
+        // Within-verse doublings: one range spanning both words, no args.
+        for span in scan_verse(text, tokens) {
+            out.push(Finding {
+                sid,
+                code: DUPLICATE_WORD,
+                severity: Severity::Warning,
+                range: span,
+                score: None,
+                args: None,
+            });
+        }
+
+        // Carry this verse's last word forward; a verse with no word tokens
+        // (empty / punctuation-only) breaks adjacency — its content sits
+        // between any flanking words — so it clears the carry.
+        tail = tokens.last().map(|last| Tail {
+            sid,
+            chapter: sid.chapter,
+            text,
+            last_end: last.span.end,
+            last_word: last.span.slice(text),
+        });
+    }
+}
+
+/// Within-verse consecutive-duplicate spans, given the verse's tokens.
+fn scan_verse(text: &str, tokens: &[crate::token::Token]) -> Vec<Span> {
     let mut spans = Vec::new();
     for pair in tokens.windows(2) {
         let [a, b] = pair else { unreachable!() };
@@ -49,7 +174,7 @@ pub fn scan_duplicate_word(text: &str) -> Vec<Span> {
         }
         let wa = a.span.slice(text);
         let wb = b.span.slice(text);
-        if wa.to_lowercase() == wb.to_lowercase() {
+        if eq_ignore_case(wa, wb) {
             // Span both words so the editor shows the duplication whole.
             spans.push(Span {
                 start: a.span.start,
@@ -161,19 +286,19 @@ pub const REPEATED_CHARACTER_RUN: RuleId = RuleId::RepeatedCharacterRun;
 
 pub struct RepeatedCharacterRun;
 
-impl PerVerseRule for RepeatedCharacterRun {
+impl CharClassRule for RepeatedCharacterRun {
     fn id(&self) -> RuleId {
         REPEATED_CHARACTER_RUN
     }
     fn severity(&self) -> Severity {
         Severity::Info
     }
-    fn check(&self, text: &str) -> Vec<Span> {
-        scan_repeated_character_run(text)
+    fn check(&self, text: &str, cc: &CharClass) -> Vec<Span> {
+        scan_repeated_character_run(text, cc)
     }
 }
 
-pub fn scan_repeated_character_run(text: &str) -> Vec<Span> {
+pub fn scan_repeated_character_run(text: &str, cc: &CharClass) -> Vec<Span> {
     const THRESHOLD: usize = 3;
     let mut spans: Vec<Span> = Vec::new();
     let mut run_start: Option<usize> = None;
@@ -191,8 +316,8 @@ pub fn scan_repeated_character_run(text: &str) -> Vec<Span> {
 
     for (i, g) in text.grapheme_indices(true) {
         // Letter graphemes only — digit/punct runs are other rules' jobs.
-        let is_letter = g.chars().next().is_some_and(|c| c.is_alphabetic())
-            && !g.chars().any(is_decimal_digit);
+        let is_letter = g.chars().next().is_some_and(|c| cc.get(c).is_alphabetic())
+            && !g.chars().any(|c| cc.get(c).is_decimal_digit());
         if is_letter && g == run_cluster {
             run_len += 1;
             run_end = i + g.len();
@@ -221,9 +346,14 @@ pub fn scan_repeated_character_run(text: &str) -> Vec<Span> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sid::BookId;
 
+    /// Within-verse doublings, as slices of `text`.
     fn dw<'a>(text: &'a str) -> Vec<&'a str> {
-        scan_duplicate_word(text).iter().map(|s| s.slice(text)).collect()
+        scan_verse(text, &tokenize(text))
+            .iter()
+            .map(|s| s.slice(text))
+            .collect()
     }
 
     #[test]
@@ -253,6 +383,74 @@ mod tests {
     #[test]
     fn triple_word_flags_both_pairs() {
         assert_eq!(dw("go go go"), vec!["go go", "go go"]);
+    }
+
+    // ── Cross-verse (book-scope) behaviour ──────────────────────────────
+
+    fn sid(book: &str, ch: u16, v: u16) -> Sid {
+        Sid::new(BookId::from_str(book).unwrap(), ch, v)
+    }
+
+    /// Build a book from `(chapter, verse, text)` triples.
+    fn book(book: &str, verses: &[(u16, u16, &str)]) -> VerseMap {
+        verses
+            .iter()
+            .map(|&(c, v, t)| (sid(book, c, v), t.to_string()))
+            .collect()
+    }
+
+    fn check(vm: &VerseMap) -> Vec<Finding> {
+        DuplicateWord.check(vm, None, None)
+    }
+
+    #[test]
+    fn duplicate_across_verse_boundary_flags_second_word() {
+        let vm = book("GEN", &[(1, 1, "in the beginning thing"), (1, 2, "thing was here")]);
+        let f = check(&vm);
+        assert_eq!(f.len(), 1);
+        // Anchored to the deletable second occurrence in verse 2.
+        assert_eq!(f[0].sid, sid("GEN", 1, 2));
+        assert_eq!(f[0].range.slice(vm.get(&f[0].sid).unwrap()), "thing");
+        // The first occurrence's verse rides in args.
+        assert_eq!(
+            f[0].args,
+            Some(FindingArgs::DuplicateWord {
+                first_sid: "GEN 1:1".to_string()
+            })
+        );
+    }
+
+    #[test]
+    fn duplicate_across_chapter_boundary_is_clean() {
+        // Same word ending ch1 and opening ch2 — discourse reset, not a typo.
+        let vm = book("GEN", &[(1, 31, "and it was good"), (2, 1, "good were the heavens")]);
+        assert!(check(&vm).is_empty());
+    }
+
+    #[test]
+    fn anadiplosis_across_verse_boundary_is_clean() {
+        // Sentence punctuation in the gap (trailing ".") — not a doubling.
+        let vm = book("PSA", &[(1, 1, "I trust the Lord."), (1, 2, "Lord, hear me")]);
+        assert!(check(&vm).is_empty());
+    }
+
+    #[test]
+    fn empty_verse_between_breaks_adjacency() {
+        // The middle verse's content sits between the two "word"s.
+        let vm = book(
+            "GEN",
+            &[(1, 1, "a word"), (1, 2, "—"), (1, 3, "word again")],
+        );
+        assert!(check(&vm).is_empty());
+    }
+
+    #[test]
+    fn within_verse_still_flags_through_project_check() {
+        let vm = book("GEN", &[(1, 1, "in the the beginning")]);
+        let f = check(&vm);
+        assert_eq!(f.len(), 1);
+        assert_eq!(f[0].range.slice(vm.get(&f[0].sid).unwrap()), "the the");
+        assert_eq!(f[0].args, None);
     }
 
     fn po<'a>(text: &'a str) -> Vec<&'a str> {
@@ -295,7 +493,8 @@ mod tests {
     }
 
     fn rc<'a>(text: &'a str) -> Vec<&'a str> {
-        scan_repeated_character_run(text).iter().map(|s| s.slice(text)).collect()
+        let cc = CharClass::build(std::iter::once(text));
+        scan_repeated_character_run(text, &cc).iter().map(|s| s.slice(text)).collect()
     }
 
     #[test]

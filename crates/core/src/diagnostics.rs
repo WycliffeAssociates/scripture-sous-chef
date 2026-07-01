@@ -125,14 +125,6 @@ pub struct DelimObservation {
     pub matched: bool,
 }
 
-/// Structured message arguments — the additive payload ADR 0010 §6
-/// anticipated. A **closed** discriminated union, like `RuleId`: rules
-/// whose localised message interpolates values add a variant here, and
-/// the consumer's ICU layer renders from it. Never a rendered string.
-/// Deterministic no-interpolation rules carry `None` on the finding.
-///
-/// Not `Copy`: the `BracketWindow` payload owns a `Vec`. Findings are
-/// collected into `Vec`s and never copied on a hot path, so this costs
 /// Which distribution flagged a `prop.length-ratio` verse, with the robust
 /// z-score(s) that did. Modelled so a scope cannot exist without its
 /// score(s): `Both` carries both, the single scopes carry one. The sign of
@@ -146,6 +138,14 @@ pub enum LengthRatioScope {
     Both { book_z: f32, project_z: f32 },
 }
 
+/// Structured message arguments — the additive payload ADR 0010 §6
+/// anticipated. A **closed** discriminated union, like `RuleId`: rules
+/// whose localised message interpolates values add a variant here, and
+/// the consumer's ICU layer renders from it. Never a rendered string.
+/// Deterministic no-interpolation rules carry `None` on the finding.
+///
+/// Not `Copy`: the `BracketWindow` payload owns a `Vec`. Findings are
+/// collected into `Vec`s and never copied on a hot path, so this costs
 /// nothing real (ADR 0016).
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -167,6 +167,15 @@ pub enum FindingArgs {
     /// bracket context. The finding's `range` anchors the orphan itself.
     #[cfg_attr(feature = "serde", serde(rename = "bracket-window"))]
     BracketWindow { window: Vec<DelimObservation> },
+    /// `lex.duplicate-word`, **cross-verse** case only: the doubled word
+    /// straddles a verse boundary, so the finding anchors the deletable
+    /// *second* occurrence (its `sid`/`range`) and carries the *first*
+    /// occurrence's verse here (`first_sid` as the canonical `"GEN 1:1"`
+    /// string, like `DelimObservation.sid`, because it lives in a different
+    /// verse). The within-verse case carries `None`: its `range` already
+    /// spans both words. See ADR 0016 (amendment).
+    #[cfg_attr(feature = "serde", serde(rename = "duplicate-word"))]
+    DuplicateWord { first_sid: String },
 }
 
 /// One addressable content finding in one verse.

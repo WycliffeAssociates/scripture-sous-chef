@@ -12,6 +12,40 @@ export function analyze_vref(target, source, config) {
     const ret = wasm.analyze_vref(target, isLikeNone(source) ? 0 : addToExternrefTable0(source), isLikeNone(config) ? 0 : addToExternrefTable0(config));
     return ret;
 }
+
+/**
+ * Stateful analyze (ADR 0017). Same as [`analyze_vref`] but returns the
+ * corpus `Stats`; pass it back as `prior` along with only the edited
+ * verses in `target` to re-analyze incrementally — the changed books
+ * supersede their prior entries and stateful rules re-judge the whole
+ * corpus from the cache. Omit `prior` (and pass the whole corpus) on the
+ * first call.
+ * @param {VrefMap} target
+ * @param {VrefMap | null} [source]
+ * @param {SousConfig | null} [config]
+ * @param {Stats | null} [prior]
+ * @returns {Analysis}
+ */
+export function analyze_vref_stateful(target, source, config, prior) {
+    const ret = wasm.analyze_vref_stateful(target, isLikeNone(source) ? 0 : addToExternrefTable0(source), isLikeNone(config) ? 0 : addToExternrefTable0(config), isLikeNone(prior) ? 0 : addToExternrefTable0(prior));
+    return ret;
+}
+
+/**
+ * Drop a book from cached `Stats` (e.g. it was removed from the project),
+ * returning the updated stats — the sanctioned deletion path so callers
+ * don't mutate the opaque value's internals. `book` is a 3-letter USFM code
+ * (e.g. `"GEN"`); an unknown code is a no-op.
+ * @param {Stats} stats
+ * @param {string} book
+ * @returns {Stats}
+ */
+export function stats_remove_book(stats, book) {
+    const ptr0 = passStringToWasm0(book, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.stats_remove_book(stats, ptr0, len0);
+    return ret;
+}
 export function __wbg___wbindgen_is_undefined_244a92c34d3b6ec0(arg0) {
     const ret = arg0 === undefined;
     return ret;

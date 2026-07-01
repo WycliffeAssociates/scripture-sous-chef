@@ -36,13 +36,14 @@ use std::collections::BTreeMap;
 
 use unicode_segmentation::UnicodeSegmentation;
 
+use crate::charclass::CharClass;
 use crate::config::CasingConfig;
 use crate::diagnostics::{Finding, RuleId, Severity};
 use crate::rule::StatefulRule;
-use crate::sid::{BookId, Sid};
+use crate::sid::Sid;
 use crate::span::Span;
 use crate::stats::RuleStats;
-use crate::verse::VerseMap;
+use crate::verse::{self, VerseMap};
 
 pub const SENTENCE_INITIAL_LOWERCASE: RuleId = RuleId::SentenceInitialLowercase;
 
@@ -57,18 +58,44 @@ struct Tally {
 
 /// A flag candidate: a lowercase token observed after a terminal glyph.
 /// Retained so `judge` can emit findings without re-scanning the text.
-/// Wire-friendly by design — a canonical `sid` string and `u32` byte
-/// offsets, not `Sid`/`Span` — so `Stats` round-trips across the wasm
-/// boundary as a typed value the shell holds opaquely (ADR 0017).
+///
+/// `sid` is a `Copy` [`Sid`] natively — building it costs nothing in the hot
+/// `reduce` loop and `judge` reads it back directly — yet it still crosses
+/// the wasm boundary as the canonical `"GEN 1:1"` **string** (via
+/// [`sid_as_string`] + the tsify `type` override), so `Stats` round-trips as
+/// a typed value the shell holds opaquely with no hand-rolled wrapper
+/// (ADR 0017). The string is materialised only when serde actually
+/// serialises — never on the native analysis path.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 struct LowerSite {
-    sid: String,
+    #[cfg_attr(feature = "serde", serde(with = "sid_as_string"))]
+    #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+    sid: Sid,
     /// Byte offsets of the lowercase grapheme within its verse.
     start: u32,
     end: u32,
     glyph: char,
+}
+
+/// Serialize a [`Sid`] as its canonical `"GEN 1:1"` string and parse it
+/// back, so a `Copy` `Sid` field round-trips across the wire as a string
+/// (matching `Finding`'s and `DelimObservation`'s string sids) without the
+/// native side ever paying a `String` allocation outside serialization.
+#[cfg(feature = "serde")]
+mod sid_as_string {
+    use crate::sid::Sid;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub(super) fn serialize<S: Serializer>(sid: &Sid, ser: S) -> Result<S::Ok, S::Error> {
+        ser.collect_str(sid)
+    }
+
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(de: D) -> Result<Sid, D::Error> {
+        let s = String::deserialize(de)?;
+        Sid::parse(&s).ok_or_else(|| serde::de::Error::custom("invalid sid"))
+    }
 }
 
 /// One book's contribution: the per-glyph counts, the lowercase flag
@@ -117,18 +144,15 @@ impl StatefulRule for SentenceInitialLowercase {
         SENTENCE_INITIAL_LOWERCASE
     }
 
-    fn reduce(&self, map: &VerseMap, _source: Option<&VerseMap>) -> RuleStats {
-        // Group by book, preserving canonical (chapter, verse) order — the
-        // `BTreeMap<Sid, _>` iteration already yields it.
-        let mut books: BTreeMap<BookId, Vec<(Sid, &str)>> = BTreeMap::new();
-        for (sid, text) in map {
-            books.entry(sid.book).or_default().push((*sid, text.as_str()));
-        }
+    fn reduce(&self, map: &VerseMap, _source: Option<&VerseMap>, cc: &CharClass) -> RuleStats {
+        // The runner supplies one fused char-classification table (ADR 0020),
+        // shared with the other char-walking rules, so the per-grapheme scan
+        // below does a single lookup instead of ~five std predicate calls.
         let mut stats = CasingStats::default();
-        for (book, verses) in books {
+        for (book, verses) in verse::by_book(map) {
             stats
                 .per_book
-                .insert(book.as_str().to_string(), reduce_book(&verses));
+                .insert(book.as_str().to_string(), reduce_book(&verses, cc));
         }
         RuleStats::Casing(stats)
     }
@@ -170,12 +194,8 @@ impl StatefulRule for SentenceInitialLowercase {
                 }
                 let p = t.upper as f32 / t.total as f32;
                 if p > self.cfg.threshold {
-                    // Parse the canonical sid only for the sites that fire.
-                    let Some(sid) = Sid::parse(&site.sid) else {
-                        continue;
-                    };
                     out.push(Finding {
-                        sid,
+                        sid: site.sid,
                         code: SENTENCE_INITIAL_LOWERCASE,
                         severity: Severity::Info,
                         range: Span {
@@ -197,7 +217,7 @@ impl StatefulRule for SentenceInitialLowercase {
 /// lowercase flag candidates. A terminal glyph found at a verse's tail is
 /// carried as `pending` across the seam to the next verse — verse
 /// boundaries are transparent to sentence detection.
-fn reduce_book(verses: &[(Sid, &str)]) -> BookCasing {
+fn reduce_book(verses: &[(Sid, &str)], cc: &CharClass) -> BookCasing {
     let mut bc = BookCasing::default();
     // A terminal glyph attached to a preceding letter, awaiting the next
     // letter (which may be in the next verse), plus whether any punctuation
@@ -211,9 +231,16 @@ fn reduce_book(verses: &[(Sid, &str)]) -> BookCasing {
 
         for (off, g) in text.grapheme_indices(true) {
             let c = g.chars().next().unwrap();
-            if c.is_alphabetic() {
+            // Classify the base scalar once. A cased letter is necessarily
+            // alphabetic, so `lower || upper` short-circuits the (table-backed)
+            // `is_alphabetic` lookup for the common Latin case; the two case
+            // queries are computed once and reused below.
+            let cl = cc.get(c);
+            let lower = cl.is_lowercase();
+            let upper = cl.is_uppercase();
+            if cl.is_alphabetic() {
                 bc.total_letters += 1;
-                if c.is_lowercase() != c.is_uppercase() {
+                if lower != upper {
                     bc.cased_letters += 1;
                 }
                 if let Some((glyph, intervening)) = pending.take() {
@@ -227,11 +254,11 @@ fn reduce_book(verses: &[(Sid, &str)]) -> BookCasing {
                     if !intervening {
                         let t = bc.counts.entry(glyph).or_default();
                         t.total += 1;
-                        if c.is_uppercase() {
+                        if upper {
                             t.upper += 1;
-                        } else if c.is_lowercase() {
+                        } else if lower {
                             bc.lower_sites.push(LowerSite {
-                                sid: sid.to_string(),
+                                sid: *sid,
                                 start: off as u32,
                                 end: (off + g.len()) as u32,
                                 glyph,
@@ -242,7 +269,7 @@ fn reduce_book(verses: &[(Sid, &str)]) -> BookCasing {
                     }
                 }
                 prev_letter = true;
-            } else if c.is_whitespace() || c.is_numeric() {
+            } else if cl.is_whitespace() || cl.is_numeric() {
                 // Whitespace/digits sit between a terminal and the next
                 // token; `pending` waits through them.
                 prev_letter = false;
@@ -265,6 +292,7 @@ fn reduce_book(verses: &[(Sid, &str)]) -> BookCasing {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sid::BookId;
 
     fn rule(threshold: f32, min_samples: u32) -> SentenceInitialLowercase {
         SentenceInitialLowercase {
@@ -286,8 +314,12 @@ mod tests {
             .collect()
     }
 
+    fn cc(map: &VerseMap) -> CharClass {
+        CharClass::build(map.values().map(String::as_str))
+    }
+
     fn run(map: &VerseMap, r: &SentenceInitialLowercase) -> Vec<Finding> {
-        r.judge(&r.reduce(map, None))
+        r.judge(&r.reduce(map, None, &cc(map)))
     }
 
     #[test]
@@ -365,13 +397,13 @@ mod tests {
         let mut verses: Vec<(u16, &str)> = (1..=10).map(|v| (v, "He spoke. Then he left.")).collect();
         verses.push((11, "He spoke. then he left."));
         let dirty = book("GEN", &verses);
-        let prior = r.reduce(&dirty, None);
+        let prior = r.reduce(&dirty, None, &cc(&dirty));
         assert_eq!(r.judge(&prior).len(), 1);
 
         let mut fixed = verses.clone();
         fixed[10] = (11, "He spoke. Then he left."); // the fix
         let fixed_map = book("GEN", &fixed);
-        let merged = prior.merge(r.reduce(&fixed_map, None));
+        let merged = prior.merge(r.reduce(&fixed_map, None, &cc(&fixed_map)));
         assert!(r.judge(&merged).is_empty());
     }
 }

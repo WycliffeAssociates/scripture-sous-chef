@@ -17,12 +17,24 @@
 //! execution cadence (every keystroke vs on save) is the orchestrator's.
 //! There is deliberately no hot/cold tier in the type system.
 
+use std::collections::HashMap;
+
+use crate::charclass::CharClass;
 use crate::config::Config;
 use crate::diagnostics::{Finding, RuleId, Severity};
+use crate::sid::Sid;
 use crate::signals;
 use crate::span::Span;
 use crate::stats::RuleStats;
+use crate::token::Token;
 use crate::verse::VerseMap;
+
+/// Per-verse word tokenizations, keyed by `Sid`, computed once per analyze
+/// and shared by every token-consuming rule so the corpus is tokenized a
+/// single time instead of once per rule (the UAX #29 word scan is a top
+/// cost on space-free and non-Latin scripts). Built only when ≥2 token
+/// consumers are enabled — see `analyze_stateful`.
+pub type TokenCache = HashMap<Sid, Vec<Token>>;
 
 pub trait PerVerseRule: Sync {
     fn id(&self) -> RuleId;
@@ -30,9 +42,41 @@ pub trait PerVerseRule: Sync {
     fn check(&self, text: &str) -> Vec<Span>;
 }
 
+/// A per-verse rule that works over the verse's **word tokens** (UAX #29).
+/// The runner supplies the tokens — from the shared [`TokenCache`] when one
+/// was built, else freshly tokenized — so the rule never tokenizes itself.
+pub trait TokenRule: Sync {
+    fn id(&self) -> RuleId;
+    fn severity(&self) -> Severity;
+    fn check(&self, text: &str, tokens: &[Token]) -> Vec<Span>;
+}
+
+/// A per-verse rule that walks characters and needs their fused
+/// classification (letter? cased? digit? …). The runner supplies a
+/// [`CharClass`] built once per analyze, so the rule does one table lookup
+/// per char instead of several std predicate calls (ADR 0020).
+pub trait CharClassRule: Sync {
+    fn id(&self) -> RuleId;
+    fn severity(&self) -> Severity;
+    fn check(&self, text: &str, cc: &CharClass) -> Vec<Span>;
+}
+
 pub trait ProjectRule: Sync {
     fn id(&self) -> RuleId;
     fn check(&self, target: &VerseMap, source: Option<&VerseMap>) -> Vec<Finding>;
+}
+
+/// A project-scoped rule that also consults per-verse tokens (e.g.
+/// cross-verse duplicate-word). Receives the shared [`TokenCache`] when one
+/// was built; when `None` it tokenizes the verses it needs itself.
+pub trait ProjectTokenRule: Sync {
+    fn id(&self) -> RuleId;
+    fn check(
+        &self,
+        target: &VerseMap,
+        source: Option<&VerseMap>,
+        tokens: Option<&TokenCache>,
+    ) -> Vec<Finding>;
 }
 
 /// A rule that **observes** the corpus into `RuleStats`, then **judges**
@@ -43,7 +87,7 @@ pub trait ProjectRule: Sync {
 /// in the caller, not the rule.
 pub trait StatefulRule: Sync {
     fn id(&self) -> RuleId;
-    fn reduce(&self, map: &VerseMap, source: Option<&VerseMap>) -> RuleStats;
+    fn reduce(&self, map: &VerseMap, source: Option<&VerseMap>, cc: &CharClass) -> RuleStats;
     fn judge(&self, stats: &RuleStats) -> Vec<Finding>;
 }
 
@@ -59,17 +103,26 @@ pub fn per_verse_rules() -> Vec<Box<dyn PerVerseRule>> {
         Box::new(signals::hygiene::EmptyVerse),
         Box::new(signals::hygiene::InvalidCodepoint),
         Box::new(signals::hygiene::CombiningMarkWithoutBase),
-        Box::new(signals::hygiene::MixedScriptInToken),
         Box::new(signals::hygiene::MixedNumeralSystems),
         Box::new(signals::structural::SourceMarkerLeftover),
         Box::new(signals::structural::MergeConflictMarker),
         Box::new(signals::punctuation::RepeatedPunct),
         Box::new(signals::punctuation::PlaceholderLeftover),
         Box::new(signals::punctuation::SpaceBeforePunct),
-        Box::new(signals::lexical::DuplicateWord),
         Box::new(signals::lexical::PunctOnlyToken),
-        Box::new(signals::lexical::RepeatedCharacterRun),
     ]
+}
+
+/// Every per-verse rule that consumes the fused [`CharClass`]. Kept out of
+/// `per_verse_rules` so the runner hands them one shared classification table.
+pub fn char_class_rules() -> Vec<Box<dyn CharClassRule>> {
+    vec![Box::new(signals::lexical::RepeatedCharacterRun)]
+}
+
+/// Every token-consuming per-verse rule. Kept out of `per_verse_rules` so the
+/// runner can hand them shared tokens instead of each one re-tokenizing.
+pub fn token_rules() -> Vec<Box<dyn TokenRule>> {
+    vec![Box::new(signals::hygiene::MixedScriptInToken)]
 }
 
 /// Every project-scoped rule wired in by default. Knob-bearing rules are
@@ -79,6 +132,11 @@ pub fn project_rules(config: &Config) -> Vec<Box<dyn ProjectRule>> {
     vec![Box::new(signals::bracket_balance::BracketBalance {
         cfg: config.bracket_balance,
     })]
+}
+
+/// Project-scoped rules that also consult per-verse tokens.
+pub fn project_token_rules() -> Vec<Box<dyn ProjectTokenRule>> {
+    vec![Box::new(signals::lexical::DuplicateWord)]
 }
 
 /// Every stateful (observe-then-judge) rule wired in, constructed from
