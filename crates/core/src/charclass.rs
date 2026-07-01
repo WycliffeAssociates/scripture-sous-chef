@@ -1,35 +1,63 @@
-//! Fused per-character classification (ADR 0020).
+//! Fused per-character classification (ADR 0020, amended by 0021 and 0022).
 //!
-//! The char-walking rules (casing, repeated-character-run) ask several
-//! Unicode questions per grapheme — is it a letter? cased? whitespace? a
-//! digit? Each std `char` predicate is a separate table lookup, and on
-//! non-ASCII text (Devanagari, Thai, CJK …) that's ~five table walks per
-//! character. This module answers all of them in **one** lookup by packing
-//! the answers into a [`Class`] byte, precomputed per distinct character into
-//! a small two-level [`CharClass`] table.
+//! The char-walking rules ask several Unicode questions per grapheme — is it a
+//! letter? cased? a digit? a mark/punctuation/symbol? which script? — and the
+//! grapheme segmenter ([`crate::grapheme`]) asks grapheme-break questions — does
+//! this scalar glue to the previous cluster? does it need the full UAX-#29
+//! rules? This module answers **all** of them in one lookup by packing the
+//! answers into a [`Class`] `u32` (flag bits + an 8-bit script lane) and reading
+//! it from a single static table.
 //!
-//! The table is built **per analyze** over the text being analyzed (a page is
-//! allocated only for a codepoint block the text actually uses), so it is a
-//! few KB — not the 128 KB a flat `[_; 0x10000]` would need — and carries no
-//! process-global or per-corpus resident state. See ADR 0020 for the
-//! flat-table and stateful-reuse alternatives that were weighed and deferred.
+//! **Why static, not per-analyze (amending ADR 0020).** ADR 0020 backed this
+//! with a per-analyze trie because casing bits are std predicates, computable
+//! per-char from nothing. Grapheme-break and script bits (`Extend`/`Prepend`/
+//! `InCB`/script identity …) are *not* computable from `std` and are not
+//! exposed by `unicode-segmentation`; they can only come from committed Unicode
+//! property data, resident in the binary. Once that data must be resident to
+//! segment at all, a per-analyze rebuild earns nothing — so the fused `u32`
+//! table is built **once** at first use from the compact committed range table
+//! ([`crate::charclass_table`], generated offline from UCD 17.0 + the
+//! `unicode-*` crates). The `.wasm` grows only by the ranges (~tens of KB); the
+//! flat BMP table is a ~256 KB heap allocation (`u32 × 65536`) for process life.
+//! See ADR 0022 for the u32-vs-parallel-byte-table reasoning.
 
-/// Packed per-character classification bits. Only specific bits are queried,
-/// so the internal [`COMPUTED`] marker is inert to callers.
+use std::sync::OnceLock;
+
+use crate::charclass_table::CLASS_RANGES;
+use crate::script::{self, ScriptTag};
+
+/// Packed per-character classification (ADR 0020/0021/0022): casing + lexical
+/// booleans and grapheme-break bits in the flag lanes, the coarse script tag in
+/// bits 16..=23. One `class_of` read answers every per-char question a rule
+/// asks. Only specific fields are queried by each consumer.
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub struct Class(u8);
+pub struct Class(u32);
 
-const ALPHA: u8 = 1 << 0;
-const LOWER: u8 = 1 << 1;
-const UPPER: u8 = 1 << 2;
-const WHITESPACE: u8 = 1 << 3;
-const NUMERIC: u8 = 1 << 4;
-const DECIMAL: u8 = 1 << 5;
-// bit 6 reserved — e.g. a future `clinging` flag (closing quotes/brackets).
-/// Set on every classified cell so a char whose real bits are 0 (no flags)
-/// still reads non-zero — otherwise the build can't tell "unfilled" from
-/// "classified as none" and would re-classify it on every occurrence.
-const COMPUTED: u8 = 1 << 7;
+// Casing / lexical bits.
+const ALPHA: u32 = 1 << 0;
+const LOWER: u32 = 1 << 1;
+const UPPER: u32 = 1 << 2;
+const WHITESPACE: u32 = 1 << 3;
+const NUMERIC: u32 = 1 << 4;
+const DECIMAL: u32 = 1 << 5;
+// bit 6 reserved — a future `clinging` flag (closing quotes/brackets).
+
+// Grapheme-break bits, consumed by `crate::grapheme` (ADR 0021).
+const EXTENDER: u32 = 1 << 8; // GCB ∈ {Extend, SpacingMark, ZWJ}: glue to prev
+const COMPLEX: u32 = 1 << 9; // needs the full UAX-#29 rules -> fallback
+const INCB_CONSONANT: u32 = 1 << 10; // InCB=Consonant (GB9c conjunct base)
+const INCB_LINKER: u32 = 1 << 11; // InCB=Linker (virama): arms a conjunct join
+const INCB_MARK: u32 = 1 << 12; // InCB ∈ {Extend, Linker}: allowed in the gap
+
+// General_Category-group bits (ADR 0022), backing `crate::unicode`'s predicates.
+const MARK: u32 = 1 << 13; // group Mark (Mn/Mc/Me)
+const PUNCT: u32 = 1 << 14; // group Punctuation (P*)
+const SYMBOL: u32 = 1 << 15; // group Symbol (S*)
+
+// Coarse script tag (ADR 0015/0022) packed into bits 16..=23: 0 = None,
+// otherwise a `ScriptTag` discriminant (see `crate::script::from_repr`).
+const SCRIPT_SHIFT: u32 = 16;
+const SCRIPT_MASK: u32 = 0xFF << SCRIPT_SHIFT;
 
 impl Class {
     #[inline]
@@ -56,80 +84,102 @@ impl Class {
     pub fn is_decimal_digit(self) -> bool {
         self.0 & DECIMAL != 0
     }
+
+    // General_Category-group queries (ADR 0022).
+    #[inline]
+    pub fn is_mark(self) -> bool {
+        self.0 & MARK != 0
+    }
+    #[inline]
+    pub fn is_punctuation(self) -> bool {
+        self.0 & PUNCT != 0
+    }
+    #[inline]
+    pub fn is_symbol(self) -> bool {
+        self.0 & SYMBOL != 0
+    }
+
+    /// The coarse script tag, or `None` for `Common`/`Inherited`/untracked.
+    #[inline]
+    pub fn script(self) -> Option<ScriptTag> {
+        script::from_repr(((self.0 & SCRIPT_MASK) >> SCRIPT_SHIFT) as u8)
+    }
+
+    // Grapheme-break queries — crate-internal, for the segmenter.
+    #[inline]
+    pub(crate) fn is_extender(self) -> bool {
+        self.0 & EXTENDER != 0
+    }
+    #[inline]
+    pub(crate) fn is_complex(self) -> bool {
+        self.0 & COMPLEX != 0
+    }
+    #[inline]
+    pub(crate) fn is_incb_consonant(self) -> bool {
+        self.0 & INCB_CONSONANT != 0
+    }
+    #[inline]
+    pub(crate) fn is_incb_linker(self) -> bool {
+        self.0 & INCB_LINKER != 0
+    }
+    #[inline]
+    pub(crate) fn is_incb_mark(self) -> bool {
+        self.0 & INCB_MARK != 0
+    }
 }
 
-/// Compute a character's bits from the std/UCD predicates. Called once per
-/// distinct char at build time (and directly for the rare astral fallback).
-fn classify(c: char) -> u8 {
-    let mut b = COMPUTED;
-    if c.is_alphabetic() {
-        b |= ALPHA;
-    }
-    if c.is_lowercase() {
-        b |= LOWER;
-    }
-    if c.is_uppercase() {
-        b |= UPPER;
-    }
-    if c.is_whitespace() {
-        b |= WHITESPACE;
-    }
-    if c.is_numeric() {
-        b |= NUMERIC;
-    }
-    if crate::unicode::is_decimal_digit(c) {
-        b |= DECIMAL;
-    }
-    b
+/// The fused table: a flat BMP array (one indexed read) plus the sorted astral
+/// ranges (binary-searched by the vanishingly rare astral char). Built once
+/// from [`CLASS_RANGES`].
+struct Table {
+    bmp: Box<[u32]>,              // len 0x10000
+    astral: Vec<(u32, u32, u32)>, // sorted, non-overlapping
 }
 
-/// Two-level page table over the Basic Multilingual Plane: the high byte of a
-/// codepoint selects a 256-byte block, the low byte indexes within it. Only
-/// pages the input actually uses get a block, so a single-script corpus needs
-/// ~1–3 KB. Astral codepoints (≥ U+10000) — vanishingly rare in scripture —
-/// take a direct `classify` fallback rather than a fourth plane of table.
-pub struct CharClass {
-    index: Vec<u16>,        // 256 page slots -> block id (0 = shared zero block)
-    blocks: Vec<[u8; 256]>, // block 0 is all-zero
-}
+static TABLE: OnceLock<Table> = OnceLock::new();
 
-impl CharClass {
-    /// Build a table covering every character in `texts`, classifying each
-    /// distinct scalar exactly once.
-    pub fn build<'a>(texts: impl Iterator<Item = &'a str>) -> CharClass {
-        let mut index = vec![0u16; 256];
-        let mut blocks: Vec<[u8; 256]> = vec![[0u8; 256]];
-        for text in texts {
-            for c in text.chars() {
-                let cp = c as u32;
-                if cp >= 0x10000 {
-                    continue; // astral -> direct fallback in `get`
-                }
-                let page = (cp >> 8) as usize;
-                let off = (cp & 0xFF) as usize;
-                let mut bid = index[page] as usize;
-                if bid == 0 {
-                    blocks.push([0u8; 256]);
-                    bid = blocks.len() - 1;
-                    index[page] = bid as u16;
-                }
-                if blocks[bid][off] == 0 {
-                    blocks[bid][off] = classify(c);
+fn table() -> &'static Table {
+    TABLE.get_or_init(|| {
+        let mut bmp = vec![0u32; 0x10000].into_boxed_slice();
+        let mut astral: Vec<(u32, u32, u32)> = Vec::new();
+        for &(lo, hi, bits) in CLASS_RANGES {
+            let bmp_hi = hi.min(0xFFFF);
+            if lo <= 0xFFFF {
+                for cp in lo..=bmp_hi {
+                    bmp[cp as usize] = bits;
                 }
             }
+            if hi >= 0x10000 {
+                astral.push((lo.max(0x10000), hi, bits));
+            }
         }
-        CharClass { index, blocks }
-    }
+        Table { bmp, astral }
+    })
+}
 
-    /// The classification of `c` — one table read for BMP chars.
-    #[inline]
-    pub fn get(&self, c: char) -> Class {
-        let cp = c as u32;
-        if cp < 0x10000 {
-            Class(self.blocks[self.index[(cp >> 8) as usize] as usize][(cp & 0xFF) as usize])
-        } else {
-            Class(classify(c))
-        }
+/// The fused classification of `c` — one table read for the BMP (every char
+/// our corpora use bar one emoji), a binary search over astral ranges otherwise.
+#[inline]
+pub fn class_of(c: char) -> Class {
+    let cp = c as u32;
+    let t = table();
+    if cp < 0x10000 {
+        Class(t.bmp[cp as usize])
+    } else {
+        let bits = t
+            .astral
+            .binary_search_by(|&(lo, hi, _)| {
+                use std::cmp::Ordering::*;
+                if cp < lo {
+                    Greater
+                } else if cp > hi {
+                    Less
+                } else {
+                    Equal
+                }
+            })
+            .map_or(0, |i| t.astral[i].2);
+        Class(bits)
     }
 }
 
@@ -137,14 +187,19 @@ impl CharClass {
 mod tests {
     use super::*;
 
-    /// The fused table must agree with the std predicates for every char it
-    /// was built over — including combining marks, digits, and astral.
+    /// The fused table must agree with the std predicates for a spread of
+    /// scripts — letters, digits, combining marks, and astral.
     #[test]
     fn matches_std_predicates() {
-        let sample = "Aa1 .;Ελληνικά देवनागरी ๗ไทย \u{0301}\u{0E48}𝐀🙏";
-        let cc = CharClass::build(std::iter::once(sample));
+        use unicode_properties::{
+            GeneralCategory, GeneralCategoryGroup, UnicodeGeneralCategory,
+        };
+        // Includes numeric-but-not-decimal chars (½ U+00BD No, Ⅷ U+2167 Nl,
+        // ² U+00B2 No) so NUMERIC and DECIMAL are exercised independently, and
+        // a spread of category/script cases.
+        let sample = "Aa1 .;+$½Ⅷ²Ελληνικά देवनागरी ๗ไทย \u{0301}\u{0E48}𝐀🙏";
         for c in sample.chars() {
-            let cl = cc.get(c);
+            let cl = class_of(c);
             assert_eq!(cl.is_alphabetic(), c.is_alphabetic(), "alpha {c:?}");
             assert_eq!(cl.is_lowercase(), c.is_lowercase(), "lower {c:?}");
             assert_eq!(cl.is_uppercase(), c.is_uppercase(), "upper {c:?}");
@@ -152,20 +207,35 @@ mod tests {
             assert_eq!(cl.is_numeric(), c.is_numeric(), "numeric {c:?}");
             assert_eq!(
                 cl.is_decimal_digit(),
-                crate::unicode::is_decimal_digit(c),
+                c.general_category() == GeneralCategory::DecimalNumber,
                 "decimal {c:?}"
             );
+            let g = c.general_category_group();
+            assert_eq!(cl.is_mark(), g == GeneralCategoryGroup::Mark, "mark {c:?}");
+            assert_eq!(
+                cl.is_punctuation(),
+                g == GeneralCategoryGroup::Punctuation,
+                "punct {c:?}"
+            );
+            assert_eq!(cl.is_symbol(), g == GeneralCategoryGroup::Symbol, "symbol {c:?}");
+            assert_eq!(cl.script(), crate::script::script_from_unicode(c), "script {c:?}");
         }
     }
 
-    /// A char whose real bits are 0 (no flags) must still classify once and
-    /// read back as all-false — the COMPUTED marker must stay inert.
+    /// A math-alphanumeric letter (astral, U+1D400 𝐀) is upper+alphabetic —
+    /// exercises the astral binary-search path.
     #[test]
-    fn zero_classification_reads_all_false() {
-        // U+0E48 THAI CHARACTER MAI EK — a tone mark: not alpha/case/ws/digit.
-        let cc = CharClass::build(std::iter::once("\u{0E48}"));
-        let cl = cc.get('\u{0E48}');
-        assert!(!cl.is_alphabetic() && !cl.is_lowercase() && !cl.is_uppercase());
-        assert!(!cl.is_whitespace() && !cl.is_numeric() && !cl.is_decimal_digit());
+    fn astral_letter_classifies() {
+        let cl = class_of('𝐀');
+        assert!(cl.is_alphabetic() && cl.is_uppercase() && !cl.is_lowercase());
+    }
+
+    /// A tone mark with no casing/lexical bits still reads all-false there,
+    /// while carrying its grapheme-break bit (Thai MAI EK is an Extend).
+    #[test]
+    fn zero_lexical_still_has_grapheme_bits() {
+        let cl = class_of('\u{0E48}');
+        assert!(!cl.is_alphabetic() && !cl.is_numeric() && !cl.is_decimal_digit());
+        assert!(cl.is_extender());
     }
 }

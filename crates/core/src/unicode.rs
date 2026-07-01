@@ -53,84 +53,31 @@ pub fn is_c1_control(c: char) -> bool {
     matches!(c as u32, 0x7F..=0x9F)
 }
 
-/// True if `c` has a Unicode case distinction (uppercase or lowercase).
-/// Used by rules that observe capitalisation conventions; caseless
-/// scripts (Devanagari, CJK, Arabic, Hebrew, Thai, …) return `false`,
-/// which lets convention-learning rules self-disable for those
-/// scripts naturally.
-pub fn is_cased(c: char) -> bool {
-    c.is_uppercase() || c.is_lowercase()
-}
+// These General_Category predicates read the fused `Class` table (ADR 0022):
+// one array index instead of a `unicode-properties` range-table binary search
+// per non-ASCII char. The table is generated from the same UCD categories, so
+// answers are identical — the hand-curated ASCII arms are no longer needed.
 
-// ASCII fast paths: `unicode-properties` resolves every General Category
-// query through a binary search over range tables, even for the ASCII
-// codepoints that dominate most text. We know ASCII's categories at
-// compile time, so branch them out ahead of the bsearch. The non-ASCII
-// arm is unchanged, so behaviour is identical — only faster for c < 0x80.
-
-/// Combining mark (General_Category group Mark: Mn / Mc / Me). Backed by
-/// `unicode-properties` — we deliberately do not hand-roll mark ranges.
+/// Combining mark (General_Category group Mark: Mn / Mc / Me).
 pub fn is_combining_mark(c: char) -> bool {
-    if c.is_ascii() {
-        return false; // No ASCII codepoint is a combining mark.
-    }
-    use unicode_properties::{GeneralCategoryGroup, UnicodeGeneralCategory};
-    c.general_category_group() == GeneralCategoryGroup::Mark
+    crate::charclass::class_of(c).is_mark()
 }
 
-/// Punctuation (General_Category group P).
+/// Punctuation (General_Category group P). Narrower than
+/// `char::is_ascii_punctuation`, which also counts the Symbol chars
+/// `$ + < = > ^ \` | ~`.
 pub fn is_punctuation(c: char) -> bool {
-    if c.is_ascii() {
-        // ASCII General_Category P* (Po/Ps/Pe/Pd/Pc). Note this is
-        // narrower than `char::is_ascii_punctuation`, which also counts
-        // `$ + < = > ^ \` | ~` — those are Symbol, not Punctuation.
-        return matches!(
-            c,
-            '!' | '"'
-                | '#'
-                | '%'
-                | '&'
-                | '\''
-                | '('
-                | ')'
-                | '*'
-                | ','
-                | '-'
-                | '.'
-                | '/'
-                | ':'
-                | ';'
-                | '?'
-                | '@'
-                | '['
-                | '\\'
-                | ']'
-                | '_'
-                | '{'
-                | '}'
-        );
-    }
-    use unicode_properties::{GeneralCategoryGroup, UnicodeGeneralCategory};
-    c.general_category_group() == GeneralCategoryGroup::Punctuation
+    crate::charclass::class_of(c).is_punctuation()
 }
 
 /// Symbol (General_Category group S) — math signs, currency, modifiers.
 pub fn is_symbol(c: char) -> bool {
-    if c.is_ascii() {
-        // ASCII General_Category S* (Sm/Sc/Sk).
-        return matches!(c, '$' | '+' | '<' | '=' | '>' | '^' | '`' | '|' | '~');
-    }
-    use unicode_properties::{GeneralCategoryGroup, UnicodeGeneralCategory};
-    c.general_category_group() == GeneralCategoryGroup::Symbol
+    crate::charclass::class_of(c).is_symbol()
 }
 
 /// Decimal digit (General_Category Nd) — any script's positional digits.
 pub fn is_decimal_digit(c: char) -> bool {
-    if c.is_ascii() {
-        return c.is_ascii_digit();
-    }
-    use unicode_properties::{GeneralCategory, UnicodeGeneralCategory};
-    c.general_category() == GeneralCategory::DecimalNumber
+    crate::charclass::class_of(c).is_decimal_digit()
 }
 
 /// Zero-width and formatting-control codepoints that should not appear

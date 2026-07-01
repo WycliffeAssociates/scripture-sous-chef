@@ -13,7 +13,7 @@
 //! - `analyze/nt_rayon`     — same NT, per-verse loop fanned out with
 //!   rayon **in the bench only** — what a native (non-wasm) consumer
 //!   could buy by parallelising around the library; core stays serial
-//! - `analyze/nt_devanagari`— bap-x-rai_reg, the expensive-script case
+//! - `analyze/full_devanagari`— hi_ulb, the expensive-script case
 //! - `proportionality/nt_vs_bible` — bem_reg vs en_ulb through the rule
 //!
 //! Run: `cargo bench -p ssc-core`
@@ -36,15 +36,29 @@ use ssc_core::{Config, Finding, VerseMap, analyze};
 mod usfm_naive;
 use usfm_naive::load_corpus;
 
+/// Resolve a corpus by its bare name (e.g. `en_ulb`) under `corpora/repos/`,
+/// where each is a `<provider>__<name>` directory (the folder layout the
+/// corpus tooling produces). Returns `None` (bench skips) if absent.
 fn corpus(name: &str) -> Option<VerseMap> {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../corpora")
-        .join(name);
-    if !dir.is_dir() {
-        eprintln!("corpora/{name} not present — skipping its benches");
-        return None;
+    let repos = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../corpora/repos");
+    let dir = std::fs::read_dir(&repos)
+        .ok()?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_dir())
+        .find(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .map(|f| f.rsplit_once("__").map_or(f, |(_, n)| n) == name)
+                .unwrap_or(false)
+        });
+    match dir {
+        Some(dir) => Some(load_corpus(&dir)),
+        None => {
+            eprintln!("corpus '{name}' not present under corpora/repos — skipping its benches");
+            None
+        }
     }
-    Some(load_corpus(&dir))
 }
 
 fn bench_analyze(c: &mut Criterion) {
@@ -73,10 +87,10 @@ fn bench_analyze(c: &mut Criterion) {
         });
     }
 
-    if let Some(nt_dev) = corpus("bap-x-rai_reg") {
-        g.throughput(Throughput::Elements(nt_dev.len() as u64));
-        g.bench_function("nt_devanagari", |b| {
-            b.iter(|| analyze(black_box(&nt_dev), None))
+    if let Some(dev) = corpus("hi_ulb") {
+        g.throughput(Throughput::Elements(dev.len() as u64));
+        g.bench_function("full_devanagari", |b| {
+            b.iter(|| analyze(black_box(&dev), None))
         });
     }
 
@@ -125,11 +139,8 @@ fn bench_proportionality(c: &mut Criterion) {
 
     let mut g = c.benchmark_group("proportionality");
     g.throughput(Throughput::Elements(target.len() as u64));
-    // Proportionality ignores the char-class table; an empty one satisfies the
-    // signature without affecting the measurement.
-    let cc = ssc_core::charclass::CharClass::build(std::iter::empty::<&str>());
     g.bench_function("nt_vs_bible", |b| {
-        b.iter(|| rule.judge(&rule.reduce(black_box(&target), Some(black_box(&source)), &cc)))
+        b.iter(|| rule.judge(&rule.reduce(black_box(&target), Some(black_box(&source)))))
     });
     g.finish();
 }

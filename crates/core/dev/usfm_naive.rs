@@ -12,20 +12,32 @@ use std::path::Path;
 
 use ssc_core::{BookId, Sid, VerseMap};
 
-/// Load every `.usfm` file under `dir` into one `VerseMap`.
+/// Load every `.usfm` file under `dir` (searched recursively) into one
+/// `VerseMap`. Corpora nest the USFM a level or two down (e.g.
+/// `<provider>__en_ulb/en_ulb/*.usfm`), so the walk descends into subdirs.
 pub fn load_corpus(dir: &Path) -> VerseMap {
-    let mut map = VerseMap::new();
-    let mut entries: Vec<_> = fs::read_dir(dir)
-        .unwrap_or_else(|e| panic!("read {}: {e}", dir.display()))
-        .map(|e| e.unwrap().path())
-        .filter(|p| p.extension().is_some_and(|x| x == "usfm"))
-        .collect();
+    let mut entries = Vec::new();
+    collect_usfm(dir, &mut entries);
     entries.sort();
+    let mut map = VerseMap::new();
     for path in entries {
         let text = fs::read_to_string(&path).expect("utf-8 usfm");
         parse_usfm(&text, &mut map);
     }
     map
+}
+
+/// Recursively gather `.usfm` file paths under `dir`.
+fn collect_usfm(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
+    let rd = fs::read_dir(dir).unwrap_or_else(|e| panic!("read {}: {e}", dir.display()));
+    for entry in rd {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            collect_usfm(&path, out);
+        } else if path.extension().is_some_and(|x| x == "usfm") {
+            out.push(path);
+        }
+    }
 }
 
 fn parse_usfm(usfm: &str, map: &mut VerseMap) {

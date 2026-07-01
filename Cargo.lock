@@ -658,6 +658,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "xtask"
+version = "0.1.0"
+dependencies = [
+ "ssc-core",
+ "unicode-properties",
+ "unicode-script",
+ "unicode-segmentation",
+]
+
+[[package]]
 name = "zerocopy"
 version = "0.8.52"
 source = "registry+https://github.com/rust-lang/crates.io-index"

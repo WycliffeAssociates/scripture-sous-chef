@@ -12,9 +12,14 @@ use unicode_script::{Script, UnicodeScript};
 ///
 /// Variants the engine tracks; everything else (`Common`, `Inherited`,
 /// `Unknown`, unexercised scripts) collapses to `None` from `script_of`.
+///
+/// `#[repr(u8)]` with `Latin = 1` (0 reserved for `None`) so the tag packs
+/// into one byte of the fused [`Class`](crate::charclass) table — see
+/// [`to_repr`] / [`from_repr`] and ADR 0022.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[repr(u8)]
 pub enum ScriptTag {
-    Latin,
+    Latin = 1,
     Greek,
     Cyrillic,
     Armenian,
@@ -56,10 +61,19 @@ pub enum ScriptTag {
 /// Coarse script identity for a single character. Returns `None` for
 /// characters that have no script identity worth tracking here —
 /// digits, punctuation, whitespace (UCD `Common`), combining marks
-/// (`Inherited`), and unassigned codepoints. Callers that need to
-/// special-case digits do so explicitly; see
-/// `signals::orthographic::classify_script`.
+/// (`Inherited`), and unassigned codepoints.
+///
+/// Reads the fused [`Class`](crate::charclass) table (ADR 0022): one array
+/// index, no `unicode-script` binary search on the hot path.
 pub fn script_of(c: char) -> Option<ScriptTag> {
+    crate::charclass::class_of(c).script()
+}
+
+/// The script identity computed straight from `unicode-script` (plus the
+/// MathAlphanumeric override). This is the **generator input and test oracle**
+/// for the fused table's script byte — runtime code uses [`script_of`], which
+/// reads the table. See ADR 0022.
+pub fn script_from_unicode(c: char) -> Option<ScriptTag> {
     // Mathematical Alphanumeric Symbols are `Common` in the UCD —
     // they have no script identity by spec. For homoglyph detection
     // that's exactly the wrong answer: U+1D400 (math-bold M) inside a
@@ -70,6 +84,29 @@ pub fn script_of(c: char) -> Option<ScriptTag> {
         return Some(ScriptTag::MathAlphanumeric);
     }
     script_tag(c.script())
+}
+
+/// Every [`ScriptTag`], in `#[repr(u8)]` discriminant order (`Latin` first).
+/// The single list [`from_repr`] indexes and the round-trip test checks.
+const ALL_TAGS: [ScriptTag; 32] = {
+    use ScriptTag::*;
+    [
+        Latin, Greek, Cyrillic, Armenian, Hebrew, Arabic, Syriac, Thaana, Nko, Devanagari,
+        Bengali, Gurmukhi, Gujarati, Oriya, Tamil, Telugu, Kannada, Malayalam, Sinhala, Thai,
+        Lao, Tibetan, Myanmar, Georgian, Hangul, Ethiopic, Cherokee, CanadianAboriginal, Khmer,
+        Mongolian, Cjk, MathAlphanumeric,
+    ]
+};
+
+/// Pack `Option<ScriptTag>` into a byte for the fused table (`None = 0`,
+/// otherwise the tag's `1..=32` discriminant).
+pub fn to_repr(tag: Option<ScriptTag>) -> u8 {
+    tag.map_or(0, |t| t as u8)
+}
+
+/// Unpack a table script byte back to `Option<ScriptTag>`.
+pub fn from_repr(v: u8) -> Option<ScriptTag> {
+    (v >= 1 && (v as usize) <= ALL_TAGS.len()).then(|| ALL_TAGS[(v - 1) as usize])
 }
 
 /// Map a `Script` variant to the engine's coarse [`ScriptTag`].
@@ -195,5 +232,24 @@ mod tests {
     fn combining_mark_is_scriptless() {
         // U+0301 COMBINING ACUTE ACCENT — Inherited.
         assert_eq!(script_of('\u{0301}'), None);
+    }
+
+    #[test]
+    fn repr_round_trips_every_tag() {
+        assert_eq!(from_repr(0), None);
+        for &t in &ALL_TAGS {
+            assert_eq!(from_repr(to_repr(Some(t))), Some(t), "round-trip {t:?}");
+        }
+        assert_eq!(from_repr(255), None); // out-of-range byte -> None
+    }
+
+    /// The table-backed `script_of` must equal the `unicode-script` oracle
+    /// across a script spread (the fused byte was generated from it).
+    #[test]
+    fn table_script_matches_oracle() {
+        let sample = "Aa Ελ де देव தமிழ் ไทย 한국 汉字 \u{1D400} 2.,\u{0301}";
+        for c in sample.chars() {
+            assert_eq!(script_of(c), script_from_unicode(c), "script {c:?}");
+        }
     }
 }

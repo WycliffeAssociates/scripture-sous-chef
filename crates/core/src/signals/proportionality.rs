@@ -26,7 +26,6 @@ use std::collections::BTreeMap;
 
 use unicode_segmentation::UnicodeSegmentation;
 
-use crate::charclass::CharClass;
 use crate::config::ProportionalityConfig;
 use crate::diagnostics::{Finding, FindingArgs, LengthRatioScope, RuleId, Severity};
 use crate::rule::StatefulRule;
@@ -85,9 +84,7 @@ impl StatefulRule for ProjectLengthRatio {
         PROJECT_LENGTH_RATIO
     }
 
-    // Proportionality is a length rule — it needs no per-char classification,
-    // so `cc` is unused (the trait supplies it to all stateful rules uniformly).
-    fn reduce(&self, target: &VerseMap, source: Option<&VerseMap>, _cc: &CharClass) -> RuleStats {
+    fn reduce(&self, target: &VerseMap, source: Option<&VerseMap>) -> RuleStats {
         let mut stats = ProportionalityStats::default();
         // Ratios for target ∩ source, grouped by book ("length" is grapheme
         // count — vision §12.5; empty sides carry no signal and would divide
@@ -276,12 +273,8 @@ mod tests {
     }
 
     /// Proportionality ignores the char table, so an empty one is fine here.
-    fn cc() -> CharClass {
-        CharClass::build(std::iter::empty::<&str>())
-    }
-
     fn run(rule: &ProjectLengthRatio, target: &VerseMap, source: Option<&VerseMap>) -> Vec<Finding> {
-        rule.judge(&rule.reduce(target, source, &cc()))
+        rule.judge(&rule.reduce(target, source))
     }
 
     #[test]
@@ -430,12 +423,12 @@ mod tests {
                 t.push('x');
             }
         }
-        let prior = r.reduce(&target, Some(&source), &cc());
+        let prior = r.reduce(&target, Some(&source));
         assert_eq!(r.judge(&prior).len(), 1);
 
         // Fix verse 3 to a normal length, re-reduce, merge (supersede GEN).
         target.insert(sid("GEN", 3), "abcdefghij ".repeat(4));
-        let merged = prior.merge(r.reduce(&target, Some(&source), &cc()));
+        let merged = prior.merge(r.reduce(&target, Some(&source)));
         assert!(r.judge(&merged).is_empty());
     }
 
@@ -450,12 +443,12 @@ mod tests {
                 t.push('x');
             }
         }
-        let prior = r.reduce(&target, Some(&source), &cc());
+        let prior = r.reduce(&target, Some(&source));
         assert_eq!(r.judge(&prior).len(), 1);
 
         // Re-supply the same book with the reference gone: the fresh reduction
         // carries an empty GEN bucket, which supersedes the prior's ratios.
-        let merged = prior.merge(r.reduce(&target, None, &cc()));
+        let merged = prior.merge(r.reduce(&target, None));
         assert!(r.judge(&merged).is_empty());
     }
 
@@ -471,7 +464,7 @@ mod tests {
         };
         let (target, _) = corpus(3, None, 1);
         // No source ⇒ every book bucket is empty; judging must not trap.
-        assert!(r.judge(&r.reduce(&target, None, &cc())).is_empty());
+        assert!(r.judge(&r.reduce(&target, None)).is_empty());
     }
 
     #[test]

@@ -1,0 +1,13 @@
+# Project tooling / codegen — not shipped (`publish = false`), not a workspace
+# dependency of any crate. Run via the `cargo xtask …` alias (.cargo/config.toml).
+[package]
+name = "xtask"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+ssc-core = { workspace = true }
+unicode-properties = { workspace = true }
+unicode-script = { workspace = true }
+unicode-segmentation = { workspace = true }

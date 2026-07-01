@@ -1,7 +1,12 @@
 # ADR 0020: Per-character classification via a fused `ClassBits` lookup (per-analyze trie)
 
 - **Date:** 2026-06-30
-- **Status:** Accepted
+- **Status:** Accepted, **amended by [ADR 0021](0021-grapheme-segmenter-fast-path-fused-static-table.md)**
+  — the per-analyze trie is retired in favour of one fused *static* `Class(u16)`
+  table once grapheme-break bits (which, unlike casing bits, cannot be computed
+  from `std` and must be resident) enter the picture. The fused byte, the
+  classify-once principle, and the reserved `clinging` bit all carry forward;
+  only the *backing* (per-analyze trie → static, built-once) changes.
 
 ## Context
 

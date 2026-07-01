@@ -19,9 +19,9 @@
 
 use std::collections::HashMap;
 
-use crate::charclass::CharClass;
 use crate::config::Config;
 use crate::diagnostics::{Finding, RuleId, Severity};
+use crate::grapheme::GraphemeRule;
 use crate::sid::Sid;
 use crate::signals;
 use crate::span::Span;
@@ -51,16 +51,6 @@ pub trait TokenRule: Sync {
     fn check(&self, text: &str, tokens: &[Token]) -> Vec<Span>;
 }
 
-/// A per-verse rule that walks characters and needs their fused
-/// classification (letter? cased? digit? …). The runner supplies a
-/// [`CharClass`] built once per analyze, so the rule does one table lookup
-/// per char instead of several std predicate calls (ADR 0020).
-pub trait CharClassRule: Sync {
-    fn id(&self) -> RuleId;
-    fn severity(&self) -> Severity;
-    fn check(&self, text: &str, cc: &CharClass) -> Vec<Span>;
-}
-
 pub trait ProjectRule: Sync {
     fn id(&self) -> RuleId;
     fn check(&self, target: &VerseMap, source: Option<&VerseMap>) -> Vec<Finding>;
@@ -87,7 +77,7 @@ pub trait ProjectTokenRule: Sync {
 /// in the caller, not the rule.
 pub trait StatefulRule: Sync {
     fn id(&self) -> RuleId;
-    fn reduce(&self, map: &VerseMap, source: Option<&VerseMap>, cc: &CharClass) -> RuleStats;
+    fn reduce(&self, map: &VerseMap, source: Option<&VerseMap>) -> RuleStats;
     fn judge(&self, stats: &RuleStats) -> Vec<Finding>;
 }
 
@@ -113,9 +103,10 @@ pub fn per_verse_rules() -> Vec<Box<dyn PerVerseRule>> {
     ]
 }
 
-/// Every per-verse rule that consumes the fused [`CharClass`]. Kept out of
-/// `per_verse_rules` so the runner hands them one shared classification table.
-pub fn char_class_rules() -> Vec<Box<dyn CharClassRule>> {
+/// Every per-verse rule over the shared grapheme segmentation. Kept out of
+/// `per_verse_rules` so the runner segments each verse once and hands them all
+/// the same `&[GSpan]` slice (ADR 0021).
+pub fn grapheme_rules() -> Vec<Box<dyn GraphemeRule>> {
     vec![Box::new(signals::lexical::RepeatedCharacterRun)]
 }
 

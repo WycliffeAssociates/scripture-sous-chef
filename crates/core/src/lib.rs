@@ -1,15 +1,20 @@
 //! `ssc-core` — a pure, addressable content analyzer.
 //!
 //! sous receives verse *text* (onion's lossless vref projection) and
-//! returns *ranges into that text*. It reads no files, calls no onion,
-//! and runs no segmentation of its own — onion is the single segmenter
-//! of record. Mapping a returned range back to a DOM node or source
-//! offset is the orchestrator's job, via onion's `segments`. See
-//! ADR 0010 and `documentation/v1-reset-design.md`.
+//! returns *ranges into that text*. It reads no files and calls no onion:
+//! onion is the single segmenter of record for **source → verse text**, and
+//! core never re-derives that. Core *does* segment verse text into grapheme
+//! clusters internally (ADR 0021) to drive the grapheme-level rules, but that
+//! is over the text it was handed and its findings are still ranges into that
+//! same text. Mapping a returned range back to a DOM node or source offset is
+//! the orchestrator's job, via onion's `segments`. See ADR 0010 and
+//! `documentation/v1-reset-design.md`.
 
 pub mod charclass;
+mod charclass_table;
 pub mod config;
 pub mod diagnostics;
+pub mod grapheme;
 pub mod rule;
 pub mod script;
 pub mod sid;
@@ -58,18 +63,17 @@ fn build_token_cache(target: &VerseMap) -> rule::TokenCache {
     }
 }
 
-/// All findings for one verse from the per-verse, token, and char-class rules.
-/// Token rules read the shared [`rule::TokenCache`] when present (else tokenize
-/// inline); char-class rules read the shared [`crate::charclass::CharClass`],
-/// which is always present when any char-class rule is enabled.
+/// All findings for one verse from the per-verse, grapheme, and token rules.
+/// Grapheme rules share one segmentation of the verse (ADR 0021); token rules
+/// read the shared [`rule::TokenCache`] when present (else tokenize inline).
 fn verse_findings(
     sid: Sid,
     text: &str,
     per_verse: &[Box<dyn rule::PerVerseRule>],
     token_rules: &[Box<dyn rule::TokenRule>],
     token_cache: &Option<rule::TokenCache>,
-    char_class: &[Box<dyn rule::CharClassRule>],
-    char_class_table: Option<&crate::charclass::CharClass>,
+    grapheme_rules: &[Box<dyn crate::grapheme::GraphemeRule>],
+    graphemes: &mut Vec<crate::grapheme::GSpan>,
 ) -> Vec<Finding> {
     let mut out = Vec::new();
     for r in per_verse {
@@ -78,10 +82,13 @@ fn verse_findings(
             out.push(Finding { sid, code, severity, range, score: None, args: None });
         }
     }
-    if let Some(cc) = char_class_table {
-        for r in char_class {
+    if !grapheme_rules.is_empty() {
+        // Segment this verse once into the caller's reused buffer (`segment`
+        // clears it); every grapheme rule reads the same slice (ADR 0021).
+        crate::grapheme::segment(text, graphemes);
+        for r in grapheme_rules {
             let (code, severity) = (r.id(), r.severity());
-            for range in r.check(text, cc) {
+            for range in r.check(text, graphemes) {
                 out.push(Finding { sid, code, severity, range, score: None, args: None });
             }
         }
@@ -156,7 +163,7 @@ pub fn analyze_stateful(
         .into_iter()
         .filter(|r| config.is_enabled(r.id()))
         .collect();
-    let char_class: Vec<_> = rule::char_class_rules()
+    let grapheme_rules: Vec<_> = rule::grapheme_rules()
         .into_iter()
         .filter(|r| config.is_enabled(r.id()))
         .collect();
@@ -165,14 +172,10 @@ pub fn analyze_stateful(
         .filter(|r| config.is_enabled(r.id()))
         .collect();
 
-    // One fused char-classification table (ADR 0020), built per analyze over
-    // this call's text and shared by every char-walking rule (casing,
-    // repeated-character-run) so each does one table lookup per char instead
-    // of ~five std predicate calls. A few KB for a single-script corpus;
-    // skipped entirely when nothing consumes it.
-    let char_class_table: Option<crate::charclass::CharClass> = (!char_class.is_empty()
-        || !stateful.is_empty())
-    .then(|| crate::charclass::CharClass::build(target.values().map(String::as_str)));
+    // Classification is a static fused table (ADR 0021, amending 0020): a
+    // process-wide `class_of` lookup, so there is nothing to build or thread
+    // per analyze. Grapheme rules segment each verse transiently in the
+    // per-verse phase; the grapheme segmenter reads the same static table.
 
     // Tokenize the corpus once and share it whenever ≥2 rules would otherwise
     // each re-tokenize every verse — the UAX #29 word scan is a top cost on
@@ -189,24 +192,29 @@ pub fn analyze_stateful(
     #[cfg(feature = "parallel")]
     let mut out: Vec<Finding> = {
         use rayon::prelude::*;
+        // `map_init` gives each worker a grapheme buffer it reuses across the
+        // verses it handles, so segmentation allocates per-worker, not per-verse.
         target
             .par_iter()
-            .flat_map_iter(|(&sid, text)| {
+            .map_init(Vec::new, |graphemes, (&sid, text)| {
                 verse_findings(
                     sid,
                     text,
                     &per_verse,
                     &token_rules,
                     &token_cache,
-                    &char_class,
-                    char_class_table.as_ref(),
+                    &grapheme_rules,
+                    graphemes,
                 )
             })
+            .flatten_iter()
             .collect()
     };
     #[cfg(not(feature = "parallel"))]
     let mut out: Vec<Finding> = {
         let mut out = Vec::new();
+        // One grapheme buffer reused across every verse (ADR 0021).
+        let mut graphemes = Vec::new();
         for (&sid, text) in target {
             out.extend(verse_findings(
                 sid,
@@ -214,8 +222,8 @@ pub fn analyze_stateful(
                 &per_verse,
                 &token_rules,
                 &token_cache,
-                &char_class,
-                char_class_table.as_ref(),
+                &grapheme_rules,
+                &mut graphemes,
             ));
         }
         out
@@ -229,14 +237,10 @@ pub fn analyze_stateful(
     }
 
     // Stateful rules: reduce this call's verses, supersede the prior cache at
-    // book granularity, judge the whole merged corpus from the cache. The
-    // char-class table is present whenever any stateful rule is (built above).
+    // book granularity, judge the whole merged corpus from the cache.
     let mut stats = prior.unwrap_or_default();
     for r in &stateful {
-        let fresh = match char_class_table.as_ref() {
-            Some(cc) => r.reduce(target, source, cc),
-            None => continue, // unreachable: table is built when `stateful` is non-empty
-        };
+        let fresh = r.reduce(target, source);
         let merged = match stats.take(r.id()) {
             Some(prev) => prev.merge(fresh),
             None => fresh,

@@ -34,11 +34,10 @@
 
 use std::collections::BTreeMap;
 
-use unicode_segmentation::UnicodeSegmentation;
-
-use crate::charclass::CharClass;
+use crate::charclass::class_of;
 use crate::config::CasingConfig;
 use crate::diagnostics::{Finding, RuleId, Severity};
+use crate::grapheme::{self, GSpan};
 use crate::rule::StatefulRule;
 use crate::sid::Sid;
 use crate::span::Span;
@@ -144,15 +143,16 @@ impl StatefulRule for SentenceInitialLowercase {
         SENTENCE_INITIAL_LOWERCASE
     }
 
-    fn reduce(&self, map: &VerseMap, _source: Option<&VerseMap>, cc: &CharClass) -> RuleStats {
-        // The runner supplies one fused char-classification table (ADR 0020),
-        // shared with the other char-walking rules, so the per-grapheme scan
-        // below does a single lookup instead of ~five std predicate calls.
+    fn reduce(&self, map: &VerseMap, _source: Option<&VerseMap>) -> RuleStats {
+        // One reused grapheme buffer across the whole reduce: each verse is
+        // segmented once (ADR 0021) and each base scalar classified with one
+        // fused-table lookup (ADR 0020) instead of ~five std predicate calls.
         let mut stats = CasingStats::default();
+        let mut graphemes = Vec::new();
         for (book, verses) in verse::by_book(map) {
             stats
                 .per_book
-                .insert(book.as_str().to_string(), reduce_book(&verses, cc));
+                .insert(book.as_str().to_string(), reduce_book(&verses, &mut graphemes));
         }
         RuleStats::Casing(stats)
     }
@@ -217,7 +217,7 @@ impl StatefulRule for SentenceInitialLowercase {
 /// lowercase flag candidates. A terminal glyph found at a verse's tail is
 /// carried as `pending` across the seam to the next verse — verse
 /// boundaries are transparent to sentence detection.
-fn reduce_book(verses: &[(Sid, &str)], cc: &CharClass) -> BookCasing {
+fn reduce_book(verses: &[(Sid, &str)], graphemes: &mut Vec<GSpan>) -> BookCasing {
     let mut bc = BookCasing::default();
     // A terminal glyph attached to a preceding letter, awaiting the next
     // letter (which may be in the next verse), plus whether any punctuation
@@ -229,13 +229,16 @@ fn reduce_book(verses: &[(Sid, &str)], cc: &CharClass) -> BookCasing {
         // verse is not "attached" to the previous verse's last letter.
         let mut prev_letter = false;
 
-        for (off, g) in text.grapheme_indices(true) {
+        grapheme::segment(text, graphemes);
+        for gs in graphemes.iter() {
+            let off = gs.start as usize;
+            let g = gs.slice(text);
             let c = g.chars().next().unwrap();
             // Classify the base scalar once. A cased letter is necessarily
             // alphabetic, so `lower || upper` short-circuits the (table-backed)
             // `is_alphabetic` lookup for the common Latin case; the two case
             // queries are computed once and reused below.
-            let cl = cc.get(c);
+            let cl = class_of(c);
             let lower = cl.is_lowercase();
             let upper = cl.is_uppercase();
             if cl.is_alphabetic() {
@@ -314,12 +317,8 @@ mod tests {
             .collect()
     }
 
-    fn cc(map: &VerseMap) -> CharClass {
-        CharClass::build(map.values().map(String::as_str))
-    }
-
     fn run(map: &VerseMap, r: &SentenceInitialLowercase) -> Vec<Finding> {
-        r.judge(&r.reduce(map, None, &cc(map)))
+        r.judge(&r.reduce(map, None))
     }
 
     #[test]
@@ -397,13 +396,13 @@ mod tests {
         let mut verses: Vec<(u16, &str)> = (1..=10).map(|v| (v, "He spoke. Then he left.")).collect();
         verses.push((11, "He spoke. then he left."));
         let dirty = book("GEN", &verses);
-        let prior = r.reduce(&dirty, None, &cc(&dirty));
+        let prior = r.reduce(&dirty, None);
         assert_eq!(r.judge(&prior).len(), 1);
 
         let mut fixed = verses.clone();
         fixed[10] = (11, "He spoke. Then he left."); // the fix
         let fixed_map = book("GEN", &fixed);
-        let merged = prior.merge(r.reduce(&fixed_map, None, &cc(&fixed_map)));
+        let merged = prior.merge(r.reduce(&fixed_map, None));
         assert!(r.judge(&merged).is_empty());
     }
 }

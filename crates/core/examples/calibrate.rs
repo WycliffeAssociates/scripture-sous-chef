@@ -65,9 +65,7 @@ fn main() {
         },
     };
     let t0 = std::time::Instant::now();
-    // Proportionality ignores the char-class table; pass an empty one.
-    let cc = ssc_core::charclass::CharClass::build(std::iter::empty::<&str>());
-    let findings = rule.judge(&rule.reduce(&target, Some(&source), &cc));
+    let findings = rule.judge(&rule.reduce(&target, Some(&source)));
     eprintln!("proportionality check: {:?}", t0.elapsed());
 
     let mut per_book: BTreeMap<BookId, usize> = BTreeMap::new();

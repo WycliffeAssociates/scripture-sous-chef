@@ -1,11 +1,10 @@
 //! Lexical signals — token-aware rules over the UAX #29 word stream
 //! (`crate::token::tokenize`).
 
-use unicode_segmentation::UnicodeSegmentation;
-
-use crate::charclass::CharClass;
+use crate::charclass::class_of;
 use crate::diagnostics::{Finding, FindingArgs, RuleId, Severity};
-use crate::rule::{CharClassRule, PerVerseRule, ProjectTokenRule, TokenCache};
+use crate::grapheme::{GSpan, GraphemeRule};
+use crate::rule::{PerVerseRule, ProjectTokenRule, TokenCache};
 use crate::sid::Sid;
 use crate::span::Span;
 use crate::token::{Token, tokenize};
@@ -286,19 +285,19 @@ pub const REPEATED_CHARACTER_RUN: RuleId = RuleId::RepeatedCharacterRun;
 
 pub struct RepeatedCharacterRun;
 
-impl CharClassRule for RepeatedCharacterRun {
+impl GraphemeRule for RepeatedCharacterRun {
     fn id(&self) -> RuleId {
         REPEATED_CHARACTER_RUN
     }
     fn severity(&self) -> Severity {
         Severity::Info
     }
-    fn check(&self, text: &str, cc: &CharClass) -> Vec<Span> {
-        scan_repeated_character_run(text, cc)
+    fn check(&self, text: &str, graphemes: &[GSpan]) -> Vec<Span> {
+        scan_repeated_character_run(text, graphemes)
     }
 }
 
-pub fn scan_repeated_character_run(text: &str, cc: &CharClass) -> Vec<Span> {
+pub fn scan_repeated_character_run(text: &str, graphemes: &[GSpan]) -> Vec<Span> {
     const THRESHOLD: usize = 3;
     let mut spans: Vec<Span> = Vec::new();
     let mut run_start: Option<usize> = None;
@@ -314,10 +313,12 @@ pub fn scan_repeated_character_run(text: &str, cc: &CharClass) -> Vec<Span> {
         }
     };
 
-    for (i, g) in text.grapheme_indices(true) {
+    for gs in graphemes {
+        let i = gs.start as usize;
+        let g = gs.slice(text);
         // Letter graphemes only — digit/punct runs are other rules' jobs.
-        let is_letter = g.chars().next().is_some_and(|c| cc.get(c).is_alphabetic())
-            && !g.chars().any(|c| cc.get(c).is_decimal_digit());
+        let is_letter = g.chars().next().is_some_and(|c| class_of(c).is_alphabetic())
+            && !g.chars().any(|c| class_of(c).is_decimal_digit());
         if is_letter && g == run_cluster {
             run_len += 1;
             run_end = i + g.len();
@@ -493,8 +494,9 @@ mod tests {
     }
 
     fn rc<'a>(text: &'a str) -> Vec<&'a str> {
-        let cc = CharClass::build(std::iter::once(text));
-        scan_repeated_character_run(text, &cc).iter().map(|s| s.slice(text)).collect()
+        let mut g = Vec::new();
+        crate::grapheme::segment(text, &mut g);
+        scan_repeated_character_run(text, &g).iter().map(|s| s.slice(text)).collect()
     }
 
     #[test]

@@ -1,0 +1,4 @@
+# `cargo xtask <task>` runs the project tooling/codegen crate (xtask/).
+# Release so the codegen sweep over all Unicode scalars is quick.
+[alias]
+xtask = "run --release --package xtask --"
