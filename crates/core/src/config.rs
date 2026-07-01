@@ -129,6 +129,15 @@ impl Default for PunctuationAdjacencyConfig {
         Self {
             convention_rate: 0.5,
             confidence_z: 1.96,
+            // 0.5 (calibration 2026-07-01). A lower floor was considered — most
+            // corpora are bimodal (conventions ≈0, anomalies ≈1) so it would be
+            // "free" there — but ayn_reg's doubled Arabic full stop `۔۔` is a
+            // *moderate-frequency* convention scoring ≈0.48, i.e. in the same
+            // band as an exclusive-glyph novelty seen twice (≈0.32). A single
+            // floor cannot suppress the former and surface the latter, so the
+            // default stays high (suppress real conventions) and consumers who
+            // want to see low-evidence novelties lower `emit_score_min`
+            // themselves. See ADR 0024 and the calibration note.
             emit_score_min: 0.5,
         }
     }

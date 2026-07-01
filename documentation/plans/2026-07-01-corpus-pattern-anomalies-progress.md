@@ -236,3 +236,41 @@ bugs found.
 (intentionally deferred — default-off, knobs unfrozen, awaiting more corpora and
 a floor re-tune). Punct is fully calibrated and default-on. The ZWNJ FP is a
 recorded, out-of-scope follow-up.
+
+## 2026-07-01 — review-response round (3rd reviewer)
+
+Addressed a third review. Fixes (all landed, 167 tests, workspace + wasm clean):
+- **Site caps removed (P1).** The per-context/per-pattern cap was **lossy** — a
+  pattern frequent in count but rare vs its denominator clears the floor and must
+  emit in full (the "common ⇒ never surfaces" premise was false). Now every site
+  is stored and every above-floor occurrence emits; the redundant `count` field
+  is gone (`judge` reads `sites.len()`). Consequence is **wire size** (measured:
+  am_ulb punct ≈580 KiB default-on, accepted; km_ulb ZWSP ≈12.4 MiB default-off
+  — a graduation gate whose non-lossy fix is a `FindingArgs` sample+count shape,
+  deferred). Judge still 2.3 ms at 308k sites.
+- **wasm config wiring (P1).** `SousConfig` now carries
+  `zero_width_space`/`punctuation_adjacency` overrides → the documented tuning
+  surface is real; editor/web can set the floors (precondition for graduation +
+  playground sliders).
+- **+∞ z (P2).** `clamp_z` now rejects non-finite (was NaN/neg only); Wilson can
+  no longer hit ∞/∞. Test added.
+- **Harness (P2).** `--zwsp` now proves U+200B findings = 0 by slicing the char,
+  not counting the rule id (the 22,625 remaining are ZWNJ).
+- **Stale catalogs (P2).** rules/README.md + vision.md updated to
+  `punct.adjacency-anomaly` (Info/stateful) + the ZWSP rule.
+
+**Punct floor: considered 0.2, REVERTED to 0.5.** Proposed lowering the floor to
+surface exclusive-glyph novelties (`※※`×2 ≈ 0.32), believing it "free" because
+am/en/es/fr are bimodal (empty 0.1–0.9 band). **ayn_reg disproved it:** its
+doubled Arabic full stop `۔۔` is a *moderate-frequency convention* at ≈0.48 —
+475 sites in that band — so a 0.2 floor resurfaces `۔۔` (598 vs 123). `۔۔` and
+`※※`×2 score in the same band; a single floor can't suppress one and surface the
+other. Floor stays **0.5** (suppress conventions); the exclusive-glyph [P1]
+finding is resolved as a **documented, tunable tradeoff** (silent by default —
+indistinguishable from a convention at that score — opt-in via the now-exposed
+`emit_score_min`), not a default change. Honest reversal recorded in the
+calibration note.
+
+**Still open (design, not yet built):** coarsen the ZWSP context toward
+adjacent-script / letter-vs-nonletter and fold in ZWJ/ZWNJ (retiring the joiner
+allow-list). Under discussion with the user.

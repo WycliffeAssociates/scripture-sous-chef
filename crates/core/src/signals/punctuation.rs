@@ -35,22 +35,15 @@ use crate::verse::{self, VerseMap};
 /// limitation).
 pub const PUNCTUATION_ADJACENCY_ANOMALY: RuleId = RuleId::PunctuationAdjacencyAnomaly;
 
-/// Per-pattern, per-book cap on retained site spans; see the ZWSP rule's
-/// equivalent for the reasoning. Exact counts are always kept, so a dominant
-/// `፤፤` (which the score suppresses anyway) stores at most this many sites per
-/// book instead of tens of thousands. Per-book, so full and incremental
-/// analysis retain identical sites.
-const MAX_SITES_PER_PATTERN: usize = 512;
-
-/// One exact pattern's contribution within a book: its occurrence count and up
-/// to [`MAX_SITES_PER_PATTERN`] retained [`ObservedSite`]s (each site's span is
-/// the complete candidate run; the pattern string is the map key, not repeated
-/// per site).
+/// One exact pattern's contribution within a book: every [`ObservedSite`] for
+/// that pattern (each site's span is the complete candidate run; the pattern
+/// string is the map key, not repeated per site). Sites are retained in full so
+/// `judge` emits a finding for every occurrence that clears the floor — the
+/// count is `sites.len()`.
 #[derive(Debug, Clone, Default, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 struct PunctuationObservations {
-    count: u64,
     sites: Vec<ObservedSite>,
 }
 
@@ -122,7 +115,7 @@ impl StatefulRule for PunctuationAdjacencyAnomaly {
                 *lead.entry(c).or_default() += n;
             }
             for (p, obs) in &book.patterns {
-                *pattern_k.entry(p.as_str()).or_default() += obs.count;
+                *pattern_k.entry(p.as_str()).or_default() += obs.sites.len() as u64;
             }
         }
 
@@ -178,15 +171,11 @@ fn reduce_book(verses: &[(Sid, &str)]) -> BookPunctuationAdjacency {
     for (sid, text) in verses {
         count_lead_opportunities(text, &mut lead_opportunities);
         for span in adjacency_candidates(text) {
-            let obs = patterns.entry(span.slice(text).to_string()).or_default();
-            obs.count += 1;
-            if obs.sites.len() < MAX_SITES_PER_PATTERN {
-                obs.sites.push(ObservedSite {
-                    sid: *sid,
-                    start: span.start as u32,
-                    end: span.end as u32,
-                });
-            }
+            patterns.entry(span.slice(text).to_string()).or_default().sites.push(ObservedSite {
+                sid: *sid,
+                start: span.start as u32,
+                end: span.end as u32,
+            });
         }
     }
     BookPunctuationAdjacency {
@@ -586,9 +575,9 @@ mod tests {
         ]);
         let s = stats_of(&default_rule(), &vm);
         let pats = &s.per_book["GEN"].patterns;
-        assert_eq!(pats["??"].count, 1);
-        assert_eq!(pats["???"].count, 1);
-        assert_eq!(pats["????"].count, 1, "one long run is a single event, not three");
+        assert_eq!(pats["??"].sites.len(), 1);
+        assert_eq!(pats["???"].sites.len(), 1);
+        assert_eq!(pats["????"].sites.len(), 1, "one long run is a single event, not three");
         // `?` run-starts: one per verse = 3.
         assert_eq!(s.per_book["GEN"].lead_opportunities[&'?'], 3);
     }
@@ -601,11 +590,12 @@ mod tests {
         // A novel `※※` whose lead glyph appears ONLY as `※※` has observed rate
         // pinned at 1.0 (k == N_start), so the *only* thing separating a
         // seen-twice novelty from an entrenched convention is the confidence
-        // lower bound. This is the fragile zone: at the default z the score is
-        // moderate — and, crucially, a 2–3× novelty can sit BELOW the default
-        // emit floor (i.e. silent), scoring under a well-evidenced common-glyph
-        // typo. Pinned here so calibration tunes z against this case, not the
-        // rate knob.
+        // lower bound — evidence ≈ 0.32 at 2×, *falling* to ≈0.12 at 3× (more
+        // occurrences read as "more established"). This lands in the same
+        // moderate band as a real moderate-frequency convention (Arabic `۔۔`
+        // ≈ 0.48), so the default floor (0.5) silences it *by design* — corpus
+        // counts can't tell a novelty from a convention at that score. A
+        // consumer who wants low-evidence novelties lowers `emit_score_min`.
         let novelty = |n: u16| {
             let v: Vec<(u16, String)> = (1..=n).map(|i| (i, "word ※※ word".to_string())).collect();
             book("GEN", &v)
@@ -613,7 +603,7 @@ mod tests {
 
         // Observed rate is exactly 1.0 (lead glyph exclusive to the pattern).
         let s = stats_of(&default_rule(), &novelty(3));
-        assert_eq!(s.per_book["GEN"].patterns["※※"].count, 3);
+        assert_eq!(s.per_book["GEN"].patterns["※※"].sites.len(), 3);
         assert_eq!(s.per_book["GEN"].lead_opportunities[&'※'], 3);
 
         // Evidence FALLS as the exclusive pattern recurs (more confident it is a
@@ -632,10 +622,14 @@ mod tests {
         assert_eq!(with_z(0.0), 0.0, "no shrinkage ⇒ rate 1.0 ⇒ fully conventional");
         assert!(with_z(3.0) > with_z(1.96), "more shrinkage raises the novelty's evidence");
 
-        // The documented consequence: this 3× novelty is BELOW the default
-        // floor (silent), unlike a well-evidenced rare common-glyph pattern.
-        assert!(run(&novelty(3), &default_rule()).is_empty(), "3× exclusive novelty is silent at default floor");
-        assert!(!run(&periods_and_commas(200, 5), &default_rule()).is_empty(), "common-glyph rarity is not");
+        // At the default floor (0.5) the exclusive-glyph novelty is silent
+        // (0.32 < 0.5) — the documented, tunable tradeoff — while a
+        // well-evidenced common-glyph rarity always surfaces.
+        assert!(run(&novelty(2), &default_rule()).is_empty(), "2× exclusive novelty silent at default 0.5");
+        assert!(!run(&periods_and_commas(200, 5), &default_rule()).is_empty(), "common-glyph rarity is not silenced");
+        // Exposed as a knob: lowering the floor opts into seeing it.
+        let low = PunctuationAdjacencyConfig { emit_score_min: 0.25, ..Default::default() };
+        assert!(!run(&novelty(2), &rule(low)).is_empty(), "lowering emit_score_min surfaces the novelty");
     }
 
     #[test]
@@ -673,15 +667,15 @@ mod tests {
     }
 
     #[test]
-    fn site_storage_is_capped_per_pattern_per_book_but_count_is_exact() {
-        // Many separate `,,` runs (one per "x,," chunk) in one verse.
-        let n = MAX_SITES_PER_PATTERN + 71;
+    fn every_site_is_retained_so_emission_is_complete() {
+        // Many separate `,,` runs (one per "x,," chunk) in one verse: all are
+        // stored (no lossy cap), so a rare-but-frequent anomaly emits in full.
+        let n = 900usize;
         let text = "x,,".repeat(n);
         let vm = book("GEN", &[(1, text)]);
         let s = stats_of(&default_rule(), &vm);
         let obs = &s.per_book["GEN"].patterns[",,"];
-        assert_eq!(obs.count, n as u64, "exact count retained");
-        assert_eq!(obs.sites.len(), MAX_SITES_PER_PATTERN, "sites capped");
+        assert_eq!(obs.sites.len(), n, "all sites retained, nothing dropped");
     }
 
     #[cfg(feature = "serde")]

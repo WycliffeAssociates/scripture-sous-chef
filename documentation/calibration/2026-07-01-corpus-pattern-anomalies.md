@@ -42,8 +42,35 @@ surface; if a corpus uses `---` as an em-dash convention it needs enough volume
 to learn down (the systematic-pattern limitation).
 
 **Decision: FREEZE the punctuation defaults** (convention 0.5 / z 1.96 /
-floor 0.5) and keep the rule **default-on**. They preserve every required
-ordering across the five corpora without a script/language branch.
+floor 0.5) and keep the rule **default-on**. Preserves every required ordering
+without a script/language branch.
+
+**Floor sensitivity — why 0.5, not lower.** Four of the five corpora are sharply
+**bimodal** (conventions ≈0, anomalies ≈1, the 0.1–0.9 band empty), so there the
+floor value is insensitive:
+
+```
+am_ulb score histogram   en_ulb          es-419
+[0.0,0.1)  8122 ██████    [0.9,1.0) 2     [0.9,1.0) 54
+[0.1,0.9)     0           (empty middle)  (empty middle)
+[0.9,1.0)    20 █
+```
+
+But **ayn_reg is not** — its doubled Arabic full stop `۔۔` is a
+*moderate-frequency* convention with **475 sites at ≈0.48**:
+
+```
+ayn_reg  [0.4,0.5) 475 ████  (`۔۔` convention)   [0.9,1.0) 123 (real anomalies)
+```
+
+That 0.48 band is the same one an exclusive-glyph novelty seen twice lands in
+(`※※` ≈ 0.32). So a single floor **cannot** both suppress `۔۔` and surface the
+novelty. The floor stays at **0.5** (suppresses `۔۔`; the acceptance criterion),
+which means low-evidence novelties are silent by default — an accepted,
+documented tradeoff, exposed as a tunable knob (a consumer who wants them lowers
+`emit_score_min`, accepting they will also see `۔۔`-type conventions). *(An
+earlier pass proposed 0.2 based on the bimodal corpora alone; ayn_reg disproved
+"free," so it was reverted.)*
 
 ## ZWSP — `uni.zero-width-space-anomaly` (default-OFF)
 
@@ -53,11 +80,19 @@ km_ulb (Khmer, ZWSP-pervasive) is the one large data point available today:
 | --- | ---: |
 | verses | 31,104 |
 | raw U+200B in files | 309,113 |
-| verse-body ZWSP sites (scored, floor 0) | 33,417 |
-| surfaced ≥ 0.5 | 8,256 |
+| verse-body ZWSP sites (scored, floor 0) | 308,094 |
+| surfaced ≥ 0.5 | 8,981 |
 | surfaced ≥ 0.9 | 1,687 |
 | surfaced ≥ 0.99 | 233 |
-| `hyg.zero-width-misuse` ZWSP findings | **0** (was the storm; now the rule skips U+200B) |
+| `hyg.zero-width-misuse` findings sliced to U+200B | **0** (proven; the 22,625 that remain are ZWNJ — see below) |
+
+Unlike punctuation, ZWSP evidence is a **gradient** (two composed factors →
+mass at every level), which is why its floor is load-bearing:
+
+```
+[0.0,0.1) 290606 ████  (dominant Khmer↔Khmer, correctly ≈0)
+[0.1,0.2)   5213 · [0.4,0.5) 3294 · [0.5,0.6) 5442 · [0.7,0.8) 1852 · [0.9,1.0) 1687
+```
 
 **Acceptance (§13):**
 - The hygiene ZWSP storm → **zero** (U+200B removed from deterministic hygiene).
@@ -69,10 +104,13 @@ km_ulb (Khmer, ZWSP-pervasive) is the one large data point available today:
   unit tests (a real minority-context corpus was not injected here).
 
 **Not met / deferred:**
-- At the *provisional* floor 0.5, km_ulb would surface **8,256** findings if the
+- At the *provisional* floor 0.5, km_ulb would surface **8,981** findings if the
   rule were enabled — directionally correct (dominant contexts suppressed) but
   too many for a clean default. A floor of ≈0.9 (1,687) or 0.99 (233) is far more
-  selective; the knobs are **not** frozen.
+  selective; the knobs are **not** frozen. (A planned follow-up coarsens the
+  context to *adjacent script* — looking through whitespace/punctuation — which
+  should collapse the medium-evidence gradient toward the punct-style bimodal
+  shape and unify ZWSP with the ZWJ/ZWNJ treatment.)
 - Only Khmer was measured. Lao, Thai, Myanmar and a Japanese/CJK corpus are
   required before freezing — **the Japanese optional-use case is an unverified
   acceptance surface** (the synthetic `optional_use_corpus_suppresses_its_convention`
@@ -87,21 +125,23 @@ Graduation needs the missing corpora and a floor/rate re-tune (recommend floor
 - **`.wasm`** (bundler, release): 533,825 → 689,274 bytes (+155 KiB / +29%),
   from the serde `Deserialize` + tsify codegen for `ScriptTag` and the ~12 new
   stats/config types. Code size, not wire size.
-- **Serialized `RuleStats`** (round-tripped per incremental call):
-  - punct on am_ulb: **334 KiB** (8,142 sites, mostly the *suppressed* `፡፡`
-    convention — stored but never emitted; this is the inherent judge-from-Stats
-    cost the site cap bounds).
-  - ZWSP on km_ulb: **1.38 MiB** (33,417 sites) — unpaid on shipped defaults
-    (rule off).
-- **Judge cost:** km_ulb ZWSP re-judge from cached stats = **2.3 ms** for 33k
-  sites — confirms `judge` is O(books·contexts + emitted sites), not O(total
+- **Serialized `RuleStats`** — **no site cap; every occurrence is stored** so
+  emission is complete (the earlier per-site cap was removed after review — it
+  silently dropped valid findings; see ADR 0023 Consequences). Round-tripped per
+  incremental call:
+  - punct on am_ulb (default-**on**): **≈580 KiB** (14,190 sites, mostly the
+    *suppressed* `፡፡`/`፣`/`።` conventions — stored but never emitted; the
+    inherent judge-from-Stats cost). Modest for a whole Ethiopic Bible; accepted.
+  - ZWSP on km_ulb (default-**off**): **≈12.4 MiB** (308,094 sites) — unpaid on
+    shipped defaults, but a real **graduation gate**. The non-lossy fix is a
+    `FindingArgs` "bounded sample + true count" shape (not a lossy cap); deferred
+    until graduation needs it. The planned coarse-script context reduces the
+    number of *contexts*, not the number of sites, so it does not by itself
+    shrink this — the sample+count shape is what will.
+- **Judge cost:** km_ulb ZWSP re-judge from cached stats = **2.3 ms** even at
+  308k sites — `judge` aggregates from `sites.len()` and floor-gates before
+  iterating, so it is O(books·contexts + emitted sites), not O(total
   occurrences); no `StatefulRule` contract change is warranted.
-- **Site-cap lever:** `MAX_SITES_PER_{CONTEXT,PATTERN}` = 512 barely binds km_ulb
-  (ZWSP is spread across contexts) — it bounds the *pathological single-context*
-  blowup, not the aggregate. No emitted pattern in the punct matrix approached
-  512/book (max ~20 total), so lowering the cap (e.g. to 128) is a safe wire-size
-  optimization available at graduation *without changing the statistical
-  contract* — deferred, not done, per §16.
 
 ## Out-of-scope discovery
 

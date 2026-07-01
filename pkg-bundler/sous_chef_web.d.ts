@@ -172,13 +172,13 @@ export interface BookPunctuationAdjacency {
 }
 
 /**
- * One context\'s contribution within a book: its exact occurrence count and up
- * to [`MAX_SITES_PER_CONTEXT`] retained [`ObservedSite`]s (the context lives
- * once here, not per site; each site\'s span is the exact U+200B scalar).
+ * One context\'s contribution within a book: every [`ObservedSite`] for that
+ * context (the context lives once here, not per site; each site\'s span is the
+ * exact U+200B scalar). Sites are retained in full so `judge` emits a finding
+ * for every occurrence that clears the floor — the count is `sites.len()`.
  */
 export interface ZwspContextObservations {
     context: ZwspContext;
-    count: number;
     sites: ObservedSite[];
 }
 
@@ -200,13 +200,13 @@ export interface DelimObservation {
 }
 
 /**
- * One exact pattern\'s contribution within a book: its occurrence count and up
- * to [`MAX_SITES_PER_PATTERN`] retained [`ObservedSite`]s (each site\'s span is
- * the complete candidate run; the pattern string is the map key, not repeated
- * per site).
+ * One exact pattern\'s contribution within a book: every [`ObservedSite`] for
+ * that pattern (each site\'s span is the complete candidate run; the pattern
+ * string is the map key, not repeated per site). Sites are retained in full so
+ * `judge` emits a finding for every occurrence that clears the floor — the
+ * count is `sites.len()`.
  */
 export interface PunctuationObservations {
-    count: number;
     sites: ObservedSite[];
 }
 
@@ -238,6 +238,29 @@ export interface CasingOverrides {
 export interface ProportionalityOverrides {
     z_threshold?: number;
     min_verses?: number;
+}
+
+/**
+ * Partial overrides for `punct.adjacency-anomaly`\'s knobs. Omitted fields
+ * keep core\'s defaults (`convention_rate` 0.5, `confidence_z` 1.96,
+ * `emit_score_min` 0.2). See ADR 0024.
+ */
+export interface PunctuationAdjacencyOverrides {
+    convention_rate?: number;
+    confidence_z?: number;
+    emit_score_min?: number;
+}
+
+/**
+ * Partial overrides for `uni.zero-width-space-anomaly`\'s knobs. Omitted
+ * fields keep core\'s provisional defaults (ADR 0023). Enabling the rule at
+ * all is via `rules` (it ships default-off).
+ */
+export interface ZeroWidthSpaceOverrides {
+    global_convention_rate?: number;
+    context_convention_rate?: number;
+    confidence_z?: number;
+    emit_score_min?: number;
 }
 
 /**
@@ -327,6 +350,8 @@ export interface SousConfig {
     rules?: Partial<Record<RuleId, boolean>>;
     proportionality?: ProportionalityOverrides;
     casing?: CasingOverrides;
+    zero_width_space?: ZeroWidthSpaceOverrides;
+    punctuation_adjacency?: PunctuationAdjacencyOverrides;
 }
 
 /**

@@ -49,10 +49,11 @@ pub(crate) fn clamp_rate(r: f32) -> f64 {
     }
 }
 
-/// Clamp `z` to `>= 0` (NaN → 0), so the lower bound stays well-defined.
+/// Clamp `z` to a finite `>= 0` (NaN / ±∞ / negative → 0), so the Wilson
+/// arithmetic can't hit `∞/∞ = NaN` and the finite-score guarantee holds.
 pub(crate) fn clamp_z(z: f32) -> f64 {
     let z = f64::from(z);
-    if z.is_nan() || z < 0.0 { 0.0 } else { z }
+    if !z.is_finite() || z < 0.0 { 0.0 } else { z }
 }
 
 /// Clamp an emission floor to `[0, 1]` (NaN → 0).
@@ -100,9 +101,20 @@ mod tests {
     #[test]
     fn clamps_reject_nan_and_out_of_range() {
         assert!(clamp_rate(f32::NAN) > 0.0 && clamp_rate(-1.0) > 0.0 && clamp_rate(2.0) == 1.0);
+        assert!(clamp_rate(f32::INFINITY) == 1.0);
         assert_eq!(clamp_z(f32::NAN), 0.0);
         assert_eq!(clamp_z(-5.0), 0.0);
+        assert_eq!(clamp_z(f32::INFINITY), 0.0);
         assert_eq!(clamp_unit(f32::NAN), 0.0);
         assert_eq!(clamp_unit(2.0), 1.0);
+    }
+
+    #[test]
+    fn infinite_z_config_yields_finite_strength() {
+        // The real call path sanitises config z through `clamp_z` before the
+        // Wilson math; a +∞ `confidence_z` must not surface as a NaN score
+        // (raw Wilson would hit ∞/∞). `clamp_z` maps it to 0 (no shrinkage).
+        let s = strength(3, 3, 0.5, clamp_z(f32::INFINITY));
+        assert!(s.is_finite() && (0.0..=1.0).contains(&s));
     }
 }

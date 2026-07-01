@@ -56,18 +56,6 @@ use crate::verse::{self, VerseMap};
 
 pub const ZERO_WIDTH_SPACE_ANOMALY: RuleId = RuleId::ZeroWidthSpaceAnomaly;
 
-/// Per-book, per-context cap on retained site spans. Exact counts are always
-/// kept (so rates and aggregation are unaffected); once a context occurs more
-/// than this many times *in one book*, that book keeps count-only for it. This
-/// bounds the serialised `Stats` for a ZWSP-pervasive project (a 300k-ZWSP
-/// Khmer corpus stores ≤ this per context per book, not 300k) without touching
-/// the `StatefulRule` contract. A context common enough to exceed the cap in a
-/// single book is established enough that its individual sites add no review
-/// value — and such a context is suppressed by the score anyway, so its stored
-/// sites are never even iterated. The cap is per-book, so full and incremental
-/// analysis retain identical sites. Calibration may tune it.
-const MAX_SITES_PER_CONTEXT: usize = 512;
-
 /// The immediate neighbour of a ZWSP, projected from one grapheme cluster.
 /// Ordered pairs of these are the corpus-observed context; a script shift
 /// (Khmer→Latin) is a different, learnable context from Khmer→Khmer.
@@ -103,15 +91,15 @@ pub struct ZwspContext {
     pub right: ZwspNeighbor,
 }
 
-/// One context's contribution within a book: its exact occurrence count and up
-/// to [`MAX_SITES_PER_CONTEXT`] retained [`ObservedSite`]s (the context lives
-/// once here, not per site; each site's span is the exact U+200B scalar).
+/// One context's contribution within a book: every [`ObservedSite`] for that
+/// context (the context lives once here, not per site; each site's span is the
+/// exact U+200B scalar). Sites are retained in full so `judge` emits a finding
+/// for every occurrence that clears the floor — the count is `sites.len()`.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 struct ZwspContextObservations {
     context: ZwspContext,
-    count: u64,
     sites: Vec<ObservedSite>,
 }
 
@@ -188,7 +176,7 @@ impl StatefulRule for ZeroWidthSpaceAnomaly {
             n += book.boundary_opportunities;
             z += book.total;
             for obs in &book.contexts {
-                *per_context.entry(obs.context).or_default() += obs.count;
+                *per_context.entry(obs.context).or_default() += obs.sites.len() as u64;
             }
         }
         if z == 0 || n == 0 {
@@ -242,7 +230,7 @@ impl StatefulRule for ZeroWidthSpaceAnomaly {
 /// Reduce one book: count boundary opportunities and ZWSP occurrences, and
 /// accumulate per-context counts + capped site spans.
 fn reduce_book(verses: &[(Sid, &str)], graphemes: &mut Vec<GSpan>) -> BookZeroWidthSpace {
-    let mut contexts: BTreeMap<ZwspContext, (u64, Vec<ObservedSite>)> = BTreeMap::new();
+    let mut contexts: BTreeMap<ZwspContext, Vec<ObservedSite>> = BTreeMap::new();
     let mut boundary_opportunities: u64 = 0;
     let mut total: u64 = 0;
 
@@ -275,17 +263,13 @@ fn reduce_book(verses: &[(Sid, &str)], graphemes: &mut Vec<GSpan>) -> BookZeroWi
             } else {
                 classify_neighbor(graphemes[idx + 1].slice(text))
             };
-            let entry = contexts.entry(ZwspContext { left, right }).or_default();
-            entry.0 += 1;
-            if entry.1.len() < MAX_SITES_PER_CONTEXT {
-                entry.1.push(ObservedSite {
-                    sid: *sid,
-                    start: graphemes[idx].start,
-                    // Exact U+200B span (3 bytes), independent of any trailing
-                    // mark that shares the cluster.
-                    end: graphemes[idx].start + ZWSP.len_utf8() as u32,
-                });
-            }
+            contexts.entry(ZwspContext { left, right }).or_default().push(ObservedSite {
+                sid: *sid,
+                start: graphemes[idx].start,
+                // Exact U+200B span (3 bytes), independent of any trailing mark
+                // that shares the cluster.
+                end: graphemes[idx].start + ZWSP.len_utf8() as u32,
+            });
         }
     }
 
@@ -294,11 +278,7 @@ fn reduce_book(verses: &[(Sid, &str)], graphemes: &mut Vec<GSpan>) -> BookZeroWi
         total,
         contexts: contexts
             .into_iter()
-            .map(|(context, (count, sites))| ZwspContextObservations {
-                context,
-                count,
-                sites,
-            })
+            .map(|(context, sites)| ZwspContextObservations { context, sites })
             .collect(),
     }
 }
@@ -586,12 +566,13 @@ mod tests {
         assert!(r.judge(&RuleStats::ZeroWidthSpace(stats)).iter().all(|f| f.sid.book != BookId::from_str("EXO").unwrap()));
     }
 
-    // ── site-storage cap (per progress-log storage decision) ────────────
+    // ── complete site storage (no cap — every site is retained) ─────────
 
     #[test]
-    fn site_storage_is_capped_per_context_per_book_but_count_is_exact() {
-        // One verse with > MAX_SITES_PER_CONTEXT ZWSPs, all Latin→Latin.
-        let n = MAX_SITES_PER_CONTEXT + 88;
+    fn every_site_is_retained_so_emission_is_complete() {
+        // Many ZWSPs in one context: all are stored (no lossy cap), so `judge`
+        // can emit a finding for every occurrence that clears the floor.
+        let n = 900usize;
         let mut text = String::from("a");
         for _ in 0..n {
             text.push_str(ZW);
@@ -601,8 +582,7 @@ mod tests {
         let s = stats_of(&default_rule(), &vm);
         let obs = &s.per_book["GEN"].contexts;
         assert_eq!(obs.len(), 1);
-        assert_eq!(obs[0].count, n as u64, "exact count is retained");
-        assert_eq!(obs[0].sites.len(), MAX_SITES_PER_CONTEXT, "sites are capped");
+        assert_eq!(obs[0].sites.len(), n, "all sites retained, nothing dropped");
     }
 
     // ── config robustness ───────────────────────────────────────────────

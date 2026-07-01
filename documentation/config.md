@@ -339,9 +339,9 @@ factors must be high to suppress. Ships default-off pending calibration (ADR
 
 | knob | meaning |
 | --- | --- |
-| `convention_rate` | share of a lead glyph's run-start opportunities above which a pattern is "established" (coarse) |
-| `confidence_z` | Wilson confidence — load-bearing when a lead glyph is exclusive to one pattern |
-| `emit_score_min` | surfacing floor |
+| `convention_rate` | share of a lead glyph's run-start opportunities above which a pattern is "established" (coarse); default 0.5 |
+| `confidence_z` | Wilson confidence — load-bearing when a lead glyph is exclusive to one pattern; default 1.96 |
+| `emit_score_min` | surfacing floor; **default 0.5**. Kept high so moderate-frequency conventions (e.g. Arabic `۔۔` ≈ 0.48) stay suppressed; lower it to also surface low-evidence novelties (a doubled novel mark ≈ 0.32) — ADR 0024 |
 
 `evidence = 1 - strength(k, N_start(lead))` per exact pattern (ADR 0024).
 

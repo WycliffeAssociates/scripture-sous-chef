@@ -87,16 +87,20 @@ glance. So the signal is real — it just isn't a hygiene assertion.
 - The 330k/17k hygiene ZWSP storms on ZWSP-using corpora go to zero; a conforming
   corpus's dominant contexts fall below the emission floor and serialise no
   findings.
-- **Site storage is bounded up front, not measured post-hoc.** A per-context,
-  per-book site cap (`MAX_SITES_PER_CONTEXT`) keeps the serialised `Stats` small
-  for a ZWSP-pervasive project while exact counts (and thus rates) stay correct.
-  A context common enough to exceed the cap in one book is suppressed anyway, so
-  the cap never truncates an emittable context in practice; the documented
-  consequence is that a mid-frequency context which *did* clear the floor would
-  emit ≤cap findings per book. If judge time ever becomes the constraint at
-  graduation, the sanctioned escalation is to pass target scope into `judge`
-  (a deliberate contract change) — **not** to prune sites, which would break
-  supersession correctness.
+- **All sites are stored; emission is complete (no site cap).** An earlier
+  revision capped retained sites per context per book, but review showed that is
+  lossy: a context that is *frequent in absolute count yet rare relative to its
+  denominator* clears the floor and must emit every occurrence, so a cap silently
+  drops valid findings (the "common ⇒ never surfaces" premise is false). We
+  therefore store every site and emit for every occurrence above the floor —
+  `judge` aggregates from `sites.len()` and floor-gates before iterating, so its
+  *cost* is still O(books·contexts + emitted sites). The consequence is **wire
+  size**: a ZWSP-pervasive corpus with the rule enabled serialises one site per
+  occurrence (~12 MiB of `Stats` on km_ulb). This is **unpaid on shipped
+  defaults** (the rule is default-off) but is a real **graduation gate**: the
+  sanctioned non-lossy fix — deferred until graduation actually needs it — is a
+  `FindingArgs` "bounded sample + true count" shape (like `BracketWindow`),
+  **not** a lossy per-site cap and **not** a `StatefulRule` contract change.
 - **Limitations (stated so they are known, not surprises):**
   - `boundary_opportunities` counts both verse edges, so the global rate is
     *per-position-including-edges*; for many-short-verse corpora the edges dilute

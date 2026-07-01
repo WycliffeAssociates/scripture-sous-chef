@@ -49,6 +49,43 @@ pub struct CasingOverrides {
     pub min_samples: Option<u32>,
 }
 
+/// Partial overrides for `uni.zero-width-space-anomaly`'s knobs. Omitted
+/// fields keep core's provisional defaults (ADR 0023). Enabling the rule at
+/// all is via `rules` (it ships default-off).
+#[derive(Deserialize, Tsify, Default)]
+#[tsify(from_wasm_abi)]
+pub struct ZeroWidthSpaceOverrides {
+    #[serde(default)]
+    #[tsify(optional)]
+    pub global_convention_rate: Option<f32>,
+    #[serde(default)]
+    #[tsify(optional)]
+    pub context_convention_rate: Option<f32>,
+    #[serde(default)]
+    #[tsify(optional)]
+    pub confidence_z: Option<f32>,
+    #[serde(default)]
+    #[tsify(optional)]
+    pub emit_score_min: Option<f32>,
+}
+
+/// Partial overrides for `punct.adjacency-anomaly`'s knobs. Omitted fields
+/// keep core's defaults (`convention_rate` 0.5, `confidence_z` 1.96,
+/// `emit_score_min` 0.2). See ADR 0024.
+#[derive(Deserialize, Tsify, Default)]
+#[tsify(from_wasm_abi)]
+pub struct PunctuationAdjacencyOverrides {
+    #[serde(default)]
+    #[tsify(optional)]
+    pub convention_rate: Option<f32>,
+    #[serde(default)]
+    #[tsify(optional)]
+    pub confidence_z: Option<f32>,
+    #[serde(default)]
+    #[tsify(optional)]
+    pub emit_score_min: Option<f32>,
+}
+
 /// Which rules to run, plus per-rule knobs. `rules` maps a rule code to a
 /// flag; omit a rule to keep it enabled (default-on). TS: `{ rules?:
 /// Partial<Record<RuleId, boolean>>, proportionality?: … }` — `RuleId` is
@@ -66,6 +103,12 @@ pub struct SousConfig {
     #[serde(default)]
     #[tsify(optional)]
     pub casing: Option<CasingOverrides>,
+    #[serde(default)]
+    #[tsify(optional)]
+    pub zero_width_space: Option<ZeroWidthSpaceOverrides>,
+    #[serde(default)]
+    #[tsify(optional)]
+    pub punctuation_adjacency: Option<PunctuationAdjacencyOverrides>,
 }
 
 /// A finding as the editor sees it: UTF-16 ranges; `code`/`severity` are
@@ -120,6 +163,31 @@ fn build_config(config: Option<SousConfig>) -> Config {
             }
             if let Some(m) = cas.min_samples {
                 cfg.casing.min_samples = m;
+            }
+        }
+        if let Some(z) = c.zero_width_space {
+            if let Some(v) = z.global_convention_rate {
+                cfg.zero_width_space.global_convention_rate = v;
+            }
+            if let Some(v) = z.context_convention_rate {
+                cfg.zero_width_space.context_convention_rate = v;
+            }
+            if let Some(v) = z.confidence_z {
+                cfg.zero_width_space.confidence_z = v;
+            }
+            if let Some(v) = z.emit_score_min {
+                cfg.zero_width_space.emit_score_min = v;
+            }
+        }
+        if let Some(p) = c.punctuation_adjacency {
+            if let Some(v) = p.convention_rate {
+                cfg.punctuation_adjacency.convention_rate = v;
+            }
+            if let Some(v) = p.confidence_z {
+                cfg.punctuation_adjacency.confidence_z = v;
+            }
+            if let Some(v) = p.emit_score_min {
+                cfg.punctuation_adjacency.emit_score_min = v;
             }
         }
     }

@@ -187,13 +187,17 @@ fn zwsp_calib(dir: &Path) {
     let target = load_corpus(dir);
     eprintln!("{} verses", target.len());
 
-    // Deterministic hygiene should no longer flag any ZWSP.
+    // Deterministic hygiene should no longer flag any ZWSP. Prove it by
+    // inspecting the sliced character, not just the rule id — the same rule
+    // still (legitimately, out of scope) flags ZWNJ/BOM/etc.
     let hyg = analyze(&target, None);
-    let hyg_zw = hyg
+    let hyg_total = hyg.iter().filter(|f| f.code == RuleId::ZeroWidthMisuse).count();
+    let hyg_zwsp = hyg
         .iter()
         .filter(|f| f.code == RuleId::ZeroWidthMisuse)
+        .filter(|f| target.get(&f.sid).and_then(|t| t.get(f.range.start..f.range.end)) == Some("\u{200B}"))
         .count();
-    println!("hyg.zero-width-misuse findings (all controls, ZWSP excluded): {hyg_zw}");
+    println!("hyg.zero-width-misuse: {hyg_total} total controls, of which U+200B: {hyg_zwsp} (must be 0)");
 
     // ZWSP rule at floor 0 → every scored site.
     let rule = ZeroWidthSpaceAnomaly {
@@ -234,13 +238,13 @@ fn punct_calib(dir: &Path) {
     report_scored("punct.adjacency-anomaly", &target, &findings);
     report_stats_size(&stats);
 
-    // How many the default floor (0.5) would surface, for the shipped config.
+    // How many the shipped default config surfaces (default-on rule).
     let shipped = analyze_with_config(&target, None, &Config::v1_defaults());
     let shipped_n = shipped
         .iter()
         .filter(|f| f.code == RuleId::PunctuationAdjacencyAnomaly)
         .count();
-    println!("\nshipped default floor (0.5) surfaces: {shipped_n}");
+    println!("\nshipped default surfaces: {shipped_n}");
 }
 
 /// Shared score-distribution report for the two corpus-relative rules: total
@@ -251,6 +255,18 @@ fn report_scored(name: &str, target: &VerseMap, findings: &[Finding]) {
     for floor in [0.5_f32, 0.7, 0.9, 0.99] {
         let n = findings.iter().filter(|f| f.score.unwrap_or(0.0) >= floor).count();
         println!("  ≥ {floor:>4}: {n}");
+    }
+    // 10-bucket histogram of evidence scores — shows the sub-floor mass.
+    let mut buckets = [0usize; 10];
+    for f in findings {
+        let s = f.score.unwrap_or(0.0).clamp(0.0, 0.999_999);
+        buckets[(s * 10.0) as usize] += 1;
+    }
+    println!("  score histogram (each row = 0.1 wide):");
+    for (i, &n) in buckets.iter().enumerate() {
+        let lo = i as f32 / 10.0;
+        let bar = "#".repeat((n as f64).sqrt() as usize);
+        println!("    [{lo:.1},{:.1}) {n:>6} {bar}", lo + 0.1);
     }
     let mut by_score: Vec<&Finding> = findings.iter().collect();
     by_score.sort_by(|a, b| b.score.unwrap_or(0.0).partial_cmp(&a.score.unwrap_or(0.0)).unwrap());

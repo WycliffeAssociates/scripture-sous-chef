@@ -74,10 +74,20 @@ a corpus fact, not an allow-list fact.
 - Findings become `Severity::Info` + score (conformance surprise, not a
   correctness verdict); `punct.placeholder-leftover` and `punct.space-before-punct`
   stay deterministic and unchanged.
-- Per-pattern per-book site cap (`MAX_SITES_PER_PATTERN`) bounds serialised
-  `Stats` (a dominant `፤፤` stores ≤cap sites per book, exact count kept). Judge
-  aggregates from counts and floor-gates before sites, so it is not O(total
-  candidates).
+- **All sites are stored; emission is complete (no cap)** — see ADR 0023's
+  Consequences for why a per-site cap is lossy (a pattern frequent in count but
+  rare vs its denominator must emit in full). For this default-on rule the wire
+  cost is modest (am_ulb, whose dominant `፡፡` convention stores every site, is
+  ~580 KiB of `Stats`); `judge` aggregates from `sites.len()` and floor-gates
+  before iterating, so it is not O(total candidates) in cost.
+- **`emit_score_min` default is 0.5.** Most corpora are bimodal (conventions ≈0,
+  anomalies ≈1), where the floor value is insensitive — but ayn_reg's
+  moderate-frequency Arabic convention `۔۔` scores ≈0.48, in the *same band* as
+  an exclusive-glyph novelty seen twice (≈0.32). A single floor cannot suppress
+  the convention and surface the novelty, so the default stays high (suppress
+  real conventions) and the knob is exposed for consumers who want the
+  low-evidence novelties. This is the [P1] exclusive-glyph tradeoff: silent by
+  default (indistinguishable from a convention at that score), opt-in via config.
 - **Limitations:**
   - A **systematic widespread typo** is suppressed exactly like a convention —
     corpus counts alone cannot tell them apart. Documented; never raised to error
