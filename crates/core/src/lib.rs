@@ -17,6 +17,7 @@ pub mod diagnostics;
 pub mod grapheme;
 pub mod rule;
 pub mod script;
+mod shrinkage;
 pub mod sid;
 pub mod signals;
 pub mod span;

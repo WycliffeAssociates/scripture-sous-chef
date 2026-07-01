@@ -168,3 +168,27 @@ noted).
 - 165 core tests pass (serial + parallel); wasm checks; full workspace builds
   and tests. `strength`/`wilson_lower_bound`/`clamp_*` are currently duplicated
   between the two rules — checkpoint D decides the hoist.
+
+## 2026-07-01 — checkpoint D (abstraction review, §11)
+
+Compared `BookZeroWidthSpace` vs `BookPunctuationAdjacency`. **Extracted** (both
+literally identical, both sanctioned by §11):
+- The shrinkage math → new `crate::shrinkage` module (`strength`,
+  `wilson_lower_bound`, `clamp_rate`/`clamp_z`/`clamp_unit`), with the pure-
+  function tests (monotonicity, no-discontinuity, bounds, clamps) moved there.
+- The site record → `crate::stats::ObservedSite { sid, start, end }`, replacing
+  the identical `ZwspSite`/`PunctuationSite`. Casing keeps its own `LowerSite`
+  (it also stores the terminal glyph, so it is *not* identical).
+
+**Rejected** (as §11 directs, no third consumer demands them):
+- `PatternStats<K>` / generic wire type, `AdjacencyModel`, generic context
+  projection, generic verdict/threshold — the two rules' reduce/judge/projection
+  are genuinely different (ZWSP: grapheme-context projection + two-factor
+  composition; punct: run extraction + one-factor). Forcing a shared shape would
+  make `RuleStats` opaque for no real saving.
+- The per-book `merge`/`remove_book` loop is a 2-line `BTreeMap<String, _>`
+  insert/remove identical across all four stateful rules, but unifying it needs
+  a trait over the book type — more machinery than the duplication. Left
+  per-type (casing/proportionality already duplicate it).
+
+166 core tests pass; workspace + wasm build with zero warnings.

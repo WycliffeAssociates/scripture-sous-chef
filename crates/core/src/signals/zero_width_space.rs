@@ -47,9 +47,10 @@ use crate::diagnostics::{Finding, RuleId, Severity};
 use crate::grapheme::{self, GSpan};
 use crate::rule::StatefulRule;
 use crate::script::ScriptTag;
+use crate::shrinkage::{clamp_rate, clamp_unit, clamp_z, strength};
 use crate::sid::Sid;
 use crate::span::Span;
-use crate::stats::RuleStats;
+use crate::stats::{ObservedSite, RuleStats};
 use crate::unicode::ZWSP;
 use crate::verse::{self, VerseMap};
 
@@ -102,31 +103,16 @@ pub struct ZwspContext {
     pub right: ZwspNeighbor,
 }
 
-/// One ZWSP occurrence, retained so `judge` can emit a span without the text.
-/// The context lives once on the containing [`ZwspContextObservations`], not
-/// per site. `sid` crosses the wire as the canonical `"GEN 1:1"` string (like
-/// `LowerSite`/`RatioObs`), materialised only when serde runs.
-#[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
-struct ZwspSite {
-    #[cfg_attr(feature = "serde", serde(with = "crate::sid::sid_as_string"))]
-    #[cfg_attr(feature = "wasm", tsify(type = "string"))]
-    sid: Sid,
-    /// Exact byte span of the U+200B scalar within its verse.
-    start: u32,
-    end: u32,
-}
-
 /// One context's contribution within a book: its exact occurrence count and up
-/// to [`MAX_SITES_PER_CONTEXT`] retained site spans.
+/// to [`MAX_SITES_PER_CONTEXT`] retained [`ObservedSite`]s (the context lives
+/// once here, not per site; each site's span is the exact U+200B scalar).
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 struct ZwspContextObservations {
     context: ZwspContext,
     count: u64,
-    sites: Vec<ZwspSite>,
+    sites: Vec<ObservedSite>,
 }
 
 /// One book's contribution: its boundary-opportunity total, its ZWSP total, and
@@ -256,7 +242,7 @@ impl StatefulRule for ZeroWidthSpaceAnomaly {
 /// Reduce one book: count boundary opportunities and ZWSP occurrences, and
 /// accumulate per-context counts + capped site spans.
 fn reduce_book(verses: &[(Sid, &str)], graphemes: &mut Vec<GSpan>) -> BookZeroWidthSpace {
-    let mut contexts: BTreeMap<ZwspContext, (u64, Vec<ZwspSite>)> = BTreeMap::new();
+    let mut contexts: BTreeMap<ZwspContext, (u64, Vec<ObservedSite>)> = BTreeMap::new();
     let mut boundary_opportunities: u64 = 0;
     let mut total: u64 = 0;
 
@@ -292,7 +278,7 @@ fn reduce_book(verses: &[(Sid, &str)], graphemes: &mut Vec<GSpan>) -> BookZeroWi
             let entry = contexts.entry(ZwspContext { left, right }).or_default();
             entry.0 += 1;
             if entry.1.len() < MAX_SITES_PER_CONTEXT {
-                entry.1.push(ZwspSite {
+                entry.1.push(ObservedSite {
                     sid: *sid,
                     start: graphemes[idx].start,
                     // Exact U+200B span (3 bytes), independent of any trailing
@@ -350,55 +336,6 @@ fn classify_neighbor(cluster: &str) -> ZwspNeighbor {
     } else {
         ZwspNeighbor::Other
     }
-}
-
-/// Conservative convention strength in `[0, 1]`: the Wilson lower bound of the
-/// rate `k/n` at confidence `z`, divided by `convention_rate` and clamped. `0`
-/// when there is no evidence of a convention (`k` or `n` zero); `1` once the
-/// conservative rate meets `convention_rate`. Non-decreasing in `k` (fixed
-/// `n`), non-increasing in `n` (fixed `k`).
-fn strength(k: u64, n: u64, convention_rate: f64, z: f64) -> f64 {
-    if k == 0 || n == 0 || convention_rate <= 0.0 {
-        return 0.0;
-    }
-    (wilson_lower_bound(k, n, z) / convention_rate).clamp(0.0, 1.0)
-}
-
-/// Wilson score-interval lower bound for `k` successes in `n` trials at
-/// confidence `z`. `z = 0` returns the observed rate (no shrinkage); larger `z`
-/// shrinks small-sample rates harder toward 0 — the load-bearing behaviour at
-/// the anomaly end. Always finite and in `[0, 1]`.
-fn wilson_lower_bound(k: u64, n: u64, z: f64) -> f64 {
-    let z = z.max(0.0);
-    let n = n as f64;
-    let p = (k as f64 / n).clamp(0.0, 1.0);
-    let z2 = z * z;
-    let denom = 1.0 + z2 / n;
-    let center = (p + z2 / (2.0 * n)) / denom;
-    let margin = (z / denom) * (p * (1.0 - p) / n + z2 / (4.0 * n * n)).sqrt();
-    (center - margin).clamp(0.0, 1.0)
-}
-
-/// Clamp a convention rate to `(0, 1]`, mapping NaN / non-positive input to a
-/// tiny positive value so it never divides to NaN or a negative score.
-fn clamp_rate(r: f32) -> f64 {
-    let r = f64::from(r);
-    if r.is_nan() || r <= 0.0 {
-        f64::from(f32::EPSILON)
-    } else {
-        r.min(1.0)
-    }
-}
-
-/// Clamp `z` to `>= 0` (NaN → 0), so the lower bound stays well-defined.
-fn clamp_z(z: f32) -> f64 {
-    let z = f64::from(z);
-    if z.is_nan() || z < 0.0 { 0.0 } else { z }
-}
-
-/// Clamp an emission floor to `[0, 1]` (NaN → 0).
-fn clamp_unit(v: f32) -> f32 {
-    if v.is_nan() { 0.0 } else { v.clamp(0.0, 1.0) }
 }
 
 #[cfg(test)]
@@ -613,28 +550,8 @@ mod tests {
         assert!(score_b <= score_a, "C=5 evidence {score_b} must not exceed C=1 {score_a}");
     }
 
-    #[test]
-    fn strength_is_monotone_in_k_and_n() {
-        let (r, z) = (0.02, 1.96);
-        // Non-decreasing in k (fixed n).
-        for k in 1..20u64 {
-            assert!(strength(k + 1, 100, r, z) >= strength(k, 100, r, z));
-        }
-        // Non-increasing in n (fixed k).
-        for n in 10..100u64 {
-            assert!(strength(5, n + 1, r, z) <= strength(5, n, r, z));
-        }
-    }
-
-    #[test]
-    fn wilson_bound_is_finite_and_bounded() {
-        // z = 0 → observed rate (no shrinkage); large samples tighten to it.
-        assert!((wilson_lower_bound(1, 4, 0.0) - 0.25).abs() < 1e-9);
-        for &(k, n, z) in &[(0, 1, 1.96), (1, 1, 1.96), (7, 7, 3.0), (3, 1000, 1.96)] {
-            let lb = wilson_lower_bound(k, n, z);
-            assert!(lb.is_finite() && (0.0..=1.0).contains(&lb), "lb={lb} for {k}/{n}");
-        }
-    }
+    // (Pure `strength`/`wilson_lower_bound` monotonicity + bounds live in the
+    // shared `crate::shrinkage` tests.)
 
     // ── incremental equivalence + book removal ──────────────────────────
 

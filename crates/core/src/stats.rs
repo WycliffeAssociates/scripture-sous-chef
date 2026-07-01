@@ -12,11 +12,29 @@
 use std::collections::BTreeMap;
 
 use crate::diagnostics::RuleId;
-use crate::sid::BookId;
+use crate::sid::{BookId, Sid};
 use crate::signals::casing::CasingStats;
 use crate::signals::proportionality::ProportionalityStats;
 use crate::signals::punctuation::PunctuationAdjacencyStats;
 use crate::signals::zero_width_space::ZeroWidthSpaceStats;
+
+/// A retained finding site in one verse: the `Sid` plus a byte span into that
+/// verse's text, so a stateful rule's `judge` can emit a `Finding` without the
+/// text. Shared by the corpus-relative anomaly rules whose sites carry nothing
+/// but location (the context/pattern lives once on the containing map entry);
+/// casing keeps its own `LowerSite` because it also stores the terminal glyph.
+/// `sid` crosses the wire as the canonical `"GEN 1:1"` string, materialised
+/// only when serde runs.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+pub(crate) struct ObservedSite {
+    #[cfg_attr(feature = "serde", serde(with = "crate::sid::sid_as_string"))]
+    #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+    pub sid: Sid,
+    pub start: u32,
+    pub end: u32,
+}
 
 /// Per-rule cached statistics — a **closed** union like `FindingArgs`, one
 /// variant per stateful rule. The orchestration treats it opaquely; each

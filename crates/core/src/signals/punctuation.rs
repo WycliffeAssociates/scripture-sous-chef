@@ -10,9 +10,10 @@ use std::collections::BTreeMap;
 use crate::config::PunctuationAdjacencyConfig;
 use crate::diagnostics::{Finding, RuleId, Severity};
 use crate::rule::{PerVerseRule, StatefulRule};
+use crate::shrinkage::{clamp_rate, clamp_unit, clamp_z, strength};
 use crate::sid::Sid;
 use crate::span::Span;
-use crate::stats::RuleStats;
+use crate::stats::{ObservedSite, RuleStats};
 use crate::unicode::is_punctuation;
 use crate::verse::{self, VerseMap};
 
@@ -41,29 +42,16 @@ pub const PUNCTUATION_ADJACENCY_ANOMALY: RuleId = RuleId::PunctuationAdjacencyAn
 /// analysis retain identical sites.
 const MAX_SITES_PER_PATTERN: usize = 512;
 
-/// One candidate occurrence, retained so `judge` can emit a span without the
-/// text. The pattern string is the map key on [`PunctuationObservations`], so
-/// it is not repeated per site.
-#[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
-struct PunctuationSite {
-    #[cfg_attr(feature = "serde", serde(with = "crate::sid::sid_as_string"))]
-    #[cfg_attr(feature = "wasm", tsify(type = "string"))]
-    sid: Sid,
-    /// Byte span of the complete candidate run within its verse.
-    start: u32,
-    end: u32,
-}
-
 /// One exact pattern's contribution within a book: its occurrence count and up
-/// to [`MAX_SITES_PER_PATTERN`] retained site spans.
+/// to [`MAX_SITES_PER_PATTERN`] retained [`ObservedSite`]s (each site's span is
+/// the complete candidate run; the pattern string is the map key, not repeated
+/// per site).
 #[derive(Debug, Clone, Default, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 struct PunctuationObservations {
     count: u64,
-    sites: Vec<PunctuationSite>,
+    sites: Vec<ObservedSite>,
 }
 
 /// One book's contribution: the per-lead-glyph run-start opportunity counts and
@@ -193,7 +181,7 @@ fn reduce_book(verses: &[(Sid, &str)]) -> BookPunctuationAdjacency {
             let obs = patterns.entry(span.slice(text).to_string()).or_default();
             obs.count += 1;
             if obs.sites.len() < MAX_SITES_PER_PATTERN {
-                obs.sites.push(PunctuationSite {
+                obs.sites.push(ObservedSite {
                     sid: *sid,
                     start: span.start as u32,
                     end: span.end as u32,
@@ -304,51 +292,6 @@ fn adjacency_candidates(text: &str) -> Vec<Span> {
 
     spans.sort();
     spans
-}
-
-/// Conservative convention strength in `[0, 1]`: the Wilson lower bound of
-/// `k/n` at confidence `z`, divided by `convention_rate` and clamped. Mirrors
-/// the ZWSP rule's helper — the abstraction checkpoint (§11) decides whether to
-/// hoist the pair into one shared location.
-fn strength(k: u64, n: u64, convention_rate: f64, z: f64) -> f64 {
-    if k == 0 || n == 0 || convention_rate <= 0.0 {
-        return 0.0;
-    }
-    (wilson_lower_bound(k, n, z) / convention_rate).clamp(0.0, 1.0)
-}
-
-/// Wilson score-interval lower bound for `k` successes in `n` trials at
-/// confidence `z`. `z = 0` returns the observed rate. Always finite, `[0, 1]`.
-fn wilson_lower_bound(k: u64, n: u64, z: f64) -> f64 {
-    let z = z.max(0.0);
-    let n = n as f64;
-    let p = (k as f64 / n).clamp(0.0, 1.0);
-    let z2 = z * z;
-    let denom = 1.0 + z2 / n;
-    let center = (p + z2 / (2.0 * n)) / denom;
-    let margin = (z / denom) * (p * (1.0 - p) / n + z2 / (4.0 * n * n)).sqrt();
-    (center - margin).clamp(0.0, 1.0)
-}
-
-/// Clamp a convention rate to `(0, 1]` (NaN / non-positive → tiny positive).
-fn clamp_rate(r: f32) -> f64 {
-    let r = f64::from(r);
-    if r.is_nan() || r <= 0.0 {
-        f64::from(f32::EPSILON)
-    } else {
-        r.min(1.0)
-    }
-}
-
-/// Clamp `z` to `>= 0` (NaN → 0).
-fn clamp_z(z: f32) -> f64 {
-    let z = f64::from(z);
-    if z.is_nan() || z < 0.0 { 0.0 } else { z }
-}
-
-/// Clamp an emission floor to `[0, 1]` (NaN → 0).
-fn clamp_unit(v: f32) -> f32 {
-    if v.is_nan() { 0.0 } else { v.clamp(0.0, 1.0) }
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -650,19 +593,8 @@ mod tests {
         assert_eq!(s.per_book["GEN"].lead_opportunities[&'?'], 3);
     }
 
-    #[test]
-    fn no_discontinuity_across_support_levels() {
-        // One Wilson formula across all k: strength is monotone non-decreasing
-        // in k with no jump at any support level (incl. the old k=4/k=5 line).
-        let (r, z) = (0.5, 1.96);
-        let mut prev = strength(1, 1000, r, z);
-        for k in 2..=20u64 {
-            let s = strength(k, 1000, r, z);
-            assert!(s >= prev, "strength must not drop from k={} to k={k}", k - 1);
-            assert!(s.is_finite());
-            prev = s;
-        }
-    }
+    // (The single-formula "no k=4/k=5 discontinuity" property is a pure
+    // `strength` fact, unit-tested in `crate::shrinkage`.)
 
     #[test]
     fn exclusive_lead_glyph_pattern_is_governed_by_confidence_z() {
