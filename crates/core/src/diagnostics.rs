@@ -71,6 +71,7 @@ define_rule_ids! {
     DuplicateWord            => "lex.duplicate-word",
     PunctOnlyToken           => "lex.punct-only-token",
     CombiningMarkWithoutBase => "uni.combining-mark-without-base",
+    ZeroWidthSpaceAnomaly    => "uni.zero-width-space-anomaly",
     MixedScriptInToken       => "uni.mixed-script-in-token",
     RepeatedCharacterRun     => "lex.repeated-character-run",
     MixedNumeralSystems      => "uni.mixed-numeral-systems",

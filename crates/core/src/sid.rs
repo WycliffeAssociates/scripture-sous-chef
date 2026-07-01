@@ -95,6 +95,26 @@ impl fmt::Display for Sid {
     }
 }
 
+/// Serialize a [`Sid`] as its canonical `"GEN 1:1"` string and parse it back,
+/// so a `Copy` `Sid` field in a cached-stats struct round-trips across the wire
+/// as a string (matching `Finding`'s string sids) without the native side ever
+/// paying a `String` allocation outside serialization. Shared by every stateful
+/// rule that stores sites (`casing`, `zero_width_space`, …).
+#[cfg(feature = "serde")]
+pub(crate) mod sid_as_string {
+    use super::Sid;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(sid: &Sid, ser: S) -> Result<S::Ok, S::Error> {
+        ser.collect_str(sid)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(de: D) -> Result<Sid, D::Error> {
+        let s = String::deserialize(de)?;
+        Sid::parse(&s).ok_or_else(|| serde::de::Error::custom("invalid sid"))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

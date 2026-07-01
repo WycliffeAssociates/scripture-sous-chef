@@ -69,32 +69,13 @@ struct Tally {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 struct LowerSite {
-    #[cfg_attr(feature = "serde", serde(with = "sid_as_string"))]
+    #[cfg_attr(feature = "serde", serde(with = "crate::sid::sid_as_string"))]
     #[cfg_attr(feature = "wasm", tsify(type = "string"))]
     sid: Sid,
     /// Byte offsets of the lowercase grapheme within its verse.
     start: u32,
     end: u32,
     glyph: char,
-}
-
-/// Serialize a [`Sid`] as its canonical `"GEN 1:1"` string and parse it
-/// back, so a `Copy` `Sid` field round-trips across the wire as a string
-/// (matching `Finding`'s and `DelimObservation`'s string sids) without the
-/// native side ever paying a `String` allocation outside serialization.
-#[cfg(feature = "serde")]
-mod sid_as_string {
-    use crate::sid::Sid;
-    use serde::{Deserialize, Deserializer, Serializer};
-
-    pub(super) fn serialize<S: Serializer>(sid: &Sid, ser: S) -> Result<S::Ok, S::Error> {
-        ser.collect_str(sid)
-    }
-
-    pub(super) fn deserialize<'de, D: Deserializer<'de>>(de: D) -> Result<Sid, D::Error> {
-        let s = String::deserialize(de)?;
-        Sid::parse(&s).ok_or_else(|| serde::de::Error::custom("invalid sid"))
-    }
 }
 
 /// One book's contribution: the per-glyph counts, the lowercase flag

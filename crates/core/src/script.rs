@@ -16,7 +16,14 @@ use unicode_script::{Script, UnicodeScript};
 /// `#[repr(u8)]` with `Latin = 1` (0 reserved for `None`) so the tag packs
 /// into one byte of the fused [`Class`](crate::charclass) table — see
 /// [`to_repr`] / [`from_repr`] and ADR 0022.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+///
+/// `Ord`/serde/`Tsify` are here for the ZWSP context key (ADR: zero-width-space
+/// anomaly), which composes two script tags into a corpus-observed context and
+/// round-trips it through `Stats`. Fieldless enum ⇒ serde uses the variant name
+/// (`"Khmer"`), so the wire form is legible and stable.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[repr(u8)]
 pub enum ScriptTag {
     Latin = 1,

@@ -105,3 +105,38 @@ default-**off** pending calibration, not a principled script difference;
 per-position-including-edges and `global_convention_rate` is calibrated on that
 same basis (edges dilute the raw rate for many-short-verse corpora — harmless but
 noted).
+
+## 2026-07-01 — checkpoint A shipped
+
+- `hyg.zero-width-misuse` skips U+200B; all other zero-width/bidi/format
+  findings preserved. `unicode.rs` docs rewritten (ZWSP constant + the
+  format-candidate predicate). Two new hygiene tests. 135 core tests pass.
+- Committed on branch `corpus-pattern-anomalies` (off master).
+
+## 2026-07-01 — checkpoint B shipped (ZWSP statistical rule)
+
+- `RuleId::ZeroWidthSpaceAnomaly => "uni.zero-width-space-anomaly"`;
+  `ZeroWidthSpaceConfig` (provisional defaults: global 0.005, context 0.02,
+  z 1.96, floor 0.5); default-**disabled** in `v1_defaults`.
+- New `signals::zero_width_space`: grapheme-context projection, per-book
+  `reduce` with the per-context site cap (`MAX_SITES_PER_CONTEXT = 512`),
+  `merge`/`remove_book`, and `judge` with the composed multiplicative evidence.
+- `RuleStats::ZeroWidthSpace` variant + merge/remove arms (compact mismatch arm
+  that still forces a compile error if a future variant lacks a same-type arm).
+- Extracted the `Sid`-as-string serde helper from `casing` into
+  `crate::sid::sid_as_string` (pub(crate)) so both stateful site types share it
+  — removes duplication rather than adding it (pre-empts §11 for this helper).
+- **Judge cost finding (answers R2-1 fully):** `judge` aggregates from per-book
+  per-context *counts*, and emission is floor-gated **before** the site loop, so
+  it is O(books·contexts + emitted sites), **not** O(total ZWSP). A suppressed
+  common context contributes one count and its (capped) sites are never
+  iterated. So no `StatefulRule` contract change is needed, and the concern is
+  resolved by construction — not deferred to calibration. Judge time is still
+  added to the calibration matrix as a sanity check.
+- Tests (17 new): projection across scripts/categories + trailing-mark base +
+  edges + double-ZWSP; pervasive-suppressed; minority-ranked-above (both
+  floor-gated and floor-0 ordering); single-ZWSP-high; optional-use suppression
+  (R1-5); realizable monotonicity + `strength`/Wilson unit monotonicity (R2-4);
+  emit-floor gating; full-vs-incremental equivalence; remove_book; site cap;
+  serde round-trip; NaN-config → finite scores. Plus a lib.rs integration test
+  through `analyze_stateful`. 152 core tests pass; full workspace builds.

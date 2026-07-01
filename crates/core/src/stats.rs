@@ -15,6 +15,7 @@ use crate::diagnostics::RuleId;
 use crate::sid::BookId;
 use crate::signals::casing::CasingStats;
 use crate::signals::proportionality::ProportionalityStats;
+use crate::signals::zero_width_space::ZeroWidthSpaceStats;
 
 /// Per-rule cached statistics — a **closed** union like `FindingArgs`, one
 /// variant per stateful rule. The orchestration treats it opaquely; each
@@ -25,6 +26,7 @@ use crate::signals::proportionality::ProportionalityStats;
 pub enum RuleStats {
     Casing(CasingStats),
     Proportionality(ProportionalityStats),
+    ZeroWidthSpace(ZeroWidthSpaceStats),
 }
 
 impl RuleStats {
@@ -37,12 +39,19 @@ impl RuleStats {
             (RuleStats::Proportionality(a), RuleStats::Proportionality(b)) => {
                 RuleStats::Proportionality(a.merge(b))
             }
+            (RuleStats::ZeroWidthSpace(a), RuleStats::ZeroWidthSpace(b)) => {
+                RuleStats::ZeroWidthSpace(a.merge(b))
+            }
             // Mismatched variants can't occur via `analyze_stateful` (it keys
-            // prior and fresh by the same `RuleId`). For malformed cached
-            // input the **fresh** reduction wins — never the stale prior.
-            // Enumerated rather than `_`, so a new variant forces these arms.
-            (RuleStats::Casing(_), fresh @ RuleStats::Proportionality(_)) => fresh,
-            (RuleStats::Proportionality(_), fresh @ RuleStats::Casing(_)) => fresh,
+            // prior and fresh by the same `RuleId`). For malformed cached input
+            // the **fresh** reduction wins — never the stale prior. The left
+            // pattern lists every current variant explicitly (not `_`), so a
+            // new variant makes this match non-exhaustive until its own
+            // same-type merge arm is added above.
+            (
+                RuleStats::Casing(_) | RuleStats::Proportionality(_) | RuleStats::ZeroWidthSpace(_),
+                fresh,
+            ) => fresh,
         }
     }
 
@@ -51,6 +60,7 @@ impl RuleStats {
         match self {
             RuleStats::Casing(c) => c.remove_book(book),
             RuleStats::Proportionality(p) => p.remove_book(book),
+            RuleStats::ZeroWidthSpace(z) => z.remove_book(book),
         }
     }
 }

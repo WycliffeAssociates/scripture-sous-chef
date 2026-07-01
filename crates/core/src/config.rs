@@ -95,6 +95,53 @@ impl Default for CasingConfig {
     }
 }
 
+/// Knobs for `uni.zero-width-space-anomaly`. The rule learns, corpus-wide,
+/// whether ZWSP is used at all and which immediate grapheme contexts surround
+/// it, then scores each occurrence's *conformance surprise* at `Severity::Info`
+/// (ADR: zero-width-space anomaly). All four values are provisional until the
+/// Section 13 calibration note freezes them; the rule ships **default-disabled**
+/// until then. Scores are always finite: `judge` clamps any out-of-range or NaN
+/// input here to a safe value rather than emitting a NaN score.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
+pub struct ZeroWidthSpaceConfig {
+    /// The ZWSP-per-boundary-opportunity rate above which the corpus is taken
+    /// to use ZWSP *as a convention at all*. This is a low "uses-it" gate, not
+    /// a "uses-it-heavily" measure: an optional-use language (e.g. Japanese)
+    /// that inserts ZWSP at any steady rate should saturate the global factor
+    /// so that discrimination falls entirely to the per-context factor, while a
+    /// lone ZWSP in an otherwise ZWSP-free Latin corpus (rate ≈ 0) stays
+    /// surfaced. Miscalibrating it *high* would under-suppress moderate-use
+    /// languages — keep it low.
+    pub global_convention_rate: f32,
+    /// The share-of-all-ZWSP above which a given context is taken to be an
+    /// established convention (and so silent). Coarse by design: at the anomaly
+    /// end (a context seen once or twice) the confidence lower bound, not this
+    /// threshold, does the discrimination — this only sets "how small a share
+    /// still counts as established."
+    pub context_convention_rate: f32,
+    /// Confidence `z` for the Wilson lower bound behind both convention
+    /// strengths. The load-bearing knob at the small-count end: it is what
+    /// separates a context seen once from one seen hundreds of times when both
+    /// have observed rate near 1. `1.96` ≈ 95%.
+    pub confidence_z: f32,
+    /// Minimum `evidence` a site must reach to be emitted. Keeps an established
+    /// convention from serialising hundreds of thousands of near-zero findings.
+    pub emit_score_min: f32,
+}
+
+impl Default for ZeroWidthSpaceConfig {
+    fn default() -> Self {
+        Self {
+            global_convention_rate: 0.005,
+            context_convention_rate: 0.02,
+            confidence_z: 1.96,
+            emit_score_min: 0.5,
+        }
+    }
+}
+
 /// Which rules to run, plus per-rule knobs. A rule **absent** from
 /// `rules` is enabled (default-on); map it to `false` to disable.
 /// Disabled rules are skipped before they run, not filtered after — so
@@ -110,6 +157,8 @@ pub struct Config {
     pub bracket_balance: BracketBalanceConfig,
     #[cfg_attr(feature = "serde", serde(default))]
     pub casing: CasingConfig,
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub zero_width_space: ZeroWidthSpaceConfig,
 }
 
 impl Config {
@@ -130,6 +179,10 @@ impl Config {
             RuleId::DuplicateWord,
             RuleId::SpaceBeforePunct,
             RuleId::SentenceInitialLowercase,
+            // Ships default-disabled until the Section 13 calibration note
+            // freezes its rates and z; graduation to default-on is a
+            // deliberate, separate decision (ADR: zero-width-space anomaly).
+            RuleId::ZeroWidthSpaceAnomaly,
         ])
     }
 

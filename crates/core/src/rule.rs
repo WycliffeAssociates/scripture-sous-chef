@@ -141,5 +141,8 @@ pub fn stateful_rules(config: &Config) -> Vec<Box<dyn StatefulRule>> {
         Box::new(signals::proportionality::ProjectLengthRatio {
             cfg: config.proportionality,
         }),
+        Box::new(signals::zero_width_space::ZeroWidthSpaceAnomaly {
+            cfg: config.zero_width_space,
+        }),
     ]
 }
