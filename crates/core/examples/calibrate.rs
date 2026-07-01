@@ -16,10 +16,17 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use ssc_core::config::ProportionalityConfig;
+use ssc_core::config::{
+    ProportionalityConfig, PunctuationAdjacencyConfig, ZeroWidthSpaceConfig,
+};
 use ssc_core::rule::StatefulRule;
 use ssc_core::signals::proportionality::ProjectLengthRatio;
-use ssc_core::{BookId, FindingArgs, LengthRatioScope, RuleId, VerseMap, analyze};
+use ssc_core::signals::punctuation::PunctuationAdjacencyAnomaly;
+use ssc_core::signals::zero_width_space::ZeroWidthSpaceAnomaly;
+use ssc_core::{
+    BookId, Config, Finding, FindingArgs, LengthRatioScope, RuleId, VerseMap, analyze,
+    analyze_with_config,
+};
 
 #[path = "../dev/usfm_naive.rs"]
 mod usfm_naive;
@@ -36,6 +43,19 @@ fn main() {
                 .map(|(sid, text)| (sid.to_string(), text.clone()))
                 .collect();
             println!("{}", serde_json::to_string(&map).unwrap());
+            return;
+        }
+        // Corpus-relative ZWSP calibration (ADR 0023): enable the default-off
+        // rule at floor 0 to see the full score distribution, and confirm the
+        // deterministic hygiene ZWSP storm is gone.
+        [flag, t] if flag == "--zwsp" => {
+            zwsp_calib(Path::new(t));
+            return;
+        }
+        // Punctuation adjacency calibration (ADR 0024): the rule is default-on;
+        // report its score distribution at floor 0.
+        [flag, t] if flag == "--punct" => {
+            punct_calib(Path::new(t));
             return;
         }
         [t] => {
@@ -157,6 +177,107 @@ fn batch(dir: &Path) {
             let ctx: String = text[ctx_start..].chars().take(60).collect();
             println!("    {:<10} [{slice}] …{ctx}", f.sid.to_string());
         }
+    }
+}
+
+/// ZWSP calibration (ADR 0023). Runs the rule at floor 0 to expose every scored
+/// site, and separately counts the deterministic hygiene ZWSP findings to prove
+/// the storm is gone.
+fn zwsp_calib(dir: &Path) {
+    let target = load_corpus(dir);
+    eprintln!("{} verses", target.len());
+
+    // Deterministic hygiene should no longer flag any ZWSP.
+    let hyg = analyze(&target, None);
+    let hyg_zw = hyg
+        .iter()
+        .filter(|f| f.code == RuleId::ZeroWidthMisuse)
+        .count();
+    println!("hyg.zero-width-misuse findings (all controls, ZWSP excluded): {hyg_zw}");
+
+    // ZWSP rule at floor 0 → every scored site.
+    let rule = ZeroWidthSpaceAnomaly {
+        cfg: ZeroWidthSpaceConfig { emit_score_min: 0.0, ..Default::default() },
+    };
+    let t0 = std::time::Instant::now();
+    let stats = rule.reduce(&target, None);
+    let findings = rule.judge(&stats);
+    eprintln!("zwsp reduce+judge: {:?}", t0.elapsed());
+    report_scored("uni.zero-width-space-anomaly", &target, &findings);
+
+    // Incremental judge cost: re-judge from the cached stats alone.
+    let t1 = std::time::Instant::now();
+    let _ = rule.judge(&stats);
+    eprintln!("zwsp re-judge (incremental cost): {:?}", t1.elapsed());
+    report_stats_size(&stats);
+}
+
+/// Serialized `RuleStats` wire size — what a caller round-trips each incremental
+/// call. The per-context/per-pattern site cap is what bounds this on a pervasive
+/// corpus (§14).
+fn report_stats_size(stats: &ssc_core::RuleStats) {
+    let bytes = serde_json::to_string(stats).map(|s| s.len()).unwrap_or(0);
+    println!("serialized RuleStats: {} bytes ({:.1} KiB)", bytes, bytes as f64 / 1024.0);
+}
+
+/// Punctuation adjacency calibration (ADR 0024) at floor 0.
+fn punct_calib(dir: &Path) {
+    let target = load_corpus(dir);
+    eprintln!("{} verses", target.len());
+    let rule = PunctuationAdjacencyAnomaly {
+        cfg: PunctuationAdjacencyConfig { emit_score_min: 0.0, ..Default::default() },
+    };
+    let t0 = std::time::Instant::now();
+    let stats = rule.reduce(&target, None);
+    let findings = rule.judge(&stats);
+    eprintln!("punct reduce+judge: {:?}", t0.elapsed());
+    report_scored("punct.adjacency-anomaly", &target, &findings);
+    report_stats_size(&stats);
+
+    // How many the default floor (0.5) would surface, for the shipped config.
+    let shipped = analyze_with_config(&target, None, &Config::v1_defaults());
+    let shipped_n = shipped
+        .iter()
+        .filter(|f| f.code == RuleId::PunctuationAdjacencyAnomaly)
+        .count();
+    println!("\nshipped default floor (0.5) surfaces: {shipped_n}");
+}
+
+/// Shared score-distribution report for the two corpus-relative rules: total
+/// scored sites, how many clear a ladder of floors, and the top/bottom samples
+/// with their exact slice and a little context.
+fn report_scored(name: &str, target: &VerseMap, findings: &[Finding]) {
+    println!("\n{name}: {} scored sites (floor 0)", findings.len());
+    for floor in [0.5_f32, 0.7, 0.9, 0.99] {
+        let n = findings.iter().filter(|f| f.score.unwrap_or(0.0) >= floor).count();
+        println!("  ≥ {floor:>4}: {n}");
+    }
+    let mut by_score: Vec<&Finding> = findings.iter().collect();
+    by_score.sort_by(|a, b| b.score.unwrap_or(0.0).partial_cmp(&a.score.unwrap_or(0.0)).unwrap());
+    println!("  top 10 by score:");
+    print_scored(target, by_score.iter().take(10).copied());
+    println!("  bottom 5 by score:");
+    print_scored(target, by_score.iter().rev().take(5).copied());
+}
+
+fn print_scored<'a>(target: &VerseMap, findings: impl Iterator<Item = &'a Finding>) {
+    for f in findings {
+        let text = &target[&f.sid];
+        let slice: String = f.range.slice(text).chars().take(16).collect();
+        let ctx_start = text[..f.range.start]
+            .char_indices()
+            .rev()
+            .nth(14)
+            .map(|(i, _)| i)
+            .unwrap_or(0);
+        let ctx: String = text[ctx_start..].chars().take(44).collect();
+        println!(
+            "    {:<10} score={:.3} [{}] …{}",
+            f.sid.to_string(),
+            f.score.unwrap_or(0.0),
+            slice.replace('\u{200B}', "·"),
+            ctx.replace('\u{200B}', "·")
+        );
     }
 }
 

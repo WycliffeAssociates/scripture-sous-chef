@@ -192,3 +192,47 @@ literally identical, both sanctioned by §11):
   per-type (casing/proportionality already duplicate it).
 
 166 core tests pass; workspace + wasm build with zero warnings.
+
+## 2026-07-01 — checkpoint E + calibration + final verification
+
+**Docs/surfaces (E):** ADRs 0023/0024, ADR index backfilled; rules/ catalog
+(hyg/uni/punct); config.md §6b + methods.md §2.5; regenerated pkg-web/pkg-bundler
+(RuleId union, RuleStats variants, ObservedSite/ScriptTag/ZwspContext types).
+
+**Calibration (§13)** via an extended throwaway `calibrate` example
+(`--zwsp`/`--punct` modes). Full note:
+`documentation/calibration/2026-07-01-corpus-pattern-anomalies.md`.
+- **Punct: FROZEN** (convention 0.5 / z 1.96 / floor 0.5), stays default-on.
+  am_ulb `፡፡`→0.000 and ayn_reg `۔۔`→0.479 suppressed; en_ulb 2 / fr_ulb 6 /
+  es-419 54 / am_ulb 20 / ayn_reg 123 surfaced — all reviewable, one-offs top.
+- **ZWSP: default-OFF, knobs NOT frozen, NOT graduated.** km_ulb hygiene ZWSP
+  storm → 0; but at provisional floor 0.5 the rule would surface 8,256 (too
+  many) — needs floor ≈0.9+ and the missing Lao/Thai/Myanmar/Japanese corpora.
+  Japanese optional-use remains an unverified surface (synthetic test only).
+
+**Sizes/cost (§14):** `.wasm` 533,825→689,274 B (+155 KiB, serde/tsify codegen).
+Serialized RuleStats: punct am_ulb 334 KiB; ZWSP km_ulb 1.38 MiB (off by
+default). ZWSP re-judge 2.3 ms for 33k sites — confirms judge is
+O(books·contexts + emitted sites). Site cap (512) bounds the pathological
+single-context blowup; lowering it is a safe graduation-time wire optimization.
+
+**Out-of-scope discovery:** km_ulb has 22,648 ZWNJ that hygiene still flags
+(Khmer absent from the joiner allow-list). Real FP, but ZWNJ/ZWJ policy is a
+stated non-goal — logged as follow-up in the calibration note.
+
+**Verification (§14):** 166 core tests pass (serial + parallel); workspace
+tests pass; wasm regenerated + `.d.ts` inspected; clippy clean on new code (one
+`chars_next_cmp` fixed). Repo has no rustfmt config / CI and its committed code
+is not `cargo fmt`-clean, so `cargo fmt` was deliberately NOT run (it would mass-
+reformat untouched files); new code matches the surrounding hand style.
+
+**Adversarial review (§14.10):** Wilson formula verified; `k ≤ n` holds for both
+rules (no domain violation); NaN/out-of-range config → safe suppression + finite
+scores; per-book site cap cannot break full-vs-incremental equivalence
+(deterministic per single-book content); finding order stable. No correctness
+bugs found.
+
+**Final green-light (§17):** all conditions met **except** ZWSP graduation
+(intentionally deferred — default-off, knobs unfrozen, awaiting more corpora and
+a floor re-tune). Punct is fully calibrated and default-on. The ZWNJ FP is a
+recorded, out-of-scope follow-up.

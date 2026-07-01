@@ -261,7 +261,7 @@ fn reduce_book(verses: &[(Sid, &str)], graphemes: &mut Vec<GSpan>) -> BookZeroWi
             // ZWSP is its own grapheme cluster (not Extend/ZWJ in UAX #29), so
             // its cluster begins with U+200B; a trailing combining mark, if any,
             // does not change that this is a ZWSP occurrence.
-            if cluster.chars().next() != Some(ZWSP) {
+            if !cluster.starts_with(ZWSP) {
                 continue;
             }
             total += 1;
