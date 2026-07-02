@@ -116,7 +116,9 @@ impl StatefulRule for ProjectLengthRatio {
         RuleStats::Proportionality(stats)
     }
 
-    fn judge(&self, stats: &RuleStats) -> Vec<Finding> {
+    fn judge(&self, stats: &RuleStats, _target: &VerseMap) -> Vec<Finding> {
+        // Proportionality caches its per-verse ratios (a sparse sufficient
+        // statistic), so it emits from them directly — no re-scan of `target`.
         let RuleStats::Proportionality(stats) = stats else {
             return Vec::new();
         };
@@ -274,7 +276,7 @@ mod tests {
 
     /// Proportionality ignores the char table, so an empty one is fine here.
     fn run(rule: &ProjectLengthRatio, target: &VerseMap, source: Option<&VerseMap>) -> Vec<Finding> {
-        rule.judge(&rule.reduce(target, source))
+        rule.judge(&rule.reduce(target, source), target)
     }
 
     #[test]
@@ -424,12 +426,12 @@ mod tests {
             }
         }
         let prior = r.reduce(&target, Some(&source));
-        assert_eq!(r.judge(&prior).len(), 1);
+        assert_eq!(r.judge(&prior, &target).len(), 1);
 
         // Fix verse 3 to a normal length, re-reduce, merge (supersede GEN).
         target.insert(sid("GEN", 3), "abcdefghij ".repeat(4));
         let merged = prior.merge(r.reduce(&target, Some(&source)));
-        assert!(r.judge(&merged).is_empty());
+        assert!(r.judge(&merged, &target).is_empty());
     }
 
     #[test]
@@ -444,12 +446,12 @@ mod tests {
             }
         }
         let prior = r.reduce(&target, Some(&source));
-        assert_eq!(r.judge(&prior).len(), 1);
+        assert_eq!(r.judge(&prior, &target).len(), 1);
 
         // Re-supply the same book with the reference gone: the fresh reduction
         // carries an empty GEN bucket, which supersedes the prior's ratios.
         let merged = prior.merge(r.reduce(&target, None));
-        assert!(r.judge(&merged).is_empty());
+        assert!(r.judge(&merged, &target).is_empty());
     }
 
     #[test]
@@ -464,7 +466,7 @@ mod tests {
         };
         let (target, _) = corpus(3, None, 1);
         // No source ⇒ every book bucket is empty; judging must not trap.
-        assert!(r.judge(&r.reduce(&target, None)).is_empty());
+        assert!(r.judge(&r.reduce(&target, None), &target).is_empty());
     }
 
     #[test]

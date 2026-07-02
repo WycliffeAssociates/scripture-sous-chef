@@ -138,7 +138,9 @@ impl StatefulRule for SentenceInitialLowercase {
         RuleStats::Casing(stats)
     }
 
-    fn judge(&self, stats: &RuleStats) -> Vec<Finding> {
+    fn judge(&self, stats: &RuleStats, _target: &VerseMap) -> Vec<Finding> {
+        // Casing's candidate class is sparse, so it caches its lowercase sites
+        // and emits from them directly — no need to re-scan `target`.
         let RuleStats::Casing(stats) = stats else {
             return Vec::new();
         };
@@ -299,7 +301,7 @@ mod tests {
     }
 
     fn run(map: &VerseMap, r: &SentenceInitialLowercase) -> Vec<Finding> {
-        r.judge(&r.reduce(map, None))
+        r.judge(&r.reduce(map, None), map)
     }
 
     #[test]
@@ -378,12 +380,12 @@ mod tests {
         verses.push((11, "He spoke. then he left."));
         let dirty = book("GEN", &verses);
         let prior = r.reduce(&dirty, None);
-        assert_eq!(r.judge(&prior).len(), 1);
+        assert_eq!(r.judge(&prior, &dirty).len(), 1);
 
         let mut fixed = verses.clone();
         fixed[10] = (11, "He spoke. Then he left."); // the fix
         let fixed_map = book("GEN", &fixed);
         let merged = prior.merge(r.reduce(&fixed_map, None));
-        assert!(r.judge(&merged).is_empty());
+        assert!(r.judge(&merged, &fixed_map).is_empty());
     }
 }

@@ -85,7 +85,7 @@ fn main() {
         },
     };
     let t0 = std::time::Instant::now();
-    let findings = rule.judge(&rule.reduce(&target, Some(&source)));
+    let findings = rule.judge(&rule.reduce(&target, Some(&source)), &target);
     eprintln!("proportionality check: {:?}", t0.elapsed());
 
     let mut per_book: BTreeMap<BookId, usize> = BTreeMap::new();
@@ -217,8 +217,8 @@ fn punct_calib(dir: &Path) {
         cfg: PunctuationAdjacencyConfig { emit_score_min: 0.0, ..Default::default() },
     };
     let t0 = std::time::Instant::now();
-    let findings = rule.check(&target, None);
-    eprintln!("punct check (full-map scan): {:?}", t0.elapsed());
+    let findings = rule.judge(&rule.reduce(&target, None), &target);
+    eprintln!("punct reduce+judge: {:?}", t0.elapsed());
     report_scored("punct.adjacency-anomaly", &target, &findings);
 
     // How many the shipped default config surfaces (default-on rule).

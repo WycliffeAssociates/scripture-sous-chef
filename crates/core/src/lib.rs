@@ -253,7 +253,7 @@ pub fn analyze_stateful(
         // — keeping the returned findings to one scope and projectable
         // against the text the caller supplied this call.
         out.extend(
-            r.judge(&merged)
+            r.judge(&merged, target)
                 .into_iter()
                 .filter(|f| target.contains_key(&f.sid)),
         );

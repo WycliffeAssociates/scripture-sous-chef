@@ -78,7 +78,13 @@ pub trait ProjectTokenRule: Sync {
 pub trait StatefulRule: Sync {
     fn id(&self) -> RuleId;
     fn reduce(&self, map: &VerseMap, source: Option<&VerseMap>) -> RuleStats;
-    fn judge(&self, stats: &RuleStats) -> Vec<Finding>;
+    /// Emit findings from the merged corpus `stats`. `target` is the verses of
+    /// the current call — a rule whose observations are *sparse* ignores it and
+    /// emits from cached sites (casing, proportionality); a rule with a *dense*
+    /// candidate class caches only aggregates and **re-scans `target`** here to
+    /// produce spans, so its `Stats` stays tiny while scores stay corpus-wide
+    /// (punctuation adjacency). Emissions are for `target` either way.
+    fn judge(&self, stats: &RuleStats, target: &VerseMap) -> Vec<Finding>;
 }
 
 /// Every per-verse rule wired in. The registry is complete — including
@@ -123,13 +129,12 @@ pub fn project_rules(config: &Config) -> Vec<Box<dyn ProjectRule>> {
         Box::new(signals::bracket_balance::BracketBalance {
             cfg: config.bracket_balance,
         }),
-        // Corpus-relative anomaly rules: computed over the supplied map in one
-        // pass (not stateful — dense candidate class, see `stats::RuleStats`).
+        // `uni.zero-width-space-anomaly` is a stateless project rule (default-off,
+        // experimental): scored over the supplied map, so it needs the full
+        // corpus each call. It will move to aggregate-only stateful (like punct)
+        // when it graduates. See ADR 0023.
         Box::new(signals::zero_width_space::ZeroWidthSpaceAnomaly {
             cfg: config.zero_width_space,
-        }),
-        Box::new(signals::punctuation::PunctuationAdjacencyAnomaly {
-            cfg: config.punctuation_adjacency,
         }),
     ]
 }

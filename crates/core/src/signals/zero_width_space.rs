@@ -72,9 +72,11 @@ enum ZwspNeighbor {
     /// An ordinary space — a ZWSP beside one is a redundant-separator shape,
     /// kept distinct from punctuation.
     Whitespace,
-    /// Another zero-width / format control — the doubled-ZWSP (or ZWSP-beside-
-    /// joiner) shape, kept distinct so it doesn't borrow support from ordinary
-    /// punctuation.
+    /// A neighbouring grapheme whose base is itself a *standalone* zero-width /
+    /// format control — chiefly a doubled/adjacent ZWSP. (A ZWJ/ZWNJ that sits
+    /// *inside* a letter cluster is found as that cluster's `Letter`, not here;
+    /// this fires only when the control is its own grapheme.) Kept distinct so
+    /// the doubled-ZWSP shape doesn't borrow support from ordinary punctuation.
     ZeroWidthControl,
     /// Any other non-letter: punctuation, symbol, digit, lone combining mark.
     OtherNonLetter,

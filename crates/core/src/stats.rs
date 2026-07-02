@@ -15,23 +15,26 @@ use crate::diagnostics::RuleId;
 use crate::sid::BookId;
 use crate::signals::casing::CasingStats;
 use crate::signals::proportionality::ProportionalityStats;
+use crate::signals::punctuation::PunctuationAdjacencyStats;
 
 /// Per-rule cached statistics — a **closed** union like `FindingArgs`, one
 /// variant per stateful rule. The orchestration treats it opaquely; each
 /// rule reduces into / judges from its own variant.
 ///
-/// Only rules whose observations are *sparse* (casing's lowercase sites,
-/// proportionality's per-verse ratios) are stateful. The corpus-relative
-/// anomaly rules (`uni.zero-width-space-anomaly`, `punct.adjacency-anomaly`) are
-/// **not** here: their candidate class is dense (every occurrence), so caching
-/// per-occurrence sites would dominate the wire size — they recompute over the
-/// supplied map in one pass instead (project rules).
+/// What each variant caches is deliberately small: casing's lowercase sites and
+/// proportionality's per-verse ratios are sparse; punctuation adjacency caches
+/// only **aggregate counts** (never per-occurrence sites — those re-derive from
+/// the text at `judge`), so a punctuation-pervasive corpus stays a few KB.
+/// `uni.zero-width-space-anomaly` is deliberately **not** here: it is a
+/// stateless project rule for now (default-off, experimental), and will earn an
+/// aggregate-only variant here when it graduates (ADR 0023).
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum RuleStats {
     Casing(CasingStats),
     Proportionality(ProportionalityStats),
+    PunctuationAdjacency(PunctuationAdjacencyStats),
 }
 
 impl RuleStats {
@@ -44,12 +47,21 @@ impl RuleStats {
             (RuleStats::Proportionality(a), RuleStats::Proportionality(b)) => {
                 RuleStats::Proportionality(a.merge(b))
             }
+            (RuleStats::PunctuationAdjacency(a), RuleStats::PunctuationAdjacency(b)) => {
+                RuleStats::PunctuationAdjacency(a.merge(b))
+            }
             // Mismatched variants can't occur via `analyze_stateful` (it keys
-            // prior and fresh by the same `RuleId`). For malformed cached
-            // input the **fresh** reduction wins — never the stale prior.
-            // Enumerated rather than `_`, so a new variant forces these arms.
-            (RuleStats::Casing(_), fresh @ RuleStats::Proportionality(_)) => fresh,
-            (RuleStats::Proportionality(_), fresh @ RuleStats::Casing(_)) => fresh,
+            // prior and fresh by the same `RuleId`). For malformed cached input
+            // the **fresh** reduction wins — never the stale prior. The left
+            // pattern lists every current variant explicitly (not `_`), so a
+            // new variant makes this match non-exhaustive until its own
+            // same-type merge arm is added above.
+            (
+                RuleStats::Casing(_)
+                | RuleStats::Proportionality(_)
+                | RuleStats::PunctuationAdjacency(_),
+                fresh,
+            ) => fresh,
         }
     }
 
@@ -58,6 +70,7 @@ impl RuleStats {
         match self {
             RuleStats::Casing(c) => c.remove_book(book),
             RuleStats::Proportionality(p) => p.remove_book(book),
+            RuleStats::PunctuationAdjacency(p) => p.remove_book(book),
         }
     }
 }

@@ -140,7 +140,7 @@ fn bench_proportionality(c: &mut Criterion) {
     let mut g = c.benchmark_group("proportionality");
     g.throughput(Throughput::Elements(target.len() as u64));
     g.bench_function("nt_vs_bible", |b| {
-        b.iter(|| rule.judge(&rule.reduce(black_box(&target), Some(black_box(&source)))))
+        b.iter(|| rule.judge(&rule.reduce(black_box(&target), Some(black_box(&source))), black_box(&target)))
     });
     g.finish();
 }

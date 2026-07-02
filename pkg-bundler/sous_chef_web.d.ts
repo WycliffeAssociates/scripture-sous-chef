@@ -63,6 +63,15 @@ export interface ProportionalityStats {
 }
 
 /**
+ * Cached punctuation-adjacency aggregates, keyed by book code so an edit
+ * supersedes only its book. Corpus-wide `k` and `N_start` are the sums over
+ * books, derived at `judge`.
+ */
+export interface PunctuationAdjacencyStats {
+    per_book: Record<string, BookPunctuationAdjacency>;
+}
+
+/**
  * Coarse script identity for a single character — a small `Copy` tag,
  * not a string. Rules count, compare, and match on these directly, so
  * the hot paths never hash or compare script *names* (see ADR 0015).
@@ -104,6 +113,18 @@ export interface Analysis {
  * How loud a finding is. Maps 1:1 to the editor\'s annotation severity.
  */
 export type Severity = "error" | "warning" | "info";
+
+/**
+ * One book\'s aggregate contribution: per-lead-glyph run-start opportunity
+ * counts and per-exact-pattern occurrence counts. **No sites** — spans are
+ * re-derived from the text at `judge`, so this stays a few KB even on a
+ * ZWSP-/punctuation-pervasive corpus. Patterns keyed by their exact run string
+ * (`\",,\"`, `\"?!?\"`, `\"፤፤\"`), so `??`/`???`/`????` stay distinct.
+ */
+export interface BookPunctuationAdjacency {
+    lead_opportunities: Record<string, number>;
+    pattern_counts: Record<string, number>;
+}
 
 /**
  * One book\'s contribution: the per-glyph counts, the lowercase flag
@@ -191,14 +212,15 @@ export interface ZeroWidthSpaceOverrides {
  * variant per stateful rule. The orchestration treats it opaquely; each
  * rule reduces into / judges from its own variant.
  *
- * Only rules whose observations are *sparse* (casing\'s lowercase sites,
- * proportionality\'s per-verse ratios) are stateful. The corpus-relative
- * anomaly rules (`uni.zero-width-space-anomaly`, `punct.adjacency-anomaly`) are
- * **not** here: their candidate class is dense (every occurrence), so caching
- * per-occurrence sites would dominate the wire size — they recompute over the
- * supplied map in one pass instead (project rules).
+ * What each variant caches is deliberately small: casing\'s lowercase sites and
+ * proportionality\'s per-verse ratios are sparse; punctuation adjacency caches
+ * only **aggregate counts** (never per-occurrence sites — those re-derive from
+ * the text at `judge`), so a punctuation-pervasive corpus stays a few KB.
+ * `uni.zero-width-space-anomaly` is deliberately **not** here: it is a
+ * stateless project rule for now (default-off, experimental), and will earn an
+ * aggregate-only variant here when it graduates (ADR 0023).
  */
-export type RuleStats = { Casing: CasingStats } | { Proportionality: ProportionalityStats };
+export type RuleStats = { Casing: CasingStats } | { Proportionality: ProportionalityStats } | { PunctuationAdjacency: PunctuationAdjacencyStats };
 
 /**
  * Stable, machine-readable rule identity — a **closed set**.

@@ -3,9 +3,10 @@
 - **Date:** 2026-07-01
 - **Status:** Accepted
 - **Builds on:** [ADR 0010](0010-pure-analyzer-contract-v1-reset.md) (pure core),
-  [ADR 0017](0017-stateful-rules-stats-returning-analyze.md) (reduce/merge/judge),
   [ADR 0012](0012-ruleid-closed-enum-config-surface.md) (closed unions),
   [ADR 0021](0021-grapheme-segmenter-fast-path-fused-static-table.md) (segmenter).
+- **Note:** an earlier revision built this as a stateful rule (ADR 0017); it is
+  now a stateless project rule (see Decision 2 / Consequences).
 - **Amends:** the hygiene rule's treatment of U+200B only.
 
 ## Context
@@ -28,18 +29,19 @@ glance. So the signal is real — it just isn't a hygiene assertion.
    embeddings/overrides, and the script-aware ZWNJ/ZWJ). The broad format
    predicate is redocumented as a *candidate* identifier whose callers decide
    legitimacy — not an "always invalid" predicate.
-2. **A new stateful rule `uni.zero-width-space-anomaly`** (ADR 0017 shape)
-   scores each U+200B's *conformance surprise* at `Severity::Info` with a
-   continuous `score ∈ [0, 1]`. It ships **default-disabled** until the
-   calibration note freezes its knobs; graduation to default-on is a separate,
-   deliberate decision.
-3. **Two learned factors, multiplied.** `reduce` counts, per book: boundary
-   opportunities `N` (inter-grapheme positions, both verse edges included), ZWSP
-   total `Z`, and per-ordered-grapheme-context counts `C(ctx)`. `judge` sums
-   over books and composes
+2. **A new `uni.zero-width-space-anomaly` rule** scores each U+200B's
+   *conformance surprise* at `Severity::Info` with a continuous `score ∈ [0, 1]`.
+   It ships **default-disabled** until the calibration note freezes its knobs;
+   graduation to default-on is a separate, deliberate decision. It is a
+   **stateless project rule** — computed over the supplied map in one pass,
+   holding nothing between calls (see Consequences for why not stateful).
+3. **Two learned factors, multiplied.** In one pass over the map it counts:
+   boundary opportunities `N` (inter-grapheme positions, both verse edges
+   included), ZWSP total `Z`, and per-ordered-context counts `C(ctx)`, then
+   composes
    `evidence = 1 - global_strength(Z, N) · context_strength(C(ctx), Z)`, where
    `strength` is the Wilson lower bound of the rate over the convention rate,
-   clamped (`crate::shrinkage`).
+   clamped (`crate::shrinkage`). The corpus scope *is* the supplied map.
 4. **The global factor is a low "uses-ZWSP-at-all" gate, not a "uses-it-heavily"
    measure.** Both factors must be high to suppress, so `global_convention_rate`
    is calibrated *low*: any corpus that uses ZWSP at a steady rate saturates it
