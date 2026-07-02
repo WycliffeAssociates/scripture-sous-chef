@@ -7,9 +7,11 @@ than raw codepoints. Per-character script identity is delegated to the
 perf representation). **Common** and **Inherited** characters — ASCII digits,
 punctuation, most combining marks — carry no script identity and never, on
 their own, trigger these rules. The deterministic ones ship on by default
-(ADR 0014); the one **stateful, corpus-relative** member of this namespace,
+(ADR 0014); the one **corpus-relative** member of this namespace,
 `uni.zero-width-space-anomaly`, lives in `zero_width_space.rs`, carries knobs,
-and ships **default-off** pending calibration (ADR 0023).
+and ships **default-off** pending calibration (ADR 0023). It is a stateless
+project rule — scored over whatever map it is handed, so it must be given the
+full corpus when enabled.
 
 Source: `crates/core/src/signals/hygiene.rs`,
 `crates/core/src/signals/zero_width_space.rs`.
@@ -87,7 +89,7 @@ should be updated to a real current rule.)*
 
 ## `uni.zero-width-space-anomaly` — a ZWSP in an unusual context for this corpus
 
-> **Severity** Info · **Default** OFF · **Scope** project (stateful) · **Knobs** `global_convention_rate`, `context_convention_rate`, `confidence_z`, `emit_score_min` · **Source** `zero_width_space.rs` · **ADR** 0023
+> **Severity** Info · **Default** OFF · **Scope** project (stateless — needs full corpus) · **Knobs** `global_convention_rate`, `context_convention_rate`, `confidence_z`, `emit_score_min` · **Source** `zero_width_space.rs` · **ADR** 0023
 
 **Flags** — A U+200B ZERO WIDTH SPACE whose *conformance surprise* is high, with
 a continuous `score`:
@@ -112,14 +114,15 @@ ZWSP-free corpus keeps it near zero and surfaces the lone occurrence);
 established"; `confidence_z` is the load-bearing knob at the anomaly end;
 `emit_score_min` is the surfacing floor. All provisional until calibration.
 
-**Nuance & ADR ties** — Context is the ordered `(left, right)` grapheme classes:
-the first script-bearing scalar of each neighbour (so a trailing combining mark
-can't hide its base script), else a category (whitespace / punctuation / symbol /
-numeral / another ZWSP / other), with `Boundary` at a verse edge — so adjacent
-ZWSPs and verse-edge ZWSPs are learnable contexts, not special cases. Untracked
-scripts collapse to `Other`; `ScriptTag` is not expanded for this rule. Severity
-is **Info** with a score; corpus counts can't distinguish a systematic misuse
-from a convention (both go silent when common). See ADR 0023.
+**Nuance & ADR ties** — Context is the ordered `(left, right)` neighbour kinds:
+a **letter** carries its *full* Unicode script (so "wrong script" — Latin↔Latin
+vs Khmer↔Khmer — is a distinct, rare context), and non-letters collapse to
+`Whitespace` (redundant-separator shape), `ZeroWidthControl` (adjacent zero-width
+char — doubled-ZWSP shape), or `OtherNonLetter`; a verse edge is `Boundary`. No
+look-through, so a ZWSP beside a space stays `(…, Whitespace)`, not laundered to
+`(…, letter)`. Severity is **Info** with a score; corpus counts can't
+distinguish a systematic misuse from a convention (both go silent when common).
+See ADR 0023.
 
 **Open issues / future work** — Ships default-off; graduation to default-on is a
 deliberate post-calibration decision. `boundary_opportunities` includes both

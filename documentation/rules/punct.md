@@ -55,7 +55,7 @@ rare mis-pair near a genuine missing closer.
 
 ## `punct.adjacency-anomaly` — corpus-relative repeated / mixed punctuation
 
-> **Severity** Info · **Default** on · **Scope** project (stateful) · **Knobs** `convention_rate`, `confidence_z`, `emit_score_min` · **Source** `punctuation.rs` · **ADR** 0024
+> **Severity** Info · **Default** on · **Scope** stateful (aggregate-only) · **Knobs** `convention_rate`, `confidence_z`, `emit_score_min` · **Source** `punctuation.rs` · **ADR** 0024
 
 **Flags** — A repeated or mixed punctuation run that is **rare relative to its
 lead glyph's opportunities** in the corpus, with a continuous `score`:

@@ -319,8 +319,11 @@ Both rules emit `Severity::Info` with a continuous `score ∈ [0, 1]` — a
 corpus does", 0 ≈ "ordinary here"). Both derive the score from one shared
 `strength` function (see `methods.md` §"Corpus-relative rate shrinkage"): the
 Wilson lower bound of an observed rate `k/n`, divided by a convention rate and
-clamped. `judge` only serialises a finding when its score reaches
-`emit_score_min`, so an established convention emits nothing.
+clamped. A finding is emitted only when its score reaches `emit_score_min`, so
+an established convention emits nothing. (`punct.adjacency-anomaly` is
+aggregate-only stateful — it caches tiny per-book counts, not sites;
+`uni.zero-width-space-anomaly` is stateless and must be given the full corpus
+when enabled. Neither serialises per-occurrence sites.)
 
 ### `uni.zero-width-space-anomaly` (`Config.zero_width_space`) — **default OFF**
 

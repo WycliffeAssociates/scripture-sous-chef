@@ -47,7 +47,7 @@ diverge — `lex.excess-h-whitespace` lives in `whitespace.rs`,
 | `uni.combining-mark-without-base` | Warning | on | per-verse | ✅ documented |
 | `uni.mixed-script-in-token` | Warning | on | per-verse | ✅ documented |
 | `uni.mixed-numeral-systems` | Warning | on | per-verse | ✅ documented |
-| `uni.zero-width-space-anomaly` | Info | **off** | stateful | ✅ documented (ADR 0023) |
+| `uni.zero-width-space-anomaly` | Info | **off** | project (stateless) | ✅ documented (ADR 0023) |
 | `punct.bracket-balance` | Info | on | project | ✅ documented |
 | `prop.length-ratio` | Warning | on | project | 🗣 pending discussion |
 | `punct.adjacency-anomaly` | Info | on | stateful | ✅ documented (ADR 0024) |

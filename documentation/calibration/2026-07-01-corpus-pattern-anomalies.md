@@ -106,11 +106,12 @@ mass at every level), which is why its floor is load-bearing:
 **Not met / deferred:**
 - At the *provisional* floor 0.5, km_ulb would surface **8,981** findings if the
   rule were enabled — directionally correct (dominant contexts suppressed) but
-  too many for a clean default. A floor of ≈0.9 (1,687) or 0.99 (233) is far more
-  selective; the knobs are **not** frozen. (A planned follow-up coarsens the
-  context to *adjacent script* — looking through whitespace/punctuation — which
-  should collapse the medium-evidence gradient toward the punct-style bimodal
-  shape and unify ZWSP with the ZWJ/ZWNJ treatment.)
+  too many for a clean default. A floor of ≈0.9 (~1.7k) or 0.99 (~350) is far
+  more selective; the knobs are **not** frozen. (The context was since coarsened
+  to full-`Script` letters + `Whitespace`/`ZeroWidthControl`/`OtherNonLetter`/
+  `Boundary`, no look-through — it reduced the number of contexts but Khmer
+  genuinely uses ZWSP across several of them, so a gradient persists; ≥0.5 ≈
+  13k, ≥0.9 ≈ 2k. Still default-off; a high floor remains needed.)
 - Only Khmer was measured. Lao, Thai, Myanmar and a Japanese/CJK corpus are
   required before freezing — **the Japanese optional-use case is an unverified
   acceptance surface** (the synthetic `optional_use_corpus_suppresses_its_convention`
@@ -122,26 +123,25 @@ Graduation needs the missing corpora and a floor/rate re-tune (recommend floor
 
 ## Sizes and cost (§14)
 
-- **`.wasm`** (bundler, release): 533,825 → 689,274 bytes (+155 KiB / +29%),
-  from the serde `Deserialize` + tsify codegen for `ScriptTag` and the ~12 new
-  stats/config types. Code size, not wire size.
-- **Serialized `RuleStats`** — **no site cap; every occurrence is stored** so
-  emission is complete (the earlier per-site cap was removed after review — it
-  silently dropped valid findings; see ADR 0023 Consequences). Round-tripped per
-  incremental call:
-  - punct on am_ulb (default-**on**): **≈580 KiB** (14,190 sites, mostly the
-    *suppressed* `፡፡`/`፣`/`።` conventions — stored but never emitted; the
-    inherent judge-from-Stats cost). Modest for a whole Ethiopic Bible; accepted.
-  - ZWSP on km_ulb (default-**off**): **≈12.4 MiB** (308,094 sites) — unpaid on
-    shipped defaults, but a real **graduation gate**. The non-lossy fix is a
-    `FindingArgs` "bounded sample + true count" shape (not a lossy cap); deferred
-    until graduation needs it. The planned coarse-script context reduces the
-    number of *contexts*, not the number of sites, so it does not by itself
-    shrink this — the sample+count shape is what will.
-- **Judge cost:** km_ulb ZWSP re-judge from cached stats = **2.3 ms** even at
-  308k sites — `judge` aggregates from `sites.len()` and floor-gates before
-  iterating, so it is O(books·contexts + emitted sites), not O(total
-  occurrences); no `StatefulRule` contract change is warranted.
+The site-storage saga resolved cleanly: **neither rule stores per-occurrence
+sites**, so the ~12 MiB wire payload an interim stateful-with-sites design had
+is gone.
+
+- **`.wasm`** (bundler, release): ~690 KiB (was 533,825 B), from the serde +
+  tsify codegen for the new stats/config types. Code size, not wire size.
+- **Serialized `RuleStats`:**
+  - `punct.adjacency-anomaly` (default-**on**) is **aggregate-only stateful** —
+    per-book `char`/`String` counts, **no sites**. am_ulb's `Stats` is a few KB
+    (it stores the handful of `፤`-family lead glyphs + pattern strings + counts),
+    round-trips trivially, and `judge` re-scans `target` to emit spans. Emission
+    is complete (no cap) because spans are re-derived. Incremental scores equal
+    the full-corpus scores (tested).
+  - `uni.zero-width-space-anomaly` (default-**off**) is **stateless** — it caches
+    nothing, so it contributes nothing to `Stats` at all. The cost is the
+    incremental carve-out (must be passed the full corpus when enabled; ADR 0023).
+- **Cost model:** punct `judge` is O(corpus contexts + `target` candidates); ZWSP
+  `check` is one O(map) pass. The former 2.3 ms re-judge figure was for the
+  discarded stateful-with-sites design and no longer applies.
 
 ## Out-of-scope discovery
 

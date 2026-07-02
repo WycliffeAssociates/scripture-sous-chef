@@ -274,3 +274,46 @@ calibration note.
 **Still open (design, not yet built):** coarsen the ZWSP context toward
 adjacent-script / letter-vs-nonletter and fold in ZWJ/ZWNJ (retiring the joiner
 allow-list). Under discussion with the user.
+
+## 2026-07-01 — architecture reset after review (statefulness + context + joiners)
+
+A clean-room review of the stateless migration caught real issues; net result is
+a simpler, correct landing. Decisions (with the user):
+
+- **ZWSP context coarsened** (implemented): neighbour = `Letter(full
+  unicode_script::Script) | Whitespace | ZeroWidthControl | OtherNonLetter |
+  Boundary`, no look-through. Full `Script` read directly on the rare neighbours
+  (no fused-table change, no curated list → untracked scripts distinguished).
+  Keeps "wrong script" + doubled-ZWSP + redundant-separator shapes; drops the
+  per-category fragmentation. On km_ulb the dominant Khmer↔Khmer suppresses
+  (~0), but a gradient persists (Khmer uses ZWSP across several contexts) — so
+  ZWSP stays default-off, high floor.
+- **punct → aggregate-only stateful (B).** The interim stateless project-rule
+  broke ADR 0017's incremental guarantee for **default-on** punct (a project
+  rule sees only `target`, so an incremental one-book call scored book-local).
+  Fix: cache per-book run-start + pattern *counts* (no sites — a few KB);
+  `judge(stats, target)` sums corpus-wide and **re-scans `target`** to emit.
+  `StatefulRule::judge` gained a `target` param (casing/proportionality ignore
+  it). Test proves incremental score == full-corpus score. The 12 MiB site
+  payload is gone (nothing per-occurrence is cached).
+- **ZWSP kept stateless** (default-off, experimental) — documented **incremental
+  carve-out**: must be passed the full corpus when enabled; graduates to
+  aggregate-only stateful (like punct) later, which is where `Script`
+  serialisation cost would land. Stateless lets us defer that.
+- **Determinism fix (review #3):** punct `judge` sorts by `(sid, start, end)` so
+  overlapping candidates sharing a start (`..`/`..,`) order deterministically —
+  fixes the HashMap-iteration nondeterminism the stateless pass introduced.
+- **`ZeroWidthControl` comment narrowed (review #2):** a joiner inside a letter
+  cluster classifies as `Letter`; `ZeroWidthControl` fires only for a standalone
+  zero-width grapheme (chiefly doubled ZWSP).
+- **Joiners: NOT implemented (review #5).** "Deterministic Unicode-property
+  check" is scalar-determinable but underspecified (Joining_Type incl.
+  transparent ≠ `Mn`; virama ≠ InCB exactly; emoji shape; ZWJ≠ZWNJ; and UTS #39
+  is conservative *security* rules, not a natural-text grammar). Parked as
+  spec-first future work: measure km_ulb's 22,648 ZWNJ contexts, write exact
+  ZWNJ/ZWJ predicates + UCD extracts, test Arabic/Indic/Khmer/emoji.
+  `script_allows_joiners` unchanged; Khmer ZWNJ FP remains a documented,
+  out-of-scope gap.
+
+Docs reconciled (ADRs 0023/0024, calibration note, rules catalog, config.md).
+165 core tests (serial + parallel), 2 wasm tests, workspace + wasm clean.

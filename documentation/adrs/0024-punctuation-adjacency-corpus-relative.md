@@ -74,12 +74,23 @@ a corpus fact, not an allow-list fact.
 - Findings become `Severity::Info` + score (conformance surprise, not a
   correctness verdict); `punct.placeholder-leftover` and `punct.space-before-punct`
   stay deterministic and unchanged.
-- **All sites are stored; emission is complete (no cap)** — see ADR 0023's
-  Consequences for why a per-site cap is lossy (a pattern frequent in count but
-  rare vs its denominator must emit in full). For this default-on rule the wire
-  cost is modest (am_ulb, whose dominant `፡፡` convention stores every site, is
-  ~580 KiB of `Stats`); `judge` aggregates from `sites.len()` and floor-gates
-  before iterating, so it is not O(total candidates) in cost.
+- **Aggregate-only stateful — caches counts, not sites.** The rule is a
+  `StatefulRule` whose `reduce` caches only per-book aggregates (per-lead
+  run-start counts + per-pattern occurrence counts — `char`/`String` keyed, a
+  few KB even on a punctuation-pervasive corpus); it stores **no** per-occurrence
+  sites. `judge(stats, target)` sums the corpus-wide counts, computes per-pattern
+  evidence, and **re-scans `target`** to emit spans. This keeps `Stats` tiny
+  *and* keeps the ADR 0017 incremental guarantee: an edited-book-only call scores
+  its patterns against the corpus-wide counts in the merged prior, so the score
+  is identical to the full analysis (not book-local). Emission is complete (no
+  lossy cap) because sites are re-derived, not stored. (An interim revision made
+  it a *stateless* project rule; that broke the incremental guarantee for this
+  default-on rule — scoring book-locally on an incremental call — so it was
+  moved to this aggregate-only stateful shape. See ADR 0023 for why the
+  still-experimental ZWSP rule stays stateless for now.)
+- **Deterministic output.** `judge` sorts emitted findings by
+  `(sid, start, end)` — `end` included so overlapping candidates that share a
+  start (`..` and `..,`) order deterministically regardless of map iteration.
 - **`emit_score_min` default is 0.5.** Most corpora are bimodal (conventions ≈0,
   anomalies ≈1), where the floor value is insensitive — but ayn_reg's
   moderate-frequency Arabic convention `۔۔` scores ≈0.48, in the *same band* as

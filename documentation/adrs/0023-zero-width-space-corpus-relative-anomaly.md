@@ -48,12 +48,17 @@ glance. So the signal is real — it just isn't a hygiene assertion.
    and cedes discrimination to the per-context factor, while a corpus with
    essentially no ZWSP keeps the global factor near zero and surfaces the lone
    occurrence.
-5. **Context = the ordered `(left, right)` grapheme classes** around the ZWSP:
-   the first script-bearing scalar of each neighbour (so a trailing combining
-   mark can't hide its base script), else a category (whitespace / punctuation /
-   symbol / numeric / another ZWSP / other), and `Boundary` at a verse edge.
-   Untracked scripts collapse to `Other`; `ScriptTag` is **not** expanded for
-   this rule.
+5. **Context = the ordered `(left, right)` neighbour kinds** around the ZWSP,
+   coarse by design: a **letter** carries its *full* Unicode `Script` (Latin ≠
+   Khmer ≠ Han — so "ZWSP in the wrong script" is a distinct, rare context);
+   everything else collapses to `Whitespace` (redundant-separator shape),
+   `ZeroWidthControl` (an adjacent standalone zero-width char — the doubled-ZWSP
+   shape), or `OtherNonLetter` (punctuation / symbol / digit); a verse edge is
+   `Boundary`. **No look-through** — immediate adjacency is used, so a
+   `Khmer ZWSP SPACE Khmer` sequence stays `(Khmer, Whitespace)` rather than
+   being laundered into `(Khmer, Khmer)`. Full `Script` is read directly from
+   `unicode_script` on the (rare) ZWSP neighbours — no fused-table change, and
+   no curated script list (so untracked scripts are still distinguished).
 
 ## Rationale
 
@@ -78,31 +83,33 @@ glance. So the signal is real — it just isn't a hygiene assertion.
   context scores high. Evidence is **not** monotone in raw `Z` for a fixed
   context — global familiarity rises while that context's share falls, an
   intentional tradeoff — so no test or claim asserts that.
-- **Judge is not O(total ZWSP).** `judge` aggregates from per-book per-context
-  *counts* and floor-gates before touching sites, so it is
-  O(books·contexts + emitted sites). A suppressed common context contributes one
-  count and its sites are never iterated — so the O(project) recompute worry does
-  not materialise, and no change to the `StatefulRule` contract is needed.
+- **Computed in one pass, no state (start simple).** An earlier revision made
+  this stateful (ADR 0017) and cached per-occurrence sites, but the site array
+  dominated the wire (~12 MiB on km_ulb) and no consumer exercises
+  incrementality yet. It is now a **stateless project rule**: aggregate the map,
+  score, emit — nothing cached. When it graduates it will move to the
+  aggregate-only stateful shape `punct.adjacency-anomaly` uses (cache tiny
+  per-book counts, re-scan `target` to emit), which is where the `Script`
+  serialisation cost lands; stateless lets us defer that.
 
 ## Consequences
 
 - The 330k/17k hygiene ZWSP storms on ZWSP-using corpora go to zero; a conforming
   corpus's dominant contexts fall below the emission floor and serialise no
   findings.
-- **All sites are stored; emission is complete (no site cap).** An earlier
-  revision capped retained sites per context per book, but review showed that is
-  lossy: a context that is *frequent in absolute count yet rare relative to its
-  denominator* clears the floor and must emit every occurrence, so a cap silently
-  drops valid findings (the "common ⇒ never surfaces" premise is false). We
-  therefore store every site and emit for every occurrence above the floor —
-  `judge` aggregates from `sites.len()` and floor-gates before iterating, so its
-  *cost* is still O(books·contexts + emitted sites). The consequence is **wire
-  size**: a ZWSP-pervasive corpus with the rule enabled serialises one site per
-  occurrence (~12 MiB of `Stats` on km_ulb). This is **unpaid on shipped
-  defaults** (the rule is default-off) but is a real **graduation gate**: the
-  sanctioned non-lossy fix — deferred until graduation actually needs it — is a
-  `FindingArgs` "bounded sample + true count" shape (like `BracketWindow`),
-  **not** a lossy per-site cap and **not** a `StatefulRule` contract change.
+- **No `Stats`, no wire cost** — being stateless, the rule serialises nothing,
+  so the ~12 MiB site-payload problem an earlier (stateful-with-sites) revision
+  had simply does not exist here. The tradeoff is the **incremental carve-out**
+  below.
+- **Incremental carve-out (a real contract note).** Because it scores over the
+  map it is handed, an incremental `analyze_stateful` call that supplies only an
+  edited book would score ZWSP *book-locally*, not corpus-wide — so
+  **consumers must pass the full corpus when this rule is enabled.** ADR 0017's
+  incremental guarantee is explicitly *not* extended to it yet. This is
+  acceptable because it is default-off/experimental; graduation resolves it by
+  moving to aggregate-only stateful (per-book counts cached, `target` re-scanned
+  at emit — the shape `punct.adjacency-anomaly` already uses), which restores the
+  guarantee without caching sites.
 - **Limitations (stated so they are known, not surprises):**
   - `boundary_opportunities` counts both verse edges, so the global rate is
     *per-position-including-edges*; for many-short-verse corpora the edges dilute
