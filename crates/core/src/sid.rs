@@ -23,6 +23,10 @@ impl BookId {
 
     /// Parse a 3-character ASCII USFM book code. Returns `None` for any
     /// other length or non-ASCII content.
+    // Deliberately named `from_str` to read as a parser, but returns `Option`
+    // (an invalid book code is not an error worth a dedicated `Err` type), so
+    // it does not implement `std::str::FromStr`.
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<Self> {
         let b = s.as_bytes();
         if b.len() != 3 || !b.iter().all(|c| c.is_ascii()) {
@@ -70,7 +74,7 @@ impl Sid {
         let book_s = parts.next()?;
         let cv = parts.next()?;
         let book = BookId::from_str(book_s)?;
-        let mut cv_iter = cv.split(|c: char| c == ':' || c == '.');
+        let mut cv_iter = cv.split([':', '.']);
         let ch: u16 = cv_iter.next()?.parse().ok()?;
         let vs: u16 = cv_iter.next()?.parse().ok()?;
         Some(Self::new(book, ch, vs))

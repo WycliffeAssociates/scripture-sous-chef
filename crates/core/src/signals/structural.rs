@@ -8,9 +8,17 @@ use crate::rule::PerVerseRule;
 use crate::span::Span;
 
 /// Source-markup leftovers in verse text: USFM backslash markers
-/// (`\v`, `\p`, `\f`, `\w` …), USFM attribute remnants (`|` pipes,
-/// `^` carets), and raw `<…>` HTML/XML tags. The highest-value scan in
-/// the deterministic batch — it catches ingest bugs.
+/// (`\v`, `\p`, `\f`, `\w` …) and raw `<…>` HTML/XML tags. The
+/// highest-value scan in the deterministic batch — it catches ingest bugs.
+///
+/// We deliberately do *not* flag bare `|` or `^`. USFM's text grammar
+/// (`([^\\]|\\[/~\\|])+`, "simple text up to the next marker") treats every
+/// non-backslash byte — pipes and carets included — as legitimate content;
+/// only the backslash is special. A surviving `|`/`^` would at most signal a
+/// buggy USFM *parser* upstream, which is that parser's job to fix, not a
+/// property of the translation. A caret wedged mid-word (`b^bê`) is real, but
+/// it's a punctuation-usage anomaly best surfaced statistically
+/// ([`crate::signals::punctuation`]), not a deterministic markup scan.
 pub const SOURCE_MARKER_LEFTOVER: RuleId = RuleId::SourceMarkerLeftover;
 
 pub struct SourceMarkerLeftover;
@@ -72,11 +80,6 @@ pub fn scan_source_marker_leftover(text: &str) -> Vec<Span> {
                 }
                 i += 1;
             }
-            // USFM attribute / special-text remnants.
-            b'|' | b'^' => {
-                spans.push(Span { start: i, end: i + 1 });
-                i += 1;
-            }
             _ => i += 1,
         }
     }
@@ -88,18 +91,18 @@ pub fn scan_source_marker_leftover(text: &str) -> Vec<Span> {
 // ─────────────────────────────────────────────────────────────────────
 
 /// Git merge-conflict markers committed into verse text: a run of three
-/// or more `<`, `=`, or `>` — the heads of `<<<<<<< HEAD`, `=======`,
-/// `>>>>>>> branch`. A resolved merge never leaves these; their presence
-/// means a conflict was saved unresolved. We deliberately *don't* match
-/// git's exact seven-char, line-anchored form: a non-default
-/// `conflict-marker-size`, a truncated paste, or a projection that
-/// collapsed the marker's newlines would all slip past it. No scripture
-/// body legitimately repeats one of these characters three times, so the
-/// low bar costs nothing in false positives. The diff3 base marker
-/// (`|||||||`) is intentionally absent: any pipe already trips
-/// [`SOURCE_MARKER_LEFTOVER`] as a USFM attribute remnant, so flagging it
-/// here too would only double-report. Language-blind: the run is ASCII
-/// punctuation, never script.
+/// or more `<`, `=`, `>`, or `|` — the heads of `<<<<<<< HEAD`, `=======`,
+/// `>>>>>>> branch`, and the diff3 base marker `||||||| merged common
+/// ancestors`. A resolved merge never leaves these; their presence means a
+/// conflict was saved unresolved. We deliberately *don't* match git's exact
+/// seven-char, line-anchored form: a non-default `conflict-marker-size`, a
+/// truncated paste, or a projection that collapsed the marker's newlines
+/// would all slip past it. No scripture body legitimately repeats one of
+/// these characters three times, so the low bar costs nothing in false
+/// positives. The pipe run lives here rather than in
+/// [`SOURCE_MARKER_LEFTOVER`] because a bare `|` is legitimate USFM text —
+/// only a *run* of them is conflict evidence. Language-blind: the run is
+/// ASCII punctuation, never script.
 pub const MERGE_CONFLICT_MARKER: RuleId = RuleId::MergeConflictMarker;
 
 pub struct MergeConflictMarker;
@@ -124,7 +127,7 @@ pub fn scan_merge_conflict_marker(text: &str) -> Vec<Span> {
     let mut i = 0usize;
     while i < bytes.len() {
         let c = bytes[i];
-        if matches!(c, b'<' | b'=' | b'>') {
+        if matches!(c, b'<' | b'=' | b'>' | b'|') {
             let start = i;
             while i < bytes.len() && bytes[i] == c {
                 i += 1;
@@ -183,9 +186,13 @@ mod tests {
     }
 
     #[test]
-    fn flags_attribute_remnants() {
-        assert_eq!(slices("grace|strong=\"G5485\""), vec!["|"]);
-        assert_eq!(slices("foo ^ bar"), vec!["^"]);
+    fn bare_pipe_and_caret_are_clean() {
+        // USFM text grammar treats non-backslash bytes as legitimate content.
+        // A surviving `|`/`^` is at most an upstream parser bug, not a
+        // translation signal, so this rule stays out of it.
+        assert!(slices("grace|strong=\"G5485\"").is_empty());
+        assert!(slices("foo ^ bar").is_empty());
+        assert!(slices("sô turu ané bêbê whã b^bê supitu").is_empty());
     }
 
     #[test]
@@ -209,9 +216,16 @@ mod tests {
     }
 
     #[test]
-    fn ignores_diff3_base_pipes() {
-        // Pipes are source-marker-leftover's job, not ours.
-        assert!(conflict_slices("||||||| merged common ancestors").is_empty());
+    fn flags_diff3_base_pipes() {
+        // The diff3 base marker: a run of pipes is conflict evidence. A bare
+        // `|` is legitimate USFM text and stays clean (see below).
+        assert_eq!(conflict_slices("||||||| merged common ancestors"), vec!["|||||||"]);
+    }
+
+    #[test]
+    fn bare_pipe_is_not_a_conflict() {
+        assert!(conflict_slices("grace|strong=\"G5485\"").is_empty());
+        assert!(conflict_slices("a | b || c").is_empty());
     }
 
     #[test]

@@ -60,7 +60,11 @@ Worst per-book count anywhere: 85 total bracket findings in `acz`
    visible without shouting. (Cross-verse balance is the book-scope
    future per ADR 0011.)
 5. **Everything else ships as specced**: `struct.source-marker-leftover`
-   (4 real `|` leftovers in ne_ulb GEN — exactly its purpose),
+   (4 real `|` leftovers in ne_ulb GEN). **[Superseded by ADR 0026:** those
+   `|` came from the harness's naive USFM stripping (see Notes below) — a
+   parser deficiency, not a translation signal — so the `|`/`^` arms were
+   later dropped and the diff3 pipe run moved to `merge-conflict-marker`.
+   The backslash/HTML arms are unaffected.**]**
    `uni.combining-mark-without-base` (1–2 per corpus, all real: a bare
    `´` on a quote in es REV 2:19), `uni.mixed-script-in-token` (1 hit
    total, ne ZEP), `uni.mixed-numeral-systems` (1 ne + 1 fa, Warning

@@ -19,13 +19,20 @@ deterministic default batch (ADR 0014).
 - `In the \v 2 beginning` → the `\v` marker
 - `word \f + \ft note \f* more` → `\f`, `\ft`, `\f*` (footnote markers, including the `*` close)
 - `a \+nd Lord\+nd* b` → `\+nd`, `\+nd*` (nested-marker `\+` form)
-- `grace|strong="G5485"` → the `|` (USFM attribute pipe)
-- `foo ^ bar` → the `^` (special-text caret remnant)
 - `a <b>bold</b> word` → `<b>` and `</b>` (raw HTML/XML tags)
 - `a \ b` → a lone backslash (no place in scripture body)
 
+**Does *not* flag** — bare `|` or `^`. USFM's text grammar
+(`([^\\]|\\[/~\\|])+`, "simple text up to the next marker") treats every
+non-backslash byte, pipes and carets included, as legitimate content — only
+the backslash is special. A surviving `|`/`^` would signal a buggy USFM
+*parser* upstream, which is that parser's job to fix, not a property of the
+translation (ADR 0026). A caret wedged mid-word (`b^bê`) is a real oddity,
+but it's a punctuation-usage anomaly for a probabilistic rule to surface, not
+a deterministic markup scan.
+
 **Why it matters** — The text that reaches the analyzer is supposed to be
-clean, projected verse content. A surviving `\v`, `|`, or `<br/>` means the
+clean, projected verse content. A surviving `\v` or `<br/>` means the
 USFM/HTML stripping pipeline upstream broke or was skipped. This is the
 highest-value scan in the deterministic batch: it catches whole-pipeline
 failures that would otherwise corrupt every downstream rule's view of the
@@ -41,10 +48,10 @@ text.
 - **Backslash markers are matched structurally**, not against a known-marker
   list: backslash, optional `+`, ASCII alphanumerics, optional closing `*`.
   So an unknown or future USFM marker still flags.
-- **The `|` pipe overlap is deliberate.** The diff3 merge-conflict base
-  marker (`|||||||`) is *not* matched by `struct.merge-conflict-marker` —
-  it's left to this rule, because any pipe already trips here as a USFM
-  attribute remnant. Flagging it in both would double-report.
+- **The diff3 base marker (`|||||||`) belongs to
+  `struct.merge-conflict-marker`,** not here. A bare `|` is legitimate USFM
+  text; only a *run* of three or more is conflict evidence, so the pipe run
+  lives with the other conflict-marker runs (see that rule's note).
 - Language-blind by construction (`structural.rs` header) — no corpus stats,
   same behavior in every script.
 
@@ -59,8 +66,9 @@ obvious place to tighten if a corpus ever uses angle brackets in prose.
 
 > **Severity** Warning · **Default** on · **Scope** per-verse · **Knobs** none
 
-**Flags** — A run of **3 or more** identical `<`, `=`, or `>`:
+**Flags** — A run of **3 or more** identical `<`, `=`, `>`, or `|`:
 - `<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> feature/x` → `<<<<<<<`, `=======`, `>>>>>>>`
+- `||||||| merged common ancestors` → `|||||||` (the diff3 base marker)
 - `ours=======theirs` → `=======` (fires even when a projection collapsed the marker's newlines)
 - `<<<`, `>>>>` → fire (below git's default 7-char marker size)
 
@@ -79,11 +87,12 @@ built-in constant.
   a projection that dropped the marker's surrounding newlines would all slip
   past the strict form. Matching any 3+ run catches every variant at no
   false-positive cost.
-- `<<` / `==` (runs of two) are ordinary text — quotes, a rule fragment — and
-  do **not** flag.
-- **The diff3 base marker (`|||||||`) is intentionally absent here.** Any pipe
-  already trips `struct.source-marker-leftover` as a USFM attribute remnant,
-  so matching it here too would only double-report. (See that rule's note.)
+- `<<` / `==` / `||` (runs of two) are ordinary text — quotes, a rule
+  fragment, a bare USFM pipe — and do **not** flag.
+- **The diff3 base marker (`|||||||`) is matched here** alongside the other
+  conflict heads (ADR 0026). A bare `|` is legitimate USFM text, so
+  `struct.source-marker-leftover` deliberately ignores it; only a run of
+  three or more pipes is conflict evidence, which is this rule's job.
 - Language-blind: the run is ASCII punctuation, never script.
 
 **Open issues / future work** — None.
