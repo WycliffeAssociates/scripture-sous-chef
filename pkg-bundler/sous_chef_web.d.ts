@@ -24,30 +24,8 @@ export interface Finding {
 }
 
 /**
- * A flag candidate: a lowercase token observed after a terminal glyph.
- * Retained so `judge` can emit findings without re-scanning the text.
- *
- * `sid` is a `Copy` [`Sid`] natively — building it costs nothing in the hot
- * `reduce` loop and `judge` reads it back directly — yet it still crosses
- * the wasm boundary as the canonical `\"GEN 1:1\"` **string** (via
- * [`sid_as_string`] + the tsify `type` override), so `Stats` round-trips as
- * a typed value the shell holds opaquely with no hand-rolled wrapper
- * (ADR 0017). The string is materialised only when serde actually
- * serialises — never on the native analysis path.
- */
-export interface LowerSite {
-    sid: string;
-    /**
-     * Byte offsets of the lowercase grapheme within its verse.
-     */
-    start: number;
-    end: number;
-    glyph: string;
-}
-
-/**
  * Cached casing statistics, keyed by book code (e.g. `\"GEN\"`) so an edit
- * supersedes only its book. The corpus-wide `P(upper | glyph)` is the sum
+ * supersedes only its book. The corpus-wide per-glyph counts are the sum
  * of the per-book counts, derived at `judge` time.
  */
 export interface CasingStats {
@@ -60,6 +38,14 @@ export interface CasingStats {
  */
 export interface ProportionalityStats {
     per_book: Record<string, RatioObs[]>;
+}
+
+/**
+ * Cached punct-only-token aggregates, partitioned by book so incremental
+ * analysis can supersede one book without retaining occurrence sites.
+ */
+export interface PunctOnlyTokenStats {
+    per_book: Record<string, BookPunctOnlyToken>;
 }
 
 /**
@@ -107,7 +93,7 @@ export interface PunctuationSpacingStats {
 export type ScriptTag = "Latin" | "Greek" | "Cyrillic" | "Armenian" | "Hebrew" | "Arabic" | "Syriac" | "Thaana" | "Nko" | "Devanagari" | "Bengali" | "Gurmukhi" | "Gujarati" | "Oriya" | "Tamil" | "Telugu" | "Kannada" | "Malayalam" | "Sinhala" | "Thai" | "Lao" | "Tibetan" | "Myanmar" | "Georgian" | "Hangul" | "Ethiopic" | "Cherokee" | "CanadianAboriginal" | "Khmer" | "Mongolian" | "Cjk" | "MathAlphanumeric";
 
 /**
- * Counts behind `P(upper | glyph) = upper / total` for one terminal glyph.
+ * Counts behind the uppercase-majority dominance for one terminal glyph.
  */
 export interface Tally {
     upper: number;
@@ -155,12 +141,20 @@ export interface BookPunctuationAdjacency {
 }
 
 /**
- * One book\'s contribution: the per-glyph counts, the lowercase flag
- * candidates, and the cased-letter tally that drives the emergent gate.
+ * One book\'s aggregate contribution: whitespace-unit count and per-chunk
+ * candidate counts, keyed by the exact chunk text.
+ */
+export interface BookPunctOnlyToken {
+    lexical_units: number;
+    chunks: Record<string, number>;
+}
+
+/**
+ * One book\'s contribution: the per-glyph counts and the cased-letter tally
+ * that drives the emergent gate. Aggregates only — no sites.
  */
 export interface BookCasing {
     counts: Record<string, Tally>;
-    lower_sites: LowerSite[];
     cased_letters: number;
     total_letters: number;
 }
@@ -213,12 +207,22 @@ export interface RatioObs {
 
 /**
  * Partial overrides for `case.sentence-initial-lowercase`\'s knobs. Omitted
- * fields keep core\'s calibrated defaults (`threshold` 0.99,
- * `min_samples` 200).
+ * fields keep core\'s calibrated defaults (`emit_score_min` 0.98,
+ * `confidence_z` 1.96).
  */
 export interface CasingOverrides {
-    threshold?: number;
-    min_samples?: number;
+    emit_score_min?: number;
+    confidence_z?: number;
+}
+
+/**
+ * Partial overrides for `lex.punct-only-token`\'s corpus-relative score.
+ * Omitted fields keep core\'s calibrated defaults (ADR 0030).
+ */
+export interface PunctOnlyTokenOverrides {
+    convention_rate_per_10k?: number;
+    confidence_z?: number;
+    emit_score_min?: number;
 }
 
 /**
@@ -228,6 +232,7 @@ export interface CasingOverrides {
 export interface RepeatedCharacterRunOverrides {
     convention_rate_per_10k?: number;
     word_recurrence_k?: number;
+    confidence_z?: number;
     emit_score_min?: number;
 }
 
@@ -275,7 +280,7 @@ export interface PunctuationSpacingOverrides {
  * deterministically by `uni.redundant-zero-width-space` (ADR 0027), which needs
  * no corpus statistics.
  */
-export type RuleStats = { Casing: CasingStats } | { Proportionality: ProportionalityStats } | { PunctuationAdjacency: PunctuationAdjacencyStats } | { PunctuationSpacing: PunctuationSpacingStats } | { RepeatedCharacterRun: RepeatedCharacterRunStats };
+export type RuleStats = { Casing: CasingStats } | { Proportionality: ProportionalityStats } | { PunctuationAdjacency: PunctuationAdjacencyStats } | { PunctuationSpacing: PunctuationSpacingStats } | { RepeatedCharacterRun: RepeatedCharacterRunStats } | { PunctOnlyToken: PunctOnlyTokenStats };
 
 /**
  * Stable, machine-readable rule identity — a **closed set**.
@@ -286,7 +291,7 @@ export type RuleStats = { Casing: CasingStats } | { Proportionality: Proportiona
  * config and localisation off: Rust via [`RuleId::ALL`] +
  * exhaustive `match`; TS via the `Tsify` string union.
  */
-export type RuleId = "lex.excess-h-whitespace" | "hyg.tab-in-body" | "hyg.control-chars" | "hyg.zero-width-misuse" | "hyg.empty-verse" | "hyg.invalid-codepoint" | "prop.length-ratio" | "struct.source-marker-leftover" | "struct.merge-conflict-marker" | "punct.adjacency-anomaly" | "lex.duplicate-word" | "lex.punct-only-token" | "uni.combining-mark-without-base" | "uni.redundant-zero-width-space" | "uni.mixed-script-in-token" | "lex.repeated-character-run" | "uni.mixed-numeral-systems" | "punct.placeholder-leftover" | "punct.bracket-balance" | "punct.spacing-anomaly" | "case.sentence-initial-lowercase";
+export type RuleId = "lex.excess-h-whitespace" | "hyg.tab-in-body" | "hyg.control-chars" | "hyg.zero-width-misuse" | "hyg.empty-verse" | "hyg.invalid-codepoint" | "hyg.replacement-run" | "prop.length-ratio" | "struct.source-marker-leftover" | "struct.merge-conflict-marker" | "punct.adjacency-anomaly" | "lex.duplicate-word" | "lex.punct-only-token" | "uni.combining-mark-without-base" | "uni.redundant-zero-width-space" | "uni.mixed-script-in-token" | "lex.repeated-character-run" | "uni.mixed-numeral-systems" | "punct.bracket-balance" | "punct.spacing-anomaly" | "case.sentence-initial-lowercase";
 
 /**
  * Structured message arguments — the additive payload ADR 0010 §6
@@ -345,6 +350,7 @@ export interface SousConfig {
     punctuation_adjacency?: PunctuationAdjacencyOverrides;
     punctuation_spacing?: PunctuationSpacingOverrides;
     repeated_character_run?: RepeatedCharacterRunOverrides;
+    punct_only_token?: PunctOnlyTokenOverrides;
 }
 
 /**
