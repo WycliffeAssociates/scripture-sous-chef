@@ -12,14 +12,20 @@
 //!       corpora/bem_reg corpora/en_ulb
 //!   # per-verse batch (one corpus, default config):
 //!   cargo run --release -p ssc-core --example calibrate -- corpora/en_ulb
+//!   # repeated-run score report / parameter sweep:
+//!   cargo run --release -p ssc-core --example calibrate -- --repeat corpora/en_ulb [rate K]
 
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use ssc_core::config::{ProportionalityConfig, PunctuationAdjacencyConfig};
+use ssc_core::config::{
+    ProportionalityConfig, PunctuationAdjacencyConfig, PunctuationSpacingConfig,
+    RepeatedCharacterRunConfig,
+};
 use ssc_core::rule::StatefulRule;
+use ssc_core::signals::lexical::RepeatedCharacterRun;
 use ssc_core::signals::proportionality::ProjectLengthRatio;
-use ssc_core::signals::punctuation::PunctuationAdjacencyAnomaly;
+use ssc_core::signals::punctuation::{PunctuationAdjacencyAnomaly, PunctuationSpacingAnomaly};
 use ssc_core::{
     BookId, Config, Finding, FindingArgs, LengthRatioScope, RuleId, VerseMap, analyze,
     analyze_with_config,
@@ -42,9 +48,8 @@ fn main() {
             println!("{}", serde_json::to_string(&map).unwrap());
             return;
         }
-        // Corpus-relative ZWSP calibration (ADR 0023): enable the default-off
-        // rule at floor 0 to see the full score distribution, and confirm the
-        // deterministic hygiene ZWSP storm is gone.
+        // Redundant-ZWSP report (ADR 0027): count the deterministic duplicate-run
+        // findings the default-on rule emits, and confirm hygiene flags no U+200B.
         [flag, t] if flag == "--zwsp" => {
             zwsp_calib(Path::new(t));
             return;
@@ -55,11 +60,38 @@ fn main() {
             punct_calib(Path::new(t));
             return;
         }
+        // Punctuation spacing calibration (ADR 0029): score distribution at floor
+        // 0, a per-mark spaced:attached tally, and the shipped-floor surface count.
+        [flag, t] if flag == "--spacing" => {
+            spacing_calib(Path::new(t));
+            return;
+        }
         // Repeated-character-run signal exploration: per-finding TSV with the
         // candidate corpus-relative signals (word frequency, run recurrence,
         // corpus base rate) on stdout; per-corpus summary on stderr.
         [flag, t] if flag == "--repeat" => {
-            repeat_calib(Path::new(t));
+            repeat_calib(Path::new(t), RepeatedCharacterRunConfig::default());
+            return;
+        }
+        // Parameter sweep: override the two evidence factors while always
+        // reporting at floor zero. The third knob stays a surfacing policy, not
+        // part of the score sweep.
+        [flag, t, rate, word_k] if flag == "--repeat" => {
+            repeat_calib(
+                Path::new(t),
+                RepeatedCharacterRunConfig {
+                    convention_rate_per_10k: rate.parse().expect("repeat convention rate"),
+                    word_recurrence_k: word_k.parse().expect("repeat word recurrence K"),
+                    ..Default::default()
+                },
+            );
+            return;
+        }
+        // Punct-only-token signal exploration: per-finding TSV (chunk, its
+        // corpus-wide recurrence as a flagged pattern, context) on stdout;
+        // per-corpus summary on stderr.
+        [flag, t] if flag == "--punct-only" => {
+            punct_only_calib(Path::new(t));
             return;
         }
         [t] => {
@@ -215,13 +247,10 @@ fn zwsp_calib(dir: &Path) {
     }
 }
 
-/// Repeated-character-run signal exploration. For every finding the shipped
-/// stateless rule produces, emit the candidate corpus-relative signals so we
-/// can decide how to score:
-///   - the containing word and its corpus frequency (hapax or not),
-///   - how many tokens / distinct word types contain the *same* cluster run,
-///   - the corpus base rate of 3+ letter runs (any cluster).
-fn repeat_calib(dir: &Path) {
+/// Repeated-character-run calibration at floor zero. The scored distribution
+/// comes from the production rule; the TSV joins each site to the human-readable
+/// recurrence signals needed for typo/convention spot checks.
+fn repeat_calib(dir: &Path, cfg: RepeatedCharacterRunConfig) {
     use std::collections::{HashMap, HashSet};
 
     use ssc_core::grapheme::segment;
@@ -231,50 +260,83 @@ fn repeat_calib(dir: &Path) {
     let corpus = dir.file_name().unwrap().to_string_lossy().to_string();
     let target = load_corpus(dir);
 
-    // Corpus pass: word frequencies (case-folded) and run recurrence.
+    // Corpus pass for explanatory TSV columns. Production scoring performs its
+    // own reduction below; keeping this throwaway join separate prevents the
+    // calibration harness from becoming rule infrastructure.
     let mut word_freq: HashMap<String, usize> = HashMap::new();
-    let mut cluster_tokens: HashMap<String, usize> = HashMap::new();
+    let mut cluster_runs: HashMap<String, usize> = HashMap::new();
     let mut cluster_types: HashMap<String, HashSet<String>> = HashMap::new();
     let mut total_tokens = 0usize;
+    let mut lexical_units = 0usize;
     let mut tokens_with_run = 0usize;
     let mut graphemes = Vec::new();
+    let mut word_graphemes = Vec::new();
 
     for text in target.values() {
-        for tok in tokenize(text) {
+        lexical_units += text.split_whitespace().count();
+        let tokens = tokenize(text);
+        total_tokens += tokens.len();
+        graphemes.clear();
+        segment(text, &mut graphemes);
+        let raw_runs = scan_repeated_character_run(text, &graphemes);
+        for run in &raw_runs {
+            *cluster_runs
+                .entry(run.slice(text).graphemes_first().to_lowercase())
+                .or_default() += 1;
+        }
+        for tok in tokens {
             let word = tok.span.slice(text);
+            if word.chars().take(3).count() < 3 {
+                continue;
+            }
             let folded = word.to_lowercase();
+            word_graphemes.clear();
+            segment(&folded, &mut word_graphemes);
+            if scan_repeated_character_run(&folded, &word_graphemes).is_empty() {
+                continue;
+            }
             *word_freq.entry(folded.clone()).or_default() += 1;
-            total_tokens += 1;
-            graphemes.clear();
-            segment(word, &mut graphemes);
-            let runs = scan_repeated_character_run(word, &graphemes);
+            let runs: Vec<_> = raw_runs
+                .iter()
+                .filter(|run| tok.span.start <= run.start && run.end <= tok.span.end)
+                .collect();
             if runs.is_empty() {
                 continue;
             }
             tokens_with_run += 1;
             let mut seen = HashSet::new();
-            for r in &runs {
+            for r in runs {
                 // Cluster = first grapheme of the run, folded.
-                let run_str = r.slice(word);
-                let cluster = run_str
-                    .graphemes_first()
-                    .to_lowercase();
+                let cluster = r.slice(text).graphemes_first().to_lowercase();
                 if seen.insert(cluster.clone()) {
-                    *cluster_tokens.entry(cluster.clone()).or_default() += 1;
-                    cluster_types.entry(cluster).or_default().insert(folded.clone());
+                    cluster_types
+                        .entry(cluster)
+                        .or_default()
+                        .insert(folded.clone());
                 }
             }
         }
     }
 
-    // Finding pass: the rule as shipped, joined to its containing token.
-    let findings = analyze(&target, None);
-    let repeat: Vec<_> = findings
-        .iter()
-        .filter(|f| f.code == RuleId::RepeatedCharacterRun)
-        .collect();
+    let rule = RepeatedCharacterRun {
+        cfg: RepeatedCharacterRunConfig {
+            emit_score_min: 0.0,
+            ..cfg
+        },
+    };
+    let t0 = std::time::Instant::now();
+    let repeat = rule.judge(&rule.reduce(&target, None), &target);
+    eprintln!(
+        "{corpus}: repeat reduce+judge {:?}; rate={} K={}",
+        t0.elapsed(),
+        cfg.convention_rate_per_10k,
+        cfg.word_recurrence_k
+    );
+    report_scored("lex.repeated-character-run", &target, &repeat);
 
-    println!("corpus\tsid\tword\tcluster\trun_len\tword_freq\tsame_run_tokens\tsame_run_types\ttokens_with_run\ttotal_tokens");
+    println!(
+        "corpus\tsid\tword\tcluster\trun_len\tword_freq\tcluster_runs\tcluster_rate_per_10k\tsame_run_types\ttokens_with_run\tlexical_units\tscore"
+    );
     for f in &repeat {
         let text = &target[&f.sid];
         let word = tokenize(text)
@@ -289,22 +351,26 @@ fn repeat_calib(dir: &Path) {
         let cluster = run_str.graphemes_first().to_lowercase();
         let folded = word.to_lowercase();
         println!(
-            "{corpus}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+            "{corpus}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.4}\t{}\t{}\t{}\t{:.6}",
             f.sid,
             word,
             cluster,
             run_len,
             word_freq.get(&folded).copied().unwrap_or(0),
-            cluster_tokens.get(&cluster).copied().unwrap_or(0),
+            cluster_runs.get(&cluster).copied().unwrap_or(0),
+            cluster_runs.get(&cluster).copied().unwrap_or(0) as f64 * 10_000.0
+                / lexical_units.max(1) as f64,
             cluster_types.get(&cluster).map(|s| s.len()).unwrap_or(0),
             tokens_with_run,
-            total_tokens,
+            lexical_units,
+            f.score.unwrap_or(0.0),
         );
     }
     eprintln!(
-        "{corpus}: {} verses, {} tokens, {} tokens-with-run ({:.2}/10k), {} findings",
+        "{corpus}: {} verses, {} UAX tokens, {} lexical units, {} tokens-with-run ({:.2}/10k UAX tokens), {} findings",
         target.len(),
         total_tokens,
+        lexical_units,
         tokens_with_run,
         tokens_with_run as f64 * 10_000.0 / total_tokens.max(1) as f64,
         repeat.len()
@@ -319,6 +385,68 @@ impl GraphemesFirst for str {
         use unicode_segmentation::UnicodeSegmentation;
         self.graphemes(true).next().unwrap_or("")
     }
+}
+
+/// Punct-only-token signal exploration: every finding the shipped rule
+/// produces, with the exact flagged chunk, how many times that same chunk is
+/// flagged corpus-wide (pattern recurrence — the candidate convention signal),
+/// and a little context for eyeballing.
+fn punct_only_calib(dir: &Path) {
+    use std::collections::HashMap;
+
+    use ssc_core::signals::lexical::scan_punct_only_token;
+
+    let corpus = dir.file_name().unwrap().to_string_lossy().to_string();
+    let target = load_corpus(dir);
+
+    // Pass 1: count every flagged chunk pattern corpus-wide.
+    let mut pattern_count: HashMap<String, usize> = HashMap::new();
+    let mut per_verse: Vec<(ssc_core::Sid, Vec<ssc_core::Span>)> = Vec::new();
+    for (sid, text) in &target {
+        let spans = scan_punct_only_token(text);
+        if spans.is_empty() {
+            continue;
+        }
+        for s in &spans {
+            *pattern_count.entry(s.slice(text).to_string()).or_default() += 1;
+        }
+        per_verse.push((*sid, spans));
+    }
+    let total: usize = pattern_count.values().sum();
+
+    // Pass 2: emit per-finding rows.
+    println!("corpus\tsid\tchunk\tchunk_count\ttotal_findings\tverses\tcontext");
+    for (sid, spans) in &per_verse {
+        let text = &target[sid];
+        for s in spans {
+            let chunk = s.slice(text);
+            let ctx_start = text[..s.start]
+                .char_indices()
+                .rev()
+                .nth(19)
+                .map(|(i, _)| i)
+                .unwrap_or(0);
+            let ctx: String = text[ctx_start..]
+                .chars()
+                .take(20 + chunk.chars().count() + 20)
+                .collect::<String>()
+                .replace(['\t', '\n'], " ");
+            println!(
+                "{corpus}\t{sid}\t{chunk}\t{}\t{total}\t{}\t{ctx}",
+                pattern_count[chunk],
+                target.len(),
+            );
+        }
+    }
+    let mut top: Vec<_> = pattern_count.iter().collect();
+    top.sort_by(|a, b| b.1.cmp(a.1));
+    let head: Vec<String> = top.iter().take(6).map(|(p, n)| format!("[{p}]x{n}")).collect();
+    eprintln!(
+        "{corpus}: {} verses, {total} findings, {} distinct patterns | {}",
+        target.len(),
+        pattern_count.len(),
+        head.join(" ")
+    );
 }
 
 /// Punctuation adjacency calibration (ADR 0024) at floor 0.
@@ -342,7 +470,66 @@ fn punct_calib(dir: &Path) {
     println!("\nshipped default surfaces: {shipped_n}");
 }
 
-/// Shared score-distribution report for the two corpus-relative rules: total
+/// Punctuation spacing calibration (ADR 0029) at floor 0. Reports the production
+/// score distribution, plus a naive per-mark spaced:attached tally (harness-local
+/// scan, for eyeballing which marks are conventions), and how many the shipped
+/// floor (0.75) surfaces with the rule enabled.
+fn spacing_calib(dir: &Path) {
+    let corpus = dir.file_name().unwrap().to_string_lossy().to_string();
+    let target = load_corpus(dir);
+    eprintln!("{corpus}: {} verses", target.len());
+
+    let rule = PunctuationSpacingAnomaly {
+        cfg: PunctuationSpacingConfig { emit_score_min: 0.0, ..Default::default() },
+    };
+    let t0 = std::time::Instant::now();
+    let findings = rule.judge(&rule.reduce(&target, None), &target);
+    eprintln!("spacing reduce+judge: {:?}", t0.elapsed());
+    report_scored("punct.spacing-anomaly", &target, &findings);
+
+    // Naive per-mark tally: a mark preceded (ignoring horizontal whitespace) by a
+    // letter is an opportunity; spaced iff whitespace intervened. Mirrors the
+    // rule's letter-governed, cluster-excluding domain closely enough to eyeball.
+    let mut counts: BTreeMap<char, (u64, u64)> = BTreeMap::new(); // (spaced, attached)
+    for text in target.values() {
+        let mut prev_is_letter = false;
+        let mut ws_since = false;
+        for c in text.chars() {
+            if matches!(c, ' ' | '\t' | '\u{00A0}' | '\u{202F}') {
+                ws_since = true;
+                continue;
+            }
+            if matches!(c, '.' | ',' | ';' | ':' | '?' | '!') {
+                if prev_is_letter {
+                    let e = counts.entry(c).or_default();
+                    if ws_since { e.0 += 1 } else { e.1 += 1 }
+                }
+                prev_is_letter = false; // a following mark clings to this one
+                ws_since = false;
+                continue;
+            }
+            prev_is_letter = c.is_alphabetic();
+            ws_since = false;
+        }
+    }
+    println!("\nper-mark spacing (spaced : attached, majority):");
+    for (mark, (sp, at)) in &counts {
+        let n = sp + at;
+        let maj = (*sp).max(*at) as f64 / n.max(1) as f64 * 100.0;
+        let which = if sp > at { "spaced" } else if at > sp { "attached" } else { "tie" };
+        println!("  {mark:?}  {sp:>7} : {at:<7}  N={n:<8} {maj:5.1}% {which}");
+    }
+
+    let mut cfg = Config::v1_defaults();
+    cfg.rules.insert(RuleId::PunctuationSpacingAnomaly, true);
+    let shipped = analyze_with_config(&target, None, &cfg)
+        .iter()
+        .filter(|f| f.code == RuleId::PunctuationSpacingAnomaly)
+        .count();
+    println!("\nshipped default (floor 0.75, enabled) surfaces: {shipped}");
+}
+
+/// Shared score-distribution report for the corpus-relative rules: total
 /// scored sites, how many clear a ladder of floors, and the top/bottom samples
 /// with their exact slice and a little context.
 fn report_scored(name: &str, target: &VerseMap, findings: &[Finding]) {
@@ -407,4 +594,3 @@ fn scope_z(scope: &LengthRatioScope) -> f32 {
         LengthRatioScope::Both { book_z, .. } => *book_z,
     }
 }
-

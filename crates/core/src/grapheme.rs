@@ -26,7 +26,6 @@
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::charclass::class_of;
-use crate::diagnostics::{RuleId, Severity};
 use crate::span::Span;
 
 /// The byte span of one grapheme cluster within a verse. Grapheme-aligned by
@@ -49,16 +48,6 @@ impl GSpan {
     pub fn slice(self, text: &str) -> &str {
         &text[self.start as usize..(self.start + self.len) as usize]
     }
-}
-
-/// A per-verse rule over the shared grapheme segmentation. The runner segments
-/// each verse **once** and hands every grapheme rule the same slice, so the
-/// corpus is walked one time regardless of how many grapheme rules are enabled
-/// (ADR 0021).
-pub trait GraphemeRule: Sync {
-    fn id(&self) -> RuleId;
-    fn severity(&self) -> Severity;
-    fn check(&self, text: &str, graphemes: &[GSpan]) -> Vec<Span>;
 }
 
 /// Segment `text` into grapheme clusters, appending each cluster's byte span to

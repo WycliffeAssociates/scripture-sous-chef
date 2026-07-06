@@ -44,6 +44,8 @@ isn't visible from the code alone.
 | 0025 | 2026-07-06 | [Drop ZWNJ/ZWJ flagging from hygiene — flagging nothing beats flagging wrong](0025-drop-joiner-flagging-from-hygiene.md) | Accepted |
 | 0026 | 2026-07-06 | [Drop `\|`/`^` from source-marker-leftover — a bare pipe is valid USFM text](0026-drop-pipe-caret-from-source-marker-leftover.md) | Accepted |
 | 0027 | 2026-07-06 | [Retire the corpus-relative ZWSP scorer; adopt a deterministic redundant-ZWSP rule](0027-redundant-zwsp-deterministic-retire-corpus-relative.md) | Accepted (supersedes 0023 scorer) |
+| 0028 | 2026-07-06 | [Repeated letter runs are judged against corpus recurrence](0028-repeated-character-run-corpus-relative.md) | Accepted |
+| 0029 | 2026-07-06 | [Punctuation spacing is a per-mark corpus convention — flag the minority form](0029-punctuation-spacing-corpus-relative.md) | Accepted (amends 0014 space-before-punct) |
 
 ## Format
 

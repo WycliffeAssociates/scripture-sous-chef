@@ -3,7 +3,7 @@
 //! The typed surface a consumer uses to choose which rules run.
 //! Enable/disable is a `BTreeMap<RuleId, bool>`; knob-bearing rules grow
 //! a typed sub-config alongside it, **additively** — one small struct per
-//! rule that has knobs (today: proportionality and casing), not a generic
+//! rule that has knobs, not a generic
 //! per-rule value type. See ADR 0011 (graduation order), ADR 0012, ADR 0013,
 //! ADR 0017.
 //!
@@ -143,6 +143,75 @@ impl Default for PunctuationAdjacencyConfig {
     }
 }
 
+/// Knobs for `punct.spacing-anomaly`. The rule learns, per punctuation mark,
+/// whether the corpus spaces or attaches it, and flags occurrences of the
+/// **minority** form scored by how dominant the opposing convention is (ADR
+/// 0029). The grapheme-governed opportunity scan is fixed; these two values are
+/// the whole judgment surface. Ships **default-disabled** until calibrated.
+/// Scores are always finite: `judge` sanitises out-of-range / NaN input here.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
+pub struct PunctuationSpacingConfig {
+    /// **The user-facing decision threshold** ("minimum convention dominance"):
+    /// emit a minority-form occurrence only when the opposite form's
+    /// *conservative* corpus share (a Wilson lower bound) is at least this
+    /// value. The finding's `score` is in the same unit, so `0.75` reads
+    /// literally as "flag only where the convention holds ≥75% of the time,
+    /// conservatively." Raising it surfaces less; it is **not** a sensitivity
+    /// dial (higher ⇒ fewer findings).
+    pub emit_score_min: f32,
+    /// Confidence `z` for the Wilson lower bound. Advanced calibration knob,
+    /// kept configurable but omitted from normal UI: it sets how hard small
+    /// samples are shrunk toward "not yet a convention," so a lopsided split
+    /// seen a handful of times stays quiet until the evidence accumulates.
+    /// `1.96` ≈ 95%.
+    pub confidence_z: f32,
+}
+
+impl Default for PunctuationSpacingConfig {
+    fn default() -> Self {
+        Self {
+            // Provisional (ADR 0029): flag a mark's minority spacing form once
+            // the majority form is conservatively ≥75% of that mark's
+            // word-adjacent occurrences. Frozen after corpus calibration.
+            emit_score_min: 0.75,
+            confidence_z: 1.96,
+        }
+    }
+}
+
+/// Knobs for `lex.repeated-character-run`. The threshold-three candidate scan
+/// is fixed; these values decide whether a detected run is unusual relative to
+/// the corpus's own orthography (ADR 0028).
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
+pub struct RepeatedCharacterRunConfig {
+    /// Cluster-run events per 10,000 whitespace-delimited lexical units at
+    /// which the cluster factor reaches zero. Events are counted over raw verse
+    /// text, so word joins in scriptio continua can establish their own
+    /// convention without UAX #29's one-grapheme token inflation.
+    pub convention_rate_per_10k: f32,
+    /// How many repeats beyond the first drive the containing-word factor to
+    /// zero. A value of 5 keeps frequency 2 positive for copied typos while
+    /// suppressing recurring interjections and ideophones.
+    pub word_recurrence_k: f32,
+    /// Minimum evidence to emit. Scores below this are established corpus
+    /// conventions and are not serialized as findings.
+    pub emit_score_min: f32,
+}
+
+impl Default for RepeatedCharacterRunConfig {
+    fn default() -> Self {
+        Self {
+            convention_rate_per_10k: 2.0,
+            word_recurrence_k: 5.0,
+            emit_score_min: 0.5,
+        }
+    }
+}
+
 /// Which rules to run, plus per-rule knobs. A rule **absent** from
 /// `rules` is enabled (default-on); map it to `false` to disable.
 /// Disabled rules are skipped before they run, not filtered after — so
@@ -160,6 +229,10 @@ pub struct Config {
     pub casing: CasingConfig,
     #[cfg_attr(feature = "serde", serde(default))]
     pub punctuation_adjacency: PunctuationAdjacencyConfig,
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub punctuation_spacing: PunctuationSpacingConfig,
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub repeated_character_run: RepeatedCharacterRunConfig,
 }
 
 impl Config {
@@ -178,7 +251,7 @@ impl Config {
     pub fn v1_defaults() -> Self {
         Self::disabling(&[
             RuleId::DuplicateWord,
-            RuleId::SpaceBeforePunct,
+            RuleId::PunctuationSpacingAnomaly,
             RuleId::SentenceInitialLowercase,
         ])
     }

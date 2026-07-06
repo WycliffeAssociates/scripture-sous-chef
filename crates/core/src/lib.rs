@@ -28,7 +28,7 @@ pub mod verse;
 
 pub use config::{
     BracketBalanceConfig, CasingConfig, Config, ProportionalityConfig,
-    PunctuationAdjacencyConfig,
+    PunctuationAdjacencyConfig, PunctuationSpacingConfig, RepeatedCharacterRunConfig,
 };
 pub use diagnostics::{Finding, FindingArgs, LengthRatioScope, RuleId, Severity};
 pub use sid::{BookId, Sid};
@@ -67,8 +67,7 @@ fn build_token_cache(target: &VerseMap) -> rule::TokenCache {
     }
 }
 
-/// All findings for one verse from the per-verse, grapheme, and token rules.
-/// Grapheme rules share one segmentation of the verse (ADR 0021); token rules
+/// All findings for one verse from the per-verse and token rules. Token rules
 /// read the shared [`rule::TokenCache`] when present (else tokenize inline).
 fn verse_findings(
     sid: Sid,
@@ -76,25 +75,12 @@ fn verse_findings(
     per_verse: &[Box<dyn rule::PerVerseRule>],
     token_rules: &[Box<dyn rule::TokenRule>],
     token_cache: &Option<rule::TokenCache>,
-    grapheme_rules: &[Box<dyn crate::grapheme::GraphemeRule>],
-    graphemes: &mut Vec<crate::grapheme::GSpan>,
 ) -> Vec<Finding> {
     let mut out = Vec::new();
     for r in per_verse {
         let (code, severity) = (r.id(), r.severity());
         for range in r.check(text) {
             out.push(Finding { sid, code, severity, range, score: None, args: None });
-        }
-    }
-    if !grapheme_rules.is_empty() {
-        // Segment this verse once into the caller's reused buffer (`segment`
-        // clears it); every grapheme rule reads the same slice (ADR 0021).
-        crate::grapheme::segment(text, graphemes);
-        for r in grapheme_rules {
-            let (code, severity) = (r.id(), r.severity());
-            for range in r.check(text, graphemes) {
-                out.push(Finding { sid, code, severity, range, score: None, args: None });
-            }
         }
     }
     if !token_rules.is_empty() {
@@ -167,10 +153,6 @@ pub fn analyze_stateful(
         .into_iter()
         .filter(|r| config.is_enabled(r.id()))
         .collect();
-    let grapheme_rules: Vec<_> = rule::grapheme_rules()
-        .into_iter()
-        .filter(|r| config.is_enabled(r.id()))
-        .collect();
     let stateful: Vec<_> = rule::stateful_rules(config)
         .into_iter()
         .filter(|r| config.is_enabled(r.id()))
@@ -178,8 +160,7 @@ pub fn analyze_stateful(
 
     // Classification is a static fused table (ADR 0021, amending 0020): a
     // process-wide `class_of` lookup, so there is nothing to build or thread
-    // per analyze. Grapheme rules segment each verse transiently in the
-    // per-verse phase; the grapheme segmenter reads the same static table.
+    // per analyze.
 
     // Tokenize the corpus once and share it whenever ≥2 rules would otherwise
     // each re-tokenize every verse — the UAX #29 word scan is a top cost on
@@ -196,39 +177,17 @@ pub fn analyze_stateful(
     #[cfg(feature = "parallel")]
     let mut out: Vec<Finding> = {
         use rayon::prelude::*;
-        // `map_init` gives each worker a grapheme buffer it reuses across the
-        // verses it handles, so segmentation allocates per-worker, not per-verse.
         target
             .par_iter()
-            .map_init(Vec::new, |graphemes, (&sid, text)| {
-                verse_findings(
-                    sid,
-                    text,
-                    &per_verse,
-                    &token_rules,
-                    &token_cache,
-                    &grapheme_rules,
-                    graphemes,
-                )
-            })
+            .map(|(&sid, text)| verse_findings(sid, text, &per_verse, &token_rules, &token_cache))
             .flatten_iter()
             .collect()
     };
     #[cfg(not(feature = "parallel"))]
     let mut out: Vec<Finding> = {
         let mut out = Vec::new();
-        // One grapheme buffer reused across every verse (ADR 0021).
-        let mut graphemes = Vec::new();
         for (&sid, text) in target {
-            out.extend(verse_findings(
-                sid,
-                text,
-                &per_verse,
-                &token_rules,
-                &token_cache,
-                &grapheme_rules,
-                &mut graphemes,
-            ));
+            out.extend(verse_findings(sid, text, &per_verse, &token_rules, &token_cache));
         }
         out
     };
@@ -365,6 +324,28 @@ mod tests {
         assert_eq!(findings[0].code, signals::hygiene::TAB_IN_BODY);
     }
 
+    #[test]
+    fn repeated_character_run_is_default_on_stateful_and_disableable() {
+        let target = map(&[(
+            "v1",
+            &format!("{}joyfullly", "word ".repeat(50_000)),
+        )]);
+        let findings = analyze(&target, None);
+        let repeated: Vec<_> = findings
+            .iter()
+            .filter(|finding| finding.code == RuleId::RepeatedCharacterRun)
+            .collect();
+        assert_eq!(repeated.len(), 1);
+        assert!(repeated[0].score.unwrap() > 0.85);
+
+        let off = Config::disabling(&[RuleId::RepeatedCharacterRun]);
+        assert!(
+            analyze_with_config(&target, None, &off)
+                .iter()
+                .all(|finding| finding.code != RuleId::RepeatedCharacterRun)
+        );
+    }
+
     /// Proportionality runs through the entry like any other rule: fires
     /// against a reference, honours enable/disable and its typed knobs.
     #[test]
@@ -413,18 +394,52 @@ mod tests {
         );
     }
 
+    /// `punct.adjacency-anomaly` is default-on and, unlike before, actually
+    /// wired into the stateful registry (it was implemented but unregistered,
+    /// so it never ran through `analyze`). A rare mixed run against many period
+    /// run-starts must surface as an Info finding through the default entry.
+    #[test]
+    fn adjacency_anomaly_runs_through_analyze() {
+        let mut pairs: Vec<(&str, &str)> = (0..200).map(|_| ("v", "He said. She left.")).collect();
+        pairs.push(("v", "word., word")); // one rare `.,`
+        let target = map(&pairs);
+        let f = analyze(&target, None);
+        let adj: Vec<_> = f
+            .iter()
+            .filter(|f| f.code == RuleId::PunctuationAdjacencyAnomaly)
+            .collect();
+        assert_eq!(adj.len(), 1, "the rare `.,` surfaces through analyze");
+        assert_eq!(adj[0].severity, Severity::Info);
+        assert!(adj[0].score.unwrap() > 0.9);
+    }
+
     /// The shipped defaults keep convention-dependent (P2) rules off;
     /// an explicit config entry opts in.
     #[test]
     fn p2_rules_are_default_disabled_and_opt_in() {
-        let target = map(&[("v1", "word ,word")]);
-        assert!(analyze(&target, None).is_empty());
+        // `punct.spacing-anomaly` is corpus-relative (ADR 0029): it needs a
+        // dominant convention to judge against, so build one — commas attached
+        // corpus-wide, one spaced minority to surface.
+        let mut pairs: Vec<(&str, &str)> = (0..100).map(|_| ("v", "word, word")).collect();
+        pairs.push(("v", "word , word"));
+        let target = map(&pairs);
+        assert!(
+            analyze(&target, None)
+                .iter()
+                .all(|f| f.code != RuleId::PunctuationSpacingAnomaly),
+            "default-disabled"
+        );
 
         let mut on = Config::v1_defaults();
-        on.rules.insert(RuleId::SpaceBeforePunct, true);
+        on.rules.insert(RuleId::PunctuationSpacingAnomaly, true);
         let findings = analyze_with_config(&target, None, &on);
-        assert_eq!(findings.len(), 1);
-        assert_eq!(findings[0].code, RuleId::SpaceBeforePunct);
+        let spacing: Vec<_> = findings
+            .iter()
+            .filter(|f| f.code == RuleId::PunctuationSpacingAnomaly)
+            .collect();
+        assert_eq!(spacing.len(), 1, "the lone spaced comma surfaces");
+        assert_eq!(spacing[0].severity, Severity::Info);
+        assert!(spacing[0].score.unwrap() > 0.85);
 
         // Casing is corpus-observed (ADR 0017): default-off, and once opted
         // in it fires only where enough observations establish a

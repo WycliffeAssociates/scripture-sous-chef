@@ -77,7 +77,7 @@ define_rule_ids! {
     MixedNumeralSystems      => "uni.mixed-numeral-systems",
     PlaceholderLeftover      => "punct.placeholder-leftover",
     BracketBalance           => "punct.bracket-balance",
-    SpaceBeforePunct         => "punct.space-before-punct",
+    PunctuationSpacingAnomaly => "punct.spacing-anomaly",
     SentenceInitialLowercase => "case.sentence-initial-lowercase",
 }
 

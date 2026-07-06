@@ -66,6 +66,36 @@ pub struct PunctuationAdjacencyOverrides {
     pub emit_score_min: Option<f32>,
 }
 
+/// Partial overrides for `punct.spacing-anomaly`'s knobs. Omitted fields keep
+/// core's defaults (ADR 0029): `emit_score_min` 0.75 (the "minimum convention
+/// dominance" slider) and `confidence_z` 1.96 (an advanced calibration knob).
+#[derive(Deserialize, Tsify, Default)]
+#[tsify(from_wasm_abi)]
+pub struct PunctuationSpacingOverrides {
+    #[serde(default)]
+    #[tsify(optional)]
+    pub emit_score_min: Option<f32>,
+    #[serde(default)]
+    #[tsify(optional)]
+    pub confidence_z: Option<f32>,
+}
+
+/// Partial overrides for `lex.repeated-character-run`'s corpus-relative score.
+/// Omitted fields keep core's calibrated defaults (ADR 0028).
+#[derive(Deserialize, Tsify, Default)]
+#[tsify(from_wasm_abi)]
+pub struct RepeatedCharacterRunOverrides {
+    #[serde(default)]
+    #[tsify(optional)]
+    pub convention_rate_per_10k: Option<f32>,
+    #[serde(default)]
+    #[tsify(optional)]
+    pub word_recurrence_k: Option<f32>,
+    #[serde(default)]
+    #[tsify(optional)]
+    pub emit_score_min: Option<f32>,
+}
+
 /// Which rules to run, plus per-rule knobs. `rules` maps a rule code to a
 /// flag; omit a rule to keep it enabled (default-on). TS: `{ rules?:
 /// Partial<Record<RuleId, boolean>>, proportionality?: … }` — `RuleId` is
@@ -86,6 +116,12 @@ pub struct SousConfig {
     #[serde(default)]
     #[tsify(optional)]
     pub punctuation_adjacency: Option<PunctuationAdjacencyOverrides>,
+    #[serde(default)]
+    #[tsify(optional)]
+    pub punctuation_spacing: Option<PunctuationSpacingOverrides>,
+    #[serde(default)]
+    #[tsify(optional)]
+    pub repeated_character_run: Option<RepeatedCharacterRunOverrides>,
 }
 
 /// A finding as the editor sees it: UTF-16 ranges; `code`/`severity` are
@@ -151,6 +187,25 @@ fn build_config(config: Option<SousConfig>) -> Config {
             }
             if let Some(v) = p.emit_score_min {
                 cfg.punctuation_adjacency.emit_score_min = v;
+            }
+        }
+        if let Some(p) = c.punctuation_spacing {
+            if let Some(v) = p.emit_score_min {
+                cfg.punctuation_spacing.emit_score_min = v;
+            }
+            if let Some(v) = p.confidence_z {
+                cfg.punctuation_spacing.confidence_z = v;
+            }
+        }
+        if let Some(r) = c.repeated_character_run {
+            if let Some(v) = r.convention_rate_per_10k {
+                cfg.repeated_character_run.convention_rate_per_10k = v;
+            }
+            if let Some(v) = r.word_recurrence_k {
+                cfg.repeated_character_run.word_recurrence_k = v;
+            }
+            if let Some(v) = r.emit_score_min {
+                cfg.repeated_character_run.emit_score_min = v;
             }
         }
     }
@@ -254,6 +309,15 @@ mod tests {
                 confidence_z: Some(2.1),
                 emit_score_min: Some(0.7),
             }),
+            punctuation_spacing: Some(PunctuationSpacingOverrides {
+                emit_score_min: Some(0.6),
+                confidence_z: Some(2.2),
+            }),
+            repeated_character_run: Some(RepeatedCharacterRunOverrides {
+                convention_rate_per_10k: Some(3.0),
+                word_recurrence_k: Some(7.0),
+                emit_score_min: Some(0.8),
+            }),
         }));
 
         assert!(cfg.is_enabled(RuleId::DuplicateWord));
@@ -264,6 +328,57 @@ mod tests {
         assert_eq!(cfg.punctuation_adjacency.convention_rate, 0.4);
         assert_eq!(cfg.punctuation_adjacency.confidence_z, 2.1);
         assert_eq!(cfg.punctuation_adjacency.emit_score_min, 0.7);
+        assert_eq!(cfg.punctuation_spacing.emit_score_min, 0.6);
+        assert_eq!(cfg.punctuation_spacing.confidence_z, 2.2);
+        assert_eq!(cfg.repeated_character_run.convention_rate_per_10k, 3.0);
+        assert_eq!(cfg.repeated_character_run.word_recurrence_k, 7.0);
+        assert_eq!(cfg.repeated_character_run.emit_score_min, 0.8);
+    }
+
+    /// The corpus-relative `punct.spacing-anomaly` survives an incremental,
+    /// `Stats`-round-tripped pass through the boundary entry point: judging the
+    /// edited book alone (with the rest pooled in the round-tripped prior) scores
+    /// its minority mark corpus-wide, identical to the full analysis.
+    #[test]
+    fn spacing_anomaly_incremental_round_trips_through_the_boundary() {
+        use std::collections::BTreeMap;
+        let enable = || {
+            Some(SousConfig {
+                rules: Some([(RuleId::PunctuationSpacingAnomaly, true)].into_iter().collect()),
+                ..Default::default()
+            })
+        };
+        // GEN establishes an attached-comma convention; EXO holds one spaced minority.
+        let mut full: BTreeMap<String, String> = BTreeMap::new();
+        for v in 1..=100u16 {
+            full.insert(format!("GEN 1:{v}"), "word, word".to_string());
+        }
+        full.insert("EXO 1:1".to_string(), "word , word".to_string());
+
+        let analysis = analyze_vref_stateful(VrefMap(full), None, enable(), None);
+        let full_score = analysis
+            .findings
+            .iter()
+            .find(|f| f.sid == "EXO 1:1" && f.code == RuleId::PunctuationSpacingAnomaly)
+            .expect("minority surfaces in the full pass")
+            .score;
+
+        // Round-trip the opaque `Stats` as the editor does across the JS boundary.
+        let prior: Stats =
+            serde_json::from_str(&serde_json::to_string(&analysis.stats).unwrap()).unwrap();
+
+        // Re-supply only the edited book; the score must stay corpus-wide.
+        let exo: BTreeMap<String, String> =
+            [("EXO 1:1".to_string(), "word , word".to_string())].into_iter().collect();
+        let inc = analyze_vref_stateful(VrefMap(exo), None, enable(), Some(prior));
+        let hits: Vec<_> = inc
+            .findings
+            .iter()
+            .filter(|f| f.code == RuleId::PunctuationSpacingAnomaly)
+            .collect();
+        assert_eq!(hits.len(), 1, "emits only for the edited book");
+        assert_eq!(hits[0].sid, "EXO 1:1");
+        assert_eq!(hits[0].score, full_score, "incremental score is corpus-wide");
     }
 
     /// Omitted overrides keep core's defaults; the default-on redundant-ZWSP rule
@@ -273,6 +388,7 @@ mod tests {
         let cfg = build_config(None);
         let d = Config::v1_defaults();
         assert_eq!(cfg.punctuation_adjacency.emit_score_min, d.punctuation_adjacency.emit_score_min);
+        assert_eq!(cfg.repeated_character_run, d.repeated_character_run);
         assert!(cfg.is_enabled(RuleId::RedundantZeroWidthSpace));
         assert!(!cfg.is_enabled(RuleId::DuplicateWord));
     }

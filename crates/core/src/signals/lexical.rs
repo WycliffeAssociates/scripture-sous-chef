@@ -1,12 +1,19 @@
-//! Lexical signals — token-aware rules over the UAX #29 word stream
-//! (`crate::token::tokenize`).
+//! Lexical signals — token-aware and grapheme-aware rules over verse text.
+//! UAX #29 supplies containing words where it can; repeated-run recurrence also
+//! scans raw graphemes so scriptio-continua joins remain observable.
+
+use std::collections::BTreeMap;
+
+use unicode_segmentation::UnicodeSegmentation;
 
 use crate::charclass::class_of;
+use crate::config::RepeatedCharacterRunConfig;
 use crate::diagnostics::{Finding, FindingArgs, RuleId, Severity};
-use crate::grapheme::{GSpan, GraphemeRule};
-use crate::rule::{PerVerseRule, ProjectTokenRule, TokenCache};
+use crate::grapheme::{GSpan, segment};
+use crate::rule::{PerVerseRule, ProjectTokenRule, StatefulRule, TokenCache};
 use crate::sid::Sid;
 use crate::span::Span;
+use crate::stats::RuleStats;
 use crate::token::{Token, tokenize};
 use crate::verse::{self, VerseMap};
 
@@ -195,7 +202,7 @@ fn scan_verse(text: &str, tokens: &[crate::token::Token]) -> Vec<Span> {
 /// detach sentence punctuation as a matter of convention (Nepali
 /// `…थिए ।`, spaced `?` / `!` / `،` — tens of thousands of legitimate
 /// hits per Bible), and judging spacing conventions is the opt-in
-/// `punct.space-before-punct` family's job. What flags here is the
+/// `punct.spacing-anomaly` rule's job. What flags here is the
 /// unambiguous wreckage: multi-mark chunks (`।।`, `.,`), stranded
 /// opening brackets, and stray symbols (`=`, `´`). Quotes, closing
 /// brackets, dashes, and ellipses ride along as normal typography.
@@ -277,23 +284,188 @@ pub fn scan_punct_only_token(text: &str) -> Vec<Span> {
 // Repeated character run
 // ─────────────────────────────────────────────────────────────────────
 
-/// Three or more consecutive identical letter graphemes (`heeello`).
-/// Threshold 3 is built in. Info, not Warning: some languages have
-/// legitimate long runs (vowel length, ideophones), and the corpus-norm
-/// modulation that would tell them apart is a `labs` concern.
+/// Three or more consecutive identical letter graphemes (`heeello`), scored
+/// against recurrence of that cluster and its containing word across the
+/// corpus. Orthographic length and ideophones self-suppress without a language
+/// or script list; isolated slips remain high-evidence Info findings (ADR 0028).
 pub const REPEATED_CHARACTER_RUN: RuleId = RuleId::RepeatedCharacterRun;
 
-pub struct RepeatedCharacterRun;
+/// One book's aggregate contribution. Raw-text run counts include candidates
+/// outside UAX #29 tokens; the word map includes only token types whose folded
+/// form contains a run. Folding before that gate lets `Eee` establish the same
+/// word convention as `eee` without storing general word frequencies.
+#[derive(Debug, Clone, Default, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+struct BookRepeatedCharacterRun {
+    lexical_units: u64,
+    cluster_runs: BTreeMap<String, u64>,
+    run_words: BTreeMap<String, u64>,
+}
 
-impl GraphemeRule for RepeatedCharacterRun {
+/// Cached repeated-run aggregates, partitioned by book so incremental analysis
+/// can supersede one book without retaining occurrence sites.
+#[derive(Debug, Clone, Default, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+pub struct RepeatedCharacterRunStats {
+    per_book: BTreeMap<String, BookRepeatedCharacterRun>,
+}
+
+impl RepeatedCharacterRunStats {
+    pub(crate) fn merge(mut self, other: RepeatedCharacterRunStats) -> RepeatedCharacterRunStats {
+        for (book, stats) in other.per_book {
+            self.per_book.insert(book, stats);
+        }
+        self
+    }
+
+    pub(crate) fn remove_book(&mut self, book: &str) {
+        self.per_book.remove(book);
+    }
+}
+
+pub struct RepeatedCharacterRun {
+    pub cfg: RepeatedCharacterRunConfig,
+}
+
+impl StatefulRule for RepeatedCharacterRun {
     fn id(&self) -> RuleId {
         REPEATED_CHARACTER_RUN
     }
-    fn severity(&self) -> Severity {
-        Severity::Info
+
+    fn reduce(&self, map: &VerseMap, _source: Option<&VerseMap>) -> RuleStats {
+        let mut stats = RepeatedCharacterRunStats::default();
+        for (book, verses) in verse::by_book(map) {
+            stats
+                .per_book
+                .insert(book.as_str().to_string(), reduce_repeated_run_book(&verses));
+        }
+        RuleStats::RepeatedCharacterRun(stats)
     }
-    fn check(&self, text: &str, graphemes: &[GSpan]) -> Vec<Span> {
-        scan_repeated_character_run(text, graphemes)
+
+    fn judge(&self, stats: &RuleStats, target: &VerseMap) -> Vec<Finding> {
+        let RuleStats::RepeatedCharacterRun(stats) = stats else {
+            return Vec::new();
+        };
+
+        let mut lexical_units = 0u64;
+        let mut cluster_runs: BTreeMap<&str, u64> = BTreeMap::new();
+        let mut run_words: BTreeMap<&str, u64> = BTreeMap::new();
+        for book in stats.per_book.values() {
+            lexical_units += book.lexical_units;
+            for (cluster, &count) in &book.cluster_runs {
+                *cluster_runs.entry(cluster.as_str()).or_default() += count;
+            }
+            for (word, &count) in &book.run_words {
+                *run_words.entry(word.as_str()).or_default() += count;
+            }
+        }
+
+        let convention_rate = clamp_positive(self.cfg.convention_rate_per_10k);
+        let word_k = clamp_positive(self.cfg.word_recurrence_k);
+        let floor = f64::from(crate::shrinkage::clamp_unit(self.cfg.emit_score_min));
+        let unit_denominator = lexical_units.max(1) as f64;
+
+        let cluster_factors: BTreeMap<&str, f64> = cluster_runs
+            .iter()
+            .map(|(&cluster, &count)| {
+                let rate_per_10k = count as f64 * 10_000.0 / unit_denominator;
+                (
+                    cluster,
+                    (1.0 - rate_per_10k / convention_rate).clamp(0.0, 1.0),
+                )
+            })
+            .collect();
+
+        let mut out = Vec::new();
+        let mut graphemes = Vec::new();
+        for (&sid, text) in target {
+            let tokens = tokenize(text);
+            segment(text, &mut graphemes);
+            for span in scan_repeated_character_run(text, &graphemes) {
+                let cluster = repeated_run_cluster(span.slice(text));
+                let cluster_factor = cluster_factors
+                    .get(cluster.as_str())
+                    .copied()
+                    .unwrap_or(1.0);
+                let word_frequency = containing_word(text, &tokens, span)
+                    .and_then(|word| run_words.get(word.to_lowercase().as_str()).copied());
+                let word_factor = word_frequency.map_or(1.0, |frequency| {
+                    (1.0 - frequency.saturating_sub(1) as f64 / word_k).clamp(0.0, 1.0)
+                });
+                let evidence = (cluster_factor * word_factor).clamp(0.0, 1.0);
+                if evidence < floor {
+                    continue;
+                }
+                out.push(Finding {
+                    sid,
+                    code: REPEATED_CHARACTER_RUN,
+                    severity: Severity::Info,
+                    range: span,
+                    score: Some(evidence as f32),
+                    args: None,
+                });
+            }
+        }
+        out.sort_by_key(|finding| (finding.sid, finding.range.start, finding.range.end));
+        out
+    }
+}
+
+fn reduce_repeated_run_book(verses: &[(Sid, &str)]) -> BookRepeatedCharacterRun {
+    let mut out = BookRepeatedCharacterRun::default();
+    let mut graphemes = Vec::new();
+    let mut word_graphemes = Vec::new();
+    for (_sid, text) in verses {
+        let tokens = tokenize(text);
+        // UAX #29 intentionally has no dictionary segmentation for Thai/Lao
+        // and can yield one token per grapheme there. Whitespace chunks are a
+        // stable, script-neutral normalization unit: word-like in spaced text,
+        // verse-span-like in scriptio continua. Word recurrence still uses the
+        // UAX tokens below because it applies only when one contains the run.
+        out.lexical_units += text.split_whitespace().count() as u64;
+        segment(text, &mut graphemes);
+        let runs = scan_repeated_character_run(text, &graphemes);
+        for span in &runs {
+            *out.cluster_runs
+                .entry(repeated_run_cluster(span.slice(text)))
+                .or_default() += 1;
+        }
+        for token in &tokens {
+            let word = token.span.slice(text);
+            if word.chars().take(3).count() < 3 {
+                continue;
+            }
+            let folded = word.to_lowercase();
+            segment(&folded, &mut word_graphemes);
+            if !scan_repeated_character_run(&folded, &word_graphemes).is_empty() {
+                *out.run_words.entry(folded).or_default() += 1;
+            }
+        }
+    }
+    out
+}
+
+fn containing_word<'a>(text: &'a str, tokens: &[Token], run: Span) -> Option<&'a str> {
+    tokens
+        .iter()
+        .find(|token| token.span.start <= run.start && run.end <= token.span.end)
+        .map(|token| token.span.slice(text))
+}
+
+/// The complete first grapheme is the recurrence key. Lowercasing pools case
+/// variants but deliberately preserves combining marks and other cluster data.
+fn repeated_run_cluster(run: &str) -> String {
+    run.graphemes(true).next().unwrap_or("").to_lowercase()
+}
+
+fn clamp_positive(value: f32) -> f64 {
+    let value = f64::from(value);
+    if value.is_finite() && value > 0.0 {
+        value
+    } else {
+        f64::from(f32::EPSILON)
     }
 }
 
@@ -317,7 +489,10 @@ pub fn scan_repeated_character_run(text: &str, graphemes: &[GSpan]) -> Vec<Span>
         let i = gs.start as usize;
         let g = gs.slice(text);
         // Letter graphemes only — digit/punct runs are other rules' jobs.
-        let is_letter = g.chars().next().is_some_and(|c| class_of(c).is_alphabetic())
+        let is_letter = g
+            .chars()
+            .next()
+            .is_some_and(|c| c != '\u{0640}' && class_of(c).is_alphabetic())
             && !g.chars().any(|c| class_of(c).is_decimal_digit());
         if is_letter && g == run_cluster {
             run_len += 1;
@@ -519,5 +694,180 @@ mod tests {
         assert!(rc("aa bb cc").is_empty());
         assert!(rc("111 222").is_empty()); // digits aren't letters
         assert!(rc("... --- ...").is_empty()); // punct isn't letters
+        // U+0640 is kashida stretching, not a repeated letter.
+        assert!(rc("الإيمــــــان").is_empty());
+    }
+
+    fn repeat_map(book: &str, verses: &[String]) -> VerseMap {
+        verses
+            .iter()
+            .enumerate()
+            .map(|(i, text)| (sid(book, 1, (i + 1) as u16), text.clone()))
+            .collect()
+    }
+
+    fn repeat_rule(cfg: RepeatedCharacterRunConfig) -> RepeatedCharacterRun {
+        RepeatedCharacterRun { cfg }
+    }
+
+    fn repeat_findings(map: &VerseMap, cfg: RepeatedCharacterRunConfig) -> Vec<Finding> {
+        let rule = repeat_rule(cfg);
+        rule.judge(&rule.reduce(map, None), map)
+    }
+
+    #[test]
+    fn rare_run_in_a_large_corpus_surfaces_near_one() {
+        let text = format!("{}joyfullly", "word ".repeat(50_000));
+        let map = repeat_map("GEN", &[text]);
+        let findings = repeat_findings(&map, RepeatedCharacterRunConfig::default());
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].range.slice(&map[&findings[0].sid]), "lll");
+        assert!(findings[0].score.unwrap() > 0.85);
+        assert_eq!(findings[0].severity, Severity::Info);
+    }
+
+    #[test]
+    fn copied_typo_at_word_frequency_two_still_surfaces() {
+        let text = format!("{}guerrras guerrras", "word ".repeat(50_000));
+        let findings = repeat_findings(
+            &repeat_map("GEN", &[text]),
+            RepeatedCharacterRunConfig::default(),
+        );
+        assert_eq!(findings.len(), 2);
+        assert!(findings.iter().all(|f| f.score.unwrap() > 0.6));
+    }
+
+    #[test]
+    fn recurring_word_suppresses_a_low_run_interjection() {
+        // Make the cluster factor deliberately neutral: the six repeated words
+        // are suppressed by word recurrence, not by a corpus-wide run storm.
+        let cfg = RepeatedCharacterRunConfig {
+            convention_rate_per_10k: 1_000_000.0,
+            ..Default::default()
+        };
+        // Only the lowercase form is a raw candidate; title-case `Eee` still
+        // contributes to the folded word frequency.
+        let text = format!("{}eee {}", "word ".repeat(1_000), "Eee ".repeat(5));
+        assert!(repeat_findings(&repeat_map("GEN", &[text]), cfg).is_empty());
+    }
+
+    #[test]
+    fn common_cluster_suppresses_distinct_word_types() {
+        let mut text = "word ".repeat(50_000);
+        for suffix in 'a'..='z' {
+            text.push_str(&format!(" yaaa{suffix}"));
+        }
+        assert!(
+            repeat_findings(
+                &repeat_map("GEN", &[text]),
+                RepeatedCharacterRunConfig::default(),
+            )
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn scriptio_continua_join_has_no_word_factor() {
+        let text = "ขอออก";
+        let mut graphemes = Vec::new();
+        segment(text, &mut graphemes);
+        let runs = scan_repeated_character_run(text, &graphemes);
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].slice(text), "อออ");
+        assert!(containing_word(text, &tokenize(text), runs[0]).is_none());
+    }
+
+    #[test]
+    fn recurring_scriptio_join_is_not_diluted_by_grapheme_tokens() {
+        // UAX #29 tokenizes the long Thai prefix roughly one grapheme at a
+        // time. It must not dilute the ordinary join-run in `ขอออก`; the two
+        // whitespace units make the raw run rate conventional and silent.
+        let text = format!("{} ขอออก", "กข".repeat(10_000));
+        assert!(
+            repeat_findings(
+                &repeat_map("GEN", &[text]),
+                RepeatedCharacterRunConfig::default(),
+            )
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn cluster_key_folds_case_but_preserves_the_full_grapheme() {
+        assert_eq!(repeated_run_cluster("AAA"), "a");
+        assert_eq!(repeated_run_cluster("E\u{301}E\u{301}E\u{301}"), "e\u{301}");
+        assert_ne!(
+            repeated_run_cluster("EEE"),
+            repeated_run_cluster("E\u{301}E\u{301}E\u{301}")
+        );
+    }
+
+    #[test]
+    fn incremental_score_uses_the_retained_corpus() {
+        let cfg = RepeatedCharacterRunConfig::default();
+        let rule = repeat_rule(cfg);
+        let gen_map = repeat_map("GEN", &["word ".repeat(50_000)]);
+        let exo_map = repeat_map("EXO", &["joyfullly".to_string()]);
+        let mut full = gen_map.clone();
+        full.extend(exo_map.clone());
+
+        let full_score = rule.judge(&rule.reduce(&full, None), &full)[0].score;
+        let merged = rule
+            .reduce(&gen_map, None)
+            .merge(rule.reduce(&exo_map, None));
+        let incremental = rule.judge(&merged, &exo_map);
+        assert_eq!(incremental.len(), 1);
+        assert_eq!(incremental[0].score, full_score);
+    }
+
+    #[test]
+    fn removing_a_book_drops_its_lexical_unit_denominator() {
+        let rule = repeat_rule(RepeatedCharacterRunConfig {
+            emit_score_min: 0.0,
+            ..Default::default()
+        });
+        let gen_map = repeat_map("GEN", &["word ".repeat(50_000)]);
+        let exo_map = repeat_map("EXO", &["joyfullly".to_string()]);
+        let mut full = gen_map;
+        full.extend(exo_map.clone());
+        let RuleStats::RepeatedCharacterRun(mut stats) = rule.reduce(&full, None) else {
+            unreachable!()
+        };
+        let before = rule.judge(&RuleStats::RepeatedCharacterRun(stats.clone()), &exo_map)[0]
+            .score
+            .unwrap();
+        stats.remove_book("GEN");
+        let after = rule.judge(&RuleStats::RepeatedCharacterRun(stats), &exo_map)[0]
+            .score
+            .unwrap();
+        assert!(after < before);
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn repeated_run_stats_round_trip_through_serde() {
+        let rule = repeat_rule(RepeatedCharacterRunConfig {
+            emit_score_min: 0.0,
+            ..Default::default()
+        });
+        let map = repeat_map("GEN", &["word joyfullly".to_string()]);
+        let stats = rule.reduce(&map, None);
+        let back: RuleStats =
+            serde_json::from_str(&serde_json::to_string(&stats).unwrap()).unwrap();
+        assert_eq!(stats, back);
+        assert_eq!(rule.judge(&stats, &map), rule.judge(&back, &map));
+    }
+
+    #[test]
+    fn invalid_repeated_run_config_still_produces_finite_scores() {
+        let cfg = RepeatedCharacterRunConfig {
+            convention_rate_per_10k: f32::INFINITY,
+            word_recurrence_k: f32::NAN,
+            emit_score_min: f32::NAN,
+        };
+        let map = repeat_map("GEN", &["joyfullly".to_string()]);
+        let findings = repeat_findings(&map, cfg);
+        assert_eq!(findings.len(), 1);
+        assert!(findings[0].score.unwrap().is_finite());
     }
 }

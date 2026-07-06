@@ -87,12 +87,63 @@ chunks and stray symbols are). Full write-up to follow.
 
 ---
 
-## `lex.repeated-character-run` — *(write-up pending discussion)*
+## `lex.repeated-character-run` — corpus-unusual repeated letter graphemes
 
-> **Severity** Info · **Default** on · **Scope** per-verse · **Knobs** none (threshold 3 is built in) · **Source** `lexical.rs`
+> **Severity** Info · **Default** on · **Scope** stateful corpus · **Knobs** `convention_rate_per_10k`, `word_recurrence_k`, `emit_score_min` · **Source** `lexical.rs`
 
-In the "suggestion" set: today it flags 3+ identical letter graphemes
-(`heeello`) at a hardcoded threshold. Open question is whether to make it
-*observe-and-flag-above-threshold* against the corpus norm (vowel length /
-ideophones make long runs legitimate in some languages). Full write-up — and
-the threshold/observation design — to follow.
+**Flags** — Three or more identical extended grapheme clusters where both the
+cluster and its containing word are unusual for this corpus:
+
+- `joyfullly` in English → `lll`, score 0.994 in calibration
+- `guerrras` in Spanish → `rrr`, score 0.974
+- a copied `destruccción` occurring twice still surfaces at 0.790
+- Thai `ภรรรยา` (a tripled ro han in `ภรรยา`, "wife") → `รรร` — rare
+  corpus-wide, so it surfaces even though no UAX #29 token contains it
+
+**Clean** — Double letters (`bookkeeper`); digits/punctuation; U+0640 tatweel
+kashida stretching; established vowel length/ideophones; and recurring
+scriptio-continua joins such as Thai `ขอออก` where the `อออ` spans two words.
+
+**Why it matters** — A third repeated letter is a strong typo clue in many
+languages, but a universal verdict creates thousands of false positives in
+languages that use long vowels, expressive repetition, or unspaced word joins.
+The rule learns those conventions from the project itself. No language or
+script identity is consulted.
+
+**Scoring** — The fixed threshold-three grapheme scan supplies candidates. The
+score multiplies two corpus-relative factors:
+
+```text
+cluster_rate = raw cluster-run events * 10,000 / whitespace lexical units
+cluster_factor = max(0, 1 - cluster_rate / convention_rate_per_10k)
+word_factor = max(0, 1 - (containing_word_frequency - 1) / word_recurrence_k)
+score = cluster_factor * word_factor
+```
+
+When UAX #29 supplies no containing token, `word_factor = 1.0`; raw run
+recurrence still suppresses scriptio-continua conventions. The denominator is
+whitespace-delimited lexical units, not UAX token count: Thai/Lao UAX word
+segmentation produced one token per grapheme and diluted real recurrence.
+
+**Config** — Defaults are `2.0` runs per 10k lexical units, word recurrence
+`K = 5`, and emission floor `0.5`. Lower the convention rate or raise the floor
+for fewer findings. The rule is default-on; map its `RuleId` to `false` to skip
+both reduction and judgment.
+
+**Nuance & ADR ties** — Tatweel (U+0640) is excluded in the scan itself, not
+by scoring: kashida is a stretching control whose repetition is inherently
+typographic (`الإيمــــــان` is one word, elongated), so runs of it can never
+be the doubled-letter error this rule hunts. That is a one-character
+Unicode-semantics carve-out, not a script allow-list — the no-script-identity
+principle (ADR 0023/0025) stands. Stats are aggregate-only and partitioned per book:
+cluster counts, run-containing word counts, and lexical-unit count, with no
+stored sites. Incremental analysis replaces one book's aggregates, scores
+against the retained corpus, and re-scans only the supplied target verses for
+spans. The cluster key is the full first grapheme lowercased, so case variants
+pool while combining marks remain significant. Run length above three adds no
+weight. See ADR 0028 and the 2026-07-06 calibration report.
+
+**Open issues / future work** — Systematic typos suppress like conventions;
+corpus counts cannot infer intent. Multi-grapheme morphological reduplication
+such as Gujarati `દાદાદાદી` is outside this detector and remains a known
+conflation if it happens to contain a single-cluster triple.

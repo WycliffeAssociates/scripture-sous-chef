@@ -109,13 +109,57 @@ about how fixed vs. configurable that set should be. Full write-up to follow.
 
 ---
 
-## `punct.space-before-punct` — *(write-up pending discussion)*
+## `punct.spacing-anomaly` — corpus-relative punctuation spacing
 
-> **Severity** Warning · **Default** OFF · **Scope** per-verse · **Knobs** none · **Source** `punctuation.rs`
+> **Severity** Info · **Default** off · **Scope** stateful (aggregate-only) · **Knobs** `emit_score_min`, `confidence_z` · **Source** `punctuation.rs` · **ADR** 0029
 
-In the "suggestion" set. Flags horizontal whitespace before `, . ; : ? !`.
-Ships **default-disabled** because French and several typographic traditions
-legitimately space before `; : ? !`. Open question is whether to make it
-*observe-and-flag-above-threshold* against the corpus's own spacing habit
-rather than a blanket on/off. Full write-up — and the observation design — to
-follow.
+**Flags** — A punctuation mark (`. , ; : ? !`) written in the **minority**
+spacing form for that mark in this corpus, with a continuous `score`:
+- a spaced `,` in a corpus that attaches commas (English) → high score
+- an *attached* `?` in a corpus that spaces `? !` (French, `pa_ulb`) → high score
+
+**Clean (learned silent)** — The majority form for each mark (whatever the
+corpus does most), any mark with **no dominant convention** (near-50/50 stays
+quiet), and a mark seen in only one form. Cluster tails (`word?!` — the `!`
+clings to `?`), closing-quote/paren-then-mark (`word" ,`), verse-leading marks,
+and numeric `1:1` colons never enter the opportunity pool.
+
+**Why it matters** — Whether a mark is spaced or attached is a *per-mark
+convention*, not a universal rule. The predecessor `punct.space-before-punct`
+flagged all whitespace-before-punct as a typo and fired **6159 times** on
+`pa_ulb`, where spacing `? !` is the norm — every hit a false positive. This
+rule learns each mark's dominant form and flags only deviations, in **both**
+directions (the old rule could never catch an errant *attached* mark in a
+spacing corpus).
+
+**Score — conservative convention dominance** — Per mark, count word-adjacent
+occurrences that are `spaced` vs `attached` (`N = spaced + attached`). The score
+of every minority-form occurrence is `wilson_lower_bound(max(spaced, attached),
+N, confidence_z)` — the conservative share held by the *opposing* convention,
+equivalently `1 − upper_bound(minority_share)`. An exact tie yields no verdict
+(silent). The score is **confidence-monotone**: at a fixed ratio it rises with
+`N` toward the observed rate, so more evidence makes the rule more willing to
+flag, never less.
+
+**Config** — `emit_score_min` is the single **user-facing decision threshold**
+("minimum convention dominance"): `0.75` means "flag only where the opposite
+form's conservative corpus share is ≥ 75%," and the finding's `score` is in the
+same unit. `confidence_z` is an advanced calibration knob (Wilson lower-bound
+confidence; shrinks small samples toward "not yet a convention"), omitted from
+normal UI. There is deliberately no `convention_rate` and no `min_samples`.
+Provisional defaults (`emit_score_min = 0.75`, `confidence_z = 1.96`) until
+calibration.
+
+**Nuance & ADR ties** — Governing neighbour is a *grapheme cluster* containing a
+letter, so a decomposed word-final letter (base + combining mark) still counts.
+The finding message is direction-neutral ("this mark's spacing differs from the
+corpus convention"). Two scorers were rejected en route: `1 − strength(self)`
+(confuses insufficient evidence with rarity — fires on 1:1) and signed contrast
+(confidence-*inverts* as the corpus grows). No core cap on findings: a
+weak-convention corpus flags its whole minority, controlled by the floor. See
+ADR 0029.
+
+**Open issues / future work** — A `mark × script` fallback dimension (for a mark
+that genuinely follows different conventions across scripts) is deferred until
+calibration shows both buckets carry enough evidence. Digit-adjacent punctuation
+stays out of scope.

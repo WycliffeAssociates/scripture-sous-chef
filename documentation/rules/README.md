@@ -22,7 +22,7 @@ aggregation model, see [`../config.md`](../config.md).
 | [`uni.md`](uni.md) | `uni.*` | combining-mark-without-base, mixed-script-in-token, redundant-zero-width-space, mixed-numeral-systems |
 | [`lex.md`](lex.md) | `lex.*` | excess-h-whitespace, duplicate-word, punct-only-token, repeated-character-run |
 | [`struct.md`](struct.md) | `struct.*` | source-marker-leftover, merge-conflict-marker |
-| [`punct.md`](punct.md) | `punct.*` | bracket-balance, repeated-punct, placeholder-leftover, space-before-punct |
+| [`punct.md`](punct.md) | `punct.*` | bracket-balance, adjacency-anomaly, placeholder-leftover, spacing-anomaly |
 | [`prop.md`](prop.md) | `prop.*` | length-ratio |
 | [`case.md`](case.md) | `case.*` | sentence-initial-lowercase |
 
@@ -54,8 +54,8 @@ diverge — `lex.excess-h-whitespace` lives in `whitespace.rs`,
 | `lex.punct-only-token` | Warning | on | per-verse | 🗣 pending discussion |
 | `case.sentence-initial-lowercase` | Info | **off** | stateful | 🗣 pending discussion |
 | `punct.placeholder-leftover` | Warning | on | per-verse | 🗣 pending discussion |
-| `lex.repeated-character-run` | Info | on | per-verse | 💡 suggestion (threshold redesign) |
-| `punct.space-before-punct` | Warning | **off** | per-verse | 💡 suggestion (threshold redesign) |
+| `lex.repeated-character-run` | Info | on | stateful | ✅ documented (ADR 0028) |
+| `punct.spacing-anomaly` | Info | **off** | stateful (aggregate) | 💡 suggestion (corpus-relative; ADR 0029) |
 
 ✅ = settled write-up done · 🗣 = needs a conversation before write-up ·
 💡 = floated as observe-and-flag-above-threshold redesigns

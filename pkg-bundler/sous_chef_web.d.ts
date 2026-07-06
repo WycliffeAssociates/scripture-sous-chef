@@ -72,6 +72,22 @@ export interface PunctuationAdjacencyStats {
 }
 
 /**
+ * Cached repeated-run aggregates, partitioned by book so incremental analysis
+ * can supersede one book without retaining occurrence sites.
+ */
+export interface RepeatedCharacterRunStats {
+    per_book: Record<string, BookRepeatedCharacterRun>;
+}
+
+/**
+ * Cached spacing aggregates, keyed by book code so an edit supersedes only its
+ * book. Corpus-wide counts are the sums over books, derived at `judge`.
+ */
+export interface PunctuationSpacingStats {
+    per_book: Record<string, BookPunctuationSpacing>;
+}
+
+/**
  * Coarse script identity for a single character — a small `Copy` tag,
  * not a string. Rules count, compare, and match on these directly, so
  * the hot paths never hash or compare script *names* (see ADR 0015).
@@ -115,6 +131,18 @@ export interface Analysis {
 export type Severity = "error" | "warning" | "info";
 
 /**
+ * One book\'s aggregate contribution. Raw-text run counts include candidates
+ * outside UAX #29 tokens; the word map includes only token types whose folded
+ * form contains a run. Folding before that gate lets `Eee` establish the same
+ * word convention as `eee` without storing general word frequencies.
+ */
+export interface BookRepeatedCharacterRun {
+    lexical_units: number;
+    cluster_runs: Record<string, number>;
+    run_words: Record<string, number>;
+}
+
+/**
  * One book\'s aggregate contribution: per-lead-glyph run-start opportunity
  * counts and per-exact-pattern occurrence counts. **No sites** — spans are
  * re-derived from the text at `judge`, so this stays a few KB even on a
@@ -138,6 +166,14 @@ export interface BookCasing {
 }
 
 /**
+ * One book\'s per-mark spacing counts. **No sites** — spans re-derive from the
+ * text at `judge`, so this stays a few bytes per mark even corpus-wide.
+ */
+export interface BookPunctuationSpacing {
+    per_mark: Record<string, SpacingCounts>;
+}
+
+/**
  * One delimiter seen inside a `punct.bracket-balance` window: which verse
  * (`sid` as the canonical `\"GEN 1:1\"` string), its glyph, whether it opens
  * or closes, and whether the matcher paired it. The whole list lets a
@@ -152,6 +188,16 @@ export interface DelimObservation {
     glyph: string;
     role: DelimRole;
     matched: boolean;
+}
+
+/**
+ * One mark\'s binary spacing counts: word-adjacent occurrences that are spaced
+ * from vs attached to their governing word. `spaced + attached = N`, the
+ * opportunity denominator.
+ */
+export interface SpacingCounts {
+    spaced: number;
+    attached: number;
 }
 
 /**
@@ -176,6 +222,16 @@ export interface CasingOverrides {
 }
 
 /**
+ * Partial overrides for `lex.repeated-character-run`\'s corpus-relative score.
+ * Omitted fields keep core\'s calibrated defaults (ADR 0028).
+ */
+export interface RepeatedCharacterRunOverrides {
+    convention_rate_per_10k?: number;
+    word_recurrence_k?: number;
+    emit_score_min?: number;
+}
+
+/**
  * Partial overrides for `prop.length-ratio`\'s knobs. Omitted fields keep
  * core\'s calibrated defaults (`z_threshold` 3.5, `min_verses` 50).
  */
@@ -196,19 +252,30 @@ export interface PunctuationAdjacencyOverrides {
 }
 
 /**
+ * Partial overrides for `punct.spacing-anomaly`\'s knobs. Omitted fields keep
+ * core\'s defaults (ADR 0029): `emit_score_min` 0.75 (the \"minimum convention
+ * dominance\" slider) and `confidence_z` 1.96 (an advanced calibration knob).
+ */
+export interface PunctuationSpacingOverrides {
+    emit_score_min?: number;
+    confidence_z?: number;
+}
+
+/**
  * Per-rule cached statistics — a **closed** union like `FindingArgs`, one
  * variant per stateful rule. The orchestration treats it opaquely; each
  * rule reduces into / judges from its own variant.
  *
  * What each variant caches is deliberately small: casing\'s lowercase sites and
- * proportionality\'s per-verse ratios are sparse; punctuation adjacency caches
- * only **aggregate counts** (never per-occurrence sites — those re-derive from
- * the text at `judge`), so a punctuation-pervasive corpus stays a few KB.
+ * proportionality\'s per-verse ratios are sparse; punctuation adjacency and
+ * repeated-character-run cache only **aggregate counts** (never per-occurrence
+ * sites — those re-derive from the text at `judge`), so convention-heavy
+ * corpora stay small.
  * Zero-width space carries no variant here: it is judged per-verse and
  * deterministically by `uni.redundant-zero-width-space` (ADR 0027), which needs
  * no corpus statistics.
  */
-export type RuleStats = { Casing: CasingStats } | { Proportionality: ProportionalityStats } | { PunctuationAdjacency: PunctuationAdjacencyStats };
+export type RuleStats = { Casing: CasingStats } | { Proportionality: ProportionalityStats } | { PunctuationAdjacency: PunctuationAdjacencyStats } | { PunctuationSpacing: PunctuationSpacingStats } | { RepeatedCharacterRun: RepeatedCharacterRunStats };
 
 /**
  * Stable, machine-readable rule identity — a **closed set**.
@@ -219,7 +286,7 @@ export type RuleStats = { Casing: CasingStats } | { Proportionality: Proportiona
  * config and localisation off: Rust via [`RuleId::ALL`] +
  * exhaustive `match`; TS via the `Tsify` string union.
  */
-export type RuleId = "lex.excess-h-whitespace" | "hyg.tab-in-body" | "hyg.control-chars" | "hyg.zero-width-misuse" | "hyg.empty-verse" | "hyg.invalid-codepoint" | "prop.length-ratio" | "struct.source-marker-leftover" | "struct.merge-conflict-marker" | "punct.adjacency-anomaly" | "lex.duplicate-word" | "lex.punct-only-token" | "uni.combining-mark-without-base" | "uni.redundant-zero-width-space" | "uni.mixed-script-in-token" | "lex.repeated-character-run" | "uni.mixed-numeral-systems" | "punct.placeholder-leftover" | "punct.bracket-balance" | "punct.space-before-punct" | "case.sentence-initial-lowercase";
+export type RuleId = "lex.excess-h-whitespace" | "hyg.tab-in-body" | "hyg.control-chars" | "hyg.zero-width-misuse" | "hyg.empty-verse" | "hyg.invalid-codepoint" | "prop.length-ratio" | "struct.source-marker-leftover" | "struct.merge-conflict-marker" | "punct.adjacency-anomaly" | "lex.duplicate-word" | "lex.punct-only-token" | "uni.combining-mark-without-base" | "uni.redundant-zero-width-space" | "uni.mixed-script-in-token" | "lex.repeated-character-run" | "uni.mixed-numeral-systems" | "punct.placeholder-leftover" | "punct.bracket-balance" | "punct.spacing-anomaly" | "case.sentence-initial-lowercase";
 
 /**
  * Structured message arguments — the additive payload ADR 0010 §6
@@ -276,6 +343,8 @@ export interface SousConfig {
     proportionality?: ProportionalityOverrides;
     casing?: CasingOverrides;
     punctuation_adjacency?: PunctuationAdjacencyOverrides;
+    punctuation_spacing?: PunctuationSpacingOverrides;
+    repeated_character_run?: RepeatedCharacterRunOverrides;
 }
 
 /**

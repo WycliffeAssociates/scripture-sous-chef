@@ -314,15 +314,14 @@ Every available configuration option, set to its built-in default. Copy this and
 > This section documents the corpus-relative rule against that real surface; the
 > older reference is retained for its conceptual material.
 
-`punct.adjacency-anomaly` is the one corpus-relative rule with tunable knobs. It
-emits `Severity::Info` with a continuous `score ∈ [0, 1]` — a **conformance
-surprise**, not a correctness verdict (1 ≈ "unlike anything this corpus does",
-0 ≈ "ordinary here"). The score is the Wilson lower bound of an observed rate
-`k/n`, divided by a convention rate and clamped (see `methods.md`
-§"Corpus-relative rate shrinkage"); a finding is emitted only when its score
-reaches `emit_score_min`, so an established convention emits nothing. It is
-aggregate-only stateful — it caches tiny per-book counts, not per-occurrence
-sites.
+`punct.adjacency-anomaly`, `punct.spacing-anomaly`, and
+`lex.repeated-character-run` are corpus-relative rules with typed knobs. Each
+emits `Severity::Info` with a continuous
+`score ∈ [0, 1]` — a **conformance surprise**, not a correctness verdict (1 ≈
+"unlike anything this corpus does", 0 ≈ "ordinary here"). A finding is emitted
+only when its score reaches `emit_score_min`, so established conventions emit
+nothing. All three are aggregate-only stateful: tiny per-book counts, no
+per-occurrence sites.
 
 > **Zero-width space is no longer scored corpus-relative.** The
 > `uni.zero-width-space-anomaly` scorer (and its `Config.zero_width_space` knobs)
@@ -344,6 +343,40 @@ sites.
 **Stricter (fewer findings):** raise `emit_score_min` toward 1.0 (surface only
 near-certain anomalies) and/or lower the `*_convention_rate` (more patterns count
 as established → silent). **Looser:** lower `emit_score_min`.
+
+### `punct.spacing-anomaly` (`Config.punctuation_spacing`) — **default OFF**
+
+| knob | meaning |
+| --- | --- |
+| `emit_score_min` | **the user-facing decision threshold** ("minimum convention dominance"): flag a mark's minority spacing form only where the opposite form's *conservative* corpus share is ≥ this value. `0.75` reads literally as "≥75% dominant"; the finding's `score` is in the same unit. Default 0.75 |
+| `confidence_z` | Wilson lower-bound confidence — an **advanced** calibration knob (higher shrinks small samples harder toward "not yet a convention"); default 1.96. Omit from normal UI |
+
+`score = wilson_lower_bound(k_majority, N, confidence_z)` per mark, emitted only
+for **minority-form** occurrences (ADR 0029). Unlike the sibling rules there is
+no `convention_rate` — the single threshold does the convention-floor job — and
+no `min_samples`. The score is confidence-monotone: at a fixed ratio it rises
+with `N`, so more data flags more readily, never less.
+
+**Stricter (fewer findings):** raise `emit_score_min` (demand a more dominant
+convention before flagging its minority). **Looser:** lower it (surface weaker
+conventions' minority forms, down toward a near-even split which stays silent).
+
+### `lex.repeated-character-run` (`Config.repeated_character_run`) — **default ON**
+
+| knob | meaning |
+| --- | --- |
+| `convention_rate_per_10k` | raw runs of one folded grapheme cluster per 10,000 whitespace lexical units at which that cluster factor reaches zero; default 2.0 |
+| `word_recurrence_k` | repeats beyond the first that drive a run-containing word's factor to zero; default 5.0 |
+| `emit_score_min` | surfacing floor; default 0.5 |
+
+`evidence = cluster_factor × word_factor` (ADR 0028). The cluster count scans
+raw verse text, including runs at scriptio-continua joins. The word factor is
+neutral when UAX #29 supplies no containing token. The rate denominator uses
+whitespace-delimited lexical units because Thai/Lao UAX tokenization inflated
+one grapheme into one token and hid established joins.
+
+**Stricter (fewer findings):** lower `convention_rate_per_10k`, lower
+`word_recurrence_k`, or raise `emit_score_min`. **Looser:** reverse those.
 
 ## 7. Common Tuning Recipes
 

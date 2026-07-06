@@ -21,7 +21,6 @@ use std::collections::HashMap;
 
 use crate::config::Config;
 use crate::diagnostics::{Finding, RuleId, Severity};
-use crate::grapheme::GraphemeRule;
 use crate::sid::Sid;
 use crate::signals;
 use crate::span::Span;
@@ -69,12 +68,11 @@ pub trait ProjectTokenRule: Sync {
     ) -> Vec<Finding>;
 }
 
-/// A rule that **observes** the corpus into `RuleStats`, then **judges**
-/// from that alone (ADR 0017). `reduce` summarises the verses it is given
-/// (the whole corpus, or just the edited books); the caller `merge`s the
-/// result into any prior stats; `judge` emits findings from the cached
-/// observations without re-scanning text. Core stays pure — the stats live
-/// in the caller, not the rule.
+/// A rule that **observes** the corpus into `RuleStats`, then **judges** from
+/// that corpus context (ADR 0017). `reduce` summarises the verses it is given;
+/// the caller `merge`s that into prior stats. Aggregate-only rules may re-scan
+/// `target` to recover spans without storing sites. Core stays pure — the stats
+/// live in the caller, not the rule.
 pub trait StatefulRule: Sync {
     fn id(&self) -> RuleId;
     fn reduce(&self, map: &VerseMap, source: Option<&VerseMap>) -> RuleStats;
@@ -104,16 +102,8 @@ pub fn per_verse_rules() -> Vec<Box<dyn PerVerseRule>> {
         Box::new(signals::structural::SourceMarkerLeftover),
         Box::new(signals::structural::MergeConflictMarker),
         Box::new(signals::punctuation::PlaceholderLeftover),
-        Box::new(signals::punctuation::SpaceBeforePunct),
         Box::new(signals::lexical::PunctOnlyToken),
     ]
-}
-
-/// Every per-verse rule over the shared grapheme segmentation. Kept out of
-/// `per_verse_rules` so the runner segments each verse once and hands them all
-/// the same `&[GSpan]` slice (ADR 0021).
-pub fn grapheme_rules() -> Vec<Box<dyn GraphemeRule>> {
-    vec![Box::new(signals::lexical::RepeatedCharacterRun)]
 }
 
 /// Every token-consuming per-verse rule. Kept out of `per_verse_rules` so the
@@ -146,6 +136,16 @@ pub fn stateful_rules(config: &Config) -> Vec<Box<dyn StatefulRule>> {
         }),
         Box::new(signals::proportionality::ProjectLengthRatio {
             cfg: config.proportionality,
+        }),
+        // Corpus-relative punctuation rules, both aggregate-only stateful.
+        Box::new(signals::punctuation::PunctuationAdjacencyAnomaly {
+            cfg: config.punctuation_adjacency,
+        }),
+        Box::new(signals::punctuation::PunctuationSpacingAnomaly {
+            cfg: config.punctuation_spacing,
+        }),
+        Box::new(signals::lexical::RepeatedCharacterRun {
+            cfg: config.repeated_character_run,
         }),
     ]
 }

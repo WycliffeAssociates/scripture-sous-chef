@@ -1,19 +1,21 @@
 //! Punctuation signals.
 //!
-//! `punct.adjacency-anomaly` is corpus-relative and stateful with
-//! **aggregate-only** state (ADR 0017, ADR 0024): it caches per-book run-start
-//! and pattern *counts* — never sites — so `Stats` stays tiny; at `judge` it
-//! re-scans the current call's verses to emit spans, keeping scores corpus-wide
-//! and incremental re-analysis correct. `punct.placeholder-leftover` and
-//! `punct.space-before-punct` remain deterministic per-verse rules. Spans always
-//! slice the offending characters out of the verse text.
+//! `punct.adjacency-anomaly` and `punct.spacing-anomaly` are both corpus-relative
+//! and stateful with **aggregate-only** state (ADR 0017, ADR 0024, ADR 0029):
+//! each caches per-book *counts* — never sites — so `Stats` stays tiny; at
+//! `judge` each re-scans the current call's verses to emit spans, keeping scores
+//! corpus-wide and incremental re-analysis correct. `punct.placeholder-leftover`
+//! remains a deterministic per-verse rule. Spans always slice the offending
+//! characters out of the verse text.
 
 use std::collections::BTreeMap;
 
-use crate::config::PunctuationAdjacencyConfig;
+use crate::charclass::class_of;
+use crate::config::{PunctuationAdjacencyConfig, PunctuationSpacingConfig};
 use crate::diagnostics::{Finding, RuleId, Severity};
+use crate::grapheme::{self, GSpan};
 use crate::rule::{PerVerseRule, StatefulRule};
-use crate::shrinkage::{clamp_rate, clamp_unit, clamp_z, strength};
+use crate::shrinkage::{clamp_rate, clamp_unit, clamp_z, strength, wilson_lower_bound};
 use crate::sid::Sid;
 use crate::span::Span;
 use crate::stats::RuleStats;
@@ -338,51 +340,245 @@ pub fn scan_placeholder_leftover(text: &str) -> Vec<Span> {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Space before punctuation (P2 — ships default-disabled)
+// Punctuation spacing anomaly (corpus-relative, aggregate-only stateful)
 // ─────────────────────────────────────────────────────────────────────
 
-/// Horizontal whitespace immediately before `, . ; : ? !`. Often a typo
-/// in English-convention texts — but French and several typographic
-/// traditions legitimately space before `; : ? !`, so this ships
-/// **default-disabled** (opt-in via config).
-pub const SPACE_BEFORE_PUNCT: RuleId = RuleId::SpaceBeforePunct;
+/// Whether the corpus spaces or attaches a given punctuation mark is a *per-mark
+/// convention*, not a universal rule: English attaches `, . ; : ? !`; French and
+/// several traditions space `; : ? !`; `pa_ulb` spaces `? !`. A fixed
+/// "space-before-punct is a typo" predicate mislabels the convention as an error
+/// (6159 false hits on `pa_ulb`). So this rule learns each mark's dominant form
+/// and flags only the **minority** form — spaced-where-attached or
+/// attached-where-spaced — scored by how dominant the opposing convention is
+/// (ADR 0029, amending the deterministic rule of ADR 0014). Ships
+/// **default-disabled** until calibrated.
+pub const PUNCTUATION_SPACING_ANOMALY: RuleId = RuleId::PunctuationSpacingAnomaly;
 
-pub struct SpaceBeforePunct;
+/// Horizontal whitespace that can separate a word from a clinging mark.
+fn is_spacing_ws(c: char) -> bool {
+    matches!(c, ' ' | '\t' | '\u{00A0}' | '\u{202F}')
+}
 
-impl PerVerseRule for SpaceBeforePunct {
-    fn id(&self) -> RuleId {
-        SPACE_BEFORE_PUNCT
+/// One mark's binary spacing counts: word-adjacent occurrences that are spaced
+/// from vs attached to their governing word. `spaced + attached = N`, the
+/// opportunity denominator.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+struct SpacingCounts {
+    spaced: u64,
+    attached: u64,
+}
+
+/// One book's per-mark spacing counts. **No sites** — spans re-derive from the
+/// text at `judge`, so this stays a few bytes per mark even corpus-wide.
+#[derive(Debug, Clone, Default, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+struct BookPunctuationSpacing {
+    per_mark: BTreeMap<char, SpacingCounts>,
+}
+
+/// Cached spacing aggregates, keyed by book code so an edit supersedes only its
+/// book. Corpus-wide counts are the sums over books, derived at `judge`.
+#[derive(Debug, Clone, Default, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+pub struct PunctuationSpacingStats {
+    per_book: BTreeMap<String, BookPunctuationSpacing>,
+}
+
+impl PunctuationSpacingStats {
+    /// Book-level supersede: books in `other` replace those in `self`.
+    pub(crate) fn merge(mut self, other: PunctuationSpacingStats) -> PunctuationSpacingStats {
+        for (book, b) in other.per_book {
+            self.per_book.insert(book, b);
+        }
+        self
     }
-    fn severity(&self) -> Severity {
-        Severity::Warning
-    }
-    fn check(&self, text: &str) -> Vec<Span> {
-        scan_space_before_punct(text)
+
+    pub(crate) fn remove_book(&mut self, book: &str) {
+        self.per_book.remove(book);
     }
 }
 
-pub fn scan_space_before_punct(text: &str) -> Vec<Span> {
-    let is_hs = |c: char| c == ' ' || c == '\t' || c == '\u{00A0}' || c == '\u{202F}';
-    let mut spans = Vec::new();
-    let mut saw_content = false;
-    let mut ws_start: Option<usize> = None;
-    for (i, c) in text.char_indices() {
-        if is_hs(c) {
-            if saw_content && ws_start.is_none() {
-                ws_start = Some(i);
-            }
-        } else {
-            if is_separator_punct(c)
-                && let Some(start) = ws_start
-            {
-                // Span covers the whitespace run plus the mark it clings to.
-                spans.push(Span { start, end: i + c.len_utf8() });
-            }
-            saw_content = true;
-            ws_start = None;
-        }
+pub struct PunctuationSpacingAnomaly {
+    pub cfg: PunctuationSpacingConfig,
+}
+
+impl StatefulRule for PunctuationSpacingAnomaly {
+    fn id(&self) -> RuleId {
+        PUNCTUATION_SPACING_ANOMALY
     }
-    spans
+
+    fn reduce(&self, map: &VerseMap, _source: Option<&VerseMap>) -> RuleStats {
+        let mut stats = PunctuationSpacingStats::default();
+        let mut graphemes = Vec::new();
+        for (book, verses) in verse::by_book(map) {
+            let mut per_mark: BTreeMap<char, SpacingCounts> = BTreeMap::new();
+            for (_sid, text) in &verses {
+                grapheme::segment(text, &mut graphemes);
+                for opp in spacing_opportunities(text, &graphemes) {
+                    let counts = per_mark.entry(opp.mark).or_default();
+                    if opp.spaced {
+                        counts.spaced += 1;
+                    } else {
+                        counts.attached += 1;
+                    }
+                }
+            }
+            stats
+                .per_book
+                .insert(book.as_str().to_string(), BookPunctuationSpacing { per_mark });
+        }
+        RuleStats::PunctuationSpacing(stats)
+    }
+
+    fn judge(&self, stats: &RuleStats, target: &VerseMap) -> Vec<Finding> {
+        let RuleStats::PunctuationSpacing(stats) = stats else {
+            return Vec::new();
+        };
+
+        // Corpus-wide per-mark counts: sum the per-book aggregates.
+        let mut totals: BTreeMap<char, SpacingCounts> = BTreeMap::new();
+        for book in stats.per_book.values() {
+            for (&mark, counts) in &book.per_mark {
+                let e = totals.entry(mark).or_default();
+                e.spaced += counts.spaced;
+                e.attached += counts.attached;
+            }
+        }
+
+        let z = clamp_z(self.cfg.confidence_z);
+        let floor = f64::from(clamp_unit(self.cfg.emit_score_min));
+
+        // A mark's verdict (which form is minority + the majority's conservative
+        // dominance) is identical for every one of its occurrences, so compute
+        // it once per mark.
+        let verdicts: BTreeMap<char, MarkVerdict> = totals
+            .iter()
+            .filter_map(|(&mark, &c)| mark_verdict(c, z).map(|v| (mark, v)))
+            .collect();
+
+        // Re-scan the target to emit spans (aggregate-only state holds none).
+        let mut out = Vec::new();
+        let mut graphemes = Vec::new();
+        for (&sid, text) in target {
+            grapheme::segment(text, &mut graphemes);
+            for opp in spacing_opportunities(text, &graphemes) {
+                let Some(v) = verdicts.get(&opp.mark) else {
+                    continue;
+                };
+                // Only the minority form is anomalous; and only above the floor.
+                if opp.spaced != v.minority_is_spaced || v.dominance < floor {
+                    continue;
+                }
+                out.push(Finding {
+                    sid,
+                    code: PUNCTUATION_SPACING_ANOMALY,
+                    severity: Severity::Info,
+                    range: opp.span,
+                    score: Some(v.dominance as f32),
+                    args: None,
+                });
+            }
+        }
+        out.sort_by_key(|f| (f.sid, f.range.start, f.range.end));
+        out
+    }
+}
+
+/// A mark's corpus verdict: which form is the (flaggable) minority, and the
+/// conservative dominance of the majority form — the score its minority
+/// occurrences carry.
+struct MarkVerdict {
+    minority_is_spaced: bool,
+    dominance: f64,
+}
+
+/// The direct-dominance verdict for one mark's counts (ADR 0029). `None` on an
+/// exact tie (no strict minority) or an empty denominator — so a mark with no
+/// dominant convention, and a mark seen in a single form, both stay silent. The
+/// score is the Wilson lower bound of the majority share: the *conservative
+/// convention dominance*, equivalently `1 − upper_bound(minority_share)`. It is
+/// confidence-monotone (at a fixed ratio it rises with `N` toward the observed
+/// rate), so more evidence makes it more willing to flag, never less.
+fn mark_verdict(c: SpacingCounts, z: f64) -> Option<MarkVerdict> {
+    let n = c.spaced + c.attached;
+    if n == 0 || c.spaced == c.attached {
+        return None;
+    }
+    Some(MarkVerdict {
+        minority_is_spaced: c.spaced < c.attached,
+        dominance: wilson_lower_bound(c.spaced.max(c.attached), n, z),
+    })
+}
+
+/// One word-adjacent punctuation opportunity: the mark, whether it is spaced
+/// from its governing word, and the span to highlight if flagged.
+struct SpacingOpportunity {
+    mark: char,
+    spaced: bool,
+    span: Span,
+}
+
+/// Extract word-adjacent spacing opportunities from a verse. A separator mark
+/// (`. , ; : ? !`) is an opportunity iff its **governing left neighbour** — the
+/// first non-spacing grapheme to its left — is a cluster containing a letter.
+/// Spacing is decided by whether ≥1 horizontal-whitespace grapheme was crossed
+/// to reach it. This excludes, with no special cases: cluster tails (`word?!`
+/// counts `?`, skips `!`), closing-quote/paren-then-mark (`word" ,`), verse-
+/// leading marks, and numeric `1:1` colons. The flagged span is the whitespace
+/// run + mark (spaced) or the governing letter grapheme + mark (attached), so
+/// the highlight shows where the space is, or where it belongs.
+fn spacing_opportunities(text: &str, graphemes: &[GSpan]) -> Vec<SpacingOpportunity> {
+    let mut out = Vec::new();
+    for (idx, gs) in graphemes.iter().enumerate() {
+        let g = gs.slice(text);
+        // A lone separator-punct scalar — a mark carrying a combining cluster is
+        // not a clean spacing site, so require the grapheme to be exactly the mark.
+        let mark = match g.chars().next() {
+            Some(c) if g.len() == c.len_utf8() && is_separator_punct(c) => c,
+            _ => continue,
+        };
+        // Walk left over horizontal-whitespace clusters to the governing token.
+        let mut j = idx;
+        let mut spaced = false;
+        let mut ws_start = gs.start as usize;
+        while j > 0 {
+            let prev = graphemes[j - 1];
+            let ps = prev.slice(text);
+            if !ps.is_empty() && ps.chars().all(is_spacing_ws) {
+                spaced = true;
+                ws_start = prev.start as usize;
+                j -= 1;
+            } else {
+                break;
+            }
+        }
+        // The governing neighbour must exist and contain a letter.
+        if j == 0 {
+            continue; // verse-leading mark: only whitespace (or nothing) precedes
+        }
+        let gov = graphemes[j - 1];
+        if !cluster_has_letter(gov.slice(text)) {
+            continue; // punctuation / quote / paren / digit to the left → not a word
+        }
+        let mark_end = gs.start as usize + mark.len_utf8();
+        let span = if spaced {
+            Span { start: ws_start, end: mark_end }
+        } else {
+            Span { start: gov.start as usize, end: mark_end }
+        };
+        out.push(SpacingOpportunity { mark, spaced, span });
+    }
+    out
+}
+
+/// Whether a grapheme cluster contains a letter (an alphabetic scalar), so a
+/// decomposed word-final letter (base + combining mark) still counts as a word.
+fn cluster_has_letter(cluster: &str) -> bool {
+    cluster.chars().any(|c| class_of(c).is_alphabetic())
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -717,20 +913,217 @@ mod tests {
         assert!(ph("really?? now").is_empty());
     }
 
-    fn sb<'a>(text: &'a str) -> Vec<&'a str> {
-        scan_space_before_punct(text).iter().map(|s| s.slice(text)).collect()
+    // ── punctuation spacing anomaly ─────────────────────────────────────
+
+    fn sp_rule(cfg: PunctuationSpacingConfig) -> PunctuationSpacingAnomaly {
+        PunctuationSpacingAnomaly { cfg }
+    }
+    fn sp_default() -> PunctuationSpacingAnomaly {
+        sp_rule(PunctuationSpacingConfig::default())
+    }
+    fn sp_no_floor() -> PunctuationSpacingConfig {
+        PunctuationSpacingConfig { emit_score_min: 0.0, ..Default::default() }
+    }
+    fn sp_run(map: &VerseMap, r: &PunctuationSpacingAnomaly) -> Vec<Finding> {
+        r.judge(&r.reduce(map, None), map)
+    }
+    /// A book whose comma appears `spaced` times word-spaced (`word , word`) and
+    /// `attached` times word-attached (`word, word`) — one opportunity per verse.
+    fn marks_book(bk: &str, spaced: usize, attached: usize) -> VerseMap {
+        let mut v: Vec<(u16, String)> = Vec::new();
+        let mut n = 1u16;
+        for _ in 0..spaced {
+            v.push((n, "word , word".to_string()));
+            n += 1;
+        }
+        for _ in 0..attached {
+            v.push((n, "word, word".to_string()));
+            n += 1;
+        }
+        book(bk, &v)
+    }
+    fn marks(spaced: usize, attached: usize) -> VerseMap {
+        marks_book("GEN", spaced, attached)
+    }
+    fn opps_of(text: &str) -> Vec<SpacingOpportunity> {
+        let mut g = Vec::new();
+        grapheme::segment(text, &mut g);
+        spacing_opportunities(text, &g)
+    }
+
+    // ── scorer units (mark_verdict / conservative dominance) ─────────────
+
+    #[test]
+    fn dominance_reads_as_a_literal_share_at_z_zero() {
+        // z = 0 ⇒ the Wilson lower bound is the observed rate, so the score is
+        // exactly the majority share and the threshold has literal units.
+        let v = mark_verdict(SpacingCounts { spaced: 25, attached: 75 }, 0.0).unwrap();
+        assert!(v.minority_is_spaced, "spaced (25) is the minority of 25:75");
+        assert!((v.dominance - 0.75).abs() < 1e-9, "75:25 → 0.75, got {}", v.dominance);
+        let v2 = mark_verdict(SpacingCounts { spaced: 26, attached: 74 }, 0.0).unwrap();
+        assert!((v2.dominance - 0.74).abs() < 1e-9, "74:26 → 0.74, got {}", v2.dominance);
     }
 
     #[test]
-    fn space_before_punct_flagged() {
-        assert_eq!(sb("word , word"), vec![" ,"]);
-        assert_eq!(sb("word\u{00A0}! word"), vec!["\u{00A0}!"]);
+    fn dominance_rises_with_evidence_at_a_fixed_ratio() {
+        // Confidence-monotone (the property signed-contrast failed): the same
+        // ~76% majority scores higher as N grows, toward the observed rate.
+        let z = 1.96;
+        let a = mark_verdict(SpacingCounts { spaced: 9, attached: 29 }, z).unwrap().dominance;
+        let b = mark_verdict(SpacingCounts { spaced: 90, attached: 290 }, z).unwrap().dominance;
+        let c = mark_verdict(SpacingCounts { spaced: 900, attached: 2900 }, z).unwrap().dominance;
+        assert!(a < b && b < c, "dominance must rise with N: {a} < {b} < {c}");
+        assert!(c < 29.0 / 38.0, "stays below the observed majority rate 0.763");
     }
 
     #[test]
-    fn space_before_punct_clean_and_leading() {
-        assert!(sb("word, word.").is_empty());
-        // Leading whitespace then punct: no preceding content, skip.
-        assert!(sb("  ...word").is_empty());
+    fn ties_have_no_verdict() {
+        assert!(mark_verdict(SpacingCounts { spaced: 1, attached: 1 }, 1.96).is_none());
+        assert!(mark_verdict(SpacingCounts { spaced: 20, attached: 20 }, 1.96).is_none());
+        assert!(mark_verdict(SpacingCounts { spaced: 0, attached: 0 }, 1.96).is_none());
+    }
+
+    // ── corpus behaviour ────────────────────────────────────────────────
+
+    #[test]
+    fn a_tie_corpus_is_silent() {
+        // No strict majority for the comma ⇒ nothing is anomalous, even at floor 0.
+        assert!(sp_run(&marks(1, 1), &sp_rule(sp_no_floor())).is_empty());
+        assert!(sp_run(&marks(25, 25), &sp_rule(sp_no_floor())).is_empty());
+    }
+
+    #[test]
+    fn a_sole_form_corpus_is_silent() {
+        // Only-attached or only-spaced: the sole form is the majority, so there
+        // are no minority occurrences to flag.
+        assert!(sp_run(&marks(0, 40), &sp_rule(sp_no_floor())).is_empty());
+        assert!(sp_run(&marks(40, 0), &sp_rule(sp_no_floor())).is_empty());
+    }
+
+    #[test]
+    fn minority_surfaces_and_majority_is_silent_both_directions() {
+        // Attached-dominant (English comma): the few spaced commas surface.
+        let f = sp_run(&marks(3, 100), &sp_default());
+        assert_eq!(f.len(), 3, "the 3 minority spaced commas surface");
+        for x in &f {
+            assert_eq!(x.severity, Severity::Info);
+            assert!(x.score.unwrap() > 0.85, "score {:?}", x.score);
+        }
+        // Spaced-dominant (pa_ulb `? !`): the few attached marks surface — the
+        // inverse the old one-directional rule could never catch.
+        let g = sp_run(&marks(100, 3), &sp_default());
+        assert_eq!(g.len(), 3, "the 3 minority attached commas surface");
+    }
+
+    #[test]
+    fn spans_point_at_the_spacing_site() {
+        // Spaced minority → whitespace-run + mark.
+        let vm = marks(1, 100);
+        let f = sp_run(&vm, &sp_default());
+        assert_eq!(f.len(), 1);
+        assert_eq!(f[0].range.slice(&vm[&f[0].sid]), " ,");
+        // Attached minority → governing letter + mark (shows where the space belongs).
+        let vm2 = marks(100, 1);
+        let f2 = sp_run(&vm2, &sp_default());
+        assert_eq!(f2.len(), 1);
+        assert_eq!(f2[0].range.slice(&vm2[&f2[0].sid]), "d,");
+    }
+
+    // ── opportunity extraction ──────────────────────────────────────────
+
+    #[test]
+    fn cluster_tail_and_closers_are_not_opportunities() {
+        // `word ?!`: only the spaced `?` is an opportunity; `!` clings to `?`.
+        let o = opps_of("word ?!");
+        assert_eq!(o.len(), 1);
+        assert_eq!(o[0].mark, '?');
+        assert!(o[0].spaced);
+        // Closing quote / paren before a mark → governing neighbour is no letter.
+        assert!(opps_of("word\" ,").is_empty());
+        assert!(opps_of("word) .").is_empty());
+    }
+
+    #[test]
+    fn leading_marks_and_numeric_colons_are_excluded() {
+        assert!(opps_of(", word").is_empty()); // verse-leading mark
+        assert!(opps_of("chapter 1:1 verse").is_empty()); // digit governs the `:`
+    }
+
+    #[test]
+    fn decomposed_letter_governs_an_opportunity() {
+        // é as e + combining acute: the base letter still makes it a word.
+        let o = opps_of("cafe\u{0301}, then");
+        assert_eq!(o.len(), 1);
+        assert_eq!(o[0].mark, ',');
+        assert!(!o[0].spaced);
+    }
+
+    // ── stateful: corpus-wide pooling, incrementality, removal ───────────
+
+    #[test]
+    fn incremental_score_is_corpus_wide_not_book_local() {
+        let r = sp_default();
+        let gen_map = marks_book("GEN", 0, 100); // attach convention for the comma
+        let mut exo = VerseMap::new();
+        exo.insert(sid("EXO", 1), "word , word".to_string()); // one spaced comma
+        let mut full = gen_map.clone();
+        full.extend(exo.clone());
+
+        let full_score = r
+            .judge(&r.reduce(&full, None), &full)
+            .into_iter()
+            .find(|f| f.sid == sid("EXO", 1))
+            .unwrap()
+            .score;
+
+        let merged = r.reduce(&gen_map, None).merge(r.reduce(&exo, None));
+        let inc = r.judge(&merged, &exo);
+        assert_eq!(inc.len(), 1, "emits only for the target (EXO)");
+        assert_eq!(inc[0].sid, sid("EXO", 1));
+        assert_eq!(inc[0].score, full_score, "incremental score is corpus-wide");
+    }
+
+    #[test]
+    fn removing_a_book_drops_its_contribution() {
+        let r = sp_rule(sp_no_floor());
+        let gen_map = marks_book("GEN", 0, 100); // 100 attached commas
+        let mut exo = VerseMap::new();
+        exo.insert(sid("EXO", 1), "word , word".to_string()); // spaced
+        exo.insert(sid("EXO", 2), "word, word".to_string()); // attached
+        let mut full = gen_map;
+        full.extend(exo.clone());
+
+        let RuleStats::PunctuationSpacing(mut stats) = r.reduce(&full, None) else {
+            unreachable!()
+        };
+        // Pooled with GEN: comma is 1 spaced : 101 attached → spaced minority surfaces.
+        let before = r.judge(&RuleStats::PunctuationSpacing(stats.clone()), &exo);
+        assert!(before.iter().any(|f| f.sid == sid("EXO", 1)));
+        // Drop GEN: EXO alone is 1 spaced : 1 attached → a tie → silent.
+        stats.remove_book("GEN");
+        assert!(r.judge(&RuleStats::PunctuationSpacing(stats), &exo).is_empty());
+    }
+
+    #[test]
+    fn invalid_config_produces_finite_scores() {
+        let cfg = PunctuationSpacingConfig {
+            emit_score_min: f32::NAN,
+            confidence_z: f32::INFINITY,
+        };
+        for f in sp_run(&marks(3, 100), &sp_rule(cfg)) {
+            let s = f.score.unwrap();
+            assert!(s.is_finite() && (0.0..=1.0).contains(&s), "score {s}");
+        }
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn spacing_stats_round_trip_through_serde() {
+        let r = sp_default();
+        let vm = marks(3, 100);
+        let stats = r.reduce(&vm, None);
+        let back: RuleStats = serde_json::from_str(&serde_json::to_string(&stats).unwrap()).unwrap();
+        assert_eq!(stats, back);
+        assert_eq!(r.judge(&stats, &vm), r.judge(&back, &vm));
     }
 }

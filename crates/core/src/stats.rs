@@ -14,17 +14,19 @@ use std::collections::BTreeMap;
 use crate::diagnostics::RuleId;
 use crate::sid::BookId;
 use crate::signals::casing::CasingStats;
+use crate::signals::lexical::RepeatedCharacterRunStats;
 use crate::signals::proportionality::ProportionalityStats;
-use crate::signals::punctuation::PunctuationAdjacencyStats;
+use crate::signals::punctuation::{PunctuationAdjacencyStats, PunctuationSpacingStats};
 
 /// Per-rule cached statistics — a **closed** union like `FindingArgs`, one
 /// variant per stateful rule. The orchestration treats it opaquely; each
 /// rule reduces into / judges from its own variant.
 ///
 /// What each variant caches is deliberately small: casing's lowercase sites and
-/// proportionality's per-verse ratios are sparse; punctuation adjacency caches
-/// only **aggregate counts** (never per-occurrence sites — those re-derive from
-/// the text at `judge`), so a punctuation-pervasive corpus stays a few KB.
+/// proportionality's per-verse ratios are sparse; punctuation adjacency and
+/// repeated-character-run cache only **aggregate counts** (never per-occurrence
+/// sites — those re-derive from the text at `judge`), so convention-heavy
+/// corpora stay small.
 /// Zero-width space carries no variant here: it is judged per-verse and
 /// deterministically by `uni.redundant-zero-width-space` (ADR 0027), which needs
 /// no corpus statistics.
@@ -35,6 +37,8 @@ pub enum RuleStats {
     Casing(CasingStats),
     Proportionality(ProportionalityStats),
     PunctuationAdjacency(PunctuationAdjacencyStats),
+    PunctuationSpacing(PunctuationSpacingStats),
+    RepeatedCharacterRun(RepeatedCharacterRunStats),
 }
 
 impl RuleStats {
@@ -50,6 +54,12 @@ impl RuleStats {
             (RuleStats::PunctuationAdjacency(a), RuleStats::PunctuationAdjacency(b)) => {
                 RuleStats::PunctuationAdjacency(a.merge(b))
             }
+            (RuleStats::PunctuationSpacing(a), RuleStats::PunctuationSpacing(b)) => {
+                RuleStats::PunctuationSpacing(a.merge(b))
+            }
+            (RuleStats::RepeatedCharacterRun(a), RuleStats::RepeatedCharacterRun(b)) => {
+                RuleStats::RepeatedCharacterRun(a.merge(b))
+            }
             // Mismatched variants can't occur via `analyze_stateful` (it keys
             // prior and fresh by the same `RuleId`). For malformed cached input
             // the **fresh** reduction wins — never the stale prior. The left
@@ -59,7 +69,9 @@ impl RuleStats {
             (
                 RuleStats::Casing(_)
                 | RuleStats::Proportionality(_)
-                | RuleStats::PunctuationAdjacency(_),
+                | RuleStats::PunctuationAdjacency(_)
+                | RuleStats::PunctuationSpacing(_)
+                | RuleStats::RepeatedCharacterRun(_),
                 fresh,
             ) => fresh,
         }
@@ -71,6 +83,8 @@ impl RuleStats {
             RuleStats::Casing(c) => c.remove_book(book),
             RuleStats::Proportionality(p) => p.remove_book(book),
             RuleStats::PunctuationAdjacency(p) => p.remove_book(book),
+            RuleStats::PunctuationSpacing(p) => p.remove_book(book),
+            RuleStats::RepeatedCharacterRun(r) => r.remove_book(book),
         }
     }
 }

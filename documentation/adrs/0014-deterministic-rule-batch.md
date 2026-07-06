@@ -1,7 +1,9 @@
 # ADR 0014: The deterministic rule batch — tokenizer, eleven rules, and shipped defaults
 
 - **Date:** 2026-06-09
-- **Status:** Accepted
+- **Status:** Accepted (`punct.space-before-punct` amended by
+  [ADR 0029](0029-punctuation-spacing-corpus-relative.md) — replaced by the
+  corpus-relative, bidirectional `punct.spacing-anomaly`)
 
 ## Context
 
@@ -42,7 +44,7 @@ into the given verse text, `sid`-anchored, no rendered messages,
    | `punct.placeholder-leftover` | Warning | on |
    | `punct.bracket-balance` | **Info** | on |
    | `lex.duplicate-word` | Warning | **off** |
-   | `punct.space-before-punct` | Warning | **off** |
+   | `punct.space-before-punct` | Warning | **off** | *(amended by ADR 0029 → `punct.spacing-anomaly`, Info, corpus-relative)* |
    | `case.sentence-initial-lowercase` | Info | **off** |
 
    General-category predicates (mark / punctuation / symbol / decimal
