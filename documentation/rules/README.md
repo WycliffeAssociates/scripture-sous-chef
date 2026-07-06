@@ -18,11 +18,11 @@ aggregation model, see [`../config.md`](../config.md).
 
 | File | Namespace | Rules |
 | --- | --- | --- |
-| [`hyg.md`](hyg.md) | `hyg.*` | tab-in-body, control-chars, zero-width-misuse, empty-verse, invalid-codepoint |
+| [`hyg.md`](hyg.md) | `hyg.*` | tab-in-body, control-chars, zero-width-misuse, empty-verse, invalid-codepoint, replacement-run |
 | [`uni.md`](uni.md) | `uni.*` | combining-mark-without-base, mixed-script-in-token, redundant-zero-width-space, mixed-numeral-systems |
 | [`lex.md`](lex.md) | `lex.*` | excess-h-whitespace, duplicate-word, punct-only-token, repeated-character-run |
 | [`struct.md`](struct.md) | `struct.*` | source-marker-leftover, merge-conflict-marker |
-| [`punct.md`](punct.md) | `punct.*` | bracket-balance, adjacency-anomaly, placeholder-leftover, spacing-anomaly |
+| [`punct.md`](punct.md) | `punct.*` | bracket-balance, adjacency-anomaly, spacing-anomaly |
 | [`prop.md`](prop.md) | `prop.*` | length-ratio |
 | [`case.md`](case.md) | `case.*` | sentence-initial-lowercase |
 
@@ -35,12 +35,13 @@ diverge — `lex.excess-h-whitespace` lives in `whitespace.rs`,
 
 | Rule | Severity | Default | Scope | Status |
 | --- | --- | --- | --- | --- |
-| `lex.excess-h-whitespace` | Warning | on | per-verse | ✅ documented |
+| `lex.excess-h-whitespace` | Warning | on | per-verse | ✅ documented (ADR 0036) |
 | `hyg.tab-in-body` | Warning | on | per-verse | ✅ documented |
-| `hyg.control-chars` | Warning | on | per-verse | ✅ documented |
+| `hyg.control-chars` | Warning | on | per-verse | ✅ documented (ADR 0034) |
 | `hyg.zero-width-misuse` | Warning | on | per-verse | ✅ documented |
 | `hyg.empty-verse` | Info | on | per-verse | ✅ documented |
 | `hyg.invalid-codepoint` | Warning | on | per-verse | ✅ documented |
+| `hyg.replacement-run` | Warning | on | per-verse | ✅ documented (ADR 0034) |
 | `struct.source-marker-leftover` | Warning | on | per-verse | ✅ documented |
 | `struct.merge-conflict-marker` | Warning | on | per-verse | ✅ documented |
 | `lex.duplicate-word` | Warning | **off** | per-verse | ✅ documented |
@@ -48,13 +49,12 @@ diverge — `lex.excess-h-whitespace` lives in `whitespace.rs`,
 | `uni.mixed-script-in-token` | Warning | on | per-verse | ✅ documented |
 | `uni.mixed-numeral-systems` | Warning | on | per-verse | ✅ documented |
 | `uni.redundant-zero-width-space` | Info | on | per-verse | ✅ documented (ADR 0027) |
-| `punct.bracket-balance` | Info | on | project | ✅ documented |
+| `punct.bracket-balance` | Info | on | project (corpus-relative scored) | ✅ documented (ADR 0037) |
 | `prop.length-ratio` | Warning | on | project | 🗣 pending discussion |
-| `punct.adjacency-anomaly` | Info | on | stateful | ✅ documented (ADR 0024) |
-| `lex.punct-only-token` | Warning | on | per-verse | 🗣 pending discussion |
-| `case.sentence-initial-lowercase` | Info | **off** | stateful | 🗣 pending discussion |
-| `punct.placeholder-leftover` | Warning | on | per-verse | 🗣 pending discussion |
-| `lex.repeated-character-run` | Info | on | stateful | ✅ documented (ADR 0028) |
+| `punct.adjacency-anomaly` | Info | on | stateful | ✅ documented (ADR 0024, 0031) |
+| `lex.punct-only-token` | Warning | on | stateful | ✅ documented (ADR 0030, 0032) |
+| `case.sentence-initial-lowercase` | Info | **off** | stateful | ✅ documented (ADR 0035) |
+| `lex.repeated-character-run` | Info | on | stateful | ✅ documented (ADR 0028, 0032) |
 | `punct.spacing-anomaly` | Info | **off** | stateful (aggregate) | 💡 suggestion (corpus-relative; ADR 0029) |
 
 ✅ = settled write-up done · 🗣 = needs a conversation before write-up ·

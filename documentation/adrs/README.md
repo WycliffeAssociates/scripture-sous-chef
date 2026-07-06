@@ -46,6 +46,14 @@ isn't visible from the code alone.
 | 0027 | 2026-07-06 | [Retire the corpus-relative ZWSP scorer; adopt a deterministic redundant-ZWSP rule](0027-redundant-zwsp-deterministic-retire-corpus-relative.md) | Accepted (supersedes 0023 scorer) |
 | 0028 | 2026-07-06 | [Repeated letter runs are judged against corpus recurrence](0028-repeated-character-run-corpus-relative.md) | Accepted |
 | 0029 | 2026-07-06 | [Punctuation spacing is a per-mark corpus convention — flag the minority form](0029-punctuation-spacing-corpus-relative.md) | Accepted (amends 0014 space-before-punct) |
+| 0030 | 2026-07-06 | [Punct-only tokens are judged against corpus recurrence](0030-punct-only-token-corpus-relative.md) | Accepted |
+| 0031 | 2026-07-06 | [Punctuation adjacency is judged by breadth and run length, not frequency alone](0031-punctuation-adjacency-breadth-and-length.md) | Accepted (amends 0024; retires placeholder-leftover) |
+| 0032 | 2026-07-06 | [One evidence library — the lexical rules adopt Wilson shrinkage](0032-evidence-library-wilson-unification.md) | Accepted (amends 0028, 0030) |
+| 0033 | 2026-07-06 | [The separator-punctuation class is GC `Po`, not an ASCII list](0033-separator-class-is-po-not-ascii.md) | Accepted (amends 0029, 0031) |
+| 0034 | 2026-07-06 | [`hyg.replacement-run` owns `?`-run damage; control chars report per run](0034-replacement-run-owns-mojibake.md) | Accepted (amends 0030, 0031) |
+| 0035 | 2026-07-06 | [Casing joins the evidence library — dominance verdict, aggregate stats](0035-casing-recast-on-dominance.md) | Accepted (amends 0017 casing shape) |
+| 0036 | 2026-07-06 | [Excess-whitespace reads Unicode classes — `Zs`+tab runs, STerm protection](0036-excess-whitespace-unicode-classes.md) | Accepted (amends 0014) |
+| 0037 | 2026-07-06 | [Bracket balance — UCD inventory, book-stream pairing, corpus-relative verdicts](0037-bracket-balance-corpus-relative.md) | Accepted (amends 0016) |
 
 ## Format
 

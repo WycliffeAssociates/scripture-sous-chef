@@ -314,14 +314,29 @@ Every available configuration option, set to its built-in default. Copy this and
 > This section documents the corpus-relative rule against that real surface; the
 > older reference is retained for its conceptual material.
 
-`punct.adjacency-anomaly`, `punct.spacing-anomaly`, and
-`lex.repeated-character-run` are corpus-relative rules with typed knobs. Each
-emits `Severity::Info` with a continuous
-`score ∈ [0, 1]` — a **conformance surprise**, not a correctness verdict (1 ≈
-"unlike anything this corpus does", 0 ≈ "ordinary here"). A finding is emitted
-only when its score reaches `emit_score_min`, so established conventions emit
-nothing. All three are aggregate-only stateful: tiny per-book counts, no
-per-occurrence sites.
+`punct.adjacency-anomaly`, `punct.spacing-anomaly`,
+`lex.repeated-character-run`, `lex.punct-only-token`,
+`case.sentence-initial-lowercase`, and `punct.bracket-balance` are
+corpus-relative rules with typed knobs. Each emits a continuous
+`score ∈ [0, 1]` whose unit is **anomaly evidence**, not a correctness
+verdict: 1 ≈ "unlike this corpus's own conventions", 0 ≈ "ordinary here"
+(ADR 0032). For the dominance-verdict rules (spacing, casing,
+bracket-balance) that evidence *is* the conservative dominance of the
+convention the flagged site violates — same number, read from the
+convention's side. All but `lex.punct-only-token` (Warning) carry
+`Severity::Info`. A finding is emitted only when its score reaches
+`emit_score_min`, so established conventions emit nothing. The stateful five
+are aggregate-only: tiny per-book counts, no per-occurrence sites
+(`punct.bracket-balance` is a whole-map project rule that recomputes its
+family tallies per call).
+
+All six share one scoring library, `crates/core/src/evidence.rs` (ADR 0032):
+`strength(k, n, rate, z)` — Wilson-shrunk convention strength;
+`dominance(k_major, n, z)` — Wilson lower bound of a majority form;
+`from_strengths(&[s])` — the noisy-OR residual `∏(1 − sᵢ)` for independent
+convention axes; and `odds_amplify(e, gain)` for magnitude modifiers such as
+run length. Every `confidence_z` knob below feeds the same Wilson
+arithmetic, and every rule ships `1.96`.
 
 > **Zero-width space is no longer scored corpus-relative.** The
 > `uni.zero-width-space-anomaly` scorer (and its `Config.zero_width_space` knobs)
@@ -334,11 +349,18 @@ per-occurrence sites.
 
 | knob | meaning |
 | --- | --- |
-| `convention_rate` | share of a lead glyph's run-start opportunities above which a pattern is "established" (coarse); default 0.5 |
+| `convention_rate` | share of a lead glyph's run-start opportunities above which a pattern is "established" by **frequency** (coarse); default 0.5 |
 | `confidence_z` | Wilson confidence — load-bearing when a lead glyph is exclusive to one pattern; default 1.96 |
-| `emit_score_min` | surfacing floor; **default 0.5**. Kept high so moderate-frequency conventions (e.g. Arabic `۔۔` ≈ 0.48) stay suppressed; lower it to also surface low-evidence novelties (a doubled novel mark ≈ 0.32) — ADR 0024 |
+| `breadth_convention_rate` | share of a corpus's books above which a pattern is "established" by **breadth** (ADR 0031); default 0.12 |
+| `breadth_z` | Wilson confidence for the breadth axis; default 1.96 |
+| `breadth_min_books` | minimum corpus book count before breadth is consulted (dispersion is meaningless below it); default 8 |
+| `length_gain_slope` | run-length odds amplifier per extra character (ADR 0031); `0.5` ⇒ an 8-long run ≈ 4× the odds of a doubling |
+| `emit_score_min` | surfacing floor; **default 0.5**. Retained for the exclusive-glyph seen-twice tradeoff (ADR 0024); moderate-frequency conventions like Arabic `۔۔` now suppress on the breadth axis instead |
 
-`evidence = 1 - strength(k, N_start(lead))` per exact pattern (ADR 0024).
+Per exact pattern (ADR 0024, 0031): frequency and breadth are independent
+convention evidence combined by noisy-OR, then run length amplifies the residual
+as an odds multiplier —
+`score = odds_amplify((1−freq_strength)·(1−breadth_strength), 1 + length_gain_slope·(len−2))`.
 
 **Stricter (fewer findings):** raise `emit_score_min` toward 1.0 (surface only
 near-certain anomalies) and/or lower the `*_convention_rate` (more patterns count
@@ -351,8 +373,10 @@ as established → silent). **Looser:** lower `emit_score_min`.
 | `emit_score_min` | **the user-facing decision threshold** ("minimum convention dominance"): flag a mark's minority spacing form only where the opposite form's *conservative* corpus share is ≥ this value. `0.75` reads literally as "≥75% dominant"; the finding's `score` is in the same unit. Default 0.75 |
 | `confidence_z` | Wilson lower-bound confidence — an **advanced** calibration knob (higher shrinks small samples harder toward "not yet a convention"); default 1.96. Omit from normal UI |
 
-`score = wilson_lower_bound(k_majority, N, confidence_z)` per mark, emitted only
-for **minority-form** occurrences (ADR 0029). Unlike the sibling rules there is
+`score = dominance(k_majority, N, confidence_z)` per mark (the Wilson lower
+bound, via `evidence.rs`), emitted only for **minority-form** occurrences
+(ADR 0029). Candidate marks are GC `Po` minus quotes (ADR 0033), not an ASCII
+list. Unlike the sibling rules there is
 no `convention_rate` — the single threshold does the convention-floor job — and
 no `min_samples`. The score is confidence-monotone: at a fixed ratio it rises
 with `N`, so more data flags more readily, never less.
@@ -365,18 +389,76 @@ conventions' minority forms, down toward a near-even split which stays silent).
 
 | knob | meaning |
 | --- | --- |
-| `convention_rate_per_10k` | raw runs of one folded grapheme cluster per 10,000 whitespace lexical units at which that cluster factor reaches zero; default 2.0 |
-| `word_recurrence_k` | repeats beyond the first that drive a run-containing word's factor to zero; default 5.0 |
+| `convention_rate_per_10k` | raw runs of one folded grapheme cluster per 10,000 whitespace lexical units at which that cluster's convention strength saturates; default 2.0. The per-10k value is converted to a fraction internally (`/ 10⁴`) and fed to Wilson `strength` |
+| `word_recurrence_k` | repeats beyond the first that drive a run-containing word's convention strength to one; default 5.0 |
+| `confidence_z` | Wilson confidence for the cluster axis (ADR 0032); shrinks small-corpus rates toward 0 so early drafts still emit; default 1.96 |
 | `emit_score_min` | surfacing floor; default 0.5 |
 
-`evidence = cluster_factor × word_factor` (ADR 0028). The cluster count scans
-raw verse text, including runs at scriptio-continua joins. The word factor is
-neutral when UAX #29 supplies no containing token. The rate denominator uses
-whitespace-delimited lexical units because Thai/Lao UAX tokenization inflated
-one grapheme into one token and hid established joins.
+`evidence = (1 − cluster_strength) · (1 − word_strength)` — the noisy-OR
+residual of two independent convention axes (ADR 0028, 0032), with
+`cluster_strength = strength(count, lexical_units, rate/10⁴, z)`. The cluster
+count scans raw verse text, including runs at scriptio-continua joins. The
+word strength is zero when UAX #29 supplies no containing token. The rate
+denominator uses whitespace-delimited lexical units because Thai/Lao UAX
+tokenization inflated one grapheme into one token and hid established joins.
 
 **Stricter (fewer findings):** lower `convention_rate_per_10k`, lower
 `word_recurrence_k`, or raise `emit_score_min`. **Looser:** reverse those.
+
+### `lex.punct-only-token` (`Config.punct_only_token`) — **default ON**
+
+| knob | meaning |
+| --- | --- |
+| `convention_rate_per_10k` | occurrences of one core pattern per 10,000 whitespace lexical units at which its convention strength saturates; default 1.0. Converted to a fraction internally (`/ 10⁴`) and fed to Wilson `strength` |
+| `confidence_z` | Wilson confidence (ADR 0032); default 1.96 |
+| `emit_score_min` | surfacing floor; default 0.5 |
+
+`evidence = 1 − strength(count, lexical_units, rate/10⁴, z)` per core pattern
+(riding quotes/closers stripped, closers by the UCD bracket inventory) —
+ADR 0030, 0032. Two deterministic candidacy exclusions: runs of 3+
+`<`/`=`/`>`/`|` are never candidates (merge-conflict markers,
+`struct.merge-conflict-marker`'s finding), and chunks whose core is a run of
+3+ `?` are never candidates (encoding damage, `hyg.replacement-run`'s
+finding — ADR 0034; the old judge-side score-1.0 bypass is gone).
+
+**Stricter (fewer findings):** lower `convention_rate_per_10k` or raise
+`emit_score_min`. **Looser:** reverse those.
+
+### `case.sentence-initial-lowercase` (`Config.casing`) — **default OFF**
+
+| knob | meaning |
+| --- | --- |
+| `emit_score_min` | minimum uppercase-majority dominance (Wilson lower bound of `upper / total` for the terminal glyph) to flag a lowercase site after it — the single dial; default **0.98** engages only strong-casing contexts (the bare period, `?` on en_ulb) |
+| `confidence_z` | Wilson confidence for the dominance estimate; shrinks small-sample majorities so a barely-observed glyph can't assert a casing convention — the smooth replacement for the retired hard `min_samples` gate; default 1.96 |
+
+`score = dominance(upper, total, confidence_z)` per terminal glyph, emitted
+for lowercase sites (ADR 0035, replacing the old raw-ratio `threshold` +
+`min_samples` pair). Confidence-monotone like spacing; caseless scripts stay
+silent by construction. Default-off because ~24% of cased languages don't
+reliably capitalise after a period — enabling is a per-project language
+question.
+
+**Stricter (fewer findings):** raise `emit_score_min`. **Looser:** lower it
+(engages lower-precision terminals like `!`).
+
+### `punct.bracket-balance` (`Config.bracket_balance`) — **default ON**
+
+| knob | meaning |
+| --- | --- |
+| `window_verses` | the long-span bar and reported-inventory radius (u16, default 16). No longer a matching circuit-breaker (ADR 0037): pairing reads the whole book stream with no distance cutoff |
+| `confidence_z` | Wilson confidence for both dominance verdicts; default 1.96 |
+| `emit_score_min` | surfacing floor; default 0.5 |
+
+Two dominance verdicts per open-glyph family (ADR 0037): an orphan scores
+the family's corpus-wide pairing dominance
+(`dominance(matched_events, events, z)`); a matched pair spanning more than
+`window_verses` scores the family's short-span dominance
+(`dominance(short_pairs, pairs, z)`), anchored at the opener. The inventory
+is the UCD BidiBrackets pairs plus the U+FD3E/FD3F supplement; quotes stay
+excluded. A never-paired glyph (gux's letter-`]`) self-suppresses at ~0.
+
+**Stricter (fewer findings):** raise `emit_score_min`. **Looser:** lower it
+(weak-convention families' orphans surface near the floor).
 
 ## 7. Common Tuning Recipes
 

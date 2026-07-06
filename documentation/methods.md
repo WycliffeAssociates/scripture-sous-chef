@@ -337,57 +337,90 @@ unjustifiably hide real signal. Just use Dunning.
 - **Conformal prediction abstention.** Promising long-term, but premature
   before we have any labels at all.
 
-### 2.5 Corpus-relative rate shrinkage (the conformance-surprise rules)
+### 2.5 Corpus-relative evidence (the `evidence.rs` library)
 
-The corpus-relative anomaly rule shipped in the v1-reset core —
-`punct.adjacency-anomaly` (ADR 0024) — does **not** use anything above. There is
-no Kneser–Ney model, no Good–Turing mass, no Dunning log-likelihood ratio, and no
-correctness inference. It is a corpus-conditioned **rate estimator**, and its
-output is a *conformance surprise*, not a probability that something is an error.
-(A sibling corpus-relative ZWSP scorer, `uni.zero-width-space-anomaly` (ADR 0023),
-used the same method but was retired in ADR 0027 — see below.)
+The corpus-relative anomaly rules shipped in the v1-reset core do **not** use
+anything above. There is no Kneser–Ney model, no Good–Turing mass, no Dunning
+log-likelihood ratio, and no correctness inference. Each is a
+corpus-conditioned **rate estimator**, and its output is anomaly evidence —
+how unlike this corpus's own conventions a given occurrence is — not a
+probability that something is an error. (A sibling corpus-relative ZWSP
+scorer, `uni.zero-width-space-anomaly` (ADR 0023), used the same method but
+was retired in ADR 0027 — see below.)
 
-The whole method is one function, `strength(k, n, convention_rate, z)`
-(`crate::shrinkage`):
+The whole method lives in one module, `crate::evidence` (renamed from
+`shrinkage` when the lexical rules joined it — ADR 0032), with three
+primitives, one per question class:
 
-```text
-observed_rate     = k / n
-conservative_rate = wilson_lower_bound(k, n, z)      // shrinks small samples toward 0
-convention        = clamp(conservative_rate / convention_rate, 0, 1)
-```
+- **`strength(k, n, convention_rate, z)`** — "is this pattern's corpus rate
+  high enough to be a convention?"
 
-`k` and `n` are the rule's counts (for punctuation, `k` = a pattern's project
-count and `n = N_start(lead glyph)`). A rule composes `strength` into
-`evidence = 1 - convention`, emits at `Severity::Info` with `score = evidence`,
-and serialises only sites at or above `emit_score_min`. (The retired ZWSP scorer
-multiplied *two* such conventions, `(Z, N)` and `(C(ctx), Z)`; it is gone as of
-ADR 0027, but the shared `strength` primitive it exercised still backs
-punctuation.)
+  ```text
+  observed_rate     = k / n
+  conservative_rate = wilson_lower_bound(k, n, z)      // shrinks small samples toward 0
+  convention        = clamp(conservative_rate / convention_rate, 0, 1)
+  ```
+
+  `k` and `n` are the rule's counts (for punctuation adjacency, `k` = a
+  pattern's project count and `n = N_start(lead glyph)`; for the lexical
+  rules, `n` = whitespace lexical units and the per-10k rate knob is scaled
+  to a fraction).
+- **`dominance(k_major, n, z)`** — "how confidently does the majority form
+  own this convention?" The Wilson lower bound of `k_major / n`. This is the
+  verdict for the minority-form rules: spacing (which form of a mark),
+  casing (uppercase after a terminal glyph, ADR 0035), and bracket balance
+  (a family's pairing rate and short-span rate, ADR 0037).
+- **`from_strengths(&[s])`** — the noisy-OR residual `∏(1 − sᵢ)`, the
+  composition for *independent* convention axes: any one axis fully
+  establishing a convention zeroes the evidence. Adjacency composes
+  frequency × breadth this way; repeated-run composes cluster × word.
+  `odds_amplify(e, gain)` then lets a magnitude signal (run length) push
+  anomalous evidence toward 1 without ever resurrecting a fully-established
+  convention.
+
+A rule composes these into `evidence ∈ [0, 1]`, emits it as the finding's
+`score`, and serialises only sites at or above `emit_score_min`.
+
+**All corpus-relative rules now use the Wilson math.** The two lexical rules
+(`repeated-character-run`, `punct-only-token`) originally shipped an unshrunk
+linear ramp `1 − rate/convention_rate` — exactly `strength` with `z = 0` —
+which had a quiet small-corpus failure: one occurrence of anything in a small
+corpus reads as a high rate, so evidence went non-positive and an early-draft
+NT was silently suppressed (nothing emitted below ~20k lexical units for
+punct-only). Wilson shrinkage moves the right way — small `n` shrinks the
+rate toward 0, so the evidence survives — and the emission threshold dropped
+~6× (ADR 0032). Casing and bracket balance joined the library in ADRs 0035
+and 0037, replacing a raw-ratio-plus-`min_samples` cliff and an unscored
+deterministic matcher respectively.
 
 Why this shape:
 
 - **Wilson lower bound, not a raw rate or a significance test.** It is monotone
   and has one formula across all support levels (no `k = 4`/`k = 5` model
-  switch). It supplies the conservative shrinkage the design wants — a rare
-  pattern's rate is pulled toward 0, so it stays anomalous — without claiming an
-  iid significance interpretation.
+  switch, no sample-count cliff). It supplies the conservative shrinkage the
+  design wants — a rare pattern's rate is pulled toward 0, so it stays
+  anomalous — without claiming an iid significance interpretation.
 - **`z` is load-bearing at the anomaly end, the rate knob is coarse.** When a
   pattern's opportunity glyph is exclusive to it (observed rate pinned at 1.0),
   only the sample size, through `z`, separates a novelty seen twice from an
   entrenched convention seen thousands of times. Calibration targets `z` and
   the small-`k` behaviour first; `*_convention_rate` only sets "how small a
-  share still counts as established."
+  share still counts as established." Every rule ships `z = 1.96`.
 - **Monotonicity is over realizable corpus edits, not free `(k, n)` moves.**
   `strength` is non-decreasing in `k` and non-increasing in `n`, but a real edit
   moves them together (adding an occurrence of a pattern raises both `k` and its
   denominator). The invariant the rules actually rely on is: adding an
   occurrence of a pattern never *raises* that pattern's evidence, and raises a
-  competing same-denominator pattern's evidence.
+  competing same-denominator pattern's evidence. `dominance` is
+  confidence-monotone the other way round: at a fixed ratio, more evidence
+  makes a rule *more* willing to flag the minority form, never less.
 
 This is deliberately *not* a language model. It cannot tell a systematic
 widespread typo from a convention — both go silent when common — and it never
 asserts correctness; it only reports how unlike the rest of the corpus a given
-occurrence is.
+occurrence is. The sanctioned upgrade path is empirical-Bayes shrinkage toward
+a per-corpus pattern-rate prior; `strength`'s signature is the stable seam for
+that swap (ADR 0032).
 
 ---
 

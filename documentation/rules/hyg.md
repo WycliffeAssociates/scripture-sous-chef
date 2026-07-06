@@ -42,7 +42,9 @@ legitimately preserve line breaks (ADR 0010).
 
 **Flags** — C0 (`U+0000`–`U+001F`) and C1 (`U+0080`–`U+009F`) control
 characters: e.g. `foo<BEL>bar` (`U+0007`), `…<NEL>…` (`U+0085`). Tab and
-newline are excluded.
+newline are excluded. One finding per **maximal run of the same control
+char** (ADR 0034): a `NUL×40` padding run at a damaged verse end is one
+finding whose span covers the run, not forty.
 
 **Why it matters** — Control characters are invisible and have no place in
 interchange text. They break layout engines and search/matching, and their
@@ -52,7 +54,12 @@ presence means a bad paste or an encoding mishap upstream.
 
 **Nuance & ADR ties** — Tab is handled by `hyg.tab-in-body` (excluded here to
 avoid double-reporting); newline is excluded because a projection may
-legitimately carry line breaks (ADR 0010).
+legitimately carry line breaks (ADR 0010). Per-run reporting (ADR 0034)
+exists because damaged files carry padding runs — the 106-corpus survey's
+control-char findings were dominated by NUL runs (tl_udb 1,354, atg 895,
+yun 340), and per-char rows made one damaged verse read as dozens of
+problems. Finding totals now count damage *sites*; highlighting is unchanged
+in practice since the span covers the run.
 
 **Open issues / future work** — None.
 
@@ -155,3 +162,47 @@ Distinct from `hyg.zero-width-misuse`, where the codepoints are *valid* but
 misused in context; here the codepoints are *never* valid.
 
 **Open issues / future work** — None.
+
+---
+
+## `hyg.replacement-run` — `?`-run substitution damage
+
+> **Severity** Warning · **Default** on · **Scope** per-verse · **Knobs** none
+
+**Flags** — One finding per maximal run of **3+ ASCII `?`** — the classic
+substitution glyph a lossy legacy-encoding conversion leaves where whole
+words died:
+- `word ????? word` → the five-`?` run
+- `wo???rd` → the mid-word triple
+
+**Clean** — `what?` and `really??` (run length ≤ 2 — `??` is plausibly
+rhetoric, and `punct.adjacency-anomaly` judges it corpus-relatively); `؟؟؟`
+and other script question marks (they are not the lossy-conversion glyph, so
+the rule is ASCII-only); a `?` mixed into a run of other marks (`?!` etc. —
+adjacency's business).
+
+**Why it matters** — A run of `?` is what a destroyed encoding conversion
+looks like in valid Unicode: U+FFFD is the modern decode-failure marker
+(`hyg.invalid-codepoint`'s finding), but older conversion pipelines
+substituted ASCII `?` per unmappable character, so only the *shape* gives it
+away. Corpus recurrence must never excuse it — destroyed text recurs like a
+convention (my_juds carries ~989 such runs) — which is why this is
+deterministic hygiene, not a corpus-relative score.
+
+**Config** — On/off only.
+
+**Nuance & ADR ties** — This rule *owns* the phenomenon (ADR 0034):
+previously my_juds' damage was double-reported by a score-1.0 bypass in
+`lex.punct-only-token` and by `punct.adjacency-anomaly`'s identical-run pass
+— two findings, two severities, two scores per site. Both corpus-relative
+rules now **exclude the pattern from candidacy** (the same shape as
+punct-only's merge-conflict exclusion): punct-only skips chunks whose core is
+a 3+ `?`-run; adjacency's identical-run pass skips 3+ `?` runs. `??` stays
+theirs. Two neighbouring damage classes are explicit **non-goals**, recorded
+rather than half-detected: a *single* mid-word `?` substitution (occurs ~7×
+across all 106 corpora, and Thai's are plausibly real question marks inside
+unspaced text — unreliable exactly where it looks tempting) and
+wrong-codepage mojibake like `Ã©` (valid Unicode no codepoint rule can catch;
+future char-ngram territory).
+
+**Open issues / future work** — None beyond the recorded non-goals.
