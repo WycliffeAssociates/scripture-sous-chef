@@ -16,13 +16,10 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use ssc_core::config::{
-    ProportionalityConfig, PunctuationAdjacencyConfig, ZeroWidthSpaceConfig,
-};
-use ssc_core::rule::{ProjectRule, StatefulRule};
+use ssc_core::config::{ProportionalityConfig, PunctuationAdjacencyConfig};
+use ssc_core::rule::StatefulRule;
 use ssc_core::signals::proportionality::ProjectLengthRatio;
 use ssc_core::signals::punctuation::PunctuationAdjacencyAnomaly;
-use ssc_core::signals::zero_width_space::ZeroWidthSpaceAnomaly;
 use ssc_core::{
     BookId, Config, Finding, FindingArgs, LengthRatioScope, RuleId, VerseMap, analyze,
     analyze_with_config,
@@ -180,35 +177,35 @@ fn batch(dir: &Path) {
     }
 }
 
-/// ZWSP calibration (ADR 0023). Runs the rule at floor 0 to expose every scored
-/// site, and separately counts the deterministic hygiene ZWSP findings to prove
-/// the storm is gone.
+/// Redundant-ZWSP report (ADR 0027). The rule is deterministic and default-on, so
+/// there is nothing to calibrate — this just reports how much U+200B a corpus
+/// carries, how many runs are redundant (doubled or U+0020-adjacent), and confirms
+/// deterministic hygiene still flags no U+200B.
 fn zwsp_calib(dir: &Path) {
     let target = load_corpus(dir);
     eprintln!("{} verses", target.len());
 
-    // Deterministic hygiene should no longer flag any ZWSP. Prove it by
-    // inspecting the sliced character, not just the rule id — the same rule
-    // still flags the universally-invalid controls (BOM, bidi, WJ, …). Joiners
-    // are no longer flagged either (ADR 0025), so this count is now BOM-family.
-    let hyg = analyze(&target, None);
-    let hyg_total = hyg.iter().filter(|f| f.code == RuleId::ZeroWidthMisuse).count();
-    let hyg_zwsp = hyg
+    let raw: usize = target.values().map(|t| t.matches('\u{200B}').count()).sum();
+
+    let f = analyze(&target, None);
+    // Deterministic hygiene must still flag zero U+200B (checked by slicing the
+    // char, not just the rule id — hyg.zero-width-misuse still owns BOM/bidi/WJ).
+    let hyg_zwsp = f
         .iter()
         .filter(|f| f.code == RuleId::ZeroWidthMisuse)
         .filter(|f| target.get(&f.sid).and_then(|t| t.get(f.range.start..f.range.end)) == Some("\u{200B}"))
         .count();
-    println!("hyg.zero-width-misuse: {hyg_total} total controls, of which U+200B: {hyg_zwsp} (must be 0)");
-
-    // ZWSP rule at floor 0 → every scored site. Two-pass project rule (no state):
-    // aggregate the denominators, then re-scan and emit; buffers no occurrences.
-    let rule = ZeroWidthSpaceAnomaly {
-        cfg: ZeroWidthSpaceConfig { emit_score_min: 0.0, ..Default::default() },
-    };
-    let t0 = std::time::Instant::now();
-    let findings = rule.check(&target, None);
-    eprintln!("zwsp check (full-map scan): {:?}", t0.elapsed());
-    report_scored("uni.zero-width-space-anomaly", &target, &findings);
+    let redundant: Vec<_> = f.iter().filter(|f| f.code == RuleId::RedundantZeroWidthSpace).collect();
+    println!(
+        "U+200B raw={raw}  redundant runs flagged={}  (hyg U+200B flags: {hyg_zwsp}, must be 0)",
+        redundant.len()
+    );
+    for fd in redundant.iter().take(10) {
+        if let Some(t) = target.get(&fd.sid) {
+            let n = t.get(fd.range.start..fd.range.end).unwrap_or("").matches('\u{200B}').count();
+            println!("  {}  run of {n} U+200B", fd.sid);
+        }
+    }
 }
 
 /// Punctuation adjacency calibration (ADR 0024) at floor 0.

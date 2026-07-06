@@ -80,9 +80,10 @@ in any script, so they flag unconditionally.
 **The orthography-dependent zero-width chars are not judged here.** U+200B ZERO
 WIDTH SPACE (ADR 0023) and the joiners ZWNJ (`U+200C`) / ZWJ (`U+200D`) are each
 legitimate in some scripts and a slip in others — a fixed predicate can't tell a
-convention from a slip. ZWSP's corpus-relative context surprise is scored by
-[`uni.zero-width-space-anomaly`](uni.md) at Info; the joiners are skipped
-entirely for now, awaiting their own corpus-relative rule.
+convention from a slip. ZWSP's *redundant* placements (a doubled run, or one
+beside a U+0020 SPACE) are flagged by [`uni.redundant-zero-width-space`](uni.md)
+at Info; the joiners are skipped entirely for now, awaiting their own
+corpus-relative rule.
 
 **Config** — On/off only.
 
@@ -95,8 +96,8 @@ storms on legitimate Khmer/Indic joiner use (e.g. 22,648 ZWNJ in a Khmer
 corpus), so it was removed — flagging nothing beats flagging wrong.
 
 **Open issues / future work** — A property-driven joiner rule (Joining_Type /
-effective-shaping context, corpus-relative like
-[`uni.zero-width-space-anomaly`](uni.md)) is the sanctioned successor. Until it
+effective-shaping context, built from character properties rather than a script
+allow-list) is the sanctioned successor. Until it
 exists, a genuinely-wrong joiner in a non-joining script (a Latin ZWNJ typo)
 goes unflagged — an accepted tradeoff (see ADR 0025).
 

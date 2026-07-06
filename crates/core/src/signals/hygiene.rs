@@ -97,13 +97,13 @@ pub fn scan_control_chars(text: &str) -> Vec<Span> {
 /// **The orthography-dependent zero-width characters are not judged here.**
 /// U+200B ZERO WIDTH SPACE and the joiners U+200C ZWNJ / U+200D ZWJ are each
 /// legitimate in some scripts and a slip in others; a fixed predicate cannot
-/// tell a convention from an error. ZWSP's corpus-relative context surprise is
-/// scored at `Severity::Info` by
-/// [`uni.zero-width-space-anomaly`](crate::signals::zero_width_space); the
-/// joiners are simply skipped for now, awaiting their own corpus-relative rule.
-/// (They were previously flagged via a Latin-centric script allow-list, which
-/// produced false-positive storms on legitimate Khmer/Indic joiner use — worse
-/// than flagging nothing. A property-driven successor is future work.)
+/// tell a convention from an error. U+200B's *redundant* placements (a doubled
+/// run, or one beside a U+0020 SPACE) are flagged separately by
+/// [`uni.redundant-zero-width-space`](crate::signals::zero_width_space) at Info;
+/// the joiners are simply skipped for now, awaiting their own corpus-relative
+/// rule. (They were previously flagged via a Latin-centric script allow-list,
+/// which produced false-positive storms on legitimate Khmer/Indic joiner use —
+/// worse than flagging nothing. A property-driven successor is future work.)
 pub const ZERO_WIDTH_MISUSE: RuleId = RuleId::ZeroWidthMisuse;
 
 pub struct ZeroWidthMisuse;
@@ -127,9 +127,9 @@ pub fn scan_zero_width_misuse(text: &str) -> Vec<Span> {
             continue;
         }
         // The orthography-dependent zero-width characters are never a
-        // deterministic error: U+200B is scored corpus-relative by
-        // `uni.zero-width-space-anomaly`, and the joiners U+200C/U+200D are
-        // skipped entirely pending their own corpus-relative rule. Everything
+        // deterministic error here: U+200B's redundant placements are flagged by
+        // `uni.redundant-zero-width-space` instead, and the joiners U+200C/U+200D
+        // are skipped entirely pending their own corpus-relative rule. Everything
         // else in the format range (BOM, bidi, word joiner, …) is flagged.
         if c == ZWSP || c == ZWNJ || c == ZWJ {
             continue;
@@ -447,9 +447,9 @@ mod tests {
 
     #[test]
     fn zero_width_no_longer_flags_zwsp() {
-        // U+200B is orthography-dependent (Khmer/Lao/…), scored corpus-relative
-        // by uni.zero-width-space-anomaly — deterministic hygiene stays silent
-        // regardless of surrounding script.
+        // U+200B is orthography-dependent (Khmer/Lao/…); deterministic hygiene
+        // stays silent on it regardless of surrounding script (its redundant
+        // placements are handled by uni.redundant-zero-width-space instead).
         assert!(scan_zero_width_misuse("a\u{200B}b").is_empty());
         assert!(scan_zero_width_misuse("ក\u{200B}ខ").is_empty()); // Khmer
         assert!(scan_zero_width_misuse("\u{200B}").is_empty());

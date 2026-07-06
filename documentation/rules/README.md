@@ -19,7 +19,7 @@ aggregation model, see [`../config.md`](../config.md).
 | File | Namespace | Rules |
 | --- | --- | --- |
 | [`hyg.md`](hyg.md) | `hyg.*` | tab-in-body, control-chars, zero-width-misuse, empty-verse, invalid-codepoint |
-| [`uni.md`](uni.md) | `uni.*` | combining-mark-without-base, mixed-script-in-token, mixed-numeral-systems |
+| [`uni.md`](uni.md) | `uni.*` | combining-mark-without-base, mixed-script-in-token, redundant-zero-width-space, mixed-numeral-systems |
 | [`lex.md`](lex.md) | `lex.*` | excess-h-whitespace, duplicate-word, punct-only-token, repeated-character-run |
 | [`struct.md`](struct.md) | `struct.*` | source-marker-leftover, merge-conflict-marker |
 | [`punct.md`](punct.md) | `punct.*` | bracket-balance, repeated-punct, placeholder-leftover, space-before-punct |
@@ -47,7 +47,7 @@ diverge — `lex.excess-h-whitespace` lives in `whitespace.rs`,
 | `uni.combining-mark-without-base` | Warning | on | per-verse | ✅ documented |
 | `uni.mixed-script-in-token` | Warning | on | per-verse | ✅ documented |
 | `uni.mixed-numeral-systems` | Warning | on | per-verse | ✅ documented |
-| `uni.zero-width-space-anomaly` | Info | **off** | project (stateless) | ✅ documented (ADR 0023) |
+| `uni.redundant-zero-width-space` | Info | on | per-verse | ✅ documented (ADR 0027) |
 | `punct.bracket-balance` | Info | on | project | ✅ documented |
 | `prop.length-ratio` | Warning | on | project | 🗣 pending discussion |
 | `punct.adjacency-anomaly` | Info | on | stateful | ✅ documented (ADR 0024) |

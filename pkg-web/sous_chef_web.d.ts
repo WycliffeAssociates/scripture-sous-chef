@@ -196,18 +196,6 @@ export interface PunctuationAdjacencyOverrides {
 }
 
 /**
- * Partial overrides for `uni.zero-width-space-anomaly`\'s knobs. Omitted
- * fields keep core\'s provisional defaults (ADR 0023). Enabling the rule at
- * all is via `rules` (it ships default-off).
- */
-export interface ZeroWidthSpaceOverrides {
-    global_convention_rate?: number;
-    context_convention_rate?: number;
-    confidence_z?: number;
-    emit_score_min?: number;
-}
-
-/**
  * Per-rule cached statistics — a **closed** union like `FindingArgs`, one
  * variant per stateful rule. The orchestration treats it opaquely; each
  * rule reduces into / judges from its own variant.
@@ -216,9 +204,9 @@ export interface ZeroWidthSpaceOverrides {
  * proportionality\'s per-verse ratios are sparse; punctuation adjacency caches
  * only **aggregate counts** (never per-occurrence sites — those re-derive from
  * the text at `judge`), so a punctuation-pervasive corpus stays a few KB.
- * `uni.zero-width-space-anomaly` is deliberately **not** here: it is a
- * stateless project rule for now (default-off, experimental), and will earn an
- * aggregate-only variant here when it graduates (ADR 0023).
+ * Zero-width space carries no variant here: it is judged per-verse and
+ * deterministically by `uni.redundant-zero-width-space` (ADR 0027), which needs
+ * no corpus statistics.
  */
 export type RuleStats = { Casing: CasingStats } | { Proportionality: ProportionalityStats } | { PunctuationAdjacency: PunctuationAdjacencyStats };
 
@@ -231,7 +219,7 @@ export type RuleStats = { Casing: CasingStats } | { Proportionality: Proportiona
  * config and localisation off: Rust via [`RuleId::ALL`] +
  * exhaustive `match`; TS via the `Tsify` string union.
  */
-export type RuleId = "lex.excess-h-whitespace" | "hyg.tab-in-body" | "hyg.control-chars" | "hyg.zero-width-misuse" | "hyg.empty-verse" | "hyg.invalid-codepoint" | "prop.length-ratio" | "struct.source-marker-leftover" | "struct.merge-conflict-marker" | "punct.adjacency-anomaly" | "lex.duplicate-word" | "lex.punct-only-token" | "uni.combining-mark-without-base" | "uni.zero-width-space-anomaly" | "uni.mixed-script-in-token" | "lex.repeated-character-run" | "uni.mixed-numeral-systems" | "punct.placeholder-leftover" | "punct.bracket-balance" | "punct.space-before-punct" | "case.sentence-initial-lowercase";
+export type RuleId = "lex.excess-h-whitespace" | "hyg.tab-in-body" | "hyg.control-chars" | "hyg.zero-width-misuse" | "hyg.empty-verse" | "hyg.invalid-codepoint" | "prop.length-ratio" | "struct.source-marker-leftover" | "struct.merge-conflict-marker" | "punct.adjacency-anomaly" | "lex.duplicate-word" | "lex.punct-only-token" | "uni.combining-mark-without-base" | "uni.redundant-zero-width-space" | "uni.mixed-script-in-token" | "lex.repeated-character-run" | "uni.mixed-numeral-systems" | "punct.placeholder-leftover" | "punct.bracket-balance" | "punct.space-before-punct" | "case.sentence-initial-lowercase";
 
 /**
  * Structured message arguments — the additive payload ADR 0010 §6
@@ -287,7 +275,6 @@ export interface SousConfig {
     rules?: Partial<Record<RuleId, boolean>>;
     proportionality?: ProportionalityOverrides;
     casing?: CasingOverrides;
-    zero_width_space?: ZeroWidthSpaceOverrides;
     punctuation_adjacency?: PunctuationAdjacencyOverrides;
 }
 

@@ -356,3 +356,49 @@ open-issue replaced with the two-pass note), calibration note (out-of-scope ZWNJ
 section marked resolved; §14 cost model updated to two passes). 164 core tests
 (one fewer — two joiner tests merged into one), workspace `cargo check
 --all-targets` clean.
+
+## 2026-07-06 — retire the ZWSP scorer; ship deterministic redundant-ZWSP (ADR 0027)
+
+After the two-pass work, a design conversation (with two review passes) concluded
+the corpus-relative ZWSP scorer wasn't earning its complexity. Decisions and the
+evidence that drove them:
+
+- **Ablation gate (built + run).** A throwaway playground bin
+  (`src/bin/zwsp_breakdown.rs`, since removed) ran the scorer at floor 0 across all
+  106 corpora, then re-ran it on text with every deterministic-owned run stripped
+  (length ≥ 2 or U+0020-adjacent). Only **6** corpora have any ZWSP. The three
+  Latin/Devanagari artifact corpora (Portuguese, Malagasy, Dogri) dropped to
+  **zero** statistical survivors — deterministic redundancy owns 100% of every
+  demonstrated artifact. Khmer/Lao/Thai survivors were **entirely** spec-permitted
+  placements (verse edges; punctuation-/digit-adjacency; non-U+200B control
+  adjacency) or false positives (Thai's ~2,450 legitimate but *sparse* word-breaks
+  at ≈0.81, because its global gate never saturates). The wrong-script-in-token
+  case the scorer was built for never occurred. Gate passed: no demonstrated error
+  class → retire.
+- **Retired `uni.zero-width-space-anomaly` outright** — rule, `RuleId` variant +
+  wire string, `ZeroWidthSpaceConfig`, wasm `ZeroWidthSpaceOverrides` +
+  `build_config` mapping, `ZwspNeighbor`/`ZwspContext`/`classify_neighbor`
+  machinery, `v1_defaults` disable, tests. Pre-alpha, no shim, no parked config.
+- **Added `uni.redundant-zero-width-space`** — per-verse, **Info, default-on**, no
+  knobs, no score. One finding per maximal U+200B run that is redundant: run length
+  ≥ 2, or the scalar immediately before/after is **U+0020 SPACE** (scalar compare,
+  not byte). Finding spans the whole run and means "redundant *copies*", not
+  "wrong position". **Edges deliberately excluded** (a `VerseMap` value isn't a
+  guaranteed layout unit — verses split/concatenate); **only adjacent U+200B**
+  counts (NBSP/ZWJ/ZWNJ/WJ/bidi behave differently); punctuation/digit/in-token
+  placements stay silent (UAX #14 permits them). Basis: UAX #14 LB7/LB8 idempotence;
+  redundant ≠ invalid → `uni.*` Info, not `hyg.*` Warning.
+- **ADR number:** reserved-later per the review — a concurrent change had already
+  claimed 0026, so this is **0027** (supersedes the 0023 scorer; 0023's hygiene
+  half stands).
+
+Surface sweep (per the review's "search all surfaces"): diagnostics RuleId,
+config, lib re-export + integration test, rule registries (project→per-verse),
+stats/sid/unicode/hygiene doc comments, `calibrate.rs` `--zwsp` mode, wasm
+overrides + native tests, regenerated `.d.ts` (bundler + web), ADR 0023/index +
+new 0027, `rules/{uni,hyg,README}.md`, `config.md` §6b, `methods.md` §2.5,
+calibration note (ZWSP section marked superseded). Playground reconciled:
+`analysis.rs` Config field + `ConfigKnobs` zwsp knobs, `config_panel.rs` slider
+group, scratch bin + its Cargo entry removed. **160 core + 2 wasm tests pass;
+`cargo build --workspace --all-targets` and clippy clean; playground
+`cargo check --features ssr` clean.**

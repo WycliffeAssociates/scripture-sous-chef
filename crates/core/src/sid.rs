@@ -103,7 +103,7 @@ impl fmt::Display for Sid {
 /// so a `Copy` `Sid` field in a cached-stats struct round-trips across the wire
 /// as a string (matching `Finding`'s string sids) without the native side ever
 /// paying a `String` allocation outside serialization. Shared by every stateful
-/// rule that stores sites (`casing`, `zero_width_space`, …).
+/// rule that stores sites (`casing`, …).
 #[cfg(feature = "serde")]
 pub(crate) mod sid_as_string {
     use super::Sid;

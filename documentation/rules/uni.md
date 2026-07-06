@@ -6,12 +6,12 @@ than raw codepoints. Per-character script identity is delegated to the
 `unicode-script` crate (ADR 0009) via the `ScriptTag` enum (ADR 0015 for the
 perf representation). **Common** and **Inherited** characters — ASCII digits,
 punctuation, most combining marks — carry no script identity and never, on
-their own, trigger these rules. The deterministic ones ship on by default
-(ADR 0014); the one **corpus-relative** member of this namespace,
-`uni.zero-width-space-anomaly`, lives in `zero_width_space.rs`, carries knobs,
-and ships **default-off** pending calibration (ADR 0023). It is a stateless
-project rule — scored over whatever map it is handed, so it must be given the
-full corpus when enabled.
+their own, trigger these rules. All members are deterministic and ship on by
+default (ADR 0014). `uni.redundant-zero-width-space` lives in
+`zero_width_space.rs` and flags only the *redundant* placements of a U+200B
+(a doubled run, or one beside a U+0020 SPACE) at Info (ADR 0027); it replaced an
+earlier corpus-relative scorer (`uni.zero-width-space-anomaly`, ADR 0023), retired
+because a cross-corpus ablation found no error class it uniquely caught.
 
 Source: `crates/core/src/signals/hygiene.rs`,
 `crates/core/src/signals/zero_width_space.rs`.
@@ -87,51 +87,46 @@ should be updated to a real current rule.)*
 
 ---
 
-## `uni.zero-width-space-anomaly` — a ZWSP in an unusual context for this corpus
+## `uni.redundant-zero-width-space` — a U+200B that adds no break the text lacks
 
-> **Severity** Info · **Default** OFF · **Scope** project (stateless — needs full corpus) · **Knobs** `global_convention_rate`, `context_convention_rate`, `confidence_z`, `emit_score_min` · **Source** `zero_width_space.rs` · **ADR** 0023
+> **Severity** Info · **Default** on · **Scope** per-verse · **Knobs** none · **Source** `zero_width_space.rs` · **ADR** 0027 (supersedes the 0023 scorer)
 
-**Flags** — A U+200B ZERO WIDTH SPACE whose *conformance surprise* is high, with
-a continuous `score`:
-- a lone ZWSP in a Latin corpus that otherwise never uses one → high
-- a Khmer→Latin ZWSP context in a corpus whose ZWSP is otherwise all Khmer→Khmer
+**Flags** — A U+200B ZERO WIDTH SPACE whose placement is *redundant regardless of
+script*, as one finding per maximal run:
+- a **run of two or more** consecutive U+200B (`word␤␤next` doubled) — idempotent
+- a U+200B **immediately beside a U+0020 SPACE** (`word ␤next`, `word␤ next`)
 
-**Clean (learned silent)** — the pervasive Khmer→Khmer word-boundary ZWSPs in a
-Khmer corpus, or a Japanese corpus's optional-use ZWSP: the corpus taught the
-engine these are ordinary, so they fall below the emission floor.
+**Clean (not flagged)** — a lone in-token U+200B (`ក␤ក`, a Khmer word-break aid);
+U+200B beside punctuation, a digit, a slash or hyphen (all spec-permitted breaks);
+U+200B beside NBSP or a joiner/other control; a leading/trailing U+200B.
 
-**Why it matters** — U+200B is a legitimate, orthography-dependent word/line
-break aid (Khmer, Lao, Thai, Myanmar, optionally Japanese) — deterministic
-hygiene (ADR 0023) can't judge it. This rule learns, corpus-wide, whether ZWSP
-is used at all and which immediate grapheme contexts surround it, then composes
-`evidence = 1 - global_strength · context_strength`: **both** the corpus's
-overall ZWSP familiarity and this context's typicality must be high to suppress.
+**Why it matters** — U+200B marks a line/word-break *opportunity* (Core Spec §23.2;
+UAX #14 class `ZW`). A break opportunity next to one that already exists — another
+U+200B (idempotent, UAX #14 LB7/LB8) or a real space — does nothing, so it is
+almost always an editing/paste/tooling artifact. The finding spans the **whole
+run** and means *the run has redundant copies*, **not** that the position is
+wrong: keeping a single U+200B there may still be a meaningful break aid, so the
+fix is to collapse the redundancy, not necessarily delete.
 
-**Config** — `global_convention_rate` is a low "uses-ZWSP-at-all" gate (an
-optional-use language saturates it so discrimination falls to context; a
-ZWSP-free corpus keeps it near zero and surfaces the lone occurrence);
-`context_convention_rate` is a coarse "how small a share still counts as
-established"; `confidence_z` is the load-bearing knob at the anomaly end;
-`emit_score_min` is the surfacing floor. All provisional until calibration.
+**Config** — On/off only. Deterministic; nothing to tune.
 
-**Nuance & ADR ties** — Context is the ordered `(left, right)` neighbour kinds:
-a **letter** carries its *full* Unicode script (so "wrong script" — Latin↔Latin
-vs Khmer↔Khmer — is a distinct, rare context), and non-letters collapse to
-`Whitespace` (redundant-separator shape), `ZeroWidthControl` (adjacent zero-width
-char — doubled-ZWSP shape), or `OtherNonLetter`; a verse edge is `Boundary`. No
-look-through, so a ZWSP beside a space stays `(…, Whitespace)`, not laundered to
-`(…, letter)`. Severity is **Info** with a score; corpus counts can't
-distinguish a systematic misuse from a convention (both go silent when common).
-See ADR 0023.
+**Nuance & ADR ties** — Lives in `uni.*` at **Info**, not `hyg.*` at Warning:
+redundancy is *not universal invalidity* (UAX #14 permits the placements it leaves
+alone, and UAX #29 word segmentation can even shift on an added U+200B). The
+U+0020 check is a **scalar** comparison, so the contract is the character, not a
+byte. **Edges are deliberately excluded** — a `VerseMap` value is not contractually
+a complete layout unit (verses split mid-sentence and concatenate), so a
+verse-edge U+200B can be a real inter-verse break. **Only adjacent U+200B** counts
+as the duplicate case; NBSP/ZWJ/ZWNJ/WJ/bidi behave differently.
 
-**Open issues / future work** — Ships default-off; graduation to default-on is a
-deliberate post-calibration decision. `boundary_opportunities` includes both
-verse edges (documented rate basis). The rule stores **no** per-occurrence sites:
-it runs two passes over the map — aggregate the denominators, then re-scan and
-emit above-floor occurrences directly — reusing per-verse buffers, so peak memory
-is one verse's ZWSPs, not the corpus's (ADR 0023, "two passes"). Graduation to
-aggregate-only stateful — the shape `punct.adjacency-anomaly` uses — is where
-per-book counts would be cached to restore the incremental guarantee.
+**Open issues / future work** — Gives up one thing: a U+200B in a *valid-looking*
+position (letter↔letter, letter↔punct) inside a corpus that otherwise never uses
+ZWSP — never observed across 106 corpora, and a permissible break hint anyway; a
+property-driven successor would be needed if one ever demonstrably matters (cf. the
+joiner rule deferred in ADR 0025). Replaced the corpus-relative
+`uni.zero-width-space-anomaly` scorer (ADR 0023), retired after an ablation found
+its unique output was entirely spec-permitted placement or sparse-use false
+positives (ADR 0027).
 
 ---
 

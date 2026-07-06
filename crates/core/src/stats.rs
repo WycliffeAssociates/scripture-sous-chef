@@ -25,9 +25,9 @@ use crate::signals::punctuation::PunctuationAdjacencyStats;
 /// proportionality's per-verse ratios are sparse; punctuation adjacency caches
 /// only **aggregate counts** (never per-occurrence sites — those re-derive from
 /// the text at `judge`), so a punctuation-pervasive corpus stays a few KB.
-/// `uni.zero-width-space-anomaly` is deliberately **not** here: it is a
-/// stateless project rule for now (default-off, experimental), and will earn an
-/// aggregate-only variant here when it graduates (ADR 0023).
+/// Zero-width space carries no variant here: it is judged per-verse and
+/// deterministically by `uni.redundant-zero-width-space` (ADR 0027), which needs
+/// no corpus statistics.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]

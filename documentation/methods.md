@@ -339,12 +339,13 @@ unjustifiably hide real signal. Just use Dunning.
 
 ### 2.5 Corpus-relative rate shrinkage (the conformance-surprise rules)
 
-The two corpus-relative anomaly rules shipped in the v1-reset core —
-`uni.zero-width-space-anomaly` (ADR 0023) and `punct.adjacency-anomaly`
-(ADR 0024) — do **not** use anything above. There is no Kneser–Ney model, no
-Good–Turing mass, no Dunning log-likelihood ratio, and no correctness inference.
-They are corpus-conditioned **rate estimators**, and their output is a
-*conformance surprise*, not a probability that something is an error.
+The corpus-relative anomaly rule shipped in the v1-reset core —
+`punct.adjacency-anomaly` (ADR 0024) — does **not** use anything above. There is
+no Kneser–Ney model, no Good–Turing mass, no Dunning log-likelihood ratio, and no
+correctness inference. It is a corpus-conditioned **rate estimator**, and its
+output is a *conformance surprise*, not a probability that something is an error.
+(A sibling corpus-relative ZWSP scorer, `uni.zero-width-space-anomaly` (ADR 0023),
+used the same method but was retired in ADR 0027 — see below.)
 
 The whole method is one function, `strength(k, n, convention_rate, z)`
 (`crate::shrinkage`):
@@ -355,12 +356,13 @@ conservative_rate = wilson_lower_bound(k, n, z)      // shrinks small samples to
 convention        = clamp(conservative_rate / convention_rate, 0, 1)
 ```
 
-`k` and `n` are rule-specific counts (for punctuation, `k` = a pattern's
-project count and `n = N_start(lead glyph)`; for ZWSP the two factors use
-`(Z, N)` and `(C(ctx), Z)`). A rule composes these into
-`evidence = 1 - convention` (or a product of two conventions), emits at
-`Severity::Info` with `score = evidence`, and serialises only sites at or above
-`emit_score_min`.
+`k` and `n` are the rule's counts (for punctuation, `k` = a pattern's project
+count and `n = N_start(lead glyph)`). A rule composes `strength` into
+`evidence = 1 - convention`, emits at `Severity::Info` with `score = evidence`,
+and serialises only sites at or above `emit_score_min`. (The retired ZWSP scorer
+multiplied *two* such conventions, `(Z, N)` and `(C(ctx), Z)`; it is gone as of
+ADR 0027, but the shared `strength` primitive it exercised still backs
+punctuation.)
 
 Why this shape:
 

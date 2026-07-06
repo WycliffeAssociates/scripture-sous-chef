@@ -49,26 +49,6 @@ pub struct CasingOverrides {
     pub min_samples: Option<u32>,
 }
 
-/// Partial overrides for `uni.zero-width-space-anomaly`'s knobs. Omitted
-/// fields keep core's provisional defaults (ADR 0023). Enabling the rule at
-/// all is via `rules` (it ships default-off).
-#[derive(Deserialize, Tsify, Default)]
-#[tsify(from_wasm_abi)]
-pub struct ZeroWidthSpaceOverrides {
-    #[serde(default)]
-    #[tsify(optional)]
-    pub global_convention_rate: Option<f32>,
-    #[serde(default)]
-    #[tsify(optional)]
-    pub context_convention_rate: Option<f32>,
-    #[serde(default)]
-    #[tsify(optional)]
-    pub confidence_z: Option<f32>,
-    #[serde(default)]
-    #[tsify(optional)]
-    pub emit_score_min: Option<f32>,
-}
-
 /// Partial overrides for `punct.adjacency-anomaly`'s knobs. Omitted fields
 /// keep core's defaults (`convention_rate` 0.5, `confidence_z` 1.96,
 /// `emit_score_min` 0.5). See ADR 0024.
@@ -103,9 +83,6 @@ pub struct SousConfig {
     #[serde(default)]
     #[tsify(optional)]
     pub casing: Option<CasingOverrides>,
-    #[serde(default)]
-    #[tsify(optional)]
-    pub zero_width_space: Option<ZeroWidthSpaceOverrides>,
     #[serde(default)]
     #[tsify(optional)]
     pub punctuation_adjacency: Option<PunctuationAdjacencyOverrides>,
@@ -163,20 +140,6 @@ fn build_config(config: Option<SousConfig>) -> Config {
             }
             if let Some(m) = cas.min_samples {
                 cfg.casing.min_samples = m;
-            }
-        }
-        if let Some(z) = c.zero_width_space {
-            if let Some(v) = z.global_convention_rate {
-                cfg.zero_width_space.global_convention_rate = v;
-            }
-            if let Some(v) = z.context_convention_rate {
-                cfg.zero_width_space.context_convention_rate = v;
-            }
-            if let Some(v) = z.confidence_z {
-                cfg.zero_width_space.confidence_z = v;
-            }
-            if let Some(v) = z.emit_score_min {
-                cfg.zero_width_space.emit_score_min = v;
             }
         }
         if let Some(p) = c.punctuation_adjacency {
@@ -282,15 +245,10 @@ mod tests {
     #[test]
     fn build_config_maps_every_override() {
         let cfg = build_config(Some(SousConfig {
-            rules: Some([(RuleId::ZeroWidthSpaceAnomaly, true)].into_iter().collect()),
+            // DuplicateWord ships default-off; enabling it exercises the rules map.
+            rules: Some([(RuleId::DuplicateWord, true)].into_iter().collect()),
             proportionality: Some(ProportionalityOverrides { z_threshold: Some(2.5), min_verses: Some(10) }),
             casing: Some(CasingOverrides { threshold: Some(0.8), min_samples: Some(5) }),
-            zero_width_space: Some(ZeroWidthSpaceOverrides {
-                global_convention_rate: Some(0.01),
-                context_convention_rate: Some(0.03),
-                confidence_z: Some(2.0),
-                emit_score_min: Some(0.9),
-            }),
             punctuation_adjacency: Some(PunctuationAdjacencyOverrides {
                 convention_rate: Some(0.4),
                 confidence_z: Some(2.1),
@@ -298,27 +256,24 @@ mod tests {
             }),
         }));
 
-        assert!(cfg.is_enabled(RuleId::ZeroWidthSpaceAnomaly));
+        assert!(cfg.is_enabled(RuleId::DuplicateWord));
         assert_eq!(cfg.proportionality.z_threshold, 2.5);
         assert_eq!(cfg.proportionality.min_verses, 10);
         assert_eq!(cfg.casing.threshold, 0.8);
         assert_eq!(cfg.casing.min_samples, 5);
-        assert_eq!(cfg.zero_width_space.global_convention_rate, 0.01);
-        assert_eq!(cfg.zero_width_space.context_convention_rate, 0.03);
-        assert_eq!(cfg.zero_width_space.confidence_z, 2.0);
-        assert_eq!(cfg.zero_width_space.emit_score_min, 0.9);
         assert_eq!(cfg.punctuation_adjacency.convention_rate, 0.4);
         assert_eq!(cfg.punctuation_adjacency.confidence_z, 2.1);
         assert_eq!(cfg.punctuation_adjacency.emit_score_min, 0.7);
     }
 
-    /// Omitted overrides keep core's defaults (and ZWSP stays default-off).
+    /// Omitted overrides keep core's defaults; the default-on redundant-ZWSP rule
+    /// stays enabled, and DuplicateWord stays default-off.
     #[test]
     fn build_config_omitted_keeps_defaults() {
         let cfg = build_config(None);
         let d = Config::v1_defaults();
         assert_eq!(cfg.punctuation_adjacency.emit_score_min, d.punctuation_adjacency.emit_score_min);
-        assert_eq!(cfg.zero_width_space.emit_score_min, d.zero_width_space.emit_score_min);
-        assert!(!cfg.is_enabled(RuleId::ZeroWidthSpaceAnomaly));
+        assert!(cfg.is_enabled(RuleId::RedundantZeroWidthSpace));
+        assert!(!cfg.is_enabled(RuleId::DuplicateWord));
     }
 }

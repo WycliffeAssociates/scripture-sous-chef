@@ -1,7 +1,11 @@
 # ADR 0023: U+200B is orthography-dependent — a corpus-relative anomaly, not hygiene
 
 - **Date:** 2026-07-01
-- **Status:** Accepted
+- **Status:** Superseded in part — the `uni.zero-width-space-anomaly` scorer was
+  retired by [ADR 0027](0027-redundant-zwsp-deterministic-retire-corpus-relative.md)
+  (an ablation found no demonstrated error class it uniquely caught). **Decision 1
+  still stands:** U+200B is not deterministic hygiene. A deterministic
+  `uni.redundant-zero-width-space` rule now flags only its *redundant* placements.
 - **Builds on:** [ADR 0010](0010-pure-analyzer-contract-v1-reset.md) (pure core),
   [ADR 0012](0012-ruleid-closed-enum-config-surface.md) (closed unions),
   [ADR 0021](0021-grapheme-segmenter-fast-path-fused-static-table.md) (segmenter).

@@ -311,32 +311,25 @@ Every available configuration option, set to its built-in default. Copy this and
 > The `sous.json` reference above predates the v1-reset core and does not match
 > the shipped API — knob-bearing rules now grow a **typed sub-config** on the
 > `Config` struct (one small struct per rule), not a `rules.<id>.params` map.
-> This section documents the two corpus-relative rules against that real
-> surface; the older reference is retained for its conceptual material.
+> This section documents the corpus-relative rule against that real surface; the
+> older reference is retained for its conceptual material.
 
-Both rules emit `Severity::Info` with a continuous `score ∈ [0, 1]` — a
-**conformance surprise**, not a correctness verdict (1 ≈ "unlike anything this
-corpus does", 0 ≈ "ordinary here"). Both derive the score from one shared
-`strength` function (see `methods.md` §"Corpus-relative rate shrinkage"): the
-Wilson lower bound of an observed rate `k/n`, divided by a convention rate and
-clamped. A finding is emitted only when its score reaches `emit_score_min`, so
-an established convention emits nothing. (`punct.adjacency-anomaly` is
-aggregate-only stateful — it caches tiny per-book counts, not sites;
-`uni.zero-width-space-anomaly` is stateless and must be given the full corpus
-when enabled. Neither serialises per-occurrence sites.)
+`punct.adjacency-anomaly` is the one corpus-relative rule with tunable knobs. It
+emits `Severity::Info` with a continuous `score ∈ [0, 1]` — a **conformance
+surprise**, not a correctness verdict (1 ≈ "unlike anything this corpus does",
+0 ≈ "ordinary here"). The score is the Wilson lower bound of an observed rate
+`k/n`, divided by a convention rate and clamped (see `methods.md`
+§"Corpus-relative rate shrinkage"); a finding is emitted only when its score
+reaches `emit_score_min`, so an established convention emits nothing. It is
+aggregate-only stateful — it caches tiny per-book counts, not per-occurrence
+sites.
 
-### `uni.zero-width-space-anomaly` (`Config.zero_width_space`) — **default OFF**
-
-| knob | meaning |
-| --- | --- |
-| `global_convention_rate` | low "does this corpus use ZWSP **at all**" gate — keep it low so optional-use languages saturate it and a ZWSP-free corpus keeps it near zero |
-| `context_convention_rate` | coarse "how small a share of all ZWSP still counts as an established context" |
-| `confidence_z` | Wilson confidence — the load-bearing knob at the anomaly end |
-| `emit_score_min` | surfacing floor |
-
-`evidence = 1 - global_strength(Z, N) · context_strength(C(ctx), Z)`; **both**
-factors must be high to suppress. Ships default-off pending calibration (ADR
-0023).
+> **Zero-width space is no longer scored corpus-relative.** The
+> `uni.zero-width-space-anomaly` scorer (and its `Config.zero_width_space` knobs)
+> was retired for lack of a demonstrated error class. U+200B's redundant
+> placements are now flagged deterministically by `uni.redundant-zero-width-space`
+> — Info, **default-on, no knobs** — so it has no entry here. See the rules
+> catalog and ADR 0027.
 
 ### `punct.adjacency-anomaly` (`Config.punctuation_adjacency`) — **default ON**
 
@@ -350,8 +343,7 @@ factors must be high to suppress. Ships default-off pending calibration (ADR
 
 **Stricter (fewer findings):** raise `emit_score_min` toward 1.0 (surface only
 near-certain anomalies) and/or lower the `*_convention_rate` (more patterns count
-as established → silent). **Looser:** lower `emit_score_min`. To surface ZWSP at
-all, enable it: `Config.rules[uni.zero-width-space-anomaly] = true`.
+as established → silent). **Looser:** lower `emit_score_min`.
 
 ## 7. Common Tuning Recipes
 

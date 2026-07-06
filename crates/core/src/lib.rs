@@ -28,7 +28,7 @@ pub mod verse;
 
 pub use config::{
     BracketBalanceConfig, CasingConfig, Config, ProportionalityConfig,
-    PunctuationAdjacencyConfig, ZeroWidthSpaceConfig,
+    PunctuationAdjacencyConfig,
 };
 pub use diagnostics::{Finding, FindingArgs, LengthRatioScope, RuleId, Severity};
 pub use sid::{BookId, Sid};
@@ -517,33 +517,27 @@ mod tests {
         assert!(f_after.iter().all(|f| f.code != RuleId::SentenceInitialLowercase));
     }
 
-    /// The ZWSP anomaly runs through `analyze` like any project rule: default
-    /// off, opt-in, and once on it emits Info findings scored corpus-relative to
-    /// the supplied map (pervasive Khmer→Khmer silent; one Khmer→Latin slip in
-    /// another book surfaces). It is a project rule (not stateful), so it is
-    /// scored over whatever map it is given.
+    /// `uni.redundant-zero-width-space` runs through `analyze` as a default-on
+    /// per-verse rule: a doubled or space-adjacent U+200B surfaces at Info, while
+    /// a legitimate in-token word-break U+200B (letter↔letter) stays silent.
     #[test]
-    fn zero_width_space_runs_through_analyze() {
+    fn redundant_zero_width_space_runs_through_analyze() {
         const ZW: &str = "\u{200B}";
-        let mut cfg = Config::v1_defaults();
-        cfg.rules.insert(RuleId::ZeroWidthSpaceAnomaly, true);
+        let gen_id = BookId::from_str("GEN").unwrap();
+        let full: VerseMap = [
+            (Sid::new(gen_id, 1, 1), format!("word{ZW}{ZW}next")), // doubled → redundant
+            (Sid::new(gen_id, 1, 2), format!("word {ZW}next")),    // space-adjacent → redundant
+            (Sid::new(gen_id, 1, 3), format!("ក{ZW}ក")),          // Khmer word break → silent
+        ]
+        .into_iter()
+        .collect();
 
-        // GEN: pervasive Khmer ZWSP (learned silent). EXO: one Khmer→Latin slip.
-        let khmer = format!("ក{ZW}ក{ZW}ក{ZW}ក");
-        let mut full: VerseMap = (1..=80u16)
-            .map(|v| (Sid::new(BookId::from_str("GEN").unwrap(), 1, v), khmer.clone()))
-            .collect();
-        full.insert(Sid::new(BookId::from_str("EXO").unwrap(), 1, 1), format!("ក{ZW}abc"));
-        let exo = BookId::from_str("EXO").unwrap();
-
-        // Default (rule off) says nothing about ZWSP.
-        assert!(analyze(&full, None).iter().all(|f| f.code != RuleId::ZeroWidthSpaceAnomaly));
-
-        let f = analyze_with_config(&full, None, &cfg);
-        let zwsp: Vec<_> = f.iter().filter(|f| f.code == RuleId::ZeroWidthSpaceAnomaly).collect();
-        assert_eq!(zwsp.len(), 1, "only the EXO minority context surfaces");
-        assert_eq!(zwsp[0].sid.book, exo);
-        assert_eq!(zwsp[0].severity, Severity::Info);
+        let f = analyze(&full, None);
+        let hits: Vec<_> = f.iter().filter(|f| f.code == RuleId::RedundantZeroWidthSpace).collect();
+        assert_eq!(hits.len(), 2, "the doubled and space-adjacent runs surface; the word break doesn't");
+        assert!(hits.iter().all(|f| f.severity == Severity::Info));
+        assert!(hits.iter().any(|f| f.sid.verse == 1) && hits.iter().any(|f| f.sid.verse == 2));
+        assert!(hits.iter().all(|f| f.sid.verse != 3), "letter↔letter word break stays silent");
     }
 
     /// Guards the `RuleId` wire format: the serde rename must match

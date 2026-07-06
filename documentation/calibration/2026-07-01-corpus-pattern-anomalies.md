@@ -72,9 +72,19 @@ documented tradeoff, exposed as a tunable knob (a consumer who wants them lowers
 earlier pass proposed 0.2 based on the bimodal corpora alone; ayn_reg disproved
 "free," so it was reverted.)*
 
-## ZWSP — `uni.zero-width-space-anomaly` (default-OFF)
+## ZWSP — `uni.zero-width-space-anomaly` (default-OFF) — **SUPERSEDED (ADR 0027)**
 
-km_ulb (Khmer, ZWSP-pervasive) is the one large data point available today:
+> **This rule was retired.** A later ablation across all 106 corpora removed every
+> deterministic-redundancy site (doubled runs + U+0020-adjacency) and recomputed
+> the scorer on the filtered text: the three Latin/Devanagari artifact corpora
+> dropped to **zero** survivors, and the Khmer/Lao/Thai survivors were entirely
+> spec-permitted placements (edges, punctuation-/digit-adjacency, non-U+200B
+> control adjacency) or sparse-use false positives (Thai's legitimate word-breaks
+> at ≈0.81). No demonstrated error class survived, so the corpus-relative scorer
+> was replaced by the deterministic `uni.redundant-zero-width-space` rule
+> (ADR 0027). The measurements below are retained as the record that led there.
+
+km_ulb (Khmer, ZWSP-pervasive) was the one large data point available:
 
 | metric | value |
 | --- | ---: |

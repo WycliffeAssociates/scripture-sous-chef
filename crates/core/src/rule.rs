@@ -100,6 +100,7 @@ pub fn per_verse_rules() -> Vec<Box<dyn PerVerseRule>> {
         Box::new(signals::hygiene::InvalidCodepoint),
         Box::new(signals::hygiene::CombiningMarkWithoutBase),
         Box::new(signals::hygiene::MixedNumeralSystems),
+        Box::new(signals::zero_width_space::RedundantZeroWidthSpace),
         Box::new(signals::structural::SourceMarkerLeftover),
         Box::new(signals::structural::MergeConflictMarker),
         Box::new(signals::punctuation::PlaceholderLeftover),
@@ -125,18 +126,9 @@ pub fn token_rules() -> Vec<Box<dyn TokenRule>> {
 /// constructed from `config`'s typed sub-configs here, once per analyze
 /// call — `ProjectRule::check` itself never sees the `Config`.
 pub fn project_rules(config: &Config) -> Vec<Box<dyn ProjectRule>> {
-    vec![
-        Box::new(signals::bracket_balance::BracketBalance {
-            cfg: config.bracket_balance,
-        }),
-        // `uni.zero-width-space-anomaly` is a stateless project rule (default-off,
-        // experimental): scored over the supplied map, so it needs the full
-        // corpus each call. It will move to aggregate-only stateful (like punct)
-        // when it graduates. See ADR 0023.
-        Box::new(signals::zero_width_space::ZeroWidthSpaceAnomaly {
-            cfg: config.zero_width_space,
-        }),
-    ]
+    vec![Box::new(signals::bracket_balance::BracketBalance {
+        cfg: config.bracket_balance,
+    })]
 }
 
 /// Project-scoped rules that also consult per-verse tokens.
