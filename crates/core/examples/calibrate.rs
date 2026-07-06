@@ -19,11 +19,11 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use ssc_core::config::{
-    ProportionalityConfig, PunctuationAdjacencyConfig, PunctuationSpacingConfig,
-    RepeatedCharacterRunConfig,
+    ProportionalityConfig, PunctOnlyTokenConfig, PunctuationAdjacencyConfig,
+    PunctuationSpacingConfig, RepeatedCharacterRunConfig,
 };
 use ssc_core::rule::StatefulRule;
-use ssc_core::signals::lexical::RepeatedCharacterRun;
+use ssc_core::signals::lexical::{PunctOnlyToken, RepeatedCharacterRun};
 use ssc_core::signals::proportionality::ProjectLengthRatio;
 use ssc_core::signals::punctuation::{PunctuationAdjacencyAnomaly, PunctuationSpacingAnomaly};
 use ssc_core::{
@@ -442,11 +442,24 @@ fn punct_only_calib(dir: &Path) {
     top.sort_by(|a, b| b.1.cmp(a.1));
     let head: Vec<String> = top.iter().take(6).map(|(p, n)| format!("[{p}]x{n}")).collect();
     eprintln!(
-        "{corpus}: {} verses, {total} findings, {} distinct patterns | {}",
+        "{corpus}: {} verses, {total} candidates, {} distinct patterns | {}",
         target.len(),
         pattern_count.len(),
         head.join(" ")
     );
+
+    // Production score distribution at floor 0, and the shipped-floor count.
+    let rule = PunctOnlyToken {
+        cfg: PunctOnlyTokenConfig { emit_score_min: 0.0, ..Default::default() },
+    };
+    let findings = rule.judge(&rule.reduce(&target, None), &target);
+    report_scored("lex.punct-only-token", &target, &findings);
+    let shipped = PunctOnlyTokenConfig::default().emit_score_min;
+    let surfaced = findings
+        .iter()
+        .filter(|f| f.score.unwrap_or(0.0) >= shipped)
+        .count();
+    eprintln!("{corpus}: surfaced at shipped floor {shipped}: {surfaced}");
 }
 
 /// Punctuation adjacency calibration (ADR 0024) at floor 0.

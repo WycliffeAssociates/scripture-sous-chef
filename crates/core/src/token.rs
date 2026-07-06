@@ -41,7 +41,7 @@ pub fn tokenize(text: &str) -> Vec<Token> {
 mod tests {
     use super::*;
 
-    fn words<'a>(text: &'a str) -> Vec<&'a str> {
+    fn words(text: &str) -> Vec<&str> {
         tokenize(text)
             .iter()
             .map(|t| t.span.slice(text))

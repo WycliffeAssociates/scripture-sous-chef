@@ -14,7 +14,7 @@ use std::collections::BTreeMap;
 use crate::diagnostics::RuleId;
 use crate::sid::BookId;
 use crate::signals::casing::CasingStats;
-use crate::signals::lexical::RepeatedCharacterRunStats;
+use crate::signals::lexical::{PunctOnlyTokenStats, RepeatedCharacterRunStats};
 use crate::signals::proportionality::ProportionalityStats;
 use crate::signals::punctuation::{PunctuationAdjacencyStats, PunctuationSpacingStats};
 
@@ -39,6 +39,7 @@ pub enum RuleStats {
     PunctuationAdjacency(PunctuationAdjacencyStats),
     PunctuationSpacing(PunctuationSpacingStats),
     RepeatedCharacterRun(RepeatedCharacterRunStats),
+    PunctOnlyToken(PunctOnlyTokenStats),
 }
 
 impl RuleStats {
@@ -60,6 +61,9 @@ impl RuleStats {
             (RuleStats::RepeatedCharacterRun(a), RuleStats::RepeatedCharacterRun(b)) => {
                 RuleStats::RepeatedCharacterRun(a.merge(b))
             }
+            (RuleStats::PunctOnlyToken(a), RuleStats::PunctOnlyToken(b)) => {
+                RuleStats::PunctOnlyToken(a.merge(b))
+            }
             // Mismatched variants can't occur via `analyze_stateful` (it keys
             // prior and fresh by the same `RuleId`). For malformed cached input
             // the **fresh** reduction wins — never the stale prior. The left
@@ -71,7 +75,8 @@ impl RuleStats {
                 | RuleStats::Proportionality(_)
                 | RuleStats::PunctuationAdjacency(_)
                 | RuleStats::PunctuationSpacing(_)
-                | RuleStats::RepeatedCharacterRun(_),
+                | RuleStats::RepeatedCharacterRun(_)
+                | RuleStats::PunctOnlyToken(_),
                 fresh,
             ) => fresh,
         }
@@ -85,6 +90,7 @@ impl RuleStats {
             RuleStats::PunctuationAdjacency(p) => p.remove_book(book),
             RuleStats::PunctuationSpacing(p) => p.remove_book(book),
             RuleStats::RepeatedCharacterRun(r) => r.remove_book(book),
+            RuleStats::PunctOnlyToken(p) => p.remove_book(book),
         }
     }
 }

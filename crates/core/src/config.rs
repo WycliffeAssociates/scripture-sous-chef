@@ -48,20 +48,32 @@ impl Default for ProportionalityConfig {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default))]
 pub struct BracketBalanceConfig {
-    /// How many verses an opener may stay unmatched before it is reported
-    /// as orphaned and dropped (so a single missing closer can't poison the
-    /// rest of the book). Default 16: prose asides span ≤3 verses, but the
-    /// ULB also wraps whole disputed passages in editorial `[ ]` — the
+    /// The verse-span bar for the long-pair verdict, and the radius of the
+    /// reported delimiter inventory. Pairing itself reads the whole book
+    /// stream with no cutoff (ADR 0037); a *matched* pair spanning more
+    /// verses than this is reported only where the corpus dominantly keeps
+    /// the family's pairs short. Default 16: prose asides span ≤3 verses,
+    /// but the ULB wraps whole disputed passages in editorial `[ ]` — the
     /// *pericope adulterae* (JHN 7:53–8:11) and the longer ending of Mark
-    /// (MRK 16:9–20) run 11–12 verses — so the floor is set by those, not
-    /// the asides. 16 clears them with margin; its job is bounding a
-    /// runaway's blast radius, not catching asides. See ADR 0016.
+    /// (MRK 16:9–20) run 11–12 verses — so the floor is set by those.
     pub window_verses: u16,
+    /// Wilson confidence for the two dominance verdicts (pairing rate,
+    /// short-span rate). Shrinks small-sample dominance toward 0.5, so a
+    /// family seen a handful of times can't assert a convention.
+    pub confidence_z: f32,
+    /// Minimum verdict dominance to emit. An orphan in a family the corpus
+    /// doesn't actually pair (a `]`-as-letter orthography) scores near 0
+    /// and stays below any sensible floor.
+    pub emit_score_min: f32,
 }
 
 impl Default for BracketBalanceConfig {
     fn default() -> Self {
-        Self { window_verses: 16 }
+        Self {
+            window_verses: 16,
+            confidence_z: 1.96,
+            emit_score_min: 0.5,
+        }
     }
 }
 
@@ -74,23 +86,26 @@ impl Default for BracketBalanceConfig {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default))]
 pub struct CasingConfig {
-    /// Observed `P(upper | glyph)` above which a lowercase token after that
-    /// glyph is flagged. The single dial: lower it to engage lower-precision
-    /// terminals (`?`, `!`) at the cost of more benign hits. 0.99 is the
-    /// conservative default calibrated across 106 projects — it engages only
-    /// the strong-casing-convention contexts (the bare period) and silences
-    /// the rest, including caseless and weak-casing languages.
-    pub threshold: f32,
-    /// Minimum observations of a glyph before its `P(upper)` is trusted —
-    /// too few and the probability is noise, not a convention.
-    pub min_samples: u32,
+    /// Minimum uppercase-majority dominance (Wilson lower bound of
+    /// `upper / total` for the terminal glyph) to flag a lowercase token
+    /// after it. The single dial: lower it to engage lower-precision
+    /// terminals (`?`, `!`) at the cost of more benign hits. The
+    /// conservative default engages only strong-casing-convention contexts
+    /// (the bare period) and silences the rest, including caseless and
+    /// weak-casing languages.
+    pub emit_score_min: f32,
+    /// Wilson confidence for the dominance estimate. Shrinks small-sample
+    /// majorities toward 0.5, so a barely-observed glyph can't assert a
+    /// casing convention — the smooth replacement for the old hard
+    /// `min_samples` gate.
+    pub confidence_z: f32,
 }
 
 impl Default for CasingConfig {
     fn default() -> Self {
         Self {
-            threshold: 0.99,
-            min_samples: 200,
+            emit_score_min: 0.98,
+            confidence_z: 1.96,
         }
     }
 }
@@ -119,6 +134,34 @@ pub struct PunctuationAdjacencyConfig {
     /// mark seen twice from an entrenched convention seen thousands of times.
     /// Calibrate this before the rate knob. `1.96` ≈ 95%.
     pub confidence_z: f32,
+    /// Share-of-books above which a pattern is taken to be an established
+    /// convention on **dispersion** grounds alone (ADR 0031). Frequency and
+    /// breadth are *independent* evidence combined by noisy-OR: `፡፡` (frequent)
+    /// and a modest-frequency Arabic ellipsis `۔۔۔` spread across ~42% of books
+    /// both clear the convention bar, but by different axes. A pattern
+    /// concentrated in a handful of books (`?????` mojibake in 3/66) does not.
+    /// Analogue of `convention_rate` for the breadth axis; coarse by design.
+    pub breadth_convention_rate: f32,
+    /// Confidence `z` for the breadth Wilson lower bound — support-aware, so a
+    /// pattern "seen once in two books" cannot masquerade as widespread. Kept
+    /// separate from `confidence_z` unless calibration proves they should share
+    /// one (ADR 0031). `1.96` ≈ 95%.
+    pub breadth_z: f32,
+    /// Minimum number of books a corpus must contain before the breadth axis is
+    /// consulted at all (ADR 0031). Dispersion is a corpus-scale signal: in a
+    /// one- or two-book analysis every pattern trivially spans "all" books, so a
+    /// fraction carries no information and would wrongly read as a corpus-wide
+    /// convention. Below this floor the rule judges on frequency + length alone;
+    /// above it, breadth participates. The census conventions all live at ≥26
+    /// books, so `8` leaves them fully covered while sparing small projects.
+    pub breadth_min_books: u32,
+    /// Per-extra-character slope of the run-length odds amplifier (ADR 0031).
+    /// Length only *amplifies* an already-anomalous score, never fabricates one:
+    /// `length_gain(len) = 1 + slope·(len − 2)`, applied as an odds multiplier,
+    /// so a doubling is neutral (`gain = 1`) and longer identical runs — for
+    /// which no punctuation convention exists past the ellipsis — climb steeply.
+    /// `0.5` puts an 8-long run at ~4× the odds of a doubling.
+    pub length_gain_slope: f32,
     /// Minimum `evidence` a site must reach to be emitted — keeps an
     /// established convention (e.g. `፤፤`, `۔۔`) from serialising as findings.
     pub emit_score_min: f32,
@@ -129,15 +172,25 @@ impl Default for PunctuationAdjacencyConfig {
         Self {
             convention_rate: 0.5,
             confidence_z: 1.96,
-            // 0.5 (calibration 2026-07-01). A lower floor was considered — most
-            // corpora are bimodal (conventions ≈0, anomalies ≈1) so it would be
-            // "free" there — but ayn_reg's doubled Arabic full stop `۔۔` is a
-            // *moderate-frequency* convention scoring ≈0.48, i.e. in the same
-            // band as an exclusive-glyph novelty seen twice (≈0.32). A single
-            // floor cannot suppress the former and surface the latter, so the
-            // default stays high (suppress real conventions) and consumers who
-            // want to see low-evidence novelties lower `emit_score_min`
-            // themselves. See ADR 0024 and the calibration note.
+            // Breadth axis (ADR 0031). `breadth_convention_rate` 0.12 lets the
+            // real doubled-danda conventions establish on dispersion alone
+            // (`।।` at 13/66 ≈ 20% and 20/66 ≈ 30%; `۔۔۔` at 11/26 ≈ 42%) while
+            // leaving `?????` mojibake (3/66 ≈ 4.5%) anomalous. Calibrated
+            // 2026-07-06 — see the calibration note.
+            breadth_convention_rate: 0.12,
+            breadth_z: 1.96,
+            breadth_min_books: 8,
+            // Length amplifier slope (ADR 0031): 0.5 ⇒ an 8-long run carries ~4×
+            // the odds of a doubling, matching the observation that nothing but
+            // the ellipsis is legitimately tripled. Calibrated 2026-07-06.
+            length_gain_slope: 0.5,
+            // 0.5 (calibration 2026-07-01, revisited 2026-07-06 under ADR 0031).
+            // Most corpora are bimodal (conventions ≈0, anomalies ≈1) so the
+            // floor value is insensitive there. The moderate-frequency Arabic
+            // convention `۔۔` (ayn_reg) that once forced the floor high now
+            // establishes on the breadth axis (9/26 books), so it is suppressed
+            // by evidence rather than by the floor — but the floor stays 0.5 so
+            // exclusive-glyph seen-twice novelties remain opt-in. See ADR 0024.
             emit_score_min: 0.5,
         }
     }
@@ -197,6 +250,11 @@ pub struct RepeatedCharacterRunConfig {
     /// zero. A value of 5 keeps frequency 2 positive for copied typos while
     /// suppressing recurring interjections and ideophones.
     pub word_recurrence_k: f32,
+    /// Wilson confidence for the cluster-rate estimate. Shrinks small-sample
+    /// rates toward zero, so a sparse corpus can't declare a convention from a
+    /// handful of units — the load-bearing small-corpus behaviour. `0` trusts
+    /// observed rates as-is.
+    pub confidence_z: f32,
     /// Minimum evidence to emit. Scores below this are established corpus
     /// conventions and are not serialized as findings.
     pub emit_score_min: f32,
@@ -207,6 +265,41 @@ impl Default for RepeatedCharacterRunConfig {
         Self {
             convention_rate_per_10k: 2.0,
             word_recurrence_k: 5.0,
+            confidence_z: 1.96,
+            emit_score_min: 0.5,
+        }
+    }
+}
+
+/// Knobs for `lex.punct-only-token`. The candidate scan (whitespace-delimited
+/// chunks that are entirely punctuation/symbols, minus the deterministic
+/// exemptions) is fixed; these values decide whether a detected chunk is
+/// unusual relative to the corpus's own typography (ADR 0030).
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
+pub struct PunctOnlyTokenConfig {
+    /// Occurrences of the exact chunk per 10,000 whitespace-delimited lexical
+    /// units at which its convention factor reaches zero. A detached-danda
+    /// substitute (`|`), doubled Ethiopic wordspace (`፡፡`), or spaced Burmese
+    /// final (`၏။`) recurs orders of magnitude above this; one-off wreckage
+    /// (`.,`, stray `=`) sits orders of magnitude below.
+    pub convention_rate_per_10k: f32,
+    /// Wilson confidence for the chunk-rate estimate. Shrinks small-sample
+    /// rates toward zero, so a sparse corpus can't declare a convention from a
+    /// handful of units — the load-bearing small-corpus behaviour. `0` trusts
+    /// observed rates as-is.
+    pub confidence_z: f32,
+    /// Minimum evidence to emit. Scores below this are established corpus
+    /// conventions and are not serialized as findings.
+    pub emit_score_min: f32,
+}
+
+impl Default for PunctOnlyTokenConfig {
+    fn default() -> Self {
+        Self {
+            convention_rate_per_10k: 1.0,
+            confidence_z: 1.96,
             emit_score_min: 0.5,
         }
     }
@@ -233,6 +326,8 @@ pub struct Config {
     pub punctuation_spacing: PunctuationSpacingConfig,
     #[cfg_attr(feature = "serde", serde(default))]
     pub repeated_character_run: RepeatedCharacterRunConfig,
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub punct_only_token: PunctOnlyTokenConfig,
 }
 
 impl Config {

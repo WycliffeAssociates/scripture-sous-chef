@@ -96,13 +96,12 @@ pub fn per_verse_rules() -> Vec<Box<dyn PerVerseRule>> {
         Box::new(signals::hygiene::ZeroWidthMisuse),
         Box::new(signals::hygiene::EmptyVerse),
         Box::new(signals::hygiene::InvalidCodepoint),
+        Box::new(signals::hygiene::ReplacementRun),
         Box::new(signals::hygiene::CombiningMarkWithoutBase),
         Box::new(signals::hygiene::MixedNumeralSystems),
         Box::new(signals::zero_width_space::RedundantZeroWidthSpace),
         Box::new(signals::structural::SourceMarkerLeftover),
         Box::new(signals::structural::MergeConflictMarker),
-        Box::new(signals::punctuation::PlaceholderLeftover),
-        Box::new(signals::lexical::PunctOnlyToken),
     ]
 }
 
@@ -146,6 +145,9 @@ pub fn stateful_rules(config: &Config) -> Vec<Box<dyn StatefulRule>> {
         }),
         Box::new(signals::lexical::RepeatedCharacterRun {
             cfg: config.repeated_character_run,
+        }),
+        Box::new(signals::lexical::PunctOnlyToken {
+            cfg: config.punct_only_token,
         }),
     ]
 }

@@ -146,14 +146,14 @@ pub fn scan_merge_conflict_marker(text: &str) -> Vec<Span> {
 mod tests {
     use super::*;
 
-    fn slices<'a>(text: &'a str) -> Vec<&'a str> {
+    fn slices(text: &str) -> Vec<&str> {
         scan_source_marker_leftover(text)
             .iter()
             .map(|s| s.slice(text))
             .collect()
     }
 
-    fn conflict_slices<'a>(text: &'a str) -> Vec<&'a str> {
+    fn conflict_slices(text: &str) -> Vec<&str> {
         scan_merge_conflict_marker(text)
             .iter()
             .map(|s| s.slice(text))

@@ -9,8 +9,9 @@ use unicode_segmentation::UnicodeSegmentation;
 use crate::charclass::class_of;
 use crate::config::RepeatedCharacterRunConfig;
 use crate::diagnostics::{Finding, FindingArgs, RuleId, Severity};
+use crate::evidence;
 use crate::grapheme::{GSpan, segment};
-use crate::rule::{PerVerseRule, ProjectTokenRule, StatefulRule, TokenCache};
+use crate::rule::{ProjectTokenRule, StatefulRule, TokenCache};
 use crate::sid::Sid;
 use crate::span::Span;
 use crate::stats::RuleStats;
@@ -196,30 +197,144 @@ fn scan_verse(text: &str, tokens: &[crate::token::Token]) -> Vec<Span> {
 // ─────────────────────────────────────────────────────────────────────
 
 /// A whitespace-delimited chunk that is entirely punctuation/symbols —
-/// not a word, not a number (`word ;; word`, `= word`). Digit-only
-/// chunks are deliberately NOT flagged (legitimate numerals), and
-/// neither is a *single* ordinary punctuation mark: several languages
-/// detach sentence punctuation as a matter of convention (Nepali
-/// `…थिए ।`, spaced `?` / `!` / `،` — tens of thousands of legitimate
-/// hits per Bible), and judging spacing conventions is the opt-in
-/// `punct.spacing-anomaly` rule's job. What flags here is the
-/// unambiguous wreckage: multi-mark chunks (`।।`, `.,`), stranded
-/// opening brackets, and stray symbols (`=`, `´`). Quotes, closing
-/// brackets, dashes, and ellipses ride along as normal typography.
+/// not a word, not a number (`word ;; word`, `= word`) — scored against how
+/// often that exact chunk recurs across the corpus (ADR 0030). Detached
+/// sentence marks that a deterministic single-mark exemption can't cover
+/// (`|` as a danda substitute, `፡፡` as an Ethiopic full stop, Burmese
+/// `၏။`, ASCII `<<`/`>>` guillemets) recur by the hundreds where they are
+/// the house convention and self-suppress; one-off wreckage (`.,`, stray
+/// `=`, `´`) stays high-evidence. Two candidate classes stay deterministic:
+/// runs of `<`/`=`/`>`/`|` are `struct.merge-conflict-marker`'s finding and
+/// are skipped here, and runs of `?` (encoding-destroyed text) always
+/// surface — mojibake is systematic *and* broken, the one case where
+/// recurrence must not suppress. Digit-only chunks are never candidates
+/// (legitimate numerals); a *single* ordinary mark is a spacing convention
+/// somewhere (Nepali `…थिए ।`) and is judged by `punct.spacing-anomaly`
+/// instead; quotes, closing brackets, dashes, and ellipses ride along as
+/// normal typography.
 pub const PUNCT_ONLY_TOKEN: RuleId = RuleId::PunctOnlyToken;
 
-pub struct PunctOnlyToken;
+/// One book's aggregate contribution: whitespace-unit count and per-chunk
+/// candidate counts, keyed by the exact chunk text.
+#[derive(Debug, Clone, Default, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+struct BookPunctOnlyToken {
+    lexical_units: u64,
+    chunks: BTreeMap<String, u64>,
+}
 
-impl PerVerseRule for PunctOnlyToken {
+/// Cached punct-only-token aggregates, partitioned by book so incremental
+/// analysis can supersede one book without retaining occurrence sites.
+#[derive(Debug, Clone, Default, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+pub struct PunctOnlyTokenStats {
+    per_book: BTreeMap<String, BookPunctOnlyToken>,
+}
+
+impl PunctOnlyTokenStats {
+    pub(crate) fn merge(mut self, other: PunctOnlyTokenStats) -> PunctOnlyTokenStats {
+        for (book, stats) in other.per_book {
+            self.per_book.insert(book, stats);
+        }
+        self
+    }
+
+    pub(crate) fn remove_book(&mut self, book: &str) {
+        self.per_book.remove(book);
+    }
+}
+
+pub struct PunctOnlyToken {
+    pub cfg: crate::config::PunctOnlyTokenConfig,
+}
+
+impl StatefulRule for PunctOnlyToken {
     fn id(&self) -> RuleId {
         PUNCT_ONLY_TOKEN
     }
-    fn severity(&self) -> Severity {
-        Severity::Warning
+
+    fn reduce(&self, map: &VerseMap, _source: Option<&VerseMap>) -> RuleStats {
+        let mut stats = PunctOnlyTokenStats::default();
+        for (book, verses) in verse::by_book(map) {
+            let mut out = BookPunctOnlyToken::default();
+            for (_sid, text) in &verses {
+                out.lexical_units += text.split_whitespace().count() as u64;
+                for span in scan_punct_only_token(text) {
+                    *out.chunks
+                        .entry(punct_only_pattern_key(span.slice(text)))
+                        .or_default() += 1;
+                }
+            }
+            stats.per_book.insert(book.as_str().to_string(), out);
+        }
+        RuleStats::PunctOnlyToken(stats)
     }
-    fn check(&self, text: &str) -> Vec<Span> {
-        scan_punct_only_token(text)
+
+    fn judge(&self, stats: &RuleStats, target: &VerseMap) -> Vec<Finding> {
+        let RuleStats::PunctOnlyToken(stats) = stats else {
+            return Vec::new();
+        };
+
+        let mut lexical_units = 0u64;
+        let mut chunks: BTreeMap<&str, u64> = BTreeMap::new();
+        for book in stats.per_book.values() {
+            lexical_units += book.lexical_units;
+            for (chunk, &count) in &book.chunks {
+                *chunks.entry(chunk.as_str()).or_default() += count;
+            }
+        }
+
+        // The config rate is "occurrences per 10k lexical units"; `strength`
+        // works in per-opportunity fractions, so divide at the boundary.
+        let convention_rate = evidence::clamp_rate(self.cfg.convention_rate_per_10k / 10_000.0);
+        let z = evidence::clamp_z(self.cfg.confidence_z);
+        let floor = f64::from(evidence::clamp_unit(self.cfg.emit_score_min));
+
+        let mut out = Vec::new();
+        for (&sid, text) in target {
+            for span in scan_punct_only_token(text) {
+                let chunk = span.slice(text);
+                let count = chunks
+                    .get(punct_only_pattern_key(chunk).as_str())
+                    .copied()
+                    .unwrap_or(0);
+                let evidence = evidence::from_strengths(&[evidence::strength(
+                    count,
+                    lexical_units,
+                    convention_rate,
+                    z,
+                )]);
+                if evidence < floor {
+                    continue;
+                }
+                out.push(Finding {
+                    sid,
+                    code: PUNCT_ONLY_TOKEN,
+                    severity: Severity::Warning,
+                    range: span,
+                    score: Some(evidence as f32),
+                    args: None,
+                });
+            }
+        }
+        out.sort_by_key(|finding| (finding.sid, finding.range.start, finding.range.end));
+        out
     }
+}
+
+/// The recurrence key: the chunk minus riding quotes and closing brackets —
+/// the same core the scan's verdict uses — so `۔!` and `۔!)` pool as one
+/// convention instead of the closer-bearing variant surfacing alone.
+fn punct_only_pattern_key(chunk: &str) -> String {
+    chunk
+        .chars()
+        .filter(|&c| {
+            !crate::signals::punctuation::is_quote_char(c)
+                && crate::charclass::bracket_open_of(c).is_none()
+        })
+        .collect()
 }
 
 /// Dash-family chars that legitimately stand alone between words.
@@ -252,11 +367,13 @@ pub fn scan_punct_only_token(text: &str) -> Vec<Span> {
             continue;
         }
         // Quotes and closing brackets ride along with whatever they
-        // close ("।”", "।)"), so they don't count toward the verdict.
+        // close ("।”", "।)"), so they don't count toward the verdict. The
+        // closer class is the UCD pairing inventory, not an ASCII list.
         let core: Vec<char> = chunk
             .chars()
             .filter(|&c| {
-                !crate::signals::punctuation::is_quote_char(c) && !matches!(c, ')' | ']' | '}')
+                !crate::signals::punctuation::is_quote_char(c)
+                    && crate::charclass::bracket_open_of(c).is_none()
             })
             .collect();
         let legitimate = match core.as_slice() {
@@ -268,6 +385,14 @@ pub fn scan_punct_only_token(text: &str) -> Vec<Span> {
             run => {
                 run.iter().all(|&c| is_standalone_dash(c))
                     || core.iter().collect::<String>() == "..."
+                    // A run of </=/>/| is a merge-conflict head, and a run of
+                    // 3+ `?` is encoding-conversion damage — both are real
+                    // wreckage, but `struct.merge-conflict-marker` and
+                    // `hyg.replacement-run` already flag them; skipping them
+                    // here avoids double-reporting.
+                    || (run.len() >= 3
+                        && matches!(run[0], '<' | '=' | '>' | '|' | '?')
+                        && run.iter().all(|&c| c == run[0]))
             }
         };
         if !legitimate {
@@ -362,18 +487,19 @@ impl StatefulRule for RepeatedCharacterRun {
             }
         }
 
-        let convention_rate = clamp_positive(self.cfg.convention_rate_per_10k);
-        let word_k = clamp_positive(self.cfg.word_recurrence_k);
-        let floor = f64::from(crate::shrinkage::clamp_unit(self.cfg.emit_score_min));
-        let unit_denominator = lexical_units.max(1) as f64;
+        // The config rate is "runs per 10k lexical units"; `strength` works in
+        // per-opportunity fractions, so divide at the boundary.
+        let convention_rate = evidence::clamp_rate(self.cfg.convention_rate_per_10k / 10_000.0);
+        let z = evidence::clamp_z(self.cfg.confidence_z);
+        let word_k = evidence::clamp_count(self.cfg.word_recurrence_k);
+        let floor = f64::from(evidence::clamp_unit(self.cfg.emit_score_min));
 
-        let cluster_factors: BTreeMap<&str, f64> = cluster_runs
+        let cluster_strengths: BTreeMap<&str, f64> = cluster_runs
             .iter()
             .map(|(&cluster, &count)| {
-                let rate_per_10k = count as f64 * 10_000.0 / unit_denominator;
                 (
                     cluster,
-                    (1.0 - rate_per_10k / convention_rate).clamp(0.0, 1.0),
+                    evidence::strength(count, lexical_units, convention_rate, z),
                 )
             })
             .collect();
@@ -385,16 +511,18 @@ impl StatefulRule for RepeatedCharacterRun {
             segment(text, &mut graphemes);
             for span in scan_repeated_character_run(text, &graphemes) {
                 let cluster = repeated_run_cluster(span.slice(text));
-                let cluster_factor = cluster_factors
+                let cluster_strength = cluster_strengths
                     .get(cluster.as_str())
                     .copied()
-                    .unwrap_or(1.0);
+                    .unwrap_or(0.0);
                 let word_frequency = containing_word(text, &tokens, span)
                     .and_then(|word| run_words.get(word.to_lowercase().as_str()).copied());
-                let word_factor = word_frequency.map_or(1.0, |frequency| {
-                    (1.0 - frequency.saturating_sub(1) as f64 / word_k).clamp(0.0, 1.0)
+                // Recurrence of the containing word is the second convention
+                // axis: a linear knee in the word's repeat count, not a rate.
+                let word_strength = word_frequency.map_or(0.0, |frequency| {
+                    (frequency.saturating_sub(1) as f64 / word_k).clamp(0.0, 1.0)
                 });
-                let evidence = (cluster_factor * word_factor).clamp(0.0, 1.0);
+                let evidence = evidence::from_strengths(&[cluster_strength, word_strength]);
                 if evidence < floor {
                     continue;
                 }
@@ -460,15 +588,6 @@ fn repeated_run_cluster(run: &str) -> String {
     run.graphemes(true).next().unwrap_or("").to_lowercase()
 }
 
-fn clamp_positive(value: f32) -> f64 {
-    let value = f64::from(value);
-    if value.is_finite() && value > 0.0 {
-        value
-    } else {
-        f64::from(f32::EPSILON)
-    }
-}
-
 pub fn scan_repeated_character_run(text: &str, graphemes: &[GSpan]) -> Vec<Span> {
     const THRESHOLD: usize = 3;
     let mut spans: Vec<Span> = Vec::new();
@@ -525,7 +644,7 @@ mod tests {
     use crate::sid::BookId;
 
     /// Within-verse doublings, as slices of `text`.
-    fn dw<'a>(text: &'a str) -> Vec<&'a str> {
+    fn dw(text: &str) -> Vec<&str> {
         scan_verse(text, &tokenize(text))
             .iter()
             .map(|s| s.slice(text))
@@ -629,7 +748,7 @@ mod tests {
         assert_eq!(f[0].args, None);
     }
 
-    fn po<'a>(text: &'a str) -> Vec<&'a str> {
+    fn po(text: &str) -> Vec<&str> {
         scan_punct_only_token(text).iter().map(|s| s.slice(text)).collect()
     }
 
@@ -668,7 +787,92 @@ mod tests {
         assert!(po("\"go!\" he said.").is_empty());
     }
 
-    fn rc<'a>(text: &'a str) -> Vec<&'a str> {
+    // ── punct-only-token: stateful corpus-relative scoring ───────────────
+
+    fn pot_findings(map: &VerseMap, cfg: crate::config::PunctOnlyTokenConfig) -> Vec<Finding> {
+        let rule = PunctOnlyToken { cfg };
+        rule.judge(&rule.reduce(map, None), map)
+    }
+
+    #[test]
+    fn merge_conflict_runs_are_not_candidates() {
+        assert!(po("ours ======= theirs").is_empty());
+        assert!(po("a <<<<<<< b >>>>>>> c ||| d").is_empty());
+        // Below the merge rule's three-run bar they stay candidates.
+        assert!(!po("quoth << he").is_empty());
+    }
+
+    #[test]
+    fn one_off_wreckage_surfaces_near_one() {
+        let text = format!("{}.,", "word ".repeat(200_000));
+        let map = repeat_map("GEN", &[text]);
+        let findings = pot_findings(&map, Default::default());
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].range.slice(&map[&findings[0].sid]), ".,");
+        assert!(findings[0].score.unwrap() > 0.9);
+        assert_eq!(findings[0].severity, Severity::Warning);
+    }
+
+    #[test]
+    fn recurring_chunk_is_a_convention_and_suppresses() {
+        // A danda-substitute pipe every few words — far above any plausible
+        // convention rate — must be silent, however odd it looks.
+        let text = "word word word | ".repeat(1_000);
+        assert!(pot_findings(&repeat_map("GEN", &[text]), Default::default()).is_empty());
+    }
+
+    #[test]
+    fn small_corpus_hapax_wreckage_still_emits() {
+        // A few chapters of drafting (≈5k lexical units) with one `.,`: the
+        // Wilson-shrunk rate stays below the convention bar, so the wreckage
+        // surfaces. The unshrunk ratio read one occurrence in a small corpus
+        // as a 2-per-10k "convention" and silently suppressed everything —
+        // the early-draft regression this pins against.
+        let text = format!("{}.,", "word ".repeat(5_000));
+        let map = repeat_map("GEN", &[text]);
+        let findings = pot_findings(&map, Default::default());
+        assert_eq!(findings.len(), 1);
+        assert!(findings[0].score.unwrap() >= 0.5);
+    }
+
+    #[test]
+    fn tiny_corpus_conservatively_abstains() {
+        // A single short book (≈500 units) genuinely cannot establish what is
+        // conventional; one odd chunk stays below the floor rather than
+        // asserting confidence the data can't back.
+        let text = format!("{}.,", "word ".repeat(500));
+        assert!(pot_findings(&repeat_map("GEN", &[text]), Default::default()).is_empty());
+    }
+
+    #[test]
+    fn replacement_runs_are_not_candidates() {
+        // 3+ `?` chunks are `hyg.replacement-run`'s finding (encoding damage),
+        // excluded from candidacy like merge-conflict runs — including with a
+        // riding closer. Below the bar, `??` stays a corpus-judged candidate.
+        assert!(po("word ???? ??? word").is_empty());
+        assert!(po("word ???) word").is_empty());
+        assert_eq!(po("word ?? word"), vec!["??"]);
+    }
+
+    #[test]
+    fn punct_only_incremental_score_uses_the_retained_corpus() {
+        let rule = PunctOnlyToken { cfg: Default::default() };
+        let gen_map = repeat_map("GEN", &["word ".repeat(50_000)]);
+        let exo_map = repeat_map("EXO", &["word ,; word".to_string()]);
+        let mut full = gen_map.clone();
+        full.extend(exo_map.clone());
+
+        let full_score = rule.judge(&rule.reduce(&full, None), &full)[0].score;
+        let merged = rule
+            .reduce(&gen_map, None)
+            .merge(rule.reduce(&exo_map, None));
+        let incremental = rule.judge(&merged, &exo_map);
+        assert_eq!(incremental.len(), 1);
+        assert_eq!(incremental[0].sid, sid("EXO", 1, 1));
+        assert_eq!(incremental[0].score, full_score);
+    }
+
+    fn rc(text: &str) -> Vec<&str> {
         let mut g = Vec::new();
         crate::grapheme::segment(text, &mut g);
         scan_repeated_character_run(text, &g).iter().map(|s| s.slice(text)).collect()
@@ -863,6 +1067,7 @@ mod tests {
         let cfg = RepeatedCharacterRunConfig {
             convention_rate_per_10k: f32::INFINITY,
             word_recurrence_k: f32::NAN,
+            confidence_z: f32::NAN,
             emit_score_min: f32::NAN,
         };
         let map = repeat_map("GEN", &["joyfullly".to_string()]);

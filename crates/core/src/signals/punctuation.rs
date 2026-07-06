@@ -1,12 +1,11 @@
 //! Punctuation signals.
 //!
 //! `punct.adjacency-anomaly` and `punct.spacing-anomaly` are both corpus-relative
-//! and stateful with **aggregate-only** state (ADR 0017, ADR 0024, ADR 0029):
-//! each caches per-book *counts* — never sites — so `Stats` stays tiny; at
-//! `judge` each re-scans the current call's verses to emit spans, keeping scores
-//! corpus-wide and incremental re-analysis correct. `punct.placeholder-leftover`
-//! remains a deterministic per-verse rule. Spans always slice the offending
-//! characters out of the verse text.
+//! and stateful with **aggregate-only** state (ADR 0017, ADR 0024, ADR 0029,
+//! ADR 0031): each caches per-book *counts* — never sites — so `Stats` stays
+//! tiny; at `judge` each re-scans the current call's verses to emit spans,
+//! keeping scores corpus-wide and incremental re-analysis correct. Spans always
+//! slice the offending characters out of the verse text.
 
 use std::collections::BTreeMap;
 
@@ -14,8 +13,8 @@ use crate::charclass::class_of;
 use crate::config::{PunctuationAdjacencyConfig, PunctuationSpacingConfig};
 use crate::diagnostics::{Finding, RuleId, Severity};
 use crate::grapheme::{self, GSpan};
-use crate::rule::{PerVerseRule, StatefulRule};
-use crate::shrinkage::{clamp_rate, clamp_unit, clamp_z, strength, wilson_lower_bound};
+use crate::rule::StatefulRule;
+use crate::evidence::{clamp_rate, clamp_unit, clamp_z, dominance, from_strengths, odds_amplify, strength};
 use crate::sid::Sid;
 use crate::span::Span;
 use crate::stats::RuleStats;
@@ -100,29 +99,57 @@ impl StatefulRule for PunctuationAdjacencyAnomaly {
             return Vec::new();
         };
 
-        // Corpus-wide aggregates: sum the per-book run-start and pattern counts.
+        // Corpus-wide aggregates: sum the per-book run-start and pattern counts,
+        // and count in how many books each pattern occurs (its breadth support).
         let mut lead: BTreeMap<char, u64> = BTreeMap::new();
         let mut pattern_k: BTreeMap<&str, u64> = BTreeMap::new();
+        let mut pattern_books: BTreeMap<&str, u64> = BTreeMap::new();
         for book in stats.per_book.values() {
             for (&c, &n) in &book.lead_opportunities {
                 *lead.entry(c).or_default() += n;
             }
             for (p, &k) in &book.pattern_counts {
                 *pattern_k.entry(p.as_str()).or_default() += k;
+                // `pattern_counts` only holds patterns seen ≥1 time in the book,
+                // so presence is one book of breadth support.
+                *pattern_books.entry(p.as_str()).or_default() += 1;
             }
         }
+        // Nonempty books represented in the cache — the breadth denominator.
+        let corpus_books = stats.per_book.len() as u64;
 
         let rate = clamp_rate(self.cfg.convention_rate);
         let z = clamp_z(self.cfg.confidence_z);
+        let breadth_rate = clamp_rate(self.cfg.breadth_convention_rate);
+        let breadth_z = clamp_z(self.cfg.breadth_z);
+        let slope = f64::from(self.cfg.length_gain_slope).max(0.0);
         let floor = f64::from(clamp_unit(self.cfg.emit_score_min));
+        // Breadth is a corpus-scale signal — meaningless below a handful of
+        // books, where every pattern trivially spans "all" of them. Gate it.
+        let breadth_active = corpus_books >= u64::from(self.cfg.breadth_min_books);
 
         // Evidence depends only on the pattern; compute it once per pattern.
+        // Frequency and breadth are *independent* convention evidence combined
+        // by noisy-OR (either fully establishing a convention zeroes the base);
+        // run length then amplifies the residual as an odds multiplier, so it
+        // can raise an anomaly toward 1 but never resurrect a convention (ADR
+        // 0031).
         let evidence: BTreeMap<&str, f64> = pattern_k
             .iter()
             .map(|(&p, &k)| {
                 let a = p.chars().next().expect("candidate pattern is non-empty");
                 let n = lead.get(&a).copied().unwrap_or(0);
-                (p, 1.0 - strength(k, n, rate, z))
+                let books = pattern_books.get(p).copied().unwrap_or(0);
+                let freq_strength = strength(k, n, rate, z);
+                let breadth_strength = if breadth_active {
+                    strength(books, corpus_books, breadth_rate, breadth_z)
+                } else {
+                    0.0
+                };
+                let base = from_strengths(&[freq_strength, breadth_strength]);
+                let len = p.chars().count() as f64;
+                let gain = 1.0 + slope * (len - 2.0);
+                (p, odds_amplify(base, gain))
             })
             .collect();
 
@@ -191,7 +218,16 @@ fn count_lead_opportunities(text: &str, out: &mut BTreeMap<char, u64>) {
 /// (`."`, `?»`), so mixed runs are judged inside this class only;
 /// *identical* runs are judged for every punctuation char except quotes.
 fn is_separator_punct(c: char) -> bool {
-    matches!(c, '.' | ',' | ';' | ':' | '?' | '!')
+    use unicode_properties::{GeneralCategory, UnicodeGeneralCategory};
+    // GC `Po` minus the quote class. The old ASCII set (`. , ; : ? !`)
+    // silently skipped every non-Latin separator — ur-deva's `۔` and the
+    // dandas were never judged for spacing while their ASCII neighbours were.
+    // `Po` admits every script's separators by class while brackets (Ps/Pe),
+    // dashes (Pd), connectors (Pc), and curly quotes (Pi/Pf) stay out;
+    // straight quotes are `Po` and are excluded by the quote predicate. The
+    // corpus verdict, not the candidate set, decides what's conventional
+    // (ADR 0029) — a mark with no dominant form stays silent.
+    c.general_category() == GeneralCategory::OtherPunctuation && !is_quote_char(c)
 }
 
 /// Quote-class characters. Excluded from identical-run detection:
@@ -234,7 +270,12 @@ fn adjacency_candidates(text: &str) -> Vec<Span> {
             end = j + next.len_utf8();
             count += 1;
         }
-        let allowed = (c == '.' && count == 3) || (c == '-' && count == 2);
+        // `...` ellipsis and `--` em-dash substitutes are universal typography;
+        // a run of 3+ `?` is `hyg.replacement-run`'s finding (encoding-
+        // conversion damage), skipped here to avoid double-reporting.
+        let allowed = (c == '.' && count == 3)
+            || (c == '-' && count == 2)
+            || (c == '?' && count >= 3);
         if count >= 2 && !allowed {
             spans.push(Span { start, end });
         }
@@ -264,78 +305,6 @@ fn adjacency_candidates(text: &str) -> Vec<Span> {
     }
 
     spans.sort();
-    spans
-}
-
-// ─────────────────────────────────────────────────────────────────────
-// Placeholder leftovers
-// ─────────────────────────────────────────────────────────────────────
-
-/// Drafting placeholders left in the text: `[TODO]`, `[?]`, `???`,
-/// `***`, `<...>`. Conservative built-in set — each pattern is near-zero
-/// FP in any language.
-pub const PLACEHOLDER_LEFTOVER: RuleId = RuleId::PlaceholderLeftover;
-
-pub struct PlaceholderLeftover;
-
-impl PerVerseRule for PlaceholderLeftover {
-    fn id(&self) -> RuleId {
-        PLACEHOLDER_LEFTOVER
-    }
-    fn severity(&self) -> Severity {
-        Severity::Warning
-    }
-    fn check(&self, text: &str) -> Vec<Span> {
-        scan_placeholder_leftover(text)
-    }
-}
-
-pub fn scan_placeholder_leftover(text: &str) -> Vec<Span> {
-    let mut spans = Vec::new();
-
-    // Literal patterns ([TODO] case-insensitively).
-    for pat in ["[?]", "<...>"] {
-        for (i, m) in text.match_indices(pat) {
-            spans.push(Span { start: i, end: i + m.len() });
-        }
-    }
-    let lower = text.to_lowercase();
-    // `to_lowercase` can shift byte offsets in mixed-case non-ASCII
-    // text; placeholders are ASCII-anchored, so match on the original
-    // text per candidate instead of trusting lowered offsets blindly.
-    if lower.contains("[todo]") {
-        let mut i = 0;
-        while i + 6 <= text.len() {
-            if text.is_char_boundary(i) && text[i..].len() >= 6 && text[i..i + 6].eq_ignore_ascii_case("[todo]") {
-                spans.push(Span { start: i, end: i + 6 });
-                i += 6;
-            } else {
-                i += 1;
-            }
-        }
-    }
-
-    // Maximal runs: `?` ≥ 3, `*` ≥ 3.
-    for marker in ['?', '*'] {
-        let bytes = text.as_bytes();
-        let mut i = 0usize;
-        while i < bytes.len() {
-            if bytes[i] == marker as u8 {
-                let start = i;
-                while i < bytes.len() && bytes[i] == marker as u8 {
-                    i += 1;
-                }
-                if i - start >= 3 {
-                    spans.push(Span { start, end: i });
-                }
-            } else {
-                i += 1;
-            }
-        }
-    }
-
-    spans.sort();
-    spans.dedup();
     spans
 }
 
@@ -510,7 +479,7 @@ fn mark_verdict(c: SpacingCounts, z: f64) -> Option<MarkVerdict> {
     }
     Some(MarkVerdict {
         minority_is_spaced: c.spaced < c.attached,
-        dominance: wilson_lower_bound(c.spaced.max(c.attached), n, z),
+        dominance: dominance(c.spaced.max(c.attached), n, z),
     })
 }
 
@@ -595,7 +564,7 @@ mod tests {
     // now testing which runs become candidates rather than which are verdicts:
     // extraction is deliberately unchanged while the verdict model moved to
     // corpus-relative scoring.
-    fn rp<'a>(text: &'a str) -> Vec<&'a str> {
+    fn rp(text: &str) -> Vec<&str> {
         adjacency_candidates(text).iter().map(|s| s.slice(text)).collect()
     }
 
@@ -747,11 +716,15 @@ mod tests {
     fn exact_run_lengths_are_distinct_patterns_one_event_each() {
         // Each maximal run is one candidate; the exact strings stay distinct,
         // and one long run is a single event (not one-per-adjacent-pair).
+        assert_eq!(rp("a!! b"), vec!["!!"]);
+        assert_eq!(rp("c!!! d"), vec!["!!!"]);
+        assert_eq!(rp("e!!!! f"), vec!["!!!!"]);
+        // A `?`-run of 3+ is `hyg.replacement-run`'s finding (encoding
+        // damage), not an adjacency candidate; `??` still is one.
         assert_eq!(rp("a?? b"), vec!["??"]);
-        assert_eq!(rp("c??? d"), vec!["???"]);
-        assert_eq!(rp("e???? f"), vec!["????"]);
-        // A `?`-run counts once toward N_start('?'), regardless of length.
-        assert_eq!(n_start("e???? f", '?'), 1);
+        assert!(rp("c??? d").is_empty());
+        // A run counts once toward its lead's N_start, regardless of length.
+        assert_eq!(n_start("e!!!! f", '!'), 1);
     }
 
     // (The single-formula "no k=4/k=5 discontinuity" property is a pure
@@ -884,6 +857,10 @@ mod tests {
         let bad = PunctuationAdjacencyConfig {
             convention_rate: f32::NAN,
             confidence_z: -3.0,
+            breadth_convention_rate: f32::NAN,
+            breadth_z: f32::NEG_INFINITY,
+            breadth_min_books: 0,
+            length_gain_slope: f32::NAN,
             emit_score_min: f32::NAN,
         };
         for f in run(&vm, &rule(bad)) {
@@ -892,25 +869,110 @@ mod tests {
         }
     }
 
-    fn ph<'a>(text: &'a str) -> Vec<&'a str> {
-        scan_placeholder_leftover(text).iter().map(|s| s.slice(text)).collect()
+    // ── breadth + length composition (ADR 0031) ─────────────────────────
+
+    /// Ten real book codes so a synthetic corpus can clear the 8-book breadth
+    /// gate and exercise dispersion.
+    const TEN_BOOKS: [&str; 10] =
+        ["GEN", "EXO", "LEV", "NUM", "DEU", "JOS", "JDG", "RUT", "1SA", "2SA"];
+
+    /// Corpus of `TEN_BOOKS`, each with 40 `a, b, c, d` filler verses (a big
+    /// `N_start(',')`); the first `carriers` books additionally carry three
+    /// `x,, y` verses. So `,,` is a tiny share of comma opportunities (frequency
+    /// stays ≈0) but its book-breadth is `carriers/10`.
+    fn commas_in_n_books(carriers: usize) -> VerseMap {
+        let mut vm = VerseMap::new();
+        for (bi, bk) in TEN_BOOKS.iter().enumerate() {
+            for v in 1..=40u16 {
+                vm.insert(sid(bk, v), "a, b, c, d".to_string());
+            }
+            if bi < carriers {
+                for v in 100..=102u16 {
+                    vm.insert(sid(bk, v), "x,, y".to_string());
+                }
+            }
+        }
+        vm
     }
 
     #[test]
-    fn placeholders_flagged() {
-        assert_eq!(ph("name [TODO] here"), vec!["[TODO]"]);
-        assert_eq!(ph("name [todo] here"), vec!["[todo]"]);
-        assert_eq!(ph("word [?] word"), vec!["[?]"]);
-        assert_eq!(ph("and ??? said"), vec!["???"]);
-        assert_eq!(ph("then *** happened"), vec!["***"]);
-        assert_eq!(ph("insert <...> here"), vec!["<...>"]);
+    fn breadth_alone_suppresses_a_widespread_low_frequency_pattern() {
+        // `,,` is a sliver of all `,` run-starts (frequency evidence ≈ 1) yet
+        // spans 8/10 books: dispersion alone establishes it as a convention.
+        // This is the `ayn ۔۔۔` shape the multiplicative model got wrong.
+        assert!(
+            run(&commas_in_n_books(8), &default_rule()).is_empty(),
+            "widespread low-frequency `,,` must suppress on breadth alone"
+        );
     }
 
     #[test]
-    fn placeholder_clean_text() {
-        assert!(ph("an ordinary verse, with [brackets] and a question?").is_empty());
-        // ?? (two) is the adjacency rule's business, not a placeholder.
-        assert!(ph("really?? now").is_empty());
+    fn a_concentrated_pattern_of_equal_count_still_surfaces() {
+        // Same total `,,` count as the spread case, but all in one book: low
+        // breadth (1/10) cannot establish it, so it stays anomalous. Isolates
+        // breadth from frequency (k and N_start are ~equal to the spread case).
+        let mut vm = commas_in_n_books(0); // filler only, no carriers
+        for v in 100..=123u16 {
+            vm.insert(sid("GEN", v), "x,, y".to_string()); // 24 `,,` in one book
+        }
+        assert!(
+            !run(&vm, &default_rule()).is_empty(),
+            "concentrated `,,` (1/10 books) must still surface"
+        );
+    }
+
+    #[test]
+    fn breadth_gate_is_off_below_min_books() {
+        // The identical widespread-low-frequency `,,`, but in a 5-book corpus
+        // (< the 8-book gate): dispersion is not consulted, so frequency alone
+        // governs and the rare pattern surfaces.
+        let mut vm = VerseMap::new();
+        for bk in &TEN_BOOKS[..5] {
+            for v in 1..=40u16 {
+                vm.insert(sid(bk, v), "a, b, c, d".to_string());
+            }
+            for v in 100..=102u16 {
+                vm.insert(sid(bk, v), "x,, y".to_string());
+            }
+        }
+        assert!(
+            !run(&vm, &default_rule()).is_empty(),
+            "below the book gate, breadth must not suppress — frequency governs"
+        );
+    }
+
+    #[test]
+    fn frequency_alone_suppresses_a_narrow_but_dominant_pattern() {
+        // Ten books, but `::` occurs in only ONE — where `:` appears *only* as
+        // `::` (observed rate 1.0). Frequency establishes it despite breadth
+        // 1/10. This is the `bji ::` shape the multiplicative model got wrong.
+        let mut vm = commas_in_n_books(0);
+        for v in 200..=239u16 {
+            vm.insert(sid("GEN", v), "word:: next".to_string());
+        }
+        let colon_findings: Vec<_> = run(&vm, &default_rule())
+            .into_iter()
+            .filter(|f| f.range.slice(vm.get(&f.sid).unwrap()).contains(':'))
+            .collect();
+        assert!(
+            colon_findings.is_empty(),
+            "narrow but dominant `::` must suppress on frequency alone: {colon_findings:?}"
+        );
+    }
+
+    #[test]
+    fn length_amplifies_a_longer_identical_run() {
+        // At equal frequency footing (one occurrence each, shared `!` pool) and
+        // no breadth (single book), a longer identical run scores strictly above
+        // a doubling — nothing but the ellipsis is legitimately tripled.
+        let mut v: Vec<(u16, String)> =
+            (1..=200).map(|i| (i, "why! really!".to_string())).collect(); // N_start('!')
+        v.push((900, "a!! b".to_string()));
+        v.push((901, "c!!!! d".to_string()));
+        let f = run(&book("GEN", &v), &rule(no_floor()));
+        let two = score_at(&f, sid("GEN", 900)).unwrap();
+        let four = score_at(&f, sid("GEN", 901)).unwrap();
+        assert!(four > two, "longer run scores higher: !!!!={four} > !!={two}");
     }
 
     // ── punctuation spacing anomaly ─────────────────────────────────────

@@ -17,7 +17,7 @@ pub mod diagnostics;
 pub mod grapheme;
 pub mod rule;
 pub mod script;
-mod shrinkage;
+mod evidence;
 pub mod sid;
 pub mod signals;
 pub mod span;
@@ -27,7 +27,7 @@ pub mod unicode;
 pub mod verse;
 
 pub use config::{
-    BracketBalanceConfig, CasingConfig, Config, ProportionalityConfig,
+    BracketBalanceConfig, CasingConfig, Config, ProportionalityConfig, PunctOnlyTokenConfig,
     PunctuationAdjacencyConfig, PunctuationSpacingConfig, RepeatedCharacterRunConfig,
 };
 pub use diagnostics::{Finding, FindingArgs, LengthRatioScope, RuleId, Severity};
@@ -262,12 +262,12 @@ mod tests {
             .collect()
     }
 
-    fn casing_on(threshold: f32, min_samples: u32) -> Config {
+    fn casing_on(emit_score_min: f32, confidence_z: f32) -> Config {
         let mut cfg = Config::v1_defaults();
         cfg.rules.insert(RuleId::SentenceInitialLowercase, true);
         cfg.casing = CasingConfig {
-            threshold,
-            min_samples,
+            emit_score_min,
+            confidence_z,
         };
         cfg
     }
@@ -453,8 +453,8 @@ mod tests {
         let mut on = Config::v1_defaults();
         on.rules.insert(RuleId::SentenceInitialLowercase, true);
         on.casing = CasingConfig {
-            threshold: 0.5,
-            min_samples: 1,
+            emit_score_min: 0.5,
+            confidence_z: 0.0,
         };
         assert!(
             analyze_with_config(&casing, None, &on)
@@ -471,8 +471,8 @@ mod tests {
         let mut cfg = Config::v1_defaults();
         cfg.rules.insert(RuleId::SentenceInitialLowercase, true);
         cfg.casing = CasingConfig {
-            threshold: 0.5,
-            min_samples: 1,
+            emit_score_min: 0.5,
+            confidence_z: 0.0,
         };
 
         let mut pairs: Vec<(&str, &str)> = (0..10).map(|_| ("v", "He spoke. Then he left.")).collect();
@@ -495,7 +495,7 @@ mod tests {
     /// against an empty/absent verse).
     #[test]
     fn incremental_findings_are_scoped_to_target() {
-        let cfg = casing_on(0.5, 1);
+        let cfg = casing_on(0.5, 0.0);
         let anomalous = ["He spoke. Then he left.", "He spoke. Then he left.", "He spoke. then he left."];
         let mut full = mk("GEN", &anomalous);
         full.extend(mk("EXO", &anomalous));
@@ -512,11 +512,12 @@ mod tests {
     }
 
     /// `Stats::remove_book` drops a book's contribution to the corpus
-    /// aggregate, not just its findings: here EXO's anomaly only clears
-    /// `min_samples` while GEN is cached, so removing GEN silences it.
+    /// aggregate, not just its findings: here EXO's anomaly clears the
+    /// dominance floor only while GEN's observations back it, so removing
+    /// GEN silences it.
     #[test]
     fn remove_book_drops_contribution_to_corpus_stats() {
-        let cfg = casing_on(0.5, 5);
+        let cfg = casing_on(0.7, 1.0);
         let gen_map = mk("GEN", &["He spoke. Then he left.", "He spoke. Then he left.", "He spoke. Then he left.", "He spoke. Then he left."]);
         let exo_anom = ["He spoke. Then.", "He spoke. then."];
         let mut full = gen_map.clone();
@@ -528,7 +529,7 @@ mod tests {
 
         stats.remove_book(BookId::from_str("GEN").unwrap());
         let (f_after, _) = analyze_stateful(&mk("EXO", &exo_anom), None, &cfg, Some(stats));
-        // EXO's own samples are below min_samples now, so it no longer fires.
+        // EXO's own few observations can't back a confident dominance now.
         assert!(f_after.iter().all(|f| f.code != RuleId::SentenceInitialLowercase));
     }
 
@@ -553,6 +554,44 @@ mod tests {
         assert_eq!(hits.len(), 1, "only the doubled run surfaces; single ZWSP (even space-adjacent) does not");
         assert_eq!(hits[0].sid.verse, 1);
         assert_eq!(hits[0].severity, Severity::Info);
+    }
+
+    /// Registry completeness: every declared `RuleId` must be produced by
+    /// exactly one runner registry. A rule that is implemented but never wired
+    /// in — the ADR-0031 P0, where `punct.adjacency-anomaly` ran in calibration
+    /// but was absent from `stateful_rules`, so it never fired through
+    /// `analyze` — surfaces here as a count of zero.
+    #[test]
+    fn every_rule_id_is_claimed_by_exactly_one_registry() {
+        use std::collections::BTreeMap;
+        let cfg = Config::v1_defaults();
+        // Registries are membership-complete (they include rules `v1_defaults`
+        // disables); config only feeds knobs, so any config yields the full set.
+        let pv = rule::per_verse_rules();
+        let tk = rule::token_rules();
+        let pr = rule::project_rules(&cfg);
+        let pt = rule::project_token_rules();
+        let sf = rule::stateful_rules(&cfg);
+        let mut seen: BTreeMap<RuleId, u32> = BTreeMap::new();
+        for id in pv
+            .iter()
+            .map(|r| r.id())
+            .chain(tk.iter().map(|r| r.id()))
+            .chain(pr.iter().map(|r| r.id()))
+            .chain(pt.iter().map(|r| r.id()))
+            .chain(sf.iter().map(|r| r.id()))
+        {
+            *seen.entry(id).or_default() += 1;
+        }
+        for &id in RuleId::ALL {
+            assert_eq!(
+                seen.get(&id).copied().unwrap_or(0),
+                1,
+                "{} must be wired into exactly one runner registry",
+                id.code()
+            );
+        }
+        assert_eq!(seen.len(), RuleId::ALL.len(), "a registry emitted an unknown id");
     }
 
     /// Guards the `RuleId` wire format: the serde rename must match

@@ -1,16 +1,20 @@
 //! Casing — sentence-initial lowercase, corpus-observed then judged.
 //!
-//! The first stateful rule (ADR 0017). It does **not** assert "a sentence
-//! starts uppercase" — casing is convention-dependent and ~24% of cased
-//! languages don't capitalise after a period reliably (calibration over 106
-//! projects). Instead it **observes** the corpus-wide
-//! `P(uppercase-follows | terminal glyph)` and flags a lowercase token only
-//! where that probability exceeds `threshold` — i.e. where this corpus's
-//! own punctuation and casing *disagree*. Nothing about terminals, quotes,
-//! or scripts is hardcoded; the gates are emergent:
+//! The first stateful rule (ADR 0017), recast on the shared evidence library
+//! (ADR 0035). It does **not** assert "a sentence starts uppercase" — casing
+//! is convention-dependent and ~24% of cased languages don't capitalise after
+//! a period reliably (calibration over 106 projects). Instead it **observes**
+//! the corpus-wide upper-vs-lower counts after each terminal glyph and flags
+//! a lowercase token only where the *uppercase-majority dominance* — the
+//! Wilson lower bound of `upper / total`, the same `dominance` verdict
+//! `punct.spacing-anomaly` uses — clears `emit_score_min`. This is
+//! confidence-monotone: 199/200 upper is judged (conservatively), and a
+//! handful of observations can't assert a convention at all, which retires
+//! the old hard `min_samples` cliff. Nothing about terminals, quotes, or
+//! scripts is hardcoded; the gates are emergent:
 //!
-//! - **Caseless ⇒ silent:** with no cased letters, no glyph reaches a high
-//!   `P(upper)`, so nothing clears the threshold.
+//! - **Caseless ⇒ silent:** with no cased letters, no glyph accumulates an
+//!   uppercase majority, so nothing clears the floor.
 //! - **Boundaries cross verses:** the scan walks each book's verses in
 //!   canonical order, carrying a pending terminal across verse seams
 //!   (verse-start is *not* a blanket non-boundary). Resets per book.
@@ -27,16 +31,19 @@
 //!   bare-only policy correctly skips. (Policing them is a future opt-in.)
 //!   This also subsumes the ellipsis case for free.
 //!
-//! Ships default-disabled. At the default `threshold` 0.99 the policed bare
-//! terminals are `.` (0.9998), `?` (0.9986), `!` (0.9926) — en_ulb yields
-//! ~6 genuine period anomalies plus ~12 benign `?`/`!` continuations
-//! (interjections, rhetoricals), acceptable for a whole Bible.
+//! Stats are aggregate-only and partitioned per book — per-glyph tallies and
+//! the cased-letter count, no stored sites (ADR 0024's shape); `judge`
+//! re-scans the supplied target verses to recover lowercase spans, so
+//! findings are scoped to the target like every other stateful rule.
+//!
+//! Ships default-disabled.
 
 use std::collections::BTreeMap;
 
 use crate::charclass::class_of;
 use crate::config::CasingConfig;
 use crate::diagnostics::{Finding, RuleId, Severity};
+use crate::evidence;
 use crate::grapheme::{self, GSpan};
 use crate::rule::StatefulRule;
 use crate::sid::Sid;
@@ -46,7 +53,7 @@ use crate::verse::{self, VerseMap};
 
 pub const SENTENCE_INITIAL_LOWERCASE: RuleId = RuleId::SentenceInitialLowercase;
 
-/// Counts behind `P(upper | glyph) = upper / total` for one terminal glyph.
+/// Counts behind the uppercase-majority dominance for one terminal glyph.
 #[derive(Debug, Clone, Default, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
@@ -55,43 +62,29 @@ struct Tally {
     total: u32,
 }
 
-/// A flag candidate: a lowercase token observed after a terminal glyph.
-/// Retained so `judge` can emit findings without re-scanning the text.
-///
-/// `sid` is a `Copy` [`Sid`] natively — building it costs nothing in the hot
-/// `reduce` loop and `judge` reads it back directly — yet it still crosses
-/// the wasm boundary as the canonical `"GEN 1:1"` **string** (via
-/// [`sid_as_string`] + the tsify `type` override), so `Stats` round-trips as
-/// a typed value the shell holds opaquely with no hand-rolled wrapper
-/// (ADR 0017). The string is materialised only when serde actually
-/// serialises — never on the native analysis path.
-#[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+/// A lowercase token observed after a bare terminal glyph — a flag
+/// candidate. Produced transiently by the shared book walk; never stored in
+/// stats.
 struct LowerSite {
-    #[cfg_attr(feature = "serde", serde(with = "crate::sid::sid_as_string"))]
-    #[cfg_attr(feature = "wasm", tsify(type = "string"))]
     sid: Sid,
-    /// Byte offsets of the lowercase grapheme within its verse.
     start: u32,
     end: u32,
     glyph: char,
 }
 
-/// One book's contribution: the per-glyph counts, the lowercase flag
-/// candidates, and the cased-letter tally that drives the emergent gate.
+/// One book's contribution: the per-glyph counts and the cased-letter tally
+/// that drives the emergent gate. Aggregates only — no sites.
 #[derive(Debug, Clone, Default, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 struct BookCasing {
     counts: BTreeMap<char, Tally>,
-    lower_sites: Vec<LowerSite>,
     cased_letters: u32,
     total_letters: u32,
 }
 
 /// Cached casing statistics, keyed by book code (e.g. `"GEN"`) so an edit
-/// supersedes only its book. The corpus-wide `P(upper | glyph)` is the sum
+/// supersedes only its book. The corpus-wide per-glyph counts are the sum
 /// of the per-book counts, derived at `judge` time.
 #[derive(Debug, Clone, Default, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -131,16 +124,13 @@ impl StatefulRule for SentenceInitialLowercase {
         let mut stats = CasingStats::default();
         let mut graphemes = Vec::new();
         for (book, verses) in verse::by_book(map) {
-            stats
-                .per_book
-                .insert(book.as_str().to_string(), reduce_book(&verses, &mut graphemes));
+            let (bc, _) = walk_book(&verses, &mut graphemes);
+            stats.per_book.insert(book.as_str().to_string(), bc);
         }
         RuleStats::Casing(stats)
     }
 
-    fn judge(&self, stats: &RuleStats, _target: &VerseMap) -> Vec<Finding> {
-        // Casing's candidate class is sparse, so it caches its lowercase sites
-        // and emits from them directly — no need to re-scan `target`.
+    fn judge(&self, stats: &RuleStats, target: &VerseMap) -> Vec<Finding> {
         let RuleStats::Casing(stats) = stats else {
             return Vec::new();
         };
@@ -156,7 +146,7 @@ impl StatefulRule for SentenceInitialLowercase {
             return Vec::new();
         }
 
-        // Corpus-wide P(upper | glyph): sum the per-book counts.
+        // Corpus-wide per-glyph counts: sum the per-book tallies.
         let mut corpus: BTreeMap<char, Tally> = BTreeMap::new();
         for b in stats.per_book.values() {
             for (glyph, t) in &b.counts {
@@ -166,42 +156,52 @@ impl StatefulRule for SentenceInitialLowercase {
             }
         }
 
+        let z = evidence::clamp_z(self.cfg.confidence_z);
+        let floor = f64::from(evidence::clamp_unit(self.cfg.emit_score_min));
+
+        // Re-scan the target to recover lowercase spans (aggregate-only
+        // state holds no sites). Verdicts stay corpus-wide via `corpus`.
         let mut out = Vec::new();
-        for b in stats.per_book.values() {
-            for site in &b.lower_sites {
+        let mut graphemes = Vec::new();
+        for (_book, verses) in verse::by_book(target) {
+            let (_, sites) = walk_book(&verses, &mut graphemes);
+            for site in sites {
                 let Some(t) = corpus.get(&site.glyph) else {
                     continue;
                 };
-                if t.total < self.cfg.min_samples {
-                    continue; // too few observations to trust the probability
+                // The uppercase-majority dominance is the site's anomaly
+                // evidence: how established the convention is that this
+                // lowercase token breaks. Confidence-monotone in the number
+                // of observations — a barely-seen glyph can't assert one.
+                let d = evidence::dominance(u64::from(t.upper), u64::from(t.total), z);
+                if d < floor {
+                    continue;
                 }
-                let p = t.upper as f32 / t.total as f32;
-                if p > self.cfg.threshold {
-                    out.push(Finding {
-                        sid: site.sid,
-                        code: SENTENCE_INITIAL_LOWERCASE,
-                        severity: Severity::Info,
-                        range: Span {
-                            start: site.start as usize,
-                            end: site.end as usize,
-                        },
-                        score: Some(p),
-                        args: None,
-                    });
-                }
+                out.push(Finding {
+                    sid: site.sid,
+                    code: SENTENCE_INITIAL_LOWERCASE,
+                    severity: Severity::Info,
+                    range: Span {
+                        start: site.start as usize,
+                        end: site.end as usize,
+                    },
+                    score: Some(d as f32),
+                    args: None,
+                });
             }
         }
-        out.sort_by_key(|f| (f.sid, f.range.start));
+        out.sort_by_key(|f| (f.sid, f.range.start, f.range.end));
         out
     }
 }
 
 /// Scan one book's verses in order, accumulating per-glyph counts and
-/// lowercase flag candidates. A terminal glyph found at a verse's tail is
-/// carried as `pending` across the seam to the next verse — verse
-/// boundaries are transparent to sentence detection.
-fn reduce_book(verses: &[(Sid, &str)], graphemes: &mut Vec<GSpan>) -> BookCasing {
+/// producing the lowercase flag candidates. A terminal glyph found at a
+/// verse's tail is carried as `pending` across the seam to the next verse —
+/// verse boundaries are transparent to sentence detection.
+fn walk_book(verses: &[(Sid, &str)], graphemes: &mut Vec<GSpan>) -> (BookCasing, Vec<LowerSite>) {
     let mut bc = BookCasing::default();
+    let mut sites = Vec::new();
     // A terminal glyph attached to a preceding letter, awaiting the next
     // letter (which may be in the next verse), plus whether any punctuation
     // intervened between the terminal and that letter.
@@ -243,7 +243,7 @@ fn reduce_book(verses: &[(Sid, &str)], graphemes: &mut Vec<GSpan>) -> BookCasing
                         if upper {
                             t.upper += 1;
                         } else if lower {
-                            bc.lower_sites.push(LowerSite {
+                            sites.push(LowerSite {
                                 sid: *sid,
                                 start: off as u32,
                                 end: (off + g.len()) as u32,
@@ -272,7 +272,7 @@ fn reduce_book(verses: &[(Sid, &str)], graphemes: &mut Vec<GSpan>) -> BookCasing
         }
         // `pending` carries to the next verse; `prev_letter` resets above.
     }
-    bc
+    (bc, sites)
 }
 
 #[cfg(test)]
@@ -280,11 +280,11 @@ mod tests {
     use super::*;
     use crate::sid::BookId;
 
-    fn rule(threshold: f32, min_samples: u32) -> SentenceInitialLowercase {
+    fn rule(emit_score_min: f32, confidence_z: f32) -> SentenceInitialLowercase {
         SentenceInitialLowercase {
             cfg: CasingConfig {
-                threshold,
-                min_samples,
+                emit_score_min,
+                confidence_z,
             },
         }
     }
@@ -312,7 +312,7 @@ mod tests {
         let mut verses: Vec<(u16, &str)> = (1..=10).map(|v| (v, "He spoke. Then he left.")).collect();
         verses.push((11, "He spoke. then he left."));
         let vm = book("GEN", &verses);
-        let f = run(&vm, &rule(0.9, 1));
+        let f = run(&vm, &rule(0.5, 1.96));
         assert_eq!(f.len(), 1);
         assert_eq!(f[0].sid, sid("GEN", 1, 11));
         assert_eq!(f[0].code, SENTENCE_INITIAL_LOWERCASE);
@@ -328,7 +328,7 @@ mod tests {
         verses.push((11, "He spoke."));
         verses.push((12, "then he left."));
         let vm = book("GEN", &verses);
-        let f = run(&vm, &rule(0.9, 1));
+        let f = run(&vm, &rule(0.5, 1.96));
         assert_eq!(f.len(), 1);
         assert_eq!(f[0].sid, sid("GEN", 1, 12)); // anchored in the next verse
     }
@@ -338,44 +338,83 @@ mod tests {
         // No terminal at the seam ⇒ the next verse's lowercase start is a
         // genuine continuation, not a boundary.
         let vm = book("GEN", &[(1, "He spoke"), (2, "and then he left.")]);
-        assert!(run(&vm, &rule(0.0, 1)).is_empty());
+        assert!(run(&vm, &rule(0.0, 0.0)).is_empty());
     }
 
     #[test]
     fn caseless_script_is_silent() {
-        // Devanagari has no case; no glyph can reach a high P(upper), and the
-        // explicit cased-letters gate is zero either way.
+        // Devanagari has no case; no glyph accumulates an uppercase majority,
+        // and the explicit cased-letters gate is zero either way.
         let vm = book(
             "GEN",
             &[(1, "उसने कहा। वे चले गए।"), (2, "फिर वह चला गया।")],
         );
-        assert!(run(&vm, &rule(0.0, 1)).is_empty());
+        assert!(run(&vm, &rule(0.0, 0.0)).is_empty());
     }
 
     #[test]
     fn low_precision_glyph_is_not_flagged() {
         // A glyph followed by lowercase as often as uppercase is no boundary;
-        // at threshold 0.9 its ~0.5 precision never fires.
+        // its dominance sits near 0.5 and never clears a meaningful floor.
         let verses: Vec<(u16, &str)> = (1..=10)
             .map(|v| if v % 2 == 0 { (v, "a, Bee") } else { (v, "a, bee") })
             .collect();
         let vm = book("GEN", &verses);
-        assert!(run(&vm, &rule(0.9, 1)).is_empty());
+        assert!(run(&vm, &rule(0.9, 1.96)).is_empty());
     }
 
     #[test]
-    fn glyph_below_min_samples_is_not_judged() {
-        // One lowercase-after-period site, but only a couple of observations
-        // of "." — too few to trust, so min_samples suppresses it.
-        let vm = book("GEN", &[(1, "A. b")]);
-        assert!(run(&vm, &rule(0.0, 5)).is_empty());
+    fn sparse_glyph_cannot_assert_a_convention() {
+        // One lowercase-after-period site with almost no observations of "."
+        // — the Wilson-shrunk dominance stays low, replacing the old hard
+        // `min_samples` cliff with the same smooth confidence treatment the
+        // spacing rule uses.
+        let vm = book("GEN", &[(1, "A. B. c")]);
+        assert!(run(&vm, &rule(0.9, 1.96)).is_empty());
+    }
+
+    #[test]
+    fn dominance_is_confidence_monotone_in_corpus_size() {
+        // The same 100%-upper convention judged with 10× the evidence scores
+        // strictly higher — more data, more confidence, never less.
+        let small: Vec<(u16, &str)> = (1..=10).map(|v| (v, "He spoke. Then left.")).collect();
+        let large: Vec<(u16, &str)> = (1..=100).map(|v| (v, "He spoke. Then left.")).collect();
+        let mut small = small;
+        small.push((900, "He spoke. then he left."));
+        let mut large = large;
+        large.push((900, "He spoke. then he left."));
+        let r = rule(0.0, 1.96);
+        let fs = run(&book("GEN", &small), &r);
+        let fl = run(&book("GEN", &large), &r);
+        assert_eq!((fs.len(), fl.len()), (1, 1));
+        assert!(fl[0].score.unwrap() > fs[0].score.unwrap());
+    }
+
+    #[test]
+    fn judge_is_scoped_to_the_target() {
+        // Corpus-wide stats, one edited book as target: findings come only
+        // from the target's verses (the same contract as every other
+        // stateful rule).
+        let r = rule(0.5, 1.96);
+        let mut gen_verses: Vec<(u16, &str)> =
+            (1..=10).map(|v| (v, "He spoke. Then he left.")).collect();
+        gen_verses.push((11, "He spoke. then he left."));
+        let gen_map = book("GEN", &gen_verses);
+        let exo_map = book("EXO", &[(1, "He slept. then he woke.")]);
+        let mut full = gen_map.clone();
+        full.extend(exo_map.clone());
+
+        let stats = r.reduce(&full, None);
+        let scoped = r.judge(&stats, &exo_map);
+        assert_eq!(scoped.len(), 1);
+        assert!(scoped.iter().all(|f| f.sid.book.as_str() == "EXO"));
     }
 
     #[test]
     fn editing_a_book_supersedes_its_prior_stats() {
-        // Reduce a clean book, then a corrected edit; merging supersedes the
+        // Reduce a dirty book, then a corrected edit; merging supersedes the
         // book so a previously-flagged anomaly disappears.
-        let r = rule(0.9, 1);
+        let r = rule(0.5, 1.96);
         let mut verses: Vec<(u16, &str)> = (1..=10).map(|v| (v, "He spoke. Then he left.")).collect();
         verses.push((11, "He spoke. then he left."));
         let dirty = book("GEN", &verses);

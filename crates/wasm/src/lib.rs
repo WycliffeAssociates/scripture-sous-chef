@@ -36,17 +36,17 @@ pub struct ProportionalityOverrides {
 }
 
 /// Partial overrides for `case.sentence-initial-lowercase`'s knobs. Omitted
-/// fields keep core's calibrated defaults (`threshold` 0.99,
-/// `min_samples` 200).
+/// fields keep core's calibrated defaults (`emit_score_min` 0.98,
+/// `confidence_z` 1.96).
 #[derive(Deserialize, Tsify, Default)]
 #[tsify(from_wasm_abi)]
 pub struct CasingOverrides {
     #[serde(default)]
     #[tsify(optional)]
-    pub threshold: Option<f32>,
+    pub emit_score_min: Option<f32>,
     #[serde(default)]
     #[tsify(optional)]
-    pub min_samples: Option<u32>,
+    pub confidence_z: Option<f32>,
 }
 
 /// Partial overrides for `punct.adjacency-anomaly`'s knobs. Omitted fields
@@ -93,6 +93,25 @@ pub struct RepeatedCharacterRunOverrides {
     pub word_recurrence_k: Option<f32>,
     #[serde(default)]
     #[tsify(optional)]
+    pub confidence_z: Option<f32>,
+    #[serde(default)]
+    #[tsify(optional)]
+    pub emit_score_min: Option<f32>,
+}
+
+/// Partial overrides for `lex.punct-only-token`'s corpus-relative score.
+/// Omitted fields keep core's calibrated defaults (ADR 0030).
+#[derive(Deserialize, Tsify, Default)]
+#[tsify(from_wasm_abi)]
+pub struct PunctOnlyTokenOverrides {
+    #[serde(default)]
+    #[tsify(optional)]
+    pub convention_rate_per_10k: Option<f32>,
+    #[serde(default)]
+    #[tsify(optional)]
+    pub confidence_z: Option<f32>,
+    #[serde(default)]
+    #[tsify(optional)]
     pub emit_score_min: Option<f32>,
 }
 
@@ -122,6 +141,9 @@ pub struct SousConfig {
     #[serde(default)]
     #[tsify(optional)]
     pub repeated_character_run: Option<RepeatedCharacterRunOverrides>,
+    #[serde(default)]
+    #[tsify(optional)]
+    pub punct_only_token: Option<PunctOnlyTokenOverrides>,
 }
 
 /// A finding as the editor sees it: UTF-16 ranges; `code`/`severity` are
@@ -171,11 +193,11 @@ fn build_config(config: Option<SousConfig>) -> Config {
             }
         }
         if let Some(cas) = c.casing {
-            if let Some(t) = cas.threshold {
-                cfg.casing.threshold = t;
+            if let Some(v) = cas.emit_score_min {
+                cfg.casing.emit_score_min = v;
             }
-            if let Some(m) = cas.min_samples {
-                cfg.casing.min_samples = m;
+            if let Some(v) = cas.confidence_z {
+                cfg.casing.confidence_z = v;
             }
         }
         if let Some(p) = c.punctuation_adjacency {
@@ -204,8 +226,22 @@ fn build_config(config: Option<SousConfig>) -> Config {
             if let Some(v) = r.word_recurrence_k {
                 cfg.repeated_character_run.word_recurrence_k = v;
             }
+            if let Some(v) = r.confidence_z {
+                cfg.repeated_character_run.confidence_z = v;
+            }
             if let Some(v) = r.emit_score_min {
                 cfg.repeated_character_run.emit_score_min = v;
+            }
+        }
+        if let Some(p) = c.punct_only_token {
+            if let Some(v) = p.convention_rate_per_10k {
+                cfg.punct_only_token.convention_rate_per_10k = v;
+            }
+            if let Some(v) = p.confidence_z {
+                cfg.punct_only_token.confidence_z = v;
+            }
+            if let Some(v) = p.emit_score_min {
+                cfg.punct_only_token.emit_score_min = v;
             }
         }
     }
@@ -303,7 +339,7 @@ mod tests {
             // DuplicateWord ships default-off; enabling it exercises the rules map.
             rules: Some([(RuleId::DuplicateWord, true)].into_iter().collect()),
             proportionality: Some(ProportionalityOverrides { z_threshold: Some(2.5), min_verses: Some(10) }),
-            casing: Some(CasingOverrides { threshold: Some(0.8), min_samples: Some(5) }),
+            casing: Some(CasingOverrides { emit_score_min: Some(0.8), confidence_z: Some(1.5) }),
             punctuation_adjacency: Some(PunctuationAdjacencyOverrides {
                 convention_rate: Some(0.4),
                 confidence_z: Some(2.1),
@@ -316,15 +352,21 @@ mod tests {
             repeated_character_run: Some(RepeatedCharacterRunOverrides {
                 convention_rate_per_10k: Some(3.0),
                 word_recurrence_k: Some(7.0),
+                confidence_z: Some(1.5),
                 emit_score_min: Some(0.8),
+            }),
+            punct_only_token: Some(PunctOnlyTokenOverrides {
+                convention_rate_per_10k: Some(4.0),
+                confidence_z: Some(1.2),
+                emit_score_min: Some(0.9),
             }),
         }));
 
         assert!(cfg.is_enabled(RuleId::DuplicateWord));
         assert_eq!(cfg.proportionality.z_threshold, 2.5);
         assert_eq!(cfg.proportionality.min_verses, 10);
-        assert_eq!(cfg.casing.threshold, 0.8);
-        assert_eq!(cfg.casing.min_samples, 5);
+        assert_eq!(cfg.casing.emit_score_min, 0.8);
+        assert_eq!(cfg.casing.confidence_z, 1.5);
         assert_eq!(cfg.punctuation_adjacency.convention_rate, 0.4);
         assert_eq!(cfg.punctuation_adjacency.confidence_z, 2.1);
         assert_eq!(cfg.punctuation_adjacency.emit_score_min, 0.7);
@@ -332,7 +374,11 @@ mod tests {
         assert_eq!(cfg.punctuation_spacing.confidence_z, 2.2);
         assert_eq!(cfg.repeated_character_run.convention_rate_per_10k, 3.0);
         assert_eq!(cfg.repeated_character_run.word_recurrence_k, 7.0);
+        assert_eq!(cfg.repeated_character_run.confidence_z, 1.5);
+        assert_eq!(cfg.punct_only_token.confidence_z, 1.2);
         assert_eq!(cfg.repeated_character_run.emit_score_min, 0.8);
+        assert_eq!(cfg.punct_only_token.convention_rate_per_10k, 4.0);
+        assert_eq!(cfg.punct_only_token.emit_score_min, 0.9);
     }
 
     /// The corpus-relative `punct.spacing-anomaly` survives an incremental,

@@ -73,15 +73,29 @@ impl PerVerseRule for ControlChars {
 }
 
 pub fn scan_control_chars(text: &str) -> Vec<Span> {
-    let mut spans = Vec::new();
+    // One finding per maximal run of the *same* control char: damaged files
+    // carry padding runs (NUL×40 at a verse end), and per-char findings turn
+    // one damaged verse into dozens of rows without adding information.
+    let mut spans: Vec<Span> = Vec::new();
+    let mut run: Option<(char, Span)> = None;
     for (i, c) in text.char_indices() {
         let flagged = (is_c0_control(c) && c != '\t' && c != '\n') || is_c1_control(c);
         if flagged {
-            spans.push(Span {
-                start: i,
-                end: i + c.len_utf8(),
-            });
+            match &mut run {
+                Some((rc, span)) if *rc == c && span.end == i => span.end = i + c.len_utf8(),
+                _ => {
+                    if let Some((_, span)) = run.take() {
+                        spans.push(span);
+                    }
+                    run = Some((c, Span { start: i, end: i + c.len_utf8() }));
+                }
+            }
+        } else if let Some((_, span)) = run.take() {
+            spans.push(span);
         }
+    }
+    if let Some((_, span)) = run {
+        spans.push(span);
     }
     spans
 }
@@ -209,6 +223,58 @@ pub fn scan_invalid_codepoint(text: &str) -> Vec<Span> {
                 start: i,
                 end: i + c.len_utf8(),
             });
+        }
+    }
+    spans
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Replacement run
+// ─────────────────────────────────────────────────────────────────────
+
+/// A run of three or more ASCII `?` — the classic substitution glyph a lossy
+/// legacy-encoding conversion leaves where whole words died. U+FFFD is the
+/// modern equivalent and belongs to `hyg.invalid-codepoint`; a `?`-run is
+/// valid Unicode, so only its shape gives it away. Corpus recurrence must
+/// never excuse it (destroyed text recurs like a convention — my_juds carries
+/// ~1,000 such chunks), which is why this is deterministic hygiene and the
+/// corpus-relative punctuation rules exclude the pattern from candidacy
+/// rather than each half-owning it. Real `??`/`???` rhetoric exists at run
+/// length 2 and is left to `punct.adjacency-anomaly`'s statistics; genuine
+/// triple question marks in scripture body text are not an attested
+/// convention in any surveyed corpus.
+pub const REPLACEMENT_RUN: RuleId = RuleId::ReplacementRun;
+
+pub struct ReplacementRun;
+
+impl PerVerseRule for ReplacementRun {
+    fn id(&self) -> RuleId {
+        REPLACEMENT_RUN
+    }
+    fn severity(&self) -> Severity {
+        Severity::Warning
+    }
+    fn check(&self, text: &str) -> Vec<Span> {
+        scan_replacement_run(text)
+    }
+}
+
+pub fn scan_replacement_run(text: &str) -> Vec<Span> {
+    const MIN_RUN: usize = 3;
+    let mut spans = Vec::new();
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'?' {
+            let start = i;
+            while i < bytes.len() && bytes[i] == b'?' {
+                i += 1;
+            }
+            if i - start >= MIN_RUN {
+                spans.push(Span { start, end: i });
+            }
+        } else {
+            i += 1;
         }
     }
     spans
@@ -425,6 +491,37 @@ mod tests {
     #[test]
     fn control_chars_excludes_tab_and_newline() {
         assert!(scan_control_chars("foo\tbar\nbaz").is_empty());
+    }
+
+    #[test]
+    fn control_char_run_is_one_finding() {
+        // NUL padding at a damaged verse end: one finding for the run, not
+        // one per char. A different control char breaks the run; a gap does
+        // too.
+        let text = "word\u{0}\u{0}\u{0}\u{0}";
+        let f = scan_control_chars(text);
+        assert_eq!(f.len(), 1);
+        assert_eq!((f[0].start, f[0].end), (4, 8));
+        let f = scan_control_chars("a\u{0}\u{0}\u{7}\u{7}b\u{0}c");
+        assert_eq!(f.len(), 3);
+    }
+
+    #[test]
+    fn replacement_run_flags_three_plus_question_marks() {
+        let f = scan_replacement_run("word ????? word ??? end");
+        assert_eq!(f.len(), 2);
+        assert_eq!((f[0].start, f[0].end), (5, 10));
+        // Mid-word and punctuation-adjacent runs flag too — damage doesn't
+        // respect token boundaries.
+        assert_eq!(scan_replacement_run("wo???rd").len(), 1);
+    }
+
+    #[test]
+    fn replacement_run_leaves_short_and_real_questions_alone() {
+        // `?` and `??` are real interrogatives (or adjacency's business).
+        assert!(scan_replacement_run("what? really?? sure").is_empty());
+        // Non-ASCII question marks are not the lossy-conversion glyph.
+        assert!(scan_replacement_run("؟؟؟").is_empty());
     }
 
     #[test]
