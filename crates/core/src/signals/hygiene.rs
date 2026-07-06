@@ -97,8 +97,8 @@ pub fn scan_control_chars(text: &str) -> Vec<Span> {
 /// **The orthography-dependent zero-width characters are not judged here.**
 /// U+200B ZERO WIDTH SPACE and the joiners U+200C ZWNJ / U+200D ZWJ are each
 /// legitimate in some scripts and a slip in others; a fixed predicate cannot
-/// tell a convention from an error. U+200B's *redundant* placements (a doubled
-/// run, or one beside a U+0020 SPACE) are flagged separately by
+/// tell a convention from an error. A *doubled* U+200B run (line-break redundant)
+/// is flagged separately by
 /// [`uni.redundant-zero-width-space`](crate::signals::zero_width_space) at Info;
 /// the joiners are simply skipped for now, awaiting their own corpus-relative
 /// rule. (They were previously flagged via a Latin-centric script allow-list,

@@ -55,6 +55,13 @@ fn main() {
             punct_calib(Path::new(t));
             return;
         }
+        // Repeated-character-run signal exploration: per-finding TSV with the
+        // candidate corpus-relative signals (word frequency, run recurrence,
+        // corpus base rate) on stdout; per-corpus summary on stderr.
+        [flag, t] if flag == "--repeat" => {
+            repeat_calib(Path::new(t));
+            return;
+        }
         [t] => {
             batch(Path::new(t));
             return;
@@ -179,7 +186,7 @@ fn batch(dir: &Path) {
 
 /// Redundant-ZWSP report (ADR 0027). The rule is deterministic and default-on, so
 /// there is nothing to calibrate — this just reports how much U+200B a corpus
-/// carries, how many runs are redundant (doubled or U+0020-adjacent), and confirms
+/// carries, how many runs are redundant (doubled U+200B), and confirms
 /// deterministic hygiene still flags no U+200B.
 fn zwsp_calib(dir: &Path) {
     let target = load_corpus(dir);
@@ -205,6 +212,112 @@ fn zwsp_calib(dir: &Path) {
             let n = t.get(fd.range.start..fd.range.end).unwrap_or("").matches('\u{200B}').count();
             println!("  {}  run of {n} U+200B", fd.sid);
         }
+    }
+}
+
+/// Repeated-character-run signal exploration. For every finding the shipped
+/// stateless rule produces, emit the candidate corpus-relative signals so we
+/// can decide how to score:
+///   - the containing word and its corpus frequency (hapax or not),
+///   - how many tokens / distinct word types contain the *same* cluster run,
+///   - the corpus base rate of 3+ letter runs (any cluster).
+fn repeat_calib(dir: &Path) {
+    use std::collections::{HashMap, HashSet};
+
+    use ssc_core::grapheme::segment;
+    use ssc_core::signals::lexical::scan_repeated_character_run;
+    use ssc_core::token::tokenize;
+
+    let corpus = dir.file_name().unwrap().to_string_lossy().to_string();
+    let target = load_corpus(dir);
+
+    // Corpus pass: word frequencies (case-folded) and run recurrence.
+    let mut word_freq: HashMap<String, usize> = HashMap::new();
+    let mut cluster_tokens: HashMap<String, usize> = HashMap::new();
+    let mut cluster_types: HashMap<String, HashSet<String>> = HashMap::new();
+    let mut total_tokens = 0usize;
+    let mut tokens_with_run = 0usize;
+    let mut graphemes = Vec::new();
+
+    for text in target.values() {
+        for tok in tokenize(text) {
+            let word = tok.span.slice(text);
+            let folded = word.to_lowercase();
+            *word_freq.entry(folded.clone()).or_default() += 1;
+            total_tokens += 1;
+            graphemes.clear();
+            segment(word, &mut graphemes);
+            let runs = scan_repeated_character_run(word, &graphemes);
+            if runs.is_empty() {
+                continue;
+            }
+            tokens_with_run += 1;
+            let mut seen = HashSet::new();
+            for r in &runs {
+                // Cluster = first grapheme of the run, folded.
+                let run_str = r.slice(word);
+                let cluster = run_str
+                    .graphemes_first()
+                    .to_lowercase();
+                if seen.insert(cluster.clone()) {
+                    *cluster_tokens.entry(cluster.clone()).or_default() += 1;
+                    cluster_types.entry(cluster).or_default().insert(folded.clone());
+                }
+            }
+        }
+    }
+
+    // Finding pass: the rule as shipped, joined to its containing token.
+    let findings = analyze(&target, None);
+    let repeat: Vec<_> = findings
+        .iter()
+        .filter(|f| f.code == RuleId::RepeatedCharacterRun)
+        .collect();
+
+    println!("corpus\tsid\tword\tcluster\trun_len\tword_freq\tsame_run_tokens\tsame_run_types\ttokens_with_run\ttotal_tokens");
+    for f in &repeat {
+        let text = &target[&f.sid];
+        let word = tokenize(text)
+            .iter()
+            .find(|t| t.span.start <= f.range.start && f.range.end <= t.span.end)
+            .map(|t| t.span.slice(text).to_string())
+            .unwrap_or_default();
+        let run_str = f.range.slice(text);
+        graphemes.clear();
+        segment(run_str, &mut graphemes);
+        let run_len = graphemes.len();
+        let cluster = run_str.graphemes_first().to_lowercase();
+        let folded = word.to_lowercase();
+        println!(
+            "{corpus}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+            f.sid,
+            word,
+            cluster,
+            run_len,
+            word_freq.get(&folded).copied().unwrap_or(0),
+            cluster_tokens.get(&cluster).copied().unwrap_or(0),
+            cluster_types.get(&cluster).map(|s| s.len()).unwrap_or(0),
+            tokens_with_run,
+            total_tokens,
+        );
+    }
+    eprintln!(
+        "{corpus}: {} verses, {} tokens, {} tokens-with-run ({:.2}/10k), {} findings",
+        target.len(),
+        total_tokens,
+        tokens_with_run,
+        tokens_with_run as f64 * 10_000.0 / total_tokens.max(1) as f64,
+        repeat.len()
+    );
+}
+
+trait GraphemesFirst {
+    fn graphemes_first(&self) -> &str;
+}
+impl GraphemesFirst for str {
+    fn graphemes_first(&self) -> &str {
+        use unicode_segmentation::UnicodeSegmentation;
+        self.graphemes(true).next().unwrap_or("")
     }
 }
 

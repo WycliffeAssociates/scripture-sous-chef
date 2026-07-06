@@ -80,10 +80,9 @@ in any script, so they flag unconditionally.
 **The orthography-dependent zero-width chars are not judged here.** U+200B ZERO
 WIDTH SPACE (ADR 0023) and the joiners ZWNJ (`U+200C`) / ZWJ (`U+200D`) are each
 legitimate in some scripts and a slip in others — a fixed predicate can't tell a
-convention from a slip. ZWSP's *redundant* placements (a doubled run, or one
-beside a U+0020 SPACE) are flagged by [`uni.redundant-zero-width-space`](uni.md)
-at Info; the joiners are skipped entirely for now, awaiting their own
-corpus-relative rule.
+convention from a slip. A *doubled* U+200B run (line-break redundant) is flagged
+by [`uni.redundant-zero-width-space`](uni.md) at Info; the joiners are skipped
+entirely for now, awaiting their own corpus-relative rule.
 
 **Config** — On/off only.
 

@@ -15,8 +15,8 @@
 
 /// ZERO WIDTH SPACE — an orthography-dependent word/line-break aid (Khmer,
 /// Lao, Thai, Myanmar, optionally Japanese), not inherently misuse. Deterministic
-/// hygiene does not judge it; only its *redundant* placements (a doubled run, or
-/// one beside a U+0020 SPACE) are flagged, by `uni.redundant-zero-width-space`.
+/// hygiene does not judge it; only a *doubled* run (line-break redundant) is
+/// flagged, by `uni.redundant-zero-width-space`.
 pub const ZWSP: char = '\u{200B}';
 /// ZERO WIDTH NON-JOINER — legitimate in some Indic / Arabic scripts.
 pub const ZWNJ: char = '\u{200C}';

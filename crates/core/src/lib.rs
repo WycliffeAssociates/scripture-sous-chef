@@ -518,15 +518,16 @@ mod tests {
     }
 
     /// `uni.redundant-zero-width-space` runs through `analyze` as a default-on
-    /// per-verse rule: a doubled or space-adjacent U+200B surfaces at Info, while
-    /// a legitimate in-token word-break U+200B (letter↔letter) stays silent.
+    /// per-verse rule: a doubled U+200B run surfaces at Info, while a single
+    /// U+200B — even space-adjacent — and a legitimate in-token word break stay
+    /// silent (only exact duplicates are provably redundant).
     #[test]
     fn redundant_zero_width_space_runs_through_analyze() {
         const ZW: &str = "\u{200B}";
         let gen_id = BookId::from_str("GEN").unwrap();
         let full: VerseMap = [
-            (Sid::new(gen_id, 1, 1), format!("word{ZW}{ZW}next")), // doubled → redundant
-            (Sid::new(gen_id, 1, 2), format!("word {ZW}next")),    // space-adjacent → redundant
+            (Sid::new(gen_id, 1, 1), format!("word{ZW}{ZW}next")), // doubled run → redundant
+            (Sid::new(gen_id, 1, 2), format!("word {ZW}next")),    // single, space-adjacent → NOT flagged
             (Sid::new(gen_id, 1, 3), format!("ក{ZW}ក")),          // Khmer word break → silent
         ]
         .into_iter()
@@ -534,10 +535,9 @@ mod tests {
 
         let f = analyze(&full, None);
         let hits: Vec<_> = f.iter().filter(|f| f.code == RuleId::RedundantZeroWidthSpace).collect();
-        assert_eq!(hits.len(), 2, "the doubled and space-adjacent runs surface; the word break doesn't");
-        assert!(hits.iter().all(|f| f.severity == Severity::Info));
-        assert!(hits.iter().any(|f| f.sid.verse == 1) && hits.iter().any(|f| f.sid.verse == 2));
-        assert!(hits.iter().all(|f| f.sid.verse != 3), "letter↔letter word break stays silent");
+        assert_eq!(hits.len(), 1, "only the doubled run surfaces; single ZWSP (even space-adjacent) does not");
+        assert_eq!(hits[0].sid.verse, 1);
+        assert_eq!(hits[0].severity, Severity::Info);
     }
 
     /// Guards the `RuleId` wire format: the serde rename must match

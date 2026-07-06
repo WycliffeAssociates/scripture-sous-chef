@@ -402,3 +402,30 @@ calibration note (ZWSP section marked superseded). Playground reconciled:
 group, scratch bin + its Cargo entry removed. **160 core + 2 wasm tests pass;
 `cargo build --workspace --all-targets` and clippy clean; playground
 `cargo check --features ssr` clean.**
+
+### Review fix — narrow to duplicate runs only (spec bug)
+
+Review caught a **P1 spec bug**: U+0020 adjacency is *not* universally redundant.
+LB8 breaks after `ZW` (absorbing following spaces) with precedence over LB13, so a
+single U+200B can add a break the space alone doesn't — e.g. `word␠<ZWSP>/next`
+breaks before `/` (LB8), but removing the U+200B leaves `␠/`, which LB13
+*prohibits* breaking before even after a space. So the space-adjacency trigger
+could flag a *meaningful* control.
+
+- **Dropped the U+0020-adjacency trigger.** `scan_redundant_zwsp` now flags only a
+  **maximal run of ≥ 2** consecutive U+200B — the one placement redundant
+  regardless of surrounding line-break classes. Proving space-adjacency redundant
+  would need LB-class analysis; out of scope. (Reviewer's recommended option.)
+- **Consequence:** the two Malagasy findings (a single U+200B before a space) are
+  given up along with the trigger; Portuguese and Dogri (doubled) are still owned.
+  Acceptable — single space-adjacent controls are exactly the not-provably-redundant
+  case, and the retired scorer only ever caught them as *rarity*, not error.
+- Also fixed (review's minor doc points): ADR 0023 `Status` kept **Accepted** with
+  an amendment note (Decision 1 stands; scorer retired by 0027) — not the
+  out-of-vocabulary "Superseded in part"; **NBSP** no longer miscalled
+  zero-width/format (it is a no-break space); **LB13** described as *prohibiting*
+  (not permitting) breaks before certain punctuation; "semantic no-op" → "line-break
+  redundant" throughout.
+- No binding regen needed (RuleId union unchanged). Tests updated
+  (`single_zwsp_is_never_flagged` now covers the LB13 case + space-adjacent +
+  edges). **157 core + 2 wasm tests pass; workspace build + clippy clean.**

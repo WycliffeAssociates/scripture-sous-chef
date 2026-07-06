@@ -28,11 +28,16 @@ the scorer wasn't earning its complexity:
   breaks around punctuation, digits, in-token — LB13 etc.). So the scorer could
   only ever measure *rarity-for-this-corpus*, which is not the same as *error*.
 
-The **ablation gate** (remove every deterministic-owned run — length ≥ 2 or
+The **ablation gate** (remove every candidate-redundant run — length ≥ 2 or
 U+0020-adjacent — then recompute the scorer on the filtered text) was decisive:
 
-- Portuguese / Malagasy / Dogri → **zero** statistical survivors: a deterministic
-  redundancy check owns 100% of every demonstrated artifact.
+- Portuguese / Malagasy / Dogri → **zero** statistical survivors. (Portuguese and
+  Dogri are *doubled* runs; Malagasy is a *single* U+200B before a space. The
+  shipped rule below was narrowed to **duplicate runs only** after review found
+  space-adjacency not provably redundant — so it owns the Portuguese and Dogri
+  artifacts and **gives up** the two Malagasy ones. That is acceptable: those two
+  are single space-adjacent controls, exactly the not-*provably*-redundant case,
+  and the scorer only ever "caught" them as *rarity*, not error.)
 - The surviving high scorers in Khmer/Lao/Thai were **entirely** placements we
   would deliberately not police (verse edges; adjacency to a *non*-U+200B control;
   adjacency to punctuation — all spec-permitted) **or** demonstrable false
@@ -52,25 +57,27 @@ output was spec-permitted variation and false positives.
    `ZwspContext` / grapheme-context machinery, its `v1_defaults` disable, and its
    tests. Pre-alpha, no shim, no parked config/stats machinery.
 2. **Add `uni.redundant-zero-width-space`** — per-verse, `Severity::Info`,
-   **default-on**, no knobs, no score. It flags each *maximal run of consecutive
-   U+200B* that is redundant:
-   - the run length is ≥ 2 (a second adjacent `ZW` is idempotent — UAX #14 LB7/LB8
-     give one break at `ZW`, and no orthography doubles it on purpose); **or**
-   - the scalar immediately before/after the run is **U+0020 SPACE** (the space
-     already provides the break opportunity).
-   One finding spans the **whole run**; the finding means *this run contains
-   redundant copies*, not that the position is wrong — a single U+200B there may
-   still be a meaningful word/line-break aid.
-3. **Deliberately not flagged**, because each would over-reach a "redundant
-   regardless of language" bar:
-   - **Verse edges** (leading/trailing U+200B). A `VerseMap` value is not
-     contractually a complete layout unit — verses split mid-sentence and get
-     concatenated, so an edge U+200B can be a real inter-verse break.
-   - **Adjacency to a non-U+200B zero-width/format char** (NBSP, ZWJ, ZWNJ, WJ,
-     bidi). Those are nonbreaking or behave differently; only an adjacent *U+200B*
-     is the safe duplicate case.
-   - **In-token and punctuation-/digit-adjacent placements** — exactly the breaks
-     UAX #14 permits; spec-sanctioned, not redundant.
+   **default-on**, no knobs, no score. It flags each **maximal run of two or more
+   consecutive U+200B**: repeats are idempotent (UAX #14 LB8 breaks after `ZW`, so
+   adjacent controls give break opportunities at the same zero-width position), and
+   no orthography doubles it on purpose. One finding spans the **whole run**; it
+   means *this run holds redundant copies*, not that the position is wrong — a
+   single U+200B there may still be a meaningful word/line-break aid, so the fix is
+   to collapse to one, not necessarily delete.
+3. **Only exact-duplicate runs — no single-U+200B rule.** In particular, U+0020
+   SPACE adjacency is **not** a redundancy proof and is *not* flagged. LB8 breaks
+   after `ZW` (absorbing following spaces) with precedence over LB13, so a single
+   U+200B can add a break the space alone does not: in `word␠<ZWSP>/next` LB8
+   permits the break before `/`, but removing the U+200B leaves `␠/`, which LB13
+   *prohibits* breaking before even after a space. Proving space-adjacency
+   redundant would require analysing the surrounding line-break classes — out of
+   scope for this deterministic rule. Also not flagged, for the same "not
+   *provably* redundant" reason: single in-token / punctuation- / digit-adjacent
+   U+200B (UAX #14–governed break positions); **verse-edge** U+200B (a `VerseMap`
+   value is not contractually a complete layout unit — verses split mid-sentence
+   and get concatenated); and U+200B beside a *different* character — a no-break
+   space (NBSP, which is neither zero-width nor a format control), a joiner
+   (ZWJ/ZWNJ), WJ, or a bidi control, each with its own line-break behaviour.
 
 ## Rationale
 
@@ -78,13 +85,15 @@ output was spec-permitted variation and false positives.
   artifact; the statistical residue is spec-permitted placement or false positives.
   A rule should demonstrate a real error class to survive, not merely flag unusual
   placement — and this one couldn't.
-- **Redundant ≠ invalid → `uni.*` Info, not `hyg.*` Warning.** UAX #14 makes
-  doubling/space-adjacency a semantic *no-op*, and UAX #29 word segmentation can
-  even shift on an added U+200B, so "always invalid" (the hygiene bar) is not
-  defensible. It is a redundant line-break control, surfaced for cleanup at Info.
-- **Scalar, not byte, adjacency.** The U+0020 check compares the `char`, so the
-  Unicode contract reads as the character it is (a raw `0x20` byte compare would be
-  correct but communicates less).
+- **Redundant ≠ invalid → `uni.*` Info, not `hyg.*` Warning.** UAX #14 makes a
+  *doubled* U+200B **line-break redundant** (idempotent), and UAX #29 word
+  segmentation can even shift on an added U+200B, so "always invalid" (the hygiene
+  bar) is not defensible. It is a redundant line-break control, surfaced for
+  cleanup at Info.
+- **Duplicate-only is the provably-safe scope.** An earlier draft also flagged a
+  single U+200B adjacent to U+0020 SPACE; review showed that is not universally
+  redundant (the LB8/LB13 interaction above), so it was dropped. What we keep is
+  exactly the placement that is redundant regardless of surrounding classes.
 - **Deterministic beats corpus-relative here.** Corpus-relative scoring conflates
   "sparse legitimate use" (Thai) with "rare artifact" (Portuguese) and normalizes
   systematic artifacts (a corpus full of doubled ZWSP would learn them as
@@ -93,13 +102,14 @@ output was spec-permitted variation and false positives.
 ## Consequences
 
 - Default rule behaviour changes: `uni.redundant-zero-width-space` ships **on**
-  (the retired scorer was off), flagging doubled/space-adjacent U+200B at Info.
-- **What we give up:** a ZWSP in a *valid-looking* position (letter↔letter,
-  letter↔punct) inside a corpus that otherwise never uses ZWSP — e.g. a lone
-  `begin<ZWSP>ning` in an English text that is neither doubled nor space-adjacent.
-  It is a permissible line-break hint and was never observed; revisit only if a
-  real corpus demonstrates it matters (a property-driven successor, like the
-  joiner one deferred in ADR 0025).
+  (the retired scorer was off), flagging **doubled U+200B runs** at Info.
+- **What we give up:** any *single* U+200B, including one beside a space (the two
+  Malagasy findings) and one in a valid-looking position (letter↔letter,
+  letter↔punct) in a corpus that otherwise never uses ZWSP. All are either
+  permissible line-break hints or not *provably* redundant without line-break-class
+  analysis, and none is a demonstrated error. Revisit only if a real corpus shows a
+  single-U+200B error class worth an LB-class-aware or property-driven successor
+  (cf. the joiner rule deferred in ADR 0025).
 - Wire/stats surface shrinks: no ZWSP config, no wasm overrides, no `RuleStats`
   note. Bindings regenerated; the `RuleId` union swaps
   `uni.zero-width-space-anomaly` → `uni.redundant-zero-width-space`.
