@@ -59,3 +59,13 @@ diverge — `lex.excess-h-whitespace` lives in `whitespace.rs`,
 
 ✅ = settled write-up done · 🗣 = needs a conversation before write-up ·
 💡 = floated as observe-and-flag-above-threshold redesigns
+
+## Retired / superseded rules
+
+Rules that once shipped but were removed — recorded so a stale reference, or a
+reader hunting the old id, lands on the reason and the replacement rather than a
+blank.
+
+| Retired rule | Replaced by | Why | ADR |
+| --- | --- | --- | --- |
+| `uni.zero-width-space-anomaly` | [`uni.redundant-zero-width-space`](uni.md) | A corpus-relative ZWSP "conformance surprise" scorer (default-off, tunable). A cross-corpus ablation (106 corpora) found the deterministic duplicate-run check owns every demonstrated artifact, while the scorer's *unique* output was entirely spec-permitted placement (UAX #14 allows ZWSP around punctuation/digits and in-token) or sparse-use false positives (Thai's legitimate but infrequent word-breaks). No demonstrated error class survived, so the whole scorer + its config/wasm/stats surface was deleted. | 0027 (amends 0023) |
