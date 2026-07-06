@@ -189,7 +189,8 @@ fn zwsp_calib(dir: &Path) {
 
     // Deterministic hygiene should no longer flag any ZWSP. Prove it by
     // inspecting the sliced character, not just the rule id — the same rule
-    // still (legitimately, out of scope) flags ZWNJ/BOM/etc.
+    // still flags the universally-invalid controls (BOM, bidi, WJ, …). Joiners
+    // are no longer flagged either (ADR 0025), so this count is now BOM-family.
     let hyg = analyze(&target, None);
     let hyg_total = hyg.iter().filter(|f| f.code == RuleId::ZeroWidthMisuse).count();
     let hyg_zwsp = hyg
@@ -199,7 +200,8 @@ fn zwsp_calib(dir: &Path) {
         .count();
     println!("hyg.zero-width-misuse: {hyg_total} total controls, of which U+200B: {hyg_zwsp} (must be 0)");
 
-    // ZWSP rule at floor 0 → every scored site. One-pass project rule (no state).
+    // ZWSP rule at floor 0 → every scored site. Two-pass project rule (no state):
+    // aggregate the denominators, then re-scan and emit; buffers no occurrences.
     let rule = ZeroWidthSpaceAnomaly {
         cfg: ZeroWidthSpaceConfig { emit_score_min: 0.0, ..Default::default() },
     };

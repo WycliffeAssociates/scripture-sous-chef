@@ -8,8 +8,6 @@
 //! normalised copy) and returns byte `Span`s into it. The runner stamps
 //! `sid` + `code` + `severity`.
 
-use std::collections::HashMap;
-
 use crate::diagnostics::{RuleId, Severity};
 use crate::rule::{PerVerseRule, TokenRule};
 use crate::token::Token;
@@ -92,18 +90,20 @@ pub fn scan_control_chars(text: &str) -> Vec<Span> {
 // Zero-width misuse
 // ─────────────────────────────────────────────────────────────────────
 
-/// Zero-width and bidi/format controls that don't belong in scripture body.
-/// ZWNJ/ZWJ are meaningful in many Indic and Arabic-family scripts and are
-/// not flagged when the verse's majority script is one of those. BOM, RLM,
-/// LRM, the bidi embeddings/overrides, the word joiner and the rest of the
-/// formatting-control range are flagged unconditionally.
+/// Zero-width and bidi/format controls that don't belong in scripture body:
+/// BOM, RLM, LRM, the bidi embeddings/overrides, the word joiner and the rest
+/// of the formatting-control range are flagged unconditionally.
 ///
-/// **U+200B ZERO WIDTH SPACE is not judged here.** It is a legitimate,
-/// orthography-dependent word/line-break aid in Khmer, Lao, Thai, Myanmar and
-/// (optionally) Japanese; a fixed predicate cannot tell a convention from a
-/// slip. Its corpus-relative context surprise is scored at `Severity::Info` by
-/// [`uni.zero-width-space-anomaly`](crate::signals::zero_width_space), leaving
-/// this deterministic rule to the controls that genuinely never belong.
+/// **The orthography-dependent zero-width characters are not judged here.**
+/// U+200B ZERO WIDTH SPACE and the joiners U+200C ZWNJ / U+200D ZWJ are each
+/// legitimate in some scripts and a slip in others; a fixed predicate cannot
+/// tell a convention from an error. ZWSP's corpus-relative context surprise is
+/// scored at `Severity::Info` by
+/// [`uni.zero-width-space-anomaly`](crate::signals::zero_width_space); the
+/// joiners are simply skipped for now, awaiting their own corpus-relative rule.
+/// (They were previously flagged via a Latin-centric script allow-list, which
+/// produced false-positive storms on legitimate Khmer/Indic joiner use — worse
+/// than flagging nothing. A property-driven successor is future work.)
 pub const ZERO_WIDTH_MISUSE: RuleId = RuleId::ZeroWidthMisuse;
 
 pub struct ZeroWidthMisuse;
@@ -122,23 +122,16 @@ impl PerVerseRule for ZeroWidthMisuse {
 
 pub fn scan_zero_width_misuse(text: &str) -> Vec<Span> {
     let mut spans = Vec::new();
-    // The joiner allow-list only matters once we actually meet a ZWNJ/ZWJ,
-    // and computing it walks every character. The vast majority of verses
-    // carry no zero-width chars at all, so defer it: compute at most once,
-    // lazily, on the first joiner encountered.
-    let mut allows_joiners: Option<bool> = None;
     for (i, c) in text.char_indices() {
         if !is_zero_width_or_format(c) {
             continue;
         }
-        // U+200B is orthography-dependent, never a deterministic error —
-        // `uni.zero-width-space-anomaly` scores it corpus-relative instead.
-        if c == ZWSP {
-            continue;
-        }
-        if (c == ZWNJ || c == ZWJ)
-            && *allows_joiners.get_or_insert_with(|| script_allows_joiners(majority_script(text)))
-        {
+        // The orthography-dependent zero-width characters are never a
+        // deterministic error: U+200B is scored corpus-relative by
+        // `uni.zero-width-space-anomaly`, and the joiners U+200C/U+200D are
+        // skipped entirely pending their own corpus-relative rule. Everything
+        // else in the format range (BOM, bidi, word joiner, …) is flagged.
+        if c == ZWSP || c == ZWNJ || c == ZWJ {
             continue;
         }
         spans.push(Span {
@@ -147,38 +140,6 @@ pub fn scan_zero_width_misuse(text: &str) -> Vec<Span> {
         });
     }
     spans
-}
-
-fn majority_script(s: &str) -> Option<ScriptTag> {
-    let mut counts: HashMap<ScriptTag, usize> = HashMap::new();
-    for c in s.chars() {
-        if let Some(tag) = script_of(c) {
-            *counts.entry(tag).or_default() += 1;
-        }
-    }
-    counts.into_iter().max_by_key(|(_, c)| *c).map(|(t, _)| t)
-}
-
-fn script_allows_joiners(majority: Option<ScriptTag>) -> bool {
-    use crate::script::ScriptTag as S;
-    matches!(
-        majority,
-        Some(
-            S::Devanagari
-                | S::Bengali
-                | S::Gurmukhi
-                | S::Gujarati
-                | S::Oriya
-                | S::Tamil
-                | S::Telugu
-                | S::Kannada
-                | S::Malayalam
-                | S::Sinhala
-                | S::Arabic
-                | S::Myanmar
-                | S::Thaana
-        )
-    )
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -474,15 +435,14 @@ mod tests {
     }
 
     #[test]
-    fn zero_width_allows_zwnj_in_devanagari() {
-        // एक (Devanagari) + ZWNJ + क
-        assert!(scan_zero_width_misuse("एक\u{200C}क").is_empty());
-    }
-
-    #[test]
-    fn zero_width_flags_zwnj_in_latin() {
-        let f = scan_zero_width_misuse("fo\u{200C}o");
-        assert_eq!(f.len(), 1);
+    fn zero_width_no_longer_flags_joiners() {
+        // ZWNJ (U+200C) and ZWJ (U+200D) are orthography-dependent — legitimate
+        // in Indic/Arabic-family shaping and in emoji sequences, a slip in Latin.
+        // Deterministic hygiene no longer judges them at all (the old Latin-centric
+        // script allow-list is gone); a corpus-relative successor is future work.
+        assert!(scan_zero_width_misuse("एक\u{200C}क").is_empty()); // Devanagari ZWNJ
+        assert!(scan_zero_width_misuse("fo\u{200C}o").is_empty()); // Latin ZWNJ (was flagged)
+        assert!(scan_zero_width_misuse("a\u{200D}b").is_empty()); // ZWJ
     }
 
     #[test]

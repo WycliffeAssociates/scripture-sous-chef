@@ -8,6 +8,9 @@
 - **Note:** an earlier revision built this as a stateful rule (ADR 0017); it is
   now a stateless project rule (see Decision 2 / Consequences).
 - **Amends:** the hygiene rule's treatment of U+200B only.
+- **Amended by:** [ADR 0025](0025-drop-joiner-flagging-from-hygiene.md) —
+  Decision 1's parenthetical (hygiene keeps "the script-aware ZWNJ/ZWJ") no
+  longer holds; hygiene now skips the joiners too.
 
 ## Context
 

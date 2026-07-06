@@ -317,3 +317,42 @@ a simpler, correct landing. Decisions (with the user):
 
 Docs reconciled (ADRs 0023/0024, calibration note, rules catalog, config.md).
 165 core tests (serial + parallel), 2 wasm tests, workspace + wasm clean.
+
+## 2026-07-06 — final scope decision: drop joiners, two-pass ZWSP
+
+Closing the two items parked at the last review, with the user. Net: keep the two
+new corpus-relative rules (`uni.zero-width-space-anomaly` + `punct.adjacency-
+anomaly`), stop flagging joiners, and remove ZWSP's last transient buffer.
+
+- **Joiner (ZWNJ/ZWJ) flagging dropped from hygiene (ADR 0025).** Rather than
+  ship the spec-first joiner rule now (or curate the Latin-centric allow-list),
+  `hyg.zero-width-misuse` now skips `U+200C`/`U+200D` alongside `U+200B`, and the
+  `majority_script` / `script_allows_joiners` allow-list machinery is deleted
+  (no shim — pre-alpha). The rule is now purely universal-wrong hygiene (BOM,
+  bidi, WJ, format range); both script-dependent controls have left it. This
+  zeroes the 22,648-per-corpus Khmer ZWNJ false-positive storm. Tradeoff: a wrong
+  joiner in a non-joining script (a Latin `fo<ZWNJ>o` typo) is now unflagged
+  until a property-driven corpus-relative successor is built — accepted, because
+  flagging nothing beats a guaranteed large FP storm. The two `zwnj_in_*` tests
+  collapse into one `zero_width_no_longer_flags_joiners`; `HashMap` import dropped
+  from `hygiene.rs`.
+- **ZWSP `check` → two passes (bounded memory).** Was single-pass with a transient
+  `occ: Vec<(Sid, u32, ZwspContext)>` buffering *every* occurrence (~7 MB on
+  km_ulb before any floor gating). Now: pass 1 tallies `N`/`Z`/per-context counts,
+  pass 2 re-scans `target` and emits above-floor occurrences directly, reusing the
+  per-verse grapheme + site buffers. Peak memory is one verse's ZWSPs plus the
+  tiny per-context table — never the corpus's occurrences. Re-deriving contexts
+  twice is cheap next to buffering hundreds of thousands of sites. `Sid` import
+  moved into the test module (no longer used in non-test code). No behaviour
+  change: identical scan in both passes, so every pass-2 context exists in the
+  pass-1 evidence table; output still sorted by `(sid, start)`.
+- **Joiner redesign (#5) stays fully parked** — spec-first (UAX #31 §2.3 /
+  `ArabicShaping.txt` `Joining_Type` / Core Spec §23.2), now with *nothing wrong
+  shipping in the meantime* rather than a bad allow-list to replace.
+
+Docs reconciled: ADR 0025 (new) + index rows (0014/0023 amended-by notes);
+`rules/hyg.md` (joiner write-up rewritten), `rules/uni.md` (stale site-cap
+open-issue replaced with the two-pass note), calibration note (out-of-scope ZWNJ
+section marked resolved; §14 cost model updated to two passes). 164 core tests
+(one fewer — two joiner tests merged into one), workspace `cargo check
+--all-targets` clean.

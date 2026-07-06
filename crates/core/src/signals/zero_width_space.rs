@@ -12,12 +12,19 @@
 //! **Not stateful (start simple; promote later).** Earlier revisions cached
 //! per-book observations for incremental re-analysis (ADR 0017), but the site
 //! array dominated the wire size (~12 MiB on a ZWSP-pervasive corpus) and no
-//! consumer exercises incrementality yet. So this computes aggregates and emits
-//! in a single pass over the supplied map, holding nothing between calls. The
-//! corpus scope *is* whatever map the caller passes. If a future editor needs
-//! per-keystroke incrementality it can be promoted to cache the tiny aggregates
-//! (`N`, `Z`, per-context counts — never the sites, which re-derive from the
-//! target text at emit).
+//! consumer exercises incrementality yet. So this holds nothing between calls;
+//! the corpus scope *is* whatever map the caller passes. If a future editor
+//! needs per-keystroke incrementality it can be promoted to cache the tiny
+//! aggregates (`N`, `Z`, per-context counts — never the sites, which re-derive
+//! from the target text at emit).
+//!
+//! **Two passes, bounded memory.** Pass 1 walks the map to tally the
+//! denominators (`N`, `Z`, per-context counts); pass 2 re-walks it and emits an
+//! above-floor finding for each occurrence directly. The per-verse grapheme and
+//! site buffers are reused across verses, so peak memory is one verse's ZWSPs
+//! plus the (tiny) per-context table — never the whole corpus's occurrences.
+//! (Deriving contexts twice is cheap next to *buffering every occurrence*, which
+//! on a ZWSP-pervasive corpus like Khmer is hundreds of thousands of sites.)
 //!
 //! **Composed evidence.**
 //!
@@ -54,7 +61,6 @@ use crate::diagnostics::{Finding, RuleId, Severity};
 use crate::grapheme::{self, GSpan};
 use crate::rule::ProjectRule;
 use crate::shrinkage::{clamp_rate, clamp_unit, clamp_z, strength};
-use crate::sid::Sid;
 use crate::span::Span;
 use crate::unicode::{ZWSP, is_zero_width_or_format};
 use crate::verse::VerseMap;
@@ -101,21 +107,21 @@ impl ProjectRule for ZeroWidthSpaceAnomaly {
     }
 
     fn check(&self, target: &VerseMap, _source: Option<&VerseMap>) -> Vec<Finding> {
-        // One pass: collect every ZWSP occurrence (transiently) while tallying
-        // the corpus-wide denominators. Nothing here is retained past the call.
+        // Buffers reused across both passes and every verse, so peak memory is
+        // one verse's ZWSPs — never the whole corpus's occurrences buffered up.
         let mut graphemes = Vec::new();
+        let mut sites: Vec<(u32, ZwspContext)> = Vec::new();
+
+        // Pass 1 — tally the corpus-wide denominators. No occurrence is kept.
         let mut n: u64 = 0; // boundary opportunities
         let mut z: u64 = 0; // ZWSP occurrences
         let mut per_context: HashMap<ZwspContext, u64> = HashMap::new();
-        let mut occ: Vec<(Sid, u32, ZwspContext)> = Vec::new();
-
-        for (&sid, text) in target {
-            let mut sites = Vec::new();
+        for text in target.values() {
+            sites.clear();
             n += scan_verse(text, &mut graphemes, &mut sites);
-            for &(start, ctx) in &sites {
-                z += 1;
+            z += sites.len() as u64;
+            for &(_, ctx) in &sites {
                 *per_context.entry(ctx).or_default() += 1;
-                occ.push((sid, start, ctx));
             }
         }
         if z == 0 || n == 0 {
@@ -135,26 +141,33 @@ impl ProjectRule for ZeroWidthSpaceAnomaly {
             .map(|(&ctx, &c)| (ctx, 1.0 - global_strength * strength(c, z, context_rate, zc)))
             .collect();
 
+        // Pass 2 — re-scan and emit each above-floor occurrence directly. Every
+        // context seen here was counted in pass 1 (identical scan), so the
+        // `evidence` lookup can't miss.
         let zwsp_len = ZWSP.len_utf8() as u32;
         let mut out = Vec::new();
-        for (sid, start, ctx) in occ {
-            let ev = evidence[&ctx];
-            if ev < floor {
-                continue;
+        for (&sid, text) in target {
+            sites.clear();
+            scan_verse(text, &mut graphemes, &mut sites);
+            for &(start, ctx) in &sites {
+                let ev = evidence[&ctx];
+                if ev < floor {
+                    continue;
+                }
+                out.push(Finding {
+                    sid,
+                    code: ZERO_WIDTH_SPACE_ANOMALY,
+                    severity: Severity::Info,
+                    // Exact U+200B span (3 bytes), independent of any trailing
+                    // mark that shares the cluster.
+                    range: Span {
+                        start: start as usize,
+                        end: (start + zwsp_len) as usize,
+                    },
+                    score: Some(ev as f32),
+                    args: None,
+                });
             }
-            out.push(Finding {
-                sid,
-                code: ZERO_WIDTH_SPACE_ANOMALY,
-                severity: Severity::Info,
-                // Exact U+200B span (3 bytes), independent of any trailing mark
-                // that shares the cluster.
-                range: Span {
-                    start: start as usize,
-                    end: (start + zwsp_len) as usize,
-                },
-                score: Some(ev as f32),
-                args: None,
-            });
         }
         out.sort_by_key(|f| (f.sid, f.range.start));
         out
@@ -222,7 +235,7 @@ fn classify_neighbor(cluster: &str) -> ZwspNeighbor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sid::BookId;
+    use crate::sid::{BookId, Sid};
 
     const ZW: &str = "\u{200B}";
 

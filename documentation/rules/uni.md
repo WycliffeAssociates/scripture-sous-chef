@@ -126,9 +126,12 @@ See ADR 0023.
 
 **Open issues / future work** — Ships default-off; graduation to default-on is a
 deliberate post-calibration decision. `boundary_opportunities` includes both
-verse edges (documented rate basis). Serialised-site storage is bounded by a
-per-context per-book cap; if judge time ever binds at graduation, the sanctioned
-fix is passing target scope into `judge`, not pruning sites.
+verse edges (documented rate basis). The rule stores **no** per-occurrence sites:
+it runs two passes over the map — aggregate the denominators, then re-scan and
+emit above-floor occurrences directly — reusing per-verse buffers, so peak memory
+is one verse's ZWSPs, not the corpus's (ADR 0023, "two passes"). Graduation to
+aggregate-only stateful — the shape `punct.adjacency-anomaly` uses — is where
+per-book counts would be cached to restore the incremental guarantee.
 
 ---
 

@@ -62,41 +62,43 @@ legitimately carry line breaks (ADR 0010).
 
 > **Severity** Warning · **Default** on · **Scope** per-verse · **Knobs** none
 
-**Flags** — Zero-width / bidi / format characters in scripts that don't use them:
-- `foo<BOM>bar` → the BOM (`U+FEFF`) in a Latin verse
-- `fo<ZWNJ>o` → a zero-width non-joiner inside a Latin word
+**Flags** — Zero-width / bidi / format characters that never belong in
+scripture body, regardless of script:
+- `foo<BOM>bar` → the BOM (`U+FEFF`)
+- `word<WJ>next` → the word joiner (`U+2060`)
+- a bidi override (`U+202E`) dropped mid-verse
 
-**Clean** — `एक<ZWNJ>क`: a ZWNJ in a Devanagari verse is a legitimate
-letterform control, not misuse. **`a<ZWSP>b`** — U+200B is never flagged here
-(see below).
+**Clean** — **`a<ZWSP>b`** (U+200B, scored elsewhere) and both joiners —
+`एक<ZWNJ>क` *and* `fo<ZWNJ>o` — are all left alone here (see below). Only the
+universally-invalid controls fire.
 
-**Why it matters** — BOM, RLM/LRM, the bidi embeddings/overrides and the rest
-of the format-control range are invisible and break layout and search, and the
-translator can't see them on screen. **But** ZWNJ/ZWJ are *required* to spell
-words correctly in many Indic and Arabic-family scripts — so blanket-flagging
-them would be wrong.
+**Why it matters** — BOM, RLM/LRM, the bidi embeddings/overrides, the word
+joiner and the rest of the format-control range are invisible, break layout and
+search, and the translator can't see them on screen. They are never legitimate
+in any script, so they flag unconditionally.
 
-**U+200B is not judged here (ADR 0023).** ZERO WIDTH SPACE is an
-orthography-dependent word/line-break aid (Khmer, Lao, Thai, Myanmar, optionally
-Japanese); a fixed predicate can't tell a convention from a slip. Its
-corpus-relative context surprise is scored by
-[`uni.zero-width-space-anomaly`](uni.md) at Info instead. This rule skips it and
-keeps every other zero-width/bidi/format finding.
+**The orthography-dependent zero-width chars are not judged here.** U+200B ZERO
+WIDTH SPACE (ADR 0023) and the joiners ZWNJ (`U+200C`) / ZWJ (`U+200D`) are each
+legitimate in some scripts and a slip in others — a fixed predicate can't tell a
+convention from a slip. ZWSP's corpus-relative context surprise is scored by
+[`uni.zero-width-space-anomaly`](uni.md) at Info; the joiners are skipped
+entirely for now, awaiting their own corpus-relative rule.
 
 **Config** — On/off only.
 
-**Nuance & ADR ties** — The joiners ZWNJ (`U+200C`) and ZWJ (`U+200D`) are
-allowed only when the verse's **majority script** is one of the
-joiner-using families: Devanagari, Bengali, Gurmukhi, Gujarati, Oriya, Tamil,
-Telugu, Kannada, Malayalam, Sinhala, Arabic, Myanmar, Thaana. Every *other*
-zero-width/format char (BOM, RLM, LRM, …) flags unconditionally, in any
-script. The majority-script computation is done lazily — only when a joiner
-is actually encountered — since the vast majority of verses carry no
-zero-width chars at all.
+**Nuance & ADR ties** — After ADR 0025 this rule flags only characters that are
+wrong *regardless of script* — both script-dependent controls (ZWSP and the
+joiners) have left it, so it is now purely universal-wrong hygiene. The joiners
+were previously gated on a verse-majority-script allow-list (Devanagari,
+Bengali, … Thaana); that list was Latin-centric and produced false-positive
+storms on legitimate Khmer/Indic joiner use (e.g. 22,648 ZWNJ in a Khmer
+corpus), so it was removed — flagging nothing beats flagging wrong.
 
-**Open issues / future work** — The allow-list is keyed on the verse's
-*majority* script, so a joiner-script word embedded in a Latin-majority verse
-would have its legitimately-needed joiner flagged. Rare edge case, deferred.
+**Open issues / future work** — A property-driven joiner rule (Joining_Type /
+effective-shaping context, corpus-relative like
+[`uni.zero-width-space-anomaly`](uni.md)) is the sanctioned successor. Until it
+exists, a genuinely-wrong joiner in a non-joining script (a Latin ZWNJ typo)
+goes unflagged — an accepted tradeoff (see ADR 0025).
 
 ---
 

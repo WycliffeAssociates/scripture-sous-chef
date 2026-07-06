@@ -84,7 +84,7 @@ km_ulb (Khmer, ZWSP-pervasive) is the one large data point available today:
 | surfaced ≥ 0.5 | 8,981 |
 | surfaced ≥ 0.9 | 1,687 |
 | surfaced ≥ 0.99 | 233 |
-| `hyg.zero-width-misuse` findings sliced to U+200B | **0** (proven; the 22,625 that remain are ZWNJ — see below) |
+| `hyg.zero-width-misuse` findings sliced to U+200B | **0** (proven; the ~22.6k that then remained were ZWNJ — since also dropped from hygiene, ADR 0025 — see below) |
 
 Unlike punctuation, ZWSP evidence is a **gradient** (two composed factors →
 mass at every level), which is why its floor is load-bearing:
@@ -140,14 +140,25 @@ is gone.
     nothing, so it contributes nothing to `Stats` at all. The cost is the
     incremental carve-out (must be passed the full corpus when enabled; ADR 0023).
 - **Cost model:** punct `judge` is O(corpus contexts + `target` candidates); ZWSP
-  `check` is one O(map) pass. The former 2.3 ms re-judge figure was for the
-  discarded stateful-with-sites design and no longer applies.
+  `check` is **two** O(map) passes (aggregate the denominators, then re-scan and
+  emit), reusing per-verse grapheme/site buffers so peak memory is one verse's
+  ZWSPs — it never buffers the corpus's occurrences (ADR 0023, "two passes").
+  The former 2.3 ms re-judge figure was for the discarded stateful-with-sites
+  design and no longer applies.
 
-## Out-of-scope discovery
+## Out-of-scope discovery → resolved (ADR 0025)
 
-km_ulb also carries **22,648 U+200C (ZWNJ)**, which `hyg.zero-width-misuse` still
-flags because Khmer is not in the joiner allow-list (`script_allows_joiners`).
-Khmer uses ZWNJ legitimately, so this is a real false-positive storm — but
-changing ZWNJ/ZWJ policy is an explicit **non-goal** of this plan (§6). Recorded
-here as a separate follow-up (adding Khmer to the joiner allow-list, or making
-ZWNJ corpus-relative too).
+km_ulb also carries **22,648 U+200C (ZWNJ)**, which `hyg.zero-width-misuse`
+flagged because Khmer was not in the joiner allow-list (`script_allows_joiners`).
+Khmer uses ZWNJ legitimately, so that was a real false-positive storm as large as
+the U+200B one. Changing joiner policy was a **non-goal** of the original plan
+(§6), so it was recorded here as a follow-up.
+
+**Resolved 2026-07-06 (ADR 0025):** rather than curate the allow-list, hygiene
+now drops joiner (ZWNJ/ZWJ) flagging entirely — the allow-list was Latin-centric
+and joiner legitimacy is a `Joining_Type`/shaping-context fact, not a
+majority-script one. The storm goes to zero; a property-driven, corpus-relative
+joiner rule (the shape of `uni.zero-width-space-anomaly`) is the deferred
+successor. So on shipped defaults `hyg.zero-width-misuse` now produces **zero**
+findings on clean km_ulb — both its ZWSP (ADR 0023) and its ZWNJ (ADR 0025) are
+left to corpus-relative judgement.
