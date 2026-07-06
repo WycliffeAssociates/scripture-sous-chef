@@ -54,6 +54,10 @@ something to ship under time pressure.
    — the shape of `uni.zero-width-space-anomaly`, keyed on `Joining_Type` /
    effective shaping context rather than a curated script list — is the
    sanctioned successor, and is deferred as future work.
+   (**Note, added later:** `uni.zero-width-space-anomaly` was itself retired by
+   [ADR 0027](0027-redundant-zwsp-deterministic-retire-corpus-relative.md); the
+   "shape" meant here is the *corpus-relative learning* approach, not that live
+   rule, which no longer exists.)
 
 ## Rationale
 

@@ -68,9 +68,9 @@ scripture body, regardless of script:
 - `word<WJ>next` → the word joiner (`U+2060`)
 - a bidi override (`U+202E`) dropped mid-verse
 
-**Clean** — **`a<ZWSP>b`** (U+200B, scored elsewhere) and both joiners —
-`एक<ZWNJ>क` *and* `fo<ZWNJ>o` — are all left alone here (see below). Only the
-universally-invalid controls fire.
+**Clean** — **`a<ZWSP>b`** (a single U+200B — handled elsewhere, and only when
+doubled) and both joiners — `एक<ZWNJ>क` *and* `fo<ZWNJ>o` — are all left alone
+here (see below). Only the universally-invalid controls fire.
 
 **Why it matters** — BOM, RLM/LRM, the bidi embeddings/overrides, the word
 joiner and the rest of the format-control range are invisible, break layout and
@@ -79,10 +79,12 @@ in any script, so they flag unconditionally.
 
 **The orthography-dependent zero-width chars are not judged here.** U+200B ZERO
 WIDTH SPACE (ADR 0023) and the joiners ZWNJ (`U+200C`) / ZWJ (`U+200D`) are each
-legitimate in some scripts and a slip in others — a fixed predicate can't tell a
-convention from a slip. A *doubled* U+200B run (line-break redundant) is flagged
-by [`uni.redundant-zero-width-space`](uni.md) at Info; the joiners are skipped
-entirely for now, awaiting their own corpus-relative rule.
+legitimate in some scripts and a slip in others, and a fixed predicate can't tell
+a *single* one's convention from a slip. The one exception is a **doubled** U+200B
+run, which is line-break redundant regardless of script — that alone is flagged,
+deterministically, by [`uni.redundant-zero-width-space`](uni.md) at Info
+(ADR 0027). The joiners are skipped entirely for now, awaiting their own
+corpus-relative rule.
 
 **Config** — On/off only.
 

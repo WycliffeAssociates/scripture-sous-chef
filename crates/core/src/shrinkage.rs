@@ -1,6 +1,6 @@
 //! Conservative rate shrinkage — the Wilson-lower-bound convention strength
-//! shared by the corpus-relative anomaly rules (ADRs: zero-width-space anomaly,
-//! punctuation adjacency anomaly). Pure math with **no rule semantics and no
+//! shared by the corpus-relative anomaly rules (e.g. `punct.adjacency-anomaly`,
+//! ADR 0024). Pure math with **no rule semantics and no
 //! thresholds**: it takes `(k, n, convention_rate, z)` and returns a finite
 //! strength in `[0, 1]`, plus the small config-sanitisers that keep scores
 //! finite. The `strength` interpretation is deliberately identical across rules

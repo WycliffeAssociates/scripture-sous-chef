@@ -86,8 +86,9 @@ pub fn is_decimal_digit(c: char) -> bool {
 /// Zero-width and formatting-control codepoints — the **candidate** set for
 /// zero-width scrutiny. This predicate identifies candidates; the *caller*
 /// decides which are legitimate. Hygiene skips the orthography-dependent
-/// members — the joiners ZWNJ/ZWJ and U+200B, all scored (or deferred to)
-/// corpus-relative rules elsewhere (ADRs 0023, 0025) — and flags the rest; it
+/// members: U+200B (a *doubled* run is flagged deterministically by
+/// `uni.redundant-zero-width-space`, ADRs 0023/0027) and the joiners ZWNJ/ZWJ
+/// (deferred to a future corpus-relative rule, ADR 0025). It flags the rest; it
 /// is not an "always invalid" predicate.
 ///
 /// Coverage:
