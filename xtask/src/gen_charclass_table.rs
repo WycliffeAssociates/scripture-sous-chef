@@ -52,7 +52,8 @@ const UPPER: u32 = 1 << 2;
 const WHITESPACE: u32 = 1 << 3;
 const NUMERIC: u32 = 1 << 4;
 const DECIMAL: u32 = 1 << 5;
-// bit 6 = clinging (reserved, unset here); bit 7 free.
+// bit 6 = clinging (reserved, unset here).
+const SENTENCE_TERMINAL: u32 = 1 << 7; // PropList Sentence_Terminal (STerm)
 const EXTENDER: u32 = 1 << 8;
 const COMPLEX: u32 = 1 << 9;
 const INCB_CONSONANT: u32 = 1 << 10;
@@ -144,6 +145,11 @@ pub fn run(ssc_core: &Path) {
             set(lo, hi, COMPLEX);
         }
     }
+    for (lo, hi, f) in parse_ucd(&ucd.join("PropList-SentenceTerminal.txt")) {
+        if f.first().map(String::as_str) == Some("Sentence_Terminal") {
+            set(lo, hi, SENTENCE_TERMINAL);
+        }
+    }
     for (lo, hi, f) in parse_ucd(&ucd.join("DerivedCoreProperties-InCB.txt")) {
         if f.first().map(String::as_str) == Some("InCB") {
             match f.get(1).map(String::as_str) {
@@ -154,6 +160,21 @@ pub fn run(ssc_core: &Path) {
             }
         }
     }
+
+    // Paired brackets (BidiBrackets.txt `o` entries): the runtime inventory
+    // for `punct.bracket-balance`. Emitted alongside the class ranges so a
+    // Unicode bump regenerates both from one command.
+    let mut pairs: Vec<(u32, u32)> = parse_ucd(&ucd.join("BidiBrackets.txt"))
+        .into_iter()
+        .filter(|(_, _, f)| f.get(1).map(String::as_str) == Some("o"))
+        .map(|(lo, _, f)| (lo, u32::from_str_radix(f[0].trim(), 16).unwrap()))
+        .collect();
+    // Supplement: U+FD3E/FD3F ORNATE LEFT/RIGHT PARENTHESIS pair as text
+    // brackets (Arabic-script scripture quotation marks) but are excluded
+    // from BidiBrackets.txt because they don't Bidi_Mirror — a bidi
+    // technicality, not a pairing fact.
+    pairs.push((0xFD3E, 0xFD3F));
+    pairs.sort_unstable();
 
     // Fuse casing (std), General_Category groups + script (unicode-*), and the
     // grapheme bits; coalesce into ranges.
@@ -216,6 +237,15 @@ pub fn run(ssc_core: &Path) {
     src.push_str("pub(crate) const CLASS_RANGES: &[(u32, u32, u32)] = &[\n");
     for (lo, hi, b) in &ranges {
         src.push_str(&format!("    (0x{lo:X}, 0x{hi:X}, 0x{b:08X}),\n"));
+    }
+    src.push_str("];\n");
+
+    src.push_str("\n/// `(open, close)` scalar pairs from UCD `BidiBrackets.txt` — the\n");
+    src.push_str("/// paired-bracket inventory for `punct.bracket-balance`. Sorted by\n");
+    src.push_str("/// the open scalar for binary search.\n");
+    src.push_str("pub(crate) const BRACKET_PAIRS: &[(u32, u32)] = &[\n");
+    for (o, c) in &pairs {
+        src.push_str(&format!("    (0x{o:X}, 0x{c:X}),\n"));
     }
     src.push_str("];\n");
 

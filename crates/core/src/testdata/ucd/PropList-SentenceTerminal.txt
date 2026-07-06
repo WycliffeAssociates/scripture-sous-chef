@@ -1,0 +1,90 @@
+# PropList-17.0.0.txt (trimmed: Sentence_Terminal lines only)
+# Source: https://www.unicode.org/Public/17.0.0/ucd/PropList.txt
+0021          ; Sentence_Terminal # Po       EXCLAMATION MARK
+002E          ; Sentence_Terminal # Po       FULL STOP
+003F          ; Sentence_Terminal # Po       QUESTION MARK
+0589          ; Sentence_Terminal # Po       ARMENIAN FULL STOP
+061D..061F    ; Sentence_Terminal # Po   [3] ARABIC END OF TEXT MARK..ARABIC QUESTION MARK
+06D4          ; Sentence_Terminal # Po       ARABIC FULL STOP
+0700..0702    ; Sentence_Terminal # Po   [3] SYRIAC END OF PARAGRAPH..SYRIAC SUBLINEAR FULL STOP
+07F9          ; Sentence_Terminal # Po       NKO EXCLAMATION MARK
+0837          ; Sentence_Terminal # Po       SAMARITAN PUNCTUATION MELODIC QITSA
+0839          ; Sentence_Terminal # Po       SAMARITAN PUNCTUATION QITSA
+083D..083E    ; Sentence_Terminal # Po   [2] SAMARITAN PUNCTUATION SOF MASHFAAT..SAMARITAN PUNCTUATION ANNAAU
+0964..0965    ; Sentence_Terminal # Po   [2] DEVANAGARI DANDA..DEVANAGARI DOUBLE DANDA
+104A..104B    ; Sentence_Terminal # Po   [2] MYANMAR SIGN LITTLE SECTION..MYANMAR SIGN SECTION
+1362          ; Sentence_Terminal # Po       ETHIOPIC FULL STOP
+1367..1368    ; Sentence_Terminal # Po   [2] ETHIOPIC QUESTION MARK..ETHIOPIC PARAGRAPH SEPARATOR
+166E          ; Sentence_Terminal # Po       CANADIAN SYLLABICS FULL STOP
+1735..1736    ; Sentence_Terminal # Po   [2] PHILIPPINE SINGLE PUNCTUATION..PHILIPPINE DOUBLE PUNCTUATION
+17D4..17D5    ; Sentence_Terminal # Po   [2] KHMER SIGN KHAN..KHMER SIGN BARIYOOSAN
+1803          ; Sentence_Terminal # Po       MONGOLIAN FULL STOP
+1809          ; Sentence_Terminal # Po       MONGOLIAN MANCHU FULL STOP
+1944..1945    ; Sentence_Terminal # Po   [2] LIMBU EXCLAMATION MARK..LIMBU QUESTION MARK
+1AA8..1AAB    ; Sentence_Terminal # Po   [4] TAI THAM SIGN KAAN..TAI THAM SIGN SATKAANKUU
+1B4E..1B4F    ; Sentence_Terminal # Po   [2] BALINESE INVERTED CARIK SIKI..BALINESE INVERTED CARIK PAREREN
+1B5A..1B5B    ; Sentence_Terminal # Po   [2] BALINESE PANTI..BALINESE PAMADA
+1B5E..1B5F    ; Sentence_Terminal # Po   [2] BALINESE CARIK SIKI..BALINESE CARIK PAREREN
+1B7D..1B7F    ; Sentence_Terminal # Po   [3] BALINESE PANTI LANTANG..BALINESE PANTI BAWAK
+1C3B..1C3C    ; Sentence_Terminal # Po   [2] LEPCHA PUNCTUATION TA-ROL..LEPCHA PUNCTUATION NYET THYOOM TA-ROL
+1C7E..1C7F    ; Sentence_Terminal # Po   [2] OL CHIKI PUNCTUATION MUCAAD..OL CHIKI PUNCTUATION DOUBLE MUCAAD
+2024          ; Sentence_Terminal # Po       ONE DOT LEADER
+203C..203D    ; Sentence_Terminal # Po   [2] DOUBLE EXCLAMATION MARK..INTERROBANG
+2047..2049    ; Sentence_Terminal # Po   [3] DOUBLE QUESTION MARK..EXCLAMATION QUESTION MARK
+2CF9..2CFB    ; Sentence_Terminal # Po   [3] COPTIC OLD NUBIAN FULL STOP..COPTIC OLD NUBIAN INDIRECT QUESTION MARK
+2E2E          ; Sentence_Terminal # Po       REVERSED QUESTION MARK
+2E3C          ; Sentence_Terminal # Po       STENOGRAPHIC FULL STOP
+2E53..2E54    ; Sentence_Terminal # Po   [2] MEDIEVAL EXCLAMATION MARK..MEDIEVAL QUESTION MARK
+3002          ; Sentence_Terminal # Po       IDEOGRAPHIC FULL STOP
+A4FF          ; Sentence_Terminal # Po       LISU PUNCTUATION FULL STOP
+A60E..A60F    ; Sentence_Terminal # Po   [2] VAI FULL STOP..VAI QUESTION MARK
+A6F3          ; Sentence_Terminal # Po       BAMUM FULL STOP
+A6F7          ; Sentence_Terminal # Po       BAMUM QUESTION MARK
+A876..A877    ; Sentence_Terminal # Po   [2] PHAGS-PA MARK SHAD..PHAGS-PA MARK DOUBLE SHAD
+A8CE..A8CF    ; Sentence_Terminal # Po   [2] SAURASHTRA DANDA..SAURASHTRA DOUBLE DANDA
+A92F          ; Sentence_Terminal # Po       KAYAH LI SIGN SHYA
+A9C8..A9C9    ; Sentence_Terminal # Po   [2] JAVANESE PADA LINGSA..JAVANESE PADA LUNGSI
+AA5D..AA5F    ; Sentence_Terminal # Po   [3] CHAM PUNCTUATION DANDA..CHAM PUNCTUATION TRIPLE DANDA
+AAF0..AAF1    ; Sentence_Terminal # Po   [2] MEETEI MAYEK CHEIKHAN..MEETEI MAYEK AHANG KHUDAM
+ABEB          ; Sentence_Terminal # Po       MEETEI MAYEK CHEIKHEI
+FE12          ; Sentence_Terminal # Po       PRESENTATION FORM FOR VERTICAL IDEOGRAPHIC FULL STOP
+FE15..FE16    ; Sentence_Terminal # Po   [2] PRESENTATION FORM FOR VERTICAL EXCLAMATION MARK..PRESENTATION FORM FOR VERTICAL QUESTION MARK
+FE52          ; Sentence_Terminal # Po       SMALL FULL STOP
+FE56..FE57    ; Sentence_Terminal # Po   [2] SMALL QUESTION MARK..SMALL EXCLAMATION MARK
+FF01          ; Sentence_Terminal # Po       FULLWIDTH EXCLAMATION MARK
+FF0E          ; Sentence_Terminal # Po       FULLWIDTH FULL STOP
+FF1F          ; Sentence_Terminal # Po       FULLWIDTH QUESTION MARK
+FF61          ; Sentence_Terminal # Po       HALFWIDTH IDEOGRAPHIC FULL STOP
+10A56..10A57  ; Sentence_Terminal # Po   [2] KHAROSHTHI PUNCTUATION DANDA..KHAROSHTHI PUNCTUATION DOUBLE DANDA
+10F55..10F59  ; Sentence_Terminal # Po   [5] SOGDIAN PUNCTUATION TWO VERTICAL BARS..SOGDIAN PUNCTUATION HALF CIRCLE WITH DOT
+10F86..10F89  ; Sentence_Terminal # Po   [4] OLD UYGHUR PUNCTUATION BAR..OLD UYGHUR PUNCTUATION FOUR DOTS
+11047..11048  ; Sentence_Terminal # Po   [2] BRAHMI DANDA..BRAHMI DOUBLE DANDA
+110BE..110C1  ; Sentence_Terminal # Po   [4] KAITHI SECTION MARK..KAITHI DOUBLE DANDA
+11141..11143  ; Sentence_Terminal # Po   [3] CHAKMA DANDA..CHAKMA QUESTION MARK
+111C5..111C6  ; Sentence_Terminal # Po   [2] SHARADA DANDA..SHARADA DOUBLE DANDA
+111CD         ; Sentence_Terminal # Po       SHARADA SUTRA MARK
+111DE..111DF  ; Sentence_Terminal # Po   [2] SHARADA SECTION MARK-1..SHARADA SECTION MARK-2
+11238..11239  ; Sentence_Terminal # Po   [2] KHOJKI DANDA..KHOJKI DOUBLE DANDA
+1123B..1123C  ; Sentence_Terminal # Po   [2] KHOJKI SECTION MARK..KHOJKI DOUBLE SECTION MARK
+112A9         ; Sentence_Terminal # Po       MULTANI SECTION MARK
+113D4..113D5  ; Sentence_Terminal # Po   [2] TULU-TIGALARI DANDA..TULU-TIGALARI DOUBLE DANDA
+1144B..1144C  ; Sentence_Terminal # Po   [2] NEWA DANDA..NEWA DOUBLE DANDA
+115C2..115C3  ; Sentence_Terminal # Po   [2] SIDDHAM DANDA..SIDDHAM DOUBLE DANDA
+115C9..115D7  ; Sentence_Terminal # Po  [15] SIDDHAM END OF TEXT MARK..SIDDHAM SECTION MARK WITH CIRCLES AND FOUR ENCLOSURES
+11641..11642  ; Sentence_Terminal # Po   [2] MODI DANDA..MODI DOUBLE DANDA
+1173C..1173E  ; Sentence_Terminal # Po   [3] AHOM SIGN SMALL SECTION..AHOM SIGN RULAI
+11944         ; Sentence_Terminal # Po       DIVES AKURU DOUBLE DANDA
+11946         ; Sentence_Terminal # Po       DIVES AKURU END OF TEXT MARK
+11A42..11A43  ; Sentence_Terminal # Po   [2] ZANABAZAR SQUARE MARK SHAD..ZANABAZAR SQUARE MARK DOUBLE SHAD
+11A9B..11A9C  ; Sentence_Terminal # Po   [2] SOYOMBO MARK SHAD..SOYOMBO MARK DOUBLE SHAD
+11C41..11C42  ; Sentence_Terminal # Po   [2] BHAIKSUKI DANDA..BHAIKSUKI DOUBLE DANDA
+11EF7..11EF8  ; Sentence_Terminal # Po   [2] MAKASAR PASSIMBANG..MAKASAR END OF SECTION
+11F43..11F44  ; Sentence_Terminal # Po   [2] KAWI DANDA..KAWI DOUBLE DANDA
+16A6E..16A6F  ; Sentence_Terminal # Po   [2] MRO DANDA..MRO DOUBLE DANDA
+16AF5         ; Sentence_Terminal # Po       BASSA VAH FULL STOP
+16B37..16B38  ; Sentence_Terminal # Po   [2] PAHAWH HMONG SIGN VOS THOM..PAHAWH HMONG SIGN VOS TSHAB CEEB
+16B44         ; Sentence_Terminal # Po       PAHAWH HMONG SIGN XAUS
+16D6E..16D6F  ; Sentence_Terminal # Po   [2] KIRAT RAI DANDA..KIRAT RAI DOUBLE DANDA
+16E98         ; Sentence_Terminal # Po       MEDEFAIDRIN FULL STOP
+1BC9F         ; Sentence_Terminal # Po       DUPLOYAN PUNCTUATION CHINOOK FULL STOP
+1DA88         ; Sentence_Terminal # Po       SIGNWRITING FULL STOP

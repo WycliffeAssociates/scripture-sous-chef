@@ -41,6 +41,7 @@ const WHITESPACE: u32 = 1 << 3;
 const NUMERIC: u32 = 1 << 4;
 const DECIMAL: u32 = 1 << 5;
 // bit 6 reserved — a future `clinging` flag (closing quotes/brackets).
+const SENTENCE_TERMINAL: u32 = 1 << 7; // PropList Sentence_Terminal (STerm)
 
 // Grapheme-break bits, consumed by `crate::grapheme` (ADR 0021).
 const EXTENDER: u32 = 1 << 8; // GCB ∈ {Extend, SpacingMark, ZWJ}: glue to prev
@@ -84,6 +85,14 @@ impl Class {
     pub fn is_decimal_digit(self) -> bool {
         self.0 & DECIMAL != 0
     }
+    /// UCD `Sentence_Terminal` (STerm): the marks that end sentences in
+    /// their scripts — `.` `!` `?`, danda `।`, Ethiopic `።`, Arabic `؟ ۔`,
+    /// Burmese `။`, CJK `。`, and kin. Deliberately *not*
+    /// `Terminal_Punctuation`, which also holds commas and list separators.
+    #[inline]
+    pub fn is_sentence_terminal(self) -> bool {
+        self.0 & SENTENCE_TERMINAL != 0
+    }
 
     // General_Category-group queries (ADR 0022).
     #[inline]
@@ -126,6 +135,27 @@ impl Class {
     pub(crate) fn is_incb_mark(self) -> bool {
         self.0 & INCB_MARK != 0
     }
+}
+
+/// The close glyph paired with `c` if `c` is a UCD paired-bracket opener
+/// (BidiBrackets.txt). Binary search over the generated open-sorted table.
+pub(crate) fn bracket_close_of(c: char) -> Option<char> {
+    let cp = c as u32;
+    crate::charclass_table::BRACKET_PAIRS
+        .binary_search_by_key(&cp, |&(o, _)| o)
+        .ok()
+        .and_then(|i| char::from_u32(crate::charclass_table::BRACKET_PAIRS[i].1))
+}
+
+/// The open glyph paired with `c` if `c` is a UCD paired-bracket closer.
+/// Linear over ~64 entries — callers gate on punctuation first, so this is
+/// off the hot path.
+pub(crate) fn bracket_open_of(c: char) -> Option<char> {
+    let cp = c as u32;
+    crate::charclass_table::BRACKET_PAIRS
+        .iter()
+        .find(|&&(_, cl)| cl == cp)
+        .and_then(|&(o, _)| char::from_u32(o))
 }
 
 /// The fused table: a flat BMP array (one indexed read) plus the sorted astral
