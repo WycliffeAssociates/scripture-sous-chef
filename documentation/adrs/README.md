@@ -42,6 +42,7 @@ isn't visible from the code alone.
 | 0023 | 2026-07-01 | [U+200B is orthography-dependent — a corpus-relative anomaly, not hygiene](0023-zero-width-space-corpus-relative-anomaly.md) | Accepted (ZWNJ/ZWJ treatment amended by 0025; scorer superseded by 0027, hygiene half stands) |
 | 0024 | 2026-07-01 | [Repeated/mixed punctuation is judged corpus-relative, not by a fixed allow-list](0024-punctuation-adjacency-corpus-relative.md) | Accepted |
 | 0025 | 2026-07-06 | [Drop ZWNJ/ZWJ flagging from hygiene — flagging nothing beats flagging wrong](0025-drop-joiner-flagging-from-hygiene.md) | Accepted |
+| 0026 | 2026-07-06 | [Drop `\|`/`^` from source-marker-leftover — a bare pipe is valid USFM text](0026-drop-pipe-caret-from-source-marker-leftover.md) | Accepted |
 | 0027 | 2026-07-06 | [Retire the corpus-relative ZWSP scorer; adopt a deterministic redundant-ZWSP rule](0027-redundant-zwsp-deterministic-retire-corpus-relative.md) | Accepted (supersedes 0023 scorer) |
 
 ## Format
