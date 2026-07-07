@@ -314,6 +314,73 @@ pub fn analyze_vref_stateful(
     }
 }
 
+/// One rule's human-facing card (ADR 0038): plain-language title, what a
+/// finding is, why it might deserve an eyeball, the enable question behind a
+/// language-dependent toggle, and how its verdict works. `code` is the same
+/// closed `RuleId` union carried on findings, so a UI can join cards to
+/// findings and key translations off it.
+#[derive(Serialize, Tsify)]
+#[tsify(into_wasm_abi)]
+pub struct RuleCard {
+    pub code: RuleId,
+    pub title: String,
+    pub what: String,
+    pub why: String,
+    pub enable_question: Option<String>,
+    /// `"deterministic"` | `"corpus-relative"` | `"source-relative"`.
+    /// Corpus-relative rules carry scores and honour the sensitivity dial.
+    pub verdict: String,
+}
+
+/// The catalog plus the shared sensitivity dial: labelled `emit_score_min`
+/// stops, identical for every corpus-relative rule (they all emit the same
+/// score unit). Higher value = fewer, surer findings.
+#[derive(Serialize, Tsify)]
+#[tsify(into_wasm_abi)]
+pub struct RuleCatalog {
+    pub cards: Vec<RuleCard>,
+    pub sensitivity_stops: Vec<SensitivityStop>,
+}
+
+#[derive(Serialize, Tsify)]
+#[tsify(into_wasm_abi)]
+pub struct SensitivityStop {
+    pub emit_score_min: f32,
+    pub label: String,
+}
+
+/// The shipped English rule catalog — the reference text a consumer renders
+/// (or keys a translation off). Complete by construction: one card per
+/// `RuleId`.
+#[wasm_bindgen]
+pub fn rule_catalog() -> RuleCatalog {
+    RuleCatalog {
+        cards: ssc_core::rule_cards()
+            .into_iter()
+            .map(|c| RuleCard {
+                code: c.code,
+                title: c.title.to_string(),
+                what: c.what.to_string(),
+                why: c.why.to_string(),
+                enable_question: c.enable_question.map(str::to_string),
+                verdict: match c.verdict {
+                    ssc_core::Verdict::Deterministic => "deterministic",
+                    ssc_core::Verdict::CorpusRelative => "corpus-relative",
+                    ssc_core::Verdict::SourceRelative => "source-relative",
+                }
+                .to_string(),
+            })
+            .collect(),
+        sensitivity_stops: ssc_core::SENSITIVITY_STOPS
+            .iter()
+            .map(|&(v, label)| SensitivityStop {
+                emit_score_min: v,
+                label: label.to_string(),
+            })
+            .collect(),
+    }
+}
+
 /// Drop a book from cached `Stats` (e.g. it was removed from the project),
 /// returning the updated stats — the sanctioned deletion path so callers
 /// don't mutate the opaque value's internals. `book` is a 3-letter USFM code

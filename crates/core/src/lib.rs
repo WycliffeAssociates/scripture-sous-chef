@@ -10,6 +10,7 @@
 //! the orchestrator's job, via onion's `segments`. See ADR 0010 and
 //! `documentation/v1-reset-design.md`.
 
+pub mod catalog;
 pub mod charclass;
 mod charclass_table;
 pub mod config;
@@ -30,6 +31,7 @@ pub use config::{
     BracketBalanceConfig, CasingConfig, Config, ProportionalityConfig, PunctOnlyTokenConfig,
     PunctuationAdjacencyConfig, PunctuationSpacingConfig, RepeatedCharacterRunConfig,
 };
+pub use catalog::{RuleCard, SENSITIVITY_STOPS, Verdict, rule_cards};
 pub use diagnostics::{Finding, FindingArgs, LengthRatioScope, RuleId, Severity};
 pub use sid::{BookId, Sid};
 pub use span::{GraphemeSpan, Span, Utf16Span};
