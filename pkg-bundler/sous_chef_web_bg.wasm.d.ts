@@ -3,6 +3,7 @@
 export const memory: WebAssembly.Memory;
 export const analyze_vref: (a: any, b: number, c: number) => any;
 export const analyze_vref_stateful: (a: any, b: number, c: number, d: number) => any;
+export const rule_catalog: () => any;
 export const stats_remove_book: (a: any, b: number, c: number) => any;
 export const __wbindgen_malloc: (a: number, b: number) => number;
 export const __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;

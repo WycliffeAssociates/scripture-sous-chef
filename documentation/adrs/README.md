@@ -54,6 +54,7 @@ isn't visible from the code alone.
 | 0035 | 2026-07-06 | [Casing joins the evidence library — dominance verdict, aggregate stats](0035-casing-recast-on-dominance.md) | Accepted (amends 0017 casing shape) |
 | 0036 | 2026-07-06 | [Excess-whitespace reads Unicode classes — `Zs`+tab runs, STerm protection](0036-excess-whitespace-unicode-classes.md) | Accepted (amends 0014) |
 | 0037 | 2026-07-06 | [Bracket balance — UCD inventory, book-stream pairing, corpus-relative verdicts](0037-bracket-balance-corpus-relative.md) | Accepted (amends 0016) |
+| 0038 | 2026-07-06 | [The rule catalog — shipped plain-language cards and a two-tier config](0038-rule-catalog-two-tier-config.md) | Accepted |
 
 ## Format
 

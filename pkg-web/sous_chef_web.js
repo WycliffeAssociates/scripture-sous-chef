@@ -34,6 +34,17 @@ export function analyze_vref_stateful(target, source, config, prior) {
 }
 
 /**
+ * The shipped English rule catalog — the reference text a consumer renders
+ * (or keys a translation off). Complete by construction: one card per
+ * `RuleId`.
+ * @returns {RuleCatalog}
+ */
+export function rule_catalog() {
+    const ret = wasm.rule_catalog();
+    return ret;
+}
+
+/**
  * Drop a book from cached `Stats` (e.g. it was removed from the project),
  * returning the updated stats — the sanctioned deletion path so callers
  * don't mutate the opaque value's internals. `book` is a 3-letter USFM code

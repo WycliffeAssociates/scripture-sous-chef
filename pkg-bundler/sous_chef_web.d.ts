@@ -195,6 +195,26 @@ export interface SpacingCounts {
 }
 
 /**
+ * One rule\'s human-facing card (ADR 0038): plain-language title, what a
+ * finding is, why it might deserve an eyeball, the enable question behind a
+ * language-dependent toggle, and how its verdict works. `code` is the same
+ * closed `RuleId` union carried on findings, so a UI can join cards to
+ * findings and key translations off it.
+ */
+export interface RuleCard {
+    code: RuleId;
+    title: string;
+    what: string;
+    why: string;
+    enable_question: string | null;
+    /**
+     * `\"deterministic\"` | `\"corpus-relative\"` | `\"source-relative\"`.
+     * Corpus-relative rules carry scores and honour the sensitivity dial.
+     */
+    verdict: string;
+}
+
+/**
  * One verse\'s target/reference ratio, retained so `judge` can derive the
  * distribution and emit findings without the text. Wire-friendly (canonical
  * `sid` string, `f32` ratio, `u32` byte length for the finding range).
@@ -307,6 +327,16 @@ export type RuleId = "lex.excess-h-whitespace" | "hyg.tab-in-body" | "hyg.contro
 export type FindingArgs = { kind: "length-ratio"; ratio_pct: number; scope: LengthRatioScope } | { kind: "bracket-window"; window: DelimObservation[] } | { kind: "duplicate-word"; first_sid: string };
 
 /**
+ * The catalog plus the shared sensitivity dial: labelled `emit_score_min`
+ * stops, identical for every corpus-relative rule (they all emit the same
+ * score unit). Higher value = fewer, surer findings.
+ */
+export interface RuleCatalog {
+    cards: RuleCard[];
+    sensitivity_stops: SensitivityStop[];
+}
+
+/**
  * The return type. TS: `Finding[]`.
  */
 export type Findings = Finding[];
@@ -358,6 +388,11 @@ export interface SousConfig {
  */
 export type VrefMap = Record<string, string>;
 
+export interface SensitivityStop {
+    emit_score_min: number;
+    label: string;
+}
+
 
 /**
  * Analyze a vref text map. `target` is `{ sid -> text }`; `source` is an
@@ -376,6 +411,13 @@ export function analyze_vref(target: VrefMap, source?: VrefMap | null, config?: 
  * first call.
  */
 export function analyze_vref_stateful(target: VrefMap, source?: VrefMap | null, config?: SousConfig | null, prior?: Stats | null): Analysis;
+
+/**
+ * The shipped English rule catalog — the reference text a consumer renders
+ * (or keys a translation off). Complete by construction: one card per
+ * `RuleId`.
+ */
+export function rule_catalog(): RuleCatalog;
 
 /**
  * Drop a book from cached `Stats` (e.g. it was removed from the project),

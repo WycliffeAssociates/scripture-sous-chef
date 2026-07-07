@@ -68,6 +68,31 @@ The engine is designed to be cautious. We would rather miss a minor typo than ov
 * **Conservative thresholds:** We require overwhelming proof to learn a rule. For example, we only assume a character is a "sentence terminator" if it predicts a capital letter at least 85% of the time, and only if the math guarantees a less than 0.1% chance it's a coincidence.
 * **Hygiene vs. statistics:** Hygiene rules (like using invisible formatting characters by mistake) have maximum weight because they are *always* wrong. Statistical rules have lower weights because they are educated guesses.
 
+### The user-facing surface: cards and one dial (ADR 0038)
+
+The shipped rule catalog (`core::catalog`, wasm `rule_catalog()`) carries the
+plain-language text a consumer renders: per rule a **title**, one sentence on
+**what a finding is**, one on **why it may deserve an eyeball**, and — for
+language-dependent toggles — the **enable question** a translator answers
+("Does your language repeat words on purpose? If yes, leave this off"). The
+wording holds two lines: the *translation* is the authority, never "the
+language"; and findings are invitations to look, not verdicts.
+
+For every corpus-relative rule the single user dial is `emit_score_min`,
+because ADR 0032 unified the score unit — one set of labelled stops serves
+all of them (`catalog::SENSITIVITY_STOPS`):
+
+| `emit_score_min` | label |
+| --- | --- |
+| 0.9 | Only what this translation almost never does |
+| 0.7 | Unusual for this translation |
+| 0.5 | Anything even moderately unusual (shipped default) |
+
+Everything else — `convention_rate`, `confidence_z`, structure knobs like
+`word_recurrence_k` and `window_verses` — is the calibration tier: fully
+exposed in `Config` and the wasm overrides, documented in §6b, deliberately
+absent from the cards.
+
 ### Three Tiers of Configuration
 
 1. **Engine learns from the corpus** (default). No config needed.
