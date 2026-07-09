@@ -1,19 +1,19 @@
 //! Throwaway calibration harness — NOT the library path.
 //!
-//! ADR 0010 keeps file IO and segmentation out of `core`'s contract; this
-//! example exists only to run rules over the `corpora/` USFM trees and
-//! report finding volumes for calibration decisions (vision §10). Its
-//! naive marker stripping is good enough to measure with, and nothing
-//! else. Production consumers get verse text from onion.
+//! ADR 0010 keeps file IO out of `core`'s contract; this example exists only
+//! to run rules over the vref corpus files (ADR 0040) and report finding
+//! volumes for calibration decisions (vision §10). It reads
+//! `corpora/vref/<id>.txt` directly (`REF\ttext`); the text is already onion's
+//! projection, so there is no segmentation here.
 //!
 //! Usage:
 //!   # proportionality (target vs reference):
 //!   cargo run --release -p ssc-core --example calibrate -- \
-//!       corpora/bem_reg corpora/en_ulb
+//!       corpora/vref/WA-bem-reg.txt corpora/vref/WA-en-ulb.txt
 //!   # per-verse batch (one corpus, default config):
-//!   cargo run --release -p ssc-core --example calibrate -- corpora/en_ulb
+//!   cargo run --release -p ssc-core --example calibrate -- corpora/vref/WA-en-ulb.txt
 //!   # repeated-run score report / parameter sweep:
-//!   cargo run --release -p ssc-core --example calibrate -- --repeat corpora/en_ulb [rate K]
+//!   cargo run --release -p ssc-core --example calibrate -- --repeat corpora/vref/WA-en-ulb.txt [rate K]
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -31,15 +31,14 @@ use ssc_core::{
     analyze_with_config,
 };
 
-#[path = "../dev/usfm_naive.rs"]
-mod usfm_naive;
-use usfm_naive::load_corpus;
+#[path = "../dev/vref_io.rs"]
+mod vref_io;
+use vref_io::load_corpus;
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let (target_dir, source_dir, z_threshold) = match args.as_slice() {
-        // Dump a corpus as `{ "GEN 1:1": text, … }` JSON on stdout —
-        // input for the wasm-side bench (scripts/bench-wasm.mjs).
+        // Dump a corpus as `{ "GEN 1:1": text, … }` JSON on stdout (ad-hoc).
         [flag, t] if flag == "--json" => {
             let map: BTreeMap<String, String> = load_corpus(Path::new(t))
                 .iter()
@@ -101,7 +100,7 @@ fn main() {
         [t, s] => (t, s, ProportionalityConfig::default().z_threshold),
         [t, s, z] => (t, s, z.parse().expect("z threshold")),
         _ => {
-            eprintln!("usage: calibrate <target-corpus-dir> [<source-corpus-dir> [z]]");
+            eprintln!("usage: calibrate <target-vref-file> [<source-vref-file> [z]]");
             std::process::exit(2);
         }
     };
@@ -121,7 +120,7 @@ fn main() {
         },
     };
     let t0 = std::time::Instant::now();
-    let findings = rule.judge(&rule.reduce(&target, Some(&source)), &target);
+    let findings = rule.judge(&rule.reduce(&ssc_core::verse::by_book(&target), Some(&source), None).0, &ssc_core::verse::by_book(&target), None, None);
     eprintln!("proportionality check: {:?}", t0.elapsed());
 
     let mut per_book: BTreeMap<BookId, usize> = BTreeMap::new();
@@ -325,7 +324,7 @@ fn repeat_calib(dir: &Path, cfg: RepeatedCharacterRunConfig) {
         },
     };
     let t0 = std::time::Instant::now();
-    let repeat = rule.judge(&rule.reduce(&target, None), &target);
+    let repeat = rule.judge(&rule.reduce(&ssc_core::verse::by_book(&target), None, None).0, &ssc_core::verse::by_book(&target), None, None);
     eprintln!(
         "{corpus}: repeat reduce+judge {:?}; rate={} K={}",
         t0.elapsed(),
@@ -452,7 +451,7 @@ fn punct_only_calib(dir: &Path) {
     let rule = PunctOnlyToken {
         cfg: PunctOnlyTokenConfig { emit_score_min: 0.0, ..Default::default() },
     };
-    let findings = rule.judge(&rule.reduce(&target, None), &target);
+    let findings = rule.judge(&rule.reduce(&ssc_core::verse::by_book(&target), None, None).0, &ssc_core::verse::by_book(&target), None, None);
     report_scored("lex.punct-only-token", &target, &findings);
     let shipped = PunctOnlyTokenConfig::default().emit_score_min;
     let surfaced = findings
@@ -470,7 +469,7 @@ fn punct_calib(dir: &Path) {
         cfg: PunctuationAdjacencyConfig { emit_score_min: 0.0, ..Default::default() },
     };
     let t0 = std::time::Instant::now();
-    let findings = rule.judge(&rule.reduce(&target, None), &target);
+    let findings = rule.judge(&rule.reduce(&ssc_core::verse::by_book(&target), None, None).0, &ssc_core::verse::by_book(&target), None, None);
     eprintln!("punct reduce+judge: {:?}", t0.elapsed());
     report_scored("punct.adjacency-anomaly", &target, &findings);
 
@@ -496,7 +495,7 @@ fn spacing_calib(dir: &Path) {
         cfg: PunctuationSpacingConfig { emit_score_min: 0.0, ..Default::default() },
     };
     let t0 = std::time::Instant::now();
-    let findings = rule.judge(&rule.reduce(&target, None), &target);
+    let findings = rule.judge(&rule.reduce(&ssc_core::verse::by_book(&target), None, None).0, &ssc_core::verse::by_book(&target), None, None);
     eprintln!("spacing reduce+judge: {:?}", t0.elapsed());
     report_scored("punct.spacing-anomaly", &target, &findings);
 

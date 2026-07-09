@@ -7,7 +7,6 @@ use std::fmt;
 /// bytes so the type is `Copy` and equality is a single 24-bit compare.
 /// Validation (membership in the 66-book canon) is the ingest layer's job.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct BookId(pub [u8; 3]);
 
 impl BookId {
@@ -51,7 +50,6 @@ impl fmt::Display for BookId {
 /// Scripture verse identifier. 6 bytes, `Copy`, hashable, totally ordered
 /// by (book, chapter, verse).
 #[derive(Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct Sid {
     pub book: BookId,
     pub chapter: u16,
@@ -99,6 +97,61 @@ impl fmt::Display for Sid {
     }
 }
 
+// Wire format: both types cross serde as their canonical strings — `BookId`
+// as `"GEN"`, `Sid` as `"GEN 1:1"` — reusing `as_str`/`Display` out and
+// `from_str`/`parse` back in. Map keys and cached observations stay
+// byte-identical to the earlier String-keyed stats while the in-memory
+// types stay `Copy`: nothing allocates until the wire itself.
+#[cfg(feature = "serde")]
+mod serde_impls {
+    use super::{BookId, Sid};
+
+    impl serde::Serialize for BookId {
+        fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+            s.serialize_str(self.as_str())
+        }
+    }
+
+    impl<'de> serde::Deserialize<'de> for BookId {
+        fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+            struct V;
+            impl serde::de::Visitor<'_> for V {
+                type Value = BookId;
+                fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                    f.write_str("a 3-character ASCII USFM book code")
+                }
+                fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<BookId, E> {
+                    BookId::from_str(v)
+                        .ok_or_else(|| E::custom(format_args!("invalid book code {v:?}")))
+                }
+            }
+            d.deserialize_str(V)
+        }
+    }
+
+    impl serde::Serialize for Sid {
+        fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+            s.collect_str(self)
+        }
+    }
+
+    impl<'de> serde::Deserialize<'de> for Sid {
+        fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+            struct V;
+            impl serde::de::Visitor<'_> for V {
+                type Value = Sid;
+                fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                    f.write_str("a canonical sid like \"GEN 1:1\"")
+                }
+                fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Sid, E> {
+                    Sid::parse(v).ok_or_else(|| E::custom(format_args!("invalid sid {v:?}")))
+                }
+            }
+            d.deserialize_str(V)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -127,5 +180,24 @@ mod tests {
         assert!(BookId::from_str("GENESIS").is_none());
         assert!(Sid::parse("FOO 1:1").is_some()); // length-3 only check
         assert!(Sid::parse("GEN").is_none());
+    }
+
+    /// The wire format is pinned: canonical strings both ways, so the
+    /// `BookId`-keyed stats maps serialize byte-identically to the earlier
+    /// `String`-keyed ones and round-trip through the shell.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn serde_wire_is_canonical_strings() {
+        let sid = Sid::parse("JHN 3:16").unwrap();
+        assert_eq!(serde_json::to_string(&sid).unwrap(), "\"JHN 3:16\"");
+        assert_eq!(serde_json::to_string(&sid.book).unwrap(), "\"JHN\"");
+        assert_eq!(serde_json::from_str::<Sid>("\"JHN 3:16\"").unwrap(), sid);
+        assert_eq!(serde_json::from_str::<BookId>("\"JHN\"").unwrap(), sid.book);
+        // Map keys — the actual stats shape — work under serde_json, which
+        // requires string keys.
+        let map: std::collections::BTreeMap<BookId, u32> = [(sid.book, 1)].into();
+        assert_eq!(serde_json::to_string(&map).unwrap(), r#"{"JHN":1}"#);
+        assert!(serde_json::from_str::<BookId>("\"GENESIS\"").is_err());
+        assert!(serde_json::from_str::<Sid>("\"JHN\"").is_err());
     }
 }

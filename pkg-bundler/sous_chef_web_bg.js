@@ -20,14 +20,24 @@ export function analyze_vref(target, source, config) {
  * supersede their prior entries and stateful rules re-judge the whole
  * corpus from the cache. Omit `prior` (and pass the whole corpus) on the
  * first call.
+ *
+ * `changed` (ADR 0043): with a `prior`, book codes (e.g. `["GEN"]`) naming
+ * the books edited since that prior — only those are re-counted, while
+ * findings still cover everything supplied (the complete-snapshot call at
+ * roughly half full-pass cost). A promise, not a filter: name every edited
+ * book or its counts go silently stale. Unknown codes are ignored; omit it
+ * (or omit `prior`) for the original re-count-everything behavior.
  * @param {VrefMap} target
  * @param {VrefMap | null} [source]
  * @param {SousConfig | null} [config]
  * @param {Stats | null} [prior]
+ * @param {string[] | null} [changed]
  * @returns {Analysis}
  */
-export function analyze_vref_stateful(target, source, config, prior) {
-    const ret = wasm.analyze_vref_stateful(target, isLikeNone(source) ? 0 : addToExternrefTable0(source), isLikeNone(config) ? 0 : addToExternrefTable0(config), isLikeNone(prior) ? 0 : addToExternrefTable0(prior));
+export function analyze_vref_stateful(target, source, config, prior, changed) {
+    var ptr0 = isLikeNone(changed) ? 0 : passArrayJsValueToWasm0(changed, wasm.__wbindgen_malloc);
+    var len0 = WASM_VECTOR_LEN;
+    const ret = wasm.analyze_vref_stateful(target, isLikeNone(source) ? 0 : addToExternrefTable0(source), isLikeNone(config) ? 0 : addToExternrefTable0(config), isLikeNone(prior) ? 0 : addToExternrefTable0(prior), ptr0, len0);
     return ret;
 }
 
@@ -126,6 +136,16 @@ function handleError(f, args) {
 
 function isLikeNone(x) {
     return x === undefined || x === null;
+}
+
+function passArrayJsValueToWasm0(array, malloc) {
+    const ptr = malloc(array.length * 4, 4) >>> 0;
+    for (let i = 0; i < array.length; i++) {
+        const add = addToExternrefTable0(array[i]);
+        getDataViewMemory0().setUint32(ptr + 4 * i, add, true);
+    }
+    WASM_VECTOR_LEN = array.length;
+    return ptr;
 }
 
 function passStringToWasm0(arg, malloc, realloc) {

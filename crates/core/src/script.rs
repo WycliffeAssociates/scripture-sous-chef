@@ -1,74 +1,48 @@
 //! Per-character script identity, plus the NT book table.
 //!
-//! Backed by the `unicode-script` crate (UAX #24). See ADR 0009 for
-//! the reasoning behind delegating to a crate rather than maintaining
-//! hand-rolled codepoint ranges.
+//! Backed by the `unicode-script` crate (UAX #24). See ADR 0009 for the
+//! reasoning behind delegating to a crate rather than maintaining hand-rolled
+//! codepoint ranges, and ADR 0047 for storing the crate's **full** script set
+//! (no hand-curated subset) in the fused table.
 
 use unicode_script::{Script, UnicodeScript};
 
-/// Coarse script identity for a single character — a small `Copy` tag,
-/// not a string. Rules count, compare, and match on these directly, so
-/// the hot paths never hash or compare script *names* (see ADR 0015).
-///
-/// Variants the engine tracks; everything else (`Common`, `Inherited`,
-/// `Unknown`, unexercised scripts) collapses to `None` from `script_of`.
-///
-/// `#[repr(u8)]` with `Latin = 1` (0 reserved for `None`) so the tag packs
-/// into one byte of the fused [`Class`](crate::charclass) table — see
-/// [`to_repr`] / [`from_repr`] and ADR 0022.
-///
-/// `Ord`/serde/`Tsify` are here for the ZWSP context key (ADR: zero-width-space
-/// anomaly), which composes two script tags into a corpus-observed context and
-/// round-trips it through `Stats`. Fieldless enum ⇒ serde uses the variant name
-/// (`"Khmer"`), so the wire form is legible and stable.
+use crate::charclass_table::SCRIPT_NAMES;
+
+/// The fused-table byte for the engine's math pseudo-script (see
+/// [`script_byte_and_name`]). Sits in the free gap between the real UCD
+/// scripts (`1..=172`) and the crate's `Inherited`/`Common`/`Unknown`
+/// sentinels (`253..=255`), so no real script can collide with it.
+pub const MATH_BYTE: u8 = 200;
+
+/// Coarse script identity for a single character — a small `Copy` tag backed by
+/// the fused [`Class`](crate::charclass) table's one-byte script lane (ADR 0022,
+/// ADR 0047). Not the crate's `Script` value: the table byte is `0` for the
+/// non-participants (`Common`/`Inherited`/`Unknown`), `crate_disc + 1` for a
+/// real UCD script, or [`MATH_BYTE`]. Rules compare these by value and read a
+/// stable ISO 15924 [`name`](ScriptTag::name) for keys; the crate's `Script`
+/// (and its serde/`Ord`) is never needed at runtime, so this carries none of it.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
-#[repr(u8)]
-pub enum ScriptTag {
-    Latin = 1,
-    Greek,
-    Cyrillic,
-    Armenian,
-    Hebrew,
-    Arabic,
-    Syriac,
-    Thaana,
-    Nko,
-    Devanagari,
-    Bengali,
-    Gurmukhi,
-    Gujarati,
-    Oriya,
-    Tamil,
-    Telugu,
-    Kannada,
-    Malayalam,
-    Sinhala,
-    Thai,
-    Lao,
-    Tibetan,
-    Myanmar,
-    Georgian,
-    Hangul,
-    Ethiopic,
-    Cherokee,
-    CanadianAboriginal,
-    Khmer,
-    Mongolian,
-    /// Hiragana / Katakana / Han collapsed to one identity, matching the
-    /// prior block-based behaviour.
-    Cjk,
-    /// Mathematical Alphanumeric Symbols (U+1D400..=U+1D7FF) — `Common`
-    /// in the UCD, but treated as a distinct pseudo-script so homoglyph
-    /// detection flags e.g. math-bold M inside a Latin token. See ADR 0009.
-    MathAlphanumeric,
+pub struct ScriptTag(u8);
+
+impl ScriptTag {
+    pub(crate) fn from_byte(b: u8) -> ScriptTag {
+        ScriptTag(b)
+    }
+
+    /// The script's stable ISO 15924 short name (`"Latn"`, `"Cyrl"`, `"Hani"`,
+    /// `"Zmth"` for the math pseudo-script) — the corpus-key form the mixing
+    /// rule persists. Reads the generated [`SCRIPT_NAMES`] table.
+    pub fn name(self) -> &'static str {
+        SCRIPT_NAMES.get(self.0 as usize).copied().unwrap_or("")
+    }
 }
 
-/// Coarse script identity for a single character. Returns `None` for
-/// characters that have no script identity worth tracking here —
-/// digits, punctuation, whitespace (UCD `Common`), combining marks
-/// (`Inherited`), and unassigned codepoints.
+/// Coarse script identity for a single character. Returns `None` for characters
+/// with no positive script identity — UCD `Common` (digits, punctuation,
+/// whitespace), `Inherited` (combining marks), and `Unknown` (unassigned) — all
+/// of which pack to the table's `0` byte. Every other character, including
+/// scripts no rule has yet exercised, returns its real script (ADR 0047).
 ///
 /// Reads the fused [`Class`](crate::charclass) table (ADR 0022): one array
 /// index, no `unicode-script` binary search on the hot path.
@@ -76,88 +50,39 @@ pub fn script_of(c: char) -> Option<ScriptTag> {
     crate::charclass::class_of(c).script()
 }
 
-/// The script identity computed straight from `unicode-script` (plus the
-/// MathAlphanumeric override). This is the **generator input and test oracle**
-/// for the fused table's script byte — runtime code uses [`script_of`], which
-/// reads the table. See ADR 0022.
-pub fn script_from_unicode(c: char) -> Option<ScriptTag> {
-    // Mathematical Alphanumeric Symbols are `Common` in the UCD —
-    // they have no script identity by spec. For homoglyph detection
-    // that's exactly the wrong answer: U+1D400 (math-bold M) inside a
-    // Latin token is the homoglyph mistake we want to flag. Override
-    // ahead of the crate so the script-mixing rule sees a distinct
-    // pseudo-script for the whole block. See ADR 0009.
-    if matches!(c as u32, 0x1D400..=0x1D7FF) {
-        return Some(ScriptTag::MathAlphanumeric);
-    }
-    script_tag(c.script())
-}
-
-/// Every [`ScriptTag`], in `#[repr(u8)]` discriminant order (`Latin` first).
-/// The single list [`from_repr`] indexes and the round-trip test checks.
-const ALL_TAGS: [ScriptTag; 32] = {
-    use ScriptTag::*;
-    [
-        Latin, Greek, Cyrillic, Armenian, Hebrew, Arabic, Syriac, Thaana, Nko, Devanagari,
-        Bengali, Gurmukhi, Gujarati, Oriya, Tamil, Telugu, Kannada, Malayalam, Sinhala, Thai,
-        Lao, Tibetan, Myanmar, Georgian, Hangul, Ethiopic, Cherokee, CanadianAboriginal, Khmer,
-        Mongolian, Cjk, MathAlphanumeric,
-    ]
-};
-
-/// Pack `Option<ScriptTag>` into a byte for the fused table (`None = 0`,
-/// otherwise the tag's `1..=32` discriminant).
-pub fn to_repr(tag: Option<ScriptTag>) -> u8 {
-    tag.map_or(0, |t| t as u8)
-}
-
-/// Unpack a table script byte back to `Option<ScriptTag>`.
-pub fn from_repr(v: u8) -> Option<ScriptTag> {
-    (v >= 1 && (v as usize) <= ALL_TAGS.len()).then(|| ALL_TAGS[(v - 1) as usize])
-}
-
-/// Map a `Script` variant to the engine's coarse [`ScriptTag`].
+/// The fused-table script byte **and** its ISO 15924 name, computed straight
+/// from `unicode-script` (plus the math override). This is the **generator
+/// input and test oracle** for the table's script lane — runtime code uses
+/// [`script_of`], which reads the baked table. See ADR 0022 / ADR 0047.
 ///
-/// Variants not listed here intentionally collapse to `None`:
-/// `Common`, `Inherited`, `Unknown`, and any script the engine has
-/// not yet exercised. A rule that cares about an additional script
-/// can add a row to this table.
-fn script_tag(s: Script) -> Option<ScriptTag> {
-    use ScriptTag::*;
-    Some(match s {
-        Script::Latin => Latin,
-        Script::Greek => Greek,
-        Script::Cyrillic => Cyrillic,
-        Script::Armenian => Armenian,
-        Script::Hebrew => Hebrew,
-        Script::Arabic => Arabic,
-        Script::Syriac => Syriac,
-        Script::Thaana => Thaana,
-        Script::Nko => Nko,
-        Script::Devanagari => Devanagari,
-        Script::Bengali => Bengali,
-        Script::Gurmukhi => Gurmukhi,
-        Script::Gujarati => Gujarati,
-        Script::Oriya => Oriya,
-        Script::Tamil => Tamil,
-        Script::Telugu => Telugu,
-        Script::Kannada => Kannada,
-        Script::Malayalam => Malayalam,
-        Script::Sinhala => Sinhala,
-        Script::Thai => Thai,
-        Script::Lao => Lao,
-        Script::Tibetan => Tibetan,
-        Script::Myanmar => Myanmar,
-        Script::Georgian => Georgian,
-        Script::Hangul => Hangul,
-        Script::Ethiopic => Ethiopic,
-        Script::Cherokee => Cherokee,
-        Script::Canadian_Aboriginal => CanadianAboriginal,
-        Script::Khmer => Khmer,
-        Script::Mongolian => Mongolian,
-        Script::Hiragana | Script::Katakana | Script::Han => Cjk,
-        _ => return None,
-    })
+/// Encoding: `Common`/`Inherited`/`Unknown` → `(0, "")` (the non-participant
+/// sentinel; keeping the range table's `b == 0` skip, so unassigned space
+/// isn't stored); the math range → `(MATH_BYTE, "Zmth")`; every other script →
+/// `(crate_disc + 1, short_name)`. `crate_disc` is `< 200` for every real
+/// script, so `+ 1` never reaches `MATH_BYTE`.
+pub fn script_byte_and_name(c: char) -> (u8, &'static str) {
+    // Mathematical Alphanumeric Symbols are `Common` in the UCD — no script
+    // identity by spec. For homoglyph detection that's the wrong answer: a
+    // math-bold M inside a Latin token is exactly the mistake we flag. Override
+    // ahead of the crate so the mixing rule sees a distinct pseudo-script for
+    // the whole block. See ADR 0009.
+    if matches!(c as u32, 0x1D400..=0x1D7FF) {
+        return (MATH_BYTE, "Zmth");
+    }
+    let s = c.script();
+    match s {
+        Script::Common | Script::Inherited | Script::Unknown => (0, ""),
+        s => (s as u8 + 1, s.short_name()),
+    }
+}
+
+/// The script identity computed straight from `unicode-script` (the test
+/// oracle). Runtime code uses [`script_of`], which reads the baked table.
+pub fn script_from_unicode(c: char) -> Option<ScriptTag> {
+    match script_byte_and_name(c).0 {
+        0 => None,
+        b => Some(ScriptTag(b)),
+    }
 }
 
 pub fn is_nt_book(book: &str) -> bool {
@@ -197,64 +122,79 @@ pub fn is_nt_book(book: &str) -> bool {
 mod tests {
     use super::*;
 
-    #[test]
-    fn ascii_digit_is_not_latin() {
-        // The old hand-rolled table attributed ASCII digits to Latin
-        // because 0x0030..0x0039 fell in the 0x0000..=0x024F range.
-        // UCD says digits are Common; we honour that and return None.
-        assert_eq!(script_of('2'), None);
+    /// Names come from the ISO 15924 short codes the crate carries.
+    fn name(c: char) -> Option<&'static str> {
+        script_of(c).map(|t| t.name())
     }
 
     #[test]
-    fn ascii_punctuation_is_not_latin() {
+    fn common_characters_have_no_script() {
+        // Digits, punctuation, whitespace are UCD `Common` → None.
+        assert_eq!(script_of('2'), None);
         assert_eq!(script_of('.'), None);
         assert_eq!(script_of(','), None);
     }
 
     #[test]
     fn polytonic_greek_is_greek() {
-        // U+1F08 GREEK CAPITAL LETTER ALPHA WITH PSILI — Greek Extended
-        // block, missed entirely by the old 0x0370..=0x03FF range.
-        assert_eq!(script_of('\u{1F08}'), Some(ScriptTag::Greek));
+        // U+1F08 GREEK CAPITAL LETTER ALPHA WITH PSILI — Greek Extended block.
+        assert_eq!(name('\u{1F08}'), Some("Grek"));
     }
 
     #[test]
-    fn latin_supplement_is_latin() {
-        // U+00E9 (é) — Latin-1 Supplement, covered both before and now.
-        assert_eq!(script_of('\u{00E9}'), Some(ScriptTag::Latin));
+    fn latin_and_cyrillic_are_distinct() {
+        assert_eq!(name('\u{00E9}'), Some("Latn")); // é, Latin-1 Supplement
+        assert_eq!(name('\u{0430}'), Some("Cyrl")); // а, the canonical Latin homoglyph
+        assert_ne!(script_of('\u{00E9}'), script_of('\u{0430}'));
     }
 
     #[test]
-    fn cyrillic_a_is_cyrillic() {
-        // The canonical homoglyph for Latin 'a'.
-        assert_eq!(script_of('\u{0430}'), Some(ScriptTag::Cyrillic));
+    fn cjk_is_now_uncollapsed() {
+        // ADR 0047: Han / Hiragana / Katakana are distinct scripts now, not one
+        // `Cjk` tag — so intra-word Han+Hiragana is visible to the mixing rule.
+        assert_eq!(name('汉'), Some("Hani"));
+        assert_eq!(name('\u{3042}'), Some("Hira")); // あ
+        assert_eq!(name('\u{30A2}'), Some("Kana")); // ア
+        assert_ne!(script_of('汉'), script_of('\u{3042}'));
+    }
+
+    #[test]
+    fn previously_unexercised_script_now_has_identity() {
+        // Coptic was collapsed to `None` by the old 32-variant subset; it now
+        // carries its real script (ADR 0047).
+        assert_eq!(name('\u{2C80}'), Some("Copt")); // COPTIC CAPITAL LETTER ALFA
     }
 
     #[test]
     fn math_bold_m_overrides_common() {
-        assert_eq!(script_of('\u{1D400}'), Some(ScriptTag::MathAlphanumeric));
+        assert_eq!(name('\u{1D400}'), Some("Zmth"));
     }
 
     #[test]
     fn combining_mark_is_scriptless() {
-        // U+0301 COMBINING ACUTE ACCENT — Inherited.
+        // U+0301 COMBINING ACUTE ACCENT — Inherited → None.
         assert_eq!(script_of('\u{0301}'), None);
     }
 
     #[test]
-    fn repr_round_trips_every_tag() {
-        assert_eq!(from_repr(0), None);
-        for &t in &ALL_TAGS {
-            assert_eq!(from_repr(to_repr(Some(t))), Some(t), "round-trip {t:?}");
+    fn math_byte_does_not_collide_with_any_real_script() {
+        // Every real script packs to `crate_disc + 1 < MATH_BYTE`.
+        for cp in 0u32..=0x10FFFF {
+            let Some(c) = char::from_u32(cp) else { continue };
+            if script_byte_and_name(c).0 == MATH_BYTE {
+                assert!(
+                    (0x1D400..=0x1D7FF).contains(&cp),
+                    "non-math scalar U+{cp:04X} collided with MATH_BYTE"
+                );
+            }
         }
-        assert_eq!(from_repr(255), None); // out-of-range byte -> None
     }
 
     /// The table-backed `script_of` must equal the `unicode-script` oracle
     /// across a script spread (the fused byte was generated from it).
     #[test]
     fn table_script_matches_oracle() {
-        let sample = "Aa Ελ де देव தமிழ் ไทย 한국 汉字 \u{1D400} 2.,\u{0301}";
+        let sample = "Aa Ελ де देव தமிழ் ไทย 한국 汉字 \u{3042}\u{30A2} \u{2C80} \u{1D400} 2.,\u{0301}";
         for c in sample.chars() {
             assert_eq!(script_of(c), script_from_unicode(c), "script {c:?}");
         }

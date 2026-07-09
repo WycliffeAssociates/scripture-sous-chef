@@ -14,6 +14,10 @@ rule ids). For the `.sous/rules.json` config schema, see
 [`../configuration/rules.md`](../configuration/rules.md); for the scoring /
 aggregation model, see [`../config.md`](../config.md).
 
+For the cross-cutting view of every rule's **user-facing messaging, message
+args, and fix capability** (what a front end can `replace()`), see
+[`messaging-and-fixes.md`](messaging-and-fixes.md).
+
 ## Families
 
 | File | Namespace | Rules |

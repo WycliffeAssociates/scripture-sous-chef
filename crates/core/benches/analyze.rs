@@ -10,11 +10,17 @@
 //! gitignored):
 //! - `analyze/full_bible`   — en_ulb, ~31k verses, `Config::v1_defaults()`
 //! - `analyze/nt`           — en_ulb NT subset, ~7.9k verses
-//! - `analyze/nt_rayon`     — same NT, per-verse loop fanned out with
-//!   rayon **in the bench only** — what a native (non-wasm) consumer
-//!   could buy by parallelising around the library; core stays serial
+//! - `analyze/incremental_edit_{3JN,MAT,PSA}` — the local-echo call: cached
+//!   corpus `Stats` as prior, only the edited book supplied (ADR 0017),
+//!   across the book-size spread (floor / large / largest)
+//! - `analyze/changed_edit_{3JN,MAT,PSA}` — the complete-snapshot call
+//!   (ADR 0043): whole corpus + prior + `changed=[book]`; counting is
+//!   book-scoped, emission is global
 //! - `analyze/full_devanagari`— hi_ulb, the expensive-script case
 //! - `proportionality/nt_vs_bible` — bem_reg vs en_ulb through the rule
+//!
+//! All serial under default features; rerun with `--features parallel` for
+//! the native fan-out (ADR 0018/0042) — same benches, no mirror code.
 //!
 //! Run: `cargo bench -p ssc-core`
 //! The wasm-side equivalent is `npm run bench:wasm` (same NT through
@@ -22,43 +28,27 @@
 //! Baseline numbers: `documentation/calibration/2026-06-09-perf-baseline.md`
 
 use std::hint::black_box;
-use std::path::Path;
 
-use criterion::{Criterion, Throughput, criterion_group, criterion_main};
-use rayon::prelude::*;
+use criterion::{BatchSize, Criterion, Throughput, criterion_group, criterion_main};
 use ssc_core::config::ProportionalityConfig;
-use ssc_core::rule::{StatefulRule, per_verse_rules};
+use ssc_core::rule::StatefulRule;
 use ssc_core::script::is_nt_book;
 use ssc_core::signals::proportionality::ProjectLengthRatio;
-use ssc_core::{Config, Finding, VerseMap, analyze};
+use ssc_core::{Config, VerseMap, analyze, analyze_stateful};
 
-#[path = "../dev/usfm_naive.rs"]
-mod usfm_naive;
-use usfm_naive::load_corpus;
+#[path = "../dev/vref_io.rs"]
+mod vref_io;
+use vref_io::{corpus_path, load_corpus};
 
-/// Resolve a corpus by its bare name (e.g. `en_ulb`) under `corpora/repos/`,
-/// where each is a `<provider>__<name>` directory (the folder layout the
-/// corpus tooling produces). Returns `None` (bench skips) if absent.
-fn corpus(name: &str) -> Option<VerseMap> {
-    let repos = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../corpora/repos");
-    let dir = std::fs::read_dir(&repos)
-        .ok()?
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| p.is_dir())
-        .find(|p| {
-            p.file_name()
-                .and_then(|n| n.to_str())
-                .map(|f| f.rsplit_once("__").map_or(f, |(_, n)| n) == name)
-                .unwrap_or(false)
-        });
-    match dir {
-        Some(dir) => Some(load_corpus(&dir)),
-        None => {
-            eprintln!("corpus '{name}' not present under corpora/repos — skipping its benches");
-            None
-        }
+/// Resolve a corpus by id (e.g. `WA-en-ulb`) to its vref file under
+/// `corpora/vref/` (ADR 0040). Returns `None` (bench skips) if absent.
+fn corpus(id: &str) -> Option<VerseMap> {
+    let path = corpus_path(id);
+    if !path.exists() {
+        eprintln!("corpus '{id}' not present under corpora/vref — skipping its benches");
+        return None;
     }
+    Some(load_corpus(&path))
 }
 
 fn bench_analyze(c: &mut Criterion) {
@@ -66,7 +56,7 @@ fn bench_analyze(c: &mut Criterion) {
     // A full-Bible pass is ~1s; keep wall time sane without losing signal.
     g.sample_size(10);
 
-    if let Some(bible) = corpus("en_ulb") {
+    if let Some(bible) = corpus("WA-en-ulb") {
         let nt: VerseMap = bible
             .iter()
             .filter(|(sid, _)| is_nt_book(sid.book.as_str()))
@@ -81,13 +71,64 @@ fn bench_analyze(c: &mut Criterion) {
         g.throughput(Throughput::Elements(nt.len() as u64));
         g.bench_function("nt", |b| b.iter(|| analyze(black_box(&nt), None)));
 
-        g.throughput(Throughput::Elements(nt.len() as u64));
-        g.bench_function("nt_rayon", |b| {
-            b.iter(|| analyze_par(black_box(&nt), &Config::v1_defaults()))
-        });
+        // The editor's steady state (ADR 0017): the full corpus was analyzed
+        // once and its `Stats` cached; a chapter edit re-supplies its whole
+        // book (book granularity is the supersede unit) with that prior. This
+        // is the incremental cost a keystroke-adjacent consumer pays —
+        // measured without the prior clone (`iter_batched` setup), since the
+        // shell hands the value back rather than rebuilding it. The spread of
+        // book sizes bounds the range: 3JN (~15 verses, floor), MAT (large),
+        // PSA (~2.5k verses, the worst case).
+        let cfg = Config::v1_defaults();
+        let (_, cached) = analyze_stateful(&bible, None, &cfg, None, None);
+        for code in ["3JN", "MAT", "PSA"] {
+            let mut book: VerseMap = bible
+                .iter()
+                .filter(|(sid, _)| sid.book.as_str() == code)
+                .map(|(s, t)| (*s, t.clone()))
+                .collect();
+            let Some(&first) = book.keys().next() else {
+                eprintln!("{code} not present in en_ulb — skipping its bench");
+                continue;
+            };
+            book.get_mut(&first).unwrap().push_str(" edited");
+            g.throughput(Throughput::Elements(book.len() as u64));
+            g.bench_function(format!("incremental_edit_{code}"), |b| {
+                b.iter_batched(
+                    || cached.clone(),
+                    |prior| analyze_stateful(black_box(&book), None, black_box(&cfg), Some(prior), None),
+                    BatchSize::LargeInput,
+                )
+            });
+
+            // The complete-snapshot call (ADR 0043): whole corpus supplied,
+            // `changed` names the edited book — only it re-counts, findings
+            // cover everything (a tipped convention re-emits in every book,
+            // this same call). The payoff vs `full_bible` is the counting
+            // saved; vs `incremental_edit_*` it buys global consistency.
+            let mut edited = bible.clone();
+            edited.get_mut(&first).unwrap().push_str(" edited");
+            let changed = [ssc_core::BookId::from_str(code).unwrap()];
+            g.throughput(Throughput::Elements(edited.len() as u64));
+            g.bench_function(format!("changed_edit_{code}"), |b| {
+                b.iter_batched(
+                    || cached.clone(),
+                    |prior| {
+                        analyze_stateful(
+                            black_box(&edited),
+                            None,
+                            black_box(&cfg),
+                            Some(prior),
+                            Some(black_box(&changed)),
+                        )
+                    },
+                    BatchSize::LargeInput,
+                )
+            });
+        }
     }
 
-    if let Some(dev) = corpus("hi_ulb") {
+    if let Some(dev) = corpus("WA-hi-ulb") {
         g.throughput(Throughput::Elements(dev.len() as u64));
         g.bench_function("full_devanagari", |b| {
             b.iter(|| analyze(black_box(&dev), None))
@@ -97,40 +138,55 @@ fn bench_analyze(c: &mut Criterion) {
     g.finish();
 }
 
-/// What `analyze` looks like with the per-verse loop fanned out over rayon —
-/// a perf probe quantifying native headroom (per-verse rules are `Sync` by
-/// contract). This now exists in the library proper behind the `parallel`
-/// feature (ADR 0018); it measures only the per-verse phase and asserts no
-/// correctness, so it can't drift the way a consumer copy did.
-// TODO: once a bench can build core with `--features parallel`, retire this
-// and bench `analyze` directly under the feature instead of mirroring the
-// phase here.
-fn analyze_par(target: &VerseMap, config: &Config) -> Vec<Finding> {
-    let rules: Vec<_> = per_verse_rules()
+// The old `nt_rayon` bench — a bench-local mirror of the per-verse rayon
+// fan-out — is retired: the library now parallelizes both phases for real
+// behind the `parallel` feature (ADR 0018/0042), so the parallel numbers
+// come from `cargo bench -p ssc-core --features parallel` with no mirror
+// to drift.
+
+/// The counting-vs-emission split (ADR 0043 territory): how much of the
+/// stateful phase is `reduce` (invalidated only by text edits, book-granular)
+/// vs `judge` (re-paid by any complete-emission call). This is the number
+/// that prices a hypothetical `changed: &[BookId]` argument — a whole-corpus
+/// call that re-counts one book saves ~the reduce line and still pays the
+/// judge line. Tokens are `None` here (no shared cache), so repeated-run
+/// tokenizes in both phases — a slight overcount of each, same direction.
+fn bench_phases(c: &mut Criterion) {
+    let Some(bible) = corpus("WA-en-ulb") else {
+        return;
+    };
+    let cfg = Config::v1_defaults();
+    let books = ssc_core::verse::by_book(&bible);
+    let rules: Vec<_> = ssc_core::rule::stateful_rules(&cfg)
         .into_iter()
-        .filter(|r| config.is_enabled(r.id()))
+        .filter(|r| cfg.is_enabled(r.id()))
         .collect();
-    target
-        .par_iter()
-        .flat_map_iter(|(&sid, text)| {
-            rules.iter().flat_map(move |r| {
-                let code = r.id();
-                let severity = r.severity();
-                r.check(text).into_iter().map(move |range| Finding {
-                    sid,
-                    code,
-                    severity,
-                    range,
-                    score: None,
-                    args: None,
-                })
-            })
+
+    let mut g = c.benchmark_group("phases");
+    g.sample_size(10);
+    g.bench_function("reduce_full", |b| {
+        b.iter(|| {
+            rules
+                .iter()
+                .map(|r| r.reduce(black_box(&books), None, None).0)
+                .collect::<Vec<_>>()
         })
-        .collect()
+    });
+    let merged: Vec<_> = rules.iter().map(|r| r.reduce(&books, None, None).0).collect();
+    g.bench_function("judge_full", |b| {
+        b.iter(|| {
+            rules
+                .iter()
+                .zip(&merged)
+                .map(|(r, m)| r.judge(black_box(m), black_box(&books), None, None))
+                .collect::<Vec<_>>()
+        })
+    });
+    g.finish();
 }
 
 fn bench_proportionality(c: &mut Criterion) {
-    let (Some(target), Some(source)) = (corpus("bem_reg"), corpus("en_ulb")) else {
+    let (Some(target), Some(source)) = (corpus("WA-bem-reg"), corpus("WA-en-ulb")) else {
         return;
     };
     let rule = ProjectLengthRatio {
@@ -139,11 +195,19 @@ fn bench_proportionality(c: &mut Criterion) {
 
     let mut g = c.benchmark_group("proportionality");
     g.throughput(Throughput::Elements(target.len() as u64));
+    let books = ssc_core::verse::by_book(&target);
     g.bench_function("nt_vs_bible", |b| {
-        b.iter(|| rule.judge(&rule.reduce(black_box(&target), Some(black_box(&source))), black_box(&target)))
+        b.iter(|| {
+            rule.judge(
+                &rule.reduce(black_box(&books), Some(black_box(&source)), None).0,
+                black_box(&books),
+                None,
+                None,
+            )
+        })
     });
     g.finish();
 }
 
-criterion_group!(benches, bench_analyze, bench_proportionality);
+criterion_group!(benches, bench_analyze, bench_phases, bench_proportionality);
 criterion_main!(benches);

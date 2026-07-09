@@ -126,6 +126,20 @@ pub struct DelimObservation {
     pub matched: bool,
 }
 
+/// Which of `punct.bracket-balance`'s two corpus conventions a finding
+/// broke — so the consumer knows which descriptive sentence the counts in
+/// [`FindingArgs::BracketWindow`] belong to. `Pairing`: the family is closed
+/// at all (`majority` = matched delimiter events); `ShortSpan`: the family's
+/// pairs close within the window (`majority` = pairs closing in-window).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "kebab-case"))]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+pub enum BracketMeasure {
+    Pairing,
+    ShortSpan,
+}
+
 /// Which distribution flagged a `prop.length-ratio` verse, with the robust
 /// z-score(s) that did. Modelled so a scope cannot exist without its
 /// score(s): `Both` carries both, the single scopes carry one. The sign of
@@ -164,10 +178,55 @@ pub enum FindingArgs {
         scope: LengthRatioScope,
     },
     /// `punct.bracket-balance`: every delimiter the matcher saw within the
-    /// window around the orphan, so the consumer can render the full
-    /// bracket context. The finding's `range` anchors the orphan itself.
+    /// window around the orphan, so the consumer can render the full bracket
+    /// context (the finding's `range` anchors the orphan itself), plus the
+    /// corpus convention the finding broke as a raw share. `measure` says
+    /// which convention; `majority / total` is that convention's descriptive
+    /// rate — the plain "this family is closed 99% of the time (n = 2043)"
+    /// the Wilson-bound `score` deliberately isn't (ADR 0048).
     #[cfg_attr(feature = "serde", serde(rename = "bracket-window"))]
-    BracketWindow { window: Vec<DelimObservation> },
+    BracketWindow {
+        window: Vec<DelimObservation>,
+        measure: BracketMeasure,
+        majority: u32,
+        total: u32,
+    },
+    /// `punct.spacing-anomaly`: the mark's corpus-wide spaced-vs-attached
+    /// counts, so the consumer can render "`,` is attached 96% of the time
+    /// (n = 1053)" — the descriptive rate behind the Wilson-bound `score`
+    /// (ADR 0048). The flagged occurrence is always the minority form; the
+    /// majority is `max(spaced, attached)` and `total = spaced + attached`.
+    #[cfg_attr(feature = "serde", serde(rename = "spacing-convention"))]
+    SpacingConvention { mark: char, spaced: u32, attached: u32 },
+    /// `case.sentence-initial-lowercase`: the sentence-initial glyph's
+    /// corpus-wide uppercase-vs-total counts, so the consumer can render
+    /// "sentence-initial `к` is uppercase 98% of the time (n = 520)" — the
+    /// descriptive rate behind the Wilson-bound `score` (ADR 0048). The
+    /// flagged token is the lowercase minority; `upper / total` is the
+    /// majority uppercase share.
+    #[cfg_attr(feature = "serde", serde(rename = "casing-convention"))]
+    CasingConvention { glyph: char, upper: u32, total: u32 },
+    /// `lex.punct-only-token`: how rare this stranded-punctuation pattern is —
+    /// `count` occurrences across `units` lexical units (ADR 0048). The plain
+    /// rarity behind the score; the flagged mark is in the finding's `range`.
+    #[cfg_attr(feature = "serde", serde(rename = "punct-only-rate"))]
+    PunctOnlyRate { count: u32, units: u32 },
+    /// `punct.adjacency-anomaly`: the two independent convention axes behind
+    /// the score, as raw counts (ADR 0048). `pattern` is the flagged run;
+    /// `k / lead_n` is how often it occurs among that lead glyph's runs;
+    /// `books / corpus` is how many books use it. No single %, so both ship.
+    #[cfg_attr(feature = "serde", serde(rename = "adjacency-evidence"))]
+    AdjacencyEvidence { pattern: String, k: u32, lead_n: u32, books: u32, corpus: u32 },
+    /// `uni.mixed-script-in-token`: the convention axes behind the score, as
+    /// raw counts (ADR 0048). `k / n` is this script mix's share of its
+    /// dominant script's tokens; `books / corpus` is how many books use it.
+    #[cfg_attr(feature = "serde", serde(rename = "script-mix-evidence"))]
+    ScriptMixEvidence { k: u32, n: u32, books: u32, corpus: u32 },
+    /// `lex.repeated-character-run`: the repeated character and how many times
+    /// it repeats in the flagged run (ADR 0048) — the plain fact behind the
+    /// score, in words a reviewer reads rather than convention strengths.
+    #[cfg_attr(feature = "serde", serde(rename = "repeat-evidence"))]
+    RepeatEvidence { ch: char, run: u32 },
     /// `lex.duplicate-word`, **cross-verse** case only: the doubled word
     /// straddles a verse boundary, so the finding anchors the deletable
     /// *second* occurrence (its `sid`/`range`) and carries the *first*

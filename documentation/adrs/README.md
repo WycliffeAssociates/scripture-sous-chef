@@ -56,6 +56,15 @@ isn't visible from the code alone.
 | 0037 | 2026-07-06 | [Bracket balance — UCD inventory, book-stream pairing, corpus-relative verdicts](0037-bracket-balance-corpus-relative.md) | Accepted (amends 0016) |
 | 0038 | 2026-07-06 | [The rule catalog — shipped plain-language cards and a two-tier config](0038-rule-catalog-two-tier-config.md) | Accepted |
 | 0039 | 2026-07-07 | [Quote / discourse-marker balance stays deferred — now with census data](0039-quote-balance-deferred.md) | Deferred |
+| 0040 | 2026-07-07 | [One corpus format — self-describing vref files from external producers](0040-vref-corpus-format-onion-builder.md) | Accepted |
+| 0041 | 2026-07-07 | [Stateful-phase hot-path cleanup — grapheme::count, Po bit, Copy keys, bracket gate, offset chunking](0041-stateful-phase-hot-path-cleanup.md) | Accepted (extends 0017/0021/0022) |
+| 0042 | 2026-07-07 | [The stateful phase fans out per book — books-shaped rules, shared grouping, judge on the token cache](0042-stateful-phase-book-fanout.md) | Accepted (extends 0017/0018) |
+| 0043 | 2026-07-07 | [`changed` narrows counting, never emission — the complete-snapshot call](0043-changed-scope-complete-snapshot.md) | Accepted (extends 0017/0042) |
+| 0044 | 2026-07-07 | [Reduce forwards its candidate sites to judge — within one call, never on the wire](0044-reduce-judge-site-forwarding.md) | Accepted (extends 0017/0043) |
+| 0045 | 2026-07-07 | [The scalar tape — decode + classify each verse once, then every scan consumes the tape](0045-scalar-tape.md) | Accepted (extends 0021/0022/0041) |
+| 0046 | 2026-07-08 | [Per-verse "dirty bits" prefilter — measured, and deferred](0046-per-verse-dirty-bits-prefilter.md) | Deferred (spike only; extends 0045/0022) |
+| 0047 | 2026-07-08 | [Store the crate's full script set faithfully; push mixing policy into a probabilistic rule](0047-full-script-set-no-collapse-probabilistic-mixing.md) | Accepted (amends 0009/0022) |
+| 0048 | 2026-07-08 | [Ship the raw convention share alongside the Wilson-bound score](0048-descriptive-share-args-for-dominance-rules.md) | Accepted (extends 0029/0010) |
 
 ## Format
 

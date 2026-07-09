@@ -5,28 +5,24 @@
 //
 // Usage:
 //   npm run build:wasm          # if pkg-web is stale
-//   npm run bench:wasm          # defaults to corpora/bem_reg
-//   node scripts/bench-wasm.mjs corpora/en_ulb
+//   npm run bench:wasm          # defaults to WA-bem-reg
+//   node scripts/bench-wasm.mjs WA-en-ulb
 //
 // Compare against `analyze/nt` (native serial) and `analyze/nt_rayon`
 // in documentation/calibration/2026-06-09-perf-baseline.md.
 
 import { readFileSync } from "node:fs";
-import { spawnSync } from "node:child_process";
 
-const corpus = process.argv[2] ?? "corpora/bem_reg";
+const corpus = process.argv[2] ?? "WA-bem-reg";
 
-// The naive USFM loader lives in Rust dev tooling; reuse it for parity.
-const dump = spawnSync(
-  "cargo",
-  ["run", "--release", "-p", "ssc-core", "--example", "calibrate", "--", "--json", corpus],
-  { encoding: "utf8", maxBuffer: 1 << 28 },
-);
-if (dump.status !== 0) {
-  console.error(dump.stderr);
-  process.exit(1);
+// Read the vref file directly (ADR 0040: `REF\ttext` per line) into the
+// `{ "GEN 1:1": text, … }` map `analyze_vref` wants — no USFM, no subprocess.
+const path = new URL(`../corpora/vref/${corpus}.txt`, import.meta.url);
+const target = {};
+for (const line of readFileSync(path, "utf8").split("\n")) {
+  const tab = line.indexOf("\t");
+  if (tab > 0) target[line.slice(0, tab)] = line.slice(tab + 1);
 }
-const target = JSON.parse(dump.stdout);
 const verses = Object.keys(target).length;
 
 const mod = await import("../pkg-web/sous_chef_web.js");

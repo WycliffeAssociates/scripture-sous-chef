@@ -24,15 +24,13 @@
 
 use std::collections::BTreeMap;
 
-use unicode_segmentation::UnicodeSegmentation;
-
 use crate::config::ProportionalityConfig;
 use crate::diagnostics::{Finding, FindingArgs, LengthRatioScope, RuleId, Severity};
-use crate::rule::StatefulRule;
-use crate::sid::Sid;
+use crate::rule::{self, StatefulRule, TokenCache};
+use crate::sid::{BookId, Sid};
 use crate::span::Span;
 use crate::stats::RuleStats;
-use crate::verse::VerseMap;
+use crate::verse::{Books, VerseMap};
 
 pub const PROJECT_LENGTH_RATIO: RuleId = RuleId::ProjectLengthRatio;
 
@@ -41,24 +39,27 @@ pub const PROJECT_LENGTH_RATIO: RuleId = RuleId::ProjectLengthRatio;
 const MAD_TO_SIGMA: f64 = 0.6745;
 
 /// One verse's target/reference ratio, retained so `judge` can derive the
-/// distribution and emit findings without the text. Wire-friendly (canonical
-/// `sid` string, `f32` ratio, `u32` byte length for the finding range).
+/// distribution and emit findings without the text. `sid` is a `Copy` value
+/// in memory and the canonical `"GEN 1:1"` string on the wire (its serde
+/// impl); `f32` ratio, `u32` byte length for the finding range.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 struct RatioObs {
-    sid: String,
+    #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+    sid: Sid,
     ratio: f32,
     len: u32,
 }
 
-/// Cached proportionality statistics: the raw ratios keyed by book code, so
+/// Cached proportionality statistics: the raw ratios keyed by book, so
 /// an edit supersedes only its book and the median/MAD is derived at `judge`.
 #[derive(Debug, Clone, Default, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct ProportionalityStats {
-    per_book: BTreeMap<String, Vec<RatioObs>>,
+    #[cfg_attr(feature = "wasm", tsify(type = "Record<string, RatioObs[]>"))]
+    per_book: BTreeMap<BookId, Vec<RatioObs>>,
 }
 
 impl ProportionalityStats {
@@ -70,8 +71,8 @@ impl ProportionalityStats {
         self
     }
 
-    pub(crate) fn remove_book(&mut self, book: &str) {
-        self.per_book.remove(book);
+    pub(crate) fn remove_book(&mut self, book: BookId) {
+        self.per_book.remove(&book);
     }
 }
 
@@ -84,39 +85,55 @@ impl StatefulRule for ProjectLengthRatio {
         PROJECT_LENGTH_RATIO
     }
 
-    fn reduce(&self, target: &VerseMap, source: Option<&VerseMap>) -> RuleStats {
-        let mut stats = ProportionalityStats::default();
+    fn reduce(
+        &self,
+        books: &Books<'_>,
+        source: Option<&VerseMap>,
+        _tokens: Option<&TokenCache>,
+    ) -> (RuleStats, rule::RuleSites) {
         // Ratios for target ∩ source, grouped by book ("length" is grapheme
         // count — vision §12.5; empty sides carry no signal and would divide
-        // by zero).
-        for (sid, text) in target {
-            // Every book present in `target` gets a (possibly empty) bucket,
-            // so on merge it *supersedes* any prior entry — even when it now
-            // has no usable ratios (source gone, or empty sides). Without
-            // this, an edited book that lost its ratios would keep
-            // re-emitting the prior reduction's stale findings.
-            let bucket = stats
-                .per_book
-                .entry(sid.book.as_str().to_string())
-                .or_default();
-            let Some(src_text) = source.and_then(|s| s.get(sid)) else {
-                continue;
-            };
-            let t = text.graphemes(true).count();
-            let s = src_text.graphemes(true).count();
-            if t == 0 || s == 0 {
-                continue;
+        // by zero). Every book present gets a (possibly empty) bucket, so on
+        // merge it *supersedes* any prior entry — even when it now has no
+        // usable ratios (source gone, or empty sides). Without this, an
+        // edited book that lost its ratios would keep re-emitting the prior
+        // reduction's stale findings.
+        let per_book = rule::map_books(books, |book, verses| {
+            let mut bucket = Vec::new();
+            for (sid, text) in verses {
+                let Some(src_text) = source.and_then(|s| s.get(sid)) else {
+                    continue;
+                };
+                let t = crate::grapheme::count(text);
+                let s = crate::grapheme::count(src_text);
+                if t == 0 || s == 0 {
+                    continue;
+                }
+                bucket.push(RatioObs {
+                    sid: *sid,
+                    ratio: (t as f64 / s as f64) as f32,
+                    len: text.len() as u32,
+                });
             }
-            bucket.push(RatioObs {
-                sid: sid.to_string(),
-                ratio: (t as f64 / s as f64) as f32,
-                len: text.len() as u32,
-            });
-        }
-        RuleStats::Proportionality(stats)
+            (book, bucket)
+        })
+        .into_iter()
+        .collect();
+        // No sites to forward (ADR 0044): judge emits from the cached ratios
+        // and never scans text.
+        (
+            RuleStats::Proportionality(ProportionalityStats { per_book }),
+            rule::RuleSites::Proportionality,
+        )
     }
 
-    fn judge(&self, stats: &RuleStats, _target: &VerseMap) -> Vec<Finding> {
+    fn judge(
+        &self,
+        stats: &RuleStats,
+        _books: &Books<'_>,
+        _tokens: Option<&TokenCache>,
+        _sites: Option<&rule::RuleSites>,
+    ) -> Vec<Finding> {
         // Proportionality caches its per-verse ratios (a sparse sufficient
         // statistic), so it emits from them directly — no re-scan of `target`.
         let RuleStats::Proportionality(stats) = stats else {
@@ -167,11 +184,8 @@ impl StatefulRule for ProjectLengthRatio {
                     .into_iter()
                     .chain(project_fires.then(|| project_z.unwrap().abs()))
                     .fold(0.0_f64, f64::max);
-                let Some(sid) = Sid::parse(&o.sid) else {
-                    continue;
-                };
                 out.push(Finding {
-                    sid,
+                    sid: o.sid,
                     code: PROJECT_LENGTH_RATIO,
                     severity: Severity::Warning,
                     // The finding anchors the whole verse; `sid` carries identity.
@@ -276,7 +290,7 @@ mod tests {
 
     /// Proportionality ignores the char table, so an empty one is fine here.
     fn run(rule: &ProjectLengthRatio, target: &VerseMap, source: Option<&VerseMap>) -> Vec<Finding> {
-        rule.judge(&rule.reduce(target, source), target)
+        rule.judge(&rule.reduce(&crate::verse::by_book(target), source, None).0, &crate::verse::by_book(target), None, None)
     }
 
     #[test]
@@ -425,13 +439,13 @@ mod tests {
                 t.push('x');
             }
         }
-        let prior = r.reduce(&target, Some(&source));
-        assert_eq!(r.judge(&prior, &target).len(), 1);
+        let prior = r.reduce(&crate::verse::by_book(&target), Some(&source), None).0;
+        assert_eq!(r.judge(&prior, &crate::verse::by_book(&target), None, None).len(), 1);
 
         // Fix verse 3 to a normal length, re-reduce, merge (supersede GEN).
         target.insert(sid("GEN", 3), "abcdefghij ".repeat(4));
-        let merged = prior.merge(r.reduce(&target, Some(&source)));
-        assert!(r.judge(&merged, &target).is_empty());
+        let merged = prior.merge(r.reduce(&crate::verse::by_book(&target), Some(&source), None).0);
+        assert!(r.judge(&merged, &crate::verse::by_book(&target), None, None).is_empty());
     }
 
     #[test]
@@ -445,13 +459,13 @@ mod tests {
                 t.push('x');
             }
         }
-        let prior = r.reduce(&target, Some(&source));
-        assert_eq!(r.judge(&prior, &target).len(), 1);
+        let prior = r.reduce(&crate::verse::by_book(&target), Some(&source), None).0;
+        assert_eq!(r.judge(&prior, &crate::verse::by_book(&target), None, None).len(), 1);
 
         // Re-supply the same book with the reference gone: the fresh reduction
         // carries an empty GEN bucket, which supersedes the prior's ratios.
-        let merged = prior.merge(r.reduce(&target, None));
-        assert!(r.judge(&merged, &target).is_empty());
+        let merged = prior.merge(r.reduce(&crate::verse::by_book(&target), None, None).0);
+        assert!(r.judge(&merged, &crate::verse::by_book(&target), None, None).is_empty());
     }
 
     #[test]
@@ -466,7 +480,7 @@ mod tests {
         };
         let (target, _) = corpus(3, None, 1);
         // No source ⇒ every book bucket is empty; judging must not trap.
-        assert!(r.judge(&r.reduce(&target, None), &target).is_empty());
+        assert!(r.judge(&r.reduce(&crate::verse::by_book(&target), None, None).0, &crate::verse::by_book(&target), None, None).is_empty());
     }
 
     #[test]

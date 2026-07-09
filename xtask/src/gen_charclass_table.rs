@@ -15,9 +15,14 @@
 //! `Class(u32)` and coalesces contiguous equal-nonzero runs into ranges:
 //!
 //! - **Casing / lexical bits** — from `std`'s `char` predicates; the
-//!   General_Category groups (`MARK`/`PUNCT`/`SYMBOL`) and `DECIMAL` (Nd) from
-//!   `unicode-properties`. These are what the char-walking and hygiene rules
-//!   query — the rules read them back from the table rather than recomputing.
+//!   General_Category groups (`MARK`/`PUNCT`/`SYMBOL`), `DECIMAL` (Nd), and the
+//!   `OTHER_PUNCT` (Po) / `CONTROL` (Cc) refinements from `unicode-properties`.
+//!   These are what the char-walking and hygiene rules query — the rules read
+//!   them back from the table rather than recomputing.
+//! - **Rare-family / quote bits** (ADR 0046) — `ZW_FORMAT` and `INVALID_CP`
+//!   from the literal range mirrors of `crate::unicode`'s predicates below, and
+//!   `QUOTE` from the engine-defined [`QUOTE_CHARS`] set (not a UCD property).
+//!   These let the per-verse dirty-bits mask OR each family for free.
 //! - **Script byte** — `ssc_core::script::script_from_unicode` (wraps
 //!   `unicode-script` + the MathAlphanumeric override), packed via `to_repr`.
 //! - **Grapheme-break bits** — parsed from the committed UCD property files
@@ -42,7 +47,7 @@
 use std::fs;
 use std::path::Path;
 
-use ssc_core::script::{script_from_unicode, to_repr};
+use ssc_core::script::{script_byte_and_name, MATH_BYTE};
 use unicode_properties::{GeneralCategory, GeneralCategoryGroup, UnicodeGeneralCategory};
 
 // ── Class(u32) layout — MUST match crates/core/src/charclass.rs ──
@@ -63,8 +68,39 @@ const MARK: u32 = 1 << 13;
 const PUNCT: u32 = 1 << 14;
 const SYMBOL: u32 = 1 << 15;
 const SCRIPT_SHIFT: u32 = 16;
+// bits 16..=23 = script lane.
+const OTHER_PUNCT: u32 = 1 << 24; // GC Po — a strict subset of PUNCT
+const CONTROL: u32 = 1 << 25; // GC Cc (C0 U+0000..=001F + C1 U+007F..=009F)
+const ZW_FORMAT: u32 = 1 << 26; // exactly ssc_core::unicode::is_zero_width_or_format
+const INVALID_CP: u32 = 1 << 27; // exactly ssc_core::unicode::is_invalid_text_codepoint
+const QUOTE: u32 = 1 << 28; // engine-defined quote set (NOT a UCD property)
+// bits 29..=31 free; bit 6 reserved (clinging).
 
 const MAX_CP: u32 = 0x10FFFF;
+
+/// The engine's quote set — the exact 14 chars in
+/// `ssc_core::signals::punctuation::is_quote_char`. Kept here as a literal (not
+/// a UCD property) so the QUOTE bit is a documented, self-contained fact of the
+/// generator; the exhaustive sweep test in `charclass.rs` pins the table bit to
+/// the predicate so the two cannot drift.
+const QUOTE_CHARS: &[char] = &[
+    '\'', '"', '\u{2018}', '\u{2019}', '\u{201A}', '\u{201B}', '\u{201C}', '\u{201D}', '\u{201E}',
+    '\u{201F}', '\u{00AB}', '\u{00BB}', '\u{2039}', '\u{203A}',
+];
+
+/// Exactly `ssc_core::unicode::is_zero_width_or_format` — kept as a literal
+/// mirror so the generator is the source of record for the ZW_FORMAT bit.
+fn is_zero_width_or_format(cp: u32) -> bool {
+    matches!(cp, 0x200B..=0x200F | 0x202A..=0x202E | 0x2060..=0x206F | 0xFEFF)
+}
+
+/// Exactly `ssc_core::unicode::is_invalid_text_codepoint`. The `cp & 0xFFFE`
+/// arm is range-based across every plane, so the astral noncharacter pairs
+/// (`…FFFE`/`…FFFF`) are emitted as isolated 2-codepoint ranges by the
+/// coalescer below — verified by the exhaustive sweep test.
+fn is_invalid_text_codepoint(cp: u32) -> bool {
+    cp == 0xFFFD || (0xFDD0..=0xFDEF).contains(&cp) || (cp & 0xFFFE) == 0xFFFE || (0xFFF9..=0xFFFC).contains(&cp)
+}
 
 /// Parse a UCD data file into `(lo, hi, [semicolon fields after the codepoint])`.
 /// Handles `CP` and `CP..CP`, strips `#` comments, trims fields.
@@ -179,6 +215,9 @@ pub fn run(ssc_core: &Path) {
     // Fuse casing (std), General_Category groups + script (unicode-*), and the
     // grapheme bits; coalesce into ranges.
     let mut ranges: Vec<(u32, u32, u32)> = Vec::new();
+    // Script byte -> ISO 15924 short name, for the runtime `ScriptTag::name`
+    // table. Byte 0 (no positive script identity) maps to "" (ADR 0047).
+    let mut script_names: Vec<&'static str> = vec![""; MATH_BYTE as usize + 1];
     for cp in 0..=MAX_CP {
         if (0xD800..=0xDFFF).contains(&cp) {
             continue; // surrogates are not scalars
@@ -205,14 +244,41 @@ pub fn run(ssc_core: &Path) {
         if c.general_category() == GeneralCategory::DecimalNumber {
             b |= DECIMAL;
         }
+        if c.general_category() == GeneralCategory::OtherPunctuation {
+            b |= OTHER_PUNCT;
+        }
+        // The three rare families the per-verse scans hunt (ADR 0046).
+        // CONTROL is GC Cc; assert the standard's Cc equals the C0+C1 blocks so
+        // the equivalence documented at the bit is guarded, not assumed.
+        let is_cc = c.general_category() == GeneralCategory::Control;
+        assert_eq!(
+            is_cc,
+            cp <= 0x1F || (0x7F..=0x9F).contains(&cp),
+            "GC Cc must equal C0 (U+0..=1F) + C1 (U+7F..=9F) at U+{cp:04X}"
+        );
+        if is_cc {
+            b |= CONTROL;
+        }
+        if is_zero_width_or_format(cp) {
+            b |= ZW_FORMAT;
+        }
+        if is_invalid_text_codepoint(cp) {
+            b |= INVALID_CP;
+        }
+        if QUOTE_CHARS.contains(&c) {
+            b |= QUOTE;
+        }
         match c.general_category_group() {
             GeneralCategoryGroup::Mark => b |= MARK,
             GeneralCategoryGroup::Punctuation => b |= PUNCT,
             GeneralCategoryGroup::Symbol => b |= SYMBOL,
             _ => {}
         }
-        // Coarse script tag, packed into bits 16..=23.
-        b |= (to_repr(script_from_unicode(c)) as u32) << SCRIPT_SHIFT;
+        // Script byte (full UCD set, ADR 0047), packed into bits 16..=23; its
+        // ISO 15924 name recorded for the runtime name table.
+        let (sbyte, sname) = script_byte_and_name(c);
+        b |= (sbyte as u32) << SCRIPT_SHIFT;
+        script_names[sbyte as usize] = sname;
         if b == 0 {
             continue;
         }
@@ -246,6 +312,18 @@ pub fn run(ssc_core: &Path) {
     src.push_str("pub(crate) const BRACKET_PAIRS: &[(u32, u32)] = &[\n");
     for (o, c) in &pairs {
         src.push_str(&format!("    (0x{o:X}, 0x{c:X}),\n"));
+    }
+    src.push_str("];\n");
+
+    src.push_str("\n/// ISO 15924 short name per script byte (ADR 0047): index by the\n");
+    src.push_str("/// fused table's script lane. `\"\"` = no positive script identity\n");
+    src.push_str("/// (byte 0: Common/Inherited/Unknown) or an unused byte.\n");
+    src.push_str(&format!(
+        "pub(crate) const SCRIPT_NAMES: [&str; {}] = [\n",
+        script_names.len()
+    ));
+    for name in &script_names {
+        src.push_str(&format!("    {name:?},\n"));
     }
     src.push_str("];\n");
 

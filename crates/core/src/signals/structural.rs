@@ -6,6 +6,7 @@
 use crate::diagnostics::{RuleId, Severity};
 use crate::rule::PerVerseRule;
 use crate::span::Span;
+use crate::tape::{Mask, TapeEntry};
 
 /// Source-markup leftovers in verse text: USFM backslash markers
 /// (`\v`, `\p`, `\f`, `\w` …) and raw `<…>` HTML/XML tags. The
@@ -30,8 +31,11 @@ impl PerVerseRule for SourceMarkerLeftover {
     fn severity(&self) -> Severity {
         Severity::Warning
     }
-    fn check(&self, text: &str) -> Vec<Span> {
+    fn check(&self, text: &str, _tape: &[TapeEntry]) -> Vec<Span> {
         scan_source_marker_leftover(text)
+    }
+    fn gate(&self) -> Mask {
+        Mask::BACKSLASH_OR_LT
     }
 }
 
@@ -114,8 +118,11 @@ impl PerVerseRule for MergeConflictMarker {
     fn severity(&self) -> Severity {
         Severity::Warning
     }
-    fn check(&self, text: &str) -> Vec<Span> {
+    fn check(&self, text: &str, _tape: &[TapeEntry]) -> Vec<Span> {
         scan_merge_conflict_marker(text)
+    }
+    fn gate(&self) -> Mask {
+        Mask::CONFLICT3
     }
 }
 

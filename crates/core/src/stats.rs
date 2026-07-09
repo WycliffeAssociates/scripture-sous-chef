@@ -17,6 +17,7 @@ use crate::signals::casing::CasingStats;
 use crate::signals::lexical::{PunctOnlyTokenStats, RepeatedCharacterRunStats};
 use crate::signals::proportionality::ProportionalityStats;
 use crate::signals::punctuation::{PunctuationAdjacencyStats, PunctuationSpacingStats};
+use crate::signals::script_mixing::MixedScriptStats;
 
 /// Per-rule cached statistics — a **closed** union like `FindingArgs`, one
 /// variant per stateful rule. The orchestration treats it opaquely; each
@@ -40,6 +41,7 @@ pub enum RuleStats {
     PunctuationSpacing(PunctuationSpacingStats),
     RepeatedCharacterRun(RepeatedCharacterRunStats),
     PunctOnlyToken(PunctOnlyTokenStats),
+    MixedScript(MixedScriptStats),
 }
 
 impl RuleStats {
@@ -64,6 +66,9 @@ impl RuleStats {
             (RuleStats::PunctOnlyToken(a), RuleStats::PunctOnlyToken(b)) => {
                 RuleStats::PunctOnlyToken(a.merge(b))
             }
+            (RuleStats::MixedScript(a), RuleStats::MixedScript(b)) => {
+                RuleStats::MixedScript(a.merge(b))
+            }
             // Mismatched variants can't occur via `analyze_stateful` (it keys
             // prior and fresh by the same `RuleId`). For malformed cached input
             // the **fresh** reduction wins — never the stale prior. The left
@@ -76,14 +81,15 @@ impl RuleStats {
                 | RuleStats::PunctuationAdjacency(_)
                 | RuleStats::PunctuationSpacing(_)
                 | RuleStats::RepeatedCharacterRun(_)
-                | RuleStats::PunctOnlyToken(_),
+                | RuleStats::PunctOnlyToken(_)
+                | RuleStats::MixedScript(_),
                 fresh,
             ) => fresh,
         }
     }
 
     /// Drop a book's contribution from this rule's cache.
-    fn remove_book(&mut self, book: &str) {
+    fn remove_book(&mut self, book: BookId) {
         match self {
             RuleStats::Casing(c) => c.remove_book(book),
             RuleStats::Proportionality(p) => p.remove_book(book),
@@ -91,6 +97,7 @@ impl RuleStats {
             RuleStats::PunctuationSpacing(p) => p.remove_book(book),
             RuleStats::RepeatedCharacterRun(r) => r.remove_book(book),
             RuleStats::PunctOnlyToken(p) => p.remove_book(book),
+            RuleStats::MixedScript(m) => m.remove_book(book),
         }
     }
 }
@@ -121,7 +128,7 @@ impl Stats {
     /// to corpus aggregates and stops emitting findings.
     pub fn remove_book(&mut self, book: BookId) {
         for stats in self.rules.values_mut() {
-            stats.remove_book(book.as_str());
+            stats.remove_book(book);
         }
     }
 

@@ -27,6 +27,7 @@ use unicode_segmentation::UnicodeSegmentation;
 
 use crate::charclass::class_of;
 use crate::span::Span;
+use crate::tape::TapeEntry;
 
 /// The byte span of one grapheme cluster within a verse. Grapheme-aligned by
 /// construction, so a finding built from these can never split a cluster.
@@ -55,6 +56,127 @@ impl GSpan {
 /// to `unicode-segmentation`.
 pub fn segment(text: &str, out: &mut Vec<GSpan>) {
     out.clear();
+    walk(text, |start, end| {
+        out.push(GSpan {
+            start: start as u32,
+            len: (end - start) as u32,
+        });
+    });
+}
+
+/// Count `text`'s grapheme clusters without materializing spans — the same
+/// walk as [`segment`] (one shared implementation, so the two cannot drift)
+/// minus the `GSpan` bookkeeping. For length-only consumers (proportionality's
+/// target/reference ratio) this replaces `str::graphemes(true).count()`.
+pub fn count(text: &str) -> usize {
+    let mut n = 0usize;
+    walk(text, |_, _| n += 1);
+    n
+}
+
+/// Tape-driven [`segment`] (ADR 0045): identical output, but reads the
+/// prebuilt scalar tape instead of re-decoding + re-classifying `text`. `text`
+/// is still needed for the `COMPLEX`-cluster fallback to `unicode-segmentation`
+/// (effectively never taken on scripture). Clears `out` first.
+pub(crate) fn segment_tape(text: &str, tape: &[TapeEntry], out: &mut Vec<GSpan>) {
+    out.clear();
+    walk_tape(text, tape, |start, end, _| {
+        out.push(GSpan {
+            start: start as u32,
+            len: (end - start) as u32,
+        });
+    });
+}
+
+/// Tape-driven segmentation that also records, per cluster, the **tape index**
+/// of its base scalar. A consumer that needs the base char's [`Class`]
+/// (casing's `walk_book`) then reads `tape[idx]` directly instead of
+/// re-slicing the cluster and re-classifying its first scalar. `out` and
+/// `starts` are cleared and filled in lockstep.
+pub(crate) fn segment_tape_indexed(
+    text: &str,
+    tape: &[TapeEntry],
+    out: &mut Vec<GSpan>,
+    starts: &mut Vec<u32>,
+) {
+    out.clear();
+    starts.clear();
+    walk_tape(text, tape, |start, end, i| {
+        out.push(GSpan {
+            start: start as u32,
+            len: (end - start) as u32,
+        });
+        starts.push(i as u32);
+    });
+}
+
+/// The tape-consuming twin of [`walk`]: same fast path + inline GB9c + COMPLEX
+/// fallback, reading `{off, ch, cl}` from the tape. `emit(start, end, i)` also
+/// carries `i`, the base scalar's tape index. Kept structurally identical to
+/// [`walk`] so the two cannot diverge — the conformance and synthetic tests
+/// assert byte-identical boundaries from both.
+#[inline]
+fn walk_tape(text: &str, tape: &[TapeEntry], mut emit: impl FnMut(usize, usize, usize)) {
+    let mut i = 0usize;
+    while i < tape.len() {
+        let e = tape[i];
+        if !e.cl.is_complex() {
+            let mut end = e.off as usize + e.ch.len_utf8();
+            let in_incb = e.cl.is_incb_consonant();
+            let mut seen_linker = false;
+            let mut gap_all_incb = true;
+            let mut j = i + 1;
+            while j < tape.len() {
+                let n = tape[j];
+                if n.cl.is_complex() {
+                    break;
+                }
+                if n.cl.is_extender() {
+                    if n.cl.is_incb_linker() {
+                        seen_linker = true;
+                    }
+                    if !n.cl.is_incb_mark() {
+                        gap_all_incb = false;
+                    }
+                    end = n.off as usize + n.ch.len_utf8();
+                    j += 1;
+                    continue;
+                }
+                if in_incb && n.cl.is_incb_consonant() && seen_linker && gap_all_incb {
+                    end = n.off as usize + n.ch.len_utf8();
+                    j += 1;
+                    seen_linker = false;
+                    gap_all_incb = true;
+                    continue;
+                }
+                break;
+            }
+            emit(e.off as usize, end, i);
+            i = j;
+        } else {
+            let start = e.off as usize;
+            let len = text[start..]
+                .graphemes(true)
+                .next()
+                .map(str::len)
+                .unwrap_or_else(|| e.ch.len_utf8());
+            let end = start + len;
+            let mut j = i + 1;
+            while j < tape.len() && (tape[j].off as usize) < end {
+                j += 1;
+            }
+            emit(e.off as usize, end, i);
+            i = j;
+        }
+    }
+}
+
+/// The one cluster walk: calls `emit(start, end)` with the byte range of each
+/// grapheme cluster in order. Monomorphized per caller, so the closure costs
+/// nothing. Fast path + inline GB9c, deferring `COMPLEX` clusters to
+/// `unicode-segmentation` (see module docs).
+#[inline]
+fn walk(text: &str, mut emit: impl FnMut(usize, usize)) {
     let mut it = text.char_indices().peekable();
     while let Some((i, c)) = it.next() {
         let cl = class_of(c);
@@ -93,10 +215,7 @@ pub fn segment(text: &str, out: &mut Vec<GSpan>) {
                 }
                 break;
             }
-            out.push(GSpan {
-                start: i as u32,
-                len: (end - i) as u32,
-            });
+            emit(i, end);
         } else {
             // Fallback: Hangul / Regional_Indicator / emoji / Prepend /
             // control-newline. Hand this cluster to the authoritative segmenter,
@@ -110,10 +229,7 @@ pub fn segment(text: &str, out: &mut Vec<GSpan>) {
             while it.peek().is_some_and(|&(j, _)| j < end) {
                 it.next();
             }
-            out.push(GSpan {
-                start: i as u32,
-                len: (end - i) as u32,
-            });
+            emit(i, end);
         }
     }
 }
@@ -133,6 +249,19 @@ mod tests {
 
     fn oracle_boundaries(text: &str) -> Vec<usize> {
         let mut b: Vec<usize> = text.grapheme_indices(true).map(|(i, _)| i).collect();
+        b.push(text.len());
+        b
+    }
+
+    /// Cluster-start boundaries our *tape-driven* segmenter produces (ADR
+    /// 0045). Must equal `our_boundaries` for every input — the tape path and
+    /// the char-walk path share no code, so this pins them together.
+    fn tape_boundaries(text: &str) -> Vec<usize> {
+        let mut tape = Vec::new();
+        crate::tape::build(text, &mut tape);
+        let mut buf = Vec::new();
+        segment_tape(text, &tape, &mut buf);
+        let mut b: Vec<usize> = buf.iter().map(|g| g.start as usize).collect();
         b.push(text.len());
         b
     }
@@ -164,6 +293,12 @@ mod tests {
                     }
                 }
             }
+            // `count` shares the walk with `segment`, so it inherits this
+            // conformance gate: clusters = boundaries − the final-length entry.
+            assert_eq!(count(&s), expected.len().saturating_sub(1), "count on {line}");
+            // The tape-driven walk (ADR 0045) must match the char walk on
+            // every case — same conformance, byte-for-byte.
+            assert_eq!(tape_boundaries(&s), our_boundaries(&s), "tape vs char walk on {line}");
             if our_boundaries(&s) == expected {
                 pass += 1;
             } else {
@@ -215,6 +350,37 @@ mod tests {
             "Aa1 .;\n",               // mixed + control
         ] {
             assert_eq!(our_boundaries(t), oracle_boundaries(t), "mismatch on {t:?}");
+            assert_eq!(tape_boundaries(t), oracle_boundaries(t), "tape mismatch on {t:?}");
+            assert_eq!(
+                count(t),
+                t.graphemes(true).count(),
+                "count mismatch on {t:?}"
+            );
+        }
+    }
+
+    /// `segment_tape_indexed` records the tape index of each cluster's base
+    /// scalar, so `tape[idx].off` equals the cluster's start and `tape[idx].ch`
+    /// is the cluster's first scalar — the contract casing's `walk_book` relies
+    /// on (ADR 0045).
+    #[test]
+    fn indexed_starts_point_at_cluster_base_scalars() {
+        for t in [
+            "abc",
+            "e\u{0301}\u{0302}b",
+            "\u{0915}\u{094D}\u{0937} ka",
+            "\u{0E01}\u{0E48}\u{0E32}x",
+        ] {
+            let mut tape = Vec::new();
+            crate::tape::build(t, &mut tape);
+            let (mut spans, mut starts) = (Vec::new(), Vec::new());
+            segment_tape_indexed(t, &tape, &mut spans, &mut starts);
+            assert_eq!(spans.len(), starts.len(), "lockstep on {t:?}");
+            for (gs, &idx) in spans.iter().zip(&starts) {
+                let e = tape[idx as usize];
+                assert_eq!(e.off, gs.start, "base off on {t:?}");
+                assert_eq!(e.ch, gs.slice(t).chars().next().unwrap(), "base ch on {t:?}");
+            }
         }
     }
 }

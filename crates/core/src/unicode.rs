@@ -78,9 +78,43 @@ pub fn is_symbol(c: char) -> bool {
     crate::charclass::class_of(c).is_symbol()
 }
 
+/// Other_Punctuation (GC `Po`, exactly) — every script's sentence separators
+/// and ordinary marks, without brackets (Ps/Pe), dashes (Pd), connectors
+/// (Pc), or curly quotes (Pi/Pf). Straight quotes `'` `"` ARE `Po`; callers
+/// that mean "separators" exclude the quote class themselves.
+pub fn is_other_punctuation(c: char) -> bool {
+    crate::charclass::class_of(c).is_other_punctuation()
+}
+
 /// Decimal digit (General_Category Nd) — any script's positional digits.
 pub fn is_decimal_digit(c: char) -> bool {
     crate::charclass::class_of(c).is_decimal_digit()
+}
+
+/// Numeral-system identity of a decimal digit: the zero codepoint of its
+/// contiguous Nd block (every Unicode decimal-digit block is a run of ten
+/// starting at its zero). `None` for non-digits. Shared by
+/// `hyg.mixed-numeral-systems` and `tape`'s per-verse mask so the mask's
+/// "≥2 numeral systems" gate is derived from the very function the rule fires
+/// on — they cannot drift.
+pub(crate) fn numeral_system(c: char) -> Option<u32> {
+    if !is_decimal_digit(c) {
+        return None;
+    }
+    let v = c.to_digit(10).unwrap_or_else(|| {
+        // Non-ASCII Nd: Rust's `to_digit` handles only ASCII, so walk back to
+        // the block zero — Nd blocks are aligned runs of ten.
+        let cu = c as u32;
+        for back in 1..=9 {
+            if let Some(z) = char::from_u32(cu - back)
+                && !is_decimal_digit(z)
+            {
+                return back - 1;
+            }
+        }
+        9
+    });
+    Some(c as u32 - v)
 }
 
 /// Zero-width and formatting-control codepoints — the **candidate** set for
@@ -97,11 +131,13 @@ pub fn is_decimal_digit(c: char) -> bool {
 /// - U+2060..=U+206F: word-joiner, math invisibles, deprecated
 ///   format-control range, interlinear-annotation markers
 /// - U+FEFF: BOM / ZWNBSP
+///
+/// Reads the fused `ZW_FORMAT` bit (ADR 0046): one array index instead of a
+/// range match. The generator emits the bit from a literal mirror of the exact
+/// ranges above, and `charclass`'s exhaustive sweep test pins the two equal, so
+/// this stays byte-identical to the old `matches!`.
 pub fn is_zero_width_or_format(c: char) -> bool {
-    matches!(
-        c as u32,
-        0x200B..=0x200F | 0x202A..=0x202E | 0x2060..=0x206F | 0xFEFF
-    )
+    crate::charclass::class_of(c).is_zero_width_format()
 }
 
 /// Codepoints that can never validly appear in interchange text, so their
@@ -115,11 +151,12 @@ pub fn is_zero_width_or_format(c: char) -> bool {
 /// - **U+FFF9..=U+FFFC**: interlinear-annotation anchors and the
 ///   object-replacement character — special-purpose format leftovers,
 ///   the same family as the U+2060..=U+206F range above.
+///
+/// Reads the fused `INVALID_CP` bit (ADR 0046): one array index (the astral
+/// noncharacter pairs are emitted as isolated 2-codepoint ranges the astral
+/// binary search finds). The generator emits it from a literal mirror of the
+/// arms above, pinned equal by `charclass`'s exhaustive sweep test.
 pub fn is_invalid_text_codepoint(c: char) -> bool {
-    let cp = c as u32;
-    cp == 0xFFFD
-        || (0xFDD0..=0xFDEF).contains(&cp)
-        || (cp & 0xFFFE) == 0xFFFE
-        || (0xFFF9..=0xFFFC).contains(&cp)
+    crate::charclass::class_of(c).is_invalid_codepoint()
 }
 

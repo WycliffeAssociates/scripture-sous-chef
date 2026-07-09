@@ -115,6 +115,31 @@ pub struct PunctOnlyTokenOverrides {
     pub emit_score_min: Option<f32>,
 }
 
+/// Partial overrides for `uni.mixed-script-in-token`'s corpus-relative score.
+/// Omitted fields keep core's calibrated defaults (ADR 0047).
+#[derive(Deserialize, Tsify, Default)]
+#[tsify(from_wasm_abi)]
+pub struct MixedScriptOverrides {
+    #[serde(default)]
+    #[tsify(optional)]
+    pub convention_rate: Option<f32>,
+    #[serde(default)]
+    #[tsify(optional)]
+    pub confidence_z: Option<f32>,
+    #[serde(default)]
+    #[tsify(optional)]
+    pub breadth_convention_rate: Option<f32>,
+    #[serde(default)]
+    #[tsify(optional)]
+    pub breadth_z: Option<f32>,
+    #[serde(default)]
+    #[tsify(optional)]
+    pub breadth_min_books: Option<u32>,
+    #[serde(default)]
+    #[tsify(optional)]
+    pub emit_score_min: Option<f32>,
+}
+
 /// Which rules to run, plus per-rule knobs. `rules` maps a rule code to a
 /// flag; omit a rule to keep it enabled (default-on). TS: `{ rules?:
 /// Partial<Record<RuleId, boolean>>, proportionality?: … }` — `RuleId` is
@@ -144,6 +169,9 @@ pub struct SousConfig {
     #[serde(default)]
     #[tsify(optional)]
     pub punct_only_token: Option<PunctOnlyTokenOverrides>,
+    #[serde(default)]
+    #[tsify(optional)]
+    pub mixed_script: Option<MixedScriptOverrides>,
 }
 
 /// A finding as the editor sees it: UTF-16 ranges; `code`/`severity` are
@@ -244,6 +272,26 @@ fn build_config(config: Option<SousConfig>) -> Config {
                 cfg.punct_only_token.emit_score_min = v;
             }
         }
+        if let Some(m) = c.mixed_script {
+            if let Some(v) = m.convention_rate {
+                cfg.mixed_script.convention_rate = v;
+            }
+            if let Some(v) = m.confidence_z {
+                cfg.mixed_script.confidence_z = v;
+            }
+            if let Some(v) = m.breadth_convention_rate {
+                cfg.mixed_script.breadth_convention_rate = v;
+            }
+            if let Some(v) = m.breadth_z {
+                cfg.mixed_script.breadth_z = v;
+            }
+            if let Some(v) = m.breadth_min_books {
+                cfg.mixed_script.breadth_min_books = v;
+            }
+            if let Some(v) = m.emit_score_min {
+                cfg.mixed_script.emit_score_min = v;
+            }
+        }
     }
     cfg
 }
@@ -297,17 +345,33 @@ pub struct Analysis {
 /// supersede their prior entries and stateful rules re-judge the whole
 /// corpus from the cache. Omit `prior` (and pass the whole corpus) on the
 /// first call.
+///
+/// `changed` (ADR 0043): with a `prior`, book codes (e.g. `["GEN"]`) naming
+/// the books edited since that prior — only those are re-counted, while
+/// findings still cover everything supplied (the complete-snapshot call at
+/// roughly half full-pass cost). A promise, not a filter: name every edited
+/// book or its counts go silently stale. Unknown codes are ignored; omit it
+/// (or omit `prior`) for the original re-count-everything behavior.
 #[wasm_bindgen]
 pub fn analyze_vref_stateful(
     target: VrefMap,
     source: Option<VrefMap>,
     config: Option<SousConfig>,
     prior: Option<Stats>,
+    changed: Option<Vec<String>>,
 ) -> Analysis {
     let target_vm = to_verse_map(&target.0);
     let source_vm = source.as_ref().map(|s| to_verse_map(&s.0));
     let cfg = build_config(config);
-    let (findings, stats) = analyze_stateful(&target_vm, source_vm.as_ref(), &cfg, prior);
+    let changed_ids: Option<Vec<BookId>> = changed
+        .map(|list| list.iter().filter_map(|c| BookId::from_str(c)).collect());
+    let (findings, stats) = analyze_stateful(
+        &target_vm,
+        source_vm.as_ref(),
+        &cfg,
+        prior,
+        changed_ids.as_deref(),
+    );
     Analysis {
         findings: project(&target_vm, &findings),
         stats,
@@ -427,6 +491,14 @@ mod tests {
                 confidence_z: Some(1.2),
                 emit_score_min: Some(0.9),
             }),
+            mixed_script: Some(MixedScriptOverrides {
+                convention_rate: Some(0.05),
+                confidence_z: Some(1.5),
+                breadth_convention_rate: Some(0.3),
+                breadth_z: Some(2.0),
+                breadth_min_books: Some(4),
+                emit_score_min: Some(0.6),
+            }),
         }));
 
         assert!(cfg.is_enabled(RuleId::DuplicateWord));
@@ -446,6 +518,12 @@ mod tests {
         assert_eq!(cfg.repeated_character_run.emit_score_min, 0.8);
         assert_eq!(cfg.punct_only_token.convention_rate_per_10k, 4.0);
         assert_eq!(cfg.punct_only_token.emit_score_min, 0.9);
+        assert_eq!(cfg.mixed_script.convention_rate, 0.05);
+        assert_eq!(cfg.mixed_script.confidence_z, 1.5);
+        assert_eq!(cfg.mixed_script.breadth_convention_rate, 0.3);
+        assert_eq!(cfg.mixed_script.breadth_z, 2.0);
+        assert_eq!(cfg.mixed_script.breadth_min_books, 4);
+        assert_eq!(cfg.mixed_script.emit_score_min, 0.6);
     }
 
     /// The corpus-relative `punct.spacing-anomaly` survives an incremental,
@@ -468,7 +546,7 @@ mod tests {
         }
         full.insert("EXO 1:1".to_string(), "word , word".to_string());
 
-        let analysis = analyze_vref_stateful(VrefMap(full), None, enable(), None);
+        let analysis = analyze_vref_stateful(VrefMap(full), None, enable(), None, None);
         let full_score = analysis
             .findings
             .iter()
@@ -483,7 +561,7 @@ mod tests {
         // Re-supply only the edited book; the score must stay corpus-wide.
         let exo: BTreeMap<String, String> =
             [("EXO 1:1".to_string(), "word , word".to_string())].into_iter().collect();
-        let inc = analyze_vref_stateful(VrefMap(exo), None, enable(), Some(prior));
+        let inc = analyze_vref_stateful(VrefMap(exo), None, enable(), Some(prior), None);
         let hits: Vec<_> = inc
             .findings
             .iter()

@@ -20,7 +20,7 @@
 //!   it", never "Wilson lower bound"; the advanced knobs stay documented in
 //!   `config.md` for calibrators, not here.
 
-use crate::diagnostics::RuleId;
+use crate::diagnostics::{BracketMeasure, FindingArgs, RuleId};
 
 /// How a rule's findings are decided — drives which caption a UI shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -185,9 +185,11 @@ pub fn card(id: RuleId) -> RuleCard {
         RuleId::MixedScriptInToken => (
             "Mixed alphabets in one word",
             "A word mixing letters from two writing systems — like a Latin \u{201C}o\u{201D} inside a word in another script.",
-            "Usually a look-alike character from the wrong keyboard layout; it reads fine on screen and breaks searching and sorting.",
-            None,
-            Deterministic,
+            "A look-alike from the wrong keyboard breaks searching and sorting; but some orthographies borrow a foreign letter on purpose, so this respects a mix your text uses throughout and surfaces only the rare, out-of-place ones.",
+            Some(
+                "Leave this on — it learns which script mixes your translation uses as house style and flags only the odd ones out; raise the sensitivity if you want to see borderline mixes too.",
+            ),
+            CorpusRelative,
         ),
         RuleId::RepeatedCharacterRun => (
             "Repeated letter",
@@ -239,6 +241,130 @@ pub fn card(id: RuleId) -> RuleCard {
     }
 }
 
+/// Sous Chef's **default English** finding message for one finding, rendered
+/// from its structured `args` (ADR 0048, ADR 0010 §6). This is the shipped
+/// fallback label; an upstream consumer localizes by keying its own ICU
+/// catalog on `code` + the same args, and ignores this string. Exhaustive over
+/// `RuleId` — a new rule without a message fails to compile, the same
+/// completeness guarantee [`card`] carries. Deliberately free of statistics
+/// vocabulary: a reviewer reads plain counts, never "Wilson" or "noisy-OR".
+pub fn message(id: RuleId, args: Option<&FindingArgs>) -> String {
+    // Majority-share percentage of `k` of `n`, to 3 decimals with trailing
+    // zeros (and a bare dot) trimmed — so a near-total share like 44229/44365
+    // reads "99.693", not a misleading rounded "100", while a clean 77 stays
+    // "77".
+    fn pct(k: u32, n: u32) -> String {
+        if n == 0 {
+            return "0".into();
+        }
+        let p = f64::from(k) / f64::from(n) * 100.0;
+        let s = format!("{p:.3}");
+        s.trim_end_matches('0').trim_end_matches('.').to_string()
+    }
+    match id {
+        // ── Deterministic: the finding is the fact; no counts to explain. ──
+        RuleId::ExcessHWhitespace => "Two or more spaces in a row.".into(),
+        RuleId::TabInBody => "A tab character in the verse text.".into(),
+        RuleId::ControlChars => "A run of invisible control characters.".into(),
+        RuleId::ZeroWidthMisuse => "A stray invisible formatting character.".into(),
+        RuleId::EmptyVerse => "This verse has no text.".into(),
+        RuleId::InvalidCodepoint => {
+            "A broken character — the original was lost in a conversion.".into()
+        }
+        RuleId::ReplacementRun => {
+            "A run of “?” marks — text likely destroyed by a failed encoding conversion.".into()
+        }
+        RuleId::SourceMarkerLeftover => "Leftover file markup inside the verse text.".into(),
+        RuleId::MergeConflictMarker => {
+            "A version-control merge-conflict marker committed into the text.".into()
+        }
+        RuleId::CombiningMarkWithoutBase => {
+            "An accent mark with no letter in front of it to attach to.".into()
+        }
+        RuleId::RedundantZeroWidthSpace => {
+            "The invisible word-break character typed twice in a row.".into()
+        }
+        RuleId::MixedNumeralSystems => {
+            "A digit from a different number system than the rest of the verse.".into()
+        }
+        RuleId::DuplicateWord => match args {
+            Some(FindingArgs::DuplicateWord { .. }) => {
+                "This repeats the last word of the previous verse.".into()
+            }
+            _ => "The same word appears twice in a row.".into(),
+        },
+
+        // ── Source-relative. ──
+        RuleId::ProjectLengthRatio => match args {
+            Some(FindingArgs::LengthRatio { ratio_pct, .. }) => format!(
+                "This verse is {}% the length of the same verse in the source.",
+                ratio_pct.round() as i32
+            ),
+            _ => "This verse is a very different length from its source.".into(),
+        },
+
+        // ── Corpus-relative: plain counts behind the score (ADR 0048). ──
+        RuleId::SentenceInitialLowercase => match args {
+            Some(FindingArgs::CasingConvention { glyph, upper, total }) => format!(
+                "This translation capitalizes after ‘{glyph}’ in {upper} of {total} places; \
+                 this word starts lowercase."
+            ),
+            _ => "A lowercase word after a mark this translation usually capitalizes.".into(),
+        },
+        RuleId::PunctuationSpacingAnomaly => match args {
+            Some(FindingArgs::SpacingConvention { mark, spaced, attached }) => {
+                let total = spaced + attached;
+                let (form, k) = if attached >= spaced {
+                    ("attached to its word", *attached)
+                } else {
+                    ("spaced from its word", *spaced)
+                };
+                format!(
+                    "‘{mark}’ is usually {form} ({k} of {total}, {}%); \
+                     here it is written the other way.",
+                    pct(k, total)
+                )
+            }
+            _ => "This mark is spaced the opposite way from this translation’s usual style.".into(),
+        },
+        RuleId::BracketBalance => match args {
+            Some(FindingArgs::BracketWindow { measure: BracketMeasure::Pairing, majority, total, .. }) => {
+                format!("This bracket has no partner — the translation pairs it in {majority} of {total} places.")
+            }
+            Some(FindingArgs::BracketWindow { measure: BracketMeasure::ShortSpan, majority, total, .. }) => {
+                format!("This bracket pair stays open unusually long — {majority} of {total} pairs close within a few verses.")
+            }
+            _ => "An opening or closing bracket with no partner.".into(),
+        },
+        RuleId::PunctuationAdjacencyAnomaly => match args {
+            Some(FindingArgs::AdjacencyEvidence { pattern, k, lead_n, books, corpus }) => format!(
+                "The punctuation ‘{pattern}’ is unusual here — it appears {k} of {lead_n} times, \
+                 in {books} of {corpus} books."
+            ),
+            _ => "Punctuation combined in a way this translation almost never uses.".into(),
+        },
+        RuleId::PunctOnlyToken => match args {
+            Some(FindingArgs::PunctOnlyRate { count, units }) => format!(
+                "A lone punctuation mark, rare here — seen {count} times across {units} words of text."
+            ),
+            _ => "Punctuation standing alone between words, unusual for this translation.".into(),
+        },
+        RuleId::MixedScriptInToken => match args {
+            Some(FindingArgs::ScriptMixEvidence { books, corpus, .. }) => format!(
+                "This word mixes writing systems — a mix this translation uses in only \
+                 {books} of {corpus} books."
+            ),
+            _ => "A word mixing letters from two writing systems.".into(),
+        },
+        RuleId::RepeatedCharacterRun => match args {
+            Some(FindingArgs::RepeatEvidence { ch, run }) => format!(
+                "‘{ch}’ repeats {run} times here — a repetition this translation doesn’t otherwise use."
+            ),
+            _ => "A letter repeated more than this translation otherwise does.".into(),
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -251,6 +377,17 @@ mod tests {
             assert!(!c.title.is_empty() && !c.what.is_empty() && !c.why.is_empty());
             // The one-liners stay one-liners: list-renderable, no headings.
             assert!(!c.what.contains('\n') && !c.why.contains('\n'), "{}", c.code);
+        }
+    }
+
+    #[test]
+    fn every_rule_renders_a_default_message() {
+        // The exhaustive match guarantees a message per rule; assert the
+        // arg-free fallback is real text for all of them (the completeness
+        // guarantee an upstream localizer relies on).
+        for &id in RuleId::ALL {
+            let m = message(id, None);
+            assert!(!m.is_empty() && !m.contains('\n'), "{id}: {m:?}");
         }
     }
 
@@ -268,6 +405,7 @@ mod tests {
             vec![
                 RuleId::PunctuationAdjacencyAnomaly,
                 RuleId::PunctOnlyToken,
+                RuleId::MixedScriptInToken,
                 RuleId::RepeatedCharacterRun,
                 RuleId::BracketBalance,
                 RuleId::PunctuationSpacingAnomaly,

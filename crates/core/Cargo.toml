@@ -15,9 +15,6 @@ rayon = { version = "1", optional = true }
 [dev-dependencies]
 serde_json = "1"
 criterion = "0.5"
-# Bench-only: shows what parallelism buys a native (non-wasm) consumer.
-# The library itself stays serial — see the perf baseline doc.
-rayon = "1"
 
 [[bench]]
 name = "analyze"

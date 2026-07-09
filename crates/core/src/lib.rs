@@ -23,6 +23,7 @@ pub mod sid;
 pub mod signals;
 pub mod span;
 pub mod stats;
+mod tape;
 pub mod token;
 pub mod unicode;
 pub mod verse;
@@ -32,7 +33,10 @@ pub use config::{
     PunctuationAdjacencyConfig, PunctuationSpacingConfig, RepeatedCharacterRunConfig,
 };
 pub use catalog::{RuleCard, SENSITIVITY_STOPS, Verdict, rule_cards};
-pub use diagnostics::{Finding, FindingArgs, LengthRatioScope, RuleId, Severity};
+pub use diagnostics::{
+    BracketMeasure, DelimObservation, DelimRole, Finding, FindingArgs, LengthRatioScope, RuleId,
+    Severity,
+};
 pub use sid::{BookId, Sid};
 pub use span::{GraphemeSpan, Span, Utf16Span};
 pub use stats::{RuleStats, Stats};
@@ -69,36 +73,27 @@ fn build_token_cache(target: &VerseMap) -> rule::TokenCache {
     }
 }
 
-/// All findings for one verse from the per-verse and token rules. Token rules
-/// read the shared [`rule::TokenCache`] when present (else tokenize inline).
+/// All findings for one verse from the per-verse rules. The verse's scalar
+/// tape (ADR 0045) is built once into the caller's reused `tape` buffer and
+/// shared by every per-verse rule.
 fn verse_findings(
     sid: Sid,
     text: &str,
+    tape: &[tape::TapeEntry],
+    mask: tape::Mask,
     per_verse: &[Box<dyn rule::PerVerseRule>],
-    token_rules: &[Box<dyn rule::TokenRule>],
-    token_cache: &Option<rule::TokenCache>,
 ) -> Vec<Finding> {
     let mut out = Vec::new();
     for r in per_verse {
-        let (code, severity) = (r.id(), r.severity());
-        for range in r.check(text) {
-            out.push(Finding { sid, code, severity, range, score: None, args: None });
+        // Skip the clean majority: a rule runs only when the verse's dirty-bits
+        // mask opens its gate (ADR 0046). The gate is a safe superset of the
+        // fire set, so this never drops a finding.
+        if !mask.opens(r.gate()) {
+            continue;
         }
-    }
-    if !token_rules.is_empty() {
-        let owned;
-        let tokens: &[crate::token::Token] = match token_cache {
-            Some(c) => c.get(&sid).map(Vec::as_slice).unwrap_or(&[]),
-            None => {
-                owned = crate::token::tokenize(text);
-                &owned
-            }
-        };
-        for r in token_rules {
-            let (code, severity) = (r.id(), r.severity());
-            for range in r.check(text, tokens) {
-                out.push(Finding { sid, code, severity, range, score: None, args: None });
-            }
+        let (code, severity) = (r.id(), r.severity());
+        for range in r.check(text, tape) {
+            out.push(Finding { sid, code, severity, range, score: None, args: None });
         }
     }
     out
@@ -115,7 +110,7 @@ pub fn analyze_with_config(
 ) -> Vec<Finding> {
     // The one-shot sugar over the stateful entry point: no prior, discard
     // the returned stats (ADR 0017).
-    analyze_stateful(target, source, config, None).0
+    analyze_stateful(target, source, config, None, None).0
 }
 
 /// Analyze, returning the corpus [`Stats`] so a caller can cache it and feed
@@ -133,17 +128,26 @@ pub fn analyze_with_config(
 /// statistic shifting a verdict in an untouched book surfaces when that book
 /// is next supplied. (This also keeps every finding projectable: the caller
 /// need only hand in the text for the verses it asked about.)
+///
+/// **`changed` narrows the *counting*, never the emission (ADR 0043).** With
+/// `prior = Some` and `changed = Some(books)`, only the named books are
+/// re-reduced — every other supplied book carries its prior counts — while
+/// judging and emission still cover all of `target`. This is the
+/// complete-snapshot call for a shell that holds the whole corpus: pass
+/// everything, name what was edited, and a convention the edit tipped
+/// re-emits in *every* book in this one call, at roughly half the full-pass
+/// cost (the counting half). `changed` is a **promise, not a filter**: name
+/// fewer books than were actually edited since `prior` and their counts go
+/// silently stale. It is ignored without a `prior` (there are no carried
+/// counts to reuse — everything must be counted).
 pub fn analyze_stateful(
     target: &VerseMap,
     source: Option<&VerseMap>,
     config: &Config,
     prior: Option<Stats>,
+    changed: Option<&[BookId]>,
 ) -> (Vec<Finding>, Stats) {
     let per_verse: Vec<_> = rule::per_verse_rules()
-        .into_iter()
-        .filter(|r| config.is_enabled(r.id()))
-        .collect();
-    let token_rules: Vec<_> = rule::token_rules()
         .into_iter()
         .filter(|r| config.is_enabled(r.id()))
         .collect();
@@ -164,48 +168,105 @@ pub fn analyze_stateful(
     // process-wide `class_of` lookup, so there is nothing to build or thread
     // per analyze.
 
-    // Tokenize the corpus once and share it whenever ≥2 rules would otherwise
-    // each re-tokenize every verse — the UAX #29 word scan is a top cost on
-    // space-free / non-Latin scripts. With 0–1 token consumers the lone rule
-    // tokenizes inline, so default configs pay no cache overhead.
-    let token_cache: Option<rule::TokenCache> =
-        (token_rules.len() + project_token.len() >= 2).then(|| build_token_cache(target));
+    // Tokenize the corpus once and share it whenever ≥2 full tokenization
+    // passes would otherwise happen — the UAX #29 word scan is a top cost on
+    // space-free / non-Latin scripts. Repeated-character-run tokenizes in
+    // **both** reduce and judge, so it counts as two; mixed-script-in-token
+    // tokenizes in reduce (its judge re-emits from forwarded sites), so it
+    // counts as one (ADR 0042, ADR 0047). With 0–1 passes the lone consumer
+    // tokenizes inline and no cache is built.
+    let repeated_run_scans = if config.is_enabled(RuleId::RepeatedCharacterRun) {
+        2
+    } else {
+        0
+    };
+    let mixed_script_scans = if config.is_enabled(RuleId::MixedScriptInToken) {
+        1
+    } else {
+        0
+    };
+    let token_cache: Option<rule::TokenCache> = (project_token.len()
+        + repeated_run_scans
+        + mixed_script_scans
+        >= 2)
+        .then(|| build_token_cache(target));
 
     // The per-verse phase is embarrassingly parallel — each verse is judged
     // from its own text by `Sync` rules. Under the `parallel` feature it fans
     // out over rayon (ADR 0018); otherwise it stays serial. Output is the same
     // either way: `out` is sorted before return, so order never depends on the
     // feature.
+    // The verse's scalar tape (ADR 0045) is built once per verse into a reused
+    // buffer — a `map_init` per-worker buffer under `parallel`, a plain reused
+    // `Vec` serially — and shared by every per-verse rule, replacing their ~10
+    // separate `char_indices()` walks with one decode+classify pass.
     #[cfg(feature = "parallel")]
     let mut out: Vec<Finding> = {
         use rayon::prelude::*;
         target
             .par_iter()
-            .map(|(&sid, text)| verse_findings(sid, text, &per_verse, &token_rules, &token_cache))
+            .map_init(Vec::new, |tape_buf, (&sid, text)| {
+                let mask = tape::build_masked(text, tape_buf);
+                verse_findings(sid, text, tape_buf, mask, &per_verse)
+            })
             .flatten_iter()
             .collect()
     };
     #[cfg(not(feature = "parallel"))]
     let mut out: Vec<Finding> = {
         let mut out = Vec::new();
+        let mut tape_buf = Vec::new();
         for (&sid, text) in target {
-            out.extend(verse_findings(sid, text, &per_verse, &token_rules, &token_cache));
+            let mask = tape::build_masked(text, &mut tape_buf);
+            out.extend(verse_findings(sid, text, &tape_buf, mask, &per_verse));
         }
         out
     };
 
+    // The by-book view, computed once and shared by the project and stateful
+    // phases — the book is the corpus-scoped unit (supersede granularity,
+    // cross-verse seams, and the `parallel` fan-out; ADR 0042). Rules never
+    // rebuild this grouping.
+    let books = verse::by_book(target);
+
     for r in &project {
-        out.extend(r.check(target, source));
+        out.extend(r.check(&books, source));
     }
     for r in &project_token {
-        out.extend(r.check(target, source, token_cache.as_ref()));
+        out.extend(r.check(&books, source, token_cache.as_ref()));
     }
+
+    // The reduce scope (ADR 0043): with a prior and `changed`, only the named
+    // books are re-counted — the others' counts carry forward through the
+    // supersede merge untouched. The filtered view borrows the same verse
+    // slices, so this is a key-subset copy, not a text copy. Without a prior
+    // there are no carried counts, so `changed` is ignored for correctness.
+    let scoped;
+    let reduce_books: &verse::Books<'_> = match (&prior, changed) {
+        (Some(_), Some(list)) => {
+            scoped = books
+                .iter()
+                .filter(|(b, _)| list.contains(b))
+                .map(|(b, v)| (*b, v.clone()))
+                .collect();
+            &scoped
+        }
+        _ => &books,
+    };
 
     // Stateful rules: reduce this call's verses, supersede the prior cache at
     // book granularity, judge the whole merged corpus from the cache.
+    //
+    // Deliberately sequential over rules: pooling all rules' reduces/judges
+    // into two rule×book task pools was tried (2026-07-07) and measured at
+    // parity-to-slightly-worse (see ADR 0042's rejected alternatives) — each
+    // rule's own per-book fan already saturates the workers, and interleaving
+    // six rules' working sets costs locality. The simple loop wins.
     let mut stats = prior.unwrap_or_default();
     for r in &stateful {
-        let fresh = r.reduce(target, source);
+        // Reduce hands back the candidate sites it visited (ADR 0044) so the
+        // same-call judge below never re-scans a book counted this call.
+        let (fresh, sites) = r.reduce(reduce_books, source, token_cache.as_ref());
         let merged = match stats.take(r.id()) {
             Some(prev) => prev.merge(fresh),
             None => fresh,
@@ -214,7 +275,7 @@ pub fn analyze_stateful(
         // — keeping the returned findings to one scope and projectable
         // against the text the caller supplied this call.
         out.extend(
-            r.judge(&merged, target)
+            r.judge(&merged, &books, token_cache.as_ref(), Some(&sites))
                 .into_iter()
                 .filter(|f| target.contains_key(&f.sid)),
         );
@@ -481,13 +542,13 @@ mod tests {
         pairs.push(("v", "He spoke. then he left."));
         let target = map(&pairs);
 
-        let (f1, stats) = analyze_stateful(&target, None, &cfg, None);
+        let (f1, stats) = analyze_stateful(&target, None, &cfg, None, None);
         assert!(f1.iter().any(|f| f.code == RuleId::SentenceInitialLowercase));
 
         let json = serde_json::to_string(&stats).unwrap();
         let back: Stats = serde_json::from_str(&json).unwrap();
 
-        let (f2, _) = analyze_stateful(&target, None, &cfg, Some(back));
+        let (f2, _) = analyze_stateful(&target, None, &cfg, Some(back), None);
         assert_eq!(f1, f2);
     }
 
@@ -504,13 +565,45 @@ mod tests {
         let gen_id = BookId::from_str("GEN").unwrap();
         let exo = BookId::from_str("EXO").unwrap();
 
-        let (f_full, stats) = analyze_stateful(&full, None, &cfg, None);
+        let (f_full, stats) = analyze_stateful(&full, None, &cfg, None, None);
         assert!(f_full.iter().any(|f| f.sid.book == gen_id && f.code == RuleId::SentenceInitialLowercase));
         assert!(f_full.iter().any(|f| f.sid.book == exo && f.code == RuleId::SentenceInitialLowercase));
 
-        let (f_inc, _) = analyze_stateful(&mk("EXO", &anomalous), None, &cfg, Some(stats));
+        let (f_inc, _) = analyze_stateful(&mk("EXO", &anomalous), None, &cfg, Some(stats), None);
         assert!(!f_inc.is_empty());
         assert!(f_inc.iter().all(|f| f.sid.book == exo)); // nothing from GEN
+    }
+
+    /// The `changed` reduce scope (ADR 0043) is exactly a performance hint:
+    /// a whole-corpus call naming only the edited book must produce findings
+    /// AND stats identical to a from-scratch recompute of the edited corpus —
+    /// including findings that *moved in the untouched book* because the edit
+    /// tipped a pooled convention (the copy-paste-a-new-Genesis case).
+    #[test]
+    fn changed_scope_matches_full_recompute() {
+        let cfg = casing_on(0.5, 0.0);
+        let clean = ["He spoke. Then he left.", "He spoke. Then he left."];
+        let mut original = mk("GEN", &clean);
+        original.extend(mk("EXO", &clean));
+        let (_, prior) = analyze_stateful(&original, None, &cfg, None, None);
+
+        // Edit GEN only: introduce lowercase-after-terminal anomalies.
+        let mut edited = mk("GEN", &["He spoke. then he left.", "He spoke. then he left."]);
+        edited.extend(mk("EXO", &clean));
+
+        let (f_scratch, s_scratch) = analyze_stateful(&edited, None, &cfg, None, None);
+        let gen_id = BookId::from_str("GEN").unwrap();
+        let (f_changed, s_changed) =
+            analyze_stateful(&edited, None, &cfg, Some(prior.clone()), Some(&[gen_id]));
+        assert_eq!(f_scratch, f_changed);
+        assert_eq!(s_scratch, s_changed);
+
+        // Without a prior, `changed` is ignored (nothing to carry): still a
+        // full recompute, never a tiny-counts corpus.
+        let (f_no_prior, s_no_prior) =
+            analyze_stateful(&edited, None, &cfg, None, Some(&[gen_id]));
+        assert_eq!(f_scratch, f_no_prior);
+        assert_eq!(s_scratch, s_no_prior);
     }
 
     /// `Stats::remove_book` drops a book's contribution to the corpus
@@ -526,11 +619,11 @@ mod tests {
         full.extend(mk("EXO", &exo_anom));
         let exo = BookId::from_str("EXO").unwrap();
 
-        let (f_full, mut stats) = analyze_stateful(&full, None, &cfg, None);
+        let (f_full, mut stats) = analyze_stateful(&full, None, &cfg, None, None);
         assert!(f_full.iter().any(|f| f.sid.book == exo)); // fires on combined samples
 
         stats.remove_book(BookId::from_str("GEN").unwrap());
-        let (f_after, _) = analyze_stateful(&mk("EXO", &exo_anom), None, &cfg, Some(stats));
+        let (f_after, _) = analyze_stateful(&mk("EXO", &exo_anom), None, &cfg, Some(stats), None);
         // EXO's own few observations can't back a confident dominance now.
         assert!(f_after.iter().all(|f| f.code != RuleId::SentenceInitialLowercase));
     }
@@ -570,7 +663,6 @@ mod tests {
         // Registries are membership-complete (they include rules `v1_defaults`
         // disables); config only feeds knobs, so any config yields the full set.
         let pv = rule::per_verse_rules();
-        let tk = rule::token_rules();
         let pr = rule::project_rules(&cfg);
         let pt = rule::project_token_rules();
         let sf = rule::stateful_rules(&cfg);
@@ -578,7 +670,6 @@ mod tests {
         for id in pv
             .iter()
             .map(|r| r.id())
-            .chain(tk.iter().map(|r| r.id()))
             .chain(pr.iter().map(|r| r.id()))
             .chain(pt.iter().map(|r| r.id()))
             .chain(sf.iter().map(|r| r.id()))

@@ -40,16 +40,15 @@
 
 use std::collections::BTreeMap;
 
-use crate::charclass::class_of;
 use crate::config::CasingConfig;
-use crate::diagnostics::{Finding, RuleId, Severity};
+use crate::diagnostics::{Finding, FindingArgs, RuleId, Severity};
 use crate::evidence;
 use crate::grapheme::{self, GSpan};
-use crate::rule::StatefulRule;
-use crate::sid::Sid;
+use crate::rule::{self, StatefulRule, TokenCache};
+use crate::sid::{BookId, Sid};
 use crate::span::Span;
 use crate::stats::RuleStats;
-use crate::verse::{self, VerseMap};
+use crate::verse::{Books, VerseMap};
 
 pub const SENTENCE_INITIAL_LOWERCASE: RuleId = RuleId::SentenceInitialLowercase;
 
@@ -63,13 +62,14 @@ struct Tally {
 }
 
 /// A lowercase token observed after a bare terminal glyph — a flag
-/// candidate. Produced transiently by the shared book walk; never stored in
-/// stats.
-struct LowerSite {
-    sid: Sid,
-    start: u32,
-    end: u32,
-    glyph: char,
+/// candidate. Produced transiently by the shared book walk and forwarded
+/// reduce→judge within a call as [`crate::rule::RuleSites`] (ADR 0044);
+/// never stored in stats.
+pub struct LowerSite {
+    pub(crate) sid: Sid,
+    pub(crate) start: u32,
+    pub(crate) end: u32,
+    pub(crate) glyph: char,
 }
 
 /// One book's contribution: the per-glyph counts and the cased-letter tally
@@ -83,14 +83,16 @@ struct BookCasing {
     total_letters: u32,
 }
 
-/// Cached casing statistics, keyed by book code (e.g. `"GEN"`) so an edit
-/// supersedes only its book. The corpus-wide per-glyph counts are the sum
-/// of the per-book counts, derived at `judge` time.
+/// Cached casing statistics, keyed by book so an edit supersedes only its
+/// book (`BookId` crosses the wire as its `"GEN"` string). The corpus-wide
+/// per-glyph counts are the sum of the per-book counts, derived at `judge`
+/// time.
 #[derive(Debug, Clone, Default, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct CasingStats {
-    per_book: BTreeMap<String, BookCasing>,
+    #[cfg_attr(feature = "wasm", tsify(type = "Record<string, BookCasing>"))]
+    per_book: BTreeMap<BookId, BookCasing>,
 }
 
 impl CasingStats {
@@ -102,9 +104,9 @@ impl CasingStats {
         self
     }
 
-    /// Drop a book's contribution (keyed by its 3-letter code, e.g. `"GEN"`).
-    pub(crate) fn remove_book(&mut self, book: &str) {
-        self.per_book.remove(book);
+    /// Drop a book's contribution.
+    pub(crate) fn remove_book(&mut self, book: BookId) {
+        self.per_book.remove(&book);
     }
 }
 
@@ -117,20 +119,40 @@ impl StatefulRule for SentenceInitialLowercase {
         SENTENCE_INITIAL_LOWERCASE
     }
 
-    fn reduce(&self, map: &VerseMap, _source: Option<&VerseMap>) -> RuleStats {
-        // One reused grapheme buffer across the whole reduce: each verse is
-        // segmented once (ADR 0021) and each base scalar classified with one
-        // fused-table lookup (ADR 0020) instead of ~five std predicate calls.
-        let mut stats = CasingStats::default();
-        let mut graphemes = Vec::new();
-        for (book, verses) in verse::by_book(map) {
-            let (bc, _) = walk_book(&verses, &mut graphemes);
-            stats.per_book.insert(book.as_str().to_string(), bc);
+    fn reduce(
+        &self,
+        books: &Books<'_>,
+        _source: Option<&VerseMap>,
+        _tokens: Option<&TokenCache>,
+    ) -> (RuleStats, rule::RuleSites) {
+        // Each verse is segmented once (ADR 0021) and each base scalar
+        // classified with one fused-table lookup (ADR 0020) instead of ~five
+        // std predicate calls. Books walk independently — the grapheme buffer
+        // lives per book so the fan-out (ADR 0042) shares nothing. The walk
+        // already produces the flag-candidate sites; forwarding them to a
+        // same-call judge (ADR 0044) makes its re-walk unnecessary.
+        let mut per_book = std::collections::BTreeMap::new();
+        let mut sites = std::collections::BTreeMap::new();
+        for (book, (bc, book_sites)) in rule::map_books(books, |book, verses| {
+            let mut bufs = WalkBufs::default();
+            (book, walk_book(verses, &mut bufs))
+        }) {
+            per_book.insert(book, bc);
+            sites.insert(book, book_sites);
         }
-        RuleStats::Casing(stats)
+        (
+            RuleStats::Casing(CasingStats { per_book }),
+            rule::RuleSites::Casing(sites),
+        )
     }
 
-    fn judge(&self, stats: &RuleStats, target: &VerseMap) -> Vec<Finding> {
+    fn judge(
+        &self,
+        stats: &RuleStats,
+        books: &Books<'_>,
+        _tokens: Option<&TokenCache>,
+        sites: Option<&rule::RuleSites>,
+    ) -> Vec<Finding> {
         let RuleStats::Casing(stats) = stats else {
             return Vec::new();
         };
@@ -159,47 +181,85 @@ impl StatefulRule for SentenceInitialLowercase {
         let z = evidence::clamp_z(self.cfg.confidence_z);
         let floor = f64::from(evidence::clamp_unit(self.cfg.emit_score_min));
 
-        // Re-scan the target to recover lowercase spans (aggregate-only
-        // state holds no sites). Verdicts stay corpus-wide via `corpus`.
-        let mut out = Vec::new();
-        let mut graphemes = Vec::new();
-        for (_book, verses) in verse::by_book(target) {
-            let (_, sites) = walk_book(&verses, &mut graphemes);
-            for site in sites {
-                let Some(t) = corpus.get(&site.glyph) else {
-                    continue;
-                };
-                // The uppercase-majority dominance is the site's anomaly
-                // evidence: how established the convention is that this
-                // lowercase token breaks. Confidence-monotone in the number
-                // of observations — a barely-seen glyph can't assert one.
-                let d = evidence::dominance(u64::from(t.upper), u64::from(t.total), z);
-                if d < floor {
-                    continue;
-                }
-                out.push(Finding {
-                    sid: site.sid,
-                    code: SENTENCE_INITIAL_LOWERCASE,
-                    severity: Severity::Info,
-                    range: Span {
-                        start: site.start as usize,
-                        end: site.end as usize,
-                    },
-                    score: Some(d as f32),
-                    args: None,
-                });
+        // Recover lowercase spans (aggregate-only state holds no sites):
+        // from the forwarded reduce sites where this call scanned the book
+        // (ADR 0044), by re-walking otherwise. Verdicts stay corpus-wide via
+        // `corpus`. Any re-walk is per book — sentence state crosses verse
+        // seams (`walk_book`'s pending terminal), so the book, not the
+        // verse, is the parallel unit (ADR 0042).
+        let forwarded = match sites {
+            Some(rule::RuleSites::Casing(m)) => Some(m),
+            _ => None,
+        };
+        let score = |site: &LowerSite, found: &mut Vec<Finding>| {
+            let Some(t) = corpus.get(&site.glyph) else {
+                return;
+            };
+            // The uppercase-majority dominance is the site's anomaly
+            // evidence: how established the convention is that this
+            // lowercase token breaks. Confidence-monotone in the number
+            // of observations — a barely-seen glyph can't assert one.
+            let d = evidence::dominance(u64::from(t.upper), u64::from(t.total), z);
+            if d < floor {
+                return;
             }
-        }
+            found.push(Finding {
+                sid: site.sid,
+                code: SENTENCE_INITIAL_LOWERCASE,
+                severity: Severity::Info,
+                range: Span {
+                    start: site.start as usize,
+                    end: site.end as usize,
+                },
+                score: Some(d as f32),
+                // Carry the glyph's raw uppercase/total split so the consumer
+                // can render the descriptive rate the Wilson-bound score isn't
+                // (ADR 0048).
+                args: Some(FindingArgs::CasingConvention {
+                    glyph: site.glyph,
+                    upper: t.upper,
+                    total: t.total,
+                }),
+            });
+        };
+        let mut out: Vec<Finding> = rule::map_books(books, |book, verses| {
+            let mut found = Vec::new();
+            if let Some(book_sites) = forwarded.and_then(|m| m.get(&book)) {
+                for site in book_sites {
+                    score(site, &mut found);
+                }
+            } else {
+                let mut bufs = WalkBufs::default();
+                let (_, walked) = walk_book(verses, &mut bufs);
+                for site in &walked {
+                    score(site, &mut found);
+                }
+            }
+            found
+        })
+        .into_iter()
+        .flatten()
+        .collect();
         out.sort_by_key(|f| (f.sid, f.range.start, f.range.end));
         out
     }
+}
+
+/// Reused per-book scratch for [`walk_book`]: the verse scalar tape, its
+/// grapheme spans, and the tape index of each cluster's base scalar (ADR
+/// 0045). Lives per book so the `parallel` fan-out shares nothing.
+#[derive(Default)]
+struct WalkBufs {
+    tape: Vec<crate::tape::TapeEntry>,
+    graphemes: Vec<GSpan>,
+    starts: Vec<u32>,
 }
 
 /// Scan one book's verses in order, accumulating per-glyph counts and
 /// producing the lowercase flag candidates. A terminal glyph found at a
 /// verse's tail is carried as `pending` across the seam to the next verse —
 /// verse boundaries are transparent to sentence detection.
-fn walk_book(verses: &[(Sid, &str)], graphemes: &mut Vec<GSpan>) -> (BookCasing, Vec<LowerSite>) {
+fn walk_book(verses: &[(Sid, &str)], bufs: &mut WalkBufs) -> (BookCasing, Vec<LowerSite>) {
     let mut bc = BookCasing::default();
     let mut sites = Vec::new();
     // A terminal glyph attached to a preceding letter, awaiting the next
@@ -207,21 +267,27 @@ fn walk_book(verses: &[(Sid, &str)], graphemes: &mut Vec<GSpan>) -> (BookCasing,
     // intervened between the terminal and that letter.
     let mut pending: Option<(char, bool)> = None;
 
+    let WalkBufs { tape, graphemes, starts } = bufs;
     for (sid, text) in verses {
         // The seam between verses is a gap: a terminal at the start of this
         // verse is not "attached" to the previous verse's last letter.
         let mut prev_letter = false;
 
-        grapheme::segment(text, graphemes);
-        for gs in graphemes.iter() {
+        // One decode+classify pass per verse (the tape), then tape-driven
+        // segmentation that also hands back each cluster's base-scalar tape
+        // index — so the base char and its class are a tape read, not a
+        // re-slice + re-classify (ADR 0045).
+        crate::tape::build(text, tape);
+        grapheme::segment_tape_indexed(text, tape, graphemes, starts);
+        for (k, gs) in graphemes.iter().enumerate() {
             let off = gs.start as usize;
-            let g = gs.slice(text);
-            let c = g.chars().next().unwrap();
-            // Classify the base scalar once. A cased letter is necessarily
-            // alphabetic, so `lower || upper` short-circuits the (table-backed)
-            // `is_alphabetic` lookup for the common Latin case; the two case
-            // queries are computed once and reused below.
-            let cl = class_of(c);
+            let g_len = gs.len as usize;
+            let e = tape[starts[k] as usize];
+            let c = e.ch;
+            // The base scalar's class, already computed into the tape. A cased
+            // letter is necessarily alphabetic; the two case queries are read
+            // once and reused below.
+            let cl = e.cl;
             let lower = cl.is_lowercase();
             let upper = cl.is_uppercase();
             if cl.is_alphabetic() {
@@ -246,7 +312,7 @@ fn walk_book(verses: &[(Sid, &str)], graphemes: &mut Vec<GSpan>) -> (BookCasing,
                             sites.push(LowerSite {
                                 sid: *sid,
                                 start: off as u32,
-                                end: (off + g.len()) as u32,
+                                end: (off + g_len) as u32,
                                 glyph,
                             });
                         }
@@ -301,7 +367,7 @@ mod tests {
     }
 
     fn run(map: &VerseMap, r: &SentenceInitialLowercase) -> Vec<Finding> {
-        r.judge(&r.reduce(map, None), map)
+        r.judge(&r.reduce(&crate::verse::by_book(map), None, None).0, &crate::verse::by_book(map), None, None)
     }
 
     #[test]
@@ -318,6 +384,29 @@ mod tests {
         assert_eq!(f[0].code, SENTENCE_INITIAL_LOWERCASE);
         // Anchored on the lowercase "then".
         assert_eq!(vm[&f[0].sid][f[0].range.start..f[0].range.end], *"t");
+    }
+
+    #[test]
+    fn finding_carries_the_raw_upper_total_counts() {
+        // The descriptive payload (ADR 0048) is the boundary glyph's raw
+        // uppercase-vs-total split, not the Wilson-bound score. The `.` here is
+        // uppercase-followed in every clean verse and lowercase in one, so the
+        // majority share is high and the score sits at or below it.
+        use crate::diagnostics::FindingArgs;
+        let mut verses: Vec<(u16, &str)> = (1..=10).map(|v| (v, "He spoke. Then he left.")).collect();
+        verses.push((11, "He spoke. then he left."));
+        let vm = book("GEN", &verses);
+        let f = run(&vm, &rule(0.5, 1.96));
+        assert_eq!(f.len(), 1);
+        match &f[0].args {
+            Some(FindingArgs::CasingConvention { glyph, upper, total }) => {
+                assert_eq!(*glyph, '.');
+                assert!(*total > 0 && *upper <= *total, "upper {upper} ≤ total {total}");
+                let share = f64::from(*upper) / f64::from(*total);
+                assert!(f[0].score.unwrap() as f64 <= share + 1e-6, "score ≤ observed share {share}");
+            }
+            other => panic!("expected CasingConvention args, got {other:?}"),
+        }
     }
 
     #[test]
@@ -404,8 +493,8 @@ mod tests {
         let mut full = gen_map.clone();
         full.extend(exo_map.clone());
 
-        let stats = r.reduce(&full, None);
-        let scoped = r.judge(&stats, &exo_map);
+        let stats = r.reduce(&crate::verse::by_book(&full), None, None).0;
+        let scoped = r.judge(&stats, &crate::verse::by_book(&exo_map), None, None);
         assert_eq!(scoped.len(), 1);
         assert!(scoped.iter().all(|f| f.sid.book.as_str() == "EXO"));
     }
@@ -418,13 +507,13 @@ mod tests {
         let mut verses: Vec<(u16, &str)> = (1..=10).map(|v| (v, "He spoke. Then he left.")).collect();
         verses.push((11, "He spoke. then he left."));
         let dirty = book("GEN", &verses);
-        let prior = r.reduce(&dirty, None);
-        assert_eq!(r.judge(&prior, &dirty).len(), 1);
+        let prior = r.reduce(&crate::verse::by_book(&dirty), None, None).0;
+        assert_eq!(r.judge(&prior, &crate::verse::by_book(&dirty), None, None).len(), 1);
 
         let mut fixed = verses.clone();
         fixed[10] = (11, "He spoke. Then he left."); // the fix
         let fixed_map = book("GEN", &fixed);
-        let merged = prior.merge(r.reduce(&fixed_map, None));
-        assert!(r.judge(&merged, &fixed_map).is_empty());
+        let merged = prior.merge(r.reduce(&crate::verse::by_book(&fixed_map), None, None).0);
+        assert!(r.judge(&merged, &crate::verse::by_book(&fixed_map), None, None).is_empty());
     }
 }

@@ -10,13 +10,14 @@ use crate::charclass::class_of;
 use crate::config::RepeatedCharacterRunConfig;
 use crate::diagnostics::{Finding, FindingArgs, RuleId, Severity};
 use crate::evidence;
-use crate::grapheme::{GSpan, segment};
-use crate::rule::{ProjectTokenRule, StatefulRule, TokenCache};
-use crate::sid::Sid;
+use crate::grapheme::{GSpan, segment, segment_tape};
+use crate::rule::{self, ProjectTokenRule, StatefulRule, TokenCache};
+use crate::sid::{BookId, Sid};
 use crate::span::Span;
 use crate::stats::RuleStats;
+use crate::tape::TapeEntry;
 use crate::token::{Token, tokenize};
-use crate::verse::{self, VerseMap};
+use crate::verse::{Books, VerseMap};
 
 // ─────────────────────────────────────────────────────────────────────
 // Duplicate word
@@ -67,15 +68,20 @@ impl ProjectTokenRule for DuplicateWord {
     // Duplication is intrinsic to the target; the reference is irrelevant.
     fn check(
         &self,
-        target: &VerseMap,
+        books: &Books<'_>,
         _source: Option<&VerseMap>,
         tokens: Option<&TokenCache>,
     ) -> Vec<Finding> {
-        let mut out = Vec::new();
-        for verses in verse::by_book(target).values() {
-            check_book(verses, tokens, &mut out);
-        }
-        out
+        // Books are independent (the tail carry never crosses a book), so
+        // the walk fans out per book under `parallel` (ADR 0042).
+        rule::map_books(books, |_book, verses| {
+            let mut found = Vec::new();
+            check_book(verses, tokens, &mut found);
+            found
+        })
+        .into_iter()
+        .flatten()
+        .collect()
     }
 }
 
@@ -230,7 +236,8 @@ struct BookPunctOnlyToken {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct PunctOnlyTokenStats {
-    per_book: BTreeMap<String, BookPunctOnlyToken>,
+    #[cfg_attr(feature = "wasm", tsify(type = "Record<string, BookPunctOnlyToken>"))]
+    per_book: BTreeMap<BookId, BookPunctOnlyToken>,
 }
 
 impl PunctOnlyTokenStats {
@@ -241,8 +248,8 @@ impl PunctOnlyTokenStats {
         self
     }
 
-    pub(crate) fn remove_book(&mut self, book: &str) {
-        self.per_book.remove(book);
+    pub(crate) fn remove_book(&mut self, book: BookId) {
+        self.per_book.remove(&book);
     }
 }
 
@@ -255,24 +262,46 @@ impl StatefulRule for PunctOnlyToken {
         PUNCT_ONLY_TOKEN
     }
 
-    fn reduce(&self, map: &VerseMap, _source: Option<&VerseMap>) -> RuleStats {
-        let mut stats = PunctOnlyTokenStats::default();
-        for (book, verses) in verse::by_book(map) {
+    fn reduce(
+        &self,
+        books: &Books<'_>,
+        _source: Option<&VerseMap>,
+        _tokens: Option<&TokenCache>,
+    ) -> (RuleStats, rule::RuleSites) {
+        let mut per_book = BTreeMap::new();
+        let mut sites = BTreeMap::new();
+        for (book, (counts, book_sites)) in rule::map_books(books, |book, verses| {
             let mut out = BookPunctOnlyToken::default();
-            for (_sid, text) in &verses {
+            let mut book_sites = Vec::new();
+            let mut tape = Vec::new();
+            for &(sid, text) in verses {
                 out.lexical_units += text.split_whitespace().count() as u64;
-                for span in scan_punct_only_token(text) {
+                crate::tape::build(text, &mut tape);
+                for span in scan_punct_only_token_tape(text, &tape) {
                     *out.chunks
                         .entry(punct_only_pattern_key(span.slice(text)))
                         .or_default() += 1;
+                    book_sites.push((sid, span));
                 }
             }
-            stats.per_book.insert(book.as_str().to_string(), out);
+            (book, (out, book_sites))
+        }) {
+            per_book.insert(book, counts);
+            sites.insert(book, book_sites);
         }
-        RuleStats::PunctOnlyToken(stats)
+        (
+            RuleStats::PunctOnlyToken(PunctOnlyTokenStats { per_book }),
+            rule::RuleSites::PunctOnlyToken(sites),
+        )
     }
 
-    fn judge(&self, stats: &RuleStats, target: &VerseMap) -> Vec<Finding> {
+    fn judge(
+        &self,
+        stats: &RuleStats,
+        books: &Books<'_>,
+        _tokens: Option<&TokenCache>,
+        sites: Option<&rule::RuleSites>,
+    ) -> Vec<Finding> {
         let RuleStats::PunctOnlyToken(stats) = stats else {
             return Vec::new();
         };
@@ -292,33 +321,60 @@ impl StatefulRule for PunctOnlyToken {
         let z = evidence::clamp_z(self.cfg.confidence_z);
         let floor = f64::from(evidence::clamp_unit(self.cfg.emit_score_min));
 
-        let mut out = Vec::new();
-        for (&sid, text) in target {
-            for span in scan_punct_only_token(text) {
-                let chunk = span.slice(text);
-                let count = chunks
-                    .get(punct_only_pattern_key(chunk).as_str())
-                    .copied()
-                    .unwrap_or(0);
-                let evidence = evidence::from_strengths(&[evidence::strength(
-                    count,
-                    lexical_units,
-                    convention_rate,
-                    z,
-                )]);
-                if evidence < floor {
-                    continue;
-                }
-                out.push(Finding {
-                    sid,
-                    code: PUNCT_ONLY_TOKEN,
-                    severity: Severity::Warning,
-                    range: span,
-                    score: Some(evidence as f32),
-                    args: None,
-                });
+        // Recover spans: from the forwarded reduce sites where this call
+        // scanned the book (ADR 0044) — slicing the chunk at a known span,
+        // no re-scan — by re-scanning otherwise. Fans out per book (ADR 0042).
+        let forwarded = match sites {
+            Some(rule::RuleSites::PunctOnlyToken(m)) => Some(m),
+            _ => None,
+        };
+        let score = |sid: Sid, text: &str, span: Span, found: &mut Vec<Finding>| {
+            let chunk = span.slice(text);
+            let count = chunks
+                .get(punct_only_pattern_key(chunk).as_str())
+                .copied()
+                .unwrap_or(0);
+            let evidence = evidence::from_strengths(&[evidence::strength(
+                count,
+                lexical_units,
+                convention_rate,
+                z,
+            )]);
+            if evidence < floor {
+                return;
             }
-        }
+            found.push(Finding {
+                sid,
+                code: PUNCT_ONLY_TOKEN,
+                severity: Severity::Warning,
+                range: span,
+                score: Some(evidence as f32),
+                args: Some(FindingArgs::PunctOnlyRate {
+                    count: count.min(u64::from(u32::MAX)) as u32,
+                    units: lexical_units.min(u64::from(u32::MAX)) as u32,
+                }),
+            });
+        };
+        let mut out: Vec<Finding> = rule::map_books(books, |book, verses| {
+            let mut found = Vec::new();
+            if let Some(book_sites) = forwarded.and_then(|m| m.get(&book)) {
+                rule::for_each_site_text(verses, book_sites, |sid, text, &span| {
+                    score(sid, text, span, &mut found);
+                });
+            } else {
+                let mut tape = Vec::new();
+                for &(sid, text) in verses {
+                    crate::tape::build(text, &mut tape);
+                    for span in scan_punct_only_token_tape(text, &tape) {
+                        score(sid, text, span, &mut found);
+                    }
+                }
+            }
+            found
+        })
+        .into_iter()
+        .flatten()
+        .collect();
         out.sort_by_key(|finding| (finding.sid, finding.range.start, finding.range.end));
         out
     }
@@ -345,17 +401,52 @@ fn is_standalone_dash(c: char) -> bool {
 /// Ordinary punctuation (GC Po) plus the ellipsis: the class whose
 /// single detached occurrence is a spacing convention somewhere.
 fn is_ordinary_punct(c: char) -> bool {
-    use unicode_properties::{GeneralCategory, UnicodeGeneralCategory};
-    c == '\u{2026}' || c.general_category() == GeneralCategory::OtherPunctuation
+    c == '\u{2026}' || crate::unicode::is_other_punctuation(c)
 }
 
+/// Whitespace-separated chunks with their byte offsets — `split_whitespace`
+/// plus the positions it discards, in one pass over the fused table's
+/// whitespace bit. Same chunks by construction: the split predicate is the
+/// Unicode `White_Space` property either way (the table bit is oracle-pinned
+/// by `matches_std_predicates`). Replaces the old recovery that re-found
+/// each chunk with a substring search (`StrSearcher` was ~9 % of an
+/// all-rules corpus pass).
+fn ws_chunks<'a>(text: &'a str, tape: &'a [TapeEntry]) -> impl Iterator<Item = (usize, &'a str)> {
+    let mut idx = 0usize;
+    std::iter::from_fn(move || {
+        // Skip whitespace to the next chunk's start.
+        while idx < tape.len() && tape[idx].cl.is_whitespace() {
+            idx += 1;
+        }
+        if idx >= tape.len() {
+            return None;
+        }
+        let start = tape[idx].off as usize;
+        // Advance to the chunk's end (next whitespace, or end of text).
+        while idx < tape.len() && !tape[idx].cl.is_whitespace() {
+            idx += 1;
+        }
+        let end = if idx < tape.len() {
+            tape[idx].off as usize
+        } else {
+            text.len()
+        };
+        Some((start, &text[start..end]))
+    })
+}
+
+/// Public convenience for offline tooling (calibration) and tests: builds the
+/// verse tape, then scans. The orchestrated path uses the shared tape via
+/// [`scan_punct_only_token_tape`].
 pub fn scan_punct_only_token(text: &str) -> Vec<Span> {
+    let mut tape = Vec::new();
+    crate::tape::build(text, &mut tape);
+    scan_punct_only_token_tape(text, &tape)
+}
+
+pub(crate) fn scan_punct_only_token_tape(text: &str, tape: &[TapeEntry]) -> Vec<Span> {
     let mut spans = Vec::new();
-    let mut offset = 0usize;
-    for chunk in text.split_whitespace() {
-        // split_whitespace loses offsets; recover via scan-from.
-        let start = offset + text[offset..].find(chunk).expect("chunk in text");
-        offset = start + chunk.len();
+    for (start, chunk) in ws_chunks(text, tape) {
         // Cheap gate first: only an all-punctuation/symbol chunk can ever
         // flag. This short-circuits on the first letter of any ordinary
         // word, so the allocation-heavy `core` analysis below runs only
@@ -434,7 +525,11 @@ struct BookRepeatedCharacterRun {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct RepeatedCharacterRunStats {
-    per_book: BTreeMap<String, BookRepeatedCharacterRun>,
+    #[cfg_attr(
+        feature = "wasm",
+        tsify(type = "Record<string, BookRepeatedCharacterRun>")
+    )]
+    per_book: BTreeMap<BookId, BookRepeatedCharacterRun>,
 }
 
 impl RepeatedCharacterRunStats {
@@ -445,8 +540,8 @@ impl RepeatedCharacterRunStats {
         self
     }
 
-    pub(crate) fn remove_book(&mut self, book: &str) {
-        self.per_book.remove(book);
+    pub(crate) fn remove_book(&mut self, book: BookId) {
+        self.per_book.remove(&book);
     }
 }
 
@@ -459,17 +554,33 @@ impl StatefulRule for RepeatedCharacterRun {
         REPEATED_CHARACTER_RUN
     }
 
-    fn reduce(&self, map: &VerseMap, _source: Option<&VerseMap>) -> RuleStats {
-        let mut stats = RepeatedCharacterRunStats::default();
-        for (book, verses) in verse::by_book(map) {
-            stats
-                .per_book
-                .insert(book.as_str().to_string(), reduce_repeated_run_book(&verses));
+    fn reduce(
+        &self,
+        books: &Books<'_>,
+        _source: Option<&VerseMap>,
+        tokens: Option<&TokenCache>,
+    ) -> (RuleStats, rule::RuleSites) {
+        let mut per_book = BTreeMap::new();
+        let mut sites = BTreeMap::new();
+        for (book, (counts, book_sites)) in rule::map_books(books, |book, verses| {
+            (book, reduce_repeated_run_book(verses, tokens))
+        }) {
+            per_book.insert(book, counts);
+            sites.insert(book, book_sites);
         }
-        RuleStats::RepeatedCharacterRun(stats)
+        (
+            RuleStats::RepeatedCharacterRun(RepeatedCharacterRunStats { per_book }),
+            rule::RuleSites::RepeatedCharacterRun(sites),
+        )
     }
 
-    fn judge(&self, stats: &RuleStats, target: &VerseMap) -> Vec<Finding> {
+    fn judge(
+        &self,
+        stats: &RuleStats,
+        books: &Books<'_>,
+        tokens: Option<&TokenCache>,
+        sites: Option<&rule::RuleSites>,
+    ) -> Vec<Finding> {
         let RuleStats::RepeatedCharacterRun(stats) = stats else {
             return Vec::new();
         };
@@ -504,63 +615,134 @@ impl StatefulRule for RepeatedCharacterRun {
             })
             .collect();
 
-        let mut out = Vec::new();
-        let mut graphemes = Vec::new();
-        for (&sid, text) in target {
-            let tokens = tokenize(text);
-            segment(text, &mut graphemes);
-            for span in scan_repeated_character_run(text, &graphemes) {
-                let cluster = repeated_run_cluster(span.slice(text));
-                let cluster_strength = cluster_strengths
-                    .get(cluster.as_str())
-                    .copied()
-                    .unwrap_or(0.0);
-                let word_frequency = containing_word(text, &tokens, span)
-                    .and_then(|word| run_words.get(word.to_lowercase().as_str()).copied());
-                // Recurrence of the containing word is the second convention
-                // axis: a linear knee in the word's repeat count, not a rate.
-                let word_strength = word_frequency.map_or(0.0, |frequency| {
-                    (frequency.saturating_sub(1) as f64 / word_k).clamp(0.0, 1.0)
-                });
-                let evidence = evidence::from_strengths(&[cluster_strength, word_strength]);
-                if evidence < floor {
-                    continue;
-                }
-                out.push(Finding {
-                    sid,
-                    code: REPEATED_CHARACTER_RUN,
-                    severity: Severity::Info,
-                    range: span,
-                    score: Some(evidence as f32),
-                    args: None,
-                });
+        // Recover spans: from the forwarded reduce sites where this call
+        // scanned the book (ADR 0044) — skipping segmentation entirely, the
+        // heaviest part of this rule's scan — by re-scanning otherwise. Both
+        // paths fan out per book (ADR 0042) and read the shared token cache
+        // instead of re-tokenizing when one was built.
+        let forwarded = match sites {
+            Some(rule::RuleSites::RepeatedCharacterRun(m)) => Some(m),
+            _ => None,
+        };
+        let score = |sid: Sid,
+                     text: &str,
+                     verse_tokens: &[Token],
+                     span: Span,
+                     found: &mut Vec<Finding>| {
+            let cluster = repeated_run_cluster(span.slice(text));
+            let cluster_strength = cluster_strengths
+                .get(cluster.as_str())
+                .copied()
+                .unwrap_or(0.0);
+            let word_frequency = containing_word(text, verse_tokens, span)
+                .and_then(|word| run_words.get(word.to_lowercase().as_str()).copied());
+            // Recurrence of the containing word is the second convention
+            // axis: a linear knee in the word's repeat count, not a rate.
+            let word_strength = word_frequency.map_or(0.0, |frequency| {
+                (frequency.saturating_sub(1) as f64 / word_k).clamp(0.0, 1.0)
+            });
+            let evidence = evidence::from_strengths(&[cluster_strength, word_strength]);
+            if evidence < floor {
+                return;
             }
-        }
+            // The plain fact behind the score: which char repeated, how many
+            // times, in the flagged run (ADR 0048).
+            let run_text = span.slice(text);
+            let ch = run_text.chars().next().unwrap_or('\u{FFFD}');
+            let run = run_text.chars().count().min(u32::MAX as usize) as u32;
+            found.push(Finding {
+                sid,
+                code: REPEATED_CHARACTER_RUN,
+                severity: Severity::Info,
+                range: span,
+                score: Some(evidence as f32),
+                args: Some(FindingArgs::RepeatEvidence { ch, run }),
+            });
+        };
+        let mut out: Vec<Finding> = rule::map_books(books, |book, verses| {
+            let mut found = Vec::new();
+            if let Some(book_sites) = forwarded.and_then(|m| m.get(&book)) {
+                // Memoize tokenization per verse — multiple runs in one verse
+                // (rare) shouldn't tokenize it twice when there's no cache.
+                let mut memo: Option<(Sid, Vec<Token>)> = None;
+                rule::for_each_site_text(verses, book_sites, |sid, text, &span| {
+                    let owned_ref: &[Token] = match tokens.and_then(|c| c.get(&sid)) {
+                        Some(t) => t,
+                        None => {
+                            if memo.as_ref().map(|(s, _)| *s) != Some(sid) {
+                                memo = Some((sid, tokenize(text)));
+                            }
+                            &memo.as_ref().unwrap().1
+                        }
+                    };
+                    score(sid, text, owned_ref, span, &mut found);
+                });
+            } else {
+                let mut tape = Vec::new();
+                let mut graphemes = Vec::new();
+                for (sid, text) in verses {
+                    let owned: Vec<Token>;
+                    let verse_tokens: &[Token] = match tokens.and_then(|c| c.get(sid)) {
+                        Some(t) => t,
+                        None => {
+                            owned = tokenize(text);
+                            &owned
+                        }
+                    };
+                    crate::tape::build(text, &mut tape);
+                    segment_tape(text, &tape, &mut graphemes);
+                    for span in scan_repeated_character_run(text, &graphemes) {
+                        score(*sid, text, verse_tokens, span, &mut found);
+                    }
+                }
+            }
+            found
+        })
+        .into_iter()
+        .flatten()
+        .collect();
         out.sort_by_key(|finding| (finding.sid, finding.range.start, finding.range.end));
         out
     }
 }
 
-fn reduce_repeated_run_book(verses: &[(Sid, &str)]) -> BookRepeatedCharacterRun {
+fn reduce_repeated_run_book(
+    verses: &[(Sid, &str)],
+    cache: Option<&TokenCache>,
+) -> (BookRepeatedCharacterRun, Vec<(Sid, Span)>) {
     let mut out = BookRepeatedCharacterRun::default();
+    let mut sites = Vec::new();
+    let mut tape = Vec::new();
     let mut graphemes = Vec::new();
     let mut word_graphemes = Vec::new();
-    for (_sid, text) in verses {
-        let tokens = tokenize(text);
+    for (sid, text) in verses {
+        // The shared per-analyze cache saves this rule's tokenization pass
+        // (it is one of the reasons the cache exists — ADR 0042); absent a
+        // cache entry, tokenize inline exactly as before.
+        let owned: Vec<Token>;
+        let tokens: &[Token] = match cache.and_then(|c| c.get(sid)) {
+            Some(t) => t,
+            None => {
+                owned = tokenize(text);
+                &owned
+            }
+        };
         // UAX #29 intentionally has no dictionary segmentation for Thai/Lao
         // and can yield one token per grapheme there. Whitespace chunks are a
         // stable, script-neutral normalization unit: word-like in spaced text,
         // verse-span-like in scriptio continua. Word recurrence still uses the
         // UAX tokens below because it applies only when one contains the run.
         out.lexical_units += text.split_whitespace().count() as u64;
-        segment(text, &mut graphemes);
+        crate::tape::build(text, &mut tape);
+        segment_tape(text, &tape, &mut graphemes);
         let runs = scan_repeated_character_run(text, &graphemes);
         for span in &runs {
             *out.cluster_runs
                 .entry(repeated_run_cluster(span.slice(text)))
                 .or_default() += 1;
+            sites.push((*sid, *span));
         }
-        for token in &tokens {
+        for token in tokens {
             let word = token.span.slice(text);
             if word.chars().take(3).count() < 3 {
                 continue;
@@ -572,7 +754,7 @@ fn reduce_repeated_run_book(verses: &[(Sid, &str)]) -> BookRepeatedCharacterRun 
             }
         }
     }
-    out
+    (out, sites)
 }
 
 fn containing_word<'a>(text: &'a str, tokens: &[Token], run: Span) -> Option<&'a str> {
@@ -695,7 +877,7 @@ mod tests {
     }
 
     fn check(vm: &VerseMap) -> Vec<Finding> {
-        DuplicateWord.check(vm, None, None)
+        DuplicateWord.check(&crate::verse::by_book(vm), None, None)
     }
 
     #[test]
@@ -748,8 +930,52 @@ mod tests {
         assert_eq!(f[0].args, None);
     }
 
+    fn tp(text: &str) -> Vec<TapeEntry> {
+        let mut v = Vec::new();
+        crate::tape::build(text, &mut v);
+        v
+    }
     fn po(text: &str) -> Vec<&str> {
         scan_punct_only_token(text).iter().map(|s| s.slice(text)).collect()
+    }
+
+    /// `ws_chunks` must produce exactly `split_whitespace`'s chunks, each at
+    /// the byte offset the old find-from recovery would have computed —
+    /// synthetic samples covering leading/trailing/multiple whitespace,
+    /// non-ASCII whitespace (NBSP, ideographic space), non-Latin scripts,
+    /// and the empty/all-whitespace edges.
+    #[test]
+    fn ws_chunks_match_split_whitespace_with_offsets() {
+        for t in [
+            "",
+            "   \t\n",
+            "word",
+            "  leading and trailing  ",
+            "a ,; b\tc\n\nd",
+            "nb\u{00A0}sp and\u{3000}ideographic",
+            "थिए । सो ।।",
+            "ไทยไม่มีช่องว่าง",
+            "e\u{0301} composed",
+        ] {
+            let tape = tp(t);
+            let ours: Vec<(usize, &str)> = ws_chunks(t, &tape).collect();
+            let oracle: Vec<&str> = t.split_whitespace().collect();
+            assert_eq!(
+                ours.iter().map(|&(_, c)| c).collect::<Vec<_>>(),
+                oracle,
+                "chunks {t:?}"
+            );
+            let mut offset = 0usize;
+            for &(start, chunk) in &ours {
+                assert_eq!(&t[start..start + chunk.len()], chunk, "slice {t:?}");
+                assert_eq!(
+                    start,
+                    offset + t[offset..].find(chunk).unwrap(),
+                    "old recovery position {t:?}"
+                );
+                offset = start + chunk.len();
+            }
+        }
     }
 
     #[test]
@@ -791,7 +1017,7 @@ mod tests {
 
     fn pot_findings(map: &VerseMap, cfg: crate::config::PunctOnlyTokenConfig) -> Vec<Finding> {
         let rule = PunctOnlyToken { cfg };
-        rule.judge(&rule.reduce(map, None), map)
+        rule.judge(&rule.reduce(&crate::verse::by_book(map), None, None).0, &crate::verse::by_book(map), None, None)
     }
 
     #[test]
@@ -862,11 +1088,11 @@ mod tests {
         let mut full = gen_map.clone();
         full.extend(exo_map.clone());
 
-        let full_score = rule.judge(&rule.reduce(&full, None), &full)[0].score;
+        let full_score = rule.judge(&rule.reduce(&crate::verse::by_book(&full), None, None).0, &crate::verse::by_book(&full), None, None)[0].score;
         let merged = rule
-            .reduce(&gen_map, None)
-            .merge(rule.reduce(&exo_map, None));
-        let incremental = rule.judge(&merged, &exo_map);
+            .reduce(&crate::verse::by_book(&gen_map), None, None).0
+            .merge(rule.reduce(&crate::verse::by_book(&exo_map), None, None).0);
+        let incremental = rule.judge(&merged, &crate::verse::by_book(&exo_map), None, None);
         assert_eq!(incremental.len(), 1);
         assert_eq!(incremental[0].sid, sid("EXO", 1, 1));
         assert_eq!(incremental[0].score, full_score);
@@ -916,7 +1142,7 @@ mod tests {
 
     fn repeat_findings(map: &VerseMap, cfg: RepeatedCharacterRunConfig) -> Vec<Finding> {
         let rule = repeat_rule(cfg);
-        rule.judge(&rule.reduce(map, None), map)
+        rule.judge(&rule.reduce(&crate::verse::by_book(map), None, None).0, &crate::verse::by_book(map), None, None)
     }
 
     #[test]
@@ -1015,11 +1241,11 @@ mod tests {
         let mut full = gen_map.clone();
         full.extend(exo_map.clone());
 
-        let full_score = rule.judge(&rule.reduce(&full, None), &full)[0].score;
+        let full_score = rule.judge(&rule.reduce(&crate::verse::by_book(&full), None, None).0, &crate::verse::by_book(&full), None, None)[0].score;
         let merged = rule
-            .reduce(&gen_map, None)
-            .merge(rule.reduce(&exo_map, None));
-        let incremental = rule.judge(&merged, &exo_map);
+            .reduce(&crate::verse::by_book(&gen_map), None, None).0
+            .merge(rule.reduce(&crate::verse::by_book(&exo_map), None, None).0);
+        let incremental = rule.judge(&merged, &crate::verse::by_book(&exo_map), None, None);
         assert_eq!(incremental.len(), 1);
         assert_eq!(incremental[0].score, full_score);
     }
@@ -1034,14 +1260,14 @@ mod tests {
         let exo_map = repeat_map("EXO", &["joyfullly".to_string()]);
         let mut full = gen_map;
         full.extend(exo_map.clone());
-        let RuleStats::RepeatedCharacterRun(mut stats) = rule.reduce(&full, None) else {
+        let RuleStats::RepeatedCharacterRun(mut stats) = rule.reduce(&crate::verse::by_book(&full), None, None).0 else {
             unreachable!()
         };
-        let before = rule.judge(&RuleStats::RepeatedCharacterRun(stats.clone()), &exo_map)[0]
+        let before = rule.judge(&RuleStats::RepeatedCharacterRun(stats.clone()), &crate::verse::by_book(&exo_map), None, None)[0]
             .score
             .unwrap();
-        stats.remove_book("GEN");
-        let after = rule.judge(&RuleStats::RepeatedCharacterRun(stats), &exo_map)[0]
+        stats.remove_book(BookId::from_str("GEN").unwrap());
+        let after = rule.judge(&RuleStats::RepeatedCharacterRun(stats), &crate::verse::by_book(&exo_map), None, None)[0]
             .score
             .unwrap();
         assert!(after < before);
@@ -1055,11 +1281,11 @@ mod tests {
             ..Default::default()
         });
         let map = repeat_map("GEN", &["word joyfullly".to_string()]);
-        let stats = rule.reduce(&map, None);
+        let stats = rule.reduce(&crate::verse::by_book(&map), None, None).0;
         let back: RuleStats =
             serde_json::from_str(&serde_json::to_string(&stats).unwrap()).unwrap();
         assert_eq!(stats, back);
-        assert_eq!(rule.judge(&stats, &map), rule.judge(&back, &map));
+        assert_eq!(rule.judge(&stats, &crate::verse::by_book(&map), None, None), rule.judge(&back, &crate::verse::by_book(&map), None, None));
     }
 
     #[test]

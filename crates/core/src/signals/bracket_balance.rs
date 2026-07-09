@@ -29,12 +29,14 @@ use std::collections::BTreeMap;
 
 use crate::charclass::{bracket_close_of, bracket_open_of};
 use crate::config::BracketBalanceConfig;
-use crate::diagnostics::{DelimObservation, DelimRole, Finding, FindingArgs, RuleId, Severity};
+use crate::diagnostics::{
+    BracketMeasure, DelimObservation, DelimRole, Finding, FindingArgs, RuleId, Severity,
+};
 use crate::evidence;
-use crate::rule::ProjectRule;
+use crate::rule::{self, ProjectRule};
 use crate::sid::Sid;
 use crate::span::Span;
-use crate::verse::{self, VerseMap};
+use crate::verse::{Books, VerseMap};
 
 pub const BRACKET_BALANCE: RuleId = RuleId::BracketBalance;
 
@@ -79,16 +81,14 @@ impl ProjectRule for BracketBalance {
     }
 
     // Brackets are intrinsic to the target; the reference is irrelevant.
-    fn check(&self, target: &VerseMap, _source: Option<&VerseMap>) -> Vec<Finding> {
+    fn check(&self, books: &Books<'_>, _source: Option<&VerseMap>) -> Vec<Finding> {
         let window = self.cfg.window_verses as usize;
         let z = evidence::clamp_z(self.cfg.confidence_z);
         let floor = f64::from(evidence::clamp_unit(self.cfg.emit_score_min));
 
-        // Pass 1 — match every book, accumulating corpus-wide family tallies.
-        let books: Vec<BookMatch> = verse::by_book(target)
-            .values()
-            .map(|verses| match_book(verses))
-            .collect();
+        // Pass 1 — match every book (independent; fans out per book under
+        // `parallel`, ADR 0042), then accumulate corpus-wide family tallies.
+        let books: Vec<BookMatch> = rule::map_books(books, |_book, verses| match_book(verses));
 
         let mut families: BTreeMap<char, FamilyTally> = BTreeMap::new();
         for b in &books {
@@ -130,7 +130,16 @@ impl ProjectRule for BracketBalance {
                 if score < floor {
                     continue;
                 }
-                out.push(finding(e, score, inventory(b, e.vi, window)));
+                let t = families.get(&e.family);
+                let (majority, total) = t.map_or((0, 0), |t| (t.matched_events, t.events));
+                out.push(finding(
+                    e,
+                    score,
+                    BracketMeasure::Pairing,
+                    majority,
+                    total,
+                    inventory(b, e.vi, window),
+                ));
             }
             for &(oi, ci) in &b.pairs {
                 let (open, close) = (&b.events[oi], &b.events[ci]);
@@ -141,7 +150,16 @@ impl ProjectRule for BracketBalance {
                 if score < floor {
                     continue;
                 }
-                out.push(finding(open, score, inventory(b, open.vi, window)));
+                let t = families.get(&open.family);
+                let (majority, total) = t.map_or((0, 0), |t| (t.short_pairs, t.pairs));
+                out.push(finding(
+                    open,
+                    score,
+                    BracketMeasure::ShortSpan,
+                    majority,
+                    total,
+                    inventory(b, open.vi, window),
+                ));
             }
         }
         out.sort_by_key(|f| (f.sid, f.range.start, f.range.end));
@@ -149,7 +167,14 @@ impl ProjectRule for BracketBalance {
     }
 }
 
-fn finding(e: &DelimEvent, score: f64, inventory: Vec<DelimObservation>) -> Finding {
+fn finding(
+    e: &DelimEvent,
+    score: f64,
+    measure: BracketMeasure,
+    majority: u64,
+    total: u64,
+    inventory: Vec<DelimObservation>,
+) -> Finding {
     Finding {
         sid: e.sid,
         code: BRACKET_BALANCE,
@@ -159,7 +184,12 @@ fn finding(e: &DelimEvent, score: f64, inventory: Vec<DelimObservation>) -> Find
             end: e.offset + e.glyph.len_utf8(),
         },
         score: Some(score as f32),
-        args: Some(FindingArgs::BracketWindow { window: inventory }),
+        args: Some(FindingArgs::BracketWindow {
+            window: inventory,
+            measure,
+            majority: majority.min(u64::from(u32::MAX)) as u32,
+            total: total.min(u64::from(u32::MAX)) as u32,
+        }),
     }
 }
 
@@ -188,8 +218,18 @@ fn inventory(b: &BookMatch, vi: usize, window: usize) -> Vec<DelimObservation> {
 /// LIFO-match one book's delimiter stream, whole-book (no distance cutoff).
 fn match_book(verses: &[(Sid, &str)]) -> BookMatch {
     let mut events: Vec<DelimEvent> = Vec::new();
+    let mut tape = Vec::new();
     for (vi, (sid, text)) in verses.iter().enumerate() {
-        for (offset, ch) in text.char_indices() {
+        crate::tape::build(text, &mut tape);
+        for e in &tape {
+            // One fused-table read (from the tape) gates the pair lookups:
+            // every UCD paired bracket is GC Ps/Pe ⊂ punctuation (pinned by
+            // test below), so the binary/linear searches run only on the rare
+            // punctuation char — not per letter of the whole corpus.
+            if !e.cl.is_punctuation() {
+                continue;
+            }
+            let ch = e.ch;
             let (family, is_open) = if bracket_close_of(ch).is_some() {
                 (ch, true)
             } else if let Some(open) = bracket_open_of(ch) {
@@ -200,7 +240,7 @@ fn match_book(verses: &[(Sid, &str)]) -> BookMatch {
             events.push(DelimEvent {
                 vi,
                 sid: *sid,
-                offset,
+                offset: e.off as usize,
                 glyph: ch,
                 family,
                 is_open,
@@ -244,6 +284,7 @@ fn match_book(verses: &[(Sid, &str)]) -> BookMatch {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::charclass::class_of;
     use crate::sid::BookId;
 
     fn rule(window_verses: u16) -> BracketBalance {
@@ -279,7 +320,7 @@ mod tests {
 
     fn inventory(f: &Finding) -> &Vec<DelimObservation> {
         match &f.args {
-            Some(FindingArgs::BracketWindow { window }) => window,
+            Some(FindingArgs::BracketWindow { window, .. }) => window,
             _ => panic!("expected BracketWindow args"),
         }
     }
@@ -296,10 +337,27 @@ mod tests {
             .collect()
     }
 
+    /// The punctuation gate in `match_book` is sound only while every glyph
+    /// in the pairing inventory carries the fused `PUNCT` bit. UCD paired
+    /// brackets are all GC Ps/Pe today; this pins that against inventory or
+    /// table regeneration drift.
+    #[test]
+    fn every_inventory_bracket_is_punctuation() {
+        for &(o, c) in crate::charclass_table::BRACKET_PAIRS {
+            for cp in [o, c] {
+                let ch = char::from_u32(cp).unwrap();
+                assert!(
+                    class_of(ch).is_punctuation(),
+                    "bracket U+{cp:04X} {ch:?} lacks the PUNCT bit"
+                );
+            }
+        }
+    }
+
     #[test]
     fn balanced_within_verse_is_clean() {
         let vm = book("GEN", &[(1, "a (b [c] {d}) e")]);
-        assert!(rule(10).check(&vm, None).is_empty());
+        assert!(rule(10).check(&crate::verse::by_book(&vm), None).is_empty());
     }
 
     #[test]
@@ -310,7 +368,7 @@ mod tests {
         verses.extend((2..=30).map(|v| (v, "continues")));
         verses.push((31, "and ends) after"));
         let vm = book("GEN", &verses);
-        let f = rule(10).check(&vm, None);
+        let f = rule(10).check(&crate::verse::by_book(&vm), None);
         // The pair matches (no orphans); the long span itself is judged
         // corpus-relatively — with no short-pair convention here (it's the
         // family's only pair), it stays silent.
@@ -320,7 +378,7 @@ mod tests {
     #[test]
     fn stray_closer_is_flagged_where_the_corpus_pairs() {
         let vm = with_convention(&[(200, "then a stray) closer")]);
-        let f = rule(10).check(&vm, None);
+        let f = rule(10).check(&crate::verse::by_book(&vm), None);
         assert_eq!(f.len(), 1);
         assert_eq!(f[0].sid, sid("GEN", 1, 200));
         assert_eq!(f[0].severity, Severity::Info);
@@ -333,7 +391,7 @@ mod tests {
     #[test]
     fn opener_never_closed_is_flagged_at_book_end() {
         let vm = with_convention(&[(200, "open (and never"), (201, "close it")]);
-        let f = rule(10).check(&vm, None);
+        let f = rule(10).check(&crate::verse::by_book(&vm), None);
         assert_eq!(f.len(), 1);
         assert_eq!(f[0].sid, sid("GEN", 1, 200));
         let orphan = inventory(&f[0]).iter().find(|o| !o.matched).unwrap();
@@ -351,9 +409,9 @@ mod tests {
             .iter()
             .map(|(v, t)| (sid("GEN", 1, *v), t.clone()))
             .collect();
-        assert!(rule(10).check(&vm, None).is_empty());
+        assert!(rule(10).check(&crate::verse::by_book(&vm), None).is_empty());
         // At floor 0 they'd surface — the score is low, not absent.
-        let f = no_floor(10).check(&vm, None);
+        let f = no_floor(10).check(&crate::verse::by_book(&vm), None);
         assert!(!f.is_empty());
         assert!(f.iter().all(|x| x.score.unwrap() < 0.1));
     }
@@ -372,10 +430,57 @@ mod tests {
             .iter()
             .map(|(v, t)| (sid("GEN", 1, *v), t.clone()))
             .collect();
-        let f = rule(10).check(&vm, None);
+        let f = rule(10).check(&crate::verse::by_book(&vm), None);
         assert_eq!(f.len(), 1);
         assert_eq!(f[0].sid, sid("GEN", 1, 200));
         assert!(f[0].score.unwrap() > 0.9);
+    }
+
+    /// The `(measure, majority, total)` descriptive share (ADR 0048) a
+    /// bracket finding carries.
+    fn share(f: &Finding) -> (BracketMeasure, u32, u32) {
+        match &f.args {
+            Some(FindingArgs::BracketWindow { measure, majority, total, .. }) => {
+                (*measure, *majority, *total)
+            }
+            _ => panic!("expected BracketWindow args"),
+        }
+    }
+
+    #[test]
+    fn orphan_finding_carries_the_pairing_share() {
+        // The stray `)` broke the pairing convention, so its descriptive share
+        // is `matched_events / events` (measure = Pairing): 100 clean pairs are
+        // matched, the stray adds one unmatched event, and the Wilson-bound
+        // score never exceeds that raw majority share.
+        let vm = with_convention(&[(200, "then a stray) closer")]);
+        let f = rule(10).check(&crate::verse::by_book(&vm), None);
+        assert_eq!(f.len(), 1);
+        let (measure, majority, total) = share(&f[0]);
+        assert_eq!(measure, BracketMeasure::Pairing);
+        assert!(majority > 0 && majority < total, "one unmatched: {majority} < {total}");
+        let observed = f64::from(majority) / f64::from(total);
+        assert!(f[0].score.unwrap() as f64 <= observed + 1e-6, "score ≤ share {observed}");
+    }
+
+    #[test]
+    fn long_pair_finding_carries_the_short_span_share() {
+        // The 25-verse pair broke the short-span convention, so its share is
+        // `short_pairs / pairs` (measure = ShortSpan): 100 short + 1 long.
+        let mut extra: Vec<(u16, String)> = vec![(200, "open (here".to_string())];
+        extra.extend((201..=224u16).map(|v| (v, "middle".to_string())));
+        extra.push((225, "close) here".to_string()));
+        let mut verses: Vec<(u16, String)> =
+            (1..=100u16).map(|v| (v, "clean (x) pair".to_string())).collect();
+        verses.extend(extra);
+        let vm: VerseMap = verses.iter().map(|(v, t)| (sid("GEN", 1, *v), t.clone())).collect();
+        let f = rule(10).check(&crate::verse::by_book(&vm), None);
+        assert_eq!(f.len(), 1);
+        let (measure, majority, total) = share(&f[0]);
+        assert_eq!(measure, BracketMeasure::ShortSpan);
+        assert_eq!((majority, total), (100, 101), "100 short pairs of 101 total");
+        let observed = f64::from(majority) / f64::from(total);
+        assert!(f[0].score.unwrap() as f64 <= observed + 1e-6, "score ≤ share {observed}");
     }
 
     #[test]
@@ -389,7 +494,7 @@ mod tests {
             .iter()
             .map(|(v, t)| (sid("GEN", 1, *v), t.clone()))
             .collect();
-        let f = rule(10).check(&vm, None);
+        let f = rule(10).check(&crate::verse::by_book(&vm), None);
         assert_eq!(f.len(), 1);
         assert_eq!(f[0].sid, sid("GEN", 1, 200));
         assert_eq!(f[0].range.slice(&vm[&f[0].sid]), "﴾");
@@ -402,7 +507,7 @@ mod tests {
         // by the corpus-wide convention the clean pairs establish).
         let mut vm = with_convention(&[(200, "last verse (open")]);
         vm.extend(book("EXO", &[(1, "first verse) close")]));
-        let f = rule(10).check(&vm, None);
+        let f = rule(10).check(&crate::verse::by_book(&vm), None);
         assert_eq!(f.len(), 2);
         assert!(f.iter().any(|x| x.sid == sid("GEN", 1, 200)));
         assert!(f.iter().any(|x| x.sid == sid("EXO", 1, 1)));
@@ -411,7 +516,7 @@ mod tests {
     #[test]
     fn crossed_nesting_is_flagged() {
         let vm = with_convention(&[(200, "a ([b) c]")]);
-        let f = rule(10).check(&vm, None);
+        let f = rule(10).check(&crate::verse::by_book(&vm), None);
         // The `(` pairs with nothing (its closer was absorbed as a
         // mismatch): the mismatched `)` and the unmatched `[`/`]`... the
         // LIFO reports the crossing as orphans; at least the mismatched

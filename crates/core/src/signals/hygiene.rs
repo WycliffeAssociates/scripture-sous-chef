@@ -8,14 +8,14 @@
 //! normalised copy) and returns byte `Span`s into it. The runner stamps
 //! `sid` + `code` + `severity`.
 
+use crate::charclass::Class;
 use crate::diagnostics::{RuleId, Severity};
-use crate::rule::{PerVerseRule, TokenRule};
-use crate::token::Token;
-use crate::script::{ScriptTag, script_of};
+use crate::rule::PerVerseRule;
 use crate::span::Span;
+use crate::tape::{Mask, TapeEntry};
 use crate::unicode::{
-    ZWJ, ZWNJ, ZWSP, is_c0_control, is_c1_control, is_combining_mark, is_decimal_digit,
-    is_invalid_text_codepoint, is_punctuation, is_symbol, is_zero_width_or_format,
+    ZWJ, ZWNJ, ZWSP, is_c0_control, is_c1_control, is_invalid_text_codepoint,
+    is_zero_width_or_format, numeral_system,
 };
 
 // ─────────────────────────────────────────────────────────────────────
@@ -35,8 +35,11 @@ impl PerVerseRule for TabInBody {
     fn severity(&self) -> Severity {
         Severity::Warning
     }
-    fn check(&self, text: &str) -> Vec<Span> {
+    fn check(&self, text: &str, _tape: &[TapeEntry]) -> Vec<Span> {
         scan_tab_in_body(text)
+    }
+    fn gate(&self) -> Mask {
+        Mask::TAB
     }
 }
 
@@ -67,18 +70,22 @@ impl PerVerseRule for ControlChars {
     fn severity(&self) -> Severity {
         Severity::Warning
     }
-    fn check(&self, text: &str) -> Vec<Span> {
-        scan_control_chars(text)
+    fn check(&self, _text: &str, tape: &[TapeEntry]) -> Vec<Span> {
+        scan_control_chars(tape)
+    }
+    fn gate(&self) -> Mask {
+        Mask::CONTROL
     }
 }
 
-pub fn scan_control_chars(text: &str) -> Vec<Span> {
+pub(crate) fn scan_control_chars(tape: &[TapeEntry]) -> Vec<Span> {
     // One finding per maximal run of the *same* control char: damaged files
     // carry padding runs (NUL×40 at a verse end), and per-char findings turn
     // one damaged verse into dozens of rows without adding information.
     let mut spans: Vec<Span> = Vec::new();
     let mut run: Option<(char, Span)> = None;
-    for (i, c) in text.char_indices() {
+    for e in tape {
+        let (i, c) = (e.off as usize, e.ch);
         let flagged = (is_c0_control(c) && c != '\t' && c != '\n') || is_c1_control(c);
         if flagged {
             match &mut run {
@@ -129,14 +136,18 @@ impl PerVerseRule for ZeroWidthMisuse {
     fn severity(&self) -> Severity {
         Severity::Warning
     }
-    fn check(&self, text: &str) -> Vec<Span> {
-        scan_zero_width_misuse(text)
+    fn check(&self, _text: &str, tape: &[TapeEntry]) -> Vec<Span> {
+        scan_zero_width_misuse(tape)
+    }
+    fn gate(&self) -> Mask {
+        Mask::ZW_FORMAT
     }
 }
 
-pub fn scan_zero_width_misuse(text: &str) -> Vec<Span> {
+pub(crate) fn scan_zero_width_misuse(tape: &[TapeEntry]) -> Vec<Span> {
     let mut spans = Vec::new();
-    for (i, c) in text.char_indices() {
+    for e in tape {
+        let (i, c) = (e.off as usize, e.ch);
         if !is_zero_width_or_format(c) {
             continue;
         }
@@ -174,13 +185,18 @@ impl PerVerseRule for EmptyVerse {
     fn severity(&self) -> Severity {
         Severity::Info
     }
-    fn check(&self, text: &str) -> Vec<Span> {
-        scan_empty_verse(text)
+    fn check(&self, text: &str, tape: &[TapeEntry]) -> Vec<Span> {
+        scan_empty_verse(text, tape)
+    }
+    fn gate(&self) -> Mask {
+        // Fires on the *absence* of content; the mask sets NO_CONTENT when no
+        // non-whitespace scalar was seen (empty or whitespace-only verse).
+        Mask::NO_CONTENT
     }
 }
 
-pub fn scan_empty_verse(text: &str) -> Vec<Span> {
-    if text.chars().all(|c| c.is_whitespace()) {
+pub(crate) fn scan_empty_verse(text: &str, tape: &[TapeEntry]) -> Vec<Span> {
+    if tape.iter().all(|e| e.cl.is_whitespace()) {
         // Span the whole (whitespace-only or empty) text.
         vec![Span {
             start: 0,
@@ -210,18 +226,21 @@ impl PerVerseRule for InvalidCodepoint {
     fn severity(&self) -> Severity {
         Severity::Warning
     }
-    fn check(&self, text: &str) -> Vec<Span> {
-        scan_invalid_codepoint(text)
+    fn check(&self, _text: &str, tape: &[TapeEntry]) -> Vec<Span> {
+        scan_invalid_codepoint(tape)
+    }
+    fn gate(&self) -> Mask {
+        Mask::INVALID
     }
 }
 
-pub fn scan_invalid_codepoint(text: &str) -> Vec<Span> {
+pub(crate) fn scan_invalid_codepoint(tape: &[TapeEntry]) -> Vec<Span> {
     let mut spans = Vec::new();
-    for (i, c) in text.char_indices() {
-        if is_invalid_text_codepoint(c) {
+    for e in tape {
+        if is_invalid_text_codepoint(e.ch) {
             spans.push(Span {
-                start: i,
-                end: i + c.len_utf8(),
+                start: e.off as usize,
+                end: e.off as usize + e.ch.len_utf8(),
             });
         }
     }
@@ -254,8 +273,11 @@ impl PerVerseRule for ReplacementRun {
     fn severity(&self) -> Severity {
         Severity::Warning
     }
-    fn check(&self, text: &str) -> Vec<Span> {
+    fn check(&self, text: &str, _tape: &[TapeEntry]) -> Vec<Span> {
         scan_replacement_run(text)
+    }
+    fn gate(&self) -> Mask {
+        Mask::QRUN
     }
 }
 
@@ -298,28 +320,34 @@ impl PerVerseRule for CombiningMarkWithoutBase {
     fn severity(&self) -> Severity {
         Severity::Warning
     }
-    fn check(&self, text: &str) -> Vec<Span> {
-        scan_combining_mark_without_base(text)
+    fn check(&self, _text: &str, tape: &[TapeEntry]) -> Vec<Span> {
+        scan_combining_mark_without_base(tape)
+    }
+    fn gate(&self) -> Mask {
+        Mask::MARK_BASELESS
     }
 }
 
-pub fn scan_combining_mark_without_base(text: &str) -> Vec<Span> {
+pub(crate) fn scan_combining_mark_without_base(tape: &[TapeEntry]) -> Vec<Span> {
     let mut spans = Vec::new();
-    let mut prev: Option<char> = None;
-    for (i, c) in text.char_indices() {
-        if is_combining_mark(c) {
+    // The previous scalar's class — a mark is baseless at verse start, or when
+    // the scalar before it is whitespace, punctuation, or a symbol (the fused
+    // bits equal the std/GC predicates used before; ADR 0045).
+    let mut prev: Option<Class> = None;
+    for e in tape {
+        if e.cl.is_mark() {
             let baseless = match prev {
                 None => true,
-                Some(p) => p.is_whitespace() || is_punctuation(p) || is_symbol(p),
+                Some(p) => p.is_whitespace() || p.is_punctuation() || p.is_symbol(),
             };
             if baseless {
                 spans.push(Span {
-                    start: i,
-                    end: i + c.len_utf8(),
+                    start: e.off as usize,
+                    end: e.off as usize + e.ch.len_utf8(),
                 });
             }
         }
-        prev = Some(c);
+        prev = Some(e.cl);
     }
     spans
 }
@@ -327,49 +355,6 @@ pub fn scan_combining_mark_without_base(text: &str) -> Vec<Span> {
 // ─────────────────────────────────────────────────────────────────────
 // Mixed script in token
 // ─────────────────────────────────────────────────────────────────────
-
-/// One token mixing two or more scripts (Latin+Cyrillic homoglyphs,
-/// math-alphanumeric look-alikes). Common/Inherited characters carry no
-/// script identity and never count. Catches paste/encoding errors that
-/// render invisibly.
-pub const MIXED_SCRIPT_IN_TOKEN: RuleId = RuleId::MixedScriptInToken;
-
-pub struct MixedScriptInToken;
-
-impl TokenRule for MixedScriptInToken {
-    fn id(&self) -> RuleId {
-        MIXED_SCRIPT_IN_TOKEN
-    }
-    fn severity(&self) -> Severity {
-        Severity::Warning
-    }
-    fn check(&self, text: &str, tokens: &[Token]) -> Vec<Span> {
-        scan_mixed_script_in_token(text, tokens)
-    }
-}
-
-pub fn scan_mixed_script_in_token(text: &str, tokens: &[Token]) -> Vec<Span> {
-    let mut spans = Vec::new();
-    for token in tokens {
-        let mut first: Option<ScriptTag> = None;
-        let mut mixed = false;
-        for c in token.span.slice(text).chars() {
-            let Some(tag) = script_of(c) else { continue };
-            match first {
-                None => first = Some(tag),
-                Some(f) if f != tag => {
-                    mixed = true;
-                    break;
-                }
-                Some(_) => {}
-            }
-        }
-        if mixed {
-            spans.push(token.span);
-        }
-    }
-    spans
-}
 
 // ─────────────────────────────────────────────────────────────────────
 // Mixed numeral systems
@@ -389,44 +374,24 @@ impl PerVerseRule for MixedNumeralSystems {
     fn severity(&self) -> Severity {
         Severity::Warning
     }
-    fn check(&self, text: &str) -> Vec<Span> {
-        scan_mixed_numeral_systems(text)
+    fn check(&self, _text: &str, tape: &[TapeEntry]) -> Vec<Span> {
+        scan_mixed_numeral_systems(tape)
+    }
+    fn gate(&self) -> Mask {
+        Mask::MULTI_NUMSYS
     }
 }
 
-/// Numeral-system identity of a decimal digit: the zero codepoint of its
-/// contiguous Nd block (every Unicode decimal-digit block is a run of
-/// ten starting at its zero).
-fn numeral_system(c: char) -> Option<u32> {
-    if !is_decimal_digit(c) {
-        return None;
-    }
-    let v = c.to_digit(10).unwrap_or_else(|| {
-        // Non-ASCII Nd: derive the digit value from the block offset is
-        // impossible without the zero — but Rust's to_digit handles only
-        // ASCII. Walk back to the block zero instead: Nd blocks are
-        // aligned runs of ten, so the zero is the largest codepoint
-        // `z <= c` where `(c as u32 - z) < 10` and `z` is Nd with the
-        // nine following codepoints Nd. Simpler: scan back up to 9.
-        let cu = c as u32;
-        for back in 1..=9 {
-            if let Some(z) = char::from_u32(cu - back)
-                && !is_decimal_digit(z)
-            {
-                return back - 1;
-            }
-        }
-        9
-    });
-    Some(c as u32 - v)
-}
-
-pub fn scan_mixed_numeral_systems(text: &str) -> Vec<Span> {
+pub(crate) fn scan_mixed_numeral_systems(tape: &[TapeEntry]) -> Vec<Span> {
     use std::collections::HashMap;
 
     let mut counts: HashMap<u32, usize> = HashMap::new();
-    for c in text.chars() {
-        if let Some(sys) = numeral_system(c) {
+    for e in tape {
+        // The tape's decimal-digit bit gates the block-zero derivation, so
+        // `numeral_system` runs only on actual digits.
+        if e.cl.is_decimal_digit()
+            && let Some(sys) = numeral_system(e.ch)
+        {
             *counts.entry(sys).or_default() += 1;
         }
     }
@@ -444,13 +409,14 @@ pub fn scan_mixed_numeral_systems(text: &str) -> Vec<Span> {
     let mut spans = Vec::new();
     let mut run_start: Option<usize> = None;
     let mut run_end = 0usize;
-    for (i, c) in text.char_indices() {
-        let minority = numeral_system(c).is_some_and(|sys| sys != majority);
+    for e in tape {
+        let minority = e.cl.is_decimal_digit()
+            && numeral_system(e.ch).is_some_and(|sys| sys != majority);
         if minority {
             if run_start.is_none() {
-                run_start = Some(i);
+                run_start = Some(e.off as usize);
             }
-            run_end = i + c.len_utf8();
+            run_end = e.off as usize + e.ch.len_utf8();
         } else if let Some(start) = run_start.take() {
             spans.push(Span { start, end: run_end });
         }
@@ -469,6 +435,13 @@ pub fn scan_mixed_numeral_systems(text: &str) -> Vec<Span> {
 mod tests {
     use super::*;
 
+    /// The verse tape the runner would hand a per-verse scan.
+    fn tp(text: &str) -> Vec<TapeEntry> {
+        let mut v = Vec::new();
+        crate::tape::build(text, &mut v);
+        v
+    }
+
     #[test]
     fn tab_flags_each_tab() {
         let f = scan_tab_in_body("foo\tbar\tbaz");
@@ -483,14 +456,14 @@ mod tests {
     #[test]
     fn control_chars_flags_c0_and_c1() {
         // U+0007 (BEL, C0), U+0085 (NEL, C1)
-        let f = scan_control_chars("foo\u{0007}bar\u{0085}baz");
+        let f = scan_control_chars(&tp("foo\u{0007}bar\u{0085}baz"));
         assert_eq!(f.len(), 2);
         assert_eq!("foo\u{0007}bar\u{0085}baz"[f[0].start..f[0].end].chars().next(), Some('\u{0007}'));
     }
 
     #[test]
     fn control_chars_excludes_tab_and_newline() {
-        assert!(scan_control_chars("foo\tbar\nbaz").is_empty());
+        assert!(scan_control_chars(&tp("foo\tbar\nbaz")).is_empty());
     }
 
     #[test]
@@ -499,10 +472,10 @@ mod tests {
         // one per char. A different control char breaks the run; a gap does
         // too.
         let text = "word\u{0}\u{0}\u{0}\u{0}";
-        let f = scan_control_chars(text);
+        let f = scan_control_chars(&tp(text));
         assert_eq!(f.len(), 1);
         assert_eq!((f[0].start, f[0].end), (4, 8));
-        let f = scan_control_chars("a\u{0}\u{0}\u{7}\u{7}b\u{0}c");
+        let f = scan_control_chars(&tp("a\u{0}\u{0}\u{7}\u{7}b\u{0}c"));
         assert_eq!(f.len(), 3);
     }
 
@@ -526,7 +499,7 @@ mod tests {
 
     #[test]
     fn zero_width_flags_bom_in_latin() {
-        let f = scan_zero_width_misuse("foo\u{FEFF}bar");
+        let f = scan_zero_width_misuse(&tp("foo\u{FEFF}bar"));
         assert_eq!(f.len(), 1);
         assert_eq!("foo\u{FEFF}bar"[f[0].start..f[0].end].chars().next(), Some('\u{FEFF}'));
     }
@@ -537,9 +510,9 @@ mod tests {
         // in Indic/Arabic-family shaping and in emoji sequences, a slip in Latin.
         // Deterministic hygiene no longer judges them at all (the old Latin-centric
         // script allow-list is gone); a corpus-relative successor is future work.
-        assert!(scan_zero_width_misuse("एक\u{200C}क").is_empty()); // Devanagari ZWNJ
-        assert!(scan_zero_width_misuse("fo\u{200C}o").is_empty()); // Latin ZWNJ (was flagged)
-        assert!(scan_zero_width_misuse("a\u{200D}b").is_empty()); // ZWJ
+        assert!(scan_zero_width_misuse(&tp("एक\u{200C}क")).is_empty()); // Devanagari ZWNJ
+        assert!(scan_zero_width_misuse(&tp("fo\u{200C}o")).is_empty()); // Latin ZWNJ (was flagged)
+        assert!(scan_zero_width_misuse(&tp("a\u{200D}b")).is_empty()); // ZWJ
     }
 
     #[test]
@@ -547,16 +520,16 @@ mod tests {
         // U+200B is orthography-dependent (Khmer/Lao/…); deterministic hygiene
         // stays silent on it regardless of surrounding script (its redundant
         // placements are handled by uni.redundant-zero-width-space instead).
-        assert!(scan_zero_width_misuse("a\u{200B}b").is_empty());
-        assert!(scan_zero_width_misuse("ក\u{200B}ខ").is_empty()); // Khmer
-        assert!(scan_zero_width_misuse("\u{200B}").is_empty());
+        assert!(scan_zero_width_misuse(&tp("a\u{200B}b")).is_empty());
+        assert!(scan_zero_width_misuse(&tp("ក\u{200B}ខ")).is_empty()); // Khmer
+        assert!(scan_zero_width_misuse(&tp("\u{200B}")).is_empty());
     }
 
     #[test]
     fn zero_width_still_flags_other_controls_beside_zwsp() {
         // A verse carrying ZWSP *and* a BOM, word joiner, and bidi override:
         // only the three genuine controls are flagged; the ZWSP is skipped.
-        let f = scan_zero_width_misuse("a\u{200B}b\u{FEFF}c\u{2060}d\u{202E}e");
+        let f = scan_zero_width_misuse(&tp("a\u{200B}b\u{FEFF}c\u{2060}d\u{202E}e"));
         assert_eq!(f.len(), 3);
         let text = "a\u{200B}b\u{FEFF}c\u{2060}d\u{202E}e";
         let flagged: Vec<char> = f.iter().map(|s| text[s.start..s.end].chars().next().unwrap()).collect();
@@ -565,22 +538,22 @@ mod tests {
 
     #[test]
     fn empty_verse_fires_on_empty() {
-        assert_eq!(scan_empty_verse(""), vec![Span { start: 0, end: 0 }]);
+        assert_eq!(scan_empty_verse("", &tp("")), vec![Span { start: 0, end: 0 }]);
     }
 
     #[test]
     fn empty_verse_fires_on_whitespace_only() {
-        assert_eq!(scan_empty_verse("   \t  ").len(), 1);
+        assert_eq!(scan_empty_verse("   \t  ", &tp("   \t  ")).len(), 1);
     }
 
     #[test]
     fn empty_verse_quiet_on_real_content() {
-        assert!(scan_empty_verse("hello").is_empty());
+        assert!(scan_empty_verse("hello", &tp("hello")).is_empty());
     }
 
     #[test]
     fn invalid_codepoint_flags_replacement_char() {
-        let f = scan_invalid_codepoint("god\u{FFFD}created");
+        let f = scan_invalid_codepoint(&tp("god\u{FFFD}created"));
         assert_eq!(f.len(), 1);
         assert_eq!("god\u{FFFD}created"[f[0].start..f[0].end].chars().next(), Some('\u{FFFD}'));
     }
@@ -588,30 +561,30 @@ mod tests {
     #[test]
     fn invalid_codepoint_flags_noncharacters() {
         // U+FDD0 (Arabic-block noncharacter) and U+FFFE (plane-end pair).
-        assert_eq!(scan_invalid_codepoint("a\u{FDD0}b").len(), 1);
-        assert_eq!(scan_invalid_codepoint("a\u{FFFE}b").len(), 1);
-        assert_eq!(scan_invalid_codepoint("a\u{FFFF}b").len(), 1);
+        assert_eq!(scan_invalid_codepoint(&tp("a\u{FDD0}b")).len(), 1);
+        assert_eq!(scan_invalid_codepoint(&tp("a\u{FFFE}b")).len(), 1);
+        assert_eq!(scan_invalid_codepoint(&tp("a\u{FFFF}b")).len(), 1);
         // Plane-end noncharacters in a higher plane (U+1FFFF).
-        assert_eq!(scan_invalid_codepoint("a\u{1FFFF}b").len(), 1);
+        assert_eq!(scan_invalid_codepoint(&tp("a\u{1FFFF}b")).len(), 1);
     }
 
     #[test]
     fn invalid_codepoint_flags_special_format_leftovers() {
         // U+FFFC object replacement, U+FFF9 interlinear-annotation anchor.
-        assert_eq!(scan_invalid_codepoint("a\u{FFFC}b").len(), 1);
-        assert_eq!(scan_invalid_codepoint("a\u{FFF9}b").len(), 1);
+        assert_eq!(scan_invalid_codepoint(&tp("a\u{FFFC}b")).len(), 1);
+        assert_eq!(scan_invalid_codepoint(&tp("a\u{FFF9}b")).len(), 1);
     }
 
     #[test]
     fn invalid_codepoint_clean_text_quiet() {
-        assert!(scan_invalid_codepoint("In the beginning God created").is_empty());
-        assert!(scan_invalid_codepoint("परमेश्वर ने कहा").is_empty());
+        assert!(scan_invalid_codepoint(&tp("In the beginning God created")).is_empty());
+        assert!(scan_invalid_codepoint(&tp("परमेश्वर ने कहा")).is_empty());
     }
 
     #[test]
     fn invalid_codepoint_respects_range_edges() {
         // U+FDEF is the last noncharacter; U+FDF0 just past it is valid.
-        let f = scan_invalid_codepoint("\u{FDEF}\u{FDF0}");
+        let f = scan_invalid_codepoint(&tp("\u{FDEF}\u{FDF0}"));
         assert_eq!(f.len(), 1);
         assert_eq!(f[0], Span { start: 0, end: 3 });
     }
@@ -620,69 +593,37 @@ mod tests {
     fn combining_mark_after_space_flagged() {
         // "a ́b" — acute with only a space to attach to.
         let text = "a \u{0301}b";
-        let f = scan_combining_mark_without_base(text);
+        let f = scan_combining_mark_without_base(&tp(text));
         assert_eq!(f.len(), 1);
         assert_eq!(f[0].slice(text), "\u{0301}");
     }
 
     #[test]
     fn combining_mark_at_start_and_after_punct_flagged() {
-        assert_eq!(scan_combining_mark_without_base("\u{0301}abc").len(), 1);
-        assert_eq!(scan_combining_mark_without_base("word.\u{0301} x").len(), 1);
+        assert_eq!(scan_combining_mark_without_base(&tp("\u{0301}abc")).len(), 1);
+        assert_eq!(scan_combining_mark_without_base(&tp("word.\u{0301} x")).len(), 1);
     }
 
     #[test]
     fn combining_mark_on_base_is_clean() {
-        assert!(scan_combining_mark_without_base("ne\u{0301}e").is_empty());
+        assert!(scan_combining_mark_without_base(&tp("ne\u{0301}e")).is_empty());
         // Devanagari matras on consonants.
-        assert!(scan_combining_mark_without_base("परमेश्वर").is_empty());
-    }
-
-    /// Tokenize then scan — the runner now hands `scan_mixed_script_in_token`
-    /// its tokens, so the tests share one tokenization too.
-    fn mixed(text: &str) -> Vec<Span> {
-        scan_mixed_script_in_token(text, &crate::token::tokenize(text))
-    }
-
-    #[test]
-    fn mixed_script_homoglyph_flagged() {
-        // Latin word with a Cyrillic 'а' in the middle.
-        let text = "p\u{0430}ul said";
-        let f = mixed(text);
-        assert_eq!(f.len(), 1);
-        assert_eq!(f[0].slice(text), "p\u{0430}ul");
-    }
-
-    #[test]
-    fn mixed_script_math_bold_flagged() {
-        // U+1D400 MATHEMATICAL BOLD CAPITAL A inside a Latin token.
-        let f = mixed("\u{1D400}men");
-        assert_eq!(f.len(), 1);
-    }
-
-    #[test]
-    fn single_script_tokens_clean() {
-        assert!(mixed("an ordinary verse").is_empty());
-        assert!(mixed("परमेश्वर ने कहा").is_empty());
-        // Digits/punct are Common — never count as a second script.
-        assert!(mixed("40days a.m.").is_empty());
-        // Two scripts in two separate tokens is fine (quotation, gloss).
-        assert!(mixed("word शब्द").is_empty());
+        assert!(scan_combining_mark_without_base(&tp("परमेश्वर")).is_empty());
     }
 
     #[test]
     fn mixed_numerals_flag_minority_run() {
         // Two ASCII digits (majority), one Devanagari run (minority).
         let text = "12 men and ४५ women";
-        let f = scan_mixed_numeral_systems(text);
+        let f = scan_mixed_numeral_systems(&tp(text));
         assert_eq!(f.len(), 1);
         assert_eq!(f[0].slice(text), "४५");
     }
 
     #[test]
     fn single_numeral_system_clean() {
-        assert!(scan_mixed_numeral_systems("12 men and 45 women").is_empty());
-        assert!(scan_mixed_numeral_systems("१२ and ४५").is_empty());
-        assert!(scan_mixed_numeral_systems("no digits at all").is_empty());
+        assert!(scan_mixed_numeral_systems(&tp("12 men and 45 women")).is_empty());
+        assert!(scan_mixed_numeral_systems(&tp("१२ and ४५")).is_empty());
+        assert!(scan_mixed_numeral_systems(&tp("no digits at all")).is_empty());
     }
 }

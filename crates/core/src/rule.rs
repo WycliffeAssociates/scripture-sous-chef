@@ -17,16 +17,17 @@
 //! execution cadence (every keystroke vs on save) is the orchestrator's.
 //! There is deliberately no hot/cold tier in the type system.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use crate::config::Config;
 use crate::diagnostics::{Finding, RuleId, Severity};
-use crate::sid::Sid;
+use crate::sid::{BookId, Sid};
 use crate::signals;
 use crate::span::Span;
 use crate::stats::RuleStats;
+use crate::tape::{Mask, TapeEntry};
 use crate::token::Token;
-use crate::verse::VerseMap;
+use crate::verse::{Books, VerseMap};
 
 /// Per-verse word tokenizations, keyed by `Sid`, computed once per analyze
 /// and shared by every token-consuming rule so the corpus is tokenized a
@@ -35,24 +36,32 @@ use crate::verse::VerseMap;
 /// consumers are enabled — see `analyze_stateful`.
 pub type TokenCache = HashMap<Sid, Vec<Token>>;
 
-pub trait PerVerseRule: Sync {
+/// The hot, stateless majority. `check` reads the verse's prebuilt scalar tape
+/// (ADR 0045) — one shared decode+classify pass the runner does per verse —
+/// instead of each rule re-walking `text.char_indices()`. `text` rides along
+/// for the handful of scans that are byte-level (tab, `?`-run, USFM/HTML
+/// markers) or need `text.len()`. `pub(crate)`: the tape type is internal, and
+/// no consumer outside the crate names this trait.
+pub(crate) trait PerVerseRule: Sync {
     fn id(&self) -> RuleId;
     fn severity(&self) -> Severity;
-    fn check(&self, text: &str) -> Vec<Span>;
+    fn check(&self, text: &str, tape: &[TapeEntry]) -> Vec<Span>;
+    /// The per-verse dirty-bits gate (ADR 0046): the runner skips `check` on a
+    /// verse whose [`Mask`] does not open this gate. The gate must be a **safe
+    /// superset** of the rule's fire set — set on every verse `check` could
+    /// return a finding for. Defaults to all-pass (always run), so a rule with
+    /// no cheap prefilter simply never gets skipped.
+    fn gate(&self) -> Mask {
+        Mask::ALL_PASS
+    }
 }
 
-/// A per-verse rule that works over the verse's **word tokens** (UAX #29).
-/// The runner supplies the tokens — from the shared [`TokenCache`] when one
-/// was built, else freshly tokenized — so the rule never tokenizes itself.
-pub trait TokenRule: Sync {
-    fn id(&self) -> RuleId;
-    fn severity(&self) -> Severity;
-    fn check(&self, text: &str, tokens: &[Token]) -> Vec<Span>;
-}
-
+/// Project-scoped rules receive the corpus as [`Books`] — the same shared
+/// grouping the stateful phase walks (ADR 0042), so book-independent passes
+/// fan out through [`map_books`] and nobody regroups the corpus.
 pub trait ProjectRule: Sync {
     fn id(&self) -> RuleId;
-    fn check(&self, target: &VerseMap, source: Option<&VerseMap>) -> Vec<Finding>;
+    fn check(&self, books: &Books<'_>, source: Option<&VerseMap>) -> Vec<Finding>;
 }
 
 /// A project-scoped rule that also consults per-verse tokens (e.g.
@@ -62,33 +71,124 @@ pub trait ProjectTokenRule: Sync {
     fn id(&self) -> RuleId;
     fn check(
         &self,
-        target: &VerseMap,
+        books: &Books<'_>,
         source: Option<&VerseMap>,
         tokens: Option<&TokenCache>,
     ) -> Vec<Finding>;
 }
 
+/// Candidate **sites** a stateful rule visited while counting — forwarded
+/// from `reduce` to `judge` *within one analyze call* so a book scanned this
+/// call is never scanned twice (ADR 0044). Strictly ephemeral: sites never
+/// enter [`RuleStats`], never serialize, never outlive the call — the
+/// aggregates-only wire contract (ADR 0017) is untouched.
+///
+/// Per rule, per book, the candidates in scan order. **A book's presence in
+/// the map means "reduce scanned it this call"** — an empty list is a scanned
+/// book with zero candidates (judge emits nothing for it, scan-free), while
+/// an *absent* book was carried from the prior and judge must re-scan it for
+/// spans. Proportionality carries no sites: its judge emits from cached
+/// ratios and never scans.
+pub enum RuleSites {
+    Casing(BTreeMap<BookId, Vec<signals::casing::LowerSite>>),
+    Proportionality,
+    PunctuationAdjacency(BTreeMap<BookId, Vec<(Sid, Span)>>),
+    PunctuationSpacing(BTreeMap<BookId, Vec<signals::punctuation::SpacingSite>>),
+    RepeatedCharacterRun(BTreeMap<BookId, Vec<(Sid, Span)>>),
+    PunctOnlyToken(BTreeMap<BookId, Vec<(Sid, Span)>>),
+    MixedScript(BTreeMap<BookId, Vec<signals::script_mixing::MixedScriptSite>>),
+}
+
+/// Pair each site with its verse's text by walking a book's verses and its
+/// (verse-ordered) sites together — the site path's replacement for slicing
+/// via a map lookup per site. `f(sid, text, payload)`.
+pub(crate) fn for_each_site_text<'a, T>(
+    verses: &[(Sid, &'a str)],
+    sites: &[(Sid, T)],
+    mut f: impl FnMut(Sid, &'a str, &T),
+) {
+    let mut vi = verses.iter();
+    let mut cur = vi.next();
+    for (sid, payload) in sites {
+        while cur.is_some_and(|&(vsid, _)| vsid < *sid) {
+            cur = vi.next();
+        }
+        match cur {
+            Some(&(vsid, text)) if vsid == *sid => f(*sid, text, payload),
+            _ => {}
+        }
+    }
+}
+
 /// A rule that **observes** the corpus into `RuleStats`, then **judges** from
 /// that corpus context (ADR 0017). `reduce` summarises the verses it is given;
 /// the caller `merge`s that into prior stats. Aggregate-only rules may re-scan
-/// `target` to recover spans without storing sites. Core stays pure — the stats
-/// live in the caller, not the rule.
+/// the supplied verses to recover spans without storing sites. Core stays pure
+/// — the stats live in the caller, not the rule.
+///
+/// Both phases receive the corpus as [`Books`] — grouped once by
+/// `analyze_stateful` and shared — because the **book is the unit of
+/// everything** here (ADR 0042): stats supersede per book, casing's scan
+/// carries sentence state across verse seams within a book, and the
+/// `parallel` feature fans work out per book via [`map_books`]. `tokens` is
+/// the shared per-analyze [`TokenCache`] when one was built; a rule that
+/// tokenizes (repeated-character-run) reads it instead of re-tokenizing, and
+/// every other rule ignores it.
 pub trait StatefulRule: Sync {
     fn id(&self) -> RuleId;
-    fn reduce(&self, map: &VerseMap, source: Option<&VerseMap>) -> RuleStats;
-    /// Emit findings from the merged corpus `stats`. `target` is the verses of
-    /// the current call — a rule whose observations are *sparse* ignores it and
-    /// emits from cached sites (casing, proportionality); a rule with a *dense*
-    /// candidate class caches only aggregates and **re-scans `target`** here to
-    /// produce spans, so its `Stats` stays tiny while scores stay corpus-wide
-    /// (punctuation adjacency). Emissions are for `target` either way.
-    fn judge(&self, stats: &RuleStats, target: &VerseMap) -> Vec<Finding>;
+    /// Count the supplied verses into this rule's stats, and hand back the
+    /// candidate [`RuleSites`] visited along the way (ADR 0044) so a
+    /// same-call `judge` can skip re-scanning those books.
+    fn reduce(
+        &self,
+        books: &Books<'_>,
+        source: Option<&VerseMap>,
+        tokens: Option<&TokenCache>,
+    ) -> (RuleStats, RuleSites);
+    /// Emit findings from the merged corpus `stats`. `books` holds the verses
+    /// of the current call — a rule whose observations are *sparse* ignores it
+    /// and emits from cached sites (proportionality); a rule with a *dense*
+    /// candidate class caches only aggregates and recovers spans here: from
+    /// the forwarded `sites` for books reduce scanned this call, by
+    /// **re-scanning** any other supplied book (its counts came from the
+    /// prior, so no sites exist). `sites = None` (or a mismatched variant)
+    /// re-scans everything — always correct, never required in the orchestrated
+    /// path. Emissions are for the supplied verses either way.
+    fn judge(
+        &self,
+        stats: &RuleStats,
+        books: &Books<'_>,
+        tokens: Option<&TokenCache>,
+        sites: Option<&RuleSites>,
+    ) -> Vec<Finding>;
+}
+
+/// Run `f` over every book and collect the outputs **in book order**. Under
+/// the `parallel` feature the books fan out over rayon (ADR 0042); the output
+/// is identical either way — an indexed collect preserves `BTreeMap` key
+/// order, and books are disjoint — so the feature can never change results,
+/// only wall-clock. This is the *one* place the stateful phase's parallelism
+/// lives; rules call it and stay `cfg`-free.
+pub(crate) fn map_books<T: Send>(
+    books: &Books<'_>,
+    f: impl Fn(BookId, &[(Sid, &str)]) -> T + Sync,
+) -> Vec<T> {
+    #[cfg(feature = "parallel")]
+    {
+        use rayon::prelude::*;
+        let entries: Vec<(&BookId, &Vec<(Sid, &str)>)> = books.iter().collect();
+        entries.into_par_iter().map(|(b, v)| f(*b, v)).collect()
+    }
+    #[cfg(not(feature = "parallel"))]
+    {
+        books.iter().map(|(&b, v)| f(b, v)).collect()
+    }
 }
 
 /// Every per-verse rule wired in. The registry is complete — including
 /// rules `Config::v1_defaults` disables by default — so an explicit
 /// enable in config is all it takes to run one.
-pub fn per_verse_rules() -> Vec<Box<dyn PerVerseRule>> {
+pub(crate) fn per_verse_rules() -> Vec<Box<dyn PerVerseRule>> {
     vec![
         Box::new(signals::whitespace::ExcessHWhitespace),
         Box::new(signals::hygiene::TabInBody),
@@ -103,12 +203,6 @@ pub fn per_verse_rules() -> Vec<Box<dyn PerVerseRule>> {
         Box::new(signals::structural::SourceMarkerLeftover),
         Box::new(signals::structural::MergeConflictMarker),
     ]
-}
-
-/// Every token-consuming per-verse rule. Kept out of `per_verse_rules` so the
-/// runner can hand them shared tokens instead of each one re-tokenizing.
-pub fn token_rules() -> Vec<Box<dyn TokenRule>> {
-    vec![Box::new(signals::hygiene::MixedScriptInToken)]
 }
 
 /// Every project-scoped rule wired in by default. Knob-bearing rules are
@@ -149,5 +243,69 @@ pub fn stateful_rules(config: &Config) -> Vec<Box<dyn StatefulRule>> {
         Box::new(signals::lexical::PunctOnlyToken {
             cfg: config.punct_only_token,
         }),
+        Box::new(signals::script_mixing::MixedScriptInToken {
+            cfg: config.mixed_script,
+        }),
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The safety property the whole prefilter rests on (ADR 0046, ported from
+    /// the spike's corpus-wide assertion): every per-verse rule's gate is a
+    /// **safe superset** of its fire set — on any verse where `check` returns a
+    /// finding, the verse's dirty-bits mask opens that rule's gate. If this
+    /// held only on clean corpora the prefilter could silently drop findings;
+    /// these synthetic verses fire *every* rule at least once (asserted below).
+    #[test]
+    fn every_gate_is_a_safe_superset_of_its_fire_set() {
+        // A battery that fires all twelve rules plus clean / adjacent cases.
+        let verses = [
+            "",
+            "   ",
+            "In the beginning God created the heavens.",
+            "मन ने कहा। हाँ भई हाँ।",
+            "a  b",                      // excess whitespace
+            "End.  Next",                // protected (no fire) but EXCESS_WS set
+            "a\u{00A0}\u{00A0}b",         // NBSP run
+            "foo\tbar",                  // tab
+            "foo\u{0007}bar\u{0085}baz", // C0 + C1 controls
+            "a\u{FEFF}b\u{2060}c\u{202E}d", // zero-width / format
+            "god\u{FFFD}\u{FDD0}\u{FFFE}x", // invalid codepoints
+            "a\u{1FFFE}b",               // astral noncharacter
+            "word ????? end",            // ?×5
+            "\u{0301}abc word.\u{0301} x", // baseless marks
+            "12 men and ४५ women",       // mixed numerals
+            "a\u{200B}\u{200B}b c\u{200B}\u{200B}d", // doubled ZWSP runs
+            r"In the \v 2 \add beginning\add*",
+            "a <b>bold</b> <br/> word",
+            "<<<<<<< HEAD\nx\n=======\ny\n>>>>>>> z",
+            "||||||| base",
+            "5 < 7 and 7 > 5",           // lone comparisons (no conflict fire)
+            "what?? really",             // ?×2 (no replacement fire)
+        ];
+        let rules = per_verse_rules();
+        let mut tape = Vec::new();
+        // Which rules actually fired somewhere — to prove the battery is real.
+        let mut fired_any = vec![false; rules.len()];
+        for text in verses {
+            let mask = crate::tape::build_masked(text, &mut tape);
+            for (i, r) in rules.iter().enumerate() {
+                let fires = !r.check(text, &tape).is_empty();
+                if fires {
+                    fired_any[i] = true;
+                    assert!(
+                        mask.opens(r.gate()),
+                        "{:?} fired on {text:?} but its gate stayed closed",
+                        r.id()
+                    );
+                }
+            }
+        }
+        for (i, r) in rules.iter().enumerate() {
+            assert!(fired_any[i], "battery never fired {:?} — test is vacuous for it", r.id());
+        }
+    }
 }

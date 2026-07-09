@@ -1,19 +1,22 @@
 # `uni.*` — Unicode script & numeral integrity
 
-Script- and numeral-identity checks. Most live in `hygiene.rs` and carry no
-knobs beyond on/off, but they reason about Unicode **script identity** rather
-than raw codepoints. Per-character script identity is delegated to the
-`unicode-script` crate (ADR 0009) via the `ScriptTag` enum (ADR 0015 for the
-perf representation). **Common** and **Inherited** characters — ASCII digits,
-punctuation, most combining marks — carry no script identity and never, on
-their own, trigger these rules. All members are deterministic and ship on by
-default (ADR 0014). `uni.redundant-zero-width-space` lives in
-`zero_width_space.rs` and flags only a *doubled* U+200B run (line-break redundant)
-at Info (ADR 0027); it replaced an earlier corpus-relative scorer
+Script- and numeral-identity checks. They reason about Unicode **script
+identity** rather than raw codepoints. Per-character script identity is
+delegated to the `unicode-script` crate (ADR 0009) via the `ScriptTag` enum
+(ADR 0015 for the perf representation). **Common** and **Inherited**
+characters — ASCII digits, punctuation, most combining marks — carry no script
+identity and never, on their own, trigger these rules. Most members are
+deterministic and ship on by default (ADR 0014); the exception is
+`uni.mixed-script-in-token`, which is **corpus-relative** (ADR 0047) — it
+learns which script mixes a translation uses as house style and flags only the
+odd ones out. `uni.redundant-zero-width-space` lives in `zero_width_space.rs`
+and flags only a *doubled* U+200B run (line-break redundant) at Info (ADR
+0027); it replaced an earlier corpus-relative scorer
 (`uni.zero-width-space-anomaly`, ADR 0023), retired because a cross-corpus ablation
 found no error class it uniquely caught.
 
 Source: `crates/core/src/signals/hygiene.rs`,
+`crates/core/src/signals/script_mixing.rs`,
 `crates/core/src/signals/zero_width_space.rs`.
 
 ---
@@ -51,39 +54,66 @@ mark tables.
 
 ## `uni.mixed-script-in-token` — two scripts inside one word
 
-> **Severity** Warning · **Default** on · **Scope** per-verse · **Knobs** none
+> **Severity** Info · **Default** on · **Scope** corpus-relative (stateful) ·
+> **Knobs** `convention_rate`, `breadth_convention_rate`, `confidence_z`,
+> `breadth_z`, `breadth_min_books`, `emit_score_min`
 
-**Flags** — A single token mixing two or more scripts:
-- `pаul` — a Latin word with a Cyrillic `а` (`U+0430`) homoglyph in the middle
-- `𝐀men` — a Mathematical Bold Capital A (`U+1D400`) inside a Latin word
+**Flags** — A single token mixing two or more scripts, **where that mix is not
+something the translation does throughout**:
+- `pаul` — a Latin word with a Cyrillic `а` (`U+0430`) homoglyph in the middle,
+  in an otherwise all-Latin corpus
+- `పాoడీ` — a stray Latin `o` inside a Telugu word, concentrated in one book
 
-**Clean** — `40days`, `a.m.` (digits and punctuation are Common, never a
-second script); `word शब्द` (two scripts in two *separate* tokens — a gloss or
-quotation is fine).
+**Clean** — `40days`, `a.m.` (digits and punctuation are Common, never a second
+script); `word शब्द` (two scripts in two *separate* tokens — a gloss or
+quotation is fine); **and any script mix the corpus uses pervasively** — a
+language that writes `ŏ` inside Cyrillic words, uses `π` as a letter, or clings
+a Canadian Syllabics final to Latin. Those establish as conventions and go
+silent.
 
-**Why it matters** — Essentially no language mixes scripts *inside a single
-word*. When it happens it is almost always a homoglyph paste error (a Cyrillic
-`а` that looks pixel-identical to a Latin `a`) or a math-alphanumeric
+**Why it matters** — A word mixing writing systems is often a homoglyph paste
+error (a Cyrillic `а` pixel-identical to a Latin `a`) or a math-alphanumeric
 look-alike — invisible to the eye, but it silently corrupts search, sorting,
-and any cross-corpus matching. Two scripts in two adjacent tokens (a quoted
-foreign word, a gloss) is normal and is not flagged.
+and cross-corpus matching. But it is just as often a real orthographic
+convention (a borrowed letter) or a systematic transliteration artifact. A
+fixed "two scripts ⇒ flag" predicate cannot tell these apart and buries the
+real errors under thousands of convention hits (the ADR 0047 census: 30,098
+categorical hits corpus-wide, the overwhelming majority pervasive conventions).
+So this rule learns the corpus's own habits and flags only the rare, out-of-place
+mixes.
 
-**Config** — On/off only.
+**Config** — The verdict is corpus-relative, scored like `punct.adjacency-anomaly`
+(ADR 0031): each **script signature** (`Latin+Cyrillic`) is judged on a
+**frequency** axis (its share of the *dominant* script's tokens) noisy-OR'd with
+a **breadth** axis (its share of books). Either axis establishing a convention
+silences the signature. `emit_score_min` is the sensitivity dial; the other
+knobs set the convention thresholds and small-sample shrinkage. Defaults are
+calibrated (ADR 0047) and the census evidence is bimodal, so they are
+insensitive within a wide band.
 
-**Nuance & ADR ties** — Common/Inherited characters carry no script identity
-and never count as a second script (so digits and punctuation inside a token
-are transparent). The first letter to claim a real script sets the token's
-script; the first letter that disagrees flags the whole token. Script
-identity via ADR 0009 / ADR 0015.
+**Nuance & ADR ties** — The **dominant-script denominator** is load-bearing: in
+every convention the *intruder* script is exclusive to the mix (a language's
+`ŏ` never appears outside a Cyrillic word), so measuring against the rarer
+script's tokens pins the rate at 1.0 and reads the convention as an anomaly;
+measuring against the dominant script asks the right question — "what share of
+the main script's words does this contaminate?" A **systematic, widespread**
+cross-script contamination is suppressed exactly like a convention — corpus
+counts alone cannot tell them apart (the documented limitation shared with the
+punctuation anomalies). State is aggregate-only (ADR 0017): per-book signature
+and per-script token counts, no sites; spans re-derive at judge. Script identity
+via ADR 0009 / ADR 0015. This replaced the deterministic categorical rule
+(ADR 0047).
 
-**Open issues / future work** — There is **no allow-list** for legitimate
-intra-word code-switching (rare, but some loanword orthographies do it). The
-superseded `orth.script-mixing` design carried `allowed_scripts` and
-`allow_digits` knobs — and `documentation/configuration/rules.md` still shows
-that stale example. Neither knob exists in the current implementation; if a
-corpus genuinely needs intra-word mixing, a knob would have to come back
-(it would graduate this out of pure hygiene). *(Doc-debt: that config example
-should be updated to a real current rule.)*
+**Open issues / future work** — The script lane now carries the **full**
+`unicode-script` set (ADR 0047 step 2): the arbitrary "unexercised scripts →
+None" collapse is gone (Coptic, Runic, … get real identity) and CJK is
+un-collapsed (Han/Hiragana/Katakana distinct), which this probabilistic verdict
+absorbs without regression — a Japanese text's pervasive Han+Hiragana mixing is
+learned as convention (0 findings on `jpn1965`). `Common`/`Inherited`/`Unknown`
+remain non-participants (they carry no positive script identity). The stale
+`orth.script-mixing` `allowed_scripts`/`allow_digits` config example in
+`documentation/configuration/rules.md` is obsolete — the corpus-relative verdict
+is the allow-list now (a mix the corpus uses is learned, not configured).
 
 ---
 

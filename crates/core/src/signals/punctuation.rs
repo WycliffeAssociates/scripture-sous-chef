@@ -11,15 +11,15 @@ use std::collections::BTreeMap;
 
 use crate::charclass::class_of;
 use crate::config::{PunctuationAdjacencyConfig, PunctuationSpacingConfig};
-use crate::diagnostics::{Finding, RuleId, Severity};
+use crate::diagnostics::{Finding, FindingArgs, RuleId, Severity};
 use crate::grapheme::{self, GSpan};
-use crate::rule::StatefulRule;
+use crate::rule::{self, StatefulRule, TokenCache};
 use crate::evidence::{clamp_rate, clamp_unit, clamp_z, dominance, from_strengths, odds_amplify, strength};
-use crate::sid::Sid;
+use crate::sid::{BookId, Sid};
 use crate::span::Span;
 use crate::stats::RuleStats;
-use crate::unicode::is_punctuation;
-use crate::verse::{self, VerseMap};
+use crate::tape::TapeEntry;
+use crate::verse::{Books, VerseMap};
 
 // ─────────────────────────────────────────────────────────────────────
 // Punctuation adjacency anomaly (corpus-relative, aggregate-only stateful)
@@ -58,7 +58,11 @@ struct BookPunctuationAdjacency {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct PunctuationAdjacencyStats {
-    per_book: BTreeMap<String, BookPunctuationAdjacency>,
+    #[cfg_attr(
+        feature = "wasm",
+        tsify(type = "Record<string, BookPunctuationAdjacency>")
+    )]
+    per_book: BTreeMap<BookId, BookPunctuationAdjacency>,
 }
 
 impl PunctuationAdjacencyStats {
@@ -70,8 +74,8 @@ impl PunctuationAdjacencyStats {
         self
     }
 
-    pub(crate) fn remove_book(&mut self, book: &str) {
-        self.per_book.remove(book);
+    pub(crate) fn remove_book(&mut self, book: BookId) {
+        self.per_book.remove(&book);
     }
 }
 
@@ -84,17 +88,33 @@ impl StatefulRule for PunctuationAdjacencyAnomaly {
         PUNCTUATION_ADJACENCY_ANOMALY
     }
 
-    fn reduce(&self, map: &VerseMap, _source: Option<&VerseMap>) -> RuleStats {
-        let mut stats = PunctuationAdjacencyStats::default();
-        for (book, verses) in verse::by_book(map) {
-            stats
-                .per_book
-                .insert(book.as_str().to_string(), reduce_book(&verses));
+    fn reduce(
+        &self,
+        books: &Books<'_>,
+        _source: Option<&VerseMap>,
+        _tokens: Option<&TokenCache>,
+    ) -> (RuleStats, rule::RuleSites) {
+        let mut per_book = BTreeMap::new();
+        let mut sites = BTreeMap::new();
+        for (book, (bc, book_sites)) in
+            rule::map_books(books, |book, verses| (book, reduce_book(verses)))
+        {
+            per_book.insert(book, bc);
+            sites.insert(book, book_sites);
         }
-        RuleStats::PunctuationAdjacency(stats)
+        (
+            RuleStats::PunctuationAdjacency(PunctuationAdjacencyStats { per_book }),
+            rule::RuleSites::PunctuationAdjacency(sites),
+        )
     }
 
-    fn judge(&self, stats: &RuleStats, target: &VerseMap) -> Vec<Finding> {
+    fn judge(
+        &self,
+        stats: &RuleStats,
+        books: &Books<'_>,
+        _tokens: Option<&TokenCache>,
+        sites: Option<&rule::RuleSites>,
+    ) -> Vec<Finding> {
         let RuleStats::PunctuationAdjacency(stats) = stats else {
             return Vec::new();
         };
@@ -153,25 +173,70 @@ impl StatefulRule for PunctuationAdjacencyAnomaly {
             })
             .collect();
 
-        // Re-scan the current call's verses to emit spans (aggregate-only state
-        // holds no sites). Scores stay corpus-wide via `evidence`.
-        let mut out = Vec::new();
-        for (&sid, text) in target {
-            for span in adjacency_candidates(text) {
-                let ev = evidence.get(span.slice(text)).copied().unwrap_or(1.0);
-                if ev < floor {
-                    continue;
-                }
-                out.push(Finding {
-                    sid,
-                    code: PUNCTUATION_ADJACENCY_ANOMALY,
-                    severity: Severity::Info,
-                    range: span,
-                    score: Some(ev as f32),
-                    args: None,
-                });
+        // The raw counts behind each pattern's score, for the descriptive
+        // message (ADR 0048): frequency `k / lead_n` among the lead glyph's
+        // runs, and breadth `books / corpus`.
+        let sat = |v: u64| v.min(u64::from(u32::MAX)) as u32;
+        let details: BTreeMap<&str, (u32, u32, u32, u32)> = pattern_k
+            .iter()
+            .map(|(&p, &k)| {
+                let a = p.chars().next().expect("candidate pattern is non-empty");
+                let n = lead.get(&a).copied().unwrap_or(0);
+                let books = pattern_books.get(p).copied().unwrap_or(0);
+                (p, (sat(k), sat(n), sat(books), sat(corpus_books)))
+            })
+            .collect();
+
+        // Recover spans (aggregate-only state holds none): from the forwarded
+        // reduce sites where this call scanned the book (ADR 0044), by
+        // re-scanning otherwise. Scores stay corpus-wide via `evidence`; both
+        // paths fan out per book (ADR 0042).
+        let forwarded = match sites {
+            Some(rule::RuleSites::PunctuationAdjacency(m)) => Some(m),
+            _ => None,
+        };
+        let score = |sid: Sid, text: &str, span: Span, found: &mut Vec<Finding>| {
+            let pattern = span.slice(text);
+            let ev = evidence.get(pattern).copied().unwrap_or(1.0);
+            if ev < floor {
+                return;
             }
-        }
+            let (k, lead_n, books, corpus) = details.get(pattern).copied().unwrap_or((0, 0, 0, 0));
+            found.push(Finding {
+                sid,
+                code: PUNCTUATION_ADJACENCY_ANOMALY,
+                severity: Severity::Info,
+                range: span,
+                score: Some(ev as f32),
+                args: Some(FindingArgs::AdjacencyEvidence {
+                    pattern: pattern.to_string(),
+                    k,
+                    lead_n,
+                    books,
+                    corpus,
+                }),
+            });
+        };
+        let mut out: Vec<Finding> = rule::map_books(books, |book, verses| {
+            let mut found = Vec::new();
+            if let Some(book_sites) = forwarded.and_then(|m| m.get(&book)) {
+                rule::for_each_site_text(verses, book_sites, |sid, text, &span| {
+                    score(sid, text, span, &mut found);
+                });
+            } else {
+                let mut tape = Vec::new();
+                for &(sid, text) in verses {
+                    crate::tape::build(text, &mut tape);
+                    for span in adjacency_candidates(&tape) {
+                        score(sid, text, span, &mut found);
+                    }
+                }
+            }
+            found
+        })
+        .into_iter()
+        .flatten()
+        .collect();
         // Total order (incl. `end`) so overlapping candidates that share a start
         // (`..` and `..,`) are ordered deterministically.
         out.sort_by_key(|f| (f.sid, f.range.start, f.range.end));
@@ -179,20 +244,29 @@ impl StatefulRule for PunctuationAdjacencyAnomaly {
     }
 }
 
-/// Reduce one book to aggregate counts (no sites).
-fn reduce_book(verses: &[(Sid, &str)]) -> BookPunctuationAdjacency {
+/// Reduce one book to aggregate counts, returning the candidate sites
+/// alongside (forwarded reduce→judge within a call — ADR 0044; the *stats*
+/// still carry no sites).
+fn reduce_book(verses: &[(Sid, &str)]) -> (BookPunctuationAdjacency, Vec<(Sid, Span)>) {
     let mut lead_opportunities: BTreeMap<char, u64> = BTreeMap::new();
     let mut pattern_counts: BTreeMap<String, u64> = BTreeMap::new();
-    for (_sid, text) in verses {
-        count_lead_opportunities(text, &mut lead_opportunities);
-        for span in adjacency_candidates(text) {
+    let mut sites = Vec::new();
+    let mut tape = Vec::new();
+    for (sid, text) in verses {
+        crate::tape::build(text, &mut tape);
+        count_lead_opportunities(&tape, &mut lead_opportunities);
+        for span in adjacency_candidates(&tape) {
             *pattern_counts.entry(span.slice(text).to_string()).or_default() += 1;
+            sites.push((*sid, span));
         }
     }
-    BookPunctuationAdjacency {
-        lead_opportunities,
-        pattern_counts,
-    }
+    (
+        BookPunctuationAdjacency {
+            lead_opportunities,
+            pattern_counts,
+        },
+        sites,
+    )
 }
 
 /// Count, per punctuation glyph, the number of positions where it **begins a
@@ -203,13 +277,13 @@ fn reduce_book(verses: &[(Sid, &str)]) -> BookPunctuationAdjacency {
 /// runs never inflate their own denominator. Excluded candidate patterns
 /// (`...`, `--`) still count here as lead-glyph opportunities — they are
 /// suppressed from *extraction*, not from the opportunity pool.
-fn count_lead_opportunities(text: &str, out: &mut BTreeMap<char, u64>) {
+fn count_lead_opportunities(tape: &[TapeEntry], out: &mut BTreeMap<char, u64>) {
     let mut prev: Option<char> = None;
-    for c in text.chars() {
-        if is_punctuation(c) && prev != Some(c) {
-            *out.entry(c).or_default() += 1;
+    for e in tape {
+        if e.cl.is_punctuation() && prev != Some(e.ch) {
+            *out.entry(e.ch).or_default() += 1;
         }
-        prev = Some(c);
+        prev = Some(e.ch);
     }
 }
 
@@ -218,7 +292,6 @@ fn count_lead_opportunities(text: &str, out: &mut BTreeMap<char, u64>) {
 /// (`."`, `?»`), so mixed runs are judged inside this class only;
 /// *identical* runs are judged for every punctuation char except quotes.
 fn is_separator_punct(c: char) -> bool {
-    use unicode_properties::{GeneralCategory, UnicodeGeneralCategory};
     // GC `Po` minus the quote class. The old ASCII set (`. , ; : ? !`)
     // silently skipped every non-Latin separator — ur-deva's `۔` and the
     // dandas were never judged for spacing while their ASCII neighbours were.
@@ -227,21 +300,22 @@ fn is_separator_punct(c: char) -> bool {
     // straight quotes are `Po` and are excluded by the quote predicate. The
     // corpus verdict, not the candidate set, decides what's conventional
     // (ADR 0029) — a mark with no dominant form stays silent.
-    c.general_category() == GeneralCategory::OtherPunctuation && !is_quote_char(c)
+    crate::unicode::is_other_punctuation(c) && !is_quote_char(c)
 }
 
 /// Quote-class characters. Excluded from identical-run detection:
 /// doubled straight quotes (`''` standing in for a double quote, `""` at
 /// nested-quotation closes) are systematic conventions in published
 /// corpora (es-419 ULB has hundreds), not typos.
+///
+/// This is an **engine-defined** set (14 chars), not a UCD property. It is read
+/// per punctuation char in the adjacency / spacing / punct-only hot loops, so
+/// the set is precomputed into the fused `QUOTE` bit (ADR 0046) — one array
+/// index instead of a 14-arm `matches!`. The generator's `QUOTE_CHARS` literal
+/// is the source of record; `charclass`'s exhaustive sweep pins the bit to this
+/// list, so the two cannot drift.
 pub(crate) fn is_quote_char(c: char) -> bool {
-    matches!(
-        c,
-        '\'' | '"'
-            | '\u{2018}' | '\u{2019}' | '\u{201A}' | '\u{201B}'
-            | '\u{201C}' | '\u{201D}' | '\u{201E}' | '\u{201F}'
-            | '\u{00AB}' | '\u{00BB}' | '\u{2039}' | '\u{203A}'
-    )
+    crate::charclass::class_of(c).is_quote()
 }
 
 /// The conservative candidate domain, preserved verbatim from the prior
@@ -251,24 +325,30 @@ pub(crate) fn is_quote_char(c: char) -> bool {
 /// mixed run that contains an internal identical sub-run (`..,,`) yields both
 /// candidates, as before — extraction is not changed while the verdict model
 /// is. Spans slice the exact candidate run out of `text`.
-fn adjacency_candidates(text: &str) -> Vec<Span> {
+fn adjacency_candidates(tape: &[TapeEntry]) -> Vec<Span> {
     let mut spans = Vec::new();
 
+    // A tape scalar is a sentence separator (mixed-run class) iff its fused
+    // class is `Po` and it is not a quote — the class the tape already carries.
+    let is_sep = |e: &TapeEntry| e.cl.is_other_punctuation() && !is_quote_char(e.ch);
+
     // Pass 1: identical runs of any non-quote punctuation char.
-    let mut iter = text.char_indices().peekable();
-    while let Some((start, c)) = iter.next() {
-        if !is_punctuation(c) || is_quote_char(c) {
+    let mut i = 0usize;
+    while i < tape.len() {
+        let e = tape[i];
+        let c = e.ch;
+        if !e.cl.is_punctuation() || is_quote_char(c) {
+            i += 1;
             continue;
         }
+        let start = e.off as usize;
         let mut end = start + c.len_utf8();
         let mut count = 1usize;
-        while let Some(&(_, next)) = iter.peek() {
-            if next != c {
-                break;
-            }
-            let (j, _) = iter.next().unwrap();
-            end = j + next.len_utf8();
+        let mut j = i + 1;
+        while j < tape.len() && tape[j].ch == c {
+            end = tape[j].off as usize + c.len_utf8();
             count += 1;
+            j += 1;
         }
         // `...` ellipsis and `--` em-dash substitutes are universal typography;
         // a run of 3+ `?` is `hyg.replacement-run`'s finding (encoding-
@@ -279,29 +359,33 @@ fn adjacency_candidates(text: &str) -> Vec<Span> {
         if count >= 2 && !allowed {
             spans.push(Span { start, end });
         }
+        i = j;
     }
 
     // Pass 2: mixed runs within the sentence-separator class.
-    let mut iter = text.char_indices().peekable();
-    while let Some((start, c)) = iter.next() {
-        if !is_separator_punct(c) {
+    let mut i = 0usize;
+    while i < tape.len() {
+        let e = tape[i];
+        if !is_sep(&e) {
+            i += 1;
             continue;
         }
+        let c = e.ch;
+        let start = e.off as usize;
         let mut end = start + c.len_utf8();
         let mut run = String::from(c);
-        while let Some(&(_, next)) = iter.peek() {
-            if !is_separator_punct(next) {
-                break;
-            }
-            let (j, _) = iter.next().unwrap();
-            end = j + next.len_utf8();
-            run.push(next);
+        let mut j = i + 1;
+        while j < tape.len() && is_sep(&tape[j]) {
+            end = tape[j].off as usize + tape[j].ch.len_utf8();
+            run.push(tape[j].ch);
+            j += 1;
         }
         let identical = run.chars().all(|x| x == c); // pass 1's business
         let allowed = run == "?!" || run == "!?";
         if run.chars().count() >= 2 && !identical && !allowed {
             spans.push(Span { start, end });
         }
+        i = j;
     }
 
     spans.sort();
@@ -354,7 +438,11 @@ struct BookPunctuationSpacing {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct PunctuationSpacingStats {
-    per_book: BTreeMap<String, BookPunctuationSpacing>,
+    #[cfg_attr(
+        feature = "wasm",
+        tsify(type = "Record<string, BookPunctuationSpacing>")
+    )]
+    per_book: BTreeMap<BookId, BookPunctuationSpacing>,
 }
 
 impl PunctuationSpacingStats {
@@ -366,8 +454,8 @@ impl PunctuationSpacingStats {
         self
     }
 
-    pub(crate) fn remove_book(&mut self, book: &str) {
-        self.per_book.remove(book);
+    pub(crate) fn remove_book(&mut self, book: BookId) {
+        self.per_book.remove(&book);
     }
 }
 
@@ -380,13 +468,22 @@ impl StatefulRule for PunctuationSpacingAnomaly {
         PUNCTUATION_SPACING_ANOMALY
     }
 
-    fn reduce(&self, map: &VerseMap, _source: Option<&VerseMap>) -> RuleStats {
-        let mut stats = PunctuationSpacingStats::default();
-        let mut graphemes = Vec::new();
-        for (book, verses) in verse::by_book(map) {
+    fn reduce(
+        &self,
+        books: &Books<'_>,
+        _source: Option<&VerseMap>,
+        _tokens: Option<&TokenCache>,
+    ) -> (RuleStats, rule::RuleSites) {
+        let mut per_book = BTreeMap::new();
+        let mut sites = BTreeMap::new();
+        for (book, (counts, book_sites)) in rule::map_books(books, |book, verses| {
+            let mut tape = Vec::new();
+            let mut graphemes = Vec::new();
             let mut per_mark: BTreeMap<char, SpacingCounts> = BTreeMap::new();
-            for (_sid, text) in &verses {
-                grapheme::segment(text, &mut graphemes);
+            let mut book_sites = Vec::new();
+            for &(sid, text) in verses {
+                crate::tape::build(text, &mut tape);
+                grapheme::segment_tape(text, &tape, &mut graphemes);
                 for opp in spacing_opportunities(text, &graphemes) {
                     let counts = per_mark.entry(opp.mark).or_default();
                     if opp.spaced {
@@ -394,16 +491,32 @@ impl StatefulRule for PunctuationSpacingAnomaly {
                     } else {
                         counts.attached += 1;
                     }
+                    book_sites.push(SpacingSite {
+                        sid,
+                        mark: opp.mark,
+                        spaced: opp.spaced,
+                        span: opp.span,
+                    });
                 }
             }
-            stats
-                .per_book
-                .insert(book.as_str().to_string(), BookPunctuationSpacing { per_mark });
+            (book, (BookPunctuationSpacing { per_mark }, book_sites))
+        }) {
+            per_book.insert(book, counts);
+            sites.insert(book, book_sites);
         }
-        RuleStats::PunctuationSpacing(stats)
+        (
+            RuleStats::PunctuationSpacing(PunctuationSpacingStats { per_book }),
+            rule::RuleSites::PunctuationSpacing(sites),
+        )
     }
 
-    fn judge(&self, stats: &RuleStats, target: &VerseMap) -> Vec<Finding> {
+    fn judge(
+        &self,
+        stats: &RuleStats,
+        books: &Books<'_>,
+        _tokens: Option<&TokenCache>,
+        sites: Option<&rule::RuleSites>,
+    ) -> Vec<Finding> {
         let RuleStats::PunctuationSpacing(stats) = stats else {
             return Vec::new();
         };
@@ -429,29 +542,61 @@ impl StatefulRule for PunctuationSpacingAnomaly {
             .filter_map(|(&mark, &c)| mark_verdict(c, z).map(|v| (mark, v)))
             .collect();
 
-        // Re-scan the target to emit spans (aggregate-only state holds none).
-        let mut out = Vec::new();
-        let mut graphemes = Vec::new();
-        for (&sid, text) in target {
-            grapheme::segment(text, &mut graphemes);
-            for opp in spacing_opportunities(text, &graphemes) {
-                let Some(v) = verdicts.get(&opp.mark) else {
-                    continue;
-                };
-                // Only the minority form is anomalous; and only above the floor.
-                if opp.spaced != v.minority_is_spaced || v.dominance < floor {
-                    continue;
-                }
-                out.push(Finding {
-                    sid,
-                    code: PUNCTUATION_SPACING_ANOMALY,
-                    severity: Severity::Info,
-                    range: opp.span,
-                    score: Some(v.dominance as f32),
-                    args: None,
-                });
+        // Recover spans (aggregate-only state holds none): from the forwarded
+        // reduce sites where this call scanned the book (ADR 0044) — the site
+        // carries mark + spacedness, so this path never touches text — by
+        // re-scanning otherwise. Both paths fan out per book (ADR 0042).
+        let forwarded = match sites {
+            Some(rule::RuleSites::PunctuationSpacing(m)) => Some(m),
+            _ => None,
+        };
+        let score = |sid: Sid, mark: char, spaced: bool, span: Span, found: &mut Vec<Finding>| {
+            let Some(v) = verdicts.get(&mark) else {
+                return;
+            };
+            // Only the minority form is anomalous; and only above the floor.
+            if spaced != v.minority_is_spaced || v.dominance < floor {
+                return;
             }
-        }
+            // Carry the mark's raw spaced/attached split so the consumer can
+            // render the descriptive rate the Wilson-bound score isn't (ADR
+            // 0048). `totals` holds this mark (the verdict came from it).
+            let c = totals.get(&mark).copied().unwrap_or_default();
+            found.push(Finding {
+                sid,
+                code: PUNCTUATION_SPACING_ANOMALY,
+                severity: Severity::Info,
+                range: span,
+                score: Some(v.dominance as f32),
+                args: Some(FindingArgs::SpacingConvention {
+                    mark,
+                    spaced: c.spaced.min(u64::from(u32::MAX)) as u32,
+                    attached: c.attached.min(u64::from(u32::MAX)) as u32,
+                }),
+            });
+        };
+        let mut out: Vec<Finding> = rule::map_books(books, |book, verses| {
+            let mut found = Vec::new();
+            if let Some(book_sites) = forwarded.and_then(|m| m.get(&book)) {
+                for s in book_sites {
+                    score(s.sid, s.mark, s.spaced, s.span, &mut found);
+                }
+            } else {
+                let mut tape = Vec::new();
+                let mut graphemes = Vec::new();
+                for &(sid, text) in verses {
+                    crate::tape::build(text, &mut tape);
+                    grapheme::segment_tape(text, &tape, &mut graphemes);
+                    for opp in spacing_opportunities(text, &graphemes) {
+                        score(sid, opp.mark, opp.spaced, opp.span, &mut found);
+                    }
+                }
+            }
+            found
+        })
+        .into_iter()
+        .flatten()
+        .collect();
         out.sort_by_key(|f| (f.sid, f.range.start, f.range.end));
         out
     }
@@ -489,6 +634,16 @@ struct SpacingOpportunity {
     mark: char,
     spaced: bool,
     span: Span,
+}
+
+/// A spacing opportunity with its verse — the reduce→judge forwarded site
+/// (ADR 0044). Carries everything judge's verdict needs, so the site path
+/// never touches text.
+pub struct SpacingSite {
+    pub(crate) sid: Sid,
+    pub(crate) mark: char,
+    pub(crate) spaced: bool,
+    pub(crate) span: Span,
 }
 
 /// Extract word-adjacent spacing opportunities from a verse. A separator mark
@@ -564,8 +719,13 @@ mod tests {
     // now testing which runs become candidates rather than which are verdicts:
     // extraction is deliberately unchanged while the verdict model moved to
     // corpus-relative scoring.
+    fn tp(text: &str) -> Vec<TapeEntry> {
+        let mut v = Vec::new();
+        crate::tape::build(text, &mut v);
+        v
+    }
     fn rp(text: &str) -> Vec<&str> {
-        adjacency_candidates(text).iter().map(|s| s.slice(text)).collect()
+        adjacency_candidates(&tp(text)).iter().map(|s| s.slice(text)).collect()
     }
 
     #[test]
@@ -630,12 +790,12 @@ mod tests {
         PunctuationAdjacencyConfig { emit_score_min: 0.0, ..Default::default() }
     }
     fn run(map: &VerseMap, r: &PunctuationAdjacencyAnomaly) -> Vec<Finding> {
-        r.judge(&r.reduce(map, None), map)
+        r.judge(&r.reduce(&crate::verse::by_book(map), None, None).0, &crate::verse::by_book(map), None, None)
     }
     /// The `N_start` count for one glyph over a verse (for structural asserts).
     fn n_start(text: &str, glyph: char) -> u64 {
         let mut lead = BTreeMap::new();
-        count_lead_opportunities(text, &mut lead);
+        count_lead_opportunities(&tp(text), &mut lead);
         lead.get(&glyph).copied().unwrap_or(0)
     }
     /// Score of the pattern occurrence at a given verse, if emitted.
@@ -823,15 +983,15 @@ mod tests {
         let exo_only: VerseMap = full.iter().filter(|(s, _)| s.book == exo).map(|(s, t)| (*s, t.clone())).collect();
 
         let full_score = r
-            .judge(&r.reduce(&full, None), &full)
+            .judge(&r.reduce(&crate::verse::by_book(&full), None, None).0, &crate::verse::by_book(&full), None, None)
             .into_iter()
             .find(|f| f.sid == sid("EXO", 1))
             .unwrap()
             .score;
 
         // Incremental: GEN reduced earlier, EXO edited now.
-        let merged = r.reduce(&gen_only, None).merge(r.reduce(&exo_only, None));
-        let inc = r.judge(&merged, &exo_only);
+        let merged = r.reduce(&crate::verse::by_book(&gen_only), None, None).0.merge(r.reduce(&crate::verse::by_book(&exo_only), None, None).0);
+        let inc = r.judge(&merged, &crate::verse::by_book(&exo_only), None, None);
         assert_eq!(inc.len(), 1, "emits only for the target (EXO)");
         assert_eq!(inc[0].sid, sid("EXO", 1));
         assert_eq!(inc[0].score, full_score, "incremental score is corpus-wide, not book-local");
@@ -845,10 +1005,10 @@ mod tests {
         let r = default_rule();
         let mut vm = periods_and_commas(10, 3);
         vm.insert(sid("EXO", 1), "a?!? b".to_string());
-        let stats = r.reduce(&vm, None);
+        let stats = r.reduce(&crate::verse::by_book(&vm), None, None).0;
         let back: RuleStats = serde_json::from_str(&serde_json::to_string(&stats).unwrap()).unwrap();
         assert_eq!(stats, back);
-        assert_eq!(r.judge(&stats, &vm), r.judge(&back, &vm));
+        assert_eq!(r.judge(&stats, &crate::verse::by_book(&vm), None, None), r.judge(&back, &crate::verse::by_book(&vm), None, None));
     }
 
     #[test]
@@ -987,7 +1147,7 @@ mod tests {
         PunctuationSpacingConfig { emit_score_min: 0.0, ..Default::default() }
     }
     fn sp_run(map: &VerseMap, r: &PunctuationSpacingAnomaly) -> Vec<Finding> {
-        r.judge(&r.reduce(map, None), map)
+        r.judge(&r.reduce(&crate::verse::by_book(map), None, None).0, &crate::verse::by_book(map), None, None)
     }
     /// A book whose comma appears `spaced` times word-spaced (`word , word`) and
     /// `attached` times word-attached (`word, word`) — one opportunity per verse.
@@ -1091,6 +1251,27 @@ mod tests {
         assert_eq!(f2[0].range.slice(&vm2[&f2[0].sid]), "d,");
     }
 
+    #[test]
+    fn finding_carries_the_raw_spaced_attached_counts() {
+        // The descriptive payload (ADR 0048) is the mark's corpus-wide split,
+        // NOT the Wilson-bound score: 3 spaced : 100 attached commas, so every
+        // flagged (minority, spaced) finding reports spaced=3, attached=100 and
+        // a score strictly below the raw 100/103 ≈ 0.971 majority share.
+        let f = sp_run(&marks(3, 100), &sp_default());
+        assert_eq!(f.len(), 3);
+        for x in &f {
+            match &x.args {
+                Some(FindingArgs::SpacingConvention { mark, spaced, attached }) => {
+                    assert_eq!(*mark, ',');
+                    assert_eq!((*spaced, *attached), (3, 100));
+                }
+                other => panic!("expected SpacingConvention args, got {other:?}"),
+            }
+            let pct = 100.0 / 103.0;
+            assert!(x.score.unwrap() < pct, "score {:?} < majority share {pct}", x.score);
+        }
+    }
+
     // ── opportunity extraction ──────────────────────────────────────────
 
     #[test]
@@ -1132,14 +1313,14 @@ mod tests {
         full.extend(exo.clone());
 
         let full_score = r
-            .judge(&r.reduce(&full, None), &full)
+            .judge(&r.reduce(&crate::verse::by_book(&full), None, None).0, &crate::verse::by_book(&full), None, None)
             .into_iter()
             .find(|f| f.sid == sid("EXO", 1))
             .unwrap()
             .score;
 
-        let merged = r.reduce(&gen_map, None).merge(r.reduce(&exo, None));
-        let inc = r.judge(&merged, &exo);
+        let merged = r.reduce(&crate::verse::by_book(&gen_map), None, None).0.merge(r.reduce(&crate::verse::by_book(&exo), None, None).0);
+        let inc = r.judge(&merged, &crate::verse::by_book(&exo), None, None);
         assert_eq!(inc.len(), 1, "emits only for the target (EXO)");
         assert_eq!(inc[0].sid, sid("EXO", 1));
         assert_eq!(inc[0].score, full_score, "incremental score is corpus-wide");
@@ -1155,15 +1336,15 @@ mod tests {
         let mut full = gen_map;
         full.extend(exo.clone());
 
-        let RuleStats::PunctuationSpacing(mut stats) = r.reduce(&full, None) else {
+        let RuleStats::PunctuationSpacing(mut stats) = r.reduce(&crate::verse::by_book(&full), None, None).0 else {
             unreachable!()
         };
         // Pooled with GEN: comma is 1 spaced : 101 attached → spaced minority surfaces.
-        let before = r.judge(&RuleStats::PunctuationSpacing(stats.clone()), &exo);
+        let before = r.judge(&RuleStats::PunctuationSpacing(stats.clone()), &crate::verse::by_book(&exo), None, None);
         assert!(before.iter().any(|f| f.sid == sid("EXO", 1)));
         // Drop GEN: EXO alone is 1 spaced : 1 attached → a tie → silent.
-        stats.remove_book("GEN");
-        assert!(r.judge(&RuleStats::PunctuationSpacing(stats), &exo).is_empty());
+        stats.remove_book(BookId::from_str("GEN").unwrap());
+        assert!(r.judge(&RuleStats::PunctuationSpacing(stats), &crate::verse::by_book(&exo), None, None).is_empty());
     }
 
     #[test]
@@ -1183,9 +1364,9 @@ mod tests {
     fn spacing_stats_round_trip_through_serde() {
         let r = sp_default();
         let vm = marks(3, 100);
-        let stats = r.reduce(&vm, None);
+        let stats = r.reduce(&crate::verse::by_book(&vm), None, None).0;
         let back: RuleStats = serde_json::from_str(&serde_json::to_string(&stats).unwrap()).unwrap();
         assert_eq!(stats, back);
-        assert_eq!(r.judge(&stats, &vm), r.judge(&back, &vm));
+        assert_eq!(r.judge(&stats, &crate::verse::by_book(&vm), None, None), r.judge(&back, &crate::verse::by_book(&vm), None, None));
     }
 }

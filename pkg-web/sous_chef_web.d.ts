@@ -24,16 +24,25 @@ export interface Finding {
 }
 
 /**
- * Cached casing statistics, keyed by book code (e.g. `\"GEN\"`) so an edit
- * supersedes only its book. The corpus-wide per-glyph counts are the sum
- * of the per-book counts, derived at `judge` time.
+ * Cached casing statistics, keyed by book so an edit supersedes only its
+ * book (`BookId` crosses the wire as its `\"GEN\"` string). The corpus-wide
+ * per-glyph counts are the sum of the per-book counts, derived at `judge`
+ * time.
  */
 export interface CasingStats {
     per_book: Record<string, BookCasing>;
 }
 
 /**
- * Cached proportionality statistics: the raw ratios keyed by book code, so
+ * Cached mixed-script aggregates, keyed by book so an edit supersedes only its
+ * book. Corpus-wide counts are the sums over books, derived at `judge`.
+ */
+export interface MixedScriptStats {
+    per_book: Record<string, BookMixedScript>;
+}
+
+/**
+ * Cached proportionality statistics: the raw ratios keyed by book, so
  * an edit supersedes only its book and the median/MAD is derived at `judge`.
  */
 export interface ProportionalityStats {
@@ -72,25 +81,6 @@ export interface RepeatedCharacterRunStats {
 export interface PunctuationSpacingStats {
     per_book: Record<string, BookPunctuationSpacing>;
 }
-
-/**
- * Coarse script identity for a single character — a small `Copy` tag,
- * not a string. Rules count, compare, and match on these directly, so
- * the hot paths never hash or compare script *names* (see ADR 0015).
- *
- * Variants the engine tracks; everything else (`Common`, `Inherited`,
- * `Unknown`, unexercised scripts) collapses to `None` from `script_of`.
- *
- * `#[repr(u8)]` with `Latin = 1` (0 reserved for `None`) so the tag packs
- * into one byte of the fused [`Class`](crate::charclass) table — see
- * [`to_repr`] / [`from_repr`] and ADR 0022.
- *
- * `Ord`/serde/`Tsify` are here for the ZWSP context key (ADR: zero-width-space
- * anomaly), which composes two script tags into a corpus-observed context and
- * round-trips it through `Stats`. Fieldless enum ⇒ serde uses the variant name
- * (`\"Khmer\"`), so the wire form is legible and stable.
- */
-export type ScriptTag = "Latin" | "Greek" | "Cyrillic" | "Armenian" | "Hebrew" | "Arabic" | "Syriac" | "Thaana" | "Nko" | "Devanagari" | "Bengali" | "Gurmukhi" | "Gujarati" | "Oriya" | "Tamil" | "Telugu" | "Kannada" | "Malayalam" | "Sinhala" | "Thai" | "Lao" | "Tibetan" | "Myanmar" | "Georgian" | "Hangul" | "Ethiopic" | "Cherokee" | "CanadianAboriginal" | "Khmer" | "Mongolian" | "Cjk" | "MathAlphanumeric";
 
 /**
  * Counts behind the uppercase-majority dominance for one terminal glyph.
@@ -138,6 +128,16 @@ export interface BookRepeatedCharacterRun {
 export interface BookPunctuationAdjacency {
     lead_opportunities: Record<string, number>;
     pattern_counts: Record<string, number>;
+}
+
+/**
+ * One book\'s aggregate contribution: per-signature mixed-token counts and
+ * per-script token counts (how many tokens contain each script at all — the
+ * dominant-script denominator\'s raw material). **No sites.**
+ */
+export interface BookMixedScript {
+    signature_counts: Record<string, number>;
+    script_tokens: Record<string, number>;
 }
 
 /**
@@ -216,8 +216,9 @@ export interface RuleCard {
 
 /**
  * One verse\'s target/reference ratio, retained so `judge` can derive the
- * distribution and emit findings without the text. Wire-friendly (canonical
- * `sid` string, `f32` ratio, `u32` byte length for the finding range).
+ * distribution and emit findings without the text. `sid` is a `Copy` value
+ * in memory and the canonical `\"GEN 1:1\"` string on the wire (its serde
+ * impl); `f32` ratio, `u32` byte length for the finding range.
  */
 export interface RatioObs {
     sid: string;
@@ -287,6 +288,19 @@ export interface PunctuationSpacingOverrides {
 }
 
 /**
+ * Partial overrides for `uni.mixed-script-in-token`\'s corpus-relative score.
+ * Omitted fields keep core\'s calibrated defaults (ADR 0047).
+ */
+export interface MixedScriptOverrides {
+    convention_rate?: number;
+    confidence_z?: number;
+    breadth_convention_rate?: number;
+    breadth_z?: number;
+    breadth_min_books?: number;
+    emit_score_min?: number;
+}
+
+/**
  * Per-rule cached statistics — a **closed** union like `FindingArgs`, one
  * variant per stateful rule. The orchestration treats it opaquely; each
  * rule reduces into / judges from its own variant.
@@ -300,7 +314,7 @@ export interface PunctuationSpacingOverrides {
  * deterministically by `uni.redundant-zero-width-space` (ADR 0027), which needs
  * no corpus statistics.
  */
-export type RuleStats = { Casing: CasingStats } | { Proportionality: ProportionalityStats } | { PunctuationAdjacency: PunctuationAdjacencyStats } | { PunctuationSpacing: PunctuationSpacingStats } | { RepeatedCharacterRun: RepeatedCharacterRunStats } | { PunctOnlyToken: PunctOnlyTokenStats };
+export type RuleStats = { Casing: CasingStats } | { Proportionality: ProportionalityStats } | { PunctuationAdjacency: PunctuationAdjacencyStats } | { PunctuationSpacing: PunctuationSpacingStats } | { RepeatedCharacterRun: RepeatedCharacterRunStats } | { PunctOnlyToken: PunctOnlyTokenStats } | { MixedScript: MixedScriptStats };
 
 /**
  * Stable, machine-readable rule identity — a **closed set**.
@@ -324,7 +338,7 @@ export type RuleId = "lex.excess-h-whitespace" | "hyg.tab-in-body" | "hyg.contro
  * collected into `Vec`s and never copied on a hot path, so this costs
  * nothing real (ADR 0016).
  */
-export type FindingArgs = { kind: "length-ratio"; ratio_pct: number; scope: LengthRatioScope } | { kind: "bracket-window"; window: DelimObservation[] } | { kind: "duplicate-word"; first_sid: string };
+export type FindingArgs = { kind: "length-ratio"; ratio_pct: number; scope: LengthRatioScope } | { kind: "bracket-window"; window: DelimObservation[]; measure: BracketMeasure; majority: number; total: number } | { kind: "spacing-convention"; mark: string; spaced: number; attached: number } | { kind: "casing-convention"; glyph: string; upper: number; total: number } | { kind: "punct-only-rate"; count: number; units: number } | { kind: "adjacency-evidence"; pattern: string; k: number; lead_n: number; books: number; corpus: number } | { kind: "script-mix-evidence"; k: number; n: number; books: number; corpus: number } | { kind: "repeat-evidence"; ch: string; run: number } | { kind: "duplicate-word"; first_sid: string };
 
 /**
  * The catalog plus the shared sensitivity dial: labelled `emit_score_min`
@@ -367,6 +381,15 @@ export type DelimRole = "open" | "close";
 export type LengthRatioScope = { Book: { z: number } } | { Project: { z: number } } | { Both: { book_z: number; project_z: number } };
 
 /**
+ * Which of `punct.bracket-balance`\'s two corpus conventions a finding
+ * broke — so the consumer knows which descriptive sentence the counts in
+ * [`FindingArgs::BracketWindow`] belong to. `Pairing`: the family is closed
+ * at all (`majority` = matched delimiter events); `ShortSpan`: the family\'s
+ * pairs close within the window (`majority` = pairs closing in-window).
+ */
+export type BracketMeasure = "pairing" | "short-span";
+
+/**
  * Which rules to run, plus per-rule knobs. `rules` maps a rule code to a
  * flag; omit a rule to keep it enabled (default-on). TS: `{ rules?:
  * Partial<Record<RuleId, boolean>>, proportionality?: … }` — `RuleId` is
@@ -381,6 +404,7 @@ export interface SousConfig {
     punctuation_spacing?: PunctuationSpacingOverrides;
     repeated_character_run?: RepeatedCharacterRunOverrides;
     punct_only_token?: PunctOnlyTokenOverrides;
+    mixed_script?: MixedScriptOverrides;
 }
 
 /**
@@ -409,8 +433,15 @@ export function analyze_vref(target: VrefMap, source?: VrefMap | null, config?: 
  * supersede their prior entries and stateful rules re-judge the whole
  * corpus from the cache. Omit `prior` (and pass the whole corpus) on the
  * first call.
+ *
+ * `changed` (ADR 0043): with a `prior`, book codes (e.g. `["GEN"]`) naming
+ * the books edited since that prior — only those are re-counted, while
+ * findings still cover everything supplied (the complete-snapshot call at
+ * roughly half full-pass cost). A promise, not a filter: name every edited
+ * book or its counts go silently stale. Unknown codes are ignored; omit it
+ * (or omit `prior`) for the original re-count-everything behavior.
  */
-export function analyze_vref_stateful(target: VrefMap, source?: VrefMap | null, config?: SousConfig | null, prior?: Stats | null): Analysis;
+export function analyze_vref_stateful(target: VrefMap, source?: VrefMap | null, config?: SousConfig | null, prior?: Stats | null, changed?: string[] | null): Analysis;
 
 /**
  * The shipped English rule catalog — the reference text a consumer renders
@@ -432,7 +463,7 @@ export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembl
 export interface InitOutput {
     readonly memory: WebAssembly.Memory;
     readonly analyze_vref: (a: any, b: number, c: number) => any;
-    readonly analyze_vref_stateful: (a: any, b: number, c: number, d: number) => any;
+    readonly analyze_vref_stateful: (a: any, b: number, c: number, d: number, e: number, f: number) => any;
     readonly rule_catalog: () => any;
     readonly stats_remove_book: (a: any, b: number, c: number) => any;
     readonly __wbindgen_malloc: (a: number, b: number) => number;

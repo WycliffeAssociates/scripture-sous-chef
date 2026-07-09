@@ -305,6 +305,64 @@ impl Default for PunctOnlyTokenConfig {
     }
 }
 
+/// Knobs for `uni.mixed-script-in-token`. The rule keeps the deterministic
+/// candidate extraction (a token whose distinct non-`None` scripts number ≥2)
+/// but replaces the fixed "two scripts ⇒ flag" verdict with a corpus-rate one
+/// (ADR 0047): each script signature is scored on a frequency axis (share of
+/// its **dominant** script's tokens) noisy-OR'd with a breadth axis (share of
+/// books), exactly like `punct.adjacency-anomaly`. Ships **default-on** (the
+/// deterministic predecessor was on). Scores are always finite: `judge` clamps
+/// out-of-range / NaN input here.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
+pub struct MixedScriptConfig {
+    /// Share of the **dominant** script's tokens above which a signature is
+    /// taken to be an established convention (a borrowed letter pervasive in
+    /// the main script). A homoglyph contaminates a sliver of its script's
+    /// words and stays below; a genuine borrowed letter (`ŏ`, `π`) is a
+    /// meaningful share and clears it. Calibrated 2026-07-08 (ADR 0047): 0.02.
+    pub convention_rate: f32,
+    /// Confidence `z` for the frequency Wilson lower bound. Load-bearing at the
+    /// anomaly end: an intruder script *exclusive* to the mix has observed rate
+    /// pinned at 1.0 against its own token count, so the dominant-script
+    /// denominator (not this `z`) carries the frequency verdict — but small
+    /// samples still shrink here. `1.96` ≈ 95%.
+    pub confidence_z: f32,
+    /// Share-of-books above which a signature is an established convention on
+    /// **dispersion** grounds alone (ADR 0031/0047). A borrowed letter spread
+    /// across most books clears it; a homoglyph concentrated in one or two does
+    /// not. Robust across 0.34–0.75 on the census (the evidence is bimodal);
+    /// default 0.5.
+    pub breadth_convention_rate: f32,
+    /// Confidence `z` for the breadth Wilson lower bound. `1.96` ≈ 95%.
+    pub breadth_z: f32,
+    /// Minimum books a corpus must have before the breadth axis is consulted
+    /// (ADR 0031): below it every signature trivially spans "all" books. The
+    /// census conventions all live at ≥26 books, so `8` covers them while
+    /// sparing small projects.
+    pub breadth_min_books: u32,
+    /// Minimum `evidence` a signature must reach to be emitted — keeps an
+    /// established convention (a borrowed letter, a systematic transliteration
+    /// artifact) from serialising as findings. `0.5` (the census evidence is
+    /// bimodal — conventions ≈0, anomalies ≈0.6–0.9 — so the exact floor is
+    /// insensitive).
+    pub emit_score_min: f32,
+}
+
+impl Default for MixedScriptConfig {
+    fn default() -> Self {
+        Self {
+            convention_rate: 0.02,
+            confidence_z: 1.96,
+            breadth_convention_rate: 0.5,
+            breadth_z: 1.96,
+            breadth_min_books: 8,
+            emit_score_min: 0.5,
+        }
+    }
+}
+
 /// Which rules to run, plus per-rule knobs. A rule **absent** from
 /// `rules` is enabled (default-on); map it to `false` to disable.
 /// Disabled rules are skipped before they run, not filtered after — so
@@ -328,6 +386,8 @@ pub struct Config {
     pub repeated_character_run: RepeatedCharacterRunConfig,
     #[cfg_attr(feature = "serde", serde(default))]
     pub punct_only_token: PunctOnlyTokenConfig,
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub mixed_script: MixedScriptConfig,
 }
 
 impl Config {

@@ -41,6 +41,7 @@
 use crate::diagnostics::{RuleId, Severity};
 use crate::rule::PerVerseRule;
 use crate::span::Span;
+use crate::tape::{Mask, TapeEntry};
 use crate::unicode::ZWSP;
 
 pub const REDUNDANT_ZERO_WIDTH_SPACE: RuleId = RuleId::RedundantZeroWidthSpace;
@@ -54,8 +55,11 @@ impl PerVerseRule for RedundantZeroWidthSpace {
     fn severity(&self) -> Severity {
         Severity::Info
     }
-    fn check(&self, text: &str) -> Vec<Span> {
-        scan_redundant_zwsp(text)
+    fn check(&self, _text: &str, tape: &[TapeEntry]) -> Vec<Span> {
+        scan_redundant_zwsp(tape)
+    }
+    fn gate(&self) -> Mask {
+        Mask::ZWSP2
     }
 }
 
@@ -64,28 +68,28 @@ impl PerVerseRule for RedundantZeroWidthSpace {
 /// idempotent). One [`Span`] per run, spanning the whole run. A *single* U+200B is
 /// never flagged: its redundancy — even beside a space — depends on the
 /// surrounding line-break classes, which this deterministic rule does not analyse.
-pub fn scan_redundant_zwsp(text: &str) -> Vec<Span> {
+pub(crate) fn scan_redundant_zwsp(tape: &[TapeEntry]) -> Vec<Span> {
     let mut spans = Vec::new();
-    let mut it = text.char_indices().peekable();
-    while let Some((i, c)) = it.next() {
-        if c != ZWSP {
+    let mut i = 0usize;
+    while i < tape.len() {
+        if tape[i].ch != ZWSP {
+            i += 1;
             continue;
         }
         // Consume the maximal U+200B run starting here.
-        let start = i;
-        let mut end = i + ZWSP.len_utf8();
+        let start = tape[i].off as usize;
+        let mut end = start + ZWSP.len_utf8();
         let mut len = 1usize;
-        while let Some(&(j, nc)) = it.peek() {
-            if nc != ZWSP {
-                break;
-            }
-            it.next();
-            end = j + ZWSP.len_utf8();
+        let mut j = i + 1;
+        while j < tape.len() && tape[j].ch == ZWSP {
+            end = tape[j].off as usize + ZWSP.len_utf8();
             len += 1;
+            j += 1;
         }
         if len >= 2 {
             spans.push(Span { start, end });
         }
+        i = j;
     }
     spans
 }
@@ -96,14 +100,21 @@ mod tests {
 
     const ZW: &str = "\u{200B}";
 
+    /// The verse tape the runner would hand the scan.
+    fn scan(text: &str) -> Vec<Span> {
+        let mut v = Vec::new();
+        crate::tape::build(text, &mut v);
+        scan_redundant_zwsp(&v)
+    }
+
     #[test]
     fn duplicate_run_is_one_finding_spanning_the_whole_run() {
         // Two adjacent ZWSP → one finding covering both (byte 1..7).
-        let f = scan_redundant_zwsp(&format!("a{ZW}{ZW}b"));
+        let f = scan(&format!("a{ZW}{ZW}b"));
         assert_eq!(f, vec![Span { start: 1, end: 7 }]);
         // Three in a row is still one finding covering the whole run.
         let t3 = format!("a{ZW}{ZW}{ZW}b");
-        let f3 = scan_redundant_zwsp(&t3);
+        let f3 = scan(&t3);
         assert_eq!(f3.len(), 1);
         assert_eq!(&t3[f3[0].start..f3[0].end], [ZW, ZW, ZW].concat());
     }
@@ -124,14 +135,14 @@ mod tests {
             format!("a\u{200D}{ZW}b"),       // beside ZWJ
             format!("\u{1780}{ZW}\u{1781}"), // Khmer letter↔letter word break
         ] {
-            assert!(scan_redundant_zwsp(&t).is_empty(), "single ZWSP must not flag: {t:?}");
+            assert!(scan(&t).is_empty(), "single ZWSP must not flag: {t:?}");
         }
     }
 
     #[test]
     fn separated_runs_each_flag_in_order() {
         let text = format!("a{ZW}{ZW}b c{ZW}{ZW}d");
-        let f = scan_redundant_zwsp(&text);
+        let f = scan(&text);
         assert_eq!(f.len(), 2);
         assert!(f[0].start < f[1].start, "spans stay in text order");
         assert_eq!(&text[f[0].start..f[0].end], [ZW, ZW].concat());
