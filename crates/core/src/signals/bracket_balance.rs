@@ -2,8 +2,11 @@
 //! against the corpus's own pairing behaviour.
 //!
 //! Every UCD paired bracket (`BidiBrackets.txt`: ASCII `()[]{}`, ornate
-//! Arabic `﴾﴿`, CJK corner/lenticular/angle families, Tibetan gug rtags, …)
-//! is matched with a LIFO stack at **book** scope: verses anchor findings but
+//! Arabic `﴾﴿`, CJK lenticular/angle/fullwidth/title families, Tibetan gug
+//! rtags, …) is matched with a LIFO stack at **book** scope. The CJK corner
+//! brackets `「」『』｢｣` are *excluded* (ADR 0049): they are quotation marks,
+//! not text brackets, and quote balance is deferred (ADR 0039). Verses anchor
+//! findings but
 //! never bound analysis — a parenthetical or bracketed quotation legitimately
 //! spans verses (en_ulb has 12; kmr speech-parens span dozens), so pairing
 //! reads the book's verse stream in canonical order with no distance cutoff.
@@ -498,6 +501,71 @@ mod tests {
         assert_eq!(f.len(), 1);
         assert_eq!(f[0].sid, sid("GEN", 1, 200));
         assert_eq!(f[0].range.slice(&vm[&f[0].sid]), "﴾");
+    }
+
+    /// The CJK corner-bracket family 「」『』｢｣ is out of the pairing
+    /// inventory (ADR 0049) — they are quotation marks, not text brackets —
+    /// while the CJK glyphs that are genuine text delimiters stay in.
+    #[test]
+    fn corner_brackets_excluded_text_brackets_retained() {
+        use crate::charclass::{bracket_close_of, bracket_open_of};
+        for q in ['「', '『', '｢'] {
+            assert!(bracket_close_of(q).is_none(), "{q:?} must not be a bracket opener");
+        }
+        for q in ['」', '』', '｣'] {
+            assert!(bracket_open_of(q).is_none(), "{q:?} must not be a bracket closer");
+        }
+        // Genuine CJK text brackets stay: fullwidth parens, title marks,
+        // lenticular, angle.
+        assert_eq!(bracket_close_of('（'), Some('）'));
+        assert_eq!(bracket_close_of('《'), Some('》'));
+        assert_eq!(bracket_close_of('【'), Some('】'));
+        assert_eq!(bracket_close_of('〈'), Some('〉'));
+    }
+
+    /// A book full of corner-bracket quoting — nested `「『` re-opened each
+    /// verse the way Chinese continuation quoting does, never balanced —
+    /// yields no bracket findings, because the corner-bracket family is not in
+    /// the pairing inventory at all (ADR 0049). Even at floor 0 there is
+    /// nothing to score.
+    #[test]
+    fn cjk_corner_bracket_quotes_are_not_bracket_findings() {
+        let verses: Vec<(u16, &str)> = vec![
+            (1, "耶和華說：「你要去說，『我是神。"),
+            (2, "「『不可拜別的神。"),
+            (3, "「『當孝敬父母。"),
+            (4, "他說：「這是真的。」"),
+        ];
+        let vm = book("GEN", &verses);
+        assert!(rule(10).check(&crate::verse::by_book(&vm), None).is_empty());
+        assert!(no_floor(10).check(&crate::verse::by_book(&vm), None).is_empty());
+    }
+
+    /// The exclusion is scoped to the corner-bracket family, not a blanket CJK
+    /// suppression: a genuinely unclosed ASCII `(` still flags amid
+    /// corner-bracket quoting.
+    #[test]
+    fn ascii_paren_still_flags_beside_corner_quotes() {
+        let mut verses: Vec<(u16, String)> =
+            (1..=100u16).map(|v| (v, "clean (x) 「引言」".to_string())).collect();
+        verses.push((200, "未關的括號 (開始".to_string()));
+        let vm: VerseMap = verses.iter().map(|(v, t)| (sid("GEN", 1, *v), t.clone())).collect();
+        let f = rule(10).check(&crate::verse::by_book(&vm), None);
+        assert_eq!(f.len(), 1);
+        assert_eq!(f[0].range.slice(&vm[&f[0].sid]), "(");
+    }
+
+    /// Fullwidth parens （） (U+FF08/09) are genuine text brackets — kept in
+    /// the inventory — so a stray one still flags where the corpus pairs them.
+    #[test]
+    fn fullwidth_paren_still_flags() {
+        let mut verses: Vec<(u16, String)> =
+            (1..=100u16).map(|v| (v, "clean （x） pair".to_string())).collect();
+        verses.push((200, "then a stray） closer".to_string()));
+        let vm: VerseMap = verses.iter().map(|(v, t)| (sid("GEN", 1, *v), t.clone())).collect();
+        let f = rule(10).check(&crate::verse::by_book(&vm), None);
+        assert_eq!(f.len(), 1);
+        assert_eq!(f[0].range.slice(&vm[&f[0].sid]), "）");
     }
 
     #[test]

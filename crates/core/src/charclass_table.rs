@@ -3818,8 +3818,6 @@ pub(crate) const BRACKET_PAIRS: &[(u32, u32)] = &[
     (0x2E5B, 0x2E5C),
     (0x3008, 0x3009),
     (0x300A, 0x300B),
-    (0x300C, 0x300D),
-    (0x300E, 0x300F),
     (0x3010, 0x3011),
     (0x3014, 0x3015),
     (0x3016, 0x3017),
@@ -3833,7 +3831,6 @@ pub(crate) const BRACKET_PAIRS: &[(u32, u32)] = &[
     (0xFF3B, 0xFF3D),
     (0xFF5B, 0xFF5D),
     (0xFF5F, 0xFF60),
-    (0xFF62, 0xFF63),
 ];
 
 /// ISO 15924 short name per script byte (ADR 0047): index by the

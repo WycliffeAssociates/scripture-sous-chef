@@ -210,6 +210,21 @@ pub fn run(ssc_core: &Path) {
     // from BidiBrackets.txt because they don't Bidi_Mirror — a bidi
     // technicality, not a pairing fact.
     pairs.push((0xFD3E, 0xFD3F));
+    // Exclusion: the CJK CORNER BRACKET family (「」 U+300C/D, 『』 U+300E/F,
+    // and the halfwidth ｢｣ U+FF62/63) is `Ps`/`Pe` in the UCD and so lands in
+    // BidiBrackets, but in Chinese/Japanese typography these glyphs are
+    // *quotation marks*, not text brackets: 「」 is the primary quote and 『』
+    // the nested quote. Feeding them to `punct.bracket-balance` makes it a de
+    // facto quote-balance rule, and quote balance is deliberately DEFERRED
+    // (ADR 0039) — dialogue quoting nests deeply and re-opens across
+    // verse/paragraph boundaries without closing, so a LIFO stack cannot
+    // separate the continuation convention from real unmatched-opener errors.
+    // ADR 0049 removes them here; they return when a purpose-built quote engine
+    // ships. The other CJK brackets that are genuine text delimiters — 《》 title
+    // marks, （）fullwidth parens, 【】 lenticular, 〈〉 angle — stay in.
+    const CJK_CORNER_QUOTES: &[(u32, u32)] =
+        &[(0x300C, 0x300D), (0x300E, 0x300F), (0xFF62, 0xFF63)];
+    pairs.retain(|p| !CJK_CORNER_QUOTES.contains(p));
     pairs.sort_unstable();
 
     // Fuse casing (std), General_Category groups + script (unicode-*), and the

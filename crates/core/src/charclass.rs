@@ -219,7 +219,7 @@ impl Class {
 
 /// The close glyph paired with `c` if `c` is a UCD paired-bracket opener
 /// (BidiBrackets.txt). Binary search over the generated open-sorted table.
-pub(crate) fn bracket_close_of(c: char) -> Option<char> {
+pub fn bracket_close_of(c: char) -> Option<char> {
     let cp = c as u32;
     crate::charclass_table::BRACKET_PAIRS
         .binary_search_by_key(&cp, |&(o, _)| o)
@@ -230,7 +230,7 @@ pub(crate) fn bracket_close_of(c: char) -> Option<char> {
 /// The open glyph paired with `c` if `c` is a UCD paired-bracket closer.
 /// Linear over ~64 entries — callers gate on punctuation first, so this is
 /// off the hot path.
-pub(crate) fn bracket_open_of(c: char) -> Option<char> {
+pub fn bracket_open_of(c: char) -> Option<char> {
     let cp = c as u32;
     crate::charclass_table::BRACKET_PAIRS
         .iter()

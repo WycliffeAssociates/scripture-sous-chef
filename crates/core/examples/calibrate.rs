@@ -12,6 +12,9 @@
 //!       corpora/vref/WA-bem-reg.txt corpora/vref/WA-en-ulb.txt
 //!   # per-verse batch (one corpus, default config):
 //!   cargo run --release -p ssc-core --example calibrate -- corpora/vref/WA-en-ulb.txt
+//!   # bracket-balance audit (one corpus): floor-0 scores, per-family tallies,
+//!   # sample findings with delimiter inventories:
+//!   cargo run --release -p ssc-core --example calibrate -- --bracket corpora/vref/cmncbt.txt
 //!   # repeated-run score report / parameter sweep:
 //!   cargo run --release -p ssc-core --example calibrate -- --repeat corpora/vref/WA-en-ulb.txt [rate K]
 //!   # fleet survey → self-contained HTML report (all rules, floors zeroed,
@@ -26,13 +29,14 @@ use ssc_core::config::{
     PunctOnlyTokenConfig, PunctuationAdjacencyConfig, PunctuationSpacingConfig,
     RepeatedCharacterRunConfig,
 };
-use ssc_core::rule::StatefulRule;
+use ssc_core::rule::{ProjectRule, StatefulRule};
+use ssc_core::signals::bracket_balance::BracketBalance;
 use ssc_core::signals::lexical::{PunctOnlyToken, RepeatedCharacterRun};
 use ssc_core::signals::proportionality::ProjectLengthRatio;
 use ssc_core::signals::punctuation::{PunctuationAdjacencyAnomaly, PunctuationSpacingAnomaly};
 use ssc_core::{
-    BookId, Config, Finding, FindingArgs, LengthRatioScope, RuleId, VerseMap, analyze,
-    analyze_with_config,
+    BookId, BracketMeasure, Config, Finding, FindingArgs, LengthRatioScope, RuleId, VerseMap,
+    analyze, analyze_with_config,
 };
 
 #[path = "../dev/vref_io.rs"]
@@ -67,6 +71,14 @@ fn main() {
         // 0, a per-mark spaced:attached tally, and the shipped-floor surface count.
         [flag, t] if flag == "--spacing" => {
             spacing_calib(Path::new(t));
+            return;
+        }
+        // Bracket-balance calibration (ADR 0037): floor-0 score distribution,
+        // per-family tallies (glyph pair, events, pairing rate, orphan count,
+        // long-span count), and ~20 sample orphan findings with their
+        // DelimObservation inventories rendered readably.
+        [flag, t] if flag == "--bracket" => {
+            bracket_calib(Path::new(t));
             return;
         }
         // Repeated-character-run signal exploration: per-finding TSV with the
@@ -748,6 +760,158 @@ fn punct_only_calib(dir: &Path) {
         .filter(|f| f.score.unwrap_or(0.0) >= shipped)
         .count();
     eprintln!("{corpus}: surfaced at shipped floor {shipped}: {surfaced}");
+}
+
+/// Bracket-balance calibration (ADR 0037) at floor 0. Reports the production
+/// score distribution, per-family tallies (which delimiter families the corpus
+/// uses, how often each pairs, and how many orphans / long spans each yields),
+/// and a sample of orphan findings with their full `DelimObservation`
+/// inventories rendered readably — the audit view ADR 0037 findings carry.
+fn bracket_calib(dir: &Path) {
+    use ssc_core::charclass::{bracket_close_of, bracket_open_of, class_of};
+
+    let corpus = dir.file_name().unwrap().to_string_lossy().to_string();
+    let target = load_corpus(dir);
+    eprintln!("{corpus}: {} verses", target.len());
+
+    // Floor-0 run of the production rule: every orphan and every long-span pair
+    // surfaces, so the score distribution shows the sub-floor mass too.
+    let rule = BracketBalance {
+        cfg: BracketBalanceConfig { emit_score_min: 0.0, ..Default::default() },
+    };
+    let books = ssc_core::verse::by_book(&target);
+    let t0 = std::time::Instant::now();
+    let findings = rule.check(&books, None);
+    eprintln!("bracket check: {:?}", t0.elapsed());
+    report_scored("punct.bracket-balance", &target, &findings);
+
+    // Per-family event tally over the whole corpus, using the same family
+    // classification the rule uses (family key = the pair's open glyph).
+    #[derive(Default)]
+    struct Fam {
+        open: char,
+        close: char,
+        opens: u64,
+        closes: u64,
+    }
+    let mut fams: BTreeMap<char, Fam> = BTreeMap::new();
+    for text in target.values() {
+        for c in text.chars() {
+            if !class_of(c).is_punctuation() {
+                continue;
+            }
+            let (family, is_open, open_glyph, close_glyph) = if let Some(close) = bracket_close_of(c)
+            {
+                (c, true, c, close)
+            } else if let Some(open) = bracket_open_of(c) {
+                (open, false, open, c)
+            } else {
+                continue;
+            };
+            let e = fams.entry(family).or_default();
+            e.open = open_glyph;
+            e.close = close_glyph;
+            if is_open {
+                e.opens += 1;
+            } else {
+                e.closes += 1;
+            }
+        }
+    }
+
+    // Orphan / long-span counts per family, read off the floor-0 findings. The
+    // finding's own slice is the anchor glyph (the orphan for Pairing, the
+    // opener for ShortSpan); its family is that glyph or its opener.
+    let mut orphans: BTreeMap<char, u64> = BTreeMap::new();
+    let mut long_spans: BTreeMap<char, u64> = BTreeMap::new();
+    for f in &findings {
+        let text = &target[&f.sid];
+        let glyph = f.range.slice(text).chars().next().unwrap();
+        let family = bracket_close_of(glyph)
+            .map(|_| glyph)
+            .or_else(|| bracket_open_of(glyph))
+            .unwrap_or(glyph);
+        match &f.args {
+            Some(FindingArgs::BracketWindow { measure: BracketMeasure::Pairing, .. }) => {
+                *orphans.entry(family).or_default() += 1;
+            }
+            Some(FindingArgs::BracketWindow { measure: BracketMeasure::ShortSpan, .. }) => {
+                *long_spans.entry(family).or_default() += 1;
+            }
+            _ => {}
+        }
+    }
+
+    println!("\nper-family tally (family = open glyph; events = opens + closes):");
+    println!(
+        "  {:^9} {:>8} {:>7} {:>7} {:>9} {:>7} {:>9}",
+        "pair", "events", "opens", "closes", "orphans", "long", "pair_rate"
+    );
+    let mut rows: Vec<&Fam> = fams.values().collect();
+    rows.sort_by_key(|f| std::cmp::Reverse(f.opens + f.closes));
+    for f in rows {
+        let events = f.opens + f.closes;
+        let orph = orphans.get(&f.open).copied().unwrap_or(0);
+        let long = long_spans.get(&f.open).copied().unwrap_or(0);
+        // Descriptive pairing rate == matched_events / events == (events −
+        // orphan_events) / events (each orphan is one unmatched event).
+        let rate = (events.saturating_sub(orph)) as f64 / events.max(1) as f64 * 100.0;
+        println!(
+            "  {}…{}  U+{:04X}  {:>8} {:>7} {:>7} {:>9} {:>7} {:>8.1}%",
+            f.open,
+            f.close,
+            f.open as u32,
+            events,
+            f.opens,
+            f.closes,
+            orph,
+            long,
+            rate
+        );
+    }
+
+    // ~20 sample orphan findings with their DelimObservation inventories, so
+    // the family collisions (quote-role glyphs vs real brackets) are eyeballable.
+    println!("\nsample findings (up to 20) with delimiter inventories:");
+    let mut samples: Vec<&Finding> = findings.iter().collect();
+    samples.sort_by(|a, b| {
+        b.score.unwrap_or(0.0).partial_cmp(&a.score.unwrap_or(0.0)).unwrap()
+    });
+    for f in samples.iter().take(20) {
+        let text = &target[&f.sid];
+        let glyph = f.range.slice(text);
+        let (measure, window, majority, total) = match &f.args {
+            Some(FindingArgs::BracketWindow { measure, window, majority, total }) => {
+                (*measure, window, *majority, *total)
+            }
+            _ => continue,
+        };
+        let kind = match measure {
+            BracketMeasure::Pairing => "orphan",
+            BracketMeasure::ShortSpan => "long-span",
+        };
+        println!(
+            "  {:<10} score={:.3} {kind} [{glyph}] {majority}/{total}",
+            f.sid.to_string(),
+            f.score.unwrap_or(0.0),
+        );
+        // Render the inventory compactly: glyph + role + matched flag, grouped
+        // so the reviewer sees what surrounds the orphan.
+        let inv: String = window
+            .iter()
+            .map(|o| {
+                let role = match o.role {
+                    ssc_core::DelimRole::Open => 'o',
+                    ssc_core::DelimRole::Close => 'c',
+                };
+                let mark = if o.matched { '=' } else { '!' };
+                format!("{}{role}{mark}", o.glyph)
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        let inv: String = inv.chars().take(160).collect();
+        println!("      inv: {inv}");
+    }
 }
 
 /// Punctuation adjacency calibration (ADR 0024) at floor 0.
