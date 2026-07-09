@@ -110,10 +110,9 @@ None" collapse is gone (Coptic, Runic, … get real identity) and CJK is
 un-collapsed (Han/Hiragana/Katakana distinct), which this probabilistic verdict
 absorbs without regression — a Japanese text's pervasive Han+Hiragana mixing is
 learned as convention (0 findings on `jpn1965`). `Common`/`Inherited`/`Unknown`
-remain non-participants (they carry no positive script identity). The stale
-`orth.script-mixing` `allowed_scripts`/`allow_digits` config example in
-`documentation/configuration/rules.md` is obsolete — the corpus-relative verdict
-is the allow-list now (a mix the corpus uses is learned, not configured).
+remain non-participants (they carry no positive script identity). There is no
+`allowed_scripts` allow-list — the corpus-relative verdict is the allow-list now
+(a mix the corpus uses is learned, not configured).
 
 ---
 

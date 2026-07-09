@@ -9,9 +9,7 @@ Per-rule documentation, one file per **namespace family**. For each rule:
 - **Nuance & ADR ties** — subtleties and cross-references
 - **Open issues / future work**
 
-This supersedes the old `documentation/rules_playbook.md` (which used stale
-rule ids). For the `.sous/rules.json` config schema, see
-[`../configuration/rules.md`](../configuration/rules.md); for the scoring /
+For how rules are enabled/disabled and their knobs, plus the scoring /
 aggregation model, see [`../config.md`](../config.md).
 
 For the cross-cutting view of every rule's **user-facing messaging, message
