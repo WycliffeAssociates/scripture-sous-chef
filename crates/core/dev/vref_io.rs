@@ -16,6 +16,10 @@ use ssc_core::{Sid, VerseMap};
 /// Load one corpus vref file (`REF\ttext` per line) into a `VerseMap`.
 /// Lines without a tab, or whose ref doesn't parse, are skipped — the writer
 /// guarantees neither, so a skip means a hand-edited or truncated file.
+/// A text of exactly `<range>` is the BibleNLP vref convention for "this
+/// verse is bridged into the previous one" — a placeholder, not verse text —
+/// and is skipped as an absent verse (the eBible fleet uses it in ~1,050
+/// corpora; fed to the rules it reads as literal markup leftovers).
 // This module is shared via `#[path]`; not every includer calls every fn.
 #[allow(dead_code)]
 pub fn load_corpus(path: &Path) -> VerseMap {
@@ -24,6 +28,9 @@ pub fn load_corpus(path: &Path) -> VerseMap {
     text.lines()
         .filter_map(|line| {
             let (sid, verse) = line.split_once('\t')?;
+            if verse == "<range>" {
+                return None;
+            }
             Some((Sid::parse(sid)?, verse.to_string()))
         })
         .collect()

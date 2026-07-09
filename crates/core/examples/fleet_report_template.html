@@ -1,0 +1,473 @@
+<!doctype html>
+<!-- Rendered by `calibrate -- --fleet`: __FLEET_DATA__ below is replaced with
+     the survey JSON. Self-contained apart from Observable Plot via CDN. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Scripture Sous-Chef — Fleet Report</title>
+<style>
+  :root {
+    --page:         #f9f9f7;
+    --surface-1:    #fcfcfb;
+    --text-primary: #0b0b0b;
+    --text-secondary:#52514e;
+    --muted:        #898781;
+    --grid:         #e1e0d9;
+    --baseline:     #c3c2b7;
+    --border:       rgba(11,11,11,0.10);
+    --series-1:     #2a78d6;
+    --deemph:       #c3c2b7;
+    --good:         #006300;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --page:         #0d0d0d;
+      --surface-1:    #1a1a19;
+      --text-primary: #ffffff;
+      --text-secondary:#c3c2b7;
+      --muted:        #898781;
+      --grid:         #2c2c2a;
+      --baseline:     #383835;
+      --border:       rgba(255,255,255,0.10);
+      --series-1:     #3987e5;
+      --deemph:       #52514e;
+      --good:         #0ca30c;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--page); color: var(--text-primary);
+    font: 15px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  main { max-width: 980px; margin: 0 auto; padding: 32px 20px 80px; }
+  h1 { font-size: 26px; margin: 0 0 4px; }
+  h2 { font-size: 19px; margin: 40px 0 4px; }
+  .sub { color: var(--text-secondary); margin: 0 0 16px; }
+  .tierdesc { color: var(--text-secondary); max-width: 70ch; margin: 4px 0 20px; }
+  .card {
+    background: var(--surface-1); border: 1px solid var(--border);
+    border-radius: 10px; padding: 18px 20px 14px; margin: 14px 0;
+  }
+  .rule-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; }
+  .rule-head h3 { font-size: 16px; margin: 0; }
+  .code { font: 12px ui-monospace, monospace; color: var(--muted); }
+  .badge {
+    font-size: 11px; padding: 1px 8px; border-radius: 99px;
+    border: 1px solid var(--border); color: var(--text-secondary);
+  }
+  .badge.on  { color: var(--good); border-color: var(--good); }
+  .desc { color: var(--text-secondary); max-width: 72ch; margin: 6px 0 12px; }
+  .tiles { display: flex; flex-wrap: wrap; gap: 10px; margin: 0 0 8px; }
+  .tile {
+    border: 1px solid var(--border); border-radius: 8px;
+    padding: 8px 14px; min-width: 130px;
+  }
+  .tile .label { font-size: 12px; color: var(--muted); }
+  .tile .value { font-size: 21px; font-weight: 600; }
+  .tile .note  { font-size: 12px; color: var(--text-secondary); }
+  .chart { color: var(--muted); margin: 6px 0 2px; overflow-x: auto; }
+  .chart-title { font-size: 13px; color: var(--text-secondary); margin: 10px 0 0; }
+  .caption { font-size: 12.5px; color: var(--muted); margin: 2px 0 8px; }
+  .keyline { display: inline-flex; align-items: center; gap: 6px; margin-right: 14px; font-size: 12.5px; color: var(--text-secondary); }
+  .swatch { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+  details { margin: 8px 0 2px; }
+  summary { cursor: pointer; font-size: 13px; color: var(--text-secondary); }
+  table { border-collapse: collapse; font-size: 13px; margin: 8px 0; width: 100%; }
+  th { text-align: left; color: var(--muted); font-weight: 500; }
+  th, td { padding: 4px 10px 4px 0; border-bottom: 1px solid var(--grid); }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  td.snip { font: 12.5px ui-monospace, monospace; overflow-wrap: anywhere; }
+  mark { background: color-mix(in srgb, var(--series-1) 22%, transparent); color: inherit; border-radius: 2px; }
+  .howto {
+    background: var(--surface-1); border: 1px solid var(--border);
+    border-radius: 10px; padding: 16px 20px; margin: 18px 0;
+  }
+  .howto p { margin: 6px 0; max-width: 76ch; }
+  footer { margin-top: 48px; font-size: 12.5px; color: var(--muted); }
+  footer code { font: 11.5px ui-monospace, monospace; }
+  /* Observable Plot tip boxes follow the theme */
+  g[aria-label="tip"] path { fill: var(--surface-1); stroke: var(--border); }
+  g[aria-label="tip"] text { fill: var(--text-primary); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Scripture Sous-Chef — fleet report</h1>
+  <p class="sub" id="headline"></p>
+  <p class="tierdesc">
+    Sous-Chef reads a Bible translation draft and points out <em>mechanical</em>
+    problems — damaged characters, leftover markup, typos the keyboard made,
+    punctuation that breaks the text's own habits. It never judges wording or
+    meaning, and it learns each translation's conventions <strong>from that
+    translation alone</strong>: nothing from any other language is used to judge a text.
+  </p>
+  <p class="tierdesc">
+    This report is the quality control <em>for the checker itself</em>. Every check
+    was run against every real translation below. A trustworthy check must be
+    <strong>quiet on healthy text and loud on damage</strong> — these charts show
+    exactly how quiet and how loud each one is in practice.
+  </p>
+
+  <div class="tiles" id="kpis"></div>
+
+  <div class="card">
+    <div class="chart-title">How big are the translations in this fleet?</div>
+    <p class="caption">Each bar counts translations of a given size. A full Bible is ≈31,000 verses; a New Testament ≈8,000.</p>
+    <div class="chart" id="size-hist"></div>
+  </div>
+
+  <div class="howto">
+    <strong>How to read the charts</strong>
+    <p><span class="keyline"><span class="swatch" style="background:var(--series-1)"></span>dot = one translation</span>
+       In the dot charts, each dot is one translation, placed by how many findings
+       the check raised <em>per 1,000 verses</em> there (note the scale steps by
+       ×10). Dots near the left barely heard from the check; dots far right are
+       texts where it found a lot — hover any dot for the translation's name.
+       Translations with <em>zero</em> findings don't get a dot; the caption counts them.</p>
+    <p><span class="keyline"><span class="swatch" style="background:var(--deemph)"></span>seen, judged normal</span>
+       <span class="keyline"><span class="swatch" style="background:var(--series-1)"></span>shown to a reviewer</span>
+       Some checks score every candidate between 0 (“this is just how this text
+       writes”) and 1 (“this text almost never does this — look at it”). The
+       histograms show all candidates; only the blue part, right of the
+       confidence bar, is ever shown to a person. The grey mass is the check
+       recognising a text's own conventions and staying quiet about them.</p>
+    <p>For this survey every check was switched on for every translation,
+       including the ones the product ships switched off — that's the point:
+       to measure what they <em>would</em> say.</p>
+  </div>
+
+  <div id="sections"></div>
+
+  <footer>
+    Generated by <code>cargo run --release -p ssc-core --example calibrate -- --fleet corpora/vref</code>.
+    Method: all rules enabled; emission floors were set to zero for measurement so the
+    histograms include the below-floor mass, then findings were re-classified against each
+    rule's shipped floor. “Shown” counts are what the shipped floor would surface.
+  </footer>
+</main>
+
+<script type="application/json" id="fleet-data">__FLEET_DATA__</script>
+<script type="module">
+import * as Plot from "https://cdn.jsdelivr.net/npm/@observablehq/plot@0.6/+esm";
+
+const DATA = JSON.parse(document.getElementById("fleet-data").textContent);
+
+/* ---------- rule metadata: plain-language copy, grouping, badges ---------- */
+
+const TIERS = [
+  { id: "hard",
+    title: "Checks where a hit is always a problem",
+    desc: `These look for things no orthography writes on purpose — doubled spaces,
+           control characters, encoding damage, leftover software markup. There is no
+           statistical judgement to tune; what the fleet tells us here is (1) how much of
+           this damage real projects actually carry, and (2) whether any writing system
+           collides with a pattern we assumed was always junk.` },
+  { id: "learned",
+    title: "Checks that learn each translation's own habits",
+    desc: `These first learn a convention from the text itself — how it spaces
+           punctuation, which alphabet its words use, which digits it writes — then flag
+           only departures from that convention, with a confidence score. The fleet's job
+           is to verify the scoring behaves the same way everywhere: conventions score
+           high and their violations surface; genuinely mixed habits score low and stay
+           silent, in every language and script.` },
+  { id: "source",
+    title: "Checks that need a paired source text",
+    desc: `These compare the draft to the text it was translated from, so they are
+           silent in this survey (no sources were paired). They get their own
+           source-paired survey.` },
+];
+
+const RULES = {
+  "lex.excess-h-whitespace": { tier: "hard", name: "Doubled spaces",
+    fix: "auto-fix: collapse to one space",
+    desc: "Two or more spaces in a row inside a verse. Always accidental." },
+  "hyg.tab-in-body": { tier: "hard", name: "Tab characters in verse text",
+    fix: "auto-fix: replace with a space",
+    zeroNote: "Zero here is a property of the survey's export format (tab-separated, so a tab can't survive into the text), not proof the projects are clean — the check matters at editing time.",
+    desc: "A tab character inside a verse — almost always a copy-paste artifact." },
+  "hyg.control-chars": { tier: "hard", name: "Invisible control characters",
+    fix: "auto-fix: delete",
+    desc: "Non-printing control codes that render as nothing or as boxes, and break search and typesetting." },
+  "hyg.zero-width-misuse": { tier: "hard", name: "Misplaced invisible formatting characters",
+    fix: "auto-fix: delete",
+    desc: "Invisible characters (byte-order marks, direction marks, joiners) sitting where they do nothing but cause trouble later. Legitimate uses — like the invisible word-breaks some South-East Asian scripts require — are not flagged." },
+  "hyg.empty-verse": { tier: "hard", name: "Empty verses",
+    fix: "no auto-fix — the content is missing, not malformed",
+    zeroNote: "Zero here is a property of the survey's export format (verses with no text are dropped at export), not proof the projects are clean — the check matters at editing time.",
+    desc: "A verse reference with no text at all. Sometimes intentional (bridged verses), usually an omission." },
+  "hyg.invalid-codepoint": { tier: "hard", name: "Corrupted characters",
+    fix: "no auto-fix — the original character is gone; re-import",
+    desc: "Bytes that are not valid text. The original character can't be recovered from the file." },
+  "hyg.replacement-run": { tier: "hard", name: "Destroyed text (�)",
+    fix: "no auto-fix — the text is lost; re-import from the original",
+    desc: "Runs of the Unicode replacement character — the scar left when a file was once opened with the wrong encoding. The text underneath is gone." },
+  "struct.source-marker-leftover": { tier: "hard", name: "Leftover markup",
+    fix: "auto-fix: delete",
+    desc: "Fragments of translation-software markup (backslash codes and similar) that leaked into the verse text." },
+  "struct.merge-conflict-marker": { tier: "hard", name: "Merge-conflict scars",
+    fix: "no auto-fix — a person must pick which version to keep",
+    desc: "Version-control conflict markers (<<<<<<< and friends) left in the text after a bad sync." },
+  "uni.redundant-zero-width-space": { tier: "hard", name: "Doubled invisible word-breaks",
+    fix: "auto-fix: collapse to one",
+    desc: "Scripts like Khmer and Myanmar use an invisible character to mark word breaks; two in a row does nothing and means an editing slip." },
+  "uni.combining-mark-without-base": { tier: "hard", name: "Accent with no letter under it",
+    fix: "no auto-fix — the letter may be missing, not the accent spurious",
+    desc: "A combining accent floating with no letter to attach to. Either the accent is stray, or a letter was deleted out from under it." },
+  "lex.duplicate-word": { tier: "hard", name: "Doubled words",
+    fix: "auto-fix: keep the first",
+    offNote: "off by default: many languages double words on purpose (grammar or emphasis), so this is a question the translator answers, not a default",
+    desc: "The same word twice in a row (“the the”). A classic typing slip in some languages — and perfectly correct grammar in many others, which is why it ships as an opt-in question." },
+  "punct.adjacency-anomaly": { tier: "learned", name: "Punctuation combinations this text never uses",
+    fix: "no auto-fix — which mark to keep is ambiguous",
+    desc: "Learns which punctuation sequences the translation itself uses, then flags ones it essentially never writes — like “,,” or “?.” — while leaving that text's real conventions alone." },
+  "lex.punct-only-token": { tier: "learned", name: "Stranded punctuation",
+    fix: "review — deletion is usually but not always right",
+    desc: "A “word” made only of punctuation, floating between spaces. Systematic uses (poetry markers, verse dividers some corpora use thousands of times) are learned and skipped; the rare stray surfaces." },
+  "lex.repeated-character-run": { tier: "learned", name: "Stuck-key letters",
+    fix: "no auto-fix — the intended length is unknowable",
+    desc: "The same letter many times in a row (“aaand”, “hhhe”). Languages where long runs are real spelling establish that as a convention and go quiet; keyboard bounce surfaces." },
+  "uni.mixed-script-in-token": { tier: "learned", name: "Look-alike letters from the wrong alphabet",
+    fix: "planned: swap to the majority alphabet (needs a look-alike table)",
+    desc: "A word mixing alphabets — a Latin “o” inside a Cyrillic word, say. Usually invisible to the eye and a legacy of font-hack keyboards; learned per text so legitimate loanword patterns stay quiet." },
+  "uni.mixed-numeral-systems": { tier: "learned", name: "Mixed digit systems",
+    fix: "auto-fix: rewrite in the text's dominant digits",
+    desc: "The text writes numbers in one digit system (say ٣٤٥) but a few digits from another system (345) slipped in." },
+  "punct.bracket-balance": { tier: "learned", name: "Unclosed brackets and parentheses",
+    fix: "no auto-fix — where the missing partner belongs is unknown",
+    desc: "An opening bracket that never closes, or the reverse, judged within the window the text's own habits establish." },
+  "punct.spacing-anomaly": { tier: "learned", name: "Punctuation spacing against the text's own habit",
+    fix: "auto-fix: match the text's dominant form",
+    offNote: "off by default: in texts with genuinely mixed habits the volume equals the text's inconsistency count, which needs a roll-up presentation first",
+    desc: "Learns, per punctuation mark, whether this translation writes it attached (word,) or spaced (word ،) — then flags the minority form. A text that spaces “?” by convention is never told to attach it." },
+  "case.sentence-initial-lowercase": { tier: "learned", name: "Lowercase sentence starts",
+    fix: "auto-fix: capitalize",
+    offNote: "off by default: only meaningful in scripts with capital letters and texts that use them consistently",
+    desc: "A sentence starting with a lowercase letter, in a translation whose own habit is to capitalize." },
+  "prop.length-ratio": { tier: "source", name: "Verse far longer or shorter than its source",
+    fix: "no auto-fix — a translator judgement",
+    desc: "Compares each verse's length against the source it was translated from, calibrated per book (Psalms breathes differently than tight prose). The likeliest catch of a skipped or doubled passage. Zero here by construction: this survey pairs no sources." },
+};
+
+/* ---------- helpers ---------- */
+
+const $ = (sel) => document.querySelector(sel);
+const el = (tag, cls, html) => {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (html !== undefined) e.innerHTML = html;
+  return e;
+};
+const fmtInt = (n) => n.toLocaleString("en-US");
+const fmtRate = (x) => x >= 100 ? x.toFixed(0) : x >= 1 ? x.toFixed(1) : x >= 0.01 ? x.toFixed(2) : x.toExponential(1);
+const compact = (n) => n >= 1e6 ? (n/1e6).toFixed(1) + "M" : n >= 1e4 ? Math.round(n/1e3) + "K" : n >= 1e3 ? (n/1e3).toFixed(1) + "K" : String(n);
+const esc = (s) => s.replace(/[&<>]/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
+const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+
+const corpora = DATA.corpora.filter((c) => c.v > 0);
+const ruleIdx = new Map(DATA.rules.map((r, i) => [r.code, i]));
+const langOf = (id) => (id.replace(/^WA-/, "").match(/^[a-zA-Z]{2,3}/) || [id])[0].toLowerCase();
+
+function tile(label, value, note) {
+  const t = el("div", "tile");
+  t.append(el("div", "label", esc(label)), el("div", "value", value));
+  if (note) t.append(el("div", "note", note));
+  return t;
+}
+
+/* ---------- headline + KPIs ---------- */
+
+const verseTotal = corpora.reduce((a, c) => a + c.v, 0);
+const langs = new Set(corpora.map((c) => langOf(c.id))).size;
+$("#headline").textContent =
+  `${fmtInt(corpora.length)} real translations · ≈${fmtInt(langs)} languages · ` +
+  `${fmtInt(verseTotal)} verses checked, ${fmtInt(DATA.rules.length)} checks each`;
+
+const defaultOnTotal = DATA.rules.reduce((a, r) => a + (RULES[r.code]?.offNote ? 0 : Number(r.surfaced)), 0);
+const everythingTotal = DATA.rules.reduce((a, r) => a + Number(r.surfaced), 0);
+const anyFinding = corpora.filter((c) => c.c.some((n, i) => n > 0 && !RULES[DATA.rules[i].code]?.offNote)).length;
+$("#kpis").append(
+  tile("Translations surveyed", fmtInt(corpora.length), `≈${langs} languages`),
+  tile("Verses checked", compact(verseTotal), `${compact(verseTotal * DATA.rules.length)} verse–check runs`),
+  tile("Findings, default settings", compact(defaultOnTotal), `${compact(everythingTotal)} with every check on`),
+  tile("Translations with ≥1 finding", `${Math.round(100 * anyFinding / corpora.length)}%`, `${fmtInt(anyFinding)} of ${fmtInt(corpora.length)} (default settings)`),
+);
+
+/* ---------- charts ---------- */
+
+function sizeHist() {
+  return Plot.plot({
+    height: 170, width: 900, marginLeft: 50,
+    style: { background: "transparent" },
+    x: { label: "verses in the translation", tickFormat: (d) => compact(d) },
+    y: { label: "translations", grid: true },
+    marks: [
+      Plot.rectY(corpora, Plot.binX({ y: "count" }, { x: "v", fill: css("--series-1"), inset: 1, ry2: 2, tip: true })),
+      Plot.ruleY([0], { stroke: css("--baseline") }),
+    ],
+  });
+}
+
+function beeswarm(rows) {
+  return Plot.plot({
+    height: 190, width: 900, marginLeft: 10, marginBottom: 35,
+    style: { background: "transparent" },
+    x: { type: "log", label: "findings per 1,000 verses (log scale)", tickFormat: (d) => fmtRate(d) },
+    y: { axis: null },
+    marks: [
+      Plot.dot(rows, Plot.dodgeY({
+        x: "rate", r: rows.length > 700 ? 1.8 : 2.5, fill: css("--series-1"),
+        stroke: css("--surface-1"), strokeWidth: 1, anchor: "bottom",
+        channels: { translation: "id", findings: "count", "per 1k verses": (d) => fmtRate(d.rate) },
+        tip: { format: { x: false, translation: true } },
+      })),
+    ],
+  });
+}
+
+function scoreHist(rule) {
+  const floor = rule.floor ?? 0;
+  const buckets = rule.hist.map((b) => ({ ...b, kept: b.lo >= floor - 1e-6 }));
+  return Plot.plot({
+    height: 170, width: 900, marginLeft: 55,
+    style: { background: "transparent" },
+    x: { label: "confidence score (0 = the text's own style … 1 = almost certainly a slip)", domain: [0, 1] },
+    y: { label: "candidates (√ scale)", type: "sqrt", grid: true },
+    color: { domain: [false, true], range: [css("--deemph"), css("--series-1")] },
+    marks: [
+      Plot.rectY(buckets, { x1: "lo", x2: "hi", y: "n", fill: "kept", inset: 0.5, ry2: 2,
+        channels: { range: (d) => `${d.lo.toFixed(2)}–${d.hi.toFixed(2)}`, candidates: "n" },
+        tip: { format: { x: false, y: false, fill: false } } }),
+      rule.floor != null ? Plot.ruleX([floor], { stroke: css("--text-secondary") }) : null,
+      rule.floor != null ? Plot.text([floor], {
+        x: (d) => d, frameAnchor: "top",
+        text: () => floor > 0.6 ? `confidence bar ${floor}, shown → ` : ` confidence bar ${floor} — shown →`,
+        dy: 4, dx: floor > 0.6 ? -4 : 4, textAnchor: floor > 0.6 ? "end" : "start",
+        fill: css("--text-secondary") }) : null,
+      Plot.ruleY([0], { stroke: css("--baseline") }),
+    ].filter(Boolean),
+  });
+}
+
+/* ---------- per-rule cards ---------- */
+
+function ruleCard(rule) {
+  const meta = RULES[rule.code] || { name: rule.code, desc: "", tier: "hard" };
+  const ri = ruleIdx.get(rule.code);
+  const card = el("div", "card");
+  card.id = rule.code;
+
+  const head = el("div", "rule-head");
+  head.append(el("h3", null, esc(meta.name)), el("span", "code", esc(rule.code)));
+  head.append(el("span", "badge " + (meta.offNote ? "" : "on"), meta.offNote ? "opt-in" : "on by default"));
+  if (meta.fix?.startsWith("auto-fix")) head.append(el("span", "badge", "auto-fixable"));
+  card.append(head);
+
+  let desc = esc(meta.desc) + (meta.fix ? ` <em>(${esc(meta.fix)})</em>` : "");
+  if (meta.offNote) desc += `<br><em>${esc(meta.offNote[0].toUpperCase() + meta.offNote.slice(1))}.</em>`;
+  card.append(el("div", "desc", desc));
+
+  const rows = corpora
+    .map((c) => ({ id: c.id, count: c.c[ri], rate: (1000 * c.c[ri]) / c.v }))
+    .filter((r) => r.count > 0)
+    .sort((a, b) => b.rate - a.rate);
+
+  const tiles = el("div", "tiles");
+  const pct = Math.round((100 * rows.length) / corpora.length);
+  tiles.append(
+    tile("Translations affected", `${pct}%`, `${fmtInt(rows.length)} of ${fmtInt(corpora.length)}`),
+    tile("Findings shown", compact(Number(rule.surfaced)), rule.scored ? `of ${compact(Number(rule.sites))} candidates scored` : "every hit is shown"),
+  );
+  if (rows.length) {
+    const mid = rows[Math.floor(rows.length / 2)].rate;
+    tiles.append(tile("Typical affected translation", fmtRate(mid) + " /1k verses", "median among affected"));
+  }
+  card.append(tiles);
+
+  if (rows.length) {
+    card.append(el("div", "chart-title", "Where the fleet sits — one dot per translation"));
+    const chart = el("div", "chart");
+    chart.append(beeswarm(rows));
+    card.append(chart);
+    card.append(el("div", "caption",
+      `${fmtInt(corpora.length - rows.length)} of ${fmtInt(corpora.length)} translations: zero findings.` +
+      (rows.length ? ` Furthest right: ${esc(rows[0].id)} (${fmtRate(rows[0].rate)}/1k).` : "")));
+  } else {
+    card.append(el("div", "caption", rule.code === "prop.length-ratio"
+      ? "Silent in this survey by construction — no source texts were paired."
+      : meta.zeroNote || "Zero findings across the whole fleet."));
+  }
+
+  if (rule.scored && rule.hist) {
+    card.append(el("div", "chart-title", "Every candidate the check scored, fleet-wide — grey stays silent, blue is shown"));
+    const chart = el("div", "chart");
+    chart.append(scoreHist(rule));
+    card.append(chart);
+  }
+
+  if (rule.samples?.length) {
+    const det = el("details");
+    det.append(el("summary", null, "Example findings"));
+    const tbl = el("table");
+    tbl.innerHTML = `<thead><tr><th>translation</th><th>verse</th>${rule.scored ? '<th class="num">score</th>' : ""}<th>text (finding highlighted)</th></tr></thead>`;
+    const tb = el("tbody");
+    for (const s of rule.samples) {
+      const i = s.slice ? s.ctx.indexOf(s.slice) : -1;
+      const snip = i >= 0
+        ? esc(s.ctx.slice(0, i)) + "<mark>" + esc(s.slice) + "</mark>" + esc(s.ctx.slice(i + s.slice.length))
+        : esc(s.ctx) + (s.slice ? " ⟨" + esc(s.slice) + "⟩" : "");
+      tb.append(el("tr", null,
+        `<td>${esc(s.corpus)}</td><td>${esc(s.sid)}</td>` +
+        (rule.scored ? `<td class="num">${s.score != null ? s.score.toFixed(2) : ""}</td>` : "") +
+        `<td class="snip">…${snip}…</td>`));
+    }
+    tbl.append(tb);
+    det.append(tbl);
+    card.append(det);
+  }
+
+  if (rows.length) {
+    const det = el("details");
+    det.append(el("summary", null, "Table view — most-affected translations"));
+    const tbl = el("table");
+    tbl.innerHTML = `<thead><tr><th>translation</th><th class="num">findings</th><th class="num">per 1k verses</th><th class="num">verses</th></tr></thead>`;
+    const tb = el("tbody");
+    for (const r of rows.slice(0, 20)) {
+      const c = corpora.find((c) => c.id === r.id);
+      tb.append(el("tr", null,
+        `<td>${esc(r.id)}</td><td class="num">${fmtInt(r.count)}</td><td class="num">${fmtRate(r.rate)}</td><td class="num">${fmtInt(c.v)}</td>`));
+    }
+    tbl.append(tb);
+    det.append(tbl);
+    card.append(det);
+  }
+
+  return card;
+}
+
+/* ---------- assemble ---------- */
+
+function renderAll() {
+  const sh = $("#size-hist");
+  sh.replaceChildren(sizeHist());
+
+  const sections = $("#sections");
+  sections.replaceChildren();
+  for (const t of TIERS) {
+    const rules = DATA.rules.filter((r) => (RULES[r.code]?.tier || "hard") === t.id);
+    if (!rules.length) continue;
+    sections.append(el("h2", null, esc(t.title)));
+    sections.append(el("p", "tierdesc", t.desc.replace(/\s+/g, " ")));
+    // Order: default-on rules first, loudest first within each group.
+    rules.sort((a, b) =>
+      (RULES[a.code]?.offNote ? 1 : 0) - (RULES[b.code]?.offNote ? 1 : 0) ||
+      b.corpora_hit - a.corpora_hit);
+    for (const r of rules) sections.append(ruleCard(r));
+  }
+}
+
+renderAll();
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", renderAll);
+</script>
+</body>
+</html>

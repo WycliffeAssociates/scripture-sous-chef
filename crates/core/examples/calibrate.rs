@@ -14,13 +14,17 @@
 //!   cargo run --release -p ssc-core --example calibrate -- corpora/vref/WA-en-ulb.txt
 //!   # repeated-run score report / parameter sweep:
 //!   cargo run --release -p ssc-core --example calibrate -- --repeat corpora/vref/WA-en-ulb.txt [rate K]
+//!   # fleet survey → self-contained HTML report (all rules, floors zeroed,
+//!   # every corpus in the directory; out defaults to target/fleet-report.html):
+//!   cargo run --release -p ssc-core --example calibrate -- --fleet corpora/vref [out.html]
 
 use std::collections::BTreeMap;
 use std::path::Path;
 
 use ssc_core::config::{
-    ProportionalityConfig, PunctOnlyTokenConfig, PunctuationAdjacencyConfig,
-    PunctuationSpacingConfig, RepeatedCharacterRunConfig,
+    BracketBalanceConfig, CasingConfig, MixedScriptConfig, ProportionalityConfig,
+    PunctOnlyTokenConfig, PunctuationAdjacencyConfig, PunctuationSpacingConfig,
+    RepeatedCharacterRunConfig,
 };
 use ssc_core::rule::StatefulRule;
 use ssc_core::signals::lexical::{PunctOnlyToken, RepeatedCharacterRun};
@@ -91,6 +95,17 @@ fn main() {
         // per-corpus summary on stderr.
         [flag, t] if flag == "--punct-only" => {
             punct_only_calib(Path::new(t));
+            return;
+        }
+        // Fleet survey: every rule over every corpus in a vref directory,
+        // emission floors zeroed so score histograms show the sub-floor mass;
+        // writes a self-contained HTML report (Observable Plot).
+        [flag, dir, rest @ ..] if flag == "--fleet" && rest.len() <= 1 => {
+            let out = rest
+                .first()
+                .map(|s| Path::new(s).to_path_buf())
+                .unwrap_or_else(|| Path::new("target/fleet-report.html").to_path_buf());
+            fleet(Path::new(dir), &out);
             return;
         }
         [t] => {
@@ -213,6 +228,280 @@ fn batch(dir: &Path) {
             println!("    {:<10} [{slice}] …{ctx}", f.sid.to_string());
         }
     }
+}
+
+/// One finding sampled for the fleet report: enough to render a "what this
+/// looks like in real text" row without shipping the corpus.
+struct FleetSample {
+    corpus: String,
+    sid: String,
+    score: Option<f32>,
+    slice: String,
+    ctx: String,
+}
+
+/// Per-corpus tally from one fleet pass.
+struct FleetRow {
+    id: String,
+    verses: usize,
+    chars: usize,
+    /// Findings the shipped floor would show the user, per `RuleId::ALL` slot.
+    surfaced: Vec<u32>,
+    /// All scored sites at floor zero (== `surfaced` for unscored rules).
+    sites: Vec<u32>,
+    /// Score histogram per rule, aligned with that rule's bucket edges.
+    hists: Vec<Vec<u64>>,
+    /// ≤ 2 best surfaced samples per rule (corpus diversity cap).
+    samples: Vec<Vec<FleetSample>>,
+}
+
+/// Fleet survey: every rule over every vref corpus in `dir`, with all
+/// emission floors zeroed so the score histograms include the sub-floor mass
+/// the shipped floors suppress. Writes a self-contained HTML report to `out`
+/// (per-corpus rates, per-rule score distributions with the shipped floor
+/// marked, and sample findings).
+fn fleet(dir: &Path, out: &Path) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use rayon::prelude::*;
+
+    let n_rules = RuleId::ALL.len();
+
+    // Measurement config: everything on, every floor at zero. Surfaced-vs-not
+    // is then recomputed against the shipped floors below, so one pass yields
+    // both the full distribution and the user-facing volume.
+    let mut cfg = Config::all();
+    cfg.bracket_balance.emit_score_min = 0.0;
+    cfg.casing.emit_score_min = 0.0;
+    cfg.punctuation_adjacency.emit_score_min = 0.0;
+    cfg.punctuation_spacing.emit_score_min = 0.0;
+    cfg.repeated_character_run.emit_score_min = 0.0;
+    cfg.punct_only_token.emit_score_min = 0.0;
+    cfg.mixed_script.emit_score_min = 0.0;
+
+    let floors: Vec<Option<f32>> = RuleId::ALL
+        .iter()
+        .map(|id| match id {
+            RuleId::BracketBalance => Some(BracketBalanceConfig::default().emit_score_min),
+            RuleId::SentenceInitialLowercase => Some(CasingConfig::default().emit_score_min),
+            RuleId::PunctuationAdjacencyAnomaly => {
+                Some(PunctuationAdjacencyConfig::default().emit_score_min)
+            }
+            RuleId::PunctuationSpacingAnomaly => {
+                Some(PunctuationSpacingConfig::default().emit_score_min)
+            }
+            RuleId::RepeatedCharacterRun => {
+                Some(RepeatedCharacterRunConfig::default().emit_score_min)
+            }
+            RuleId::PunctOnlyToken => Some(PunctOnlyTokenConfig::default().emit_score_min),
+            RuleId::MixedScriptInToken => Some(MixedScriptConfig::default().emit_score_min),
+            _ => None,
+        })
+        .collect();
+
+    // Histogram bucket edges per rule: 40 uniform buckets plus the shipped
+    // floor as an extra edge, so below-floor vs surfaced is exact per bucket.
+    let edges: Vec<Vec<f32>> = floors
+        .iter()
+        .map(|floor| {
+            let mut e: Vec<f32> = (0..=40).map(|i| i as f32 / 40.0).collect();
+            if let Some(f) = floor
+                && e.iter().all(|x| (x - f).abs() > 1e-6)
+            {
+                e.push(*f);
+                e.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            }
+            e
+        })
+        .collect();
+
+    let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
+        .unwrap_or_else(|e| panic!("read {}: {e}", dir.display()))
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "txt"))
+        .collect();
+    files.sort();
+    let total = files.len();
+    eprintln!("fleet: {total} corpora in {}", dir.display());
+
+    let done = AtomicUsize::new(0);
+    let rows: Vec<FleetRow> = files
+        .par_iter()
+        .map(|path| {
+            let id = path.file_stem().unwrap().to_string_lossy().to_string();
+            let map = load_corpus(path);
+            let verses = map.len();
+            let chars = map.values().map(|t| t.chars().count()).sum();
+            let findings = if verses == 0 {
+                Vec::new()
+            } else {
+                analyze_with_config(&map, None, &cfg)
+            };
+
+            let mut surfaced = vec![0u32; n_rules];
+            let mut sites = vec![0u32; n_rules];
+            let mut hists: Vec<Vec<u64>> =
+                edges.iter().map(|e| vec![0u64; e.len() - 1]).collect();
+            let mut samples: Vec<Vec<FleetSample>> = (0..n_rules).map(|_| Vec::new()).collect();
+
+            for f in &findings {
+                let ri = RuleId::ALL.iter().position(|r| *r == f.code).unwrap();
+                sites[ri] += 1;
+                if let Some(s) = f.score {
+                    let e = &edges[ri];
+                    let b = e.partition_point(|x| *x <= s.clamp(0.0, 0.999_999)) - 1;
+                    hists[ri][b.min(e.len() - 2)] += 1;
+                }
+                let shown = f.score.is_none_or(|s| s >= floors[ri].unwrap_or(0.0));
+                if !shown {
+                    continue;
+                }
+                surfaced[ri] += 1;
+                // Keep the 2 best surfaced samples per rule per corpus.
+                let sv = &mut samples[ri];
+                let better_than = |x: &FleetSample| {
+                    f.score.unwrap_or(0.0) > x.score.unwrap_or(f32::INFINITY)
+                };
+                if sv.len() < 2 || sv.iter().any(better_than) {
+                    let text = &map[&f.sid];
+                    let sample = FleetSample {
+                        corpus: id.clone(),
+                        sid: f.sid.to_string(),
+                        score: f.score,
+                        slice: display_slice(f.range.slice(text), 24),
+                        ctx: fleet_context(text, f.range.start),
+                    };
+                    if sv.len() < 2 {
+                        sv.push(sample);
+                    } else if let Some((i, _)) = sv.iter().enumerate().min_by(|a, b| {
+                        a.1.score
+                            .unwrap_or(0.0)
+                            .partial_cmp(&b.1.score.unwrap_or(0.0))
+                            .unwrap()
+                    }) {
+                        sv[i] = sample;
+                    }
+                }
+            }
+
+            let n = done.fetch_add(1, Ordering::Relaxed) + 1;
+            if n % 100 == 0 {
+                eprintln!("  …{n}/{total}");
+            }
+            FleetRow { id, verses, chars, surfaced, sites, hists, samples }
+        })
+        .collect();
+
+    // Fleet-wide aggregates.
+    let mut sites_total = vec![0u64; n_rules];
+    let mut surfaced_total = vec![0u64; n_rules];
+    let mut corpora_hit = vec![0u32; n_rules];
+    for row in &rows {
+        for ri in 0..n_rules {
+            sites_total[ri] += row.sites[ri] as u64;
+            surfaced_total[ri] += row.surfaced[ri] as u64;
+            corpora_hit[ri] += (row.surfaced[ri] > 0) as u32;
+        }
+    }
+
+    let corpora_json: Vec<serde_json::Value> = rows
+        .iter()
+        .map(|r| {
+            serde_json::json!({
+                "id": r.id, "v": r.verses, "ch": r.chars, "c": r.surfaced,
+            })
+        })
+        .collect();
+
+    let mut hist_total: Vec<Vec<u64>> = edges.iter().map(|e| vec![0u64; e.len() - 1]).collect();
+    let mut samples_all: Vec<Vec<FleetSample>> = (0..n_rules).map(|_| Vec::new()).collect();
+    for row in rows {
+        for (ri, h) in row.hists.into_iter().enumerate() {
+            for (b, n) in h.into_iter().enumerate() {
+                hist_total[ri][b] += n;
+            }
+        }
+        for (ri, s) in row.samples.into_iter().enumerate() {
+            samples_all[ri].extend(s);
+        }
+    }
+    for sv in &mut samples_all {
+        sv.sort_by(|a, b| {
+            b.score
+                .unwrap_or(0.0)
+                .partial_cmp(&a.score.unwrap_or(0.0))
+                .unwrap()
+                .then_with(|| a.corpus.cmp(&b.corpus))
+                .then_with(|| a.sid.cmp(&b.sid))
+        });
+        sv.truncate(8);
+    }
+
+    let rules_json: Vec<serde_json::Value> = RuleId::ALL
+        .iter()
+        .enumerate()
+        .map(|(ri, id)| {
+            let scored = hist_total[ri].iter().any(|&n| n > 0);
+            let hist: Option<Vec<serde_json::Value>> = scored.then(|| {
+                edges[ri]
+                    .windows(2)
+                    .zip(&hist_total[ri])
+                    .map(|(w, &n)| serde_json::json!({"lo": w[0], "hi": w[1], "n": n}))
+                    .collect()
+            });
+            serde_json::json!({
+                "code": id.code(),
+                "sites": sites_total[ri],
+                "surfaced": surfaced_total[ri],
+                "corpora_hit": corpora_hit[ri],
+                "floor": floors[ri],
+                "scored": scored,
+                "hist": hist,
+                "samples": samples_all[ri].iter().map(|s| serde_json::json!({
+                    "corpus": s.corpus, "sid": s.sid, "score": s.score,
+                    "slice": s.slice, "ctx": s.ctx,
+                })).collect::<Vec<_>>(),
+            })
+        })
+        .collect();
+
+    let data = serde_json::json!({
+        "corpus_count": corpora_json.len(),
+        "rules": rules_json,
+        "corpora": corpora_json,
+    });
+    // `</` must not appear inside the inline <script> payload; `<\/` is the
+    // same string after JSON unescaping.
+    let payload = data.to_string().replace("</", "<\\/");
+    let html = include_str!("fleet_report_template.html").replace("__FLEET_DATA__", &payload);
+    std::fs::write(out, html).unwrap_or_else(|e| panic!("write {}: {e}", out.display()));
+    eprintln!("wrote {}", out.display());
+}
+
+/// Printable preview of a finding slice: invisibles made visible, whitespace
+/// flattened, capped at `max` chars.
+fn display_slice(s: &str, max: usize) -> String {
+    s.chars()
+        .take(max)
+        .map(|c| match c {
+            '\u{200B}' => '·',
+            '\t' | '\n' => ' ',
+            c if c.is_control() => '⌧',
+            c => c,
+        })
+        .collect()
+}
+
+/// ~20 chars of lead-in plus the finding neighbourhood, for the samples table.
+fn fleet_context(text: &str, start: usize) -> String {
+    let ctx_start = text[..start]
+        .char_indices()
+        .rev()
+        .nth(19)
+        .map(|(i, _)| i)
+        .unwrap_or(0);
+    display_slice(&text[ctx_start..], 64)
 }
 
 /// Redundant-ZWSP report (ADR 0027). The rule is deterministic and default-on, so
