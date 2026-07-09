@@ -395,20 +395,23 @@ as established → silent). **Looser:** lower `emit_score_min`.
 
 | knob | meaning |
 | --- | --- |
-| `emit_score_min` | **the user-facing decision threshold** ("minimum convention dominance"): flag a mark's minority spacing form only where the opposite form's *conservative* corpus share is ≥ this value. `0.75` reads literally as "≥75% dominant"; the finding's `score` is in the same unit. Default 0.75 |
+| `emit_score_min` | the emission floor on the **two-factor** score (dominance × rarity). Before ADR 0050 the score was dominance alone and this read as a literal "≥ N% dominant" share; with the rarity factor folded in it is a two-factor cutoff. Default **0.5** (lowered from 0.75 once the recurrence knee collapsed the mid-mass — 2026-07-09 calibration) |
+| `minority_recurrence_k` | recurrence knee: how many minority-form occurrences (beyond the first) drive the rarity factor to zero. `rarity = 1 − min(minority − 1, k)/k`. A minority seen once is a rare slip (`rarity 1`); one recurring past `k` is the text's second convention (`rarity 0`, silent). Default **32** |
 | `confidence_z` | Wilson lower-bound confidence — an **advanced** calibration knob (higher shrinks small samples harder toward "not yet a convention"); default 1.96. Omit from normal UI |
 
-`score = dominance(k_majority, N, confidence_z)` per mark (the Wilson lower
-bound, via `evidence.rs`), emitted only for **minority-form** occurrences
-(ADR 0029). Candidate marks are GC `Po` minus quotes (ADR 0033), not an ASCII
-list. Unlike the sibling rules there is
-no `convention_rate` — the single threshold does the convention-floor job — and
-no `min_samples`. The score is confidence-monotone: at a fixed ratio it rises
-with `N`, so more data flags more readily, never less.
+`score = dominance(k_majority, N, confidence_z) × rarity(minority, k)` per mark
+(the Wilson lower bound × the recurrence knee, via `evidence.rs`), emitted only
+for **minority-form** occurrences (ADR 0029 + ADR 0050). Candidate marks are GC
+`Po` minus quotes (ADR 0033), not an ASCII list. Unlike the sibling rules there
+is no `convention_rate` and no `min_samples`. The dominance factor is
+confidence-monotone (more data flags more readily); the rarity factor makes
+**fixing minority occurrences raise the score of the rest** — clean-as-you-go
+sharpens the signal.
 
-**Stricter (fewer findings):** raise `emit_score_min` (demand a more dominant
-convention before flagging its minority). **Looser:** lower it (surface weaker
-conventions' minority forms, down toward a near-even split which stays silent).
+**Stricter (fewer findings):** raise `emit_score_min`, or **lower**
+`minority_recurrence_k` (treat a smaller recurring minority as an established
+second convention → silent). **Looser:** lower `emit_score_min`, or raise
+`minority_recurrence_k` (demand more recurrence before silencing).
 
 ### `lex.repeated-character-run` (`Config.repeated_character_run`) — **default ON**
 

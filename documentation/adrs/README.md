@@ -65,6 +65,7 @@ isn't visible from the code alone.
 | 0046 | 2026-07-08 | [Per-verse "dirty bits" prefilter — measured, and deferred](0046-per-verse-dirty-bits-prefilter.md) | Deferred (spike only; extends 0045/0022) |
 | 0047 | 2026-07-08 | [Store the crate's full script set faithfully; push mixing policy into a probabilistic rule](0047-full-script-set-no-collapse-probabilistic-mixing.md) | Accepted (amends 0009/0022) |
 | 0048 | 2026-07-08 | [Ship the raw convention share alongside the Wilson-bound score](0048-descriptive-share-args-for-dominance-rules.md) | Accepted (extends 0029/0010) |
+| 0050 | 2026-07-09 | [`punct.spacing-anomaly` scores dominance × minority-recurrence rarity](0050-spacing-minority-recurrence-factor.md) | Accepted (amends 0029/0033) |
 
 ## Format
 
