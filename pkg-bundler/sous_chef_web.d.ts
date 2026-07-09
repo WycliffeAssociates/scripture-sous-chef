@@ -279,12 +279,14 @@ export interface PunctuationAdjacencyOverrides {
 
 /**
  * Partial overrides for `punct.spacing-anomaly`\'s knobs. Omitted fields keep
- * core\'s defaults (ADR 0029): `emit_score_min` 0.75 (the \"minimum convention
- * dominance\" slider) and `confidence_z` 1.96 (an advanced calibration knob).
+ * core\'s defaults (ADR 0029, 0050): `emit_score_min` 0.5 (the emission floor
+ * on the two-factor score), `confidence_z` 1.96 (an advanced calibration
+ * knob), and `minority_recurrence_k` 32 (the recurrence knee).
  */
 export interface PunctuationSpacingOverrides {
     emit_score_min?: number;
     confidence_z?: number;
+    minority_recurrence_k?: number;
 }
 
 /**

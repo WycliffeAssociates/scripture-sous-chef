@@ -69,7 +69,7 @@ pub struct PunctuationAdjacencyOverrides {
 /// Partial overrides for `punct.spacing-anomaly`'s knobs. Omitted fields keep
 /// core's defaults (ADR 0029, 0050): `emit_score_min` 0.5 (the emission floor
 /// on the two-factor score), `confidence_z` 1.96 (an advanced calibration
-/// knob), and `minority_recurrence_k` 24 (the recurrence knee).
+/// knob), and `minority_recurrence_k` 32 (the recurrence knee).
 #[derive(Deserialize, Tsify, Default)]
 #[tsify(from_wasm_abi)]
 pub struct PunctuationSpacingOverrides {
