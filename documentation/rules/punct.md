@@ -163,7 +163,7 @@ scope.
 
 ## `punct.spacing-anomaly` — corpus-relative punctuation spacing
 
-> **Severity** Info · **Default** off · **Scope** stateful (aggregate-only) · **Knobs** `emit_score_min`, `confidence_z` · **Source** `punctuation.rs` · **ADR** 0029, 0033
+> **Severity** Info · **Default** off · **Scope** stateful (aggregate-only) · **Knobs** `emit_score_min` (default 0.5), `confidence_z` (default 1.96), `minority_recurrence_k` (default 32) · **Source** `punctuation.rs` · **ADR** 0029, 0033, 0050
 
 **Flags** — A separator-punctuation mark (GC `Po` minus quotes, ADR 0033 —
 `. , ; : ? !` and equally danda `।`, Arabic `۔ ، ؟ ؛`, Ethiopic `። ፤ ፥`,
@@ -177,9 +177,13 @@ mark in this corpus, with a continuous `score`:
 
 **Clean (learned silent)** — The majority form for each mark (whatever the
 corpus does most), any mark with **no dominant convention** (near-50/50 stays
-quiet), and a mark seen in only one form. Cluster tails (`word?!` — the `!`
-clings to `?`), closing-quote/paren-then-mark (`word" ,`), verse-leading marks,
-and numeric `1:1` colons never enter the opportunity pool.
+quiet), a mark seen in only one form, and — new in ADR 0050 — a **minority form
+that recurs at scale**: engwebster's spaced `; : ? !` (Webster 1833 period
+typography, hundreds each), kmr-IQ's 1,289 spaced ` ،`, udu's 2,478 spaced `/`.
+A minority recurring past the knee is the text's *second convention*, not a slip.
+Cluster tails (`word?!` — the `!` clings to `?`), closing-quote/paren-then-mark
+(`word" ,`), verse-leading marks, and numeric `1:1` colons never enter the
+opportunity pool.
 
 **Why it matters** — Whether a mark is spaced or attached is a *per-mark
 convention*, not a universal rule. The predecessor `punct.space-before-punct`
@@ -189,40 +193,61 @@ rule learns each mark's dominant form and flags only deviations, in **both**
 directions (the old rule could never catch an errant *attached* mark in a
 spacing corpus).
 
-**Score — conservative convention dominance** — Per mark, count word-adjacent
-occurrences that are `spaced` vs `attached` (`N = spaced + attached`). The score
-of every minority-form occurrence is `wilson_lower_bound(max(spaced, attached),
-N, confidence_z)` — the conservative share held by the *opposing* convention,
-equivalently `1 − upper_bound(minority_share)`. An exact tie yields no verdict
-(silent). The score is **confidence-monotone**: at a fixed ratio it rises with
-`N` toward the observed rate, so more evidence makes the rule more willing to
-flag, never less.
+**Score — two factors: dominance × rarity (ADR 0050)** — Per mark, count
+word-adjacent occurrences that are `spaced` vs `attached` (`N = spaced +
+attached`); let `minority = min(spaced, attached)`. The score of every
+minority-form occurrence is:
 
-**Config** — `emit_score_min` is the single **user-facing decision threshold**
-("minimum convention dominance"): `0.75` means "flag only where the opposite
-form's conservative corpus share is ≥ 75%," and the finding's `score` is in the
-same unit. `confidence_z` is an advanced calibration knob (Wilson lower-bound
-confidence; shrinks small samples toward "not yet a convention"), omitted from
+```
+dominance = wilson_lower_bound(max(spaced, attached), N, confidence_z)
+rarity    = 1 − min(minority − 1, k) / k        (k = minority_recurrence_k)
+score     = dominance × rarity
+```
+
+- **dominance** (ADR 0029) is the conservative share held by the *opposing*
+  convention, equivalently `1 − upper_bound(minority_share)`. Confidence-monotone:
+  at a fixed ratio it rises with `N` toward the observed rate.
+- **rarity** (ADR 0050) is a linear recurrence knee on the minority count — the
+  same shape `lex.repeated-character-run` uses for `word_recurrence_k`. A minority
+  seen once is `rarity = 1` (a rare slip against a strong convention); a minority
+  recurring past `k` is `rarity = 0` (a second convention, silent).
+
+An exact tie yields no verdict (silent). A deliberate dynamic follows from the
+product: **fixing minority occurrences raises the score of the remaining ones**
+(rarity climbs back toward 1) — clean-as-you-go sharpens the signal on what's
+left.
+
+**Config** — `emit_score_min` (default **0.5**) is the emission floor on the
+two-factor score. Before ADR 0050 the score was dominance alone and this read as
+a literal convention share ("≥75% dominant"); with the rarity factor folded in
+it is a two-factor cutoff, and it dropped from 0.75 to 0.5 once the recurrence
+knee collapsed the mid-mass that had made 0.75 a volume policy rather than a
+truth cutoff. `minority_recurrence_k` (default **32**) is the recurrence knee;
+`confidence_z` (default 1.96) is an advanced Wilson-confidence knob omitted from
 normal UI. There is deliberately no `convention_rate` and no `min_samples`.
-Defaults (`emit_score_min = 0.75`, `confidence_z = 1.96`) frozen at the
-2026-07-06 calibration.
+Defaults frozen at the [2026-07-09 calibration](../calibration/2026-07-09-spacing-minority-recurrence.md);
+`emit_score_min` / `confidence_z` were provisional from 2026-07-06 (ADR 0029).
 
 **Nuance & ADR ties** — Governing neighbour is a *grapheme cluster* containing a
 letter, so a decomposed word-final letter (base + combining mark) still counts.
 The finding message is direction-neutral ("this mark's spacing differs from the
 corpus convention"). Two scorers were rejected en route: `1 − strength(self)`
 (confuses insufficient evidence with rarity — fires on 1:1) and signed contrast
-(confidence-*inverts* as the corpus grows). No core cap on findings: a
-weak-convention corpus flags its whole minority, controlled by the floor — the
-`Po` widening (ADR 0033) took the 106-corpus survey from 2,981 to 12,565
-findings, concentrated where the convention is genuinely mixed (kmr-IQ
-11 → 2,131, arq 5 → 1,984, my_juds 0 → 1,332), with score histograms staying
-confident (0.8–1.0); the volume *is* the inconsistency count of those texts.
-See ADR 0029 and ADR 0033.
+(confidence-*inverts* as the corpus grows). The `Po` widening (ADR 0033) had
+taken the 106-corpus survey from 2,981 to 12,565 findings, with the caveat that
+"the volume *is* the inconsistency count" — a strong convention whose minority
+recurs thousands of times (kmr-IQ 2,131 ` ،`, engwebster's spaced period
+typography) emitted thousands of findings. ADR 0050 resolves that: the recurrence
+factor reads a recurring minority as a *second convention* and silences it, so
+those storm corpora collapse to their handful of genuine slips (engwebster
+2,209 → a few, kmr-IQ 2,131 → ~11) while ne_udb's strong-convention slips
+(`!` 9, `,` 15) are kept. See ADR 0029, 0033, and 0050.
 
 **Open issues / future work** — A `mark × script` fallback dimension (for a mark
 that genuinely follows different conventions across scripts) is deferred until
 calibration shows both buckets carry enough evidence. Digit-adjacent punctuation
-stays out of scope. Per-corpus volume in mixed-convention texts is unbounded by
-design; if the rule ever ships default-on, revisit a per-mark cap or a rollup
-presentation first (2026-07-06 calibration margin).
+stays out of scope. The recurrence knee cannot distinguish a genuine slip cluster
+from an emerging second convention purely by count when the two coincide in
+magnitude (ne_udb's `?` minority of 18 is discounted the same way am's
+structurally identical `፡` minority of 24 is silenced) — a single knee splits
+them as well as one constant can (2026-07-09 calibration margin).

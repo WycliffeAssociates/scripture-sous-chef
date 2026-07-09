@@ -67,10 +67,17 @@ fn main() {
             punct_calib(Path::new(t));
             return;
         }
-        // Punctuation spacing calibration (ADR 0029): score distribution at floor
-        // 0, a per-mark spaced:attached tally, and the shipped-floor surface count.
-        [flag, t] if flag == "--spacing" => {
-            spacing_calib(Path::new(t));
+        // Punctuation spacing calibration (ADR 0029, 0050): score distribution
+        // at floor 0, a per-mark two-factor decomposition (dominance × rarity),
+        // and a recurrence-knee sweep. Trailing args are the `k` values to sweep
+        // (default 8 12 16 24 32 48).
+        [flag, t, ks @ ..] if flag == "--spacing" => {
+            let sweep: Vec<f32> = if ks.is_empty() {
+                vec![8.0, 12.0, 16.0, 24.0, 32.0, 48.0]
+            } else {
+                ks.iter().map(|s| s.parse().expect("minority_recurrence_k")).collect()
+            };
+            spacing_calib(Path::new(t), &sweep);
             return;
         }
         // Bracket-balance calibration (ADR 0037): floor-0 score distribution,
@@ -935,54 +942,100 @@ fn punct_calib(dir: &Path) {
     println!("\nshipped default surfaces: {shipped_n}");
 }
 
-/// Punctuation spacing calibration (ADR 0029) at floor 0. Reports the production
-/// score distribution, plus a naive per-mark spaced:attached tally (harness-local
-/// scan, for eyeballing which marks are conventions), and how many the shipped
-/// floor (0.75) surfaces with the rule enabled.
-fn spacing_calib(dir: &Path) {
+/// One mark's corpus-wide spacing verdict, as recovered from the rule's own
+/// floor-0 findings: the raw split, the (flaggable) minority count, and the
+/// dominance factor (ADR 0029) — the k-independent half of the two-factor score.
+struct MarkRow {
+    mark: char,
+    spaced: u64,
+    attached: u64,
+    minority: u64,
+    dominance: f64,
+}
+
+/// Punctuation spacing calibration (ADR 0029 dominance × ADR 0050 recurrence
+/// rarity). Prints the production score distribution, the per-mark two-factor
+/// decomposition, and a recurrence-knee (`minority_recurrence_k`) sweep with the
+/// surfaced volume each `k`/floor pair would emit. The dominance factor is
+/// k-independent, so it is recovered once from a wide-knee floor-0 run (where
+/// `rarity ≈ 1 ⇒ score ≈ dominance`) and the sweep is then analytic.
+fn spacing_calib(dir: &Path, sweep: &[f32]) {
     let corpus = dir.file_name().unwrap().to_string_lossy().to_string();
     let target = load_corpus(dir);
     eprintln!("{corpus}: {} verses", target.len());
+    let books = ssc_core::verse::by_book(&target);
 
+    // Production distribution at the *shipped* score (default k, floor 0).
     let rule = PunctuationSpacingAnomaly {
         cfg: PunctuationSpacingConfig { emit_score_min: 0.0, ..Default::default() },
     };
     let t0 = std::time::Instant::now();
-    let findings = rule.judge(&rule.reduce(&ssc_core::verse::by_book(&target), None, None).0, &ssc_core::verse::by_book(&target), None, None);
+    let findings = rule.judge(&rule.reduce(&books, None, None).0, &books, None, None);
     eprintln!("spacing reduce+judge: {:?}", t0.elapsed());
     report_scored("punct.spacing-anomaly", &target, &findings);
 
-    // Naive per-mark tally: a mark preceded (ignoring horizontal whitespace) by a
-    // letter is an opportunity; spaced iff whitespace intervened. Mirrors the
-    // rule's letter-governed, cluster-excluding domain closely enough to eyeball.
-    let mut counts: BTreeMap<char, (u64, u64)> = BTreeMap::new(); // (spaced, attached)
-    for text in target.values() {
-        let mut prev_is_letter = false;
-        let mut ws_since = false;
-        for c in text.chars() {
-            if matches!(c, ' ' | '\t' | '\u{00A0}' | '\u{202F}') {
-                ws_since = true;
-                continue;
-            }
-            if matches!(c, '.' | ',' | ';' | ':' | '?' | '!') {
-                if prev_is_letter {
-                    let e = counts.entry(c).or_default();
-                    if ws_since { e.0 += 1 } else { e.1 += 1 }
-                }
-                prev_is_letter = false; // a following mark clings to this one
-                ws_since = false;
-                continue;
-            }
-            prev_is_letter = c.is_alphabetic();
-            ws_since = false;
+    // Recover per-mark (spaced, attached, dominance) from a wide-knee floor-0
+    // run: with k huge the rarity factor is ≈1, so each finding's score is the
+    // dominance, and its args carry the exact corpus-wide split. One finding per
+    // minority-form occurrence ⇒ dedup by mark.
+    let wide = PunctuationSpacingAnomaly {
+        cfg: PunctuationSpacingConfig {
+            emit_score_min: 0.0,
+            minority_recurrence_k: 1.0e9,
+            ..Default::default()
+        },
+    };
+    let wf = wide.judge(&wide.reduce(&books, None, None).0, &books, None, None);
+    let mut rows: BTreeMap<char, MarkRow> = BTreeMap::new();
+    for f in &wf {
+        if let Some(FindingArgs::SpacingConvention { mark, spaced, attached }) = f.args {
+            rows.entry(mark).or_insert_with(|| MarkRow {
+                mark,
+                spaced: spaced as u64,
+                attached: attached as u64,
+                minority: (spaced as u64).min(attached as u64),
+                dominance: f.score.unwrap_or(0.0) as f64,
+            });
         }
     }
-    println!("\nper-mark spacing (spaced : attached, majority):");
-    for (mark, (sp, at)) in &counts {
-        let n = sp + at;
-        let maj = (*sp).max(*at) as f64 / n.max(1) as f64 * 100.0;
-        let which = if sp > at { "spaced" } else if at > sp { "attached" } else { "tie" };
-        println!("  {mark:?}  {sp:>7} : {at:<7}  N={n:<8} {maj:5.1}% {which}");
+
+    println!("\nper-mark two-factor decomposition (dominance × rarity, ADR 0050):");
+    println!("  mark  spaced : attached   minority   dominance");
+    for r in rows.values() {
+        let which = if r.spaced < r.attached { "spaced-min" } else { "attached-min" };
+        println!(
+            "  {:?}  {:>7} : {:<7}  min={:<6} dom={:.4}  ({which})",
+            r.mark, r.spaced, r.attached, r.minority, r.dominance
+        );
+    }
+
+    // rarity(minority, k) = 1 − min(minority−1, k)/k.
+    let rarity = |minority: u64, k: f64| -> f64 {
+        (1.0 - ((minority.saturating_sub(1) as f64) / k).clamp(0.0, 1.0)).clamp(0.0, 1.0)
+    };
+
+    println!("\nknee sweep — per-mark score = dominance × rarity(minority, k):");
+    for r in rows.values() {
+        print!("  {:?} (min={:<5} dom={:.3}):", r.mark, r.minority, r.dominance);
+        for &k in sweep {
+            let s = r.dominance * rarity(r.minority, k as f64);
+            print!("  k{:.0}={:.3}", k, s);
+        }
+        println!();
+    }
+
+    // Surfaced volume each (k, floor) pair would emit: a mark contributes all
+    // `minority` of its minority-form occurrences iff its score clears the floor.
+    println!("\nsurfaced-occurrence volume by k and floor:");
+    println!("  {:>6}  {:>10}  {:>10}", "k", "floor 0.50", "floor 0.75");
+    for &k in sweep {
+        let vol = |floor: f64| -> u64 {
+            rows.values()
+                .filter(|r| r.dominance * rarity(r.minority, k as f64) >= floor)
+                .map(|r| r.minority)
+                .sum()
+        };
+        println!("  {:>6.0}  {:>10}  {:>10}", k, vol(0.5), vol(0.75));
     }
 
     let mut cfg = Config::v1_defaults();
@@ -991,7 +1044,11 @@ fn spacing_calib(dir: &Path) {
         .iter()
         .filter(|f| f.code == RuleId::PunctuationSpacingAnomaly)
         .count();
-    println!("\nshipped default (floor 0.75, enabled) surfaces: {shipped}");
+    println!(
+        "\nshipped default (k {}, floor {}, enabled) surfaces: {shipped}",
+        PunctuationSpacingConfig::default().minority_recurrence_k,
+        PunctuationSpacingConfig::default().emit_score_min,
+    );
 }
 
 /// Shared score-distribution report for the corpus-relative rules: total

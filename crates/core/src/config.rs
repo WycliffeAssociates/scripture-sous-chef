@@ -206,13 +206,14 @@ impl Default for PunctuationAdjacencyConfig {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default))]
 pub struct PunctuationSpacingConfig {
-    /// **The user-facing decision threshold** ("minimum convention dominance"):
-    /// emit a minority-form occurrence only when the opposite form's
-    /// *conservative* corpus share (a Wilson lower bound) is at least this
-    /// value. The finding's `score` is in the same unit, so `0.75` reads
-    /// literally as "flag only where the convention holds ≥75% of the time,
-    /// conservatively." Raising it surfaces less; it is **not** a sensitivity
-    /// dial (higher ⇒ fewer findings).
+    /// **The user-facing decision threshold**: emit a minority-form occurrence
+    /// only when its two-factor evidence — the majority form's *conservative*
+    /// dominance (a Wilson lower bound) **times** the minority form's rarity —
+    /// is at least this value. Before ADR 0050 the score was dominance alone
+    /// and this read as a literal convention share; now a strong convention
+    /// whose minority *recurs* is discounted by the rarity factor, so the floor
+    /// is a two-factor cutoff, not a share. Raising it surfaces less; it is
+    /// **not** a sensitivity dial (higher ⇒ fewer findings).
     pub emit_score_min: f32,
     /// Confidence `z` for the Wilson lower bound. Advanced calibration knob,
     /// kept configurable but omitted from normal UI: it sets how hard small
@@ -220,16 +221,38 @@ pub struct PunctuationSpacingConfig {
     /// seen a handful of times stays quiet until the evidence accumulates.
     /// `1.96` ≈ 95%.
     pub confidence_z: f32,
+    /// How many minority-form occurrences (beyond the first) drive the
+    /// **rarity** factor to zero — the recurrence knee that makes the score
+    /// two-factor: `score = dominance(majority) × rarity(minority)` where
+    /// `rarity = 1 − min(minority − 1, k) / k` (ADR 0050). A minority form seen
+    /// once is a rare slip against a strong convention (`rarity = 1`, surfaces);
+    /// a minority form that recurs at scale is the text's *second* convention
+    /// (`rarity → 0`, silent) — the resolution that separates ne_udb's 9
+    /// attached `!` (keep) from engwebster's spaced-`; : ? !` period typography
+    /// and kmr-IQ's 1,289 spaced ` ،` (silence). Linear knee, mirroring
+    /// `lex.repeated-character-run`'s `word_recurrence_k` (ADR 0028); sanitised
+    /// through `clamp_count`. Fixing minority occurrences *raises* the score of
+    /// the remaining ones (clean-as-you-go sharpens the signal) — desired.
+    pub minority_recurrence_k: f32,
 }
 
 impl Default for PunctuationSpacingConfig {
     fn default() -> Self {
         Self {
-            // Provisional (ADR 0029): flag a mark's minority spacing form once
-            // the majority form is conservatively ≥75% of that mark's
-            // word-adjacent occurrences. Frozen after corpus calibration.
-            emit_score_min: 0.75,
+            // Flag a mark's minority spacing form once the two-factor evidence
+            // (majority dominance × minority rarity) clears this bar. Lowered
+            // from ADR 0029's provisional 0.75 to 0.5 after the recurrence
+            // factor collapsed the mid-mass that had made 0.75 a volume policy
+            // rather than a truth cutoff (ADR 0050 / 2026-07-09 calibration).
+            emit_score_min: 0.5,
             confidence_z: 1.96,
+            // Recurrence knee (ADR 0050). 32 sits in the [28, 46] window that
+            // keeps ne_udb's 9-attached-`!` and 15-spaced-`,` slips alive
+            // (rarity 0.75 / 0.56) while silencing am's structurally identical
+            // 24-spaced-`፡` and every storm corpus's hundreds-to-thousands
+            // minority (engwebster, kmr-IQ, swe, or-ulb). Frozen 2026-07-09 —
+            // see the dated calibration note.
+            minority_recurrence_k: 32.0,
         }
     }
 }
