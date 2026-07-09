@@ -116,3 +116,46 @@ convention are exactly as loud as before. Confirmed.
 
 **FREEZE** `minority_recurrence_k = 32`, `emit_score_min = 0.5`,
 `confidence_z = 1.96`. Default-off unchanged (out of scope). See ADR 0050.
+
+## Addendum (same day): the volume-scaled knee (`minority_rate_per_10k`)
+
+Prompted by review: the frozen knee silences 15-of-10.9k and 24-of-14.5k
+minorities that a reviewer judges *worth surfacing* — and those are ~1.4/1k
+and ~1.7/1k, nearly the same **rate**, suggesting the tolerance should scale
+with the mark's opportunities.
+
+A fleet-wide per-mark decomposition (`--spacing` over all 1,504 corpora; 874
+`(corpus, mark)` pairs with a nonzero minority, 729 at dominance ≥ 0.9)
+confirmed it. The contested zone `minority ∈ [17, 64]` (79 pairs) splits by
+rate, not count:
+
+- **≤ 2/1k — slips on heavy marks (surface):** WA-pa-ulb `,` 17/37,928
+  (0.45/1k — the 2026-07-06 calibration's flagship finding, silenced by the
+  absolute knee), cmn-cu89s `，` 17/57,674, frasbl `,` 26/78,157,
+  WA-te-ulb `.` 31/55,298, WA-mr-ulb `.` 26/43,281.
+- **≥ 48/1k — mixed usage on thin marks (stay silent):** WA-or-ulb `!`
+  25/363 (69/1k), WA-kas-reg `؟` 52/832, sle `;` 38/630, mey `.` 47/809,
+  WA-am-ulb `፦` 44/911.
+
+Fleet-wide the slip cloud lives ≤ 2/1k and mixed usage ≥ 5/1k. With
+`K = k + r·N/10 000`, sweeping `r` against every pair (score = dominance ×
+rarity, floor 0.5):
+
+| k | r | surfaced occurrences | corpora | loudest |
+| --: | --: | --: | --: | --- |
+| 32 | 0 | 2,198 | 353 | tczchongthu 43 |
+| 32 | 20 | 3,425 | 364 | tczchongthu 123 |
+| **32** | **40** | **3,928** | **366** | WA-as-ulb 128 |
+| 32 | 60 | 4,857 | 366 | WA-as-ulb 211 |
+
+`r = 40` puts the large-`N` boundary at ~2/1k (the reviewer's 1.4–1.7/1k
+cases surface with margin: ne_udb `,` 0.56 → **0.81**, am `፡` 0.28 → **0.74**,
+pa `,` → **0.91**; ne_udb `?` is restored too), keeps every ≥5/1k mark silent
+(engwebster 16/1k, or-ulb 69/1k, kmr-IQ 114/1k → 0.0–0.25), and leaves the
+hapax control untouched (deutkw 1.000). `r = 60` starts admitting the 3–5/1k
+ambiguous band; `r = 20` still discounts slip-cloud members. Small-`N`
+behaviour is unchanged at any `r` (the term vanishes below `N ≈ 2k`).
+
+**FREEZE (amended):** `minority_recurrence_k = 32`,
+`minority_rate_per_10k = 40`, `emit_score_min = 0.5`, `confidence_z = 1.96`.
+Fleet surfaced volume 3,928 across 366 corpora; loudest corpus 128 — no storms.

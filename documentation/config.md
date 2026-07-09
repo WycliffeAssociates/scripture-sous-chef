@@ -396,10 +396,11 @@ as established → silent). **Looser:** lower `emit_score_min`.
 | knob | meaning |
 | --- | --- |
 | `emit_score_min` | the emission floor on the **two-factor** score (dominance × rarity). Before ADR 0050 the score was dominance alone and this read as a literal "≥ N% dominant" share; with the rarity factor folded in it is a two-factor cutoff. Default **0.5** (lowered from 0.75 once the recurrence knee collapsed the mid-mass — 2026-07-09 calibration) |
-| `minority_recurrence_k` | recurrence knee: how many minority-form occurrences (beyond the first) drive the rarity factor to zero. `rarity = 1 − min(minority − 1, k)/k`. A minority seen once is a rare slip (`rarity 1`); one recurring past `k` is the text's second convention (`rarity 0`, silent). Default **32** |
+| `minority_recurrence_k` | recurrence knee **base**: the tolerance at negligible volume, and the whole knee for thin marks. `rarity = 1 − min(minority − 1, K)/K` with `K = k + minority_rate_per_10k · N/10 000` over the mark's total occurrences `N`. A minority seen once is a rare slip (`rarity 1`); one recurring past `K` is the text's second convention (`rarity 0`, silent). Default **32** |
+| `minority_rate_per_10k` | the knee's opportunity-proportional allowance (ADR 0050 amendment): slips accumulate with volume, so at large `N` the flag boundary is a minority *rate* (~2 per 1k mark occurrences at the default) rather than a count. `0` disables (pure absolute knee). Default **40** |
 | `confidence_z` | Wilson lower-bound confidence — an **advanced** calibration knob (higher shrinks small samples harder toward "not yet a convention"); default 1.96. Omit from normal UI |
 
-`score = dominance(k_majority, N, confidence_z) × rarity(minority, k)` per mark
+`score = dominance(k_majority, N, confidence_z) × rarity(minority, K)` per mark
 (the Wilson lower bound × the recurrence knee, via `evidence.rs`), emitted only
 for **minority-form** occurrences (ADR 0029 + ADR 0050). Candidate marks are GC
 `Po` minus quotes (ADR 0033), not an ASCII list. Unlike the sibling rules there

@@ -224,16 +224,31 @@ pub struct PunctuationSpacingConfig {
     /// How many minority-form occurrences (beyond the first) drive the
     /// **rarity** factor to zero — the recurrence knee that makes the score
     /// two-factor: `score = dominance(majority) × rarity(minority)` where
-    /// `rarity = 1 − min(minority − 1, k) / k` (ADR 0050). A minority form seen
-    /// once is a rare slip against a strong convention (`rarity = 1`, surfaces);
-    /// a minority form that recurs at scale is the text's *second* convention
-    /// (`rarity → 0`, silent) — the resolution that separates ne_udb's 9
-    /// attached `!` (keep) from engwebster's spaced-`; : ? !` period typography
-    /// and kmr-IQ's 1,289 spaced ` ،` (silence). Linear knee, mirroring
-    /// `lex.repeated-character-run`'s `word_recurrence_k` (ADR 0028); sanitised
-    /// through `clamp_count`. Fixing minority occurrences *raises* the score of
-    /// the remaining ones (clean-as-you-go sharpens the signal) — desired.
+    /// `rarity = 1 − min(minority − 1, K) / K` and the effective knee
+    /// `K = minority_recurrence_k + minority_rate_per_10k · N / 10 000` scales
+    /// with the mark's total opportunities `N` (ADR 0050, amended same day).
+    /// A minority form seen once is a rare slip against a strong convention
+    /// (`rarity = 1`, surfaces); a minority form that recurs at scale is the
+    /// text's *second* convention (`rarity → 0`, silent) — the resolution that
+    /// separates ne_udb's 9 attached `!` (keep) from engwebster's spaced-
+    /// `; : ? !` period typography and kmr-IQ's 1,289 spaced ` ،` (silence).
+    /// Linear knee, mirroring `lex.repeated-character-run`'s
+    /// `word_recurrence_k` (ADR 0028); sanitised through `clamp_count`. Fixing
+    /// minority occurrences *raises* the score of the remaining ones
+    /// (clean-as-you-go sharpens the signal) — desired.
+    ///
+    /// This knob is the knee's **absolute base**: the tolerance at negligible
+    /// volume, and the whole tolerance for thin marks.
     pub minority_recurrence_k: f32,
+    /// The knee's **opportunity-proportional allowance** (ADR 0050 amendment):
+    /// slips accumulate with volume — a full Bible writes ~5× an NT's commas
+    /// and honestly accrues ~5× the spacing slips — so the knee grows as
+    /// `K = k + r · N / 10 000`. At the shipped values the large-`N` flag
+    /// boundary sits near **2 minority per 1 000 mark occurrences**: the fleet
+    /// slip cloud lives ≤ 2/1k, genuinely mixed usage ≥ 5/1k. Small-`N`
+    /// behaviour is unchanged (the term vanishes). `0` disables the term
+    /// (pure absolute knee).
+    pub minority_rate_per_10k: f32,
 }
 
 impl Default for PunctuationSpacingConfig {
@@ -246,13 +261,20 @@ impl Default for PunctuationSpacingConfig {
             // rather than a truth cutoff (ADR 0050 / 2026-07-09 calibration).
             emit_score_min: 0.5,
             confidence_z: 1.96,
-            // Recurrence knee (ADR 0050). 32 sits in the [28, 46] window that
-            // keeps ne_udb's 9-attached-`!` and 15-spaced-`,` slips alive
-            // (rarity 0.75 / 0.56) while silencing am's structurally identical
-            // 24-spaced-`፡` and every storm corpus's hundreds-to-thousands
-            // minority (engwebster, kmr-IQ, swe, or-ulb). Frozen 2026-07-09 —
-            // see the dated calibration note.
+            // Recurrence knee base (ADR 0050): the tolerance at negligible
+            // volume, and what thin marks get. 32 keeps ne_udb's
+            // 9-attached-`!` alive (N≈1.2k, K≈37) while excluding or-ulb's
+            // genuinely mixed 25-of-363 `!` (K≈33.5). Frozen 2026-07-09.
             minority_recurrence_k: 32.0,
+            // Opportunity-proportional allowance (ADR 0050 amendment, same
+            // day): K = 32 + 40·N/10k puts the large-N flag boundary at ~2
+            // minority per 1k mark occurrences — restoring the slip cloud the
+            // absolute knee wrongly silenced (pa_ulb's 17 spaced `,` of
+            // 37,928, the 2026-07-06 calibration's flagship finding, back at
+            // 0.91; am-ulb's 24 `፡` of 14,543 at 0.74) while every ≥5/1k
+            // mixed-usage mark stays silent (engwebster 16/1k, or-ulb 69/1k,
+            // kmr-IQ 114/1k — all score 0.0–0.25).
+            minority_rate_per_10k: 40.0,
         }
     }
 }

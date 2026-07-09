@@ -1009,16 +1009,22 @@ fn spacing_calib(dir: &Path, sweep: &[f32]) {
         );
     }
 
-    // rarity(minority, k) = 1 − min(minority−1, k)/k.
-    let rarity = |minority: u64, k: f64| -> f64 {
-        (1.0 - ((minority.saturating_sub(1) as f64) / k).clamp(0.0, 1.0)).clamp(0.0, 1.0)
+    // rarity(minority, N, k) with the volume-scaled knee
+    // K = k + rate·N/10k (ADR 0050 amendment); `rate` is the shipped default.
+    let rate = f64::from(PunctuationSpacingConfig::default().minority_rate_per_10k);
+    let rarity = |minority: u64, n: u64, k: f64| -> f64 {
+        let knee = k + rate * n as f64 / 10_000.0;
+        (1.0 - ((minority.saturating_sub(1) as f64) / knee).clamp(0.0, 1.0)).clamp(0.0, 1.0)
     };
 
-    println!("\nknee sweep — per-mark score = dominance × rarity(minority, k):");
+    println!(
+        "\nknee sweep — per-mark score = dominance × rarity(minority, K = k + {rate}·N/10k):"
+    );
     for r in rows.values() {
-        print!("  {:?} (min={:<5} dom={:.3}):", r.mark, r.minority, r.dominance);
+        let n = r.spaced + r.attached;
+        print!("  {:?} (min={:<5} N={:<7} dom={:.3}):", r.mark, r.minority, n, r.dominance);
         for &k in sweep {
-            let s = r.dominance * rarity(r.minority, k as f64);
+            let s = r.dominance * rarity(r.minority, n, k as f64);
             print!("  k{:.0}={:.3}", k, s);
         }
         println!();
@@ -1026,12 +1032,14 @@ fn spacing_calib(dir: &Path, sweep: &[f32]) {
 
     // Surfaced volume each (k, floor) pair would emit: a mark contributes all
     // `minority` of its minority-form occurrences iff its score clears the floor.
-    println!("\nsurfaced-occurrence volume by k and floor:");
+    println!("\nsurfaced-occurrence volume by k and floor (rate {rate}/10k):");
     println!("  {:>6}  {:>10}  {:>10}", "k", "floor 0.50", "floor 0.75");
     for &k in sweep {
         let vol = |floor: f64| -> u64 {
             rows.values()
-                .filter(|r| r.dominance * rarity(r.minority, k as f64) >= floor)
+                .filter(|r| {
+                    r.dominance * rarity(r.minority, r.spaced + r.attached, k as f64) >= floor
+                })
                 .map(|r| r.minority)
                 .sum()
         };
@@ -1045,8 +1053,9 @@ fn spacing_calib(dir: &Path, sweep: &[f32]) {
         .filter(|f| f.code == RuleId::PunctuationSpacingAnomaly)
         .count();
     println!(
-        "\nshipped default (k {}, floor {}, enabled) surfaces: {shipped}",
+        "\nshipped default (k {}, rate {}/10k, floor {}, enabled) surfaces: {shipped}",
         PunctuationSpacingConfig::default().minority_recurrence_k,
+        PunctuationSpacingConfig::default().minority_rate_per_10k,
         PunctuationSpacingConfig::default().emit_score_min,
     );
 }

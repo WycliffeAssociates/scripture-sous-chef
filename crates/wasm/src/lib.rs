@@ -69,7 +69,9 @@ pub struct PunctuationAdjacencyOverrides {
 /// Partial overrides for `punct.spacing-anomaly`'s knobs. Omitted fields keep
 /// core's defaults (ADR 0029, 0050): `emit_score_min` 0.5 (the emission floor
 /// on the two-factor score), `confidence_z` 1.96 (an advanced calibration
-/// knob), and `minority_recurrence_k` 32 (the recurrence knee).
+/// knob), `minority_recurrence_k` 32 (the recurrence knee's absolute base),
+/// and `minority_rate_per_10k` 40 (the knee's opportunity-proportional
+/// allowance: `K = k + r·N/10 000` over the mark's total occurrences `N`).
 #[derive(Deserialize, Tsify, Default)]
 #[tsify(from_wasm_abi)]
 pub struct PunctuationSpacingOverrides {
@@ -82,6 +84,9 @@ pub struct PunctuationSpacingOverrides {
     #[serde(default)]
     #[tsify(optional)]
     pub minority_recurrence_k: Option<f32>,
+    #[serde(default)]
+    #[tsify(optional)]
+    pub minority_rate_per_10k: Option<f32>,
 }
 
 /// Partial overrides for `lex.repeated-character-run`'s corpus-relative score.
@@ -252,6 +257,9 @@ fn build_config(config: Option<SousConfig>) -> Config {
             }
             if let Some(v) = p.minority_recurrence_k {
                 cfg.punctuation_spacing.minority_recurrence_k = v;
+            }
+            if let Some(v) = p.minority_rate_per_10k {
+                cfg.punctuation_spacing.minority_rate_per_10k = v;
             }
         }
         if let Some(r) = c.repeated_character_run {
@@ -487,6 +495,7 @@ mod tests {
                 emit_score_min: Some(0.6),
                 confidence_z: Some(2.2),
                 minority_recurrence_k: Some(40.0),
+                minority_rate_per_10k: Some(25.0),
             }),
             repeated_character_run: Some(RepeatedCharacterRunOverrides {
                 convention_rate_per_10k: Some(3.0),
@@ -520,6 +529,7 @@ mod tests {
         assert_eq!(cfg.punctuation_spacing.emit_score_min, 0.6);
         assert_eq!(cfg.punctuation_spacing.confidence_z, 2.2);
         assert_eq!(cfg.punctuation_spacing.minority_recurrence_k, 40.0);
+        assert_eq!(cfg.punctuation_spacing.minority_rate_per_10k, 25.0);
         assert_eq!(cfg.repeated_character_run.convention_rate_per_10k, 3.0);
         assert_eq!(cfg.repeated_character_run.word_recurrence_k, 7.0);
         assert_eq!(cfg.repeated_character_run.confidence_z, 1.5);

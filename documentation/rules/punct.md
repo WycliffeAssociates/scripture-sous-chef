@@ -163,7 +163,7 @@ scope.
 
 ## `punct.spacing-anomaly` — corpus-relative punctuation spacing
 
-> **Severity** Info · **Default** off · **Scope** stateful (aggregate-only) · **Knobs** `emit_score_min` (default 0.5), `confidence_z` (default 1.96), `minority_recurrence_k` (default 32) · **Source** `punctuation.rs` · **ADR** 0029, 0033, 0050
+> **Severity** Info · **Default** off · **Scope** stateful (aggregate-only) · **Knobs** `emit_score_min` (default 0.5), `confidence_z` (default 1.96), `minority_recurrence_k` (default 32), `minority_rate_per_10k` (default 40) · **Source** `punctuation.rs` · **ADR** 0029, 0033, 0050
 
 **Flags** — A separator-punctuation mark (GC `Po` minus quotes, ADR 0033 —
 `. , ; : ? !` and equally danda `।`, Arabic `۔ ، ؟ ؛`, Ethiopic `። ፤ ፥`,
@@ -200,14 +200,19 @@ minority-form occurrence is:
 
 ```
 dominance = wilson_lower_bound(max(spaced, attached), N, confidence_z)
-rarity    = 1 − min(minority − 1, k) / k        (k = minority_recurrence_k)
+K         = minority_recurrence_k + minority_rate_per_10k · N / 10 000
+rarity    = 1 − min(minority − 1, K) / K
 score     = dominance × rarity
 ```
 
 - **dominance** (ADR 0029) is the conservative share held by the *opposing*
   convention, equivalently `1 − upper_bound(minority_share)`. Confidence-monotone:
   at a fixed ratio it rises with `N` toward the observed rate.
-- **rarity** (ADR 0050) is a linear recurrence knee on the minority count — the
+- **rarity** (ADR 0050, volume-scaled by the same-day amendment) is a linear
+  recurrence knee on the minority count whose width grows with the mark's
+  volume: slips accumulate with opportunities, so at large `N` the flag
+  boundary is a minority *rate* (≈2 per 1k mark occurrences at the defaults),
+  while thin marks get the absolute base `k` alone — the
   same shape `lex.repeated-character-run` uses for `word_recurrence_k`. A minority
   seen once is `rarity = 1` (a rare slip against a strong convention); a minority
   recurring past `k` is `rarity = 0` (a second convention, silent).

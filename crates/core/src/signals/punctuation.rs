@@ -533,6 +533,7 @@ impl StatefulRule for PunctuationSpacingAnomaly {
 
         let z = clamp_z(self.cfg.confidence_z);
         let minority_k = clamp_count(self.cfg.minority_recurrence_k);
+        let minority_rate = clamp_count(self.cfg.minority_rate_per_10k);
         let floor = f64::from(clamp_unit(self.cfg.emit_score_min));
 
         // A mark's verdict (which form is minority, the majority's conservative
@@ -540,7 +541,9 @@ impl StatefulRule for PunctuationSpacingAnomaly {
         // one of its occurrences, so compute it once per mark.
         let verdicts: BTreeMap<char, MarkVerdict> = totals
             .iter()
-            .filter_map(|(&mark, &c)| mark_verdict(c, z, minority_k).map(|v| (mark, v)))
+            .filter_map(|(&mark, &c)| {
+                mark_verdict(c, z, minority_k, minority_rate).map(|v| (mark, v))
+            })
             .collect();
 
         // Recover spans (aggregate-only state holds none): from the forwarded
@@ -630,22 +633,35 @@ struct MarkVerdict {
 ///   *conservative convention dominance* of the majority form, equivalently
 ///   `1 − upper_bound(minority_share)`. Confidence-monotone: at a fixed ratio
 ///   it rises with `N` toward the observed rate.
-/// - `rarity = 1 − min(minority − 1, k) / k` over the minority count
+/// - `rarity = 1 − min(minority − 1, K) / K` over the minority count
 ///   `minority = min(spaced, attached)` — a linear recurrence knee (ADR 0028's
-///   shape). A minority seen once is `rarity = 1` (a rare slip); a minority
-///   recurring `≥ k + 1` times is `rarity = 0` (a second convention). This is
-///   why removing minority occurrences *raises* the surviving ones' score —
-///   clean-as-you-go sharpens the signal (ADR 0050).
-fn mark_verdict(c: SpacingCounts, z: f64, minority_k: f64) -> Option<MarkVerdict> {
+///   shape) whose width scales with the mark's volume:
+///   `K = minority_k + rate_per_10k · N / 10 000` (ADR 0050 amendment). Slips
+///   accumulate with opportunities — a corpus writing 5× the commas honestly
+///   accrues ~5× the comma slips — so at large `N` the flag boundary is a
+///   minority *rate* (≈ 2/1k at the shipped knobs), while at small `N` the
+///   base `minority_k` alone decides and behaviour matches the pure absolute
+///   knee. A minority seen once is `rarity = 1` (a rare slip); a minority
+///   recurring past `K` is `rarity = 0` (a second convention). Removing
+///   minority occurrences *raises* the surviving ones' score — the minority
+///   count falls linearly while `K` shrinks only by `rate/10 000` per removed
+///   occurrence — so clean-as-you-go sharpens the signal (ADR 0050).
+fn mark_verdict(
+    c: SpacingCounts,
+    z: f64,
+    minority_k: f64,
+    rate_per_10k: f64,
+) -> Option<MarkVerdict> {
     let n = c.spaced + c.attached;
     if n == 0 || c.spaced == c.attached {
         return None;
     }
     let dominance = dominance(c.spaced.max(c.attached), n, z);
     let minority = c.spaced.min(c.attached);
-    // Linear recurrence knee (mirrors `lex.repeated-character-run`): the first
-    // occurrence is free, each further one erodes rarity, saturating at `k`.
-    let recurrence = (minority.saturating_sub(1) as f64 / minority_k).clamp(0.0, 1.0);
+    // Volume-scaled linear recurrence knee: the first occurrence is free, each
+    // further one erodes rarity, saturating at `K`.
+    let knee = minority_k + rate_per_10k * n as f64 / 10_000.0;
+    let recurrence = (minority.saturating_sub(1) as f64 / knee).clamp(0.0, 1.0);
     let rarity = 1.0 - recurrence;
     Some(MarkVerdict {
         minority_is_spaced: c.spaced < c.attached,
@@ -1210,10 +1226,10 @@ mod tests {
         // z = 0 ⇒ the Wilson lower bound is the observed rate, so the dominance
         // factor is exactly the majority share and the threshold has literal
         // units. (WIDE_K neutralises the rarity factor for this dominance test.)
-        let v = mark_verdict(SpacingCounts { spaced: 25, attached: 75 }, 0.0, WIDE_K).unwrap();
+        let v = mark_verdict(SpacingCounts { spaced: 25, attached: 75 }, 0.0, WIDE_K, 0.0).unwrap();
         assert!(v.minority_is_spaced, "spaced (25) is the minority of 25:75");
         assert!((v.dominance - 0.75).abs() < 1e-9, "75:25 → 0.75, got {}", v.dominance);
-        let v2 = mark_verdict(SpacingCounts { spaced: 26, attached: 74 }, 0.0, WIDE_K).unwrap();
+        let v2 = mark_verdict(SpacingCounts { spaced: 26, attached: 74 }, 0.0, WIDE_K, 0.0).unwrap();
         assert!((v2.dominance - 0.74).abs() < 1e-9, "74:26 → 0.74, got {}", v2.dominance);
     }
 
@@ -1223,9 +1239,9 @@ mod tests {
         // ~76% majority's dominance factor scores higher as N grows, toward the
         // observed rate. (Isolated from rarity via WIDE_K.)
         let z = 1.96;
-        let a = mark_verdict(SpacingCounts { spaced: 9, attached: 29 }, z, WIDE_K).unwrap().dominance;
-        let b = mark_verdict(SpacingCounts { spaced: 90, attached: 290 }, z, WIDE_K).unwrap().dominance;
-        let c = mark_verdict(SpacingCounts { spaced: 900, attached: 2900 }, z, WIDE_K).unwrap().dominance;
+        let a = mark_verdict(SpacingCounts { spaced: 9, attached: 29 }, z, WIDE_K, 0.0).unwrap().dominance;
+        let b = mark_verdict(SpacingCounts { spaced: 90, attached: 290 }, z, WIDE_K, 0.0).unwrap().dominance;
+        let c = mark_verdict(SpacingCounts { spaced: 900, attached: 2900 }, z, WIDE_K, 0.0).unwrap().dominance;
         assert!(a < b && b < c, "dominance must rise with N: {a} < {b} < {c}");
         assert!(c < 29.0 / 38.0, "stays below the observed majority rate 0.763");
     }
@@ -1233,9 +1249,9 @@ mod tests {
     #[test]
     fn ties_have_no_verdict() {
         let k = 24.0;
-        assert!(mark_verdict(SpacingCounts { spaced: 1, attached: 1 }, 1.96, k).is_none());
-        assert!(mark_verdict(SpacingCounts { spaced: 20, attached: 20 }, 1.96, k).is_none());
-        assert!(mark_verdict(SpacingCounts { spaced: 0, attached: 0 }, 1.96, k).is_none());
+        assert!(mark_verdict(SpacingCounts { spaced: 1, attached: 1 }, 1.96, k, 0.0).is_none());
+        assert!(mark_verdict(SpacingCounts { spaced: 20, attached: 20 }, 1.96, k, 0.0).is_none());
+        assert!(mark_verdict(SpacingCounts { spaced: 0, attached: 0 }, 1.96, k, 0.0).is_none());
     }
 
     // ── recurrence rarity factor (ADR 0050) ─────────────────────────────
@@ -1248,9 +1264,9 @@ mod tests {
         // at scale is a second convention and collapses toward silence.
         let z = 1.96;
         let k = 24.0;
-        let s1 = mark_verdict(SpacingCounts { spaced: 1, attached: 200 }, z, k).unwrap();
-        let s8 = mark_verdict(SpacingCounts { spaced: 8, attached: 1600 }, z, k).unwrap();
-        let s500 = mark_verdict(SpacingCounts { spaced: 500, attached: 100_000 }, z, k).unwrap();
+        let s1 = mark_verdict(SpacingCounts { spaced: 1, attached: 200 }, z, k, 0.0).unwrap();
+        let s8 = mark_verdict(SpacingCounts { spaced: 8, attached: 1600 }, z, k, 0.0).unwrap();
+        let s500 = mark_verdict(SpacingCounts { spaced: 500, attached: 100_000 }, z, k, 0.0).unwrap();
         // Dominance stays high and comparable across the three (rises slightly
         // with N) — it is the rarity factor that moves the score.
         assert!(s1.dominance > 0.9 && s500.dominance > 0.9);
@@ -1268,12 +1284,36 @@ mod tests {
         let z = 0.0; // observed rate, so dominance is legible
         let k = 24.0;
         // 25:2400 → minority 25 = k+1 → rarity 0.
-        let at_knee = mark_verdict(SpacingCounts { spaced: 25, attached: 2400 }, z, k).unwrap();
+        let at_knee = mark_verdict(SpacingCounts { spaced: 25, attached: 2400 }, z, k, 0.0).unwrap();
         assert_eq!(at_knee.score, 0.0, "minority == k+1 ⇒ rarity 0");
         // 24:2400 → minority 24 = k → rarity = 1 − 23/24 = 1/24.
-        let below = mark_verdict(SpacingCounts { spaced: 24, attached: 2400 }, z, k).unwrap();
+        let below = mark_verdict(SpacingCounts { spaced: 24, attached: 2400 }, z, k, 0.0).unwrap();
         let expected = below.dominance * (1.0 / 24.0);
         assert!((below.score - expected).abs() < 1e-9, "one below the knee is dominance/k");
+    }
+
+    #[test]
+    fn the_knee_widens_with_mark_volume() {
+        // ADR 0050 amendment: slips accumulate with opportunities, so the same
+        // minority count that reads as a second convention on a thin mark reads
+        // as accumulated slips on a heavy one. Same minority (17), same ~0.999
+        // dominance ratio class; only the mark's total volume differs. With the
+        // rate term the heavy mark surfaces (K = 32 + 40·38k/10k ≈ 184,
+        // rarity ≈ 0.91 — pa_ulb's flagship spaced commas) while the thin mark
+        // stays discounted.
+        let z = 1.96;
+        let heavy =
+            mark_verdict(SpacingCounts { spaced: 17, attached: 38_000 }, z, 32.0, 40.0).unwrap();
+        let thin =
+            mark_verdict(SpacingCounts { spaced: 17, attached: 380 }, z, 32.0, 40.0).unwrap();
+        assert!(heavy.score > 0.85, "17 slips among 38k opportunities stay loud: {}", heavy.score);
+        assert!(thin.score < heavy.score, "the same count on a thin mark is discounted");
+        // With the rate term disabled the heavy mark collapses to the pure
+        // absolute knee — the pre-amendment behaviour that wrongly silenced
+        // the large-N slip cloud.
+        let absolute =
+            mark_verdict(SpacingCounts { spaced: 17, attached: 38_000 }, z, 32.0, 0.0).unwrap();
+        assert!(absolute.score < 0.51, "rate 0 reproduces the pure absolute knee");
     }
 
     // ── corpus behaviour ────────────────────────────────────────────────
@@ -1459,6 +1499,7 @@ mod tests {
             emit_score_min: f32::NAN,
             confidence_z: f32::INFINITY,
             minority_recurrence_k: f32::NAN,
+            minority_rate_per_10k: f32::NAN,
         };
         for f in sp_run(&marks(3, 100), &sp_rule(cfg)) {
             let s = f.score.unwrap();

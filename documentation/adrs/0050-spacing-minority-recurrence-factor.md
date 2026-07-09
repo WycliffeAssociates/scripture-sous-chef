@@ -152,3 +152,45 @@ any mid-mass volume — there is none left to admit.
 
 See the [2026-07-09 calibration report](../calibration/2026-07-09-spacing-minority-recurrence.md)
 for the full sweep tables and frozen knobs.
+
+## Amendment (2026-07-09, same day): the knee scales with mark volume
+
+A fleet-wide per-mark decomposition (all 1,504 corpora; every `(corpus, mark)`
+pair with a nonzero minority, 729 of them at dominance ≥ 0.9) showed the pure
+absolute knee fails in the contested zone `minority ∈ [17, 64]`, which is
+**not homogeneous**. Its low-*rate* end is unambiguous slips on high-volume
+marks — led by WA-pa-ulb's 17 spaced `,` of 37,928 (0.45/1k, dominance 0.999),
+the **flagship genuine-slip finding of the original 2026-07-06 calibration**,
+which the absolute knee silenced — while its high-rate end is genuinely mixed
+usage on thin marks (WA-or-ulb `!`, 25 of 363 = 69/1k) that must stay silent.
+Absolute count cannot separate these populations; **minority rate can**: the
+fleet slip cloud lives ≤ 2/1k, mixed usage ≥ 5/1k. Slips accumulate with
+opportunities — a full Bible writes ~5× an NT's commas and honestly accrues
+~5× the comma slips. This is also why the k window above was pinched to
+[28, 46]: it was asked to split two marks (ne_udb `,` at 1.4/1k, am `፡` at
+1.7/1k) that are members of the *same* slip population — a keep/silence
+boundary was drawn through a cloud, not between clouds.
+
+**Decision:** the knee gains an opportunity-proportional term —
+
+```
+K      = minority_recurrence_k + minority_rate_per_10k · N / 10 000
+rarity = 1 − min(minority − 1, K) / K
+```
+
+— over the mark's total opportunities `N`. New knob `minority_rate_per_10k`,
+default **40** (`0` restores the pure absolute knee). At small `N` the term
+vanishes, so every small-`N` behaviour frozen above is unchanged (the ne_udb
+`!` anchor, the or-ulb exclusion, all synthetic tests); at large `N` the flag
+boundary becomes a minority *rate* of ≈ 2/1k. Base `k = 32` and floor `0.5`
+unchanged.
+
+Validated on the same fleet decomposition: pa `,` restored at **0.91**;
+am `፡` (24 of 14,543) at **0.74** and ne_udb `,` up from 0.56 to **0.81** —
+the "collision" dissolves, and the ne_udb `?` casualty above is likewise
+restored; deutkw's hapax control unchanged at 1.000. The silences hold:
+engwebster (16/1k), or-ulb (69/1k), kmr-IQ (114/1k) all score 0.0–0.25. Fleet
+surfaced volume **2,198 → 3,928** across 366 corpora, loudest corpus 128
+findings — no storms. Clean-as-you-go is preserved: removing a minority
+occurrence lowers the numerator by 1 while shrinking `K` by only
+`rate / 10 000`.
