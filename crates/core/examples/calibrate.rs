@@ -1170,8 +1170,30 @@ const CURRENT_FLOOR: f64 = 0.98;
 const ABS_KS: [f64; 5] = [8.0, 16.0, 32.0, 64.0, 128.0];
 /// Rate-scaled knee sweep (minority per 1k opportunities).
 const RATE_KS: [f64; 6] = [0.5, 1.0, 2.0, 4.0, 8.0, 16.0];
-/// Emission-floor sweep.
-const FLOORS: [f64; 8] = [0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.98];
+/// Emission-floor sweep (0.95 added for the floor-decision packet's candidate
+/// band, between 0.90 and the current rule's 0.98).
+const FLOORS: [f64; 9] = [0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.98];
+
+/// The floor-decision packet's candidate floors and knees, and the named
+/// review anchors tracked across it. Each anchor is `(corpus, sid, lowercased
+/// word)` — the spike-review true/false positives whose post-hyphen-fix fate
+/// the packet reports per floor.
+const PACKET_FLOORS: [f64; 4] = [0.80, 0.90, 0.95, 0.98];
+const PACKET_KS: [f64; 3] = [8.0, 16.0, 32.0];
+const ANCHORS: &[(&str, &str, &str)] = &[
+    ("swhulb", "LUK 8:44", "yesu"),         // TP
+    ("WA-fr-ulb", "JHN 13:2", "jésus"),     // TP
+    ("spaRV1909", "1SA 7:8", "filisteos"),  // TP (corpus-consistency)
+    ("vie1934", "MAT 24:24", "christ"),     // probable TP
+    ("eng-web", "3MA 6:9", "gentiles"),     // TP-ish
+    ("fraLSG", "ACT 19:13", "juifs"),       // FP (French adjective)
+    ("porblt", "MAT 24:24", "messias"),     // FP (generic plural)
+    ("deu1912", "PHM 1:9", "alter"),        // FP (adj/noun homograph)
+    ("ind", "DEU 14:12", "rajawali"),       // FP (list colon, positional)
+    ("nld", "GEN 6:19", "mannetje"),        // FP (list colon, positional)
+    ("WA-en-ulb", "LAM 1:22", "deal"),      // TP (positional)
+    ("eng-kjv", "SIR 7:5", "justify"),      // TP (positional, cross-verse seam)
+];
 
 /// Wilson score-interval lower bound of `k/n` at confidence `z` — the harness
 /// copy of `evidence::dominance` (crate-private, so re-derived here for the
@@ -1311,6 +1333,40 @@ struct CasingSample {
     ctx: String,
 }
 
+/// One tracked review anchor's post-fix components (packet item 2). Both
+/// channels' factors are kept so the surfacing score is recomputable at any k.
+#[derive(Clone)]
+struct AnchorHit {
+    corpus: String,
+    sid: String,
+    word: String,
+    quad: &'static str,
+    intr_dom: f64,
+    intr_min: u64,
+    intr_opp: u64,
+    pos_dom: f64,
+    pos_min: u64,
+    pos_opp: u64,
+}
+
+impl AnchorHit {
+    /// Surfacing score at absolute knee `k`: the channel this site surfaces on
+    /// (both → the louder), mirroring `SiteScore::score`.
+    fn score(&self, k: f64) -> f64 {
+        let intr = if self.quad == "positional" {
+            0.0
+        } else {
+            self.intr_dom * rarity_abs(self.intr_min, k)
+        };
+        let pos = if self.quad == "intrinsic" {
+            0.0
+        } else {
+            self.pos_dom * rarity_abs(self.pos_min, k)
+        };
+        intr.max(pos)
+    }
+}
+
 /// The full per-corpus casing spike result. Aggregate grids/histograms are
 /// fleet-summable; `samples` is bounded per corpus.
 struct CasingCorpus {
@@ -1328,7 +1384,14 @@ struct CasingCorpus {
     shadow_tokens: u64,
     // sweep grids, surfaced distinct sites, [knee][floor]
     abs_grid: Vec<[u64; FLOORS.len()]>,
+    // per-channel splits of `abs_grid`, keyed by the site's quadrant (packet
+    // item 1) — same [knee][floor] shape.
+    abs_grid_intr: Vec<[u64; FLOORS.len()]>,
+    abs_grid_pos: Vec<[u64; FLOORS.len()]>,
+    abs_grid_both: Vec<[u64; FLOORS.len()]>,
     rate_grid: Vec<[u64; FLOORS.len()]>,
+    // named review anchors seen in this corpus (packet item 2).
+    anchors: Vec<AnchorHit>,
     // score histogram at the reference knee (all lowercase sites), 40 buckets
     hist: [u64; 40],
     // reference-setting counts (abs k=32, floor 0.5, hard censoring)
@@ -1526,7 +1589,12 @@ fn analyze_casing(id: String, map: &VerseMap) -> CasingCorpus {
     // ── Judge pass: classify every lowercase site, sweep, histogram, samples,
     // hard-vs-soft, current-rule fate.
     let mut abs_grid = vec![[0u64; FLOORS.len()]; ABS_KS.len()];
+    let mut abs_grid_intr = vec![[0u64; FLOORS.len()]; ABS_KS.len()];
+    let mut abs_grid_pos = vec![[0u64; FLOORS.len()]; ABS_KS.len()];
+    let mut abs_grid_both = vec![[0u64; FLOORS.len()]; ABS_KS.len()];
     let mut rate_grid = vec![[0u64; FLOORS.len()]; RATE_KS.len()];
+    let mut anchors: Vec<AnchorHit> = Vec::new();
+    let anchor_corpus = ANCHORS.iter().any(|a| a.0 == id);
     let mut hist = [0u64; 40];
     let mut ref_surfaced = 0u64;
     let (mut ref_intrinsic, mut ref_positional, mut ref_both) = (0u64, 0u64, 0u64);
@@ -1601,6 +1669,45 @@ fn analyze_casing(id: String, map: &VerseMap) -> CasingCorpus {
             .map(|s| s.score(false, REF_ABS_K).0 >= REF_FLOOR)
             .unwrap_or(false);
 
+        // Named-anchor capture (packet item 2): record even when the site is
+        // not a clean anomaly candidate, so an anchor that dies as
+        // unclassifiable is still visible.
+        if anchor_corpus {
+            let sid_s = o.sid.to_string();
+            let word_l = map[&o.sid][o.start as usize..o.end as usize].to_lowercase();
+            if ANCHORS
+                .iter()
+                .any(|&(ac, asid, aw)| ac == id && asid == sid_s && aw == word_l)
+            {
+                let (quad, id_dom, i_min, i_opp, p_dom, p_min, p_opp) = match &site {
+                    Some(s) => (
+                        s.quad, s.intr_dom, s.intr_min, s.intr_opp, s.pos_dom, s.pos_min, s.pos_opp,
+                    ),
+                    None => (
+                        "unclassified",
+                        p.cap_dom_hard(),
+                        p.total_lower() as u64,
+                        p.total() as u64,
+                        glyph_dom,
+                        p.for_lo as u64,
+                        p.for_total() as u64,
+                    ),
+                };
+                anchors.push(AnchorHit {
+                    corpus: id.clone(),
+                    sid: sid_s,
+                    word: word_l,
+                    quad,
+                    intr_dom: id_dom,
+                    intr_min: i_min,
+                    intr_opp: i_opp,
+                    pos_dom: p_dom,
+                    pos_min: p_min,
+                    pos_opp: p_opp,
+                });
+            }
+        }
+
         let Some(site) = site else {
             if soft_surf {
                 hard_soft_diff += 1; // surfaced under soft only
@@ -1627,6 +1734,11 @@ fn analyze_casing(id: String, map: &VerseMap) -> CasingCorpus {
                 for (fi, &fl) in FLOORS.iter().enumerate() {
                     if s >= fl {
                         abs_grid[ki][fi] += 1;
+                        match site.quad {
+                            "intrinsic" => abs_grid_intr[ki][fi] += 1,
+                            "positional" => abs_grid_pos[ki][fi] += 1,
+                            _ => abs_grid_both[ki][fi] += 1,
+                        }
                     }
                 }
             }
@@ -1689,7 +1801,11 @@ fn analyze_casing(id: String, map: &VerseMap) -> CasingCorpus {
         shadow_types,
         shadow_tokens,
         abs_grid,
+        abs_grid_intr,
+        abs_grid_pos,
+        abs_grid_both,
         rate_grid,
+        anchors,
         hist,
         ref_surfaced,
         ref_intrinsic,
@@ -2094,6 +2210,133 @@ fn casing_fleet(dir: &Path) {
                 sm.sid, sm.quad, sm.word, glyph_str(sm.glyph),
                 sm.dom, sm.minority, sm.opps, sm.rarity, sm.score, sm.ctx,
             );
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // FLOOR-DECISION PACKET — the settled design (absolute knee, soft
+    // censoring, all marks kept, default-off) leaves per-channel floors and k
+    // open. These sections size that choice: per-channel volume, tracked
+    // anchors, near-floor review samples, and the German/Danish noun storm.
+    // ═══════════════════════════════════════════════════════════════════════
+    let ki_of = |k: f64| ABS_KS.iter().position(|&x| (x - k).abs() < 1e-9).unwrap();
+    let fi_of = |f: f64| FLOORS.iter().position(|&x| (x - f).abs() < 1e-9).unwrap();
+
+    println!("\n════════ FLOOR-DECISION PACKET (post-hyphen-fix) ════════");
+
+    // Packet 1 — per-channel surfaced volume, affected corpora, top-5 share.
+    let channel_cell = |chan: u8, ki: usize, fi: usize| -> (u64, u32, f64) {
+        let mut counts: Vec<u64> = corpora
+            .iter()
+            .map(|c| {
+                let g = match chan {
+                    0 => &c.abs_grid_intr,
+                    1 => &c.abs_grid_pos,
+                    _ => &c.abs_grid_both,
+                };
+                g[ki][fi]
+            })
+            .filter(|&n| n > 0)
+            .collect();
+        let total: u64 = counts.iter().sum();
+        let affected = counts.len() as u32;
+        counts.sort_unstable_by(|a, b| b.cmp(a));
+        let top5: u64 = counts.iter().take(5).sum();
+        (total, affected, if total > 0 { top5 as f64 / total as f64 } else { 0.0 })
+    };
+    println!(
+        "\n-- packet 1: per-channel surfaced volume | rows = floor, cols = k | total (affected corpora; top-5 share) --"
+    );
+    for (chan, name) in [(0u8, "intrinsic"), (1, "positional"), (2, "both-quadrant")] {
+        println!("  [{name}]");
+        print!("    {:>6}", "fl\\k");
+        for k in PACKET_KS {
+            print!("  {:>22}", format!("k={k:.0}"));
+        }
+        println!();
+        for &fl in &PACKET_FLOORS {
+            print!("    {fl:>6.2}");
+            for &k in &PACKET_KS {
+                let (t, a, s) = channel_cell(chan, ki_of(k), fi_of(fl));
+                print!("  {:>22}", format!("{t} ({a}; {:.0}%)", s * 100.0));
+            }
+            println!();
+        }
+    }
+
+    // Packet 2 — named anchor fates.
+    let all_anchors: Vec<&AnchorHit> = corpora.iter().flat_map(|c| c.anchors.iter()).collect();
+    println!("\n-- packet 2: anchor fates (post-fix) — channel factors, score@k, alive floors at k=32 --");
+    for &(ac, asid, aw) in ANCHORS {
+        match all_anchors
+            .iter()
+            .find(|h| h.corpus == ac && h.sid == asid && h.word == aw)
+        {
+            Some(h) => {
+                let (s8, s16, s32) = (h.score(8.0), h.score(16.0), h.score(32.0));
+                let alive: Vec<String> = PACKET_FLOORS
+                    .iter()
+                    .filter(|&&fl| s32 >= fl)
+                    .map(|fl| format!("{fl:.2}"))
+                    .collect();
+                println!(
+                    "  {:<11} {:<9} {:<11} {:<12} i(d{:.3} m{} o{}) p(d{:.3} m{} o{})  s@8={:.3} @16={:.3} @32={:.3}  alive≥[{}]",
+                    ac, asid, aw, h.quad,
+                    h.intr_dom, h.intr_min, h.intr_opp,
+                    h.pos_dom, h.pos_min, h.pos_opp,
+                    s8, s16, s32,
+                    if alive.is_empty() { "dead@0.80+".to_string() } else { alive.join(",") },
+                );
+            }
+            None => println!(
+                "  {ac:<11} {asid:<9} {aw:<11} — not captured (not a lowercase anomaly candidate post-fix)"
+            ),
+        }
+    }
+
+    // Packet 3 — near-floor review samples from major corpora (0.90 / 0.95 bands).
+    println!("\n-- packet 3: near-floor surfaced samples from major corpora --");
+    for (lo, hi, label) in [(0.88_f64, 0.915_f64, "0.90 band"), (0.94, 0.965, "0.95 band")] {
+        let mut band: Vec<(&str, &CasingSample)> = Vec::new();
+        for c in &corpora {
+            if !MAJOR.contains(&c.id.as_str()) {
+                continue;
+            }
+            for s in &c.samples {
+                if s.score >= lo && s.score <= hi {
+                    band.push((c.id.as_str(), s));
+                }
+            }
+        }
+        band.sort_by(|a, b| b.1.score.partial_cmp(&a.1.score).unwrap());
+        band.truncate(12);
+        println!("  [{label}]  ({} shown)", band.len());
+        for (cid, s) in &band {
+            println!(
+                "    {:<12} {:<9} {:<11} [{}] g={} dom={:.3} min={} opp={} score={:.3} | {}",
+                cid, s.sid, s.quad, s.word, glyph_str(s.glyph),
+                s.dom, s.minority, s.opps, s.score, s.ctx,
+            );
+        }
+    }
+
+    // Packet 4 — German/Danish noun storm: surfaced count by floor at k=32.
+    println!("\n-- packet 4: German/Danish noun-storm — surfaced count by floor (k=32) --");
+    print!("  {:<10}", "corpus");
+    print!("  {:>7}", "0.50");
+    for &fl in &PACKET_FLOORS {
+        print!("  {:>7}", format!("{fl:.2}"));
+    }
+    println!();
+    for id in ["dan1931", "deutkw", "deu1912"] {
+        if let Some(c) = corpora.iter().find(|c| c.id == id) {
+            let ki = ki_of(32.0);
+            print!("  {id:<10}");
+            print!("  {:>7}", c.abs_grid[ki][fi_of(0.5)]);
+            for &fl in &PACKET_FLOORS {
+                print!("  {:>7}", c.abs_grid[ki][fi_of(fl)]);
+            }
+            println!();
         }
     }
 }

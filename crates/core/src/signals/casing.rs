@@ -380,9 +380,10 @@ pub enum PosClassExperimental {
     Midflow,
 }
 
-/// One word (letter-run) observation: its byte span within its verse, its
-/// structural position class, and its first-letter case. The `calibrate`
-/// harness folds `text[start..end]` for the lexicon key.
+/// One word observation — a UAX #29 word token (repo `token::tokenize`), with
+/// hyphenated compounds merged (see [`walk_book_experimental`]): its byte span
+/// within its verse, its structural position class, and its first-letter case.
+/// The `calibrate` harness folds `text[start..end]` for the lexicon key.
 #[derive(Debug, Clone)]
 pub struct WordObsExperimental {
     pub sid: Sid,
@@ -392,90 +393,136 @@ pub struct WordObsExperimental {
     pub case: FirstCaseExperimental,
 }
 
+/// True iff `c` is a cased/uncased letter (GC L*) — the terminal machine's
+/// "letter", and the flank test for a word-internal hyphen.
+fn is_letter_experimental(c: char) -> bool {
+    crate::charclass::class_of(c).is_alphabetic()
+}
+
+/// The verse's word units: UAX #29 word tokens (repo `token::tokenize`), then
+/// adjacent tokens joined across a single word-internal hyphen (U+002D or
+/// U+2010 flanked by a letter on both sides) merged into one span. UAX #29
+/// keeps apostrophes word-internal (Swahili `ng'ombe` is one token) but SPLITS
+/// at hyphens, so a compound like `Bar-jesus` would otherwise surface its tail
+/// as a spurious lowercase word — the merge restores it as one word whose first
+/// letter is `B`. Pure-number tokens (no letter) carry no casing evidence and
+/// are dropped.
+fn compound_words_experimental(text: &str) -> Vec<Span> {
+    let mut out: Vec<Span> = Vec::new();
+    for t in crate::token::tokenize(text) {
+        if let Some(prev) = out.last_mut() {
+            let gap = &text[prev.end..t.span.start];
+            let mut g = gap.chars();
+            let hyphen = matches!(g.next(), Some('\u{002D}' | '\u{2010}')) && g.next().is_none();
+            if hyphen
+                && text[..prev.end].chars().next_back().is_some_and(is_letter_experimental)
+                && text[t.span.start..].chars().next().is_some_and(is_letter_experimental)
+            {
+                prev.end = t.span.end;
+                continue;
+            }
+        }
+        out.push(t.span);
+    }
+    out.retain(|s| text[s.start..s.end].chars().any(is_letter_experimental));
+    out
+}
+
+/// Advance `walk_book`'s terminal state machine over a gap between words (all
+/// non-word scalars): the first punctuation after a letter is the candidate
+/// terminal, later punctuation before the next word marks the boundary
+/// *intervening*, whitespace/digits are transparent. Gaps hold no letters (a
+/// lone letter is its own UAX word), but the letter arm keeps the invariant
+/// explicit and matches `walk_book`.
+fn advance_gap_experimental(gap: &str, pending: &mut Option<(char, bool)>, prev_letter: &mut bool) {
+    for c in gap.chars() {
+        let cl = crate::charclass::class_of(c);
+        if cl.is_whitespace() || cl.is_numeric() {
+            *prev_letter = false;
+        } else if cl.is_alphabetic() {
+            *prev_letter = true;
+        } else {
+            match pending {
+                Some((_, intervening)) => *intervening = true,
+                None if *prev_letter => *pending = Some((c, false)),
+                None => {}
+            }
+            *prev_letter = false;
+        }
+    }
+}
+
 /// Walk one book's verses in canonical order, emitting one
-/// [`WordObsExperimental`] per letter-run word. Reuses `walk_book`'s exact
-/// pending-terminal state machine — the first punctuation after a letter is the
-/// candidate terminal, later punctuation before the next letter marks the
-/// boundary *intervening*, whitespace/digits are transparent, and the pending
-/// terminal (and only it) carries across the verse seam. A word cannot span a
-/// seam (verse texts are separate strings), so an in-progress word closes at
-/// each verse's end. The book-initial word is forced.
+/// [`WordObsExperimental`] per word — the UAX #29 word unit
+/// ([`compound_words_experimental`]), not a bare letter-run, so hyphenated
+/// compounds stay whole. Reuses `walk_book`'s exact pending-terminal state
+/// machine over the gaps between words: the first punctuation after a letter is
+/// the candidate terminal, later punctuation marks the boundary *intervening*,
+/// whitespace/digits are transparent, and the pending terminal (and only it)
+/// carries across the verse seam. A word cannot span a seam (verse texts are
+/// separate strings). The book-initial word is forced.
 pub fn walk_book_experimental(verses: &[(Sid, &str)]) -> Vec<WordObsExperimental> {
     use PosClassExperimental::*;
 
     let mut out = Vec::new();
-    let mut tape: Vec<crate::tape::TapeEntry> = Vec::new();
-    let mut graphemes: Vec<GSpan> = Vec::new();
-    let mut starts: Vec<u32> = Vec::new();
-
     // `walk_book`'s cross-seam sentence state.
     let mut pending: Option<(char, bool)> = None;
     let mut book_initial = true;
-    // In-progress word: (byte start, first-letter case, position class fixed at
-    // the first letter).
-    let mut cur: Option<(u32, FirstCaseExperimental, PosClassExperimental)> = None;
 
     for (sid, text) in verses {
+        let words = compound_words_experimental(text);
         // Seam gap: a terminal at this verse's start is not attached to the
-        // previous verse's last letter (mirrors `walk_book`).
+        // previous verse's last letter (mirrors `walk_book`). `prev_letter` is
+        // re-derived from each gap and never carries across the seam.
         let mut prev_letter = false;
-        crate::tape::build(text, &mut tape);
-        grapheme::segment_tape_indexed(text, &tape, &mut graphemes, &mut starts);
+        let mut cursor = 0usize;
 
-        for (k, gs) in graphemes.iter().enumerate() {
-            let e = tape[starts[k] as usize];
-            let cl = e.cl;
-            let lower = cl.is_lowercase();
-            let upper = cl.is_uppercase();
-            if cl.is_alphabetic() {
-                if cur.is_none() {
-                    // Word start: fix its case and position class. Consuming a
-                    // pending bare terminal makes it forced; an intervening
-                    // boundary is consumed but leaves the word Midflow (the
-                    // live rule does not police intervening boundaries either).
-                    let case = if upper {
-                        FirstCaseExperimental::Upper
-                    } else if lower {
-                        FirstCaseExperimental::Lower
-                    } else {
-                        FirstCaseExperimental::Uncased
-                    };
-                    let pos = if book_initial {
-                        BookInitial
-                    } else if let Some((glyph, intervening)) = pending.take() {
-                        if intervening { Midflow } else { ForcedAfterTerminal(glyph) }
-                    } else {
-                        Midflow
-                    };
-                    book_initial = false;
-                    cur = Some((gs.start, case, pos));
-                }
-                prev_letter = true;
+        for w in &words {
+            advance_gap_experimental(&text[cursor..w.start], &mut pending, &mut prev_letter);
+
+            // Word start: fix its position class from the pending terminal
+            // (consumed here, as `walk_book` consumes it at the first letter)
+            // and its first-letter case from the first scalar. A pending bare
+            // terminal makes it forced; an intervening boundary is consumed but
+            // leaves the word Midflow (the live rule polices neither).
+            let first = text[w.start..w.end].chars().next().unwrap();
+            let fcl = crate::charclass::class_of(first);
+            let case = if fcl.is_uppercase() {
+                FirstCaseExperimental::Upper
+            } else if fcl.is_lowercase() {
+                FirstCaseExperimental::Lower
             } else {
-                // A non-letter ends the in-progress word at this grapheme's start.
-                if let Some((start, case, pos)) = cur.take() {
-                    out.push(WordObsExperimental { sid: *sid, start, end: gs.start, pos, case });
-                }
-                if cl.is_whitespace() || cl.is_numeric() {
-                    prev_letter = false;
-                } else {
-                    // Punctuation / symbol — the same terminal bookkeeping as
-                    // `walk_book`: first after a letter is the terminal, the
-                    // rest mark the boundary intervening.
-                    match &mut pending {
-                        Some((_, intervening)) => *intervening = true,
-                        None if prev_letter => pending = Some((e.ch, false)),
-                        None => {}
-                    }
-                    prev_letter = false;
-                }
-            }
+                FirstCaseExperimental::Uncased
+            };
+            let pos = if book_initial {
+                BookInitial
+            } else if let Some((glyph, intervening)) = pending.take() {
+                if intervening { Midflow } else { ForcedAfterTerminal(glyph) }
+            } else {
+                Midflow
+            };
+            book_initial = false;
+
+            out.push(WordObsExperimental {
+                sid: *sid,
+                start: w.start as u32,
+                end: w.end as u32,
+                pos,
+                case,
+            });
+
+            // The word's last scalar arms `prev_letter` for the next gap: a
+            // word ending in a letter makes the following punctuation a
+            // terminal (`walk_book`'s `prev_letter = true` on each letter).
+            prev_letter = text[w.start..w.end]
+                .chars()
+                .next_back()
+                .is_some_and(is_letter_experimental);
+            cursor = w.end;
         }
-        // Close a word that ran to the verse's end (no non-letter followed it).
-        if let Some((start, case, pos)) = cur.take() {
-            out.push(WordObsExperimental { sid: *sid, start, end: text.len() as u32, pos, case });
-        }
-        // `pending` carries to the next verse; `prev_letter` resets above.
+        // Trailing gap to the verse end; its terminal (if any) carries to the
+        // next verse via `pending`.
+        advance_gap_experimental(&text[cursor..], &mut pending, &mut prev_letter);
     }
     out
 }
@@ -552,6 +599,52 @@ mod tests {
                 ("one", Midflow, Lower), // verse-5 start, no pending terminal
                 ("then", Midflow, Lower), // intervening boundary carried across the seam
                 ("done", Midflow, Lower),
+            ],
+        );
+    }
+
+    /// SPIKE: the word unit is a UAX #29 token, not a bare letter-run, so a
+    /// hyphenated compound stays one word (first letter of the head) and a
+    /// word-internal apostrophe never splits — the tokenization artifacts
+    /// (`Bar-jesus → jesus`, `A-hi-giô → giô`, `ng'ombe → ng + ombe`) that
+    /// were the largest false-positive class in the spike review.
+    #[test]
+    fn experimental_walk_keeps_compounds_and_apostrophes_whole() {
+        use FirstCaseExperimental::*;
+        use PosClassExperimental::*;
+
+        let vm = book(
+            "GEN",
+            &[
+                (1, "whose name was Bar-jesus and ng'ombe"),
+                (2, "Abel-beth-maachah fell. 40 men"),
+            ],
+        );
+        let books = crate::verse::by_book(&vm);
+        let obs = walk_book_experimental(&books[&BookId::from_str("GEN").unwrap()]);
+        let got: Vec<(&str, PosClassExperimental, FirstCaseExperimental)> = obs
+            .iter()
+            .map(|o| (&vm[&o.sid][o.start as usize..o.end as usize], o.pos, o.case))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                ("whose", BookInitial, Lower),
+                ("name", Midflow, Lower),
+                ("was", Midflow, Lower),
+                // U+002D flanked by letters: one word, first letter 'B'. The
+                // internal hyphen is NOT a terminal for the next word.
+                ("Bar-jesus", Midflow, Upper),
+                ("and", Midflow, Lower),
+                // Word-internal apostrophe (UAX #29 MidNumLet): one word.
+                ("ng'ombe", Midflow, Lower),
+                // Multi-hyphen compound merged across both hyphens.
+                ("Abel-beth-maachah", Midflow, Upper),
+                ("fell", Midflow, Lower),
+                // "40" is a number-only token (no letter): dropped, but its
+                // digits stay transparent, so the bare '.' after "fell" carries
+                // through to force "men".
+                ("men", ForcedAfterTerminal('.'), Lower),
             ],
         );
     }
