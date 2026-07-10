@@ -68,6 +68,7 @@ isn't visible from the code alone.
 | 0049 | 2026-07-09 | [CJK corner brackets are quotation marks — excluded from the bracket inventory](0049-cjk-corner-brackets-excluded-from-bracket-inventory.md) | Accepted (amends 0037; relates 0039) |
 | 0050 | 2026-07-09 | [`punct.spacing-anomaly` scores dominance × minority-recurrence rarity](0050-spacing-minority-recurrence-factor.md) | Accepted (amends 0029/0033) |
 | 0051 | 2026-07-10 | [Casing rebuilt on a word lexicon — two-factor scores, two rules from one module](0051-casing-two-factor-word-lexicon.md) | Accepted (supersedes 0035's scoring) |
+| 0052 | 2026-07-10 | [`terminal_strength` — learned mark trust gates casing's positional flagging, weights its censoring discount](0052-terminal-strength-mark-trust.md) | Accepted (builds on 0051) |
 
 ## Format
 
