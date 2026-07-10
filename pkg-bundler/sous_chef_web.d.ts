@@ -24,10 +24,10 @@ export interface Finding {
 }
 
 /**
- * Cached casing statistics, keyed by book so an edit supersedes only its
- * book (`BookId` crosses the wire as its `\"GEN\"` string). The corpus-wide
- * per-glyph counts are the sum of the per-book counts, derived at `judge`
- * time.
+ * Cached casing statistics, keyed by book so an edit supersedes only its book
+ * (`BookId` crosses the wire as its `\"GEN\"` string). Corpus-wide aggregates,
+ * the lexicon classification, and the per-glyph habit are all derived at
+ * `judge` from the merged table — the per-book state is raw tallies only.
  */
 export interface CasingStats {
     per_book: Record<string, BookCasing>;
@@ -83,14 +83,6 @@ export interface PunctuationSpacingStats {
 }
 
 /**
- * Counts behind the uppercase-majority dominance for one terminal glyph.
- */
-export interface Tally {
-    upper: number;
-    total: number;
-}
-
-/**
  * Findings plus the corpus [`Stats`] to cache for incremental re-analysis.
  */
 export interface Analysis {
@@ -99,6 +91,16 @@ export interface Analysis {
      * Caller-opaque cache: hold it and pass it back as `prior` next call.
      */
     stats: Stats;
+}
+
+/**
+ * Forced-position first-letter tallies after one key (a terminal glyph, or —
+ * stored separately — book-initial): how often the word appeared uppercase
+ * vs lowercase there. Raw and mergeable.
+ */
+export interface ForcedTally {
+    upper?: number;
+    lower?: number;
 }
 
 /**
@@ -150,13 +152,17 @@ export interface BookPunctOnlyToken {
 }
 
 /**
- * One book\'s contribution: the per-glyph counts and the cased-letter tally
- * that drives the emergent gate. Aggregates only — no sites.
+ * One book\'s contribution: the pruned word table plus the cased-word-start
+ * count that drives the emergent gate.
  */
 export interface BookCasing {
-    counts: Record<string, Tally>;
-    cased_letters: number;
-    total_letters: number;
+    words: Record<string, WordStats>;
+    /**
+     * Cased (upper or lower) word-start observations in the book — the
+     * emergent gate input, counted before pruning so a caseless book reads
+     * zero even though its (uncased) word entries are dropped.
+     */
+    cased_starts: number;
 }
 
 /**
@@ -227,13 +233,17 @@ export interface RatioObs {
 }
 
 /**
- * Partial overrides for `case.sentence-initial-lowercase`\'s knobs. Omitted
- * fields keep core\'s calibrated defaults (`emit_score_min` 0.98,
- * `confidence_z` 1.96).
+ * One word\'s raw case tallies within one book: mid-flow upper/lower (the
+ * intrinsic profile) and forced upper/lower, the latter split by the terminal
+ * glyph so the lexicon-restricted per-glyph habit is derivable at judge time
+ * (`book_initial` is the no-glyph forced key). All raw — no censoring, no
+ * habit — so book-supersede holds.
  */
-export interface CasingOverrides {
-    emit_score_min?: number;
-    confidence_z?: number;
+export interface WordStats {
+    mid_upper?: number;
+    mid_lower?: number;
+    book_initial?: ForcedTally;
+    after_glyph?: Record<string, ForcedTally>;
 }
 
 /**
@@ -306,6 +316,18 @@ export interface MixedScriptOverrides {
 }
 
 /**
+ * Partial overrides for the casing pair (`case.sentence-initial-lowercase`
+ * and `case.inconsistent-word-casing`, which share one config). Omitted
+ * fields keep core\'s calibrated defaults (ADR 0051): `emit_score_min` 0.95,
+ * `recurrence_k` 32, `confidence_z` 1.96.
+ */
+export interface CasingOverrides {
+    emit_score_min?: number;
+    recurrence_k?: number;
+    confidence_z?: number;
+}
+
+/**
  * Per-rule cached statistics — a **closed** union like `FindingArgs`, one
  * variant per stateful rule. The orchestration treats it opaquely; each
  * rule reduces into / judges from its own variant.
@@ -330,7 +352,7 @@ export type RuleStats = { Casing: CasingStats } | { Proportionality: Proportiona
  * config and localisation off: Rust via [`RuleId::ALL`] +
  * exhaustive `match`; TS via the `Tsify` string union.
  */
-export type RuleId = "lex.excess-h-whitespace" | "hyg.tab-in-body" | "hyg.control-chars" | "hyg.zero-width-misuse" | "hyg.empty-verse" | "hyg.invalid-codepoint" | "hyg.replacement-run" | "prop.length-ratio" | "struct.source-marker-leftover" | "struct.merge-conflict-marker" | "punct.adjacency-anomaly" | "lex.duplicate-word" | "lex.punct-only-token" | "uni.combining-mark-without-base" | "uni.redundant-zero-width-space" | "uni.mixed-script-in-token" | "lex.repeated-character-run" | "uni.mixed-numeral-systems" | "punct.bracket-balance" | "punct.spacing-anomaly" | "case.sentence-initial-lowercase";
+export type RuleId = "lex.excess-h-whitespace" | "hyg.tab-in-body" | "hyg.control-chars" | "hyg.zero-width-misuse" | "hyg.empty-verse" | "hyg.invalid-codepoint" | "hyg.replacement-run" | "prop.length-ratio" | "struct.source-marker-leftover" | "struct.merge-conflict-marker" | "punct.adjacency-anomaly" | "lex.duplicate-word" | "lex.punct-only-token" | "uni.combining-mark-without-base" | "uni.redundant-zero-width-space" | "uni.mixed-script-in-token" | "lex.repeated-character-run" | "uni.mixed-numeral-systems" | "punct.bracket-balance" | "punct.spacing-anomaly" | "case.sentence-initial-lowercase" | "case.inconsistent-word-casing";
 
 /**
  * Structured message arguments — the additive payload ADR 0010 §6
@@ -343,7 +365,7 @@ export type RuleId = "lex.excess-h-whitespace" | "hyg.tab-in-body" | "hyg.contro
  * collected into `Vec`s and never copied on a hot path, so this costs
  * nothing real (ADR 0016).
  */
-export type FindingArgs = { kind: "length-ratio"; ratio_pct: number; scope: LengthRatioScope } | { kind: "bracket-window"; window: DelimObservation[]; measure: BracketMeasure; majority: number; total: number } | { kind: "spacing-convention"; mark: string; spaced: number; attached: number } | { kind: "casing-convention"; glyph: string; upper: number; total: number } | { kind: "punct-only-rate"; count: number; units: number } | { kind: "adjacency-evidence"; pattern: string; k: number; lead_n: number; books: number; corpus: number } | { kind: "script-mix-evidence"; k: number; n: number; books: number; corpus: number } | { kind: "repeat-evidence"; ch: string; run: number } | { kind: "duplicate-word"; first_sid: string };
+export type FindingArgs = { kind: "length-ratio"; ratio_pct: number; scope: LengthRatioScope } | { kind: "bracket-window"; window: DelimObservation[]; measure: BracketMeasure; majority: number; total: number } | { kind: "spacing-convention"; mark: string; spaced: number; attached: number } | { kind: "casing-convention"; glyph: string | null; upper: number; total: number } | { kind: "word-casing"; word: string; upper: number; total: number } | { kind: "punct-only-rate"; count: number; units: number } | { kind: "adjacency-evidence"; pattern: string; k: number; lead_n: number; books: number; corpus: number } | { kind: "script-mix-evidence"; k: number; n: number; books: number; corpus: number } | { kind: "repeat-evidence"; ch: string; run: number } | { kind: "duplicate-word"; first_sid: string };
 
 /**
  * The catalog plus the shared sensitivity dial: labelled `emit_score_min`
