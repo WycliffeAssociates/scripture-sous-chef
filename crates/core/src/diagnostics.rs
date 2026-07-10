@@ -206,9 +206,13 @@ pub enum FindingArgs {
     /// behind the Wilson-bound `score` (ADR 0048, 0051). The flagged token is
     /// the lowercase minority; `upper / total` is the majority uppercase
     /// share. `glyph` is the terminal that forced the position, or `None` for
-    /// the book-initial word (which has no terminal glyph).
+    /// the book-initial word (which has no terminal glyph). `quoted` marks the
+    /// boundary *class* (ADR 0052): a close-quote intervened between the
+    /// terminal and the flagged word (`."`, `said: "`), a distinct learned
+    /// class from the bare terminal — so the consumer can render "after `.\"`"
+    /// vs "after `.`".
     #[cfg_attr(feature = "serde", serde(rename = "casing-convention"))]
-    CasingConvention { glyph: Option<char>, upper: u32, total: u32 },
+    CasingConvention { glyph: Option<char>, quoted: bool, upper: u32, total: u32 },
     /// `case.inconsistent-word-casing`: the flagged word's corpus-wide
     /// capitalized-vs-total counts, so the consumer can render "this
     /// translation writes ‘jesus’ capitalized in 1315 of 1316 places; here it

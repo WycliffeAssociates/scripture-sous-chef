@@ -314,11 +314,19 @@ pub fn message(id: RuleId, args: Option<&FindingArgs>) -> String {
 
         // ── Corpus-relative: plain counts behind the score (ADR 0048). ──
         RuleId::SentenceInitialLowercase => match args {
-            Some(FindingArgs::CasingConvention { glyph: Some(glyph), upper, total }) => format!(
-                "This translation capitalizes after ‘{glyph}’ in {upper} of {total} places; \
-                 this word starts lowercase."
-            ),
-            Some(FindingArgs::CasingConvention { glyph: None, upper, total }) => format!(
+            Some(FindingArgs::CasingConvention { glyph: Some(glyph), quoted: true, upper, total }) => {
+                format!(
+                    "This translation capitalizes after ‘{glyph}’ closing a quote in {upper} of \
+                     {total} places; this word starts lowercase."
+                )
+            }
+            Some(FindingArgs::CasingConvention { glyph: Some(glyph), quoted: false, upper, total }) => {
+                format!(
+                    "This translation capitalizes after ‘{glyph}’ in {upper} of {total} places; \
+                     this word starts lowercase."
+                )
+            }
+            Some(FindingArgs::CasingConvention { glyph: None, upper, total, .. }) => format!(
                 "This translation capitalizes the first word after a sentence break in \
                  {upper} of {total} places; this word starts lowercase."
             ),

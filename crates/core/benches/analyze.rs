@@ -96,7 +96,9 @@ fn bench_analyze(c: &mut Criterion) {
             g.bench_function(format!("incremental_edit_{code}"), |b| {
                 b.iter_batched(
                     || cached.clone(),
-                    |prior| analyze_stateful(black_box(&book), None, black_box(&cfg), Some(prior), None),
+                    |prior| {
+                        analyze_stateful(black_box(&book), None, black_box(&cfg), Some(prior), None)
+                    },
                     BatchSize::LargeInput,
                 )
             });
@@ -172,7 +174,10 @@ fn bench_phases(c: &mut Criterion) {
                 .collect::<Vec<_>>()
         })
     });
-    let merged: Vec<_> = rules.iter().map(|r| r.reduce(&books, None, None).0).collect();
+    let merged: Vec<_> = rules
+        .iter()
+        .map(|r| r.reduce(&books, None, None).0)
+        .collect();
     g.bench_function("judge_full", |b| {
         b.iter(|| {
             rules
@@ -199,7 +204,9 @@ fn bench_proportionality(c: &mut Criterion) {
     g.bench_function("nt_vs_bible", |b| {
         b.iter(|| {
             rule.judge(
-                &rule.reduce(black_box(&books), Some(black_box(&source)), None).0,
+                &rule
+                    .reduce(black_box(&books), Some(black_box(&source)), None)
+                    .0,
                 black_box(&books),
                 None,
                 None,

@@ -37,8 +37,8 @@ pub struct ProportionalityOverrides {
 
 /// Partial overrides for the casing pair (`case.sentence-initial-lowercase`
 /// and `case.inconsistent-word-casing`, which share one config). Omitted
-/// fields keep core's calibrated defaults (ADR 0051): `emit_score_min` 0.95,
-/// `recurrence_k` 32, `confidence_z` 1.96.
+/// fields keep core's calibrated defaults (ADR 0051/0052): `emit_score_min`
+/// 0.95, `recurrence_k` 32, `confidence_z` 1.96, `trust_gate` 0.90.
 #[derive(Deserialize, Tsify, Default)]
 #[tsify(from_wasm_abi)]
 pub struct CasingOverrides {
@@ -51,6 +51,9 @@ pub struct CasingOverrides {
     #[serde(default)]
     #[tsify(optional)]
     pub confidence_z: Option<f32>,
+    #[serde(default)]
+    #[tsify(optional)]
+    pub trust_gate: Option<f32>,
 }
 
 /// Partial overrides for `punct.adjacency-anomaly`'s knobs. Omitted fields
@@ -242,6 +245,9 @@ fn build_config(config: Option<SousConfig>) -> Config {
             }
             if let Some(v) = cas.confidence_z {
                 cfg.casing.confidence_z = v;
+            }
+            if let Some(v) = cas.trust_gate {
+                cfg.casing.trust_gate = v;
             }
         }
         if let Some(p) = c.punctuation_adjacency {
@@ -496,6 +502,7 @@ mod tests {
                 emit_score_min: Some(0.8),
                 recurrence_k: Some(24.0),
                 confidence_z: Some(1.5),
+                trust_gate: Some(0.75),
             }),
             punctuation_adjacency: Some(PunctuationAdjacencyOverrides {
                 convention_rate: Some(0.4),
@@ -535,6 +542,7 @@ mod tests {
         assert_eq!(cfg.casing.emit_score_min, 0.8);
         assert_eq!(cfg.casing.recurrence_k, 24.0);
         assert_eq!(cfg.casing.confidence_z, 1.5);
+        assert_eq!(cfg.casing.trust_gate, 0.75);
         assert_eq!(cfg.punctuation_adjacency.convention_rate, 0.4);
         assert_eq!(cfg.punctuation_adjacency.confidence_z, 2.1);
         assert_eq!(cfg.punctuation_adjacency.emit_score_min, 0.7);

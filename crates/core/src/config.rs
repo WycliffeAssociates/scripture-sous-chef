@@ -114,6 +114,19 @@ pub struct CasingConfig {
     /// a convention — the smooth replacement for a hard `min_samples` gate.
     /// `1.96` ≈ 95%.
     pub confidence_z: f32,
+    /// The learned-`terminal_strength` **gate** for the positional rule (ADR
+    /// 0052): a forced site is scored (with the *unchanged* `habit × rarity`)
+    /// only when its boundary class earns `trust ≥ trust_gate`; below it the
+    /// positional channel is not scored at all. Trust never multiplies into the
+    /// score — three honest ~0.97 factors would compound a confident finding
+    /// under `emit_score_min` (the multiplier wiring eroded 373 genuine
+    /// findings; gate wiring readmits them). Deliberately **below** the 0.95
+    /// emit floor so the two constants are not conflated, and inside a measured
+    /// plateau — surfaced totals are identical for every `trust_gate ∈
+    /// [0.50, 0.95]`. Trust also weights the censoring discount
+    /// (`1 − trust × habit`) regardless of this gate. Default **0.90**.
+    /// Sanitised through `clamp_unit`.
+    pub trust_gate: f32,
 }
 
 impl Default for CasingConfig {
@@ -122,6 +135,7 @@ impl Default for CasingConfig {
             emit_score_min: 0.95,
             recurrence_k: 32.0,
             confidence_z: 1.96,
+            trust_gate: 0.90,
         }
     }
 }

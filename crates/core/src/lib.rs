@@ -10,15 +10,16 @@
 //! the orchestrator's job, via onion's `segments`. See ADR 0010 and
 //! `documentation/v1-reset-design.md`.
 
+pub mod analysis;
 pub mod catalog;
 pub mod charclass;
 mod charclass_table;
 pub mod config;
 pub mod diagnostics;
+mod evidence;
 pub mod grapheme;
 pub mod rule;
 pub mod script;
-mod evidence;
 pub mod sid;
 pub mod signals;
 pub mod span;
@@ -28,11 +29,11 @@ pub mod token;
 pub mod unicode;
 pub mod verse;
 
+pub use catalog::{RuleCard, SENSITIVITY_STOPS, Verdict, rule_cards};
 pub use config::{
     BracketBalanceConfig, CasingConfig, Config, ProportionalityConfig, PunctOnlyTokenConfig,
     PunctuationAdjacencyConfig, PunctuationSpacingConfig, RepeatedCharacterRunConfig,
 };
-pub use catalog::{RuleCard, SENSITIVITY_STOPS, Verdict, rule_cards};
 pub use diagnostics::{
     BracketMeasure, DelimObservation, DelimRole, Finding, FindingArgs, LengthRatioScope, RuleId,
     Severity,
@@ -93,7 +94,14 @@ fn verse_findings(
         }
         let (code, severity) = (r.id(), r.severity());
         for range in r.check(text, tape) {
-            out.push(Finding { sid, code, severity, range, score: None, args: None });
+            out.push(Finding {
+                sid,
+                code,
+                severity,
+                range,
+                score: None,
+                args: None,
+            });
         }
     }
     out
@@ -185,11 +193,9 @@ pub fn analyze_stateful(
     } else {
         0
     };
-    let token_cache: Option<rule::TokenCache> = (project_token.len()
-        + repeated_run_scans
-        + mixed_script_scans
-        >= 2)
-        .then(|| build_token_cache(target));
+    let token_cache: Option<rule::TokenCache> =
+        (project_token.len() + repeated_run_scans + mixed_script_scans >= 2)
+            .then(|| build_token_cache(target));
 
     // The per-verse phase is embarrassingly parallel — each verse is judged
     // from its own text by `Sync` rules. Under the `parallel` feature it fans
@@ -286,9 +292,7 @@ pub fn analyze_stateful(
     // the parallel per-verse phase collects in nondeterministic order, so sort
     // by (sid, range start, rule) to make feature-on output byte-identical to
     // serial. Cheap against the analysis: one O(n log n) over the findings.
-    out.sort_by(|a, b| {
-        (a.sid, a.range.start, a.code).cmp(&(b.sid, b.range.start, b.code))
-    });
+    out.sort_by_key(|f| (f.sid, f.range.start, f.code));
 
     (out, stats)
 }
@@ -332,17 +336,20 @@ mod tests {
             emit_score_min,
             recurrence_k: 32.0,
             confidence_z,
+            ..CasingConfig::default()
         };
         cfg
     }
 
     /// Verses of a book that fire `case.sentence-initial-lowercase` under the
-    /// ADR 0051 model: `n` clean verses teach a capital-after-`.` habit on the
-    /// lexicon-lowercase word "the" (every sentence starts "The", "the" also
+    /// ADR 0051/0052 model: `n` clean verses teach a capital-after-`.` habit on
+    /// the lexicon-lowercase word "the" (every sentence starts "The", "the" also
     /// recurs mid-flow), then one verse writes "the" lowercase after a period.
+    /// `n ≥ 30` so the `.` boundary class clears ADR 0052's trust event floor.
     fn casing_fire(n: usize) -> Vec<String> {
-        let mut v: Vec<String> =
-            (0..n).map(|_| "The men saw the gate.".to_string()).collect();
+        let mut v: Vec<String> = (0..n)
+            .map(|_| "The men saw the gate.".to_string())
+            .collect();
         v.push("He fell. the gate stood.".to_string());
         v
     }
@@ -414,10 +421,7 @@ mod tests {
 
     #[test]
     fn repeated_character_run_is_default_on_stateful_and_disableable() {
-        let target = map(&[(
-            "v1",
-            &format!("{}joyfullly", "word ".repeat(50_000)),
-        )]);
+        let target = map(&[("v1", &format!("{}joyfullly", "word ".repeat(50_000)))]);
         let findings = analyze(&target, None);
         let repeated: Vec<_> = findings
             .iter()
@@ -457,7 +461,10 @@ mod tests {
         assert_eq!(prop.len(), 1);
         assert_eq!(prop[0].sid.verse, 7);
         assert!(prop[0].score.is_some());
-        assert!(matches!(prop[0].args, Some(FindingArgs::LengthRatio { .. })));
+        assert!(matches!(
+            prop[0].args,
+            Some(FindingArgs::LengthRatio { .. })
+        ));
 
         // Disabled ⇒ silent.
         let off = Config::disabling(&[RuleId::ProjectLengthRatio]);
@@ -532,7 +539,7 @@ mod tests {
         // Casing is corpus-observed (ADR 0017, 0051): both rules default-off,
         // and once opted in the positional rule fires only where the corpus's
         // own lexicon-lowercase words establish a capital-after-`.` habit.
-        let casing = mks("GEN", &casing_fire(10));
+        let casing = mks("GEN", &casing_fire(40));
         assert!(analyze(&casing, None).is_empty());
         let on = casing_on(0.5, 0.0);
         assert!(
@@ -548,10 +555,13 @@ mod tests {
     #[test]
     fn stateful_stats_round_trip_and_supersede() {
         let cfg = casing_on(0.5, 0.0);
-        let target = mks("GEN", &casing_fire(10));
+        let target = mks("GEN", &casing_fire(40));
 
         let (f1, stats) = analyze_stateful(&target, None, &cfg, None, None);
-        assert!(f1.iter().any(|f| f.code == RuleId::SentenceInitialLowercase));
+        assert!(
+            f1.iter()
+                .any(|f| f.code == RuleId::SentenceInitialLowercase)
+        );
 
         let json = serde_json::to_string(&stats).unwrap();
         let back: Stats = serde_json::from_str(&json).unwrap();
@@ -567,15 +577,23 @@ mod tests {
     #[test]
     fn incremental_findings_are_scoped_to_target() {
         let cfg = casing_on(0.5, 0.0);
-        let anomalous = casing_fire(10);
+        let anomalous = casing_fire(40);
         let mut full = mks("GEN", &anomalous);
         full.extend(mks("EXO", &anomalous));
         let gen_id = BookId::from_str("GEN").unwrap();
         let exo = BookId::from_str("EXO").unwrap();
 
         let (f_full, stats) = analyze_stateful(&full, None, &cfg, None, None);
-        assert!(f_full.iter().any(|f| f.sid.book == gen_id && f.code == RuleId::SentenceInitialLowercase));
-        assert!(f_full.iter().any(|f| f.sid.book == exo && f.code == RuleId::SentenceInitialLowercase));
+        assert!(
+            f_full
+                .iter()
+                .any(|f| f.sid.book == gen_id && f.code == RuleId::SentenceInitialLowercase)
+        );
+        assert!(
+            f_full
+                .iter()
+                .any(|f| f.sid.book == exo && f.code == RuleId::SentenceInitialLowercase)
+        );
 
         let (f_inc, _) = analyze_stateful(&mks("EXO", &anomalous), None, &cfg, Some(stats), None);
         assert!(!f_inc.is_empty());
@@ -591,13 +609,16 @@ mod tests {
     fn changed_scope_matches_full_recompute() {
         let cfg = casing_on(0.5, 0.0);
         // Clean establishing verses (a capital-after-`.` habit, no anomaly).
-        let clean: Vec<String> = (0..10).map(|_| "The men saw the gate.".to_string()).collect();
+        // ≥ 30 so the `.` boundary class clears ADR 0052's event floor.
+        let clean: Vec<String> = (0..40)
+            .map(|_| "The men saw the gate.".to_string())
+            .collect();
         let mut original = mks("GEN", &clean);
         original.extend(mks("EXO", &clean));
         let (_, prior) = analyze_stateful(&original, None, &cfg, None, None);
 
         // Edit GEN only: introduce a lowercase-after-terminal anomaly.
-        let mut edited = mks("GEN", &casing_fire(10));
+        let mut edited = mks("GEN", &casing_fire(40));
         edited.extend(mks("EXO", &clean));
 
         let (f_scratch, s_scratch) = analyze_stateful(&edited, None, &cfg, None, None);
@@ -609,8 +630,7 @@ mod tests {
 
         // Without a prior, `changed` is ignored (nothing to carry): still a
         // full recompute, never a tiny-counts corpus.
-        let (f_no_prior, s_no_prior) =
-            analyze_stateful(&edited, None, &cfg, None, Some(&[gen_id]));
+        let (f_no_prior, s_no_prior) = analyze_stateful(&edited, None, &cfg, None, Some(&[gen_id]));
         assert_eq!(f_scratch, f_no_prior);
         assert_eq!(s_scratch, s_no_prior);
     }
@@ -623,8 +643,10 @@ mod tests {
     fn remove_book_drops_contribution_to_corpus_stats() {
         let cfg = casing_on(0.7, 1.0);
         // GEN establishes the '.'→capital habit on the lexicon-lowercase "the".
-        let gen_clean: Vec<String> =
-            (0..20).map(|_| "The men saw the gate.".to_string()).collect();
+        // ≥ 30 so the `.` boundary class clears ADR 0052's event floor.
+        let gen_clean: Vec<String> = (0..40)
+            .map(|_| "The men saw the gate.".to_string())
+            .collect();
         let gen_map = mks("GEN", &gen_clean);
         // EXO alone holds one lowercase "the" after a period — but with no
         // mid-flow "the" of its own it is unclassifiable without GEN's lexicon.
@@ -635,14 +657,20 @@ mod tests {
 
         let (f_full, mut stats) = analyze_stateful(&full, None, &cfg, None, None);
         assert!(
-            f_full.iter().any(|f| f.sid.book == exo && f.code == RuleId::SentenceInitialLowercase),
+            f_full
+                .iter()
+                .any(|f| f.sid.book == exo && f.code == RuleId::SentenceInitialLowercase),
             "EXO's `the` fires while GEN backs the lexicon + habit"
         );
 
         stats.remove_book(BookId::from_str("GEN").unwrap());
         let (f_after, _) = analyze_stateful(&mks("EXO", &exo_anom), None, &cfg, Some(stats), None);
         // EXO's own few observations can't back a confident dominance now.
-        assert!(f_after.iter().all(|f| f.code != RuleId::SentenceInitialLowercase));
+        assert!(
+            f_after
+                .iter()
+                .all(|f| f.code != RuleId::SentenceInitialLowercase)
+        );
     }
 
     /// `uni.redundant-zero-width-space` runs through `analyze` as a default-on
@@ -655,15 +683,22 @@ mod tests {
         let gen_id = BookId::from_str("GEN").unwrap();
         let full: VerseMap = [
             (Sid::new(gen_id, 1, 1), format!("word{ZW}{ZW}next")), // doubled run → redundant
-            (Sid::new(gen_id, 1, 2), format!("word {ZW}next")),    // single, space-adjacent → NOT flagged
-            (Sid::new(gen_id, 1, 3), format!("ក{ZW}ក")),          // Khmer word break → silent
+            (Sid::new(gen_id, 1, 2), format!("word {ZW}next")), // single, space-adjacent → NOT flagged
+            (Sid::new(gen_id, 1, 3), format!("ក{ZW}ក")),        // Khmer word break → silent
         ]
         .into_iter()
         .collect();
 
         let f = analyze(&full, None);
-        let hits: Vec<_> = f.iter().filter(|f| f.code == RuleId::RedundantZeroWidthSpace).collect();
-        assert_eq!(hits.len(), 1, "only the doubled run surfaces; single ZWSP (even space-adjacent) does not");
+        let hits: Vec<_> = f
+            .iter()
+            .filter(|f| f.code == RuleId::RedundantZeroWidthSpace)
+            .collect();
+        assert_eq!(
+            hits.len(),
+            1,
+            "only the doubled run surfaces; single ZWSP (even space-adjacent) does not"
+        );
         assert_eq!(hits[0].sid.verse, 1);
         assert_eq!(hits[0].severity, Severity::Info);
     }
@@ -701,7 +736,11 @@ mod tests {
                 id.code()
             );
         }
-        assert_eq!(seen.len(), RuleId::ALL.len(), "a registry emitted an unknown id");
+        assert_eq!(
+            seen.len(),
+            RuleId::ALL.len(),
+            "a registry emitted an unknown id"
+        );
     }
 
     /// Guards the `RuleId` wire format: the serde rename must match

@@ -457,7 +457,7 @@ finding — ADR 0034; the old judge-side score-1.0 bypass is gone).
 
 ### `case.sentence-initial-lowercase` + `case.inconsistent-word-casing` (`Config.casing`) — **both default OFF**
 
-One config drives both casing rules (ADR 0051, superseding ADR 0035): they
+One config drives both casing rules (ADR 0051/0052, superseding ADR 0035): they
 share a per-word case lexicon and one two-factor score `dominance × rarity`.
 
 | knob | meaning |
@@ -465,14 +465,18 @@ share a per-word case lexicon and one two-factor score `dominance × rarity`.
 | `emit_score_min` | the two-factor emission floor for **both** rules; default **0.95**, the frozen knee that clears the homograph/adjective/plural false-positive band (~0.87–0.95) while keeping genuine proper-noun and forced-position slips (≥ 0.956) |
 | `recurrence_k` | the absolute recurrence knee `k`: `rarity = 1 − min(minority − 1, k)/k` over the minority-form count (the ADR 0050 absolute knee; the opportunity-proportional term is omitted — word opportunities are tens-to-hundreds, where a rate term vanishes). A form written the minority way once is a rare slip (`rarity 1`); one recurring past `k` is the corpus's own second convention (`rarity → 0`, silent). Default **32** — what lifts the genuine two-occurrence slips (*christ*, *deal*) over the floor while leaving the k-flat single-occurrence false positives below it. Sanitised through `clamp_count` |
 | `confidence_z` | Wilson confidence for every dominance here (the per-glyph habit and each word's capitalized share); shrinks small samples so a barely-observed glyph or word can't assert a convention; default 1.96 |
+| `trust_gate` | the learned-`terminal_strength` **gate** for the positional rule (ADR 0052): a forced site is scored only when its boundary class — the terminal mark, plus whether a close-quote follows (`.` and `."` are distinct classes) — earns `trust ≥ trust_gate`; below it the positional channel is not scored. Trust is *never* multiplied into the score (three honest ~0.97 factors would sink a confident finding under the floor); it also weights the intrinsic censoring discount (`1 − trust × habit`) regardless of the gate. Default **0.90** — deliberately below the 0.95 emit floor (so the two constants aren't conflated) and inside a measured plateau where the surfaced total is identical for every `trust_gate ∈ [0.50, 0.95]`. Sanitised through `clamp_unit` |
 
 - **`case.sentence-initial-lowercase`** (positional): a forced-position
-  lowercase site (after a bare attached terminal glyph, or book-initial —
-  never verse-initial). `score = habit(glyph) × rarity(word's forced-lowercase
-  count)`, where `habit` is the **lexicon-restricted** capitalize-after-
-  terminal dominance — measured only over words the lexicon calls intrinsically
-  lowercase, so proper nouns starting sentences don't inflate it (the
-  decontaminated ADR 0035 number).
+  lowercase site (after an attached terminal — bare or quote-context — or
+  book-initial; never verse-initial). `score = habit(class) × rarity(word's
+  forced-lowercase count)`, where `habit` is the **lexicon-restricted**
+  capitalize-after-class dominance — measured only over words the lexicon calls
+  intrinsically lowercase, so proper nouns starting sentences don't inflate it
+  (the decontaminated ADR 0035 number). A site whose class the learned witnesses
+  distrust (`trust < trust_gate` — an untrusted list-comma or an unpoliceable
+  quote context) is not scored positionally; a *trusted* quote-context class
+  (`."`, `:"`) that ADR 0051 could not see at all is newly policeable.
 - **`case.inconsistent-word-casing`** (intrinsic): a lowercase site of a word
   the corpus writes capitalized. `score = dominance(word's soft-censored
   capitalized share) × rarity(word's lowercase count)`. The first casing
@@ -491,7 +495,9 @@ per-project language question.
 **Stricter (fewer findings):** raise `emit_score_min`, or **lower**
 `recurrence_k` (treat a smaller recurring minority as an established second
 convention → silent). **Looser:** lower `emit_score_min`, or raise
-`recurrence_k`.
+`recurrence_k`. Raising `trust_gate` (positional only) demands more boundary
+trust before a site is scored — but note the surfaced total is flat across
+`[0.50, 0.95]`, so it is not a routine sensitivity dial.
 
 ### `punct.bracket-balance` (`Config.bracket_balance`) — **default ON**
 

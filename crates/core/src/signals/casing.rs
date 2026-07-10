@@ -1,67 +1,81 @@
-//! Casing — two rules over one word lexicon, corpus-observed then judged.
+//! Casing — two rules over one word lexicon, gated by learned mark trust.
 //!
-//! ADR 0051 rebuilds casing on a per-word case table (superseding ADR 0035's
-//! per-glyph dominance). An occurrence's case is modelled as the OR of two
-//! causes: the position forces uppercase, or the word is intrinsically
-//! capitalized. Censoring is one-directional — uppercase at a forced position
-//! is uninformative about the word; lowercase is informative everywhere. From
-//! that model two rules judge the 2×2 of (position, word's intrinsic class):
+//! ADR 0051 rebuilt casing on a per-word case table (superseding ADR 0035's
+//! per-glyph dominance). An occurrence's case is the OR of two causes: the
+//! position forces uppercase, or the word is intrinsically capitalized.
+//! Censoring is one-directional — uppercase at a forced position is
+//! uninformative about the word; lowercase is informative everywhere. From that
+//! model two rules judge the 2×2 of (position, word's intrinsic class):
 //!
 //! - [`SentenceInitialLowercase`] (`case.sentence-initial-lowercase`) — a
-//!   **forced-position** lowercase site: `score = habit(glyph) × rarity(this
+//!   **forced-position** lowercase site: `score = habit(class) × rarity(this
 //!   word's forced-lowercase recurrence)`, where `habit` is the lexicon-
-//!   restricted capitalize-after-terminal dominance (the decontaminated ADR
-//!   0035 number — restricted to words the lexicon calls intrinsically
-//!   lowercase, so proper nouns at sentence starts don't inflate it).
+//!   restricted capitalize-after-terminal dominance.
 //! - [`InconsistentWordCasing`] (`case.inconsistent-word-casing`) — a lowercase
 //!   site of an **intrinsically-capitalized** word: `score = dominance(word's
 //!   soft-censored capitalized share) × rarity(word's lowercase recurrence)`.
-//!   The first casing coverage of mid-flow text.
 //!
-//! A both-quadrant site (forced-position lowercase of an intrinsically-
-//! capitalized word) breaks both conventions, so **both** rules may fire —
-//! corroboration across observables, not double-counting.
+//! ## ADR 0052 — `terminal_strength` gates flagging, weights the discount
 //!
-//! Emergent gates carry over: with no cased word-starts no convention exists,
-//! so both rules stay silent (caseless scripts, by construction not a list).
-//! The pending-terminal machine crosses verse seams (a verse start is not a
-//! sentence start — `CLAUDE.md`); the **book-initial** word is forced, but
-//! verse-initial is not. Both rules ship default-off — ~24% of cased languages
-//! don't reliably capitalize after a period, so enabling is a per-project
-//! language question.
+//! A forced position now carries its boundary **class**, not just a glyph: the
+//! terminal mark plus whether a close-quote intervened before the next word
+//! (`.` and `."` are separate classes). Per corpus, per class, two witnesses
+//! combine noisy-OR into `trust(class) = 1 − (1 − s_case)(1 − s_reshuffle)`:
+//!
+//! - `s_case` — the case-follow witness (bicameral only): the lexicon-
+//!   restricted capitalize-after-class rate. This *is* the ADR 0051 habit,
+//!   reused. Absent (caseless / no lexicon-lowercase followers) ⇒ 0.
+//! - `s_reshuffle` — the word-reshuffle witness (case-free): the class's
+//!   following-word distribution's differentness from the corpus word-start
+//!   baseline (Dunning G² / Fisher via [`crate::analysis::association`]),
+//!   **guarded** by total-variation agreement with the reference terminal's
+//!   aftermath. Plain differentness cannot rank marks (a genealogy list-comma
+//!   reshapes its neighborhood as much as a period); all discriminating power
+//!   lives in the agreement guard.
+//!
+//! Consumption, per ADR 0052's "verdicts gate, evidence weighs":
+//!
+//! - **Flagging is gated, never scaled.** A forced site is scored with the
+//!   *unchanged* `habit × rarity` iff `trust(class) ≥ cfg.trust_gate`; below the
+//!   gate its positional channel is not scored. Multiplying trust into the score
+//!   would compound honest ~0.97 factors below the floor (the measured erosion
+//!   of 373 genuine findings); since `habit ≤ trust` (the case witness is a term
+//!   of the noisy-OR), any site clearing the 0.95 floor already has `trust` well
+//!   above the 0.90 gate — the gate only readmits erosion victims and admits the
+//!   promoted quote-context classes.
+//! - **The censoring discount is weighted.** Forced-position uppercase re-enters
+//!   a word's intrinsic profile at `1 − trust(class) · habit(class)`: a capital
+//!   after a distrusted mark is not position-explained and returns to the
+//!   profile. Here trust genuinely is proportional, so it multiplies.
+//! - **Quote-context sites are conditionally forced.** A `."`/`:"` class the
+//!   walk once collapsed to mid-flow becomes a forced class when `trust >
+//!   PROMOTE_BAR`; below the bar it **falls back to mid-flow** exactly as ADR
+//!   0051 (no loss). Trust is only known at judge, so the walk records every
+//!   quote-context tally by class and the judge folds untrusted classes back.
 //!
 //! ## Stats shape and merge semantics (raw, per book)
 //!
 //! Per book, [`CasingStats`] stores a word→[`WordStats`] table of **raw**
-//! tallies (mid-flow upper/lower, and forced upper/lower split by the terminal
-//! glyph that forced them, book-initial kept separately). Nothing is censored
-//! and no habit is computed at reduce: the lexicon classification and the
-//! per-glyph habit only exist **corpus-wide**, so they are judge-time
-//! arithmetic over the merged table. This keeps book-supersede sound — a book
-//! carries exactly its own counts, replaced wholesale on edit — and keeps
-//! `reduce` one walk.
+//! tallies (mid-flow upper/lower; forced upper/lower split by the bare terminal
+//! glyph, by the quote-context glyph, and book-initial separately). Nothing is
+//! censored and no trust is computed at reduce: the lexicon classification, the
+//! per-class habit, and the two witnesses are corpus-wide, so they are all
+//! **judge-time** arithmetic over the merged table. The W2 aggregates the ADR
+//! calls for — per-class following-word counts and the baseline word-start
+//! distribution — are *reindexed at judge from these same per-word tallies*
+//! (the reshuffle witness is case-free, so a word's forced upper+lower is its
+//! occurrence count after that class); no second stored table, no size cost
+//! beyond the quote-context split. This keeps book-supersede sound (a book
+//! carries its own counts, replaced wholesale on edit) and `reduce` one walk.
 //!
-//! **Pruning (the ADR 0051 stats-tension resolution).** The lexicon
-//! classification and the recurrence are corpus-wide, but `reduce` is per book,
-//! so *any* per-book pruning of case mass is unsound at book granularity: drop
-//! a word's lowercase mass in a book and a cross-book homograph (capitalized in
-//! book A, lowercase-consistent in book B — `Word`/`word`) loses the recurrence
-//! mass that keeps its many correct lowercase occurrences silent, storming
-//! false intrinsic positives; drop its uppercase mass and the same homograph
-//! loses the dominance evidence that flags its lone lowercase slip, a false
-//! negative. The ADR's "persist words seen in both cases" cannot be applied
-//! per book without one of these divergences from the corpus-wide model. The
-//! sole per-book-safe drop is an **uncased-only** word (a caseless-script
-//! token): it yields no candidate site and, being uncased, never enters the
-//! lexicon-lowercase habit — it changes no verdict in any book. So that is all
-//! that is pruned; every cased word is kept with raw tallies, matching the
-//! spike's (unpruned) fleet numbers exactly. This keeps the table at the ADR's
-//! measured cased-word cardinality; if that regresses, frequency-gating (drop
-//! hapax types — the spike doc's suggested lever) is the deferred next step,
-//! not a lossy per-book case prune.
+//! **Pruning.** As ADR 0051: the sole per-book-safe drop is an *uncased-only*
+//! word (a caseless-script token) — it yields no candidate site and never enters
+//! the lexicon-lowercase habit or the (bicameral) witnesses. Every cased word is
+//! kept with raw tallies.
 
 use std::collections::{BTreeMap, HashMap};
 
+use crate::analysis::association::Table2;
 use crate::charclass::class_of;
 use crate::config::CasingConfig;
 use crate::diagnostics::{Finding, FindingArgs, RuleId, Severity};
@@ -76,9 +90,28 @@ use crate::verse::{Books, VerseMap};
 pub const SENTENCE_INITIAL_LOWERCASE: RuleId = RuleId::SentenceInitialLowercase;
 pub const INCONSISTENT_WORD_CASING: RuleId = RuleId::InconsistentWordCasing;
 
+// ── Frozen witness internals (ADR 0052; documented constants, not knobs). ────
+
+/// A word must appear as a word-start at least this often to be a reshuffle
+/// juror (the Zipf gate).
+const JUROR_MIN: u64 = 10;
+/// A boundary class needs at least this many forced events for its witnesses to
+/// be estimated; below it both are too thin and the class earns no trust.
+const CLASS_MIN_EVENTS: u64 = 30;
+/// A quote-context class is *promoted* to a forced class (censored in the
+/// intrinsic channel, given a habit key) only above this trust. Below it the
+/// class falls back to mid-flow exactly as ADR 0051. Deliberately far below the
+/// `trust_gate`: promotion controls censoring/lexicon fold, the gate controls
+/// positional flagging.
+const PROMOTE_BAR: f64 = 0.5;
+/// The W2 differentness sigmoid `logistic((dev − THR)/SCALE)` on the
+/// standardized multinomial-G² deviate — a gentle floor that only zeroes out
+/// no-structure classes; the ranking power lives in the agreement guard.
+const W2_SIGMOID_THR: f64 = 8.0;
+const W2_SIGMOID_SCALE: f64 = 6.0;
+
 /// First-letter case of a word, from its first grapheme's base scalar.
-/// `Uncased` is a caseless letter (no upper/lower distinction) — evidence for
-/// neither convention, the emergent silence of caseless scripts.
+/// `Uncased` is a caseless letter — evidence for neither convention.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Case {
     Upper,
@@ -86,21 +119,29 @@ pub enum Case {
     Uncased,
 }
 
+/// A boundary class: the candidate terminal mark plus whether a close-quote
+/// intervened before the next word. `.` and `."` are distinct classes, each
+/// earning its own trust. In-memory only (judge-time); the wire stores the two
+/// glyph maps split by `quoted` (see [`WordStats`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ClassKey {
+    pub mark: char,
+    pub quoted: bool,
+}
+
 /// The structural position class of a word, fixed at its first letter and
-/// defined *before any casing knowledge* (the censoring model's generative
-/// side). A position is "forced" — uppercase conventionally expected — right
-/// after a bare attached terminal glyph, or book-initial. Everything else is
-/// [`Midflow`](PosClass::Midflow), including the token after an *intervening*-
-/// punctuation boundary (`."`, `...`). Verse-initial is NOT forced (verses are
-/// reference plumbing; `CLAUDE.md`).
+/// defined *before any casing knowledge*. Forced right after an attached
+/// terminal (bare, or with an intervening close-quote), or book-initial.
+/// Everything else — including a token after *non-quote* intervening
+/// punctuation (`...`) — is [`Midflow`](PosClass::Midflow). Verse-initial is
+/// NOT forced (`CLAUDE.md`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PosClass {
     /// The first word of the book — forced with no terminal glyph.
     BookInitial,
-    /// A word whose first letter consumed a *bare* attached terminal glyph
-    /// (carried across verse seams by the pending-terminal machine). The glyph
-    /// is the positional habit key.
-    ForcedAfterTerminal(char),
+    /// A word whose first letter consumed an attached terminal (carried across
+    /// verse seams). The [`ClassKey`] is the positional habit / trust key.
+    ForcedAfterTerminal(ClassKey),
     /// Not position-forced: uppercase here is intrinsic to the word.
     Midflow,
 }
@@ -110,19 +151,16 @@ impl PosClass {
         !matches!(self, PosClass::Midflow)
     }
 
-    /// The per-glyph habit key: `None` for book-initial (no terminal), the
-    /// glyph for a terminal-forced position. Midflow has no habit key.
-    fn habit_key(self) -> Option<char> {
+    /// Descriptive `(glyph, quoted)` for the finding args (ADR 0048/0052).
+    fn habit_glyph(self) -> (Option<char>, bool) {
         match self {
-            PosClass::ForcedAfterTerminal(g) => Some(g),
-            _ => None,
+            PosClass::ForcedAfterTerminal(ck) => (Some(ck.mark), ck.quoted),
+            _ => (None, false),
         }
     }
 }
 
-/// Forced-position first-letter tallies after one key (a terminal glyph, or —
-/// stored separately — book-initial): how often the word appeared uppercase
-/// vs lowercase there. Raw and mergeable.
+/// Forced-position first-letter tallies after one key. Raw and mergeable.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default))]
@@ -137,8 +175,7 @@ struct ForcedTally {
 }
 
 /// `skip_serializing_if` predicate — the per-word table is dominated by zero
-/// tallies (a common word is one case in one position), so omitting them from
-/// the wire is a large, lossless size win (ADR 0051 stats sizing).
+/// tallies, so omitting them from the wire is a large, lossless size win.
 #[cfg(feature = "serde")]
 fn is_zero(n: &u32) -> bool {
     *n == 0
@@ -159,13 +196,22 @@ impl ForcedTally {
         self.upper += o.upper;
         self.lower += o.lower;
     }
+    fn upper(&self) -> u64 {
+        u64::from(self.upper)
+    }
+    fn lower(&self) -> u64 {
+        u64::from(self.lower)
+    }
+    fn total(&self) -> u64 {
+        self.upper() + self.lower()
+    }
 }
 
-/// One word's raw case tallies within one book: mid-flow upper/lower (the
-/// intrinsic profile) and forced upper/lower, the latter split by the terminal
-/// glyph so the lexicon-restricted per-glyph habit is derivable at judge time
-/// (`book_initial` is the no-glyph forced key). All raw — no censoring, no
-/// habit — so book-supersede holds.
+/// One word's raw case tallies within one book. Mid-flow upper/lower (the
+/// intrinsic profile), forced upper/lower split by the *bare* terminal glyph
+/// (`after_glyph`) and by the *quote-context* glyph (`after_quote`, the `."`
+/// classes ADR 0051 discarded to mid-flow), and book-initial. All raw — no
+/// censoring, no trust — so book-supersede holds.
 #[derive(Debug, Clone, Default, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default))]
@@ -183,6 +229,9 @@ struct WordStats {
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "is_empty_map"))]
     #[cfg_attr(feature = "wasm", tsify(optional, type = "Record<string, ForcedTally>"))]
     after_glyph: BTreeMap<char, ForcedTally>,
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "is_empty_map"))]
+    #[cfg_attr(feature = "wasm", tsify(optional, type = "Record<string, ForcedTally>"))]
+    after_quote: BTreeMap<char, ForcedTally>,
 }
 
 impl WordStats {
@@ -195,6 +244,9 @@ impl WordStats {
         for (g, t) in &o.after_glyph {
             self.after_glyph.entry(*g).or_default().add(t);
         }
+        for (g, t) in &o.after_quote {
+            self.after_quote.entry(*g).or_default().add(t);
+        }
     }
 
     fn record(&mut self, pos: PosClass, case: Case) {
@@ -204,100 +256,67 @@ impl WordStats {
             (PosClass::Midflow, Case::Lower) => self.mid_lower += 1,
             (PosClass::BookInitial, Case::Upper) => self.book_initial.upper += 1,
             (PosClass::BookInitial, Case::Lower) => self.book_initial.lower += 1,
-            (PosClass::ForcedAfterTerminal(g), Case::Upper) => {
-                self.after_glyph.entry(g).or_default().upper += 1;
-            }
-            (PosClass::ForcedAfterTerminal(g), Case::Lower) => {
-                self.after_glyph.entry(g).or_default().lower += 1;
+            (PosClass::ForcedAfterTerminal(ck), c) => {
+                let map = if ck.quoted { &mut self.after_quote } else { &mut self.after_glyph };
+                let t = map.entry(ck.mark).or_default();
+                match c {
+                    Case::Upper => t.upper += 1,
+                    Case::Lower => t.lower += 1,
+                    Case::Uncased => {}
+                }
             }
         }
     }
 
-    /// True iff the word has ≥1 cased (upper or lower) word-start. The pruning
-    /// predicate: uncased-only words are the sole per-book-safe drop.
+    /// True iff the word has ≥1 cased word-start — the pruning predicate.
     fn has_case(&self) -> bool {
         self.mid_upper > 0
             || self.mid_lower > 0
-            || self.book_initial.upper > 0
-            || self.book_initial.lower > 0
-            || self.after_glyph.values().any(|t| t.upper > 0 || t.lower > 0)
+            || self.book_initial.total() > 0
+            || self.after_glyph.values().any(|t| t.total() > 0)
+            || self.after_quote.values().any(|t| t.total() > 0)
     }
 
-    fn forced_upper(&self) -> u64 {
-        u64::from(self.book_initial.upper)
-            + self.after_glyph.values().map(|t| u64::from(t.upper)).sum::<u64>()
+    // ── Fold-invariant raw sums (position labels don't affect these). ────────
+    fn all_upper(&self) -> u64 {
+        u64::from(self.mid_upper)
+            + self.book_initial.upper()
+            + self.after_glyph.values().map(ForcedTally::upper).sum::<u64>()
+            + self.after_quote.values().map(ForcedTally::upper).sum::<u64>()
     }
-    fn forced_lower(&self) -> u64 {
-        u64::from(self.book_initial.lower)
-            + self.after_glyph.values().map(|t| u64::from(t.lower)).sum::<u64>()
+    fn all_lower(&self) -> u64 {
+        u64::from(self.mid_lower)
+            + self.book_initial.lower()
+            + self.after_glyph.values().map(ForcedTally::lower).sum::<u64>()
+            + self.after_quote.values().map(ForcedTally::lower).sum::<u64>()
     }
-    fn forced_total(&self) -> u64 {
-        self.forced_upper() + self.forced_lower()
-    }
-    fn mid_total(&self) -> u64 {
-        u64::from(self.mid_upper) + u64::from(self.mid_lower)
-    }
-    fn total_upper(&self) -> u64 {
-        u64::from(self.mid_upper) + self.forced_upper()
-    }
-    fn total_lower(&self) -> u64 {
-        u64::from(self.mid_lower) + self.forced_lower()
-    }
-    fn total(&self) -> u64 {
-        self.total_upper() + self.total_lower()
+    fn all_total(&self) -> u64 {
+        self.all_upper() + self.all_lower()
     }
 
-    /// Hard lexicon class: mid-flow-lower-dominant. The habit's lexicon
-    /// restriction uses this (midflow only — Step 1's censoring, no habit
-    /// dependency, so no circularity).
+    /// The **baseline** mid pool (ADR 0051): mid-flow plus *all* quote-context
+    /// tallies — the pool ADR 0051 saw, since it collapsed `."` to mid-flow.
+    /// The lexicon classification is frozen here so promoting a quote class
+    /// never moves a word's intrinsic verdict off its baseline.
+    fn baseline_mid(&self) -> (u64, u64) {
+        let mut up = u64::from(self.mid_upper);
+        let mut lo = u64::from(self.mid_lower);
+        for t in self.after_quote.values() {
+            up += t.upper();
+            lo += t.lower();
+        }
+        (up, lo)
+    }
+
+    /// Hard lexicon class over the baseline mid pool: mid-flow-lower-dominant.
     fn is_lexicon_lower(&self, z: f64) -> bool {
-        self.mid_total() > 0
-            && wilson_lower_bound(u64::from(self.mid_lower), self.mid_total(), z) > 0.5
-    }
-
-    /// Soft-censored effective uppercase count: mid-flow uppercase plus each
-    /// forced-position uppercase re-entering at weight `1 − habit(key)` (ADR
-    /// 0051 step 3 — in a no-habit corpus the forced pool returns; in a strong-
-    /// habit corpus it is honestly near-worthless). One re-estimate, no EM.
-    fn effective_upper(&self, habit: &Habit) -> f64 {
-        let mut up = f64::from(self.mid_upper);
-        if self.book_initial.upper > 0 {
-            up += (1.0 - habit.dominance(None)) * f64::from(self.book_initial.upper);
-        }
-        for (g, t) in &self.after_glyph {
-            if t.upper > 0 {
-                up += (1.0 - habit.dominance(Some(*g))) * f64::from(t.upper);
-            }
-        }
-        up
-    }
-
-    /// Soft-censored capitalized dominance: Wilson lower bound of `effective
-    /// upper / (effective upper + mid-flow lower)`. Forced-lowercase is *not*
-    /// in the intrinsic denominator — the intrinsic profile is mid-flow (Step
-    /// 1); forced-lowercase feeds the positional channel and the recurrence.
-    fn cap_dominance_soft(&self, habit: &Habit, z: f64) -> f64 {
-        let up = self.effective_upper(habit);
-        wilson_lower_bound_f(up, up + f64::from(self.mid_lower), z)
-    }
-
-    fn is_cap_soft(&self, habit: &Habit, z: f64) -> bool {
-        let up = self.effective_upper(habit);
-        let n = up + f64::from(self.mid_lower);
-        n > 0.0 && self.cap_dominance_soft(habit, z) > 0.5
-    }
-
-    fn is_lower_soft(&self, habit: &Habit, z: f64) -> bool {
-        let up = self.effective_upper(habit);
-        let n = up + f64::from(self.mid_lower);
-        n > 0.0 && wilson_lower_bound_f(f64::from(self.mid_lower), n, z) > 0.5
+        let (up, lo) = self.baseline_mid();
+        let n = up + lo;
+        n > 0 && wilson_lower_bound(lo, n, z) > 0.5
     }
 }
 
-/// Cached casing statistics, keyed by book so an edit supersedes only its book
-/// (`BookId` crosses the wire as its `"GEN"` string). Corpus-wide aggregates,
-/// the lexicon classification, and the per-glyph habit are all derived at
-/// `judge` from the merged table — the per-book state is raw tallies only.
+/// Cached casing statistics, keyed by book so an edit supersedes only its book.
 #[derive(Debug, Clone, Default, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
@@ -314,9 +333,8 @@ pub struct CasingStats {
 struct BookCasing {
     #[cfg_attr(feature = "wasm", tsify(type = "Record<string, WordStats>"))]
     words: BTreeMap<String, WordStats>,
-    /// Cased (upper or lower) word-start observations in the book — the
-    /// emergent gate input, counted before pruning so a caseless book reads
-    /// zero even though its (uncased) word entries are dropped.
+    /// Cased word-start observations in the book — the emergent gate input,
+    /// counted before pruning.
     cased_starts: u32,
 }
 
@@ -351,61 +369,238 @@ fn wilson_lower_bound_f(k: f64, n: f64, z: f64) -> f64 {
     (center - margin).clamp(0.0, 1.0)
 }
 
-/// The absolute linear recurrence knee (ADR 0050, absolute form): a hapax
-/// minority scores `1`, fading linearly to `0` past `k`. Fixing a word's
-/// minority occurrences raises the survivors' rarity (clean-as-you-go).
+/// The absolute linear recurrence knee (ADR 0050/0051): a hapax minority scores
+/// `1`, fading linearly to `0` past `k`.
 fn rarity(minority: u64, k: f64) -> f64 {
     (1.0 - (minority.saturating_sub(1) as f64 / k)).clamp(0.0, 1.0)
 }
 
-/// The lexicon-restricted per-glyph capitalize-after-terminal habit: for each
-/// forced key (a terminal glyph, or `None` = book-initial), the uppercase and
-/// total forced counts summed over words the lexicon calls intrinsically
-/// lowercase. Built corpus-wide at judge.
-struct Habit {
-    counts: HashMap<Option<char>, (u64, u64)>,
-    z: f64,
+fn logistic(z: f64) -> f64 {
+    1.0 / (1.0 + (-z).exp())
 }
 
-impl Habit {
-    /// Conservative uppercase dominance for a forced key (`0` when the key was
-    /// never observed among lexicon-lowercase words).
-    fn dominance(&self, key: Option<char>) -> f64 {
-        match self.counts.get(&key) {
-            Some(&(up, total)) => wilson_lower_bound(up, total, self.z),
-            None => 0.0,
+// ── W2 word-reshuffle machinery (case-free; ADR 0052). ──────────────────────
+
+/// Aggregate per-juror 2×2 association (Dunning G² / Fisher) of a class's
+/// aftermath vs the corpus baseline, standardized: under the null each juror's
+/// statistic is ~χ²₁ (mean 1), so `(Σ − df)/√(2·df)` is comparable across corpus
+/// sizes. `base` is the word-start distribution and **includes** the after-c
+/// occurrences, so the "elsewhere" column subtracts them out.
+fn reshuffle_deviate(
+    after: &HashMap<&str, u64>,
+    base: &HashMap<&str, u64>,
+    jurors: &[&str],
+) -> f64 {
+    let n_after: u64 = jurors.iter().map(|w| after.get(w).copied().unwrap_or(0)).sum();
+    let n_base: u64 = jurors.iter().map(|w| base.get(w).copied().unwrap_or(0)).sum();
+    if n_after == 0 || n_base <= n_after {
+        return 0.0;
+    }
+    let n_else = n_base - n_after;
+    let mut sum = 0.0;
+    let mut df = 0u64;
+    for w in jurors {
+        let a = after.get(w).copied().unwrap_or(0);
+        let total_w = base.get(w).copied().unwrap_or(0);
+        if total_w == 0 {
+            continue;
+        }
+        df += 1;
+        let b = n_after - a;
+        let c = total_w.saturating_sub(a);
+        let d = n_else.saturating_sub(c);
+        sum += Table2::new(a, b, c, d).association_score();
+    }
+    let df = df.max(1);
+    (sum - df as f64) / (2.0 * df as f64).sqrt()
+}
+
+/// Total-variation distance `½·Σ|p_w − q_w|` between two juror distributions —
+/// a size-independent effect size in `[0, 1]`; 0 iff the distributions match.
+fn tv_distance(p: &HashMap<&str, u64>, q: &HashMap<&str, u64>, jurors: &[&str]) -> f64 {
+    let np: u64 = jurors.iter().map(|w| p.get(w).copied().unwrap_or(0)).sum();
+    let nq: u64 = jurors.iter().map(|w| q.get(w).copied().unwrap_or(0)).sum();
+    if np == 0 || nq == 0 {
+        return 1.0;
+    }
+    let sum: f64 = jurors
+        .iter()
+        .map(|w| {
+            let pp = p.get(w).copied().unwrap_or(0) as f64 / np as f64;
+            let qq = q.get(w).copied().unwrap_or(0) as f64 / nq as f64;
+            (pp - qq).abs()
+        })
+        .sum();
+    (0.5 * sum).clamp(0.0, 1.0)
+}
+
+/// Per-class trust computed from the merged word table (ADR 0052). Returns the
+/// noisy-OR trust for every candidate class (≥ `CLASS_MIN_EVENTS`); a class
+/// absent from the map has trust 0. The W2 aggregates (per-class following-word
+/// counts, baseline word-start distribution) are reindexed here from the
+/// per-word forced tallies — the reshuffle witness is case-free, so a word's
+/// forced upper+lower after a class is its occurrence count there.
+fn build_trust(words: &HashMap<&str, WordStats>, z: f64) -> HashMap<ClassKey, f64> {
+    // Baseline word-start distribution + per-class aftermath (reindex).
+    let mut word_start_total: HashMap<&str, u64> = HashMap::new();
+    let mut after: HashMap<ClassKey, HashMap<&str, u64>> = HashMap::new();
+    for (&key, w) in words {
+        let total = w.all_total();
+        if total == 0 {
+            continue;
+        }
+        *word_start_total.entry(key).or_default() += total;
+        for (m, t) in &w.after_glyph {
+            if t.total() > 0 {
+                *after
+                    .entry(ClassKey { mark: *m, quoted: false })
+                    .or_default()
+                    .entry(key)
+                    .or_default() += t.total();
+            }
+        }
+        for (m, t) in &w.after_quote {
+            if t.total() > 0 {
+                *after
+                    .entry(ClassKey { mark: *m, quoted: true })
+                    .or_default()
+                    .entry(key)
+                    .or_default() += t.total();
+            }
         }
     }
 
-    fn raw(&self, key: Option<char>) -> (u64, u64) {
-        self.counts.get(&key).copied().unwrap_or((0, 0))
+    let jurors: Vec<&str> = word_start_total
+        .iter()
+        .filter(|&(_, &n)| n >= JUROR_MIN)
+        .map(|(&k, _)| k)
+        .collect();
+
+    let kept: Vec<ClassKey> = after
+        .iter()
+        .filter(|(_, c)| c.values().sum::<u64>() >= CLASS_MIN_EVENTS)
+        .map(|(&k, _)| k)
+        .collect();
+    if kept.is_empty() {
+        return HashMap::new();
     }
+
+    // W1 case-follow per class: capitalize dominance over lexicon-lowercase
+    // followers — exactly ADR 0051's per-glyph habit, re-derived per class.
+    let mut w1: HashMap<ClassKey, (u64, u64)> = HashMap::new();
+    for w in words.values() {
+        if !w.is_lexicon_lower(z) {
+            continue;
+        }
+        for (m, t) in &w.after_glyph {
+            let e = w1.entry(ClassKey { mark: *m, quoted: false }).or_default();
+            e.0 += t.upper();
+            e.1 += t.total();
+        }
+        for (m, t) in &w.after_quote {
+            let e = w1.entry(ClassKey { mark: *m, quoted: true }).or_default();
+            e.0 += t.upper();
+            e.1 += t.total();
+        }
+    }
+
+    struct Prelim {
+        s_case: f64,
+        case_seen: bool,
+        diff: f64,
+        events: u64,
+    }
+    let mut prelim: HashMap<ClassKey, Prelim> = HashMap::new();
+    for &ck in &kept {
+        let a = &after[&ck];
+        let dev = reshuffle_deviate(a, &word_start_total, &jurors);
+        let diff = logistic((dev - W2_SIGMOID_THR) / W2_SIGMOID_SCALE);
+        let (s_case, case_seen) = match w1.get(&ck) {
+            Some(&(up, total)) if total > 0 => (wilson_lower_bound(up, total, z), true),
+            _ => (0.0, false),
+        };
+        prelim.insert(ck, Prelim { s_case, case_seen, diff, events: a.values().sum() });
+    }
+
+    // Reference terminal for the agreement guard: the highest-VOLUME strongly-
+    // case-trusted BARE class (`.` in Latin corpora), so the canonical
+    // terminator anchors the comparison and does not erode itself. Ties break by
+    // mark for determinism. Caseless fallbacks: highest-differentness bare,
+    // then any highest-differentness class.
+    let by_diff = |pred: &dyn Fn(&ClassKey) -> bool| {
+        prelim
+            .iter()
+            .filter(|(ck, _)| pred(ck))
+            .max_by(|(a, pa), (b, pb)| {
+                pa.diff
+                    .partial_cmp(&pb.diff)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| a.mark.cmp(&b.mark))
+            })
+            .map(|(&ck, _)| ck)
+    };
+    let reference = prelim
+        .iter()
+        .filter(|(ck, p)| p.case_seen && !ck.quoted && p.s_case >= 0.5)
+        .max_by(|(a, pa), (b, pb)| {
+            pa.events.cmp(&pb.events).then_with(|| a.mark.cmp(&b.mark))
+        })
+        .map(|(&ck, _)| ck)
+        .or_else(|| by_diff(&|ck| !ck.quoted))
+        .or_else(|| by_diff(&|_| true));
+
+    // Signature agreement: `1 − TV(after_c, ref) / TV(baseline, ref)` — how much
+    // closer to the reference aftermath the class sits than a random word-start.
+    // A real terminal resets to the sentence-start distribution; a list
+    // separator's aftermath is its own, so agreement collapses (the genealogy
+    // guard plain differentness cannot supply).
+    let ref_after = reference.map(|r| &after[&r]);
+    let ref_base_tv =
+        ref_after.map(|ra| tv_distance(&word_start_total, ra, &jurors).max(1e-6));
+
+    let mut trust = HashMap::with_capacity(prelim.len());
+    for (&ck, p) in &prelim {
+        let agree = if Some(ck) == reference {
+            1.0
+        } else if let (Some(ra), Some(rbt)) = (ref_after, ref_base_tv) {
+            (1.0 - tv_distance(&after[&ck], ra, &jurors) / rbt).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let s_reshuffle = p.diff * agree;
+        trust.insert(ck, 1.0 - (1.0 - p.s_case) * (1.0 - s_reshuffle));
+    }
+    trust
 }
 
-/// The corpus-wide model derived from merged [`CasingStats`]: the summed word
-/// table and the lexicon-restricted per-glyph habit. Built once per `judge`;
-/// shared by both rules and by the calibration harness ([`evaluate`]).
-pub(crate) struct Model<'a> {
+/// The lexicon-restricted per-class habit, plus the corpus trust map (ADR
+/// 0052). Built corpus-wide at judge over the merged table.
+struct Model<'a> {
     words: HashMap<&'a str, WordStats>,
-    habit: Habit,
+    /// Per class trust; `None`-keyed book-initial is always fully trusted.
+    trust: HashMap<ClassKey, f64>,
+    /// Lexicon-restricted capitalize-after-class counts (up, total). `None` =
+    /// book-initial. A quote class is present only when promoted.
+    habit: HashMap<Option<ClassKey>, (u64, u64)>,
     z: f64,
+    gate: f64,
 }
 
-/// A convention factor pair: the dominance (Wilson bound) of the convention
-/// the site breaks and the site's rarity inputs. `score = dominance ×
-/// rarity(minority, k)`.
+/// A convention factor pair: the dominance the site breaks and its rarity
+/// inputs. `score = dominance × rarity(minority, k)`.
 #[derive(Debug, Clone, Copy)]
 pub struct Factors {
     pub dominance: f64,
     pub minority: u64,
     pub opportunities: u64,
-    /// Descriptive majority/total for the finding args (ADR 0048).
     pub raw_major: u64,
     pub raw_total: u64,
 }
 
 impl<'a> Model<'a> {
-    fn build(stats: &'a CasingStats, z: f64) -> Model<'a> {
+    fn build(stats: &'a CasingStats, cfg: &CasingConfig) -> Model<'a> {
+        let z = clamp_z(cfg.confidence_z);
+        let gate = f64::from(clamp_unit(cfg.trust_gate));
         // Corpus-wide word table: sum each book's raw tallies.
         let mut words: HashMap<&str, WordStats> = HashMap::new();
         for bc in stats.per_book.values() {
@@ -413,64 +608,197 @@ impl<'a> Model<'a> {
                 words.entry(key.as_str()).or_default().add(w);
             }
         }
-        // Lexicon-restricted per-glyph habit: forced tallies of the words the
-        // (hard) lexicon calls intrinsically lowercase. The restriction is
-        // what removes the proper-noun confound.
-        let mut counts: HashMap<Option<char>, (u64, u64)> = HashMap::new();
+
+        let trust = build_trust(&words, z);
+
+        // Lexicon-restricted per-class habit over the words the (baseline)
+        // lexicon calls intrinsically lowercase. Bare glyphs and book-initial
+        // always contribute (structurally forced); a quote class contributes
+        // only when promoted, so trust adds the quote channel without moving the
+        // bare-terminal convention.
+        let mut habit: HashMap<Option<ClassKey>, (u64, u64)> = HashMap::new();
         for w in words.values() {
             if !w.is_lexicon_lower(z) {
                 continue;
             }
-            if w.book_initial.upper + w.book_initial.lower > 0 {
-                let e = counts.entry(None).or_default();
-                e.0 += u64::from(w.book_initial.upper);
-                e.1 += u64::from(w.book_initial.upper) + u64::from(w.book_initial.lower);
+            if w.book_initial.total() > 0 {
+                let e = habit.entry(None).or_default();
+                e.0 += w.book_initial.upper();
+                e.1 += w.book_initial.total();
             }
-            for (g, t) in &w.after_glyph {
-                let e = counts.entry(Some(*g)).or_default();
-                e.0 += u64::from(t.upper);
-                e.1 += u64::from(t.upper) + u64::from(t.lower);
+            for (m, t) in &w.after_glyph {
+                let e = habit.entry(Some(ClassKey { mark: *m, quoted: false })).or_default();
+                e.0 += t.upper();
+                e.1 += t.total();
+            }
+            for (m, t) in &w.after_quote {
+                let ck = ClassKey { mark: *m, quoted: true };
+                if trust.get(&ck).copied().unwrap_or(0.0) > PROMOTE_BAR {
+                    let e = habit.entry(Some(ck)).or_default();
+                    e.0 += t.upper();
+                    e.1 += t.total();
+                }
             }
         }
-        Model { words, habit: Habit { counts, z }, z }
+
+        Model { words, trust, habit, z, gate }
+    }
+
+    fn trust_class(&self, ck: ClassKey) -> f64 {
+        self.trust.get(&ck).copied().unwrap_or(0.0)
+    }
+
+    /// Is a quote-context class promoted to a forced class? (Bare classes are
+    /// always forced; this only decides the quote fold.)
+    fn quote_promoted(&self, mark: char) -> bool {
+        self.trust_class(ClassKey { mark, quoted: true }) > PROMOTE_BAR
+    }
+
+    fn habit_dominance(&self, key: Option<ClassKey>) -> f64 {
+        match self.habit.get(&key) {
+            Some(&(up, total)) => wilson_lower_bound(up, total, self.z),
+            None => 0.0,
+        }
+    }
+
+    /// Effective mid-flow pool (upper, lower): mid-flow plus quote-context
+    /// classes that did **not** clear the promotion bar (they fall back to
+    /// mid-flow, exactly ADR 0051 — no loss).
+    fn eff_mid(&self, w: &WordStats) -> (u64, u64) {
+        let mut up = u64::from(w.mid_upper);
+        let mut lo = u64::from(w.mid_lower);
+        for (m, t) in &w.after_quote {
+            if !self.quote_promoted(*m) {
+                up += t.upper();
+                lo += t.lower();
+            }
+        }
+        (up, lo)
+    }
+
+    /// Soft-censored effective uppercase count: the effective mid-flow uppercase
+    /// plus each *forced* uppercase re-entering at `1 − trust(class)·habit(class)`
+    /// (ADR 0052 — the discount is weighted by trust). Book-initial is fully
+    /// trusted.
+    fn effective_upper(&self, w: &WordStats) -> f64 {
+        let (mid_up, _) = self.eff_mid(w);
+        let mut up = mid_up as f64;
+        if w.book_initial.upper > 0 {
+            up += (1.0 - self.habit_dominance(None)) * f64::from(w.book_initial.upper);
+        }
+        for (m, t) in &w.after_glyph {
+            if t.upper > 0 {
+                let ck = ClassKey { mark: *m, quoted: false };
+                let discount = 1.0 - self.trust_class(ck) * self.habit_dominance(Some(ck));
+                up += discount * f64::from(t.upper);
+            }
+        }
+        for (m, t) in &w.after_quote {
+            if t.upper > 0 && self.quote_promoted(*m) {
+                let ck = ClassKey { mark: *m, quoted: true };
+                let discount = 1.0 - self.trust_class(ck) * self.habit_dominance(Some(ck));
+                up += discount * f64::from(t.upper);
+            }
+        }
+        up
+    }
+
+    /// Forced-lowercase count for the positional minority: book-initial plus
+    /// bare glyphs plus *promoted* quote classes (an unpromoted quote's
+    /// lowercase folded into the mid-flow pool).
+    fn forced_lower(&self, w: &WordStats) -> u64 {
+        let mut lo = w.book_initial.lower();
+        lo += self.after_glyph_sum(w, ForcedTally::lower);
+        for (m, t) in &w.after_quote {
+            if self.quote_promoted(*m) {
+                lo += t.lower();
+            }
+        }
+        lo
+    }
+
+    fn forced_total(&self, w: &WordStats) -> u64 {
+        let mut n = w.book_initial.total();
+        n += self.after_glyph_sum(w, ForcedTally::total);
+        for (m, t) in &w.after_quote {
+            if self.quote_promoted(*m) {
+                n += t.total();
+            }
+        }
+        n
+    }
+
+    fn after_glyph_sum(&self, w: &WordStats, f: fn(&ForcedTally) -> u64) -> u64 {
+        w.after_glyph.values().map(f).sum()
+    }
+
+    fn is_cap_soft(&self, w: &WordStats) -> bool {
+        let up = self.effective_upper(w);
+        let (_, lo) = self.eff_mid(w);
+        let n = up + lo as f64;
+        n > 0.0 && wilson_lower_bound_f(up, n, self.z) > 0.5
+    }
+
+    fn is_lower_soft(&self, w: &WordStats) -> bool {
+        let up = self.effective_upper(w);
+        let (_, lo) = self.eff_mid(w);
+        let n = up + lo as f64;
+        n > 0.0 && wilson_lower_bound_f(lo as f64, n, self.z) > 0.5
     }
 
     /// The intrinsic-channel factors for a lowercase site of word `key`, if the
-    /// word is intrinsically capitalized (soft-censored). Covers the intrinsic
-    /// and both quadrants.
+    /// word is intrinsically capitalized (soft-censored). The censoring discount
+    /// is trust-weighted; the channel is never gated.
     fn intrinsic(&self, key: &str) -> Option<Factors> {
         let w = self.words.get(key)?;
-        if !w.is_cap_soft(&self.habit, self.z) {
+        if !self.is_cap_soft(w) {
             return None;
         }
+        let up = self.effective_upper(w);
+        let (_, lo) = self.eff_mid(w);
         Some(Factors {
-            dominance: w.cap_dominance_soft(&self.habit, self.z),
-            minority: w.total_lower(),
-            opportunities: w.total(),
-            raw_major: w.total_upper(),
-            raw_total: w.total(),
+            dominance: wilson_lower_bound_f(up, up + lo as f64, self.z),
+            minority: w.all_lower(),
+            opportunities: w.all_total(),
+            raw_major: w.all_upper(),
+            raw_total: w.all_total(),
         })
     }
 
     /// The positional-channel factors for a forced-position lowercase site of
-    /// word `key` at `pos`, if the word is classifiable (lexicon-lower or
-    /// capitalized). Covers the positional and both quadrants.
+    /// word `key` at `pos`, if the word is classifiable AND the site's class
+    /// clears the trust gate (ADR 0052). An unpromoted quote-context site has
+    /// folded to mid-flow and is not forced ⇒ `None`.
     fn positional(&self, key: &str, pos: PosClass) -> Option<Factors> {
         if !pos.is_forced() {
             return None;
         }
         let w = self.words.get(key)?;
-        // A forced-lowercase site of a word the lexicon cannot classify (neither
-        // capitalized nor lower-dominant) is genuine ambiguity, not an anomaly.
-        if !w.is_cap_soft(&self.habit, self.z) && !w.is_lower_soft(&self.habit, self.z) {
+        let (habit_key, trust) = match pos {
+            PosClass::BookInitial => (None, 1.0),
+            PosClass::ForcedAfterTerminal(ck) => {
+                if ck.quoted && !self.quote_promoted(ck.mark) {
+                    return None; // folded back to mid-flow — not a forced site
+                }
+                (Some(ck), self.trust_class(ck))
+            }
+            PosClass::Midflow => return None,
+        };
+        // Gate: verdicts gate. Below the trust gate the positional channel is
+        // not scored (the discount already weighted the intrinsic channel).
+        if trust < self.gate {
             return None;
         }
-        let key_glyph = pos.habit_key();
-        let (raw_major, raw_total) = self.habit.raw(key_glyph);
+        // A forced-lowercase site of a word the lexicon cannot classify is
+        // genuine ambiguity, not an anomaly.
+        if !self.is_cap_soft(w) && !self.is_lower_soft(w) {
+            return None;
+        }
+        let (raw_major, raw_total) = self.habit.get(&habit_key).copied().unwrap_or((0, 0));
         Some(Factors {
-            dominance: self.habit.dominance(key_glyph),
-            minority: w.forced_lower(),
-            opportunities: w.forced_total(),
+            dominance: self.habit_dominance(habit_key),
+            minority: self.forced_lower(w),
+            opportunities: self.forced_total(w),
             raw_major,
             raw_total,
         })
@@ -478,10 +806,7 @@ impl<'a> Model<'a> {
 }
 
 /// A lowercase word-start observed by the book walk — a flag candidate for
-/// either rule. Produced transiently and forwarded reduce→judge within a call
-/// as [`crate::rule::RuleSites`] (ADR 0044); never stored in stats. Carries the
-/// case-folded key so `judge` looks the word up in the merged model without
-/// re-slicing the text on the forwarded path.
+/// either rule. Forwarded reduce→judge within a call (ADR 0044); never stored.
 pub struct LowerSite {
     pub(crate) sid: Sid,
     pub(crate) start: u32,
@@ -490,20 +815,14 @@ pub struct LowerSite {
     pub(crate) pos: PosClass,
 }
 
-/// True iff `c` is a cased/uncased letter (GC L*) — the terminal machine's
-/// "letter", and the flank test for a word-internal hyphen.
+/// True iff `c` is a cased/uncased letter (GC L*).
 fn is_letter(c: char) -> bool {
     class_of(c).is_alphabetic()
 }
 
-/// The verse's word units: UAX #29 word tokens ([`crate::token::tokenize`]),
-/// then adjacent tokens joined across a single word-internal hyphen (U+002D or
-/// U+2010 flanked by a letter on both sides) merged into one span. UAX #29
-/// keeps apostrophes word-internal (`ng'ombe` is one token) but SPLITS at
-/// hyphens, so a compound like `Bar-jesus` would otherwise surface its tail as
-/// a spurious lowercase word — the merge restores it as one word whose first
-/// letter is `B`. Pure-number tokens (no letter) carry no casing evidence and
-/// are dropped.
+/// The verse's word units: UAX #29 word tokens, then adjacent tokens joined
+/// across a single letter-flanked hyphen merged into one span. Pure-number
+/// tokens are dropped.
 fn compound_words(text: &str) -> Vec<Span> {
     let mut out: Vec<Span> = Vec::new();
     for t in tokenize(text) {
@@ -525,11 +844,19 @@ fn compound_words(text: &str) -> Vec<Span> {
     out
 }
 
-/// Advance the pending-terminal state machine over a gap between words (all
-/// non-word scalars): the first punctuation after a letter is the candidate
-/// terminal, later punctuation before the next word marks the boundary
-/// *intervening*, whitespace/digits are transparent.
-fn advance_gap(gap: &str, pending: &mut Option<(char, bool)>, prev_letter: &mut bool) {
+/// The pending-terminal state across a gap between words. `mark` is the
+/// candidate terminal (first punctuation after a letter); `quote` records a
+/// close-quote glyph seen after it; `other` records any *non-quote* intervening
+/// punctuation, which collapses the boundary to mid-flow (`...`).
+#[derive(Clone, Copy)]
+struct Pending {
+    mark: char,
+    quote: bool,
+    other: bool,
+}
+
+/// Advance the pending-terminal machine over a gap (all non-word scalars).
+fn advance_gap(gap: &str, pending: &mut Option<Pending>, prev_letter: &mut bool) {
     for c in gap.chars() {
         let cl = class_of(c);
         if cl.is_whitespace() || cl.is_numeric() {
@@ -538,8 +865,16 @@ fn advance_gap(gap: &str, pending: &mut Option<(char, bool)>, prev_letter: &mut 
             *prev_letter = true;
         } else {
             match pending {
-                Some((_, intervening)) => *intervening = true,
-                None if *prev_letter => *pending = Some((c, false)),
+                Some(p) => {
+                    if cl.is_quote() {
+                        p.quote = true;
+                    } else {
+                        p.other = true;
+                    }
+                }
+                None if *prev_letter => {
+                    *pending = Some(Pending { mark: c, quote: false, other: false });
+                }
                 None => {}
             }
             *prev_letter = false;
@@ -547,22 +882,34 @@ fn advance_gap(gap: &str, pending: &mut Option<(char, bool)>, prev_letter: &mut 
     }
 }
 
+/// Resolve a taken pending state to the next word's position class. Non-quote
+/// intervening punctuation collapses to mid-flow (ADR 0051); a bare terminal or
+/// a terminal-then-close-quote becomes the boundary class (ADR 0052).
+fn pos_of(book_initial: bool, taken: Option<Pending>) -> PosClass {
+    if book_initial {
+        return PosClass::BookInitial;
+    }
+    match taken {
+        Some(p) if p.other => PosClass::Midflow,
+        Some(p) if p.quote => {
+            PosClass::ForcedAfterTerminal(ClassKey { mark: p.mark, quoted: true })
+        }
+        Some(p) => PosClass::ForcedAfterTerminal(ClassKey { mark: p.mark, quoted: false }),
+        None => PosClass::Midflow,
+    }
+}
+
 /// Scan one book's verses in canonical order, accumulating the raw per-word
 /// table and producing the lowercase flag candidates. The pending terminal is
-/// carried across verse seams (a verse start is not a sentence start); the
-/// book-initial word is forced. A word cannot span a seam (verse texts are
-/// separate strings). Entries with no lowercase occurrence are pruned before
-/// return.
+/// carried across verse seams; the book-initial word is forced.
 fn walk_book(verses: &[(Sid, &str)]) -> (BookCasing, Vec<LowerSite>) {
     let mut bc = BookCasing::default();
     let mut sites = Vec::new();
-    let mut pending: Option<(char, bool)> = None;
+    let mut pending: Option<Pending> = None;
     let mut book_initial = true;
 
     for (sid, text) in verses {
         let words = compound_words(text);
-        // Seam gap: a terminal at this verse's start is not attached to the
-        // previous verse's last letter. `prev_letter` never carries across.
         let mut prev_letter = false;
         let mut cursor = 0usize;
 
@@ -578,17 +925,7 @@ fn walk_book(verses: &[(Sid, &str)]) -> (BookCasing, Vec<LowerSite>) {
             } else {
                 Case::Uncased
             };
-            let pos = if book_initial {
-                PosClass::BookInitial
-            } else if let Some((glyph, intervening)) = pending.take() {
-                if intervening {
-                    PosClass::Midflow
-                } else {
-                    PosClass::ForcedAfterTerminal(glyph)
-                }
-            } else {
-                PosClass::Midflow
-            };
+            let pos = pos_of(book_initial, pending.take());
             book_initial = false;
 
             if case != Case::Uncased {
@@ -612,14 +949,11 @@ fn walk_book(verses: &[(Sid, &str)]) -> (BookCasing, Vec<LowerSite>) {
         advance_gap(&text[cursor..], &mut pending, &mut prev_letter);
     }
 
-    // Prune only uncased-only words (see the module doc): the sole per-book
-    // drop that cannot change any corpus-wide verdict.
     bc.words.retain(|_, w| w.has_case());
     (bc, sites)
 }
 
-/// Shared reduce for both casing rules: walk each book once, producing the raw
-/// per-book table and the forwarded lowercase sites.
+/// Shared reduce for both casing rules: walk each book once.
 fn reduce_casing(books: &Books<'_>) -> (CasingStats, BTreeMap<BookId, Vec<LowerSite>>) {
     let mut per_book = BTreeMap::new();
     let mut sites = BTreeMap::new();
@@ -637,9 +971,7 @@ fn any_cased(stats: &CasingStats) -> bool {
 }
 
 /// Shared judge skeleton: build the corpus model, recover each book's lowercase
-/// sites (from the forwarded reduce sites where this call scanned the book, by
-/// re-walking otherwise — ADR 0044), and let `emit` turn a site into at most
-/// one finding for the calling rule's channel.
+/// sites, and let `emit` turn a site into at most one finding.
 fn judge_casing(
     stats: &RuleStats,
     books: &Books<'_>,
@@ -654,8 +986,7 @@ fn judge_casing(
     if !any_cased(stats) {
         return Vec::new();
     }
-    let z = clamp_z(cfg.confidence_z);
-    let model = Model::build(stats, z);
+    let model = Model::build(stats, cfg);
 
     let forwarded = match sites {
         Some(rule::RuleSites::Casing(m)) => Some(m),
@@ -728,6 +1059,7 @@ impl StatefulRule for SentenceInitialLowercase {
             if score < floor {
                 return None;
             }
+            let (glyph, quoted) = site.pos.habit_glyph();
             Some(Finding {
                 sid: site.sid,
                 code: SENTENCE_INITIAL_LOWERCASE,
@@ -735,7 +1067,8 @@ impl StatefulRule for SentenceInitialLowercase {
                 range: site_span(site),
                 score: Some(score as f32),
                 args: Some(FindingArgs::CasingConvention {
-                    glyph: site.pos.habit_key(),
+                    glyph,
+                    quoted,
                     upper: f.raw_major.min(u64::from(u32::MAX)) as u32,
                     total: f.raw_total.min(u64::from(u32::MAX)) as u32,
                 }),
@@ -799,16 +1132,15 @@ impl StatefulRule for InconsistentWordCasing {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// Calibration API (ADR 0051). The `--casing` harness in examples/calibrate.rs
-// consumes this to sweep floor/k and track review anchors over the real walk
-// and the real model; it is not used by the shipped rules' judge, which apply
-// the frozen knobs directly above.
+// Calibration API (ADR 0051/0052). The `--casing` harness in calibrate.rs
+// consumes this to sweep floor/k and track review anchors over the real walk,
+// model, trust map, and gate; it is not used by the shipped rules' judge.
 // ─────────────────────────────────────────────────────────────────────────
 
 /// One lowercase site evaluated against the corpus model: its position and the
-/// two channels' factors (either may be absent). `score = dominance ×
-/// rarity(minority, k)` on each present channel; the surfacing score is the
-/// max of the two.
+/// two channels' factors (either may be absent). The positional channel already
+/// reflects the trust gate (`None` when gated or folded to mid-flow); the
+/// intrinsic channel already reflects the trust-weighted censoring discount.
 pub struct SiteEval {
     pub sid: Sid,
     pub start: u32,
@@ -818,13 +1150,11 @@ pub struct SiteEval {
     pub positional: Option<Factors>,
 }
 
-/// Build the corpus model and classify every lowercase site — the calibration
-/// entry point. Uses the same walk, model, and soft-censored classification the
-/// shipped rules use, so swept volumes reflect the real implementation.
-pub fn evaluate(books: &Books<'_>, confidence_z: f32) -> Vec<SiteEval> {
-    let z = clamp_z(confidence_z);
+/// Build the corpus model and classify every lowercase site at the config's
+/// knobs (including `trust_gate`) — the calibration entry point.
+pub fn evaluate(books: &Books<'_>, cfg: &CasingConfig) -> Vec<SiteEval> {
     let (stats, sites_map) = reduce_casing(books);
-    let model = Model::build(&stats, z);
+    let model = Model::build(&stats, cfg);
     let mut out = Vec::new();
     for book_sites in sites_map.values() {
         for site in book_sites {
@@ -847,8 +1177,14 @@ mod tests {
     use crate::sid::BookId;
     use crate::verse::by_book;
 
+    /// Full config with an explicit trust gate (ADR 0052).
+    fn cfg_g(emit_score_min: f32, recurrence_k: f32, confidence_z: f32, trust_gate: f32) -> CasingConfig {
+        CasingConfig { emit_score_min, recurrence_k, confidence_z, trust_gate }
+    }
+
+    /// Config at the default trust gate (0.90) — most ADR 0051 tests.
     fn cfg(emit_score_min: f32, recurrence_k: f32, confidence_z: f32) -> CasingConfig {
-        CasingConfig { emit_score_min, recurrence_k, confidence_z }
+        cfg_g(emit_score_min, recurrence_k, confidence_z, 0.90)
     }
 
     fn sid(book: &str, v: u16) -> Sid {
@@ -859,8 +1195,6 @@ mod tests {
         verses.iter().map(|&(v, t)| (sid(book, v), t.to_string())).collect()
     }
 
-    /// Reduce + judge one rule over a whole map (the same-call forwarded-sites
-    /// path). Findings are already scoped to the map's verses.
     fn run(map: &VerseMap, r: &dyn StatefulRule) -> Vec<Finding> {
         let books = by_book(map);
         let (stats, sites) = r.reduce(&books, None, None);
@@ -891,17 +1225,25 @@ mod tests {
         out
     }
 
-    /// INTRINSIC fires: a capitalized word (`Jesus` mid-flow ×20) written once
-    /// lowercase mid-flow is the anomaly; nothing else surfaces.
+    /// The corpus-wide trust for one class (test introspection over the model).
+    fn class_trust(map: &VerseMap, mark: char, quoted: bool) -> f64 {
+        let books = by_book(map);
+        let (stats, _) = reduce_casing(&books);
+        let RuleStats::Casing(ref cs) = RuleStats::Casing(stats) else { unreachable!() };
+        let model = Model::build(cs, &CasingConfig::default());
+        model.trust_class(ClassKey { mark, quoted })
+    }
+
+    // ── ADR 0051 behaviours (schema-updated only where forced). ──────────────
+
+    /// INTRINSIC fires on a lowercased capital word; positional stays silent.
     #[test]
     fn intrinsic_flags_a_lowercased_capital_word() {
         let mut vm = cycle("GEN", &["we saw Jesus"], 20);
         vm.insert(sid("GEN", 100), "we saw jesus".to_string());
         let f = run(&vm, &intrinsic(cfg(0.5, 32.0, 0.0)));
         assert_eq!(f.len(), 1, "{f:?}");
-        assert_eq!(f[0].sid, sid("GEN", 100));
         assert_eq!(slice(&vm, &f[0]), "jesus");
-        assert_eq!(f[0].code, INCONSISTENT_WORD_CASING);
         match &f[0].args {
             Some(FindingArgs::WordCasing { word, upper, total }) => {
                 assert_eq!(word, "jesus");
@@ -909,37 +1251,29 @@ mod tests {
             }
             other => panic!("expected WordCasing, got {other:?}"),
         }
-        // The positional rule stays silent — `jesus` is mid-flow, not forced.
         assert!(run(&vm, &positional(cfg(0.5, 32.0, 0.0))).is_empty());
     }
 
-    /// POSITIONAL fires: a corpus that reliably capitalizes a lexicon-lowercase
-    /// word (`the`) after a period, then writes it lowercase there once.
+    /// POSITIONAL fires after a strong terminal, and the args carry the class.
     #[test]
     fn positional_flags_lowercase_after_a_strong_terminal() {
-        // "The" opens every sentence (forced upper, across the seam); "the"
-        // recurs mid-flow. The trailing '.' is what forces the next start.
-        let mut vm = cycle("GEN", &["The men saw the gate."], 30);
+        let mut vm = cycle("GEN", &["The men saw the gate."], 40);
         vm.insert(sid("GEN", 100), "He fell. the men ran.".to_string());
         let f = run(&vm, &positional(cfg(0.5, 32.0, 0.0)));
         let hit: Vec<_> = f.iter().filter(|f| slice(&vm, f) == "the").collect();
         assert_eq!(hit.len(), 1, "{f:?}");
-        assert_eq!(hit[0].sid, sid("GEN", 100));
-        assert_eq!(hit[0].code, SENTENCE_INITIAL_LOWERCASE);
         match &hit[0].args {
-            Some(FindingArgs::CasingConvention { glyph, upper, total }) => {
+            Some(FindingArgs::CasingConvention { glyph, quoted, upper, total }) => {
                 assert_eq!(*glyph, Some('.'));
+                assert!(!*quoted, "a bare terminal is not a quote-context class");
                 assert!(*upper > 0 && *upper <= *total);
             }
             other => panic!("expected CasingConvention, got {other:?}"),
         }
     }
 
-    /// The recurrence factor silences a minority that recurs, on BOTH channels:
-    /// the same dominance that fires at minority 1 goes silent at minority > k.
     #[test]
     fn recurrence_silences_a_recurring_minority() {
-        // Intrinsic: `jesus` capital ×100, lowercase mid-flow either 1 or 40.
         let one = {
             let mut vm = cycle("GEN", &["we saw Jesus"], 100);
             vm.insert(sid("GEN", 200), "we saw jesus".to_string());
@@ -953,10 +1287,9 @@ mod tests {
             vm
         };
         let r = intrinsic(cfg(0.5, 32.0, 0.0));
-        assert_eq!(run(&one, &r).len(), 1, "a single slip surfaces");
-        assert!(run(&many, &r).is_empty(), "a minority recurring past k is silent");
+        assert_eq!(run(&one, &r).len(), 1);
+        assert!(run(&many, &r).is_empty());
 
-        // Positional: `the` capital after '.' ×100, lowercase after '.' 1 or 40.
         let p_one = {
             let mut vm = cycle("GEN", &["The men saw the gate."], 100);
             vm.insert(sid("GEN", 300), "He fell. the men ran.".to_string());
@@ -971,158 +1304,55 @@ mod tests {
         };
         let pr = positional(cfg(0.5, 32.0, 0.0));
         assert!(run(&p_one, &pr).iter().any(|f| slice(&p_one, f) == "the"));
-        assert!(
-            !run(&p_many, &pr).iter().any(|f| slice(&p_many, f) == "the"),
-            "a forced-lowercase form recurring past k is silent"
-        );
+        assert!(!run(&p_many, &pr).iter().any(|f| slice(&p_many, f) == "the"));
     }
 
-    /// Lexicon restriction: a corpus that capitalizes ONLY proper nouns after
-    /// periods asserts no positional habit — the naive rule would flag, the
-    /// lexicon-restricted one stays silent.
-    #[test]
-    fn lexicon_restriction_kills_a_proper_noun_only_habit() {
-        // Every sentence start is the proper noun `God` (never lowercase);
-        // the lexicon-lowercase words that follow periods (`we`, via the seam)
-        // are lowercase, so the restricted habit is ~0.
-        let mut vm = cycle("GEN", &["we praise God"], 30);
-        vm.insert(sid("GEN", 100), "we praise God. god is good".to_string());
-        // Positional is silent: `god` after '.' has no habit backing it.
-        assert!(
-            !run(&vm, &positional(cfg(0.95, 32.0, 1.96))).iter().any(|f| slice(&vm, f) == "god"),
-            "proper-noun-only sentence starts assert no habit"
-        );
-    }
-
-    /// Soft censoring: a word seen capitalized only at sentence starts still
-    /// earns an intrinsic profile in a NO-habit corpus (the forced pool returns
-    /// at weight ≈1), but not in a STRONG-habit corpus (the position explains
-    /// the capital, weight ≈0).
-    #[test]
-    fn soft_censoring_depends_on_the_corpus_habit() {
-        // "amen" appears only as forced-upper `Amen` after '.', plus one
-        // mid-flow lowercase `amen`. The difference between the two corpora is
-        // solely whether OTHER sentence starts are capitalized.
-        // The lexicon-lowercase word `the` sets the habit: written lowercase
-        // after '.' (`the dog runs`) it is a no-habit corpus; written `The` it
-        // is a strong-habit corpus. That is the only difference between them.
-        let no_habit = {
-            let mut vm = cycle("GEN", &["we see the cat. the dog runs."], 20);
-            for i in 0..5 {
-                vm.insert(sid("GEN", 100 + i), "he said. Amen indeed.".to_string());
-            }
-            vm.insert(sid("GEN", 200), "so amen then".to_string());
-            vm
-        };
-        let strong_habit = {
-            let mut vm = cycle("GEN", &["we see the cat. The dog runs."], 20);
-            for i in 0..5 {
-                vm.insert(sid("GEN", 100 + i), "he said. Amen indeed.".to_string());
-            }
-            vm.insert(sid("GEN", 200), "so amen then".to_string());
-            vm
-        };
-        let r = intrinsic(cfg(0.5, 32.0, 0.0));
-        assert!(
-            run(&no_habit, &r).iter().any(|f| slice(&no_habit, f) == "amen"),
-            "no-habit corpus: forced-upper re-enters, `amen` is intrinsically capital"
-        );
-        assert!(
-            !run(&strong_habit, &r).iter().any(|f| slice(&strong_habit, f) == "amen"),
-            "strong-habit corpus: the position explains the capital, `amen` is not"
-        );
-    }
-
-    /// Caseless script: no cased word-starts, so the emergent gate silences
-    /// both rules (silence by construction, not a script list).
     #[test]
     fn caseless_script_is_silent() {
-        let vm = book(
-            "GEN",
-            &[(1, "उसने कहा। वे चले गए।"), (2, "फिर वह चला गया।")],
-        );
+        let vm = book("GEN", &[(1, "उसने कहा। वे चले गए।"), (2, "फिर वह चला गया।")]);
         assert!(run(&vm, &intrinsic(cfg(0.0, 32.0, 0.0))).is_empty());
         assert!(run(&vm, &positional(cfg(0.0, 32.0, 0.0))).is_empty());
     }
 
-    /// The pending terminal carries across a verse seam: a period ending verse
-    /// N forces the first word of verse N+1 (positional), which the old
-    /// per-verse rule could never see.
     #[test]
     fn positional_carries_across_a_verse_seam() {
-        // Every sentence starts with an uppercase `There`; `there` also recurs
-        // mid-flow, so it is lexicon-lowercase with a strong '.'-habit.
         let mut vm = cycle("GEN", &["There we go there.", "There it is there."], 30);
-        // A period ends verse 200; verse 201 opens with lowercase `there`.
         vm.insert(sid("GEN", 200), "he stops.".to_string());
         vm.insert(sid("GEN", 201), "there he goes".to_string());
         let f = run(&vm, &positional(cfg(0.5, 32.0, 0.0)));
-        assert!(
-            f.iter().any(|f| f.sid == sid("GEN", 201) && slice(&vm, f) == "there"),
-            "the '.' ending v200 forces `there` opening v201: {f:?}"
-        );
+        assert!(f.iter().any(|f| f.sid == sid("GEN", 201) && slice(&vm, f) == "there"));
     }
 
-    /// Verse-initial is NOT forced: a verse continuing a previous verse that
-    /// has NO terminal is mid-flow, so a lowercase word there is not positional
-    /// even under a strong habit.
     #[test]
     fn verse_initial_without_a_terminal_is_not_forced() {
-        // Strong '.'-habit (starts are uppercase `There`, no lowercase forced).
         let mut vm = cycle("GEN", &["There we go there.", "There it is there."], 30);
-        vm.insert(sid("GEN", 200), "he walks".to_string()); // NO terminal
-        vm.insert(sid("GEN", 201), "there he goes".to_string()); // continuation
+        vm.insert(sid("GEN", 200), "he walks".to_string());
+        vm.insert(sid("GEN", 201), "there he goes".to_string());
         let f = run(&vm, &positional(cfg(0.5, 32.0, 0.0)));
-        assert!(
-            !f.iter().any(|f| f.sid == sid("GEN", 201)),
-            "no terminal at the seam ⇒ v201's `there` is a continuation, not forced: {f:?}"
-        );
+        assert!(!f.iter().any(|f| f.sid == sid("GEN", 201)));
     }
 
-    /// A hyphen-flanked compound is one word: `Bar-jesus` never surfaces its
-    /// lowercase tail `jesus` as an anomaly (it is one word starting `B`),
-    /// whereas a bare lowercase `jesus` does.
     #[test]
     fn hyphen_compound_is_one_word() {
         let mut compound = cycle("GEN", &["we saw Jesus"], 20);
         compound.insert(sid("GEN", 100), "he met Bar-jesus".to_string());
-        assert!(
-            run(&compound, &intrinsic(cfg(0.5, 32.0, 0.0))).is_empty(),
-            "the compound tail is not a separate lowercase word"
-        );
+        assert!(run(&compound, &intrinsic(cfg(0.5, 32.0, 0.0))).is_empty());
 
         let mut bare = cycle("GEN", &["we saw Jesus"], 20);
         bare.insert(sid("GEN", 100), "he met jesus".to_string());
-        assert_eq!(
-            run(&bare, &intrinsic(cfg(0.5, 32.0, 0.0))).len(),
-            1,
-            "a bare lowercase `jesus` does surface"
-        );
+        assert_eq!(run(&bare, &intrinsic(cfg(0.5, 32.0, 0.0))).len(), 1);
     }
 
-    /// A both-quadrant site (forced-position lowercase of an intrinsically-
-    /// capitalized word) fires BOTH rules — corroboration.
     #[test]
     fn both_quadrant_fires_both_rules() {
-        // `God` is capitalized mid-flow (intrinsic); `The` builds the '.'-habit
-        // (positional); verse 100 writes `god` lowercase right after a period.
-        let mut vm = cycle("GEN", &["The men praise God near the gate."], 30);
+        let mut vm = cycle("GEN", &["The men praise God near the gate."], 40);
         vm.insert(sid("GEN", 100), "He wept. god is near.".to_string());
         let fi = run(&vm, &intrinsic(cfg(0.5, 32.0, 0.0)));
         let fp = run(&vm, &positional(cfg(0.5, 32.0, 0.0)));
-        assert!(
-            fi.iter().any(|f| f.sid == sid("GEN", 100) && slice(&vm, f) == "god"),
-            "intrinsic fires on the lowercased capital: {fi:?}"
-        );
-        assert!(
-            fp.iter().any(|f| f.sid == sid("GEN", 100) && slice(&vm, f) == "god"),
-            "positional fires on the same forced site: {fp:?}"
-        );
+        assert!(fi.iter().any(|f| f.sid == sid("GEN", 100) && slice(&vm, f) == "god"));
+        assert!(fp.iter().any(|f| f.sid == sid("GEN", 100) && slice(&vm, f) == "god"));
     }
 
-    /// Editing a book supersedes its prior stats (merge at book granularity):
-    /// a corrected re-reduce makes a previously-flagged anomaly disappear, and
-    /// `remove_book` drops a book's contribution entirely.
     #[test]
     fn book_supersede_via_merge_and_remove() {
         let r = intrinsic(cfg(0.5, 32.0, 0.0));
@@ -1132,16 +1362,13 @@ mod tests {
         let (prior, _) = r.reduce(&dirty_books, None, None);
         assert_eq!(r.judge(&prior, &dirty_books, None, None).len(), 1);
 
-        // Corrected edit of GEN: `jesus` → `Jesus`. Merge supersedes the book.
         let mut fixed = cycle("GEN", &["we saw Jesus"], 20);
         fixed.insert(sid("GEN", 100), "we saw Jesus".to_string());
         let fixed_books = by_book(&fixed);
         let (fresh, _) = r.reduce(&fixed_books, None, None);
         let merged = prior.merge(fresh);
-        assert!(r.judge(&merged, &fixed_books, None, None).is_empty(), "supersede clears it");
+        assert!(r.judge(&merged, &fixed_books, None, None).is_empty());
 
-        // remove_book drops the contribution: an EXO-only anomaly backed by
-        // GEN's habit falls away once GEN is removed.
         let mut two = cycle("GEN", &["we saw Jesus"], 20);
         two.extend(book("EXO", &[(1, "we saw jesus")]));
         let (mut stats2, _) = r.reduce(&by_book(&two), None, None);
@@ -1149,30 +1376,150 @@ mod tests {
         let RuleStats::Casing(ref mut c) = stats2 else { unreachable!() };
         c.remove_book(BookId::from_str("GEN").unwrap());
         let exo = book("EXO", &[(1, "we saw jesus")]);
-        assert!(
-            r.judge(&stats2, &by_book(&exo), None, None).is_empty(),
-            "without GEN's evidence, EXO's lone `jesus` can't assert a convention"
-        );
+        assert!(r.judge(&stats2, &by_book(&exo), None, None).is_empty());
     }
 
-    /// Floor and knee are honoured: the same site clears a low floor and not a
-    /// high one; and shrinking `k` silences a two-occurrence slip a wide `k`
-    /// keeps.
     #[test]
     fn floor_and_knee_config_are_respected() {
-        // dom(jesus) = 100/101 ≈ 0.990 at z=0, minority 1 ⇒ score ≈ 0.990.
         let mut vm = cycle("GEN", &["we saw Jesus"], 100);
         vm.insert(sid("GEN", 200), "we saw jesus".to_string());
-        assert_eq!(run(&vm, &intrinsic(cfg(0.95, 32.0, 0.0))).len(), 1, "clears 0.95");
-        assert!(run(&vm, &intrinsic(cfg(0.999, 32.0, 0.0))).is_empty(), "not 0.999");
+        assert_eq!(run(&vm, &intrinsic(cfg(0.95, 32.0, 0.0))).len(), 1);
+        assert!(run(&vm, &intrinsic(cfg(0.999, 32.0, 0.0))).is_empty());
 
-        // Two lowercase occurrences: rarity(2, k) = 1 − 1/k. At k=32 the
-        // recurrence factor barely erodes the score (both survive a 0.5 floor);
-        // at k=1 rarity = 0, so both go silent — the knee, not the floor.
         let mut two = cycle("GEN", &["we saw Jesus"], 100);
         two.insert(sid("GEN", 200), "we saw jesus".to_string());
         two.insert(sid("GEN", 201), "we saw jesus".to_string());
-        assert_eq!(run(&two, &intrinsic(cfg(0.5, 32.0, 0.0))).len(), 2, "wide knee keeps both");
-        assert!(run(&two, &intrinsic(cfg(0.5, 1.0, 0.0))).is_empty(), "narrow knee silences");
+        assert_eq!(run(&two, &intrinsic(cfg(0.5, 32.0, 0.0))).len(), 2);
+        assert!(run(&two, &intrinsic(cfg(0.5, 1.0, 0.0))).is_empty());
+    }
+
+    // ── ADR 0052 behaviours. ─────────────────────────────────────────────────
+
+    /// A quote-context (`."`) class earns trust where the corpus reliably
+    /// capitalizes a lexicon-lowercase word after a quoted sentence, and a
+    /// lowercase slip there flags positionally with the quoted class in its args.
+    #[test]
+    fn quote_context_class_earns_trust_and_flags() {
+        // Every verse opens `The` (forced across the seam and after `."`), and
+        // `the` recurs mid-flow several times a verse so it stays lexicon-lower
+        // even with the quote-opening `The` folded into its baseline profile.
+        // `.` and `."` share the `The` aftermath ⇒ high agreement, high trust.
+        let mut vm =
+            cycle("GEN", &["The voice spoke to the man.\" The people saw the gate by the sea."], 60);
+        // One slip: lowercase `the` right after a `."` boundary.
+        vm.insert(sid("GEN", 500), "He wept.\" the men saw the gate by the sea.".to_string());
+
+        assert!(
+            class_trust(&vm, '.', true) >= 0.90,
+            "`.\"` trust {} should clear the gate",
+            class_trust(&vm, '.', true)
+        );
+        let f = run(&vm, &positional(cfg(0.5, 32.0, 1.96)));
+        let hit: Vec<_> = f
+            .iter()
+            .filter(|f| f.sid == sid("GEN", 500) && slice(&vm, f) == "the")
+            .collect();
+        assert_eq!(hit.len(), 1, "the post-quote slip flags: {f:?}");
+        match &hit[0].args {
+            Some(FindingArgs::CasingConvention { glyph, quoted, .. }) => {
+                assert_eq!(*glyph, Some('.'));
+                assert!(*quoted, "the flagged class is the quote-context `.\"`");
+            }
+            other => panic!("expected CasingConvention, got {other:?}"),
+        }
+    }
+
+    /// A genealogy-style list comma: it capitalizes a lexicon-lowercase word
+    /// often enough to build a moderate habit, but its aftermath is its own list
+    /// vocabulary (never a terminal's), so the agreement guard denies it trust.
+    /// The would-be positional site is gated to silence — yet the capitalized
+    /// names after the comma still count as mid-flow lexicon evidence, so a
+    /// lowercase slip of a name surfaces intrinsically.
+    #[test]
+    fn untrusted_comma_gates_positional_but_keeps_lexicon_evidence() {
+        // `.` is the reference terminal (opens `The`, `the` recurs mid). The
+        // comma is followed by list names (`Enosh`, `Kenan`) never seen after a
+        // period, plus `The`/`the` in a ~2:1 mix (moderate case-witness).
+        let mut vm = VerseMap::new();
+        let mut v = 1u16;
+        for _ in 0..40 {
+            // two verses give the comma an upper `The` after it …
+            vm.insert(sid("GEN", v), "Enosh, Kenan, The men saw the gate.".to_string());
+            v += 1;
+            // … and one gives it a lowercase `the`, holding the habit under 1.0.
+            vm.insert(sid("GEN", v), "Enosh, Kenan, the men saw the gate.".to_string());
+            v += 1;
+        }
+        // A lowercase slip of the name `enosh` mid-flow (its only lowercase).
+        vm.insert(sid("GEN", 900), "we saw enosh today.".to_string());
+
+        // The comma is distrusted (agreement guard) — below the gate.
+        assert!(
+            class_trust(&vm, ',', false) < 0.90,
+            "list-comma trust {} must be gated",
+            class_trust(&vm, ',', false)
+        );
+        // Positional: no `the`-after-comma finding (gated), even though the comma
+        // capitalizes `The` most of the time.
+        let fp = run(&vm, &positional(cfg(0.5, 32.0, 1.96)));
+        assert!(
+            !fp.iter().any(|f| {
+                matches!(&f.args, Some(FindingArgs::CasingConvention { glyph: Some(','), .. }))
+            }),
+            "the distrusted comma flags nothing positionally: {fp:?}"
+        );
+        // Intrinsic: `Enosh` is capitalized only after the (untrusted) comma, so
+        // those capitals fold to mid-flow evidence — the lone lowercase `enosh`
+        // surfaces as inconsistent casing. (Under a *trusted* mark those capitals
+        // would be censored and this would stay silent.)
+        let fi = run(&vm, &intrinsic(cfg(0.5, 32.0, 1.96)));
+        assert!(
+            fi.iter().any(|f| f.sid == sid("GEN", 900) && slice(&vm, f) == "enosh"),
+            "the name's post-comma capitals remain lexicon evidence: {fi:?}"
+        );
+    }
+
+    /// The `trust_gate` knob is respected: a moderate-trust class surfaces at a
+    /// low gate and vanishes when the gate is raised above its trust. The comma
+    /// here capitalizes the lexicon-lowercase `the` a *handful* of times (Wilson
+    /// shrinks that small sample to a moderate habit ≈ its own trust), padded to
+    /// the event floor by list names, with list-like aftermath ⇒ low agreement.
+    #[test]
+    fn trust_gate_knob_is_respected() {
+        // `.` reference: opens `The`, `the` recurs mid ⇒ strongly case-trusted.
+        let mut vm = cycle("GEN", &["Enosh, Kenan lived. The people saw the gate."], 40);
+        // Six comma→`The` (upper) events: a small lexicon-lower sample ⇒ a
+        // Wilson-shrunk, moderate comma habit/trust.
+        for i in 0..6u16 {
+            vm.insert(sid("GEN", 800 + i), "We met, The men there.".to_string());
+        }
+        // One comma→`the` slip: the flag candidate (forced-lowercase count 1).
+        vm.insert(sid("GEN", 900), "We met, the men there.".to_string());
+        let t = class_trust(&vm, ',', false);
+        assert!(
+            (0.10..0.90).contains(&t),
+            "comma trust {t} must be moderate for the gate to bite either way"
+        );
+
+        let hits = |gate: f32| {
+            run(&vm, &positional(cfg_g(0.4, 32.0, 1.96, gate)))
+                .iter()
+                .filter(|f| f.sid == sid("GEN", 900) && slice(&vm, f) == "the")
+                .count()
+        };
+        assert_eq!(hits(0.10), 1, "below the comma's trust the site surfaces");
+        assert_eq!(hits(0.95), 0, "raising the gate above its trust silences it");
+    }
+
+    /// Caseless corpora self-silence, so the reshuffle witness cannot corrupt a
+    /// casing verdict even when it cannot identify the terminal.
+    #[test]
+    fn caseless_corpus_stays_silent_regardless_of_trust() {
+        let mut vm = VerseMap::new();
+        for v in 1..=60u16 {
+            vm.insert(sid("GEN", v), "उसने कहा। वे चले गए। फिर वह चला गया।".to_string());
+        }
+        assert!(run(&vm, &positional(cfg(0.0, 32.0, 1.96))).is_empty());
+        assert!(run(&vm, &intrinsic(cfg(0.0, 32.0, 1.96))).is_empty());
     }
 }

@@ -1,21 +1,18 @@
-//! 2×2 association tests for sparse language evidence — DEV TOOLING ONLY.
+//! 2×2 association tests for sparse language evidence.
 //!
-//! Ported from the `labs` branch (`crates/core/src/analysis/association.rs`)
-//! for the `terminal_strength` spike (shortlist 2/3). Dunning's `G²` on the
-//! fast path (every expected cell ≥ 5), two-sided Fisher's exact on sparse
-//! margins. Both move the same direction: larger = "less likely coincidence."
+//! Dunning's `G²` on the fast path (every expected cell ≥ 5), two-sided
+//! Fisher's exact on sparse margins. Both move the same direction: larger =
+//! "less likely coincidence." Casing's `terminal_strength` word-reshuffle
+//! witness (ADR 0052) aggregates a per-juror [`Table2::association_score`] over
+//! a class's following-word distribution; the machinery is factored here so a
+//! future positional rule or the planned inventory mode reads the same code.
 //!
-//! The one substantive change from labs: `ln_binomial` came from `statrs`,
-//! which `ssc-core` does not depend on. It is replaced here by a self-contained
-//! Lanczos `ln_gamma` (dev-only; the spike never ships). The textbook fixtures
-//! in `tests` pin the port to the same values labs verified.
+//! `ln_binomial` for Fisher comes from a self-contained Lanczos `ln_gamma`
+//! (`ssc-core` takes no external stats dependency). The textbook fixtures in
+//! `tests` pin it to hand-verified values.
 //!
 //! Dunning (1993), *Accurate Methods for the Statistics of Surprise and
 //! Coincidence*, Computational Linguistics 19(1).
-
-// Shared via `#[path]` by the calibrate example and the spike test target; not
-// every includer touches every item.
-#![allow(dead_code)]
 
 /// 2×2 contingency table. Cells are `u64` so callers populate from token /
 /// word counters without casting.
@@ -131,10 +128,13 @@ fn ln_factorial(n: u64) -> f64 {
 }
 
 /// Lanczos approximation to `ln Γ(x)` for `x > 0` (g = 7, 9 coefficients).
-/// Accurate to ~1e-13 over the range this spike touches — replaces labs'
-/// `statrs::function::factorial::ln_binomial` with no external dependency.
+/// Accurate to ~1e-13 over the range this touches — replaces an external
+/// `ln_binomial` with no dependency.
 fn ln_gamma(x: f64) -> f64 {
     const G: f64 = 7.0;
+    // Published Lanczos g=7 coefficients, kept at full source precision (the
+    // `ln_choose` fixture pins the accuracy this buys).
+    #[allow(clippy::excessive_precision)]
     const COEF: [f64; 9] = [
         0.999_999_999_999_809_93,
         676.520_368_121_885_1,

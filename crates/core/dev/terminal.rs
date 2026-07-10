@@ -33,6 +33,7 @@
 //!     per-juror enrichment vector against the corpus's most case-trusted
 //!     class). A list separator enriches its own vocabulary, not the
 //!     sentence-start signature, so agreement pulls it down.
+//!
 //!   A before/after **asymmetry** deviate is computed and reported alongside.
 //!
 //! ## Wiring
@@ -53,7 +54,7 @@ use ssc_core::token::tokenize;
 use ssc_core::verse::{VerseMap, by_book};
 use ssc_core::{Sid, Span};
 
-use crate::association::Table2;
+use ssc_core::analysis::association::Table2;
 
 // ── Knobs (spike; not frozen) ───────────────────────────────────────────────
 

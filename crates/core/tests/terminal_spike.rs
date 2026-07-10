@@ -1,11 +1,8 @@
-//! `cargo test -p ssc-core` coverage for the terminal_strength SPIKE dev code
-//! (shortlist 2/3). The ported `association` fixtures (Dunning G² + Fisher,
-//! textbook values) live in `dev/association.rs` under `#[cfg(test)]` and run
-//! here; the terminal witnesses are exercised on a hand-built VerseMap only
-//! (synthetic tests, never corpus fixtures — MEMORY).
-
-#[path = "../dev/association.rs"]
-mod association;
+//! `cargo test -p ssc-core` coverage for the terminal_strength SPIKE sweep
+//! harness (shortlist 2/3). The G²/Fisher fixtures now live with the graduated
+//! `analysis::association` module (ADR 0052); here the terminal witnesses are
+//! exercised on a hand-built VerseMap only (synthetic tests, never corpus
+//! fixtures — MEMORY).
 
 #[path = "../dev/terminal.rs"]
 mod terminal;
@@ -49,12 +46,22 @@ fn case_witness_separates_terminal_from_separator() {
     let dot = c
         .trust
         .classes
-        .get(&terminal::ClassKey { mark: '.', quoted: false })
+        .get(&terminal::ClassKey {
+            mark: '.',
+            quoted: false,
+        })
         .expect("'.' class present");
-    assert!(dot.s_case > 0.9, "'.' case-trust {} should be high", dot.s_case);
+    assert!(
+        dot.s_case > 0.9,
+        "'.' case-trust {} should be high",
+        dot.s_case
+    );
     // The genealogy guard: ',' trust stays low under variant B (the case
     // witness sees the lowercase follower; the reshuffle guard doesn't rescue).
-    if let Some(cm) = c.trust.classes.get(&terminal::ClassKey { mark: ',', quoted: false }) {
+    if let Some(cm) = c.trust.classes.get(&terminal::ClassKey {
+        mark: ',',
+        quoted: false,
+    }) {
         assert!(cm.trust_b < 0.5, "',' trust_B {} should be low", cm.trust_b);
         assert!(dot.trust_b > cm.trust_b, "'.' outranks ',' on trust");
     }
@@ -66,7 +73,10 @@ fn case_witness_separates_terminal_from_separator() {
 fn caseless_corpus_has_no_case_witness() {
     let mut vm = VerseMap::new();
     for v in 1..=40u16 {
-        vm.insert(sid("GEN", v), "उसने कहा। वे चले गए। फिर वह चला गया।".to_string());
+        vm.insert(
+            sid("GEN", v),
+            "उसने कहा। वे चले गए। फिर वह चला गया।".to_string(),
+        );
     }
     let c = terminal::analyze_corpus("syn".into(), &vm, true);
     assert!(!c.bicameral, "Devanagari corpus is caseless");
@@ -85,5 +95,8 @@ fn baseline_reproduces_an_intrinsic_finding() {
     let c = terminal::analyze_corpus("syn".into(), &vm, true);
     assert_eq!(c.base_i, 1, "one intrinsic anomaly at baseline");
     // No terminal habit exists (no '.'), so trust changes no verdict.
-    assert_eq!(c.tr_i, c.base_i, "trust wiring leaves the intrinsic count unchanged");
+    assert_eq!(
+        c.tr_i, c.base_i,
+        "trust wiring leaves the intrinsic count unchanged"
+    );
 }

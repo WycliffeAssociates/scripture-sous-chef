@@ -17,6 +17,8 @@
 //!   cargo run --release -p ssc-core --example calibrate -- --bracket corpora/vref/cmncbt.txt
 //!   # repeated-run score report / parameter sweep:
 //!   cargo run --release -p ssc-core --example calibrate -- --repeat corpora/vref/WA-en-ulb.txt [rate K]
+//!   # rare-glyph inventory and recurrence-knee spike (one corpus or fleet):
+//!   cargo run --release -p ssc-core --example calibrate -- --glyphs corpora/vref
 //!   # fleet survey → self-contained HTML report (all rules, floors zeroed,
 //!   # every corpus in the directory; out defaults to target/fleet-report.html):
 //!   cargo run --release -p ssc-core --example calibrate -- --fleet corpora/vref [out.html]
@@ -29,12 +31,14 @@ use ssc_core::config::{
     PunctOnlyTokenConfig, PunctuationAdjacencyConfig, PunctuationSpacingConfig,
     RepeatedCharacterRunConfig,
 };
+use ssc_core::charclass::class_of;
 use ssc_core::rule::{ProjectRule, StatefulRule};
 use ssc_core::signals::casing::{PosClass, SiteEval, evaluate};
 use ssc_core::signals::bracket_balance::BracketBalance;
 use ssc_core::signals::lexical::{PunctOnlyToken, RepeatedCharacterRun};
 use ssc_core::signals::proportionality::ProjectLengthRatio;
 use ssc_core::signals::punctuation::{PunctuationAdjacencyAnomaly, PunctuationSpacingAnomaly};
+use ssc_core::token::tokenize;
 use ssc_core::{
     BookId, BracketMeasure, Config, Finding, FindingArgs, LengthRatioScope, RuleId, VerseMap,
     analyze, analyze_with_config,
@@ -44,9 +48,10 @@ use ssc_core::{
 mod vref_io;
 use vref_io::load_corpus;
 
-// terminal_strength SPIKE (shortlist 2/3) — dev-only modelling; nothing ships.
-#[path = "../dev/association.rs"]
-mod association;
+// terminal_strength SPIKE (shortlist 2/3) — dev-only sweep harness. The trust
+// model itself now ships in `signals::casing` (ADR 0052); this spike retains
+// the multiplier-vs-gate sweep reporting the calibration doc was built from,
+// reading the graduated `analysis::association`.
 #[path = "../dev/terminal.rs"]
 mod terminal;
 
@@ -102,6 +107,19 @@ fn main() {
                     &load_corpus(p),
                 );
                 casing_single_report(&corpus);
+            }
+            return;
+        }
+        // Rare-glyph calibration: tally every scalar for the future census,
+        // but score only the visible L/N/P/S candidate lanes. A file prints
+        // its glyph table; a vref directory aggregates the fleet sweep.
+        [flag, path] if flag == "--glyphs" => {
+            let p = Path::new(path);
+            if p.is_dir() {
+                glyph_fleet(p);
+            } else {
+                let id = p.file_stem().unwrap().to_string_lossy().to_string();
+                glyph_single_report(&analyze_glyphs(id, &load_corpus(p)));
             }
             return;
         }
@@ -1184,8 +1202,6 @@ fn scope_z(scope: &LengthRatioScope) -> f32 {
 // grid around that so the packet volumes stay reproducible.
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Wilson confidence for the model (mirrors `CasingConfig::confidence_z`).
-const CASING_Z: f32 = 1.96;
 /// Packet floor/knee grid (rows = floor, cols = k); the shipped knobs are the
 /// (0.95, 32) cell.
 const PACKET_FLOORS: [f64; 4] = [0.80, 0.90, 0.95, 0.98];
@@ -1234,7 +1250,7 @@ fn site_quad(s: &SiteEval) -> Option<&'static str> {
 
 fn pos_glyph(pos: PosClass) -> Option<char> {
     match pos {
-        PosClass::ForcedAfterTerminal(g) => Some(g),
+        PosClass::ForcedAfterTerminal(ck) => Some(ck.mark),
         _ => None,
     }
 }
@@ -1291,7 +1307,10 @@ struct CasingCorpus {
 /// reference-setting counts, histogram, tracked anchors, and samples.
 fn analyze_casing(id: String, map: &VerseMap) -> CasingCorpus {
     let books = ssc_core::verse::by_book(map);
-    let sites = evaluate(&books, CASING_Z);
+    // Production knobs (ADR 0051 floor/k/z + ADR 0052 trust gate 0.90). The
+    // sweep below varies floor/k around the reference cell; the trust gate and
+    // discount are baked into the returned factors.
+    let sites = evaluate(&books, &ssc_core::config::CasingConfig::default());
 
     let nk = PACKET_KS.len();
     let mut grid_intr = vec![[0u64; PACKET_FLOORS.len()]; nk];
@@ -1662,6 +1681,1017 @@ fn casing_size(dir: &Path) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Rare-glyph calibration. The inventory counts every scalar so a future census
+// can reuse this walk. The spike's candidate rows are deliberately narrower:
+// visible letters, numbers, punctuation, and symbols only.
+// ═══════════════════════════════════════════════════════════════════════════
+
+const GLYPH_ABS_KS: [f64; 6] = [2.0, 4.0, 8.0, 16.0, 32.0, 64.0];
+const GLYPH_RATE_PER_10K: [f64; 6] = [0.25, 0.5, 1.0, 2.0, 5.0, 10.0];
+const GLYPH_SWEEP_FLOOR: f64 = 0.95;
+const GLYPH_HIST_LABELS: [&str; 8] = ["1", "2", "3-4", "5-8", "9-16", "17-32", "33-64", "65+"];
+// Round 3: alphabet closure is now a LETTER-SCALAR share (hapax L-scalar types /
+// all L-scalar occurrences), which is far smaller than the round-2 word-hapax
+// share, so the self-disable sweep uses finer low-end steps: 0.001% … 2%.
+const CLOSURE_SCALAR_SHARES: [f64; 8] =
+    [0.00001, 0.0001, 0.0005, 0.001, 0.002, 0.005, 0.01, 0.02];
+// Round 3: knee ≤1–5 was conjecture; sweep ≤1 through ≤8 to see where the
+// retained set stops being flat.
+const LETTER_RARE_MAX_COUNTS: [u64; 8] = [1, 2, 3, 4, 5, 6, 7, 8];
+/// Representative closure threshold and knee used only to pick retained review
+/// samples for the human adjudication table (not a frozen knob).
+const RETAINED_SAMPLE_THRESHOLD: f64 = 0.001;
+const RETAINED_SAMPLE_KNEE: u64 = 3;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GlyphLane {
+    Letter,
+    Number,
+    Punctuation,
+    Symbol,
+}
+
+impl GlyphLane {
+    const ALL: [Self; 4] = [Self::Letter, Self::Number, Self::Punctuation, Self::Symbol];
+
+    const fn index(self) -> usize {
+        match self {
+            Self::Letter => 0,
+            Self::Number => 1,
+            Self::Punctuation => 2,
+            Self::Symbol => 3,
+        }
+    }
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Letter => "L",
+            Self::Number => "N",
+            Self::Punctuation => "P",
+            Self::Symbol => "S",
+        }
+    }
+}
+
+/// The visible candidate lanes. Marks, separators, controls, and formats are
+/// inventoried but never enter the spike's rarity sweeps.
+fn glyph_lane(c: char) -> Option<GlyphLane> {
+    let cl = class_of(c);
+    if cl.is_mark()
+        || cl.is_whitespace()
+        || cl.is_control()
+        || cl.is_zero_width_format()
+        || cl.is_invalid_codepoint()
+    {
+        return None;
+    }
+    if cl.is_numeric() {
+        Some(GlyphLane::Number)
+    } else if cl.is_alphabetic() {
+        Some(GlyphLane::Letter)
+    } else if cl.is_punctuation() {
+        Some(GlyphLane::Punctuation)
+    } else if cl.is_symbol() {
+        Some(GlyphLane::Symbol)
+    } else {
+        None
+    }
+}
+
+/// UAX #29 tokens that consist only of letters and their combining marks.
+/// Numeric references and mixed `q1`-style tokens do not establish alphabet
+/// closure or lexical concentration.
+fn is_letter_token(word: &str) -> bool {
+    let mut has_letter = false;
+    for c in word.chars() {
+        let cl = class_of(c);
+        if cl.is_alphabetic() && !cl.is_mark() {
+            has_letter = true;
+        } else if !cl.is_mark() {
+            return false;
+        }
+    }
+    has_letter
+}
+
+fn letter_round2(
+    inventory: &BTreeMap<char, u64>,
+    word_tokens: BTreeMap<String, u64>,
+    glyph_words: BTreeMap<char, BTreeMap<String, u64>>,
+) -> LetterRound2 {
+    let tokens: u64 = word_tokens.values().sum();
+    let hapax_types = word_tokens.values().filter(|&&count| count == 1).count() as u64;
+    // Letter-scalar closure straight off the inventory the harness already built.
+    let mut letter_scalars = 0u64;
+    let mut hapax_letter_scalars = 0u64;
+    for (&glyph, &count) in inventory {
+        if glyph_lane(glyph) == Some(GlyphLane::Letter) {
+            letter_scalars += count;
+            if count == 1 {
+                hapax_letter_scalars += 1;
+            }
+        }
+    }
+    let mut rare = Vec::new();
+    for (&glyph, &count) in inventory {
+        if glyph_lane(glyph) != Some(GlyphLane::Letter) || count > *LETTER_RARE_MAX_COUNTS.last().unwrap() {
+            continue;
+        }
+        let Some(words) = glyph_words.get(&glyph) else {
+            rare.push(LetterRare {
+                glyph,
+                count,
+                lexical_word: None,
+                lexical_word_tokens: 0,
+            });
+            continue;
+        };
+        let accounted: u64 = words.values().sum();
+        let dominant = words.iter().max_by_key(|(_, occurrences)| **occurrences);
+        let (lexical_word, lexical_word_tokens) = match dominant {
+            Some((word, &occurrences))
+                if accounted == count && occurrences == count && word_tokens.get(word).copied().unwrap_or(0) >= 2 =>
+            {
+                (Some(word.clone()), word_tokens[word])
+            }
+            _ => (None, 0),
+        };
+        rare.push(LetterRare {
+            glyph,
+            count,
+            lexical_word,
+            lexical_word_tokens,
+        });
+    }
+    rare.sort_by_key(|candidate| (candidate.count, candidate.glyph));
+    LetterRound2 {
+        tokens,
+        types: word_tokens.len() as u64,
+        hapax_types,
+        letter_scalars,
+        hapax_letter_scalars,
+        rare,
+    }
+}
+
+fn glyph_count_bucket(count: u64) -> usize {
+    match count {
+        0 => unreachable!("inventory entries have nonzero counts"),
+        1 => 0,
+        2 => 1,
+        3..=4 => 2,
+        5..=8 => 3,
+        9..=16 => 4,
+        17..=32 => 5,
+        33..=64 => 6,
+        _ => 7,
+    }
+}
+
+fn glyph_rarity_abs(count: u64, knee: f64) -> f64 {
+    rarity_abs(count, knee)
+}
+
+/// A rate-shaped knee: one occurrence remains fully rare, then the knee grows
+/// with opportunities in the glyph's own category lane.
+fn glyph_rarity_rate(count: u64, lane_total: u64, rate_per_10k: f64) -> f64 {
+    let knee = 1.0 + rate_per_10k * lane_total as f64 / 10_000.0;
+    rarity_abs(count, knee)
+}
+
+#[derive(Clone, Copy)]
+struct GlyphCandidate {
+    glyph: char,
+    lane: GlyphLane,
+    count: u64,
+    lane_total: u64,
+}
+
+#[derive(Clone, Copy, Default)]
+struct GlyphSweep {
+    types: u64,
+    sites: u64,
+}
+
+#[derive(Clone)]
+struct GlyphSample {
+    corpus: String,
+    sid: String,
+    glyph: char,
+    lane: GlyphLane,
+    count: u64,
+    lane_total: u64,
+    context: String,
+}
+
+/// One very-rare letter's lexical evidence. A concentration discount is only
+/// justified when every scalar occurrence is accounted for by one repeatedly
+/// observed, case-folded word type.
+struct LetterRare {
+    glyph: char,
+    count: u64,
+    lexical_word: Option<String>,
+    lexical_word_tokens: u64,
+}
+
+struct LetterRound2 {
+    // Word-level machinery, retained unchanged for the lexical-concentration
+    // discount and for the round-2/round-3 flip comparison.
+    tokens: u64,
+    types: u64,
+    hapax_types: u64,
+    // Round-3 alphabet-closure gate: letter-SCALAR closure. `letter_scalars` is
+    // total GC-L scalar occurrences; `hapax_letter_scalars` is the number of L
+    // scalar types seen exactly once. Their ratio is the hapax-letter-type
+    // occurrence share (each hapax type contributes exactly one occurrence).
+    letter_scalars: u64,
+    hapax_letter_scalars: u64,
+    rare: Vec<LetterRare>,
+}
+
+impl LetterRound2 {
+    /// Letter-SCALAR closure (round 3): hapax L-scalar occurrence share. ~0 for
+    /// closed alphabets (English/Bemba), materially nonzero for open inventories
+    /// (CJK). This is the alphabet-closure gate, not vocabulary closure.
+    fn closure(&self) -> f64 {
+        self.hapax_letter_scalars as f64 / self.letter_scalars.max(1) as f64
+    }
+
+    /// Round-2 metric, kept only to report which corpora flip open under the
+    /// round-3 scalar closure that were closed under word-hapax share.
+    fn word_hapax_share(&self) -> f64 {
+        self.hapax_types as f64 / self.tokens.max(1) as f64
+    }
+}
+
+struct GlyphCorpus {
+    id: String,
+    verses: usize,
+    scalar_count: u64,
+    inventory: BTreeMap<char, u64>,
+    lane_totals: [u64; 4],
+    count_hist: [[u64; GLYPH_HIST_LABELS.len()]; 4],
+    abs_sweeps: Vec<[GlyphSweep; 4]>,
+    rate_sweeps: Vec<[GlyphSweep; 4]>,
+    decomposed_pairs: BTreeMap<String, u64>,
+    samples: Vec<GlyphSample>,
+    letter_round2: LetterRound2,
+    retained_samples: Vec<GlyphSample>,
+}
+
+/// The fleet keeps calibration rollups, not a corpus's full scalar inventory.
+/// This permits corpus-level parallelism without retaining all 1,504 maps.
+struct GlyphFleetSummary {
+    id: String,
+    scalar_count: u64,
+    lane_totals: [u64; 4],
+    count_hist: [[u64; GLYPH_HIST_LABELS.len()]; 4],
+    abs_sweeps: Vec<[GlyphSweep; 4]>,
+    rate_sweeps: Vec<[GlyphSweep; 4]>,
+    decomposed_pairs: BTreeMap<String, u64>,
+    samples: Vec<GlyphSample>,
+    letter_round2: LetterRound2,
+    retained_samples: Vec<GlyphSample>,
+}
+
+impl From<GlyphCorpus> for GlyphFleetSummary {
+    fn from(corpus: GlyphCorpus) -> Self {
+        Self {
+            id: corpus.id,
+            scalar_count: corpus.scalar_count,
+            lane_totals: corpus.lane_totals,
+            count_hist: corpus.count_hist,
+            abs_sweeps: corpus.abs_sweeps,
+            rate_sweeps: corpus.rate_sweeps,
+            decomposed_pairs: corpus.decomposed_pairs,
+            samples: corpus.samples,
+            letter_round2: corpus.letter_round2,
+            retained_samples: corpus.retained_samples,
+        }
+    }
+}
+
+fn glyph_candidates(inventory: &BTreeMap<char, u64>, lane_totals: &[u64; 4]) -> Vec<GlyphCandidate> {
+    inventory
+        .iter()
+        .filter_map(|(&glyph, &count)| {
+            glyph_lane(glyph).map(|lane| GlyphCandidate {
+                glyph,
+                lane,
+                count,
+                lane_total: lane_totals[lane.index()],
+            })
+        })
+        .collect()
+}
+
+fn glyph_sweep(candidates: &[GlyphCandidate], score: impl Fn(GlyphCandidate) -> f64) -> [GlyphSweep; 4] {
+    candidates.iter().copied().fold([GlyphSweep::default(); 4], |mut out, candidate| {
+        if score(candidate) >= GLYPH_SWEEP_FLOOR {
+            let lane = &mut out[candidate.lane.index()];
+            lane.types += 1;
+            lane.sites += candidate.count;
+        }
+        out
+    })
+}
+
+fn glyph_sweep_total(sweep: &[GlyphSweep; 4]) -> GlyphSweep {
+    sweep.iter().fold(GlyphSweep::default(), |mut total, lane| {
+        total.types += lane.types;
+        total.sites += lane.sites;
+        total
+    })
+}
+
+fn glyph_context(text: &str, start: usize, end: usize) -> String {
+    let before = text[..start].char_indices().rev().nth(22).map(|(i, _)| i).unwrap_or(0);
+    let after = text[end..].char_indices().nth(22).map(|(i, _)| end + i).unwrap_or(text.len());
+    text[before..after].replace(['\t', '\n'], " ")
+}
+
+/// Pick one source occurrence for the strongest rare candidates. The samples
+/// are review leads, not stored rule sites: a production rule will forward or
+/// re-scan its own spans under the stateful protocol.
+fn glyph_samples(id: &str, map: &VerseMap, candidates: &[GlyphCandidate]) -> Vec<GlyphSample> {
+    let mut ranked: Vec<GlyphCandidate> = candidates
+        .iter()
+        .copied()
+        .filter(|c| glyph_rarity_abs(c.count, 32.0) >= GLYPH_SWEEP_FLOOR)
+        .collect();
+    ranked.sort_by_key(|c| (std::cmp::Reverse(c.lane_total), c.count, c.glyph));
+
+    let mut wanted = BTreeMap::new();
+    for lane in GlyphLane::ALL {
+        for candidate in ranked.iter().copied().filter(|candidate| candidate.lane == lane).take(6) {
+            wanted.insert(candidate.glyph, candidate);
+        }
+    }
+    let mut samples = Vec::new();
+    for (sid, text) in map {
+        for (start, glyph) in text.char_indices() {
+            let Some(candidate) = wanted.remove(&glyph) else { continue };
+            samples.push(GlyphSample {
+                corpus: id.to_string(),
+                sid: sid.to_string(),
+                glyph,
+                lane: candidate.lane,
+                count: candidate.count,
+                lane_total: candidate.lane_total,
+                context: glyph_context(text, start, start + glyph.len_utf8()),
+            });
+            if wanted.is_empty() {
+                return samples;
+            }
+        }
+    }
+    samples.sort_by_key(|sample| {
+        (
+            sample.lane.index(),
+            std::cmp::Reverse(sample.lane_total),
+            sample.count,
+            sample.glyph,
+        )
+    });
+    samples
+}
+
+/// Retained review leads: rare letter glyphs (count ≤ knee) that survive the
+/// lexical-concentration discount, so a human can adjudicate signal quality on
+/// the set the rule would actually keep in a closed-alphabet corpus. Whether the
+/// corpus itself clears closure is decided at fleet time.
+fn glyph_retained_samples(id: &str, map: &VerseMap, round2: &LetterRound2) -> Vec<GlyphSample> {
+    let mut wanted: BTreeMap<char, u64> = BTreeMap::new();
+    for candidate in round2
+        .rare
+        .iter()
+        .filter(|c| c.count <= RETAINED_SAMPLE_KNEE && c.lexical_word.is_none())
+    {
+        wanted.insert(candidate.glyph, candidate.count);
+    }
+    let mut samples = Vec::new();
+    for (sid, text) in map {
+        if wanted.is_empty() {
+            break;
+        }
+        for (start, glyph) in text.char_indices() {
+            let Some(count) = wanted.remove(&glyph) else { continue };
+            samples.push(GlyphSample {
+                corpus: id.to_string(),
+                sid: sid.to_string(),
+                glyph,
+                lane: GlyphLane::Letter,
+                count,
+                lane_total: round2.letter_scalars,
+                context: glyph_context(text, start, start + glyph.len_utf8()),
+            });
+        }
+    }
+    samples.sort_by_key(|sample| (sample.count, sample.glyph));
+    samples
+}
+
+fn analyze_glyphs(id: String, map: &VerseMap) -> GlyphCorpus {
+    let mut inventory: BTreeMap<char, u64> = BTreeMap::new();
+    let mut lane_totals = [0u64; 4];
+    let mut decomposed_pairs: BTreeMap<String, u64> = BTreeMap::new();
+    let mut letter_words: BTreeMap<String, u64> = BTreeMap::new();
+    let mut letter_glyph_words: BTreeMap<char, BTreeMap<String, u64>> = BTreeMap::new();
+    let mut scalar_count = 0u64;
+
+    for text in map.values() {
+        let mut previous: Option<char> = None;
+        for glyph in text.chars() {
+            scalar_count += 1;
+            *inventory.entry(glyph).or_default() += 1;
+            if let Some(lane) = glyph_lane(glyph) {
+                lane_totals[lane.index()] += 1;
+            }
+
+            // This is a dependency-free preflight for the normalization seam:
+            // record immediately attached base+mark pairs. Canonical equivalence
+            // still needs a normalizer before composed and decomposed forms can
+            // be joined as one abstract glyph.
+            if class_of(glyph).is_mark()
+                && let Some(base) = previous
+                && !class_of(base).is_mark()
+            {
+                *decomposed_pairs.entry(format!("{base}{glyph}")).or_default() += 1;
+            }
+            previous = Some(glyph);
+        }
+
+        for token in tokenize(text) {
+            let word = token.span.slice(text);
+            if !is_letter_token(word) {
+                continue;
+            }
+            let key = word.to_lowercase();
+            *letter_words.entry(key.clone()).or_default() += 1;
+            for glyph in word.chars().filter(|&glyph| glyph_lane(glyph) == Some(GlyphLane::Letter)) {
+                *letter_glyph_words
+                    .entry(glyph)
+                    .or_default()
+                    .entry(key.clone())
+                    .or_default() += 1;
+            }
+        }
+    }
+
+    let candidates = glyph_candidates(&inventory, &lane_totals);
+    let mut count_hist = [[0u64; GLYPH_HIST_LABELS.len()]; 4];
+    for candidate in &candidates {
+        count_hist[candidate.lane.index()][glyph_count_bucket(candidate.count)] += 1;
+    }
+    let abs_sweeps = GLYPH_ABS_KS
+        .iter()
+        .map(|&k| glyph_sweep(&candidates, |c| glyph_rarity_abs(c.count, k)))
+        .collect();
+    let rate_sweeps = GLYPH_RATE_PER_10K
+        .iter()
+        .map(|&rate| glyph_sweep(&candidates, |c| glyph_rarity_rate(c.count, c.lane_total, rate)))
+        .collect();
+    let samples = glyph_samples(&id, map, &candidates);
+    let letter_round2 = letter_round2(&inventory, letter_words, letter_glyph_words);
+    let retained_samples = glyph_retained_samples(&id, map, &letter_round2);
+
+    GlyphCorpus {
+        id,
+        verses: map.len(),
+        scalar_count,
+        inventory,
+        lane_totals,
+        count_hist,
+        abs_sweeps,
+        rate_sweeps,
+        decomposed_pairs,
+        samples,
+        letter_round2,
+        retained_samples,
+    }
+}
+
+fn glyph_label(glyph: char) -> String {
+    format!("{} U+{:04X}", glyph.escape_default(), glyph as u32)
+}
+
+fn print_glyph_sweeps(abs: &[[GlyphSweep; 4]], rate: &[[GlyphSweep; 4]]) {
+    println!("\nrecurrence sweeps (rows surface raw rarity >= {GLYPH_SWEEP_FLOOR:.2}; types / sites):");
+    let describe = |sweep: &[GlyphSweep; 4]| {
+        let total = glyph_sweep_total(sweep);
+        let lanes = GlyphLane::ALL
+            .iter()
+            .map(|lane| {
+                let s = sweep[lane.index()];
+                format!("{} {}/{}", lane.label(), s.types, s.sites)
+            })
+            .collect::<Vec<_>>()
+            .join("  ");
+        format!("total {}/{}  {lanes}", total.types, total.sites)
+    };
+    println!("  absolute knee:");
+    for (&k, row) in GLYPH_ABS_KS.iter().zip(abs) {
+        println!("    K={k:>5.1}: {}", describe(row));
+    }
+    println!("  rate knee (K = 1 + rate × lane opportunities / 10k):");
+    for (&rate, row) in GLYPH_RATE_PER_10K.iter().zip(rate) {
+        println!("    r={rate:>5.2}: {}", describe(row));
+    }
+}
+
+fn print_glyph_histogram(hist: &[[u64; GLYPH_HIST_LABELS.len()]; 4]) {
+    println!("\ncandidate type-count histogram (number of glyph types):");
+    print!("  {:<5}", "lane");
+    for label in GLYPH_HIST_LABELS {
+        print!(" {:>7}", label);
+    }
+    println!();
+    for lane in GlyphLane::ALL {
+        print!("  {:<5}", lane.label());
+        for n in hist[lane.index()] {
+            print!(" {n:>7}");
+        }
+        println!();
+    }
+}
+
+fn print_glyph_samples(samples: &[GlyphSample]) {
+    for sample in samples {
+        let per_10k = sample.count as f64 * 10_000.0 / sample.lane_total.max(1) as f64;
+        println!(
+            "  {:<18} {:<10} {:<15} {} count={} lane_n={} rate={per_10k:.3}/10k | {}",
+            sample.corpus,
+            sample.sid,
+            sample.lane.label(),
+            glyph_label(sample.glyph),
+            sample.count,
+            sample.lane_total,
+            sample.context,
+        );
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+struct LetterRound2Tally {
+    base: GlyphSweep,
+    closure_killed: GlyphSweep,
+    lexical_killed: GlyphSweep,
+    retained: GlyphSweep,
+}
+
+fn add_glyph_sweep(total: &mut GlyphSweep, add: GlyphSweep) {
+    total.types += add.types;
+    total.sites += add.sites;
+}
+
+fn add_letter_round2_tally(total: &mut LetterRound2Tally, add: LetterRound2Tally) {
+    add_glyph_sweep(&mut total.base, add.base);
+    add_glyph_sweep(&mut total.closure_killed, add.closure_killed);
+    add_glyph_sweep(&mut total.lexical_killed, add.lexical_killed);
+    add_glyph_sweep(&mut total.retained, add.retained);
+}
+
+fn letter_round2_tally(round2: &LetterRound2, max_count: u64, closed_alphabet: bool) -> LetterRound2Tally {
+    let mut out = LetterRound2Tally::default();
+    for candidate in round2.rare.iter().filter(|candidate| candidate.count <= max_count) {
+        let candidate_sweep = GlyphSweep {
+            types: 1,
+            sites: candidate.count,
+        };
+        add_glyph_sweep(&mut out.base, candidate_sweep);
+        if !closed_alphabet {
+            add_glyph_sweep(&mut out.closure_killed, candidate_sweep);
+        } else if candidate.lexical_word.is_some() {
+            add_glyph_sweep(&mut out.lexical_killed, candidate_sweep);
+        } else {
+            add_glyph_sweep(&mut out.retained, candidate_sweep);
+        }
+    }
+    out
+}
+
+fn kill_rate(killed: u64, base: u64) -> f64 {
+    killed as f64 * 100.0 / base.max(1) as f64
+}
+
+fn print_letter_round2_single(round2: &LetterRound2) {
+    println!("\nround 3 letter evidence:");
+    println!(
+        "  L scalars={}  hapax L scalars={}  scalar closure={:.4}%  (word types={}, round-2 word-hapax share={:.3}%)",
+        round2.letter_scalars,
+        round2.hapax_letter_scalars,
+        round2.closure() * 100.0,
+        round2.types,
+        round2.word_hapax_share() * 100.0,
+    );
+    println!("  small-knee candidates assuming this corpus clears closure:");
+    for max_count in LETTER_RARE_MAX_COUNTS {
+        let tally = letter_round2_tally(round2, max_count, true);
+        println!(
+            "    <= {max_count}: base {}/{}  lexical-discount {}/{} ({:.1}%)  retained {}/{}",
+            tally.base.types,
+            tally.base.sites,
+            tally.lexical_killed.types,
+            tally.lexical_killed.sites,
+            kill_rate(tally.lexical_killed.sites, tally.base.sites),
+            tally.retained.types,
+            tally.retained.sites,
+        );
+    }
+    let lexical: Vec<_> = round2.rare.iter().filter(|candidate| candidate.lexical_word.is_some()).collect();
+    println!("  lexical-concentration discounts (first {} of {}):", lexical.len().min(20), lexical.len());
+    for candidate in lexical.iter().take(20) {
+        println!(
+            "    {:<15} count={} word={} ({} tokens)",
+            glyph_label(candidate.glyph),
+            candidate.count,
+            candidate.lexical_word.as_deref().unwrap_or_default(),
+            candidate.lexical_word_tokens,
+        );
+    }
+}
+
+fn glyph_single_report(corpus: &GlyphCorpus) {
+    println!("=== RARE-GLYPH SPIKE: {} ({} verses) ===", corpus.id, corpus.verses);
+    println!(
+        "raw scalar inventory: {} occurrences / {} distinct scalars",
+        corpus.scalar_count,
+        corpus.inventory.len()
+    );
+    println!("candidate lane opportunities:");
+    for lane in GlyphLane::ALL {
+        let types = corpus.inventory.keys().filter(|&&c| glyph_lane(c) == Some(lane)).count();
+        println!("  {}  {:>10} occurrences / {:>5} glyph types", lane.label(), corpus.lane_totals[lane.index()], types);
+    }
+    print_glyph_histogram(&corpus.count_hist);
+    print_glyph_sweeps(&corpus.abs_sweeps, &corpus.rate_sweeps);
+    print_letter_round2_single(&corpus.letter_round2);
+
+    let mut candidates = glyph_candidates(&corpus.inventory, &corpus.lane_totals);
+    candidates.sort_by_key(|c| (c.count, std::cmp::Reverse(c.lane_total), c.glyph));
+    println!("\nrarest candidate glyphs (first {} of {}):", candidates.len().min(120), candidates.len());
+    println!("  {:<15} {:<5} {:>8} {:>12} {:>14}", "glyph", "lane", "count", "lane total", "rate /10k");
+    for candidate in candidates.iter().take(120) {
+        let rate = candidate.count as f64 * 10_000.0 / candidate.lane_total.max(1) as f64;
+        println!(
+            "  {:<15} {:<5} {:>8} {:>12} {:>14.3}",
+            glyph_label(candidate.glyph),
+            candidate.lane.label(),
+            candidate.count,
+            candidate.lane_total,
+            rate,
+        );
+    }
+
+    let mut decomposed: Vec<_> = corpus.decomposed_pairs.iter().collect();
+    decomposed.sort_by_key(|(_, count)| std::cmp::Reverse(**count));
+    println!("\ndecomposed base+mark preflight (top 20; canonical pairing not yet joined):");
+    if decomposed.is_empty() {
+        println!("  none");
+    } else {
+        for (pair, count) in decomposed.iter().take(20) {
+            println!("  {pair:?}  {count}");
+        }
+    }
+    println!("\nsample high-rarity candidates (absolute K=32):");
+    print_glyph_samples(&corpus.samples);
+}
+
+/// Fleet report: workers drop each raw inventory after deriving a compact
+/// summary. The aggregate keeps only reproducible rollups and bounded samples.
+fn glyph_fleet(dir: &Path) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use rayon::prelude::*;
+
+    let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
+        .unwrap_or_else(|e| panic!("read {}: {e}", dir.display()))
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "txt"))
+        .collect();
+    files.sort();
+    let total = files.len();
+    eprintln!("rare-glyph fleet: {total} corpora in {}", dir.display());
+
+    let mut lane_totals = [0u64; 4];
+    let mut count_hist = [[0u64; GLYPH_HIST_LABELS.len()]; 4];
+    let mut abs_sweeps = vec![[GlyphSweep::default(); 4]; GLYPH_ABS_KS.len()];
+    let mut rate_sweeps = vec![[GlyphSweep::default(); 4]; GLYPH_RATE_PER_10K.len()];
+    let mut noisiest: Vec<(String, [u64; 4], [u64; 4], u64)> = Vec::new();
+    let mut samples = Vec::new();
+    let mut decomposed: BTreeMap<String, (u64, u64)> = BTreeMap::new();
+    let mut round2 = vec![vec![LetterRound2Tally::default(); LETTER_RARE_MAX_COUNTS.len()]; CLOSURE_SCALAR_SHARES.len()];
+    let mut open_corpora = vec![0u64; CLOSURE_SCALAR_SHARES.len()];
+    // (id, L scalars, hapax L scalars, scalar closure ppm, word-hapax share ppm)
+    let mut closure_rows: Vec<(String, u64, u64, u64, u64)> = Vec::new();
+    // Round-3 sanity checks: corpora that flip open (closed word-hapax → open
+    // scalar closure), retained review leads, and lexical-kill mechanism leads.
+    let mut flips: Vec<(String, u64, u64)> = Vec::new();
+    let mut retained_samples: Vec<GlyphSample> = Vec::new();
+    let mut lexical_kill_leads: Vec<(String, char, String, u64)> = Vec::new();
+    let t0 = std::time::Instant::now();
+    let done = AtomicUsize::new(0);
+    let corpora: Vec<GlyphFleetSummary> = files
+        .par_iter()
+        .map(|path| {
+            let id = path.file_stem().unwrap().to_string_lossy().to_string();
+            let summary = GlyphFleetSummary::from(analyze_glyphs(id, &load_corpus(path)));
+            let completed = done.fetch_add(1, Ordering::Relaxed) + 1;
+            if completed.is_multiple_of(100) {
+                eprintln!("  …{completed}/{total}");
+            }
+            summary
+        })
+        .collect();
+    eprintln!("rare-glyph fleet analyze: {:?}", t0.elapsed());
+
+    for corpus in corpora {
+        for lane in GlyphLane::ALL {
+            lane_totals[lane.index()] += corpus.lane_totals[lane.index()];
+            for (sum, value) in count_hist[lane.index()].iter_mut().zip(corpus.count_hist[lane.index()]) {
+                *sum += value;
+            }
+        }
+        for (sum, value) in abs_sweeps.iter_mut().zip(&corpus.abs_sweeps) {
+            for (sum, value) in sum.iter_mut().zip(value) {
+                sum.types += value.types;
+                sum.sites += value.sites;
+            }
+        }
+        for (sum, value) in rate_sweeps.iter_mut().zip(&corpus.rate_sweeps) {
+            for (sum, value) in sum.iter_mut().zip(value) {
+                sum.types += value.types;
+                sum.sites += value.sites;
+            }
+        }
+        let abs_ref = corpus.abs_sweeps[4].map(|sweep| sweep.sites); // K=32
+        let rate_ref = corpus.rate_sweeps[3].map(|sweep| sweep.sites); // 2/10k
+        noisiest.push((corpus.id.clone(), abs_ref, rate_ref, corpus.scalar_count));
+        let closure = corpus.letter_round2.closure();
+        let word_hapax = corpus.letter_round2.word_hapax_share();
+        closure_rows.push((
+            corpus.id.clone(),
+            corpus.letter_round2.letter_scalars,
+            corpus.letter_round2.hapax_letter_scalars,
+            (closure * 1_000_000.0).round() as u64,
+            (word_hapax * 1_000_000.0).round() as u64,
+        ));
+        // Flip = closed under the round-2 word-hapax gate (>0.5%, the round-2
+        // representative), open under the round-3 scalar gate (≤0.1%).
+        if word_hapax > 0.005 && closure <= RETAINED_SAMPLE_THRESHOLD {
+            flips.push((
+                corpus.id.clone(),
+                (word_hapax * 1_000_000.0).round() as u64,
+                (closure * 1_000_000.0).round() as u64,
+            ));
+        }
+        for (threshold_index, &threshold) in CLOSURE_SCALAR_SHARES.iter().enumerate() {
+            let open = closure <= threshold;
+            if open {
+                open_corpora[threshold_index] += 1;
+            }
+            for (knee_index, &max_count) in LETTER_RARE_MAX_COUNTS.iter().enumerate() {
+                add_letter_round2_tally(
+                    &mut round2[threshold_index][knee_index],
+                    letter_round2_tally(&corpus.letter_round2, max_count, open),
+                );
+            }
+        }
+        // Lexical-kill mechanism leads at knee ≤1: count==1 letter scalars whose
+        // occurrence folds into a repeated word type. Uppercase glyph here proves
+        // the suspected uppercase-folds-into-repeated-lowercase-word mechanism.
+        if closure <= RETAINED_SAMPLE_THRESHOLD {
+            for cand in corpus
+                .letter_round2
+                .rare
+                .iter()
+                .filter(|c| c.count == 1 && c.lexical_word.is_some())
+            {
+                if lexical_kill_leads.len() < 20 {
+                    lexical_kill_leads.push((
+                        corpus.id.clone(),
+                        cand.glyph,
+                        cand.lexical_word.clone().unwrap_or_default(),
+                        cand.lexical_word_tokens,
+                    ));
+                }
+            }
+            retained_samples.extend(corpus.retained_samples.iter().cloned());
+        }
+        samples.extend(corpus.samples);
+        for (pair, &count) in &corpus.decomposed_pairs {
+            let row = decomposed.entry(pair.clone()).or_default();
+            row.0 += count;
+            row.1 += 1;
+        }
+    }
+    eprintln!("rare-glyph fleet tally: {:?}", t0.elapsed());
+
+    println!("=== RARE-GLYPH SPIKE — fleet aggregate ({total} corpora) ===");
+    println!("candidate lane opportunities:");
+    for lane in GlyphLane::ALL {
+        println!("  {}  {}", lane.label(), lane_totals[lane.index()]);
+    }
+    print_glyph_histogram(&count_hist);
+    print_glyph_sweeps(&abs_sweeps, &rate_sweeps);
+
+    println!("\nround 3 L-only stack (base is the small absolute knee; all counts are sites):");
+    println!("  closure threshold is hapax L-scalar types / all L-scalar occurrences (letter-SCALAR closure).");
+    for (threshold_index, &threshold) in CLOSURE_SCALAR_SHARES.iter().enumerate() {
+        println!(
+            "  scalar closure <= {:.4}%: {}/{} corpora open the L lane",
+            threshold * 100.0,
+            open_corpora[threshold_index],
+            total
+        );
+        for (knee_index, &max_count) in LETTER_RARE_MAX_COUNTS.iter().enumerate() {
+            let tally = round2[threshold_index][knee_index];
+            println!(
+                "    <= {max_count}: base {:>6}; closure -{:>6} ({:>5.1}%); lexical -{:>6} ({:>5.1}%); keep {:>6}",
+                tally.base.sites,
+                tally.closure_killed.sites,
+                kill_rate(tally.closure_killed.sites, tally.base.sites),
+                tally.lexical_killed.sites,
+                kill_rate(tally.lexical_killed.sites, tally.base.sites),
+                tally.retained.sites,
+            );
+        }
+    }
+
+    // Highest scalar closure = open-inventory corpora that self-silence.
+    closure_rows.sort_by_key(|(_, _, _, closure_ppm, _)| std::cmp::Reverse(*closure_ppm));
+    println!("\nhighest letter-SCALAR closure (open-inventory self-disable, stay closed):");
+    for (id, scalars, hapaxes, closure_ppm, word_ppm) in closure_rows.iter().take(20) {
+        println!(
+            "  {id:<24} {}/{} = {:.4}%  (word-hapax {:.3}%)",
+            hapaxes,
+            scalars,
+            *closure_ppm as f64 / 10_000.0,
+            *word_ppm as f64 / 10_000.0,
+        );
+    }
+
+    // Sanity: corpora that flip open under scalar closure but were closed under
+    // the round-2 word-hapax gate — the agglutinative Latin-script class.
+    flips.sort_by_key(|(_, word_ppm, _)| std::cmp::Reverse(*word_ppm));
+    println!(
+        "\nflip-open corpora (word-hapax >0.5% [closed in round 2] but scalar closure <=0.1% [open now]): {} total",
+        flips.len()
+    );
+    for (id, word_ppm, closure_ppm) in flips.iter().take(25) {
+        println!(
+            "  {id:<24} word-hapax {:.3}%  scalar closure {:.4}%",
+            *word_ppm as f64 / 10_000.0,
+            *closure_ppm as f64 / 10_000.0,
+        );
+    }
+
+    // Sanity: confirm the mechanism of the knee≤1 lexical kills.
+    println!(
+        "\nlexical kills at knee<=1 (count==1 L scalar folding into a repeated word type): {} leads",
+        lexical_kill_leads.len()
+    );
+    for (id, glyph, word, word_tokens) in lexical_kill_leads.iter().take(20) {
+        let upper = glyph.is_uppercase();
+        println!(
+            "  {id:<20} {} -> word {word:?} ({word_tokens} tokens){}",
+            glyph_label(*glyph),
+            if upper { "  [uppercase → folds to repeated lowercase]" } else { "" },
+        );
+    }
+
+    // Retained review table: ~30 diverse retained sites (letter, count<=3, not
+    // lexical) in corpora open at the representative closure threshold.
+    retained_samples.sort_by_key(|s| (s.corpus.clone(), s.count, s.glyph));
+    retained_samples.dedup_by(|a, b| a.corpus == b.corpus && a.glyph == b.glyph);
+    let mut diverse: Vec<GlyphSample> = Vec::new();
+    let mut per_corpus: BTreeMap<String, u64> = BTreeMap::new();
+    for sample in &retained_samples {
+        let seen = per_corpus.entry(sample.corpus.clone()).or_default();
+        if *seen < 2 {
+            *seen += 1;
+            diverse.push(sample.clone());
+        }
+    }
+    println!(
+        "\nretained review table ({} of {} retained leads; closure<={:.3}%, knee<={}, non-lexical):",
+        diverse.len().min(30),
+        retained_samples.len(),
+        RETAINED_SAMPLE_THRESHOLD * 100.0,
+        RETAINED_SAMPLE_KNEE,
+    );
+    print_glyph_samples(&diverse.into_iter().take(30).collect::<Vec<_>>());
+
+    noisiest.sort_by_key(|(_, abs, rate, _)| {
+        (
+            std::cmp::Reverse(abs.iter().sum::<u64>()),
+            std::cmp::Reverse(rate.iter().sum::<u64>()),
+        )
+    });
+    println!("\nnoisiest corpora (raw-rarity reference: absolute K=32, rate=2/10k):");
+    for (id, abs, rate, scalars) in noisiest.iter().take(20) {
+        println!(
+            "  {id:<24} abs L/N/P/S={}/{}/{}/{}  rate={}/{}/{}/{}  raw {scalars:>9} scalars",
+            abs[0], abs[1], abs[2], abs[3], rate[0], rate[1], rate[2], rate[3],
+        );
+    }
+
+    let mut decomposed: Vec<_> = decomposed.into_iter().collect();
+    decomposed.sort_by_key(|(_, (count, _))| std::cmp::Reverse(*count));
+    println!("\ndecomposed base+mark preflight across the fleet (top 20):");
+    for (pair, (count, corpora)) in decomposed.iter().take(20) {
+        println!("  {pair:?}  {count:>8} occurrences in {corpora} corpora");
+    }
+
+    println!("\nreview samples by lane (absolute K=32):");
+    for lane in GlyphLane::ALL {
+        let mut lane_samples: Vec<_> = samples
+            .iter()
+            .filter(|sample| sample.lane == lane)
+            .cloned()
+            .collect();
+        lane_samples.sort_by_key(|sample| {
+            (std::cmp::Reverse(sample.lane_total), sample.count, sample.glyph)
+        });
+        println!("  [{}]", lane.label());
+        print_glyph_samples(&lane_samples.into_iter().take(12).collect::<Vec<_>>());
+    }
+}
+
+#[cfg(test)]
+mod glyph_tests {
+    use super::*;
+
+    fn one_verse(text: &str) -> VerseMap {
+        let mut map = VerseMap::new();
+        map.insert(
+            ssc_core::Sid::new(BookId::from_str("GEN").unwrap(), 1, 1),
+            text.to_string(),
+        );
+        map
+    }
+
+    #[test]
+    fn visible_candidate_lanes_cover_stated_examples_only() {
+        assert_eq!(glyph_lane('q'), Some(GlyphLane::Letter));
+        assert_eq!(glyph_lane('¹'), Some(GlyphLane::Number));
+        assert_eq!(glyph_lane('“'), Some(GlyphLane::Punctuation));
+        assert_eq!(glyph_lane('='), Some(GlyphLane::Symbol));
+        assert_eq!(glyph_lane('\u{301}'), None);
+        assert_eq!(glyph_lane(' '), None);
+        assert_eq!(glyph_lane('\u{FFFD}'), None);
+    }
+
+    #[test]
+    fn rate_knee_expands_with_lane_volume() {
+        assert_eq!(glyph_rarity_abs(1, 32.0), 1.0);
+        assert!(glyph_rarity_rate(32, 500_000, 2.0) > glyph_rarity_abs(32, 32.0));
+    }
+
+    #[test]
+    fn closure_uses_hapax_letter_scalar_share() {
+        // "alpha alpha alpha": a×6, l×3, p×3, h×3 — no scalar seen once.
+        let closed = analyze_glyphs("closed".to_string(), &one_verse("alpha alpha alpha"));
+        assert_eq!(closed.letter_round2.hapax_letter_scalars, 0);
+        assert_eq!(closed.letter_round2.letter_scalars, 15);
+        assert_eq!(closed.letter_round2.closure(), 0.0);
+
+        // "alpha beta gamma": a×5, m×2 repeat; l,p,h,b,e,t,g each once (7 hapax
+        // scalars) of 14 L occurrences → 0.5. Scalar closure, not word closure:
+        // even with three distinct (word-hapax=1.0) word types the alphabet is
+        // half-closed.
+        let open = analyze_glyphs("open".to_string(), &one_verse("alpha beta gamma"));
+        assert_eq!(open.letter_round2.hapax_letter_scalars, 7);
+        assert_eq!(open.letter_round2.letter_scalars, 14);
+        assert_eq!(open.letter_round2.closure(), 0.5);
+        assert_eq!(open.letter_round2.word_hapax_share(), 1.0);
+    }
+
+    #[test]
+    fn lexical_discount_requires_one_repeated_word_type() {
+        let concentrated = analyze_glyphs("concentrated".to_string(), &one_verse("Xerxes Xerxes"));
+        let x = concentrated
+            .letter_round2
+            .rare
+            .iter()
+            .find(|candidate| candidate.glyph == 'X')
+            .unwrap();
+        assert_eq!(x.lexical_word.as_deref(), Some("xerxes"));
+        assert_eq!(x.lexical_word_tokens, 2);
+
+        let scattered = analyze_glyphs("scattered".to_string(), &one_verse("Xenon Xylophone"));
+        let x = scattered
+            .letter_round2
+            .rare
+            .iter()
+            .find(|candidate| candidate.glyph == 'X')
+            .unwrap();
+        assert!(x.lexical_word.is_none());
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // terminal_strength SPIKE (shortlist 2/3). Per-mark boundary trust wired into
 // ADR 0051 casing; reports witness measurements, per-mark fleet trust, the W2
 // variant comparison (genealogy guard), the sigmoid refit evidence, and the
@@ -1917,4 +2947,177 @@ fn terminal_fleet(dir: &Path, variant_b: bool) {
         if cnt >= 10 { break; }
     }
     if cnt == 0 { println!("  (none surfaced in major-language corpora)"); }
+
+    terminal_gate_sweep(&corpora, bi, bp, bb, ti, tp, tb, promoted, variant_b);
+}
+
+/// Gate-threshold sweep report (2026-07-10). `b*` are the shipped-baseline
+/// channel totals, `t*` the multiplier wiring, `mult_promoted` the multiplier's
+/// promoted-and-surfaced count (the 237). Each item mirrors the ADR packet.
+#[allow(clippy::too_many_arguments)]
+fn terminal_gate_sweep(
+    corpora: &[TermCorpus],
+    bi: u64, bp: u64, bb: u64,
+    ti: u64, tp: u64, tb: u64,
+    mult_promoted: u64,
+    variant_b: bool,
+) {
+    let sweep = terminal::GATE_SWEEP;
+    let n_t = sweep.len();
+    let base_total = bi + bp + bb;
+    let mult_total = ti + tp + tb;
+
+    println!("\n═══ GATE-THRESHOLD SWEEP (2026-07-10; variant {}) ═══",
+        if variant_b { "B" } else { "A" });
+
+    // 1. Surfaced volume per channel + deltas vs baseline and multiplier.
+    println!("\n-- 1. surfaced volume per channel (fleet) --");
+    println!("  baseline (shipped): i {bi}  p {bp}  b {bb}  TOTAL {base_total}");
+    println!("  multiplier wiring:  i {ti}  p {tp}  b {tb}  TOTAL {mult_total}");
+    println!("  {:<5} {:>8} {:>9} {:>6} {:>8} {:>10} {:>10}",
+        "T", "intrins", "positnl", "both", "TOTAL", "Δ vs base", "Δ vs mult");
+    for (i, &t) in sweep.iter().enumerate() {
+        let (mut gi, mut gp, mut gb) = (0u64, 0u64, 0u64);
+        for c in corpora {
+            let (a, b2, c2) = c.gate.counts[i];
+            gi += a; gp += b2; gb += c2;
+        }
+        let total = gi + gp + gb;
+        println!("  {:<5.2} {:>8} {:>9} {:>6} {:>8} {:>+10} {:>+10}",
+            t, gi, gp, gb, total,
+            total as i64 - base_total as i64, total as i64 - mult_total as i64);
+    }
+
+    // 2. Middle population: sites lost between adjacent thresholds.
+    println!("\n-- 2. middle population: sites gated off between adjacent T --");
+    println!("  {:<14} {:>7}   classes (mark: count)", "step", "sites");
+    for i in 0..n_t - 1 {
+        let (lo, hi) = (sweep[i], sweep[i + 1]);
+        let mut total = 0u64;
+        let mut classes: BTreeMap<ClassKey, u64> = BTreeMap::new();
+        for c in corpora {
+            total += c.gate.step_lost[i];
+            for (k, v) in &c.gate.step_classes[i] {
+                *classes.entry(*k).or_default() += v;
+            }
+        }
+        let mut cv: Vec<(&ClassKey, &u64)> = classes.iter().collect();
+        cv.sort_by(|a, b| b.1.cmp(a.1));
+        let cs = cv.iter().take(6)
+            .map(|(k, v)| format!("{}:{}", k.label(), v))
+            .collect::<Vec<_>>().join("  ");
+        println!("  {:<14} {:>7}   {}", format!("{lo:.2}→{hi:.2}"), total, cs);
+    }
+
+    // 3. The 12 ADR 0051 anchors, alive at each threshold (first 7 = TP).
+    println!("\n-- 3. the 12 ADR 0051 anchors: alive at each threshold --");
+    print!("  {:<9} {:<11} {:<10} {:<4} {:<4}", "corpus", "sid", "word", "base", "mult");
+    for &t in sweep { print!(" {:>5.2}", t); }
+    println!("   kind");
+    let mut tp_deaths: Vec<(String, f64)> = Vec::new();
+    for (idx, &(ac, asid, aw)) in terminal::ANCHORS.iter().enumerate() {
+        let is_tp = idx < 7;
+        let fate = corpora.iter().flat_map(|c| c.anchors.iter())
+            .find(|a| a.corpus == ac && a.sid == asid && a.word == aw);
+        match fate {
+            Some(a) => {
+                print!("  {:<9} {:<11} {:<10} {:<4} {:<4}",
+                    ac, asid, aw,
+                    if a.base_alive { "✓" } else { "·" },
+                    if a.tr_alive { "✓" } else { "·" });
+                for (i, &t) in sweep.iter().enumerate() {
+                    print!(" {:>5}", if a.gate_alive[i] { "✓" } else { "·" });
+                    if is_tp && !a.gate_alive[i] {
+                        tp_deaths.push((format!("{ac} {asid} {aw} @T={t:.2}"), a.gate_score[i]));
+                    }
+                }
+                println!("   {}", if is_tp { "TP" } else { "FP" });
+            }
+            None => println!("  {:<9} {:<11} {:<10}  (not a candidate site)", ac, asid, aw),
+        }
+    }
+    if tp_deaths.is_empty() {
+        println!("  ALL 7 TPs stay alive at every swept threshold.");
+    } else {
+        println!("  ⚠ TP deaths: {}",
+            tp_deaths.iter().map(|(s, _)| s.clone()).collect::<Vec<_>>().join(", "));
+    }
+
+    // 4. Readmissions vs the multiplier wiring.
+    println!("\n-- 4. readmissions vs the multiplier wiring (fleet) --");
+    for (i, &t) in sweep.iter().enumerate() {
+        let r: u64 = corpora.iter().map(|c| c.gate.readmitted[i]).sum();
+        println!("  T={t:.2}: {r} findings the multiplier eroded, readmitted by the gate");
+    }
+    // The documented-known fraLSG MIC 2:6 disent-ils FP (expected readmitted).
+    let fralsg = corpora.iter().find(|c| c.id == "fraLSG")
+        .and_then(|c| c.gate.readmit_samples.iter().find(|s| s.sid == "MIC 2:6"));
+    match fralsg {
+        Some(s) => println!(
+            "  fraLSG MIC 2:6 [{}]: trust={:.3} gate-score={:.3} base={:.3} (readmitted; known FP) | {}",
+            s.word, s.trust, s.score, s.base_score, s.ctx),
+        None => println!("  fraLSG MIC 2:6 disent-ils: NOT in the readmit set (unexpected — investigate)"),
+    }
+    // Per-major-corpus readmit tally (T=0.50, the maximal readmit set) — shows
+    // how much of the fleet-wide readmission lands in major vs minority langs.
+    println!("\n  readmit count per major-language corpus (T=0.50):");
+    let major_readmit: u64 = corpora.iter()
+        .filter(|c| MAJOR.contains(&c.id.as_str()))
+        .map(|c| c.gate.readmitted[0]).sum();
+    let mut mr: Vec<(&str, u64)> = corpora.iter()
+        .filter(|c| MAJOR.contains(&c.id.as_str()) && c.gate.readmitted[0] > 0)
+        .map(|c| (c.id.as_str(), c.gate.readmitted[0])).collect();
+    mr.sort_by_key(|x| std::cmp::Reverse(x.1));
+    println!("    {} of {} fleet readmissions land in major-language corpora: {}",
+        major_readmit, corpora.iter().map(|c| c.gate.readmitted[0]).sum::<u64>(),
+        mr.iter().map(|(id, n)| format!("{id}:{n}")).collect::<Vec<_>>().join("  "));
+    println!("\n  readmitted-site sample from major-language corpora (verse text):");
+    let mut shown = 0;
+    for c in corpora {
+        if !MAJOR.contains(&c.id.as_str()) { continue; }
+        for s in &c.gate.readmit_samples {
+            println!("    [{}] {:<9} {:<14} class={} trust={:.3} gate={:.3} base={:.3} | {}",
+                c.id, s.sid, s.word, s.class, s.trust, s.score, s.base_score, s.ctx);
+            shown += 1;
+            if shown >= 10 { break; }
+        }
+        if shown >= 10 { break; }
+    }
+    if shown == 0 { println!("    (no readmissions in major-language corpora)"); }
+    // Erosion lands overwhelmingly in minority-language corpora, so also show a
+    // fleet-wide sample from the highest-readmit corpora for adjudication.
+    println!("\n  fleet-wide readmitted-site sample (highest-readmit corpora):");
+    let mut ranked: Vec<&TermCorpus> = corpora.iter()
+        .filter(|c| c.gate.readmitted[0] > 0).collect();
+    ranked.sort_by_key(|c| std::cmp::Reverse(c.gate.readmitted[0]));
+    let mut fshown = 0;
+    for c in ranked {
+        for s in c.gate.readmit_samples.iter().take(2) {
+            println!("    [{}] {:<9} {:<14} class={} trust={:.3} gate={:.3} base={:.3} | {}",
+                c.id, s.sid, s.word, s.class, s.trust, s.score, s.base_score, s.ctx);
+            fshown += 1;
+            if fshown >= 10 { break; }
+        }
+        if fshown >= 10 { break; }
+    }
+
+    // 5. The 237 promoted quote-context sites: survival at each threshold.
+    println!("\n-- 5. promoted quote-context sites surviving at each threshold --");
+    println!("  multiplier wiring promoted & surfaced: {mult_promoted}");
+    for (i, &t) in sweep.iter().enumerate() {
+        let s: u64 = corpora.iter().map(|c| c.gate.promoted_survived[i]).sum();
+        println!("  T={t:.2}: {s} promoted quote-context sites survive");
+    }
+
+    // 6. Corpora that lose ALL positional coverage at each threshold.
+    println!("\n-- 6. corpora that lose ALL positional coverage at each threshold --");
+    for (i, &t) in sweep.iter().enumerate() {
+        let mut losers: Vec<&TermCorpus> = corpora.iter()
+            .filter(|c| c.gate.base_pos > 0 && !c.gate.pos_alive[i]).collect();
+        losers.sort_by_key(|c| std::cmp::Reverse(c.gate.base_pos));
+        let names = losers.iter().take(5)
+            .map(|c| format!("{}(base_pos {})", c.id, c.gate.base_pos))
+            .collect::<Vec<_>>().join(", ");
+        println!("  T={t:.2}: {} corpora  [largest: {names}]", losers.len());
+    }
 }
