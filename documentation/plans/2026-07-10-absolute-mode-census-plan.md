@@ -99,9 +99,19 @@ the concrete meaning of "same walks, second accumulator."
 ## Proposed API and schema
 
 ```rust
-// crates/core/src/census.rs — cold path, pure, config-free (ADR 0010 spirit:
-// second pure entrypoint beside analyze; no IO, no thresholds).
-pub fn census(target: &VerseMap) -> Inventory;
+// crates/core/src/census.rs — cold path, pure, knob-free judgment (ADR 0010
+// spirit: second pure entrypoint beside analyze; no IO, no thresholds).
+// `CensusOptions` carries presentation capacities ONLY — nothing in it can
+// change a count or a sort, so the no-knobs principle (no *judgment* knobs)
+// holds.
+pub struct CensusOptions {
+    /// Max example sites retained per row. Default 8. A payload/presentation
+    /// capacity, not a statistical knob — counts and sorts are unaffected.
+    pub example_cap: usize,
+}
+impl Default for CensusOptions { /* example_cap: 8 */ }
+
+pub fn census(target: &VerseMap, opts: &CensusOptions) -> Inventory;
 
 pub struct Inventory {
     /// Fixed order: Letters, Punctuation, Numbers, Words.
@@ -121,9 +131,9 @@ pub struct Row {
     pub key: RowKey,            // typed, closed — see lane table
     pub count: u64,
     /// Capped example sites: first occurrence per book until the cap, then
-    /// stop (deterministic, spread across books by construction). Cap = 8,
-    /// a const, not a knob. Spans project to UTF-16 at the wasm boundary
-    /// exactly like Finding ranges.
+    /// stop (deterministic, spread across books by construction). Cap from
+    /// `CensusOptions.example_cap` (default 8). Spans project to UTF-16 at
+    /// the wasm boundary exactly like Finding ranges.
     pub examples: Vec<(Sid, Span)>,
 }
 
@@ -138,6 +148,20 @@ pub enum RowKey {
     WordCaseVariants { folded: String, forms: Vec<(String, u64)> },
 }
 ```
+
+**Input granularity — any well-formed `VerseMap`, including one entry.**
+The census never assumes verse granularity (verses are reference plumbing,
+not discourse — CLAUDE.md invariant). A caller may pass the whole text under
+a single key (the key must still parse as a `Sid`, e.g. `"GEN 1:1"` — the
+wasm boundary silently drops unparseable keys today, same as `analyze`).
+Each lane inherits its *scope* from the extractor it mirrors: book-stream
+lanes (casing/`walk_book`-shaped) already carry state across verse seams, so
+a one-entry map is behaviourally identical for them by construction;
+per-verse lanes (spacing/adjacency extraction) see whatever an entry
+contains, so a coarser map makes formerly-cross-seam adjacency *visible* —
+a documented superset, not a bug, and identical to how the rules themselves
+would see that input. Example spans still resolve exactly (byte spans into
+the entry's text). A test pins the one-entry case.
 
 Wire form: `serde`/`Tsify` mirroring `Finding` (SectionId and the RowKey tag
 are closed string unions; `Sid` serialises as `"GEN 1:1"`). **v1 sort:**
@@ -182,13 +206,17 @@ system doesn't change the shape); mixed-system tokens are already
 
 ## Answered here (ADR ratifies, doesn't research)
 
-- **Entrypoint**: `census(target: &VerseMap) -> Inventory` in core; pure,
-  cold path, one-shot, **config-free** — no `CensusConfig`, no knobs; the
-  example cap is a `const`. Ignores shell `Stats` (reasons above).
+- **Entrypoint**: `census(target: &VerseMap, opts: &CensusOptions) ->
+  Inventory` in core; pure, cold path, one-shot, **no judgment knobs** —
+  `CensusOptions` carries presentation capacities only (nothing in it can
+  change a count or a sort). Ignores shell `Stats` (reasons above). Accepts
+  any well-formed map including a single whole-text entry (see Input
+  granularity).
 - **Sort**: ascending count, core-side; learned-rarity as displayed column
   only, v1.
-- **Examples**: cap 8; first-per-book-then-stop (deterministic, book-spread,
-  cheap; no reservoir sampling — determinism beats uniformity here).
+- **Examples**: `example_cap` default 8, wasm-overridable;
+  first-per-book-then-stop (deterministic, book-spread, cheap; no reservoir
+  sampling — determinism beats uniformity here).
 - **Incrementality**: deferred. Re-run on demand; it's a report. No
   prior/merge wiring until usage demands it.
 - **Trait surface**: none. New module + two `pub(crate)` bumps.
@@ -206,6 +234,19 @@ system doesn't change the shape); mixed-system tokens are already
 3. Export-view format for PO reports (CSV vs static HTML print view) — pure
    product surface, zero engine impact.
 
+## Feature-routing policy (standing, beyond this plan)
+
+**New check ideas start in statistics mode — a scored, convention-learned
+rule — and the inventory adds/adopts a lane afterwards if a counting view is
+also wanted.** The census is never the primary implementation of an
+error-shaped check: rules judge, the census counts, and a lane appears in
+the census either by mirroring a shipped rule's extractor or because triage
+explicitly adjudicated the item as house-style/census-only (a human-judgment
+class, recorded per item as in the PO-checklist triage). This keeps the
+census permanently knob-free: anything that would need a threshold to be
+useful belongs in a rule. (Also recorded in CLAUDE.md so future agents
+route feature work correctly.)
+
 ## Tests
 
 - **Equivalence (the load-bearing suite):** on hand-built `VerseMap`s,
@@ -217,14 +258,18 @@ system doesn't change the shape); mixed-system tokens are already
   here is the exact bug the same-walks rule exists to prevent.
 - **Row-unit invariants:** rows never filtered (a hapax glyph appears); the
   example cap caps examples, never counts; empty corpus → four sections,
-  zero lane_totals, zero rows.
+  zero lane_totals, zero rows; a one-entry whole-text map is accepted and
+  counts match the same text under per-verse keys for every book-stream
+  lane (per-verse lanes may see additional cross-seam adjacency — assert
+  the documented superset relation, not equality).
 - **Determinism:** same map ⇒ byte-identical `Inventory` (ordering pinned).
 - Synthetic `VerseMap`s only — corpora are for the dry-run, never fixtures.
 
 ## wasm + shell surface
 
-`census(map: VrefMap) -> InventoryJs` beside `analyze` in
-`crates/wasm/src/lib.rs`; example spans projected to UTF-16 exactly like
+`census(map: VrefMap, example_cap?: number) -> InventoryJs` beside `analyze`
+in `crates/wasm/src/lib.rs` (omitted cap ⇒ default 8); a one-entry map is as
+legal here as anywhere. Example spans projected to UTF-16 exactly like
 `Finding` ranges (reuse the existing projection helper — byte→UTF-16 happens
 once, at the boundary that owns the text, ADR 0010). Tsify types give the
 editor the closed unions. The findings-shell rendering groups by section →

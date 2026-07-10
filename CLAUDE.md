@@ -20,3 +20,14 @@ boundaries. Therefore:
 
 Agents repeatedly assume verse-initial ≈ sentence-initial. In this codebase
 that assumption is wrong every time.
+
+## Feature routing: rules first, census adopts later
+
+New check ideas start in **statistics mode** — a scored, convention-learned
+rule (the `StatefulRule` shape, calibrated on the fleet). The census /
+inventory report (absolute mode) is never the primary implementation of an
+error-shaped check: rules judge, the census counts. A census lane appears
+either by mirroring a shipped rule's extractor or because triage explicitly
+adjudicated the item as house-style/census-only. Anything that would need a
+threshold to be useful belongs in a rule — the census stays knob-free.
+(See `documentation/plans/2026-07-10-absolute-mode-census-plan.md`.)
