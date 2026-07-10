@@ -1,6 +1,6 @@
 # Plan — the single user knob: measured conservative / normal / aggressive presets
 
-Successor to [aggression presets](2026-07-07-aggression-presets.md), upgraded
+Successor to [aggression presets](../ideas/2026-07-07-aggression-presets.md), upgraded
 from idea to committed plan (discussion 2026-07-09). The end-user requirement
 is now explicit: **field users get per-rule on/off toggles (the catalog
 `enable_question`s, aided by the config recommender) plus exactly ONE

@@ -1,7 +1,7 @@
 # Idea — project-phase aggression presets, fleet-calibrated confidence_z
 
 > **Superseded 2026-07-09** by the committed
-> [preset derivation plan](2026-07-09-preset-derivation-plan.md): single user
+> [preset derivation plan](../plans/2026-07-09-preset-derivation-plan.md): single user
 > knob, wider truncation ladder (1/5/28/120), per-rule tables over the
 > effective dials (post-ADR-0050 the rate knees, not just z), analytic sweep.
 
