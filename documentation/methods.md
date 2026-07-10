@@ -166,6 +166,18 @@ default. See §10 for the proposed `CorpusProfile` mechanism.
   work. Useful as a qualitative validation set: a good rule should
   rediscover at least some of these.
 
+### 0.1 Verses are reference plumbing, not discourse units
+
+Verse markers are an addressing scheme laid over the text; discourse —
+sentences, quotations, punctuation state — flows freely across verse
+boundaries. A verse start is **not** a sentence start, and no analysis may
+treat verse-initial position as sentence-initial or reset discourse state at
+a verse seam. The **book** is the real discourse unit: sentence state resets
+at book boundaries only (which is also why the book is the parallel-walk
+unit, ADR 0042). The single legitimate seam effect is glyph adjacency: a
+terminal glyph at the start of a verse is not "attached" to the previous
+verse's last letter.
+
 ## 1. Core thesis
 
 > **Anomaly detection in a small, in-progress translation is the problem of

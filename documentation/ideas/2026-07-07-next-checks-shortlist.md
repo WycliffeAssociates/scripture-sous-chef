@@ -34,6 +34,24 @@ Zipf-gated to words seen ≥10× (hapax-heavy corpora: the gate is honest —
 "never happens" is only assertable with history; agglutinative corpora will
 get little from it and that silence is correct, worth saying via profile).
 
+**Site-flagging ruling (2026-07-09, casing-rebuild discussion):** the
+`unexpected_sentence_end` half is **dead as a site rule**. Rarity-shaped
+evidence measures rarity, not wrongness, and legitimate terse finals are
+exactly as rare as errors — "He went in." is 2-in-1,000 for *in*, the same
+count shape as an orphaned period, and the counts don't encode
+grammaticality; precision collapses on the most natural sentences, and
+0/1,000 ("the") vs 2/1,000 ("in") isn't separable at site strength. The idea
+survives only in **aggregate** form: the word-reshuffle witness below
+operates per *mark* over the whole corpus, where terse-final noise averages
+out. Spuriously *inserted* terminals are already covered by the casing
+channel — the word after a bogus period shows up lowercase, the stronger
+witness of the same event. The sentence-*start* site rule was **not**
+adjudicated; before building it, run the same rare-but-valid base-rate
+scrutiny (poetic inversion, quoted fragments) that killed the end side. The
+`terminal_strength` machinery is unaffected and now has a concrete consumer:
+the casing rebuild's soft-censoring discount composes as
+`terminal_strength × habit`.
+
 **Position definition (ruling):** verse boundaries are addressing only —
 useful for *nothing* discourse-shaped. Position = adjacency to **validated
 terminal marks**. Validation per mark, two independent witnesses combined
