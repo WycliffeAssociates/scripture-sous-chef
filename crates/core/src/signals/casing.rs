@@ -341,6 +341,145 @@ fn walk_book(verses: &[(Sid, &str)], bufs: &mut WalkBufs) -> (BookCasing, Vec<Lo
     (bc, sites)
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// SPIKE — word-level casing calibration (next-checks-shortlist item 4).
+//
+// Everything below carries the `_experimental` suffix as a greppable spike
+// marker. It is NOT wired into any rule, `RuleStats`, or `CasingConfig`: it
+// only produces the raw per-word observations the `calibrate --casing` harness
+// consumes. All estimation, scoring, and sweeps live in the example. Delete
+// this block (and the harness) when the rebuilt rule lands.
+// ─────────────────────────────────────────────────────────────────────────
+
+/// First-letter case of a word, from its first grapheme's base scalar.
+/// `Uncased` is a caseless letter (no upper/lower distinction), which is
+/// evidence for neither convention — the emergent silence of caseless scripts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FirstCaseExperimental {
+    Upper,
+    Lower,
+    Uncased,
+}
+
+/// The structural position class of a word, fixed at its first letter and
+/// defined *before any casing knowledge* (the censoring model's generative
+/// side). A position is "forced" only where uppercase is conventionally
+/// expected: right after a bare attached terminal glyph, or book-initial.
+/// Everything else — including the token after an *intervening*-punctuation
+/// boundary (`."`, `...`), which `walk_book` deliberately does not police — is
+/// `Midflow`. Verse-initial is NOT forced (verses are reference plumbing).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PosClassExperimental {
+    /// The first word of the book — forced with no glyph.
+    BookInitial,
+    /// A word whose first letter consumed a *bare* attached terminal glyph
+    /// (carried across verse seams by the same `pending` state `walk_book`
+    /// uses). The glyph is the positional side's habit key.
+    ForcedAfterTerminal(char),
+    /// Not position-forced: uppercase here is intrinsic to the word.
+    Midflow,
+}
+
+/// One word (letter-run) observation: its byte span within its verse, its
+/// structural position class, and its first-letter case. The `calibrate`
+/// harness folds `text[start..end]` for the lexicon key.
+#[derive(Debug, Clone)]
+pub struct WordObsExperimental {
+    pub sid: Sid,
+    pub start: u32,
+    pub end: u32,
+    pub pos: PosClassExperimental,
+    pub case: FirstCaseExperimental,
+}
+
+/// Walk one book's verses in canonical order, emitting one
+/// [`WordObsExperimental`] per letter-run word. Reuses `walk_book`'s exact
+/// pending-terminal state machine — the first punctuation after a letter is the
+/// candidate terminal, later punctuation before the next letter marks the
+/// boundary *intervening*, whitespace/digits are transparent, and the pending
+/// terminal (and only it) carries across the verse seam. A word cannot span a
+/// seam (verse texts are separate strings), so an in-progress word closes at
+/// each verse's end. The book-initial word is forced.
+pub fn walk_book_experimental(verses: &[(Sid, &str)]) -> Vec<WordObsExperimental> {
+    use PosClassExperimental::*;
+
+    let mut out = Vec::new();
+    let mut tape: Vec<crate::tape::TapeEntry> = Vec::new();
+    let mut graphemes: Vec<GSpan> = Vec::new();
+    let mut starts: Vec<u32> = Vec::new();
+
+    // `walk_book`'s cross-seam sentence state.
+    let mut pending: Option<(char, bool)> = None;
+    let mut book_initial = true;
+    // In-progress word: (byte start, first-letter case, position class fixed at
+    // the first letter).
+    let mut cur: Option<(u32, FirstCaseExperimental, PosClassExperimental)> = None;
+
+    for (sid, text) in verses {
+        // Seam gap: a terminal at this verse's start is not attached to the
+        // previous verse's last letter (mirrors `walk_book`).
+        let mut prev_letter = false;
+        crate::tape::build(text, &mut tape);
+        grapheme::segment_tape_indexed(text, &tape, &mut graphemes, &mut starts);
+
+        for (k, gs) in graphemes.iter().enumerate() {
+            let e = tape[starts[k] as usize];
+            let cl = e.cl;
+            let lower = cl.is_lowercase();
+            let upper = cl.is_uppercase();
+            if cl.is_alphabetic() {
+                if cur.is_none() {
+                    // Word start: fix its case and position class. Consuming a
+                    // pending bare terminal makes it forced; an intervening
+                    // boundary is consumed but leaves the word Midflow (the
+                    // live rule does not police intervening boundaries either).
+                    let case = if upper {
+                        FirstCaseExperimental::Upper
+                    } else if lower {
+                        FirstCaseExperimental::Lower
+                    } else {
+                        FirstCaseExperimental::Uncased
+                    };
+                    let pos = if book_initial {
+                        BookInitial
+                    } else if let Some((glyph, intervening)) = pending.take() {
+                        if intervening { Midflow } else { ForcedAfterTerminal(glyph) }
+                    } else {
+                        Midflow
+                    };
+                    book_initial = false;
+                    cur = Some((gs.start, case, pos));
+                }
+                prev_letter = true;
+            } else {
+                // A non-letter ends the in-progress word at this grapheme's start.
+                if let Some((start, case, pos)) = cur.take() {
+                    out.push(WordObsExperimental { sid: *sid, start, end: gs.start, pos, case });
+                }
+                if cl.is_whitespace() || cl.is_numeric() {
+                    prev_letter = false;
+                } else {
+                    // Punctuation / symbol — the same terminal bookkeeping as
+                    // `walk_book`: first after a letter is the terminal, the
+                    // rest mark the boundary intervening.
+                    match &mut pending {
+                        Some((_, intervening)) => *intervening = true,
+                        None if prev_letter => pending = Some((e.ch, false)),
+                        None => {}
+                    }
+                    prev_letter = false;
+                }
+            }
+        }
+        // Close a word that ran to the verse's end (no non-letter followed it).
+        if let Some((start, case, pos)) = cur.take() {
+            out.push(WordObsExperimental { sid: *sid, start, end: text.len() as u32, pos, case });
+        }
+        // `pending` carries to the next verse; `prev_letter` resets above.
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -368,6 +507,53 @@ mod tests {
 
     fn run(map: &VerseMap, r: &SentenceInitialLowercase) -> Vec<Finding> {
         r.judge(&r.reduce(&crate::verse::by_book(map), None, None).0, &crate::verse::by_book(map), None, None)
+    }
+
+    /// SPIKE: `walk_book_experimental` position classes. The first word is
+    /// book-initial; a word after a bare terminal is forced (carrying the
+    /// glyph, across a verse seam); an intervening-punctuation boundary and a
+    /// plain continuation are both midflow (the live rule polices neither).
+    #[test]
+    fn experimental_walk_classifies_word_positions() {
+        use FirstCaseExperimental::*;
+        use PosClassExperimental::*;
+
+        let vm = book(
+            "GEN",
+            &[
+                (1, "God spoke. Then he"), // book-initial; "Then" forced by bare '.'
+                (2, "walked, so far"),     // any punct is a terminal candidate: "so" forced ','
+                (3, "he said."),           // ends on a bare terminal
+                (4, "Now go"),             // "Now" forced by '.' carried across the seam
+                (5, "one..."),             // ends on an intervening boundary ('.' then '..')
+                (6, "then done"),          // "then" is midflow — the intervening boundary carries
+            ],
+        );
+        let books = crate::verse::by_book(&vm);
+        let obs = walk_book_experimental(&books[&BookId::from_str("GEN").unwrap()]);
+        let got: Vec<(&str, PosClassExperimental, FirstCaseExperimental)> = obs
+            .iter()
+            .map(|o| (&vm[&o.sid][o.start as usize..o.end as usize], o.pos, o.case))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                ("God", BookInitial, Upper),
+                ("spoke", Midflow, Lower),
+                ("Then", ForcedAfterTerminal('.'), Upper),
+                ("he", Midflow, Lower),
+                ("walked", Midflow, Lower), // verse-2 start, no pending terminal
+                ("so", ForcedAfterTerminal(','), Lower),
+                ("far", Midflow, Lower),
+                ("he", Midflow, Lower), // verse-3 start, no pending terminal
+                ("said", Midflow, Lower),
+                ("Now", ForcedAfterTerminal('.'), Upper), // bare '.' carried across the seam
+                ("go", Midflow, Lower),
+                ("one", Midflow, Lower), // verse-5 start, no pending terminal
+                ("then", Midflow, Lower), // intervening boundary carried across the seam
+                ("done", Midflow, Lower),
+            ],
+        );
     }
 
     #[test]
