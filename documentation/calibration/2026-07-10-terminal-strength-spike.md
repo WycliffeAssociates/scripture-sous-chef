@@ -267,7 +267,174 @@ works; whether to ship it is a precision question for review.
    need a different reference prior (e.g. sentence-length or line-break
    structure), out of scope for this spike.
 
-## 7. Reproduce
+## 7. Gate-threshold sweep (2026-07-10)
+
+Follow-on to §6 limit #1. The **multiplier** wiring haircuts the positional
+score by `× trust`; two ~0.95 factors sink a right-at-floor finding. The
+**gate** wiring instead leaves the positional score as the *unchanged* two-factor
+`habit × rarity` **iff** `trust(class) ≥ T`, and does not score the site
+positionally below `T`. The censoring/learning discount is untouched — it keeps
+the multiplicative `trust × habit` form in both wirings; the intrinsic channel
+is never gated. Swept over `T ∈ {0.50, 0.60, 0.70, 0.80, 0.90, 0.95}`, fleet-wide
+(variant B). The multiplier mode remains available for comparison.
+
+### 7.0 Headline
+
+- The gate surfaces an **identical 4,005** findings at **every** swept `T`:
+  **+458 vs the shipped baseline (3,547)** and **+373 vs the multiplier (3,632)**.
+  It strictly dominates both — it readmits the multiplier's erosion victims
+  without the continuous haircut, and never loses a multiplier finding.
+- **The threshold is inert across the whole range**, and the reason is
+  structural: with a **0.95 emit floor** and a positional score `habit × rarity ≤
+  1`, *any* site the multiplier surfaces must already have `trust ≥ 0.95` (else
+  `habit × rarity × trust < floor`). So the entire multiplier-surfaced set clears
+  the gate at every `T ≤ 0.95`, and trust is bimodal enough (clustered near 0.99
+  or near 0) that the readmitted set and the promoted-quote survivors are
+  **constant** for all swept `T`. `T` only governs a handful of middle-trust
+  sites — 14 in total over the entire sweep.
+- **All 7 review true-positives stay alive at every `T`; all 5 false-positives
+  stay silent at every `T`.**
+
+### 7.1 Surfaced volume per channel
+
+| `T` | intrinsic | positional | both | TOTAL | Δ vs base | Δ vs mult |
+|--:|--:|--:|--:|--:|--:|--:|
+| baseline | 1,293 | 2,048 | 206 | 3,547 | — | — |
+| multiplier | 1,268 | 2,167 | 197 | 3,632 | +85 | — |
+| 0.50 | 1,368 | 2,520 | 117 | **4,005** | +458 | +373 |
+| 0.60 | 1,378 | 2,520 | 107 | **4,005** | +458 | +373 |
+| 0.70 | 1,380 | 2,520 | 105 | **4,005** | +458 | +373 |
+| 0.80 | 1,380 | 2,520 | 105 | **4,005** | +458 | +373 |
+| 0.90 | 1,381 | 2,520 | 104 | **4,005** | +458 | +373 |
+| 0.95 | 1,382 | 2,520 | 103 | **4,005** | +458 | +373 |
+
+Total and positional-only are flat; as `T` rises a single site occasionally
+slides from `both` into `intrinsic` (its positional channel gates off while its
+intrinsic mark survives), so the split shifts by ones while the total never moves.
+
+### 7.2 Middle population (verdict change between adjacent `T`)
+
+The bimodality prediction holds — the entire "insensitive plateau" is real and
+its only non-trivial edge is at the very bottom:
+
+| step | sites | classes (mark : count) |
+|---|--:|---|
+| 0.50 → 0.60 | 10 | `,`:8  `:`:1  `;`:1 |
+| 0.60 → 0.70 | 2 | `:`:1  `;`:1 |
+| 0.70 → 0.80 | 0 | — |
+| 0.80 → 0.90 | 1 | `,"`:1 |
+| 0.90 → 0.95 | 1 | `?`:1 |
+
+The 0.50→0.60 edge is dominated by the comma — the genealogy-prone class the W2
+guard already distrusts (§2). From 0.70 upward the gate moves at most one site
+per step.
+
+### 7.3 The 12 ADR 0051 anchors
+
+Alive at `base` / `mult` / **every** swept `T` (constant across the sweep):
+
+| corpus | sid | word | kind | base | mult | all `T` (0.50–0.95) |
+|---|---|---|---|:--:|:--:|:--:|
+| swhulb | LUK 8:44 | yesu | TP | ✓ | ✓ | ✓ |
+| WA-fr-ulb | JHN 13:2 | jésus | TP | ✓ | ✓ | ✓ |
+| spaRV1909 | 1SA 7:8 | filisteos | TP | ✓ | ✓ | ✓ |
+| vie1934 | MAT 24:24 | christ | TP | ✓ | ✓ | ✓ |
+| eng-web | 3MA 6:9 | gentiles | TP | ✓ | ✓ | ✓ |
+| eng-kjv | SIR 7:5 | justify | TP | ✓ | ✓ | ✓ |
+| WA-en-ulb | LAM 1:22 | deal | TP | ✓ | ✓ | ✓ |
+| fraLSG | ACT 19:13 | juifs | FP | · | · | · |
+| porblt | MAT 24:24 | messias | FP | · | · | · |
+| deu1912 | PHM 1:9 | alter | FP | · | · | · |
+| ind | DEU 14:12 | rajawali | FP | · | · | · |
+| nld | GEN 6:19 | mannetje | FP | · | · | · |
+
+**All 7 TPs survive at every swept threshold** (no `T` kills one); all 5 FPs
+stay silent. Anchor fate is threshold-independent.
+
+### 7.4 Readmissions vs the multiplier wiring
+
+**373** findings — the ones the multiplier's `× trust` eroded below the floor —
+are readmitted by the gate, **constant across every `T`** (all readmitted sites
+have `trust ≥ 0.95`, so raising `T` to 0.95 drops none). This is exactly the §6
+limit-#1 damage, now recovered. The documented fraLSG `!` case is among them:
+
+> **fraLSG MIC 2:6** `disent-ils` — class `!`, trust 0.990, gate-score 0.955,
+> multiplier 0.955×0.990 = 0.945 < floor (eroded), **readmitted; known FP**
+> (*"Ne prophétisez pas! disent-ils. Qu'on ne prophétise pa…"*).
+
+Erosion lands **overwhelmingly in minority-language corpora**: only **3 of the
+373** readmissions fall in a major-language corpus (`ind`:2, `fraLSG`:1). The
+rest cluster in translations with a quote-adjacent-terminal footnote/gloss
+convention. Fleet-wide sample from the highest-readmit corpora, for parametric
+adjudication:
+
+| corpus | sid | word | class | trust | gate | base | context |
+|---|---|---|---|--:|--:|--:|---|
+| fraLSG | MIC 2:6 | disent-ils | `!` | 0.990 | 0.955 | 0.955 | Ne prophétisez pas! disent-ils. Qu'on ne prophétise pa |
+| ind | 1CO 12:16 | perkataannya | `,"` | 0.959 | 0.959 | 0.000 | bagian dari tubuh ini," perkataannya itu pun tidak akan |
+| ind | EST 3:7 | undi | `,"` | 0.959 | 0.959 | 0.000 | Dalam bahasa Yahudi, 'undi' disebut 'pur.' Dari ha |
+| hch | 1CH 12:25 | ataxewi | `:"` | 0.965 | 0.965 | 0.000 | rimama mepɨyupaɨmekai: 'ataxewi miriyari heimana |
+| hch | 1CH 23:22 | ukari | `:"` | 0.965 | 0.965 | 0.000 | rayexeiyaka kaniumɨni: 'ukari xeikɨa pɨwarayexei |
+| rgu | 1CO 8:5 | ramatuaꞌ | `,"` | 0.959 | 0.959 | 0.000 | fo lahenda rae, 'ramatuaꞌ' do 'malaka'. |
+| rgu | GEN 3:20 | masodaꞌ | `,"` | 0.959 | 0.959 | 0.000 | 'Hawa' (sosoa na nae, 'masodaꞌ'), huu fo ria nana |
+| WA-zga-reg | ACT 2:25 | kyango | `:` | 0.969 | 0.969 | 0.969 | mańa ali kukivoko: kyango ikyandyo ukuta valangwi |
+| llg | GEN 11:9 | lakandaa | `,"` | 0.951 | 0.951 | 0.000 | fo ndandaan nae, 'lakandaa'). Huu LAMATUAK tao bab |
+| WA-bds-reg | ACT 18:21 | teesaa | `."` | 0.960 | 0.954 | 0.000 | e slaamu gu Ilitreemu." teesaa, higi waaudii hari |
+
+Most are lowercase words opening a *gloss* after a quote/colon (`'undi'`,
+`'masodaꞌ'`, `'lakandaa'`) — the quote-context class the shipped model cannot
+see at all (item-7). Several read as genuine capitalization anomalies; the
+transliteration-gloss cases want human adjudication. The gate's job here is only
+to stop erosion from silently deleting them — the precision question is separate.
+
+### 7.5 Promoted quote-context sites (item-7)
+
+The promotion *population* is fixed (bar 0.5, wiring-independent). Survivors:
+
+| wiring | promoted & surfaced |
+|---|--:|
+| multiplier | 237 |
+| gate, every `T` 0.50–0.95 | **519** |
+
+The gate **more than doubles** the item-7 payoff (237 → 519) and holds it
+constant across the sweep — the promoted survivors all sit at `trust ≥ 0.95`, so
+even `T = 0.95` keeps all of them. These are precisely the sites the multiplier's
+haircut had knocked below the floor.
+
+### 7.6 Corpora losing all positional coverage
+
+| `T` | corpora | largest (base_pos) |
+|--:|--:|---|
+| 0.50 | 55 | cbtNTpo (3), ameNT (2), kmh (2), nya (2), qxoNT (2) |
+| 0.60 | 59 | cbtNTpo (3), ameNT (2), kmh (2), nya (2), qxoNT (2) |
+| 0.70 | 61 | cbtNTpo (3), ameNT (2), kmh (2), nya (2), qxoNT (2) |
+| 0.80 | 61 | cbtNTpo (3), ameNT (2), kmh (2), nya (2), qxoNT (2) |
+| 0.90 | 61 | cbtNTpo (3), ameNT (2), kmh (2), nya (2), qxoNT (2) |
+| 0.95 | 61 | cbtNTpo (3), ameNT (2), kmh (2), nya (2), qxoNT (2) |
+
+The loss is confined to tiny NT-only corpora whose *entire* positional coverage
+was 2–3 findings on an untrusted class; 55→61 as `T` climbs, then flat. No
+substantial corpus loses coverage at any `T`.
+
+### 7.7 Recommendation — freeze `T = 0.90`
+
+Across the whole swept range the gate surfaces an identical **4,005** findings
+(**+458** vs shipped, **+373** vs the multiplier), because the 0.95 emit floor
+already forces every multiplier-surfaced site to `trust ≥ 0.95` — so `T` governs
+only *which erosion victims are readmitted*, and trust is bimodal enough that the
+readmitted set (373) and the promoted-quote survivors (519) are constant for
+every `T ≤ 0.95`. The middle population is **14 sites over the entire sweep**,
+concentrated at the bottom edge (10 of them at 0.50→0.60, almost all commas — the
+genealogy-prone class the W2 guard already distrusts). **`T = 0.90`** sits deep
+in this insensitive plateau with a full one-site step of margin on each side
+(0.80→0.90 and 0.90→0.95 each move a single site), keeps all seven review TPs
+alive, and stays strictly below the 0.95 score floor so the gate threshold is not
+conflated with the emit floor. `T = 0.95` is equally safe on the numbers; 0.90 is
+chosen for that decoupling and for a hair of margin. Below 0.70 is inadvisable
+only because that is where the gate begins admitting the distrusted comma class.
+**Still a spike — nothing frozen in core.**
+
+## 8. Reproduce
 
 ```
 cargo run --release -p ssc-core --example calibrate -- --terminal corpora/vref/eng-web.txt   # single
@@ -276,6 +443,11 @@ cargo run --release -p ssc-core --example calibrate -- --terminal corpora/vref A
 cargo test -p ssc-core --test terminal_spike                                                  # ported G²/Fisher fixtures + synthetic witnesses
 ```
 
+The fleet `--terminal` run emits both the multiplier-wiring deltas (§4) and the
+gate-threshold sweep (§7); no extra flag. The gate sweep `T` values live in
+`terminal::GATE_SWEEP`.
+
 Knobs used (spike, **not frozen**): floor 0.95, k 32, z 1.96 (frozen only to
 isolate the trust delta); juror gate 10; class-event gate 30; W2 sigmoid
-`logistic((dev − 8)/6)`; quote-promotion trust bar 0.5.
+`logistic((dev − 8)/6)`; quote-promotion trust bar 0.5; gate sweep `T ∈ {0.50,
+0.60, 0.70, 0.80, 0.90, 0.95}`.

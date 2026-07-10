@@ -50,7 +50,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use ssc_core::charclass::class_of;
 use ssc_core::token::tokenize;
-use ssc_core::verse::{by_book, VerseMap};
+use ssc_core::verse::{VerseMap, by_book};
 use ssc_core::{Sid, Span};
 
 use crate::association::Table2;
@@ -73,6 +73,15 @@ const CLASS_MIN_EVENTS: u64 = 30;
 /// raw G² does not transfer to the standardized statistic.
 const W2_SIGMOID_THR: f64 = 8.0;
 const W2_SIGMOID_SCALE: f64 = 6.0;
+/// Quote-context promotion bar — a `Quote(mark)` slot is promoted to a forced
+/// position when its class trust clears this. Held **fixed across wirings** so
+/// the promoted-site *population* (the 237) is identical for the multiplier and
+/// every gate threshold; the gate then decides how many *survive*.
+const PROMOTE_BAR: f64 = 0.5;
+/// Gate-threshold sweep (ADR 0051-follow-on; 2026-07-10). Under the gate wiring
+/// a forced site's positional score is the unchanged two-factor `habit × rarity`
+/// iff `trust(class) ≥ T`, and the site is not scored positionally below it.
+pub const GATE_SWEEP: &[f64] = &[0.50, 0.60, 0.70, 0.80, 0.90, 0.95];
 
 // ── Walk ──────────────────────────────────────────────────────────────────
 
@@ -106,8 +115,14 @@ pub struct ClassKey {
 impl ClassKey {
     fn of(slot: Slot) -> Option<ClassKey> {
         match slot {
-            Slot::Bare(m) => Some(ClassKey { mark: m, quoted: false }),
-            Slot::Quote(m) => Some(ClassKey { mark: m, quoted: true }),
+            Slot::Bare(m) => Some(ClassKey {
+                mark: m,
+                quoted: false,
+            }),
+            Slot::Quote(m) => Some(ClassKey {
+                mark: m,
+                quoted: true,
+            }),
             _ => None,
         }
     }
@@ -285,19 +300,30 @@ fn walk_corpus(map: &VerseMap) -> Walk {
 
                 // Reshuffle event: record following/preceding word by class.
                 if let Some(cls) = ClassKey::of(slot) {
-                    *w.after.entry(cls).or_default().entry(key.clone()).or_default() += 1;
+                    *w.after
+                        .entry(cls)
+                        .or_default()
+                        .entry(key.clone())
+                        .or_default() += 1;
                     if let Some(prev) = taken.as_ref().and_then(|p| p.prev.clone()) {
                         *w.before.entry(cls).or_default().entry(prev).or_default() += 1;
                     }
                 }
 
                 if case == Case::Lower {
-                    w.sites.push(Site { sid: *sid, span: *span, key: key.clone(), slot });
+                    w.sites.push(Site {
+                        sid: *sid,
+                        span: *span,
+                        key: key.clone(),
+                        slot,
+                    });
                 }
 
                 last_word = Some(key);
-                prev_letter =
-                    text[span.start..span.end].chars().next_back().is_some_and(is_letter);
+                prev_letter = text[span.start..span.end]
+                    .chars()
+                    .next_back()
+                    .is_some_and(is_letter);
                 cursor = span.end;
             }
             // Trailing gap of the verse (pending carries across the seam).
@@ -364,11 +390,11 @@ fn logistic(z: f64) -> f64 {
 pub struct ClassTrust {
     pub class: ClassKey,
     pub events: u64,
-    pub s_case: f64,     // W1 (0 if absent)
+    pub s_case: f64, // W1 (0 if absent)
     pub s_case_seen: bool,
-    pub diff: f64,       // W2 variant A (plain differentness)
-    pub agree: f64,      // cross-mark signature agreement
-    pub asym: f64,       // before/after asymmetry deviate → [0,1]
+    pub diff: f64,  // W2 variant A (plain differentness)
+    pub agree: f64, // cross-mark signature agreement
+    pub asym: f64,  // before/after asymmetry deviate → [0,1]
     pub s_reshuffle_a: f64,
     pub s_reshuffle_b: f64,
     pub jurors: u64,
@@ -391,8 +417,14 @@ fn reshuffle_deviate(
     base: &HashMap<String, u64>,
     jurors: &[String],
 ) -> (f64, f64, u64) {
-    let n_after: u64 = jurors.iter().map(|w| after.get(w).copied().unwrap_or(0)).sum();
-    let n_base: u64 = jurors.iter().map(|w| base.get(w).copied().unwrap_or(0)).sum();
+    let n_after: u64 = jurors
+        .iter()
+        .map(|w| after.get(w).copied().unwrap_or(0))
+        .sum();
+    let n_base: u64 = jurors
+        .iter()
+        .map(|w| base.get(w).copied().unwrap_or(0))
+        .sum();
     if n_after == 0 || n_base <= n_after {
         return (0.0, 0.0, 0);
     }
@@ -423,8 +455,14 @@ fn two_pop_deviate(
     before: &HashMap<String, u64>,
     jurors: &[String],
 ) -> f64 {
-    let n_a: u64 = jurors.iter().map(|w| after.get(w).copied().unwrap_or(0)).sum();
-    let n_b: u64 = jurors.iter().map(|w| before.get(w).copied().unwrap_or(0)).sum();
+    let n_a: u64 = jurors
+        .iter()
+        .map(|w| after.get(w).copied().unwrap_or(0))
+        .sum();
+    let n_b: u64 = jurors
+        .iter()
+        .map(|w| before.get(w).copied().unwrap_or(0))
+        .sum();
     if n_a == 0 || n_b == 0 {
         return 0.0;
     }
@@ -541,9 +579,10 @@ fn build_trust(w: &Walk, lex_lower: &HashMap<String, bool>) -> TrustTable {
     // class (`.` beats a thin-margin `?`), so the reference is the dominant
     // sentence terminator and doesn't erode itself. Fallbacks for caseless
     // corpora: the highest-differentness bare class, then any class.
-    let reference = pick(&|c| c.s_case_seen && !c.class.quoted && c.s_case >= 0.5, &|c| {
-        c.events as f64
-    })
+    let reference = pick(
+        &|c| c.s_case_seen && !c.class.quoted && c.s_case >= 0.5,
+        &|c| c.events as f64,
+    )
     .or_else(|| pick(&|c| !c.class.quoted, &|c| c.diff))
     .or_else(|| pick(&|_| true, &|c| c.diff));
 
@@ -602,12 +641,31 @@ fn tv_distance(p: &HashMap<String, u64>, q: &HashMap<String, u64>, jurors: &[Str
 
 // ── Casing model with trust wiring ──────────────────────────────────────────
 
-/// Which trust to apply, and whether quote-context sites may be promoted to
-/// forced. Baseline = (`None`, `false`) reproduces shipped ADR 0051.
+/// How trust enters the positional score.
+#[derive(Clone, Copy, PartialEq)]
+pub enum Wiring {
+    /// Spike wiring: positional score `×= trust(class)` (continuous haircut).
+    /// Quadrant presence is trust-independent. Reproduced by `Baseline` at
+    /// trust ≡ 1.
+    Multiplier,
+    /// Gate wiring: the positional score is the **unchanged** `habit × rarity`
+    /// iff `trust(class) ≥ T`; below `T` the site is not scored positionally
+    /// (no presence, no score). The censoring discount is untouched — it keeps
+    /// the multiplicative `trust × habit` form in both wirings.
+    Gate(f64),
+}
+
+/// Which trust to apply, whether quote-context sites may be promoted to forced,
+/// and how trust enters the positional channel. `Baseline` reproduces shipped
+/// ADR 0051 (trust ≡ 1, quote-context kept mid-flow).
 #[derive(Clone, Copy)]
 pub enum Scenario<'a> {
     Baseline,
-    Trust { trust: &'a HashMap<ClassKey, f64>, promote_quote: bool },
+    Trust {
+        trust: &'a HashMap<ClassKey, f64>,
+        promote_quote: bool,
+        wiring: Wiring,
+    },
 }
 
 /// Aggregated per-word tallies under a scenario's slot→position mapping.
@@ -630,25 +688,36 @@ impl WStats {
         self.mid_upper + self.mid_lower
     }
     fn is_lex_lower(&self) -> bool {
-        self.mid_total() > 0
-            && wilson_lb(self.mid_lower as f64, self.mid_total() as f64, Z) > 0.5
+        self.mid_total() > 0 && wilson_lb(self.mid_lower as f64, self.mid_total() as f64, Z) > 0.5
     }
 }
 
 /// Map a raw slot to a scenario position: `None` = mid-flow, `Some(None)` =
 /// book-initial, `Some(Some(class))` = forced under that habit class.
-fn slot_position(slot: Slot, sc: Scenario, trust: &dyn Fn(ClassKey) -> f64) -> Option<Option<ClassKey>> {
+fn slot_position(
+    slot: Slot,
+    sc: Scenario,
+    trust: &dyn Fn(ClassKey) -> f64,
+) -> Option<Option<ClassKey>> {
     match slot {
         Slot::Mid => None,
         Slot::BookInit => Some(None),
-        Slot::Bare(m) => Some(Some(ClassKey { mark: m, quoted: false })),
+        Slot::Bare(m) => Some(Some(ClassKey {
+            mark: m,
+            quoted: false,
+        })),
         Slot::Quote(m) => {
-            let cls = ClassKey { mark: m, quoted: true };
+            let cls = ClassKey {
+                mark: m,
+                quoted: true,
+            };
             match sc {
                 Scenario::Baseline => None, // shipped: quote-context is mid-flow
                 Scenario::Trust { promote_quote, .. } => {
-                    // Promote only when the class is meaningfully trusted.
-                    if promote_quote && trust(cls) > 0.5 {
+                    // Promote only when the class is meaningfully trusted. The
+                    // bar is wiring-independent, so the promoted population is
+                    // shared by the multiplier and every gate threshold.
+                    if promote_quote && trust(cls) > PROMOTE_BAR {
                         Some(Some(cls))
                     } else {
                         None
@@ -764,6 +833,13 @@ pub struct Scored {
 /// Score every lowercase site under a scenario at the frozen knobs.
 fn score(w: &Walk, sc: Scenario, lex: Option<&HashMap<String, bool>>) -> Vec<Scored> {
     let model = Model::build(w, sc, lex);
+    score_with_model(w, &model, sc)
+}
+
+/// Score against a prebuilt model. The `Model` is wiring-independent (it depends
+/// only on the trust map and the promotion bar), so the trust-scenario model can
+/// be built once and reused across the multiplier and every gate threshold.
+fn score_with_model(w: &Walk, model: &Model, sc: Scenario) -> Vec<Scored> {
     let trust_class = |cls: ClassKey| match sc {
         Scenario::Baseline => 1.0,
         Scenario::Trust { trust, .. } => trust.get(&cls).copied().unwrap_or(0.0),
@@ -772,7 +848,9 @@ fn score(w: &Walk, sc: Scenario, lex: Option<&HashMap<String, bool>>) -> Vec<Sco
 
     let mut out = Vec::new();
     for site in &w.sites {
-        let Some(ws) = model.words.get(&site.key) else { continue };
+        let Some(ws) = model.words.get(&site.key) else {
+            continue;
+        };
         let position = slot_position(site.slot, sc, &|c| trust_class(c));
 
         // Intrinsic channel (soft-censored cap dominance × rarity of lower).
@@ -802,17 +880,41 @@ fn score(w: &Walk, sc: Scenario, lex: Option<&HashMap<String, bool>>) -> Vec<Sco
             // same eff_up+mid_lower denominator as `is_cap`.
             let is_lower_soft = n_intr > 0.0 && wilson_lb(ws.mid_lower as f64, n_intr, Z) > 0.5;
             if is_cap || is_lower_soft {
-                pos_present = true;
                 let habit = model.habit_dom(Some(cls));
                 let t = trust_class(cls);
                 let minority = ws.forced_lower();
-                pos_score = habit * rarity(minority, K) * t;
-                p_dom = habit;
-                p_min = minority;
-                p_trust = t;
-                p_habit = habit;
+                // A promoted quote-context site is tagged regardless of whether
+                // the gate lets its positional channel fire — so the promoted
+                // *population* is stable and survival is measurable per T.
                 if matches!(site.slot, Slot::Quote(_)) {
                     promoted = true;
+                }
+                let wiring = match sc {
+                    Scenario::Baseline => Wiring::Multiplier, // trust ≡ 1
+                    Scenario::Trust { wiring, .. } => wiring,
+                };
+                let fire = match wiring {
+                    // Continuous haircut: score ×= trust; presence unconditional.
+                    Wiring::Multiplier => {
+                        pos_score = habit * rarity(minority, K) * t;
+                        true
+                    }
+                    // Gate: unchanged two-factor iff trusted, else not scored.
+                    Wiring::Gate(thr) => {
+                        if t >= thr {
+                            pos_score = habit * rarity(minority, K);
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                };
+                if fire {
+                    pos_present = true;
+                    p_dom = habit;
+                    p_min = minority;
+                    p_trust = t;
+                    p_habit = habit;
                 }
             }
         }
@@ -884,6 +986,47 @@ pub struct TermCorpus {
     pub anchors: Vec<AnchorFate>,
     /// positional-channel change magnitude vs baseline (|Δ| births + deaths).
     pub pos_delta: i64,
+    /// gate-threshold sweep (2026-07-10) — one entry per `GATE_SWEEP` value.
+    pub gate: GateStats,
+}
+
+/// Per-corpus gate-threshold sweep aggregates. Every `Vec` is indexed by the
+/// position in `GATE_SWEEP`; the `step_*` vectors are indexed by adjacent pair
+/// (length `GATE_SWEEP.len() − 1`).
+pub struct GateStats {
+    /// surfaced (intrinsic, positional, both) per threshold.
+    pub counts: Vec<(u64, u64, u64)>,
+    /// promoted quote-context sites that survive (clear the floor) per threshold.
+    pub promoted_survived: Vec<u64>,
+    /// readmissions vs the multiplier wiring per threshold: sites the gate
+    /// surfaces that the multiplier eroded below the floor.
+    pub readmitted: Vec<u64>,
+    /// does the corpus retain any positional/both coverage at each threshold?
+    pub pos_alive: Vec<bool>,
+    /// baseline positional coverage (base_p + base_b) — the coverage at stake.
+    pub base_pos: u64,
+    /// "middle population" per adjacent step: forced sites whose class trust lies
+    /// in [T_i, T_{i+1}) — surfacing at T_i, gated off at T_{i+1}.
+    pub step_lost: Vec<u64>,
+    /// the classes (marks) involved in each step's middle population.
+    pub step_classes: Vec<BTreeMap<ClassKey, u64>>,
+    /// readmitted sites (from the lowest threshold, the maximal readmit set),
+    /// capped, for major-corpus adjudication.
+    pub readmit_samples: Vec<ReadmitSample>,
+}
+
+/// A finding the multiplier eroded below the floor that the gate readmits.
+pub struct ReadmitSample {
+    pub sid: String,
+    pub word: String,
+    pub ctx: String,
+    pub class: String,
+    /// class trust — the site is readmitted at every gate threshold T ≤ trust.
+    pub trust: f64,
+    /// gate (ungated) positional score `habit × rarity`.
+    pub score: f64,
+    /// baseline score (> floor if the multiplier truly eroded a shipped finding).
+    pub base_score: f64,
 }
 
 pub struct Change {
@@ -938,6 +1081,10 @@ pub struct AnchorFate {
     pub class: String,
     pub trust: f64,
     pub habit: f64,
+    /// alive under the gate wiring at each `GATE_SWEEP` threshold.
+    pub gate_alive: Vec<bool>,
+    /// gate score at each `GATE_SWEEP` threshold (0.0 when dead).
+    pub gate_score: Vec<f64>,
 }
 
 fn quad_str(q: Quad) -> &'static str {
@@ -949,8 +1096,17 @@ fn quad_str(q: Quad) -> &'static str {
 }
 
 fn ctx(text: &str, span: Span) -> String {
-    let start = text[..span.start].char_indices().rev().nth(23).map(|(i, _)| i).unwrap_or(0);
-    let end = text[span.end..].char_indices().nth(24).map(|(i, _)| span.end + i).unwrap_or(text.len());
+    let start = text[..span.start]
+        .char_indices()
+        .rev()
+        .nth(23)
+        .map(|(i, _)| i)
+        .unwrap_or(0);
+    let end = text[span.end..]
+        .char_indices()
+        .nth(24)
+        .map(|(i, _)| span.end + i)
+        .unwrap_or(text.len());
     text[start..end].replace(['\t', '\n'], " ")
 }
 
@@ -963,8 +1119,11 @@ pub fn analyze_corpus(id: String, map: &VerseMap, variant_b: bool) -> TermCorpus
     // the FIXED lexicon: reused for the trust scenario's habit so quote
     // promotion never moves the bare-terminal convention.
     let base_model = Model::build(&w, Scenario::Baseline, None);
-    let lex_lower: HashMap<String, bool> =
-        base_model.words.iter().map(|(k, ws)| (k.clone(), ws.is_lex_lower())).collect();
+    let lex_lower: HashMap<String, bool> = base_model
+        .words
+        .iter()
+        .map(|(k, ws)| (k.clone(), ws.is_lex_lower()))
+        .collect();
 
     let tt = build_trust(&w, &lex_lower);
     let trust_map: HashMap<ClassKey, f64> = tt
@@ -974,11 +1133,23 @@ pub fn analyze_corpus(id: String, map: &VerseMap, variant_b: bool) -> TermCorpus
         .collect();
 
     let base = score(&w, Scenario::Baseline, None);
-    let wired = score(
+    // The trust-scenario model is wiring-independent, so build it once and reuse
+    // it for the multiplier and every gate threshold.
+    let trust_model = Model::build(
         &w,
-        Scenario::Trust { trust: &trust_map, promote_quote: true },
+        Scenario::Trust {
+            trust: &trust_map,
+            promote_quote: true,
+            wiring: Wiring::Multiplier,
+        },
         Some(&lex_lower),
     );
+    let mult_sc = Scenario::Trust {
+        trust: &trust_map,
+        promote_quote: true,
+        wiring: Wiring::Multiplier,
+    };
+    let wired = score_with_model(&w, &trust_model, mult_sc);
 
     let count = |v: &[Scored]| {
         let (mut i, mut p, mut b) = (0u64, 0u64, 0u64);
@@ -995,10 +1166,14 @@ pub fn analyze_corpus(id: String, map: &VerseMap, variant_b: bool) -> TermCorpus
     let (tr_i, tr_p, tr_b) = count(&wired);
 
     // Verdict changes keyed by (sid, span).
-    let base_set: HashMap<(Sid, usize, usize), &Scored> =
-        base.iter().map(|s| ((s.sid, s.span.start, s.span.end), s)).collect();
-    let wired_set: HashMap<(Sid, usize, usize), &Scored> =
-        wired.iter().map(|s| ((s.sid, s.span.start, s.span.end), s)).collect();
+    let base_set: HashMap<(Sid, usize, usize), &Scored> = base
+        .iter()
+        .map(|s| ((s.sid, s.span.start, s.span.end), s))
+        .collect();
+    let wired_set: HashMap<(Sid, usize, usize), &Scored> = wired
+        .iter()
+        .map(|s| ((s.sid, s.span.start, s.span.end), s))
+        .collect();
 
     let mut changes = Vec::new();
     let mut promoted_surfaced = 0u64;
@@ -1060,19 +1235,23 @@ pub fn analyze_corpus(id: String, map: &VerseMap, variant_b: bool) -> TermCorpus
     // two censoring discounts.
     let trust_pos_base = |_c: Option<ClassKey>| 1.0;
     let trust_map2 = trust_map.clone();
-    let trust_pos_wired = |c: Option<ClassKey>| c.map_or(1.0, |k| trust_map2.get(&k).copied().unwrap_or(0.0));
-    let wired_model =
-        Model::build(&w, Scenario::Trust { trust: &trust_map, promote_quote: true }, Some(&lex_lower));
+    let trust_pos_wired =
+        |c: Option<ClassKey>| c.map_or(1.0, |k| trust_map2.get(&k).copied().unwrap_or(0.0));
+    let wired_model = &trust_model;
     let (mut gained, mut lost) = (0u64, 0u64);
     for (key, ws_b) in &base_model.words {
         let eff_b = base_model.effective_upper(ws_b, &trust_pos_base);
         let cap_b = (eff_b + ws_b.mid_lower as f64) > 0.0
             && wilson_lb(eff_b, eff_b + ws_b.mid_lower as f64, Z) > 0.5;
-        let cap_w = wired_model.words.get(key).map(|ws_w| {
-            let eff_w = wired_model.effective_upper(ws_w, &trust_pos_wired);
-            (eff_w + ws_w.mid_lower as f64) > 0.0
-                && wilson_lb(eff_w, eff_w + ws_w.mid_lower as f64, Z) > 0.5
-        }).unwrap_or(cap_b);
+        let cap_w = wired_model
+            .words
+            .get(key)
+            .map(|ws_w| {
+                let eff_w = wired_model.effective_upper(ws_w, &trust_pos_wired);
+                (eff_w + ws_w.mid_lower as f64) > 0.0
+                    && wilson_lb(eff_w, eff_w + ws_w.mid_lower as f64, Z) > 0.5
+            })
+            .unwrap_or(cap_b);
         if cap_w && !cap_b {
             gained += 1;
         } else if cap_b && !cap_w {
@@ -1082,6 +1261,99 @@ pub fn analyze_corpus(id: String, map: &VerseMap, variant_b: bool) -> TermCorpus
     let intrinsic_flips = (tr_i + tr_b) as i64 - (base_i + base_b) as i64;
     let pos_delta = (tr_p as i64 - base_p as i64).abs();
 
+    // ── Gate-threshold sweep (2026-07-10). ─────────────────────────────────
+    // Re-score the trust scenario under the gate wiring at every threshold. The
+    // model is reused; only the positional formula changes.
+    let n_t = GATE_SWEEP.len();
+    let gate_scored: Vec<Vec<Scored>> = GATE_SWEEP
+        .iter()
+        .map(|&thr| {
+            let sc = Scenario::Trust {
+                trust: &trust_map,
+                promote_quote: true,
+                wiring: Wiring::Gate(thr),
+            };
+            score_with_model(&w, &trust_model, sc)
+        })
+        .collect();
+
+    let key_of = |s: &Scored| (s.sid, s.span.start, s.span.end);
+    let mut g_counts = Vec::with_capacity(n_t);
+    let mut g_promoted = Vec::with_capacity(n_t);
+    let mut g_readmit = Vec::with_capacity(n_t);
+    let mut g_pos_alive = Vec::with_capacity(n_t);
+    for out in &gate_scored {
+        let (gi, gp, gb) = count(out);
+        g_counts.push((gi, gp, gb));
+        g_promoted.push(out.iter().filter(|s| s.promoted_quote).count() as u64);
+        // Readmissions: gate-surfaced sites the multiplier eroded below floor.
+        let r = out
+            .iter()
+            .filter(|s| !wired_set.contains_key(&key_of(s)))
+            .count() as u64;
+        g_readmit.push(r);
+        g_pos_alive.push(gp + gb > 0);
+    }
+
+    // Middle population per adjacent step: forced sites whose class trust lies in
+    // [T_i, T_{i+1}) — surfacing (positionally) at T_i, gated off at T_{i+1}.
+    let mut step_lost = Vec::with_capacity(n_t.saturating_sub(1));
+    let mut step_classes: Vec<BTreeMap<ClassKey, u64>> = Vec::with_capacity(n_t.saturating_sub(1));
+    for i in 0..n_t.saturating_sub(1) {
+        let (lo, hi) = (GATE_SWEEP[i], GATE_SWEEP[i + 1]);
+        let mut cnt = 0u64;
+        let mut classes: BTreeMap<ClassKey, u64> = BTreeMap::new();
+        for s in &gate_scored[i] {
+            if let Some(cls) = s.class {
+                let t = trust_map.get(&cls).copied().unwrap_or(0.0);
+                if t >= lo && t < hi {
+                    cnt += 1;
+                    *classes.entry(cls).or_default() += 1;
+                }
+            }
+        }
+        step_lost.push(cnt);
+        step_classes.push(classes);
+    }
+
+    // Readmit samples from the lowest threshold (the maximal readmit set).
+    let mut readmit_samples = Vec::new();
+    if let Some(out) = gate_scored.first() {
+        for s in out {
+            if wired_set.contains_key(&key_of(s)) {
+                continue;
+            }
+            if readmit_samples.len() >= 40 {
+                break;
+            }
+            let text = &map[&s.sid];
+            let t = s
+                .class
+                .and_then(|c| trust_map.get(&c).copied())
+                .unwrap_or(s.trust);
+            readmit_samples.push(ReadmitSample {
+                sid: s.sid.to_string(),
+                word: text[s.span.start..s.span.end].to_string(),
+                ctx: ctx(text, s.span),
+                class: s.class.map(|c| c.label()).unwrap_or_default(),
+                trust: t,
+                score: s.score,
+                base_score: base_set.get(&key_of(s)).map(|b| b.score).unwrap_or(0.0),
+            });
+        }
+    }
+
+    let gate = GateStats {
+        counts: g_counts,
+        promoted_survived: g_promoted,
+        readmitted: g_readmit,
+        pos_alive: g_pos_alive,
+        base_pos: base_p + base_b,
+        step_lost,
+        step_classes,
+        readmit_samples,
+    };
+
     // Anchor fates for anchors belonging to this corpus. An anchor "alive" iff
     // some scored site in that verse slices to the anchor word.
     let mut anchors = Vec::new();
@@ -1089,17 +1361,43 @@ pub fn analyze_corpus(id: String, map: &VerseMap, variant_b: bool) -> TermCorpus
         if ac != id {
             continue;
         }
-        let find = |v: &[Scored]| -> Option<(f64, &'static str, f64, f64, String)> {
+        fn find_site<'a>(
+            v: &'a [Scored],
+            map: &VerseMap,
+            asid: &str,
+            aw: &str,
+        ) -> Option<&'a Scored> {
             v.iter()
                 .filter(|s| s.sid.to_string() == asid)
                 .find(|s| map[&s.sid][s.span.start..s.span.end].to_lowercase() == aw)
-                .map(|s| {
-                    (s.score, quad_str(s.quad), s.trust, s.habit,
-                     s.class.map(|c| c.label()).unwrap_or_default())
-                })
+        }
+        let find = |v: &[Scored]| -> Option<(f64, &'static str, f64, f64, String)> {
+            find_site(v, map, asid, aw).map(|s| {
+                (
+                    s.score,
+                    quad_str(s.quad),
+                    s.trust,
+                    s.habit,
+                    s.class.map(|c| c.label()).unwrap_or_default(),
+                )
+            })
         };
         let b = find(&base);
         let t = find(&wired);
+        let mut gate_alive = Vec::with_capacity(n_t);
+        let mut gate_score = Vec::with_capacity(n_t);
+        for out in &gate_scored {
+            match find_site(out, map, asid, aw) {
+                Some(s) => {
+                    gate_alive.push(true);
+                    gate_score.push(s.score);
+                }
+                None => {
+                    gate_alive.push(false);
+                    gate_score.push(0.0);
+                }
+            }
+        }
         anchors.push(AnchorFate {
             corpus: ac.to_string(),
             sid: asid.to_string(),
@@ -1109,9 +1407,15 @@ pub fn analyze_corpus(id: String, map: &VerseMap, variant_b: bool) -> TermCorpus
             base_alive: b.is_some(),
             tr_alive: t.is_some(),
             quad: t.as_ref().or(b.as_ref()).map(|x| x.1).unwrap_or("-"),
-            class: t.as_ref().or(b.as_ref()).map(|x| x.4.clone()).unwrap_or_default(),
+            class: t
+                .as_ref()
+                .or(b.as_ref())
+                .map(|x| x.4.clone())
+                .unwrap_or_default(),
             trust: t.as_ref().or(b.as_ref()).map(|x| x.2).unwrap_or(0.0),
             habit: t.as_ref().or(b.as_ref()).map(|x| x.3).unwrap_or(0.0),
+            gate_alive,
+            gate_score,
         });
     }
 
@@ -1134,5 +1438,6 @@ pub fn analyze_corpus(id: String, map: &VerseMap, variant_b: bool) -> TermCorpus
         samples_promoted,
         anchors,
         pos_delta,
+        gate,
     }
 }
