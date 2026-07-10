@@ -44,6 +44,12 @@ use ssc_core::{
 mod vref_io;
 use vref_io::load_corpus;
 
+// terminal_strength SPIKE (shortlist 2/3) — dev-only modelling; nothing ships.
+#[path = "../dev/association.rs"]
+mod association;
+#[path = "../dev/terminal.rs"]
+mod terminal;
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let (target_dir, source_dir, z_threshold) = match args.as_slice() {
@@ -96,6 +102,22 @@ fn main() {
                     &load_corpus(p),
                 );
                 casing_single_report(&corpus);
+            }
+            return;
+        }
+        // terminal_strength SPIKE (shortlist 2/3): per-mark boundary trust
+        // (W1 case-follow ⊕ W2 word-reshuffle, noisy-OR) wired into ADR 0051
+        // casing. `<path>` = a single vref file (per-corpus report) or the
+        // `corpora/vref` directory (fleet deltas). Optional trailing `A` uses
+        // the plain-differentness W2 variant (default is the guarded B).
+        [flag, path, rest @ ..] if flag == "--terminal" && rest.len() <= 1 => {
+            let variant_b = rest.first().map(|s| s.as_str()) != Some("A");
+            let p = Path::new(path);
+            if p.is_dir() {
+                terminal_fleet(p, variant_b);
+            } else {
+                let id = p.file_stem().unwrap().to_string_lossy().to_string();
+                terminal_single(&terminal::analyze_corpus(id, &load_corpus(p), variant_b));
             }
             return;
         }
@@ -1637,4 +1659,262 @@ fn casing_size(dir: &Path) {
             println!("  {id}: {b} B");
         }
     }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// terminal_strength SPIKE (shortlist 2/3). Per-mark boundary trust wired into
+// ADR 0051 casing; reports witness measurements, per-mark fleet trust, the W2
+// variant comparison (genealogy guard), the sigmoid refit evidence, and the
+// wiring deltas vs the shipped baseline. Knobs NOT frozen — measurement only.
+// ═══════════════════════════════════════════════════════════════════════════
+
+use terminal::{ClassKey, ClassTrust, TermCorpus};
+
+/// median, p25, p75, max of a sample (sorts in place).
+fn quartiles(v: &mut [f64]) -> (f64, f64, f64, f64) {
+    if v.is_empty() {
+        return (0.0, 0.0, 0.0, 0.0);
+    }
+    v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let at = |q: f64| v[((v.len() - 1) as f64 * q).round() as usize];
+    (at(0.25), at(0.5), at(0.75), at(1.0))
+}
+
+fn deviate(c: &ClassTrust) -> f64 {
+    if c.df == 0 {
+        0.0
+    } else {
+        (c.g2_after - c.df as f64) / (2.0 * c.df as f64).sqrt()
+    }
+}
+
+/// Detailed single-corpus terminal-strength report.
+fn terminal_single(c: &TermCorpus) {
+    println!("=== terminal_strength SPIKE: {} ({} verses, {}) ===",
+        c.id, c.verses, if c.bicameral { "bicameral" } else { "caseless" });
+    println!("jurors (word-starts ≥10): {}  dropped classes (<30 events): {}",
+        c.trust.n_jurors, c.trust.dropped_classes);
+    if let Some(r) = c.trust.reference {
+        println!("agreement reference class: {}", r.label());
+    }
+    println!("\nper-class witnesses (sorted by trust_B):");
+    println!("  {:<8} {:>7} {:>7} {:>6} {:>6} {:>6} {:>6} {:>7} {:>7} {:>7}",
+        "class", "events", "s_case", "dev", "diff", "agree", "asym", "sR_A", "trustA", "trustB");
+    let mut cls: Vec<&ClassTrust> = c.trust.classes.values().collect();
+    cls.sort_by(|a, b| b.trust_b.partial_cmp(&a.trust_b).unwrap());
+    for t in cls {
+        println!("  {:<8} {:>7} {:>7.3} {:>6.1} {:>6.3} {:>6.3} {:>6.3} {:>7.3} {:>7.3} {:>7.3}",
+            t.class.label(), t.events,
+            if t.s_case_seen { t.s_case } else { f64::NAN },
+            deviate(t), t.diff, t.agree, t.asym, t.s_reshuffle_a, t.trust_a, t.trust_b);
+    }
+    println!("\nwiring deltas (floor 0.95, k=32) — baseline vs trust-wired (variant B):");
+    println!("  intrinsic  {:>6} → {:<6}", c.base_i, c.tr_i);
+    println!("  positional {:>6} → {:<6}", c.base_p, c.tr_p);
+    println!("  both       {:>6} → {:<6}", c.base_b, c.tr_b);
+    println!("  pool: gained-cap {}  lost-cap {}  intrinsic-flip {:+}",
+        c.pool_gained, c.pool_lost, c.intrinsic_flips);
+    println!("  quote-context sites promoted & surfaced: {}", c.promoted_surfaced);
+    if !c.anchors.is_empty() {
+        println!("\nanchor fates:");
+        for a in &c.anchors {
+            println!("  {:<9} {:<11} base={:.3}({}) tr={:.3}({}) quad={} class={} trust={:.3} habit={:.3}",
+                a.sid, a.word, a.base_score, if a.base_alive {"alive"} else {"dead"},
+                a.tr_score, if a.tr_alive {"alive"} else {"dead"}, a.quad, a.class, a.trust, a.habit);
+        }
+    }
+    let mut ch: Vec<&terminal::Change> = c.changes.iter().collect();
+    ch.sort_by(|a, b| b.tr_score.max(b.base_score).partial_cmp(&a.tr_score.max(a.base_score)).unwrap());
+    println!("\nverdict changes ({} total; up to 25):", c.changes.len());
+    for x in ch.iter().take(25) {
+        println!("  [{}] {:<9} {:<14} base={:.3} tr={:.3} {} trust={:.3} habit={:.3} dom={:.3} min={} rar={:.3} | {}",
+            x.direction, x.sid, x.word, x.base_score, x.tr_score, x.quad,
+            x.trust, x.habit, x.dominance, x.minority, x.rarity, x.ctx);
+    }
+    if !c.samples_promoted.is_empty() {
+        println!("\npromoted quote-context sites (up to 15):");
+        for s in c.samples_promoted.iter().take(15) {
+            println!("  {:<9} {:<14} class={} trust={:.3} score={:.3} | {}",
+                s.sid, s.word, s.class, s.trust, s.score, s.ctx);
+        }
+    }
+}
+
+const MAJOR: &[&str] = &[
+    "eng-web", "eng-kjv", "engwebster", "WA-en-ulb", "spaRV1909", "WA-es-419-ulb",
+    "fraLSG", "WA-fr-ulb", "porblt", "ita1885", "ron1924", "deu1912", "swhulb",
+    "WA-sw-ulb", "ind", "nld", "vie1934", "tglulb",
+];
+
+/// Fleet aggregate: per-mark trust distributions, W2 variant comparison,
+/// sigmoid-refit evidence, and casing wiring deltas vs the shipped baseline.
+fn terminal_fleet(dir: &Path, variant_b: bool) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use rayon::prelude::*;
+
+    let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
+        .unwrap_or_else(|e| panic!("read {}: {e}", dir.display()))
+        .flatten().map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "txt")).collect();
+    files.sort();
+    let total = files.len();
+    eprintln!("terminal fleet: {total} corpora (W2 variant {})", if variant_b {"B (guarded)"} else {"A (plain)"});
+    let done = AtomicUsize::new(0);
+    let t0 = std::time::Instant::now();
+    let corpora: Vec<TermCorpus> = files.par_iter().map(|path| {
+        let id = path.file_stem().unwrap().to_string_lossy().to_string();
+        let map = load_corpus(path);
+        let c = terminal::analyze_corpus(id, &map, variant_b);
+        let n = done.fetch_add(1, Ordering::Relaxed) + 1;
+        if n.is_multiple_of(200) { eprintln!("  …{n}/{total}"); }
+        c
+    }).collect();
+    eprintln!("terminal fleet evaluate: {:?}", t0.elapsed());
+
+    // ── Per-mark trust distributions (bare classes) across the fleet. ──
+    // Collect per (mark, quoted) the trust/witness samples over corpora.
+    let mut by_class: BTreeMap<ClassKey, Vec<&ClassTrust>> = BTreeMap::new();
+    for c in &corpora {
+        for t in c.trust.classes.values() {
+            by_class.entry(t.class).or_default().push(t);
+        }
+    }
+    let focus_bare = ['.', ',', '?', '!', ':', ';', '\u{2014}', '"', '\u{201D}', '-', '\u{2026}'];
+    println!("\n=== TERMINAL_STRENGTH SPIKE — fleet ({} corpora) ===", corpora.len());
+    println!("\n-- per-mark trust distribution (bare classes; median [p25,p75] max over corpora) --");
+    println!("  {:<7} {:>7} {:>24} {:>24} {:>24} {:>24}",
+        "mark", "corpora", "s_case", "s_reshuffle_A(diff)", "trust_A", "trust_B");
+    let fmtq = |v: &mut Vec<f64>| { let (p25,med,p75,mx)=quartiles(v); format!("{med:.2}[{p25:.2},{p75:.2}]mx{mx:.2}") };
+    for &m in &focus_bare {
+        let key = ClassKey { mark: m, quoted: false };
+        if let Some(ts) = by_class.get(&key) {
+            let mut sc: Vec<f64> = ts.iter().filter(|t| t.s_case_seen).map(|t| t.s_case).collect();
+            let mut di: Vec<f64> = ts.iter().map(|t| t.s_reshuffle_a).collect();
+            let mut ta: Vec<f64> = ts.iter().map(|t| t.trust_a).collect();
+            let mut tb: Vec<f64> = ts.iter().map(|t| t.trust_b).collect();
+            println!("  {:<7} {:>7} {:>24} {:>24} {:>24} {:>24}",
+                key.label(), ts.len(), fmtq(&mut sc), fmtq(&mut di), fmtq(&mut ta), fmtq(&mut tb));
+        }
+    }
+    println!("\n-- quote-context classes (mark+\") — the shortlist item-7 sweep --");
+    println!("  {:<7} {:>7} {:>24} {:>24}", "class", "corpora", "trust_B", "trust_A");
+    for &m in &['.', '?', '!', ':', ',', ';'] {
+        let key = ClassKey { mark: m, quoted: true };
+        if let Some(ts) = by_class.get(&key) {
+            let mut tb: Vec<f64> = ts.iter().map(|t| t.trust_b).collect();
+            let mut ta: Vec<f64> = ts.iter().map(|t| t.trust_a).collect();
+            println!("  {:<7} {:>7} {:>24} {:>24}", key.label(), ts.len(), fmtq(&mut tb), fmtq(&mut ta));
+        }
+    }
+
+    // ── Sigmoid-refit evidence: standardized deviate for '.' vs ','. ──
+    println!("\n-- W2 sigmoid refit evidence: standardized multinomial-G² deviate --");
+    for &m in &['.', ',', '?', '!', ':'] {
+        let key = ClassKey { mark: m, quoted: false };
+        if let Some(ts) = by_class.get(&key) {
+            let mut d: Vec<f64> = ts.iter().map(|t| deviate(t)).collect();
+            let (p25, med, p75, mx) = quartiles(&mut d);
+            println!("  {:<5} dev median {med:.1} [{p25:.1},{p75:.1}] max {mx:.1}", key.label());
+        }
+    }
+
+    // ── W2 variant comparison: genealogy guard — worst comma offenders. ──
+    println!("\n-- genealogy guard: corpora where ',' is most over-trusted by variant A --");
+    let mut comma_rows: Vec<(&str, f64, f64, f64, f64)> = corpora.iter().filter_map(|c| {
+        c.trust.classes.get(&ClassKey{mark:',',quoted:false}).map(|t|
+            (c.id.as_str(), t.trust_a, t.trust_b, t.diff, t.agree))
+    }).collect();
+    comma_rows.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+    println!("  {:<20} {:>8} {:>8} {:>8} {:>8}", "corpus", "trustA", "trustB", "diff", "agree");
+    for (id, ta, tb, d, ag) in comma_rows.iter().take(12) {
+        println!("  {:<20} {:>8.3} {:>8.3} {:>8.3} {:>8.3}", id, ta, tb, d, ag);
+    }
+
+    // ── Wiring deltas vs baseline. ──
+    let (mut bi, mut bp, mut bb, mut ti, mut tp, mut tb) = (0u64,0u64,0u64,0u64,0u64,0u64);
+    let (mut pg, mut pl) = (0u64, 0u64);
+    let mut promoted = 0u64;
+    let mut corpora_changed = 0u32;
+    for c in &corpora {
+        bi += c.base_i; bp += c.base_p; bb += c.base_b;
+        ti += c.tr_i; tp += c.tr_p; tb += c.tr_b;
+        pg += c.pool_gained; pl += c.pool_lost;
+        promoted += c.promoted_surfaced;
+        if !c.changes.is_empty() { corpora_changed += 1; }
+    }
+    println!("\n-- wiring deltas (floor 0.95, k=32; variant {}) --", if variant_b {"B"} else {"A"});
+    println!("  channel     baseline   trust-wired      Δ");
+    println!("  intrinsic  {:>9} {:>13} {:>+7}", bi, ti, ti as i64 - bi as i64);
+    println!("  positional {:>9} {:>13} {:>+7}", bp, tp, tp as i64 - bp as i64);
+    println!("  both       {:>9} {:>13} {:>+7}", bb, tb, tb as i64 - bb as i64);
+    println!("  TOTAL      {:>9} {:>13} {:>+7}", bi+bp+bb, ti+tp+tb,
+        (ti+tp+tb) as i64 - (bi+bp+bb) as i64);
+    println!("  corpora with ≥1 verdict change: {}", corpora_changed);
+    println!("  pool recovery: word profiles gained-cap {pg}, lost-cap {pl}");
+    println!("  quote-context sites promoted & surfaced (item-7 payoff): {promoted}");
+
+    // ── Anchor fates. ──
+    println!("\n-- anchor fates (12 ADR 0051 anchors) --");
+    println!("  {:<9} {:<11} {:<10} {:>7} {:>7} {:<7} {:<10} {:>6} {:>6}",
+        "corpus", "sid", "word", "base", "tr", "verdict", "class", "trust", "habit");
+    for &(ac, asid, aw) in terminal::ANCHORS {
+        let fate = corpora.iter().flat_map(|c| c.anchors.iter())
+            .find(|a| a.corpus == ac && a.sid == asid && a.word == aw);
+        match fate {
+            Some(a) => {
+                let verdict = match (a.base_alive, a.tr_alive) {
+                    (true, true) => "kept", (true, false) => "DIED",
+                    (false, true) => "born", (false, false) => "silent",
+                };
+                println!("  {:<9} {:<11} {:<10} {:>7.3} {:>7.3} {:<7} {:<10} {:>6.3} {:>6.3}",
+                    ac, asid, aw, a.base_score, a.tr_score, verdict, a.class, a.trust, a.habit);
+            }
+            None => println!("  {:<9} {:<11} {:<10}  (not a candidate site)", ac, asid, aw),
+        }
+    }
+
+    // ── Top-10 corpora by positional-channel change. ──
+    let mut ranked: Vec<&TermCorpus> = corpora.iter().filter(|c| c.pos_delta > 0).collect();
+    ranked.sort_by_key(|c| std::cmp::Reverse(c.pos_delta));
+    println!("\n-- top-10 corpora by positional-channel change --");
+    for c in ranked.iter().take(10) {
+        println!("  {:<20} pos {}→{} (Δ{:+})  examples:", c.id, c.base_p, c.tr_p, c.tr_p as i64 - c.base_p as i64);
+        let mut ch: Vec<&terminal::Change> = c.changes.iter().filter(|x| x.quad != "intrinsic").collect();
+        ch.sort_by(|a,b| b.tr_score.max(b.base_score).partial_cmp(&a.tr_score.max(a.base_score)).unwrap());
+        for x in ch.iter().take(3) {
+            println!("      [{}] {:<9} {:<12} base={:.3} tr={:.3} trust={:.3} | {}",
+                x.direction, x.sid, x.word, x.base_score, x.tr_score, x.trust, x.ctx);
+        }
+    }
+
+    // ── Changed-verdict samples from major-language corpora. ──
+    println!("\n-- changed-verdict samples from major-language corpora (parametric review) --");
+    let mut shown = 0;
+    for c in &corpora {
+        if !MAJOR.contains(&c.id.as_str()) || c.changes.is_empty() { continue; }
+        println!("  [{}]:", c.id);
+        let mut ch: Vec<&terminal::Change> = c.changes.iter().collect();
+        ch.sort_by(|a,b| b.tr_score.max(b.base_score).partial_cmp(&a.tr_score.max(a.base_score)).unwrap());
+        for x in ch.iter().take(3) {
+            println!("    [{}] {:<9} {:<14} base={:.3} tr={:.3} {} trust={:.3} habit={:.3} dom={:.3} min={} rar={:.3} | {}",
+                x.direction, x.sid, x.word, x.base_score, x.tr_score, x.quad,
+                x.trust, x.habit, x.dominance, x.minority, x.rarity, x.ctx);
+            shown += 1;
+        }
+        if shown >= 25 { break; }
+    }
+
+    // ── Context-class payoff samples. ──
+    println!("\n-- promoted quote-context sites from major-language corpora (item-7) --");
+    let mut cnt = 0;
+    for c in &corpora {
+        if !MAJOR.contains(&c.id.as_str()) || c.samples_promoted.is_empty() { continue; }
+        for s in c.samples_promoted.iter().take(2) {
+            println!("  [{}] {:<9} {:<14} class={} trust={:.3} score={:.3} | {}",
+                c.id, s.sid, s.word, s.class, s.trust, s.score, s.ctx);
+            cnt += 1;
+        }
+        if cnt >= 10 { break; }
+    }
+    if cnt == 0 { println!("  (none surfaced in major-language corpora)"); }
 }
