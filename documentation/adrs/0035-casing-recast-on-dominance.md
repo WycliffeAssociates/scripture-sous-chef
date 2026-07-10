@@ -1,7 +1,9 @@
 # ADR 0035: Casing joins the evidence library — dominance verdict, aggregate stats
 
 - **Date:** 2026-07-06
-- **Status:** Accepted
+- **Status:** Scoring model superseded by
+  [ADR 0051](0051-casing-two-factor-word-lexicon.md) (2026-07-10); the walk
+  mechanics and emergent-gate reasoning here remain current
 - **Amends:** [ADR 0017](0017-stateful-rules-stats-returning-analyze.md)
   (casing's original judge/state shape); builds on
   [ADR 0032](0032-evidence-library-wilson-unification.md) and
