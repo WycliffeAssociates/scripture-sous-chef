@@ -88,28 +88,6 @@ pub(crate) fn segment_tape(text: &str, tape: &[TapeEntry], out: &mut Vec<GSpan>)
     });
 }
 
-/// Tape-driven segmentation that also records, per cluster, the **tape index**
-/// of its base scalar. A consumer that needs the base char's [`Class`]
-/// (casing's `walk_book`) then reads `tape[idx]` directly instead of
-/// re-slicing the cluster and re-classifying its first scalar. `out` and
-/// `starts` are cleared and filled in lockstep.
-pub(crate) fn segment_tape_indexed(
-    text: &str,
-    tape: &[TapeEntry],
-    out: &mut Vec<GSpan>,
-    starts: &mut Vec<u32>,
-) {
-    out.clear();
-    starts.clear();
-    walk_tape(text, tape, |start, end, i| {
-        out.push(GSpan {
-            start: start as u32,
-            len: (end - start) as u32,
-        });
-        starts.push(i as u32);
-    });
-}
-
 /// The tape-consuming twin of [`walk`]: same fast path + inline GB9c + COMPLEX
 /// fallback, reading `{off, ch, cl}` from the tape. `emit(start, end, i)` also
 /// carries `i`, the base scalar's tape index. Kept structurally identical to
@@ -359,28 +337,4 @@ mod tests {
         }
     }
 
-    /// `segment_tape_indexed` records the tape index of each cluster's base
-    /// scalar, so `tape[idx].off` equals the cluster's start and `tape[idx].ch`
-    /// is the cluster's first scalar — the contract casing's `walk_book` relies
-    /// on (ADR 0045).
-    #[test]
-    fn indexed_starts_point_at_cluster_base_scalars() {
-        for t in [
-            "abc",
-            "e\u{0301}\u{0302}b",
-            "\u{0915}\u{094D}\u{0937} ka",
-            "\u{0E01}\u{0E48}\u{0E32}x",
-        ] {
-            let mut tape = Vec::new();
-            crate::tape::build(t, &mut tape);
-            let (mut spans, mut starts) = (Vec::new(), Vec::new());
-            segment_tape_indexed(t, &tape, &mut spans, &mut starts);
-            assert_eq!(spans.len(), starts.len(), "lockstep on {t:?}");
-            for (gs, &idx) in spans.iter().zip(&starts) {
-                let e = tape[idx as usize];
-                assert_eq!(e.off, gs.start, "base off on {t:?}");
-                assert_eq!(e.ch, gs.slice(t).chars().next().unwrap(), "base ch on {t:?}");
-            }
-        }
-    }
 }

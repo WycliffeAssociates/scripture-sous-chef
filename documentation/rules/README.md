@@ -26,7 +26,7 @@ args, and fix capability** (what a front end can `replace()`), see
 | [`struct.md`](struct.md) | `struct.*` | source-marker-leftover, merge-conflict-marker |
 | [`punct.md`](punct.md) | `punct.*` | bracket-balance, adjacency-anomaly, spacing-anomaly |
 | [`prop.md`](prop.md) | `prop.*` | length-ratio |
-| [`case.md`](case.md) | `case.*` | sentence-initial-lowercase |
+| [`case.md`](case.md) | `case.*` | sentence-initial-lowercase, inconsistent-word-casing |
 
 Note: family files are keyed by **id namespace**, not source file. A few
 diverge — `lex.excess-h-whitespace` lives in `whitespace.rs`,
@@ -55,7 +55,8 @@ diverge — `lex.excess-h-whitespace` lives in `whitespace.rs`,
 | `prop.length-ratio` | Warning | on | project | 🗣 pending discussion |
 | `punct.adjacency-anomaly` | Info | on | stateful | ✅ documented (ADR 0024, 0031) |
 | `lex.punct-only-token` | Warning | on | stateful | ✅ documented (ADR 0030, 0032) |
-| `case.sentence-initial-lowercase` | Info | **off** | stateful | ✅ documented (ADR 0035) |
+| `case.sentence-initial-lowercase` | Info | **off** | stateful (word table) | ✅ documented (ADR 0035, 0051) |
+| `case.inconsistent-word-casing` | Info | **off** | stateful (word table) | ✅ documented (ADR 0051) |
 | `lex.repeated-character-run` | Info | on | stateful | ✅ documented (ADR 0028, 0032) |
 | `punct.spacing-anomaly` | Info | **off** | stateful (aggregate) | 💡 suggestion (corpus-relative; ADR 0029) |
 

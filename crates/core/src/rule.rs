@@ -227,6 +227,9 @@ pub fn stateful_rules(config: &Config) -> Vec<Box<dyn StatefulRule>> {
         Box::new(signals::casing::SentenceInitialLowercase {
             cfg: config.casing,
         }),
+        Box::new(signals::casing::InconsistentWordCasing {
+            cfg: config.casing,
+        }),
         Box::new(signals::proportionality::ProjectLengthRatio {
             cfg: config.proportionality,
         }),

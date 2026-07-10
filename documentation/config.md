@@ -341,21 +341,23 @@ Every available configuration option, set to its built-in default. Copy this and
 
 `punct.adjacency-anomaly`, `punct.spacing-anomaly`,
 `lex.repeated-character-run`, `lex.punct-only-token`,
-`case.sentence-initial-lowercase`, and `punct.bracket-balance` are
-corpus-relative rules with typed knobs. Each emits a continuous
-`score ∈ [0, 1]` whose unit is **anomaly evidence**, not a correctness
-verdict: 1 ≈ "unlike this corpus's own conventions", 0 ≈ "ordinary here"
-(ADR 0032). For the dominance-verdict rules (spacing, casing,
+`case.sentence-initial-lowercase`, `case.inconsistent-word-casing`, and
+`punct.bracket-balance` are corpus-relative rules with typed knobs. Each emits
+a continuous `score ∈ [0, 1]` whose unit is **anomaly evidence**, not a
+correctness verdict: 1 ≈ "unlike this corpus's own conventions", 0 ≈ "ordinary
+here" (ADR 0032). For the dominance-verdict rules (spacing, casing,
 bracket-balance) that evidence *is* the conservative dominance of the
 convention the flagged site violates — same number, read from the
 convention's side. All but `lex.punct-only-token` (Warning) carry
 `Severity::Info`. A finding is emitted only when its score reaches
-`emit_score_min`, so established conventions emit nothing. The stateful five
-are aggregate-only: tiny per-book counts, no per-occurrence sites
-(`punct.bracket-balance` is a whole-map project rule that recomputes its
-family tallies per call).
+`emit_score_min`, so established conventions emit nothing. Most stateful rules
+are aggregate-only (tiny per-book counts, no per-occurrence sites); the two
+casing rules are the exception (ADR 0051) — they cache a per-book **word case
+table**, raw and mergeable, from which the lexicon and per-glyph habit are
+derived at judge. (`punct.bracket-balance` is a whole-map project rule that
+recomputes its family tallies per call.)
 
-All six share one scoring library, `crates/core/src/evidence.rs` (ADR 0032):
+All seven share one scoring library, `crates/core/src/evidence.rs` (ADR 0032):
 `strength(k, n, rate, z)` — Wilson-shrunk convention strength;
 `dominance(k_major, n, z)` — Wilson lower bound of a majority form;
 `from_strengths(&[s])` — the noisy-OR residual `∏(1 − sᵢ)` for independent
@@ -453,22 +455,43 @@ finding — ADR 0034; the old judge-side score-1.0 bypass is gone).
 **Stricter (fewer findings):** lower `convention_rate_per_10k` or raise
 `emit_score_min`. **Looser:** reverse those.
 
-### `case.sentence-initial-lowercase` (`Config.casing`) — **default OFF**
+### `case.sentence-initial-lowercase` + `case.inconsistent-word-casing` (`Config.casing`) — **both default OFF**
+
+One config drives both casing rules (ADR 0051, superseding ADR 0035): they
+share a per-word case lexicon and one two-factor score `dominance × rarity`.
 
 | knob | meaning |
 | --- | --- |
-| `emit_score_min` | minimum uppercase-majority dominance (Wilson lower bound of `upper / total` for the terminal glyph) to flag a lowercase site after it — the single dial; default **0.98** engages only strong-casing contexts (the bare period, `?` on en_ulb) |
-| `confidence_z` | Wilson confidence for the dominance estimate; shrinks small-sample majorities so a barely-observed glyph can't assert a casing convention — the smooth replacement for the retired hard `min_samples` gate; default 1.96 |
+| `emit_score_min` | the two-factor emission floor for **both** rules; default **0.95**, the frozen knee that clears the homograph/adjective/plural false-positive band (~0.87–0.95) while keeping genuine proper-noun and forced-position slips (≥ 0.956) |
+| `recurrence_k` | the absolute recurrence knee `k`: `rarity = 1 − min(minority − 1, k)/k` over the minority-form count (the ADR 0050 absolute knee; the opportunity-proportional term is omitted — word opportunities are tens-to-hundreds, where a rate term vanishes). A form written the minority way once is a rare slip (`rarity 1`); one recurring past `k` is the corpus's own second convention (`rarity → 0`, silent). Default **32** — what lifts the genuine two-occurrence slips (*christ*, *deal*) over the floor while leaving the k-flat single-occurrence false positives below it. Sanitised through `clamp_count` |
+| `confidence_z` | Wilson confidence for every dominance here (the per-glyph habit and each word's capitalized share); shrinks small samples so a barely-observed glyph or word can't assert a convention; default 1.96 |
 
-`score = dominance(upper, total, confidence_z)` per terminal glyph, emitted
-for lowercase sites (ADR 0035, replacing the old raw-ratio `threshold` +
-`min_samples` pair). Confidence-monotone like spacing; caseless scripts stay
-silent by construction. Default-off because ~24% of cased languages don't
-reliably capitalise after a period — enabling is a per-project language
-question.
+- **`case.sentence-initial-lowercase`** (positional): a forced-position
+  lowercase site (after a bare attached terminal glyph, or book-initial —
+  never verse-initial). `score = habit(glyph) × rarity(word's forced-lowercase
+  count)`, where `habit` is the **lexicon-restricted** capitalize-after-
+  terminal dominance — measured only over words the lexicon calls intrinsically
+  lowercase, so proper nouns starting sentences don't inflate it (the
+  decontaminated ADR 0035 number).
+- **`case.inconsistent-word-casing`** (intrinsic): a lowercase site of a word
+  the corpus writes capitalized. `score = dominance(word's soft-censored
+  capitalized share) × rarity(word's lowercase count)`. The first casing
+  coverage of mid-flow text. Soft censoring re-enters forced-position uppercase
+  at weight `1 − habit(glyph)`: in a no-habit corpus a word capitalized only at
+  sentence starts still earns a profile; in a strong-habit corpus the position
+  explains the capital.
 
-**Stricter (fewer findings):** raise `emit_score_min`. **Looser:** lower it
-(engages lower-precision terminals like `!`).
+A both-quadrant site (forced-position lowercase of a capitalized word) may fire
+both rules — corroboration. Caseless scripts stay silent by construction (no
+cased word-starts, no convention). Both default-off because ~24% of cased
+languages don't reliably capitalise after a period, and noun-capitalizing
+orthographies (German, Danish) storm the intrinsic channel — enabling is a
+per-project language question.
+
+**Stricter (fewer findings):** raise `emit_score_min`, or **lower**
+`recurrence_k` (treat a smaller recurring minority as an established second
+convention → silent). **Looser:** lower `emit_score_min`, or raise
+`recurrence_k`.
 
 ### `punct.bracket-balance` (`Config.bracket_balance`) — **default ON**
 

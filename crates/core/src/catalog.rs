@@ -223,10 +223,19 @@ pub fn card(id: RuleId) -> RuleCard {
         ),
         RuleId::SentenceInitialLowercase => (
             "Lowercase sentence start",
-            "A lowercase word right after a mark this translation reliably follows with a capital.",
-            "Only speaks up where your own text has established the capital-after-this-mark habit; caseless scripts and mixed-habit texts stay silent.",
+            "A lowercase word right after a mark this translation reliably follows with a capital — measured only on words your text otherwise writes lowercase, so names starting sentences don't set the habit.",
+            "Only speaks up where your own text has established the capital-after-this-mark habit, and only for a word you don't usually write lowercase after that mark; caseless scripts and mixed-habit texts stay silent.",
             Some(
                 "Does your writing system use capital letters, and does your translation capitalise after sentence breaks? Turn this on only if both are yes.",
+            ),
+            CorpusRelative,
+        ),
+        RuleId::InconsistentWordCasing => (
+            "Inconsistent word capitalization",
+            "A word your translation almost always writes with a capital, written lowercase here.",
+            "Catches a name or other reliably-capitalized word slipped in lowercase — judged against how this translation itself writes that exact word, not a dictionary. A word you write both ways stays silent.",
+            Some(
+                "Does your writing system use capital letters and capitalize particular words (names, and in some languages every noun)? Turn this on if yes.",
             ),
             CorpusRelative,
         ),
@@ -305,11 +314,22 @@ pub fn message(id: RuleId, args: Option<&FindingArgs>) -> String {
 
         // ── Corpus-relative: plain counts behind the score (ADR 0048). ──
         RuleId::SentenceInitialLowercase => match args {
-            Some(FindingArgs::CasingConvention { glyph, upper, total }) => format!(
+            Some(FindingArgs::CasingConvention { glyph: Some(glyph), upper, total }) => format!(
                 "This translation capitalizes after ‘{glyph}’ in {upper} of {total} places; \
                  this word starts lowercase."
             ),
+            Some(FindingArgs::CasingConvention { glyph: None, upper, total }) => format!(
+                "This translation capitalizes the first word after a sentence break in \
+                 {upper} of {total} places; this word starts lowercase."
+            ),
             _ => "A lowercase word after a mark this translation usually capitalizes.".into(),
+        },
+        RuleId::InconsistentWordCasing => match args {
+            Some(FindingArgs::WordCasing { word, upper, total }) => format!(
+                "This translation writes ‘{word}’ capitalized in {upper} of {total} places; \
+                 here it is lowercase."
+            ),
+            _ => "A word this translation usually capitalizes, written lowercase here.".into(),
         },
         RuleId::PunctuationSpacingAnomaly => match args {
             Some(FindingArgs::SpacingConvention { mark, spaced, attached }) => {
@@ -410,6 +430,7 @@ mod tests {
                 RuleId::BracketBalance,
                 RuleId::PunctuationSpacingAnomaly,
                 RuleId::SentenceInitialLowercase,
+                RuleId::InconsistentWordCasing,
             ]
         );
     }

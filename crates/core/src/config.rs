@@ -77,34 +77,50 @@ impl Default for BracketBalanceConfig {
     }
 }
 
-/// Knobs for `case.sentence-initial-lowercase`. The rule observes the
-/// corpus-wide `P(uppercase-follows | terminal glyph)` and flags a
-/// lowercase token only where that probability is high enough to make
-/// lowercase surprising — so these two values are the whole judgment
-/// surface (ADR 0017, casing redesign plan).
+/// Knobs for the casing pair `case.sentence-initial-lowercase` (positional)
+/// and `case.inconsistent-word-casing` (intrinsic), which share one word
+/// lexicon and one two-factor score (ADR 0051, superseding ADR 0035). Both
+/// score a lowercase site as `dominance × rarity`: the positional rule with
+/// the lexicon-restricted per-glyph capitalize-after-terminal habit and the
+/// word's forced-lowercase recurrence; the intrinsic rule with the word's own
+/// (soft-censored) capitalized share and its lowercase recurrence. These three
+/// values are the whole judgment surface; both rules ship **default-off**.
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default))]
 pub struct CasingConfig {
-    /// Minimum uppercase-majority dominance (Wilson lower bound of
-    /// `upper / total` for the terminal glyph) to flag a lowercase token
-    /// after it. The single dial: lower it to engage lower-precision
-    /// terminals (`?`, `!`) at the cost of more benign hits. The
-    /// conservative default engages only strong-casing-convention contexts
-    /// (the bare period) and silences the rest, including caseless and
-    /// weak-casing languages.
+    /// **The user-facing decision threshold** for both rules: emit a lowercase
+    /// site only when its two-factor evidence (convention dominance × the
+    /// site's rarity) is at least this value. Not a share and not a
+    /// sensitivity dial in the intuitive direction — higher ⇒ fewer, surer
+    /// findings. `0.95` is the frozen knee (ADR 0051): it clears the
+    /// homograph/adjective/plural false-positive band (~0.87–0.95) while
+    /// leaving genuine proper-noun and forced-position slips at ≥ 0.956.
     pub emit_score_min: f32,
-    /// Wilson confidence for the dominance estimate. Shrinks small-sample
-    /// majorities toward 0.5, so a barely-observed glyph can't assert a
-    /// casing convention — the smooth replacement for the old hard
-    /// `min_samples` gate.
+    /// The recurrence knee `k`: how many minority occurrences (beyond the
+    /// first) drive the **rarity** factor to zero — `rarity = 1 − min(minority
+    /// − 1, k) / k`, the ADR 0050 absolute linear knee (the opportunity-
+    /// proportional term is omitted — word opportunities are tens-to-hundreds,
+    /// where a rate term vanishes). A word written the minority way once is a
+    /// rare slip (`rarity = 1`, surfaces); one that recurs past `k` is the
+    /// corpus's own second convention (`rarity → 0`, silent). `32` is frozen
+    /// (ADR 0051): it is what lifts the genuine two-occurrence slips (*christ*,
+    /// *deal*) over the floor while leaving the k-flat single-occurrence
+    /// false positives below it. Sanitised through `clamp_count`.
+    pub recurrence_k: f32,
+    /// Wilson confidence for every dominance estimate here (the per-glyph
+    /// habit, and each word's capitalized share). Shrinks small-sample
+    /// majorities toward 0.5, so a barely-observed glyph or word can't assert
+    /// a convention — the smooth replacement for a hard `min_samples` gate.
+    /// `1.96` ≈ 95%.
     pub confidence_z: f32,
 }
 
 impl Default for CasingConfig {
     fn default() -> Self {
         Self {
-            emit_score_min: 0.98,
+            emit_score_min: 0.95,
+            recurrence_k: 32.0,
             confidence_z: 1.96,
         }
     }
@@ -453,6 +469,7 @@ impl Config {
             RuleId::DuplicateWord,
             RuleId::PunctuationSpacingAnomaly,
             RuleId::SentenceInitialLowercase,
+            RuleId::InconsistentWordCasing,
         ])
     }
 

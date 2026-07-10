@@ -330,9 +330,34 @@ mod tests {
         cfg.rules.insert(RuleId::SentenceInitialLowercase, true);
         cfg.casing = CasingConfig {
             emit_score_min,
+            recurrence_k: 32.0,
             confidence_z,
         };
         cfg
+    }
+
+    /// Verses of a book that fire `case.sentence-initial-lowercase` under the
+    /// ADR 0051 model: `n` clean verses teach a capital-after-`.` habit on the
+    /// lexicon-lowercase word "the" (every sentence starts "The", "the" also
+    /// recurs mid-flow), then one verse writes "the" lowercase after a period.
+    fn casing_fire(n: usize) -> Vec<String> {
+        let mut v: Vec<String> =
+            (0..n).map(|_| "The men saw the gate.".to_string()).collect();
+        v.push("He fell. the gate stood.".to_string());
+        v
+    }
+
+    fn mks(book: &str, verses: &[String]) -> VerseMap {
+        verses
+            .iter()
+            .enumerate()
+            .map(|(i, t)| {
+                (
+                    Sid::new(BookId::from_str(book).unwrap(), 1, (i + 1) as u16),
+                    t.clone(),
+                )
+            })
+            .collect()
     }
 
     /// Findings come back in a stable `(sid, range.start, code)` order
@@ -504,21 +529,12 @@ mod tests {
         assert_eq!(spacing[0].severity, Severity::Info);
         assert!(spacing[0].score.unwrap() > 0.85);
 
-        // Casing is corpus-observed (ADR 0017): default-off, and once opted
-        // in it fires only where enough observations establish a
-        // high-precision boundary — never from a lone verse.
-        let casing = map(&[
-            ("v1", "He spoke. Then he left."),
-            ("v2", "He spoke. Then he left."),
-            ("v3", "He spoke. then he left."),
-        ]);
+        // Casing is corpus-observed (ADR 0017, 0051): both rules default-off,
+        // and once opted in the positional rule fires only where the corpus's
+        // own lexicon-lowercase words establish a capital-after-`.` habit.
+        let casing = mks("GEN", &casing_fire(10));
         assert!(analyze(&casing, None).is_empty());
-        let mut on = Config::v1_defaults();
-        on.rules.insert(RuleId::SentenceInitialLowercase, true);
-        on.casing = CasingConfig {
-            emit_score_min: 0.5,
-            confidence_z: 0.0,
-        };
+        let on = casing_on(0.5, 0.0);
         assert!(
             analyze_with_config(&casing, None, &on)
                 .iter()
@@ -531,16 +547,8 @@ mod tests {
     /// supersedes them — yielding identical findings.
     #[test]
     fn stateful_stats_round_trip_and_supersede() {
-        let mut cfg = Config::v1_defaults();
-        cfg.rules.insert(RuleId::SentenceInitialLowercase, true);
-        cfg.casing = CasingConfig {
-            emit_score_min: 0.5,
-            confidence_z: 0.0,
-        };
-
-        let mut pairs: Vec<(&str, &str)> = (0..10).map(|_| ("v", "He spoke. Then he left.")).collect();
-        pairs.push(("v", "He spoke. then he left."));
-        let target = map(&pairs);
+        let cfg = casing_on(0.5, 0.0);
+        let target = mks("GEN", &casing_fire(10));
 
         let (f1, stats) = analyze_stateful(&target, None, &cfg, None, None);
         assert!(f1.iter().any(|f| f.code == RuleId::SentenceInitialLowercase));
@@ -559,9 +567,9 @@ mod tests {
     #[test]
     fn incremental_findings_are_scoped_to_target() {
         let cfg = casing_on(0.5, 0.0);
-        let anomalous = ["He spoke. Then he left.", "He spoke. Then he left.", "He spoke. then he left."];
-        let mut full = mk("GEN", &anomalous);
-        full.extend(mk("EXO", &anomalous));
+        let anomalous = casing_fire(10);
+        let mut full = mks("GEN", &anomalous);
+        full.extend(mks("EXO", &anomalous));
         let gen_id = BookId::from_str("GEN").unwrap();
         let exo = BookId::from_str("EXO").unwrap();
 
@@ -569,7 +577,7 @@ mod tests {
         assert!(f_full.iter().any(|f| f.sid.book == gen_id && f.code == RuleId::SentenceInitialLowercase));
         assert!(f_full.iter().any(|f| f.sid.book == exo && f.code == RuleId::SentenceInitialLowercase));
 
-        let (f_inc, _) = analyze_stateful(&mk("EXO", &anomalous), None, &cfg, Some(stats), None);
+        let (f_inc, _) = analyze_stateful(&mks("EXO", &anomalous), None, &cfg, Some(stats), None);
         assert!(!f_inc.is_empty());
         assert!(f_inc.iter().all(|f| f.sid.book == exo)); // nothing from GEN
     }
@@ -582,14 +590,15 @@ mod tests {
     #[test]
     fn changed_scope_matches_full_recompute() {
         let cfg = casing_on(0.5, 0.0);
-        let clean = ["He spoke. Then he left.", "He spoke. Then he left."];
-        let mut original = mk("GEN", &clean);
-        original.extend(mk("EXO", &clean));
+        // Clean establishing verses (a capital-after-`.` habit, no anomaly).
+        let clean: Vec<String> = (0..10).map(|_| "The men saw the gate.".to_string()).collect();
+        let mut original = mks("GEN", &clean);
+        original.extend(mks("EXO", &clean));
         let (_, prior) = analyze_stateful(&original, None, &cfg, None, None);
 
-        // Edit GEN only: introduce lowercase-after-terminal anomalies.
-        let mut edited = mk("GEN", &["He spoke. then he left.", "He spoke. then he left."]);
-        edited.extend(mk("EXO", &clean));
+        // Edit GEN only: introduce a lowercase-after-terminal anomaly.
+        let mut edited = mks("GEN", &casing_fire(10));
+        edited.extend(mks("EXO", &clean));
 
         let (f_scratch, s_scratch) = analyze_stateful(&edited, None, &cfg, None, None);
         let gen_id = BookId::from_str("GEN").unwrap();
@@ -613,17 +622,25 @@ mod tests {
     #[test]
     fn remove_book_drops_contribution_to_corpus_stats() {
         let cfg = casing_on(0.7, 1.0);
-        let gen_map = mk("GEN", &["He spoke. Then he left.", "He spoke. Then he left.", "He spoke. Then he left.", "He spoke. Then he left."]);
-        let exo_anom = ["He spoke. Then.", "He spoke. then."];
+        // GEN establishes the '.'→capital habit on the lexicon-lowercase "the".
+        let gen_clean: Vec<String> =
+            (0..20).map(|_| "The men saw the gate.".to_string()).collect();
+        let gen_map = mks("GEN", &gen_clean);
+        // EXO alone holds one lowercase "the" after a period — but with no
+        // mid-flow "the" of its own it is unclassifiable without GEN's lexicon.
+        let exo_anom = ["He fell. the gate stood.".to_string()];
         let mut full = gen_map.clone();
-        full.extend(mk("EXO", &exo_anom));
+        full.extend(mks("EXO", &exo_anom));
         let exo = BookId::from_str("EXO").unwrap();
 
         let (f_full, mut stats) = analyze_stateful(&full, None, &cfg, None, None);
-        assert!(f_full.iter().any(|f| f.sid.book == exo)); // fires on combined samples
+        assert!(
+            f_full.iter().any(|f| f.sid.book == exo && f.code == RuleId::SentenceInitialLowercase),
+            "EXO's `the` fires while GEN backs the lexicon + habit"
+        );
 
         stats.remove_book(BookId::from_str("GEN").unwrap());
-        let (f_after, _) = analyze_stateful(&mk("EXO", &exo_anom), None, &cfg, Some(stats), None);
+        let (f_after, _) = analyze_stateful(&mks("EXO", &exo_anom), None, &cfg, Some(stats), None);
         // EXO's own few observations can't back a confident dominance now.
         assert!(f_after.iter().all(|f| f.code != RuleId::SentenceInitialLowercase));
     }

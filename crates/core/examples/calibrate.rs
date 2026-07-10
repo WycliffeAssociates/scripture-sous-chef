@@ -30,9 +30,7 @@ use ssc_core::config::{
     RepeatedCharacterRunConfig,
 };
 use ssc_core::rule::{ProjectRule, StatefulRule};
-use ssc_core::signals::casing::{
-    FirstCaseExperimental, PosClassExperimental, WordObsExperimental, walk_book_experimental,
-};
+use ssc_core::signals::casing::{PosClass, SiteEval, evaluate};
 use ssc_core::signals::bracket_balance::BracketBalance;
 use ssc_core::signals::lexical::{PunctOnlyToken, RepeatedCharacterRun};
 use ssc_core::signals::proportionality::ProjectLengthRatio;
@@ -83,10 +81,11 @@ fn main() {
             spacing_calib(Path::new(t), &sweep);
             return;
         }
-        // Word-level casing two-factor SPIKE (next-checks-shortlist item 4).
-        // `<path>` is a single vref file (detailed per-corpus report) or the
-        // `corpora/vref` directory (fleet aggregate). Knobs NOT frozen — this
-        // is a calibration spike over `walk_book_experimental`.
+        // Casing two-factor calibration (ADR 0051). `<path>` is a single vref
+        // file (per-corpus report) or the `corpora/vref` directory (fleet
+        // aggregate). Drives the real `signals::casing::evaluate` — the same
+        // walk, model, and soft-censored classification the shipped rules use —
+        // and sweeps floor/k over its per-site factors.
         [flag, path] if flag == "--casing" => {
             let p = Path::new(path);
             if p.is_dir() {
@@ -98,6 +97,13 @@ fn main() {
                 );
                 casing_single_report(&corpus);
             }
+            return;
+        }
+        // Casing stats-size probe (ADR 0051): reduce each corpus with the real
+        // rule and report the serialized `CasingStats` JSON byte size (the wire
+        // size that round-trips) percentiles across the fleet.
+        [flag, dir] if flag == "--casing-size" => {
+            casing_size(Path::new(dir));
             return;
         }
         // Bracket-balance calibration (ADR 0037): floor-0 score distribution,
@@ -425,7 +431,7 @@ fn fleet(dir: &Path, out: &Path) {
             }
 
             let n = done.fetch_add(1, Ordering::Relaxed) + 1;
-            if n % 100 == 0 {
+            if n.is_multiple_of(100) {
                 eprintln!("  …{n}/{total}");
             }
             FleetRow { id, verses, chars, surfaced, sites, hists, samples }
@@ -1147,178 +1153,90 @@ fn scope_z(scope: &LengthRatioScope) -> f32 {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// SPIKE — word-level casing two-factor calibration (next-checks-shortlist
-// item 4). Consumes `walk_book_experimental`; all estimation/scoring/sweeps
-// live here. Knobs NOT frozen. The generative model: an occurrence's case =
-// OR(position-forces-upper, word-intrinsically-capitalized); forced uppercase
-// is censored from the lexicon (one-directional). Mirrors the `--spacing`
-// two-factor decomposition (dominance × recurrence rarity, ADR 0050).
+// Casing two-factor calibration (ADR 0051). Consumes the real
+// `signals::casing::evaluate` (one classified `SiteEval` per lowercase site,
+// with each channel's dominance/minority/opportunities), then sweeps the
+// absolute recurrence knee `k` and the emission floor over those factors —
+// `score = dominance × rarity(minority, k)` — exactly as the shipped rules do
+// at the frozen knobs. The rules apply floor 0.95 / k 32; this reports the
+// grid around that so the packet volumes stay reproducible.
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Confidence for every Wilson bound here (mirrors `CasingConfig::confidence_z`
-/// and the frozen spacing/casing default).
-const CASING_Z: f64 = 1.96;
-/// Reference recurrence knee for the "surfaced" setting used by samples, the
-/// hard-vs-soft diff, the noisiest-corpus ranking, and the current-rule fate —
-/// the ADR 0050 frozen analog (absolute knee k = 32, floor 0.5).
-const REF_ABS_K: f64 = 32.0;
-const REF_FLOOR: f64 = 0.5;
-/// The current rule's shipped floor (`CasingConfig::default().emit_score_min`).
-const CURRENT_FLOOR: f64 = 0.98;
-
-/// Absolute recurrence-knee sweep (occurrence count).
-const ABS_KS: [f64; 5] = [8.0, 16.0, 32.0, 64.0, 128.0];
-/// Rate-scaled knee sweep (minority per 1k opportunities).
-const RATE_KS: [f64; 6] = [0.5, 1.0, 2.0, 4.0, 8.0, 16.0];
-/// Emission-floor sweep (0.95 added for the floor-decision packet's candidate
-/// band, between 0.90 and the current rule's 0.98).
-const FLOORS: [f64; 9] = [0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.98];
-
-/// The floor-decision packet's candidate floors and knees, and the named
-/// review anchors tracked across it. Each anchor is `(corpus, sid, lowercased
-/// word)` — the spike-review true/false positives whose post-hyphen-fix fate
-/// the packet reports per floor.
+/// Wilson confidence for the model (mirrors `CasingConfig::confidence_z`).
+const CASING_Z: f32 = 1.96;
+/// Packet floor/knee grid (rows = floor, cols = k); the shipped knobs are the
+/// (0.95, 32) cell.
 const PACKET_FLOORS: [f64; 4] = [0.80, 0.90, 0.95, 0.98];
 const PACKET_KS: [f64; 3] = [8.0, 16.0, 32.0];
+const REF_FLOOR: f64 = 0.95;
+const REF_K: f64 = 32.0;
+
+/// Named review anchors tracked across the fleet — `(corpus, sid, lowercased
+/// word)`; the ADR 0051 adjudicated true/false positives.
 const ANCHORS: &[(&str, &str, &str)] = &[
-    ("swhulb", "LUK 8:44", "yesu"),         // TP
-    ("WA-fr-ulb", "JHN 13:2", "jésus"),     // TP
-    ("spaRV1909", "1SA 7:8", "filisteos"),  // TP (corpus-consistency)
-    ("vie1934", "MAT 24:24", "christ"),     // probable TP
-    ("eng-web", "3MA 6:9", "gentiles"),     // TP-ish
-    ("fraLSG", "ACT 19:13", "juifs"),       // FP (French adjective)
-    ("porblt", "MAT 24:24", "messias"),     // FP (generic plural)
-    ("deu1912", "PHM 1:9", "alter"),        // FP (adj/noun homograph)
-    ("ind", "DEU 14:12", "rajawali"),       // FP (list colon, positional)
-    ("nld", "GEN 6:19", "mannetje"),        // FP (list colon, positional)
-    ("WA-en-ulb", "LAM 1:22", "deal"),      // TP (positional)
-    ("eng-kjv", "SIR 7:5", "justify"),      // TP (positional, cross-verse seam)
+    ("swhulb", "LUK 8:44", "yesu"),        // TP intrinsic
+    ("WA-fr-ulb", "JHN 13:2", "jésus"),    // TP intrinsic
+    ("spaRV1909", "1SA 7:8", "filisteos"), // TP intrinsic
+    ("vie1934", "MAT 24:24", "christ"),    // TP intrinsic (min 2)
+    ("eng-web", "3MA 6:9", "gentiles"),    // TP-ish intrinsic
+    ("eng-kjv", "SIR 7:5", "justify"),     // TP positional (cross-seam)
+    ("WA-en-ulb", "LAM 1:22", "deal"),     // TP positional (min 2)
+    ("fraLSG", "ACT 19:13", "juifs"),      // FP intrinsic (French adjective)
+    ("porblt", "MAT 24:24", "messias"),    // FP intrinsic (generic plural)
+    ("deu1912", "PHM 1:9", "alter"),       // FP intrinsic (adj/noun homograph)
+    ("ind", "DEU 14:12", "rajawali"),      // FP positional (list colon)
+    ("nld", "GEN 6:19", "mannetje"),       // FP positional (list colon)
 ];
 
-/// Wilson score-interval lower bound of `k/n` at confidence `z` — the harness
-/// copy of `evidence::dominance` (crate-private, so re-derived here for the
-/// example, exactly as `--spacing` re-derives its rarity knee). Float `k` so
-/// the soft-censoring reweight (a fractional upper count) flows through.
-fn wilson_lb(k: f64, n: f64, z: f64) -> f64 {
-    if n <= 0.0 {
-        return 0.0;
-    }
-    let p = (k / n).clamp(0.0, 1.0);
-    let z2 = z * z;
-    let denom = 1.0 + z2 / n;
-    let center = (p + z2 / (2.0 * n)) / denom;
-    let margin = (z / denom) * (p * (1.0 - p) / n + z2 / (4.0 * n * n)).sqrt();
-    (center - margin).clamp(0.0, 1.0)
-}
-
-/// Absolute linear recurrence knee (ADR 0050): a hapax minority → 1, fading to
-/// 0 past `k`.
+/// The absolute linear recurrence knee (ADR 0050/0051 absolute form).
 fn rarity_abs(minority: u64, k: f64) -> f64 {
-    (1.0 - (minority.saturating_sub(1) as f64 / k).max(0.0)).clamp(0.0, 1.0)
+    (1.0 - (minority.saturating_sub(1) as f64 / k)).clamp(0.0, 1.0)
 }
 
-/// Rate-scaled knee: the same shape with the minority replaced by its rate per
-/// 1k opportunities, so a hapax in a large denominator stays ≈1 and the flag
-/// boundary is a per-1k minority rate. `k_rate` is that rate cutoff.
-fn rarity_rate(minority: u64, opps: u64, k_rate: f64) -> f64 {
-    if opps == 0 {
-        return 1.0;
-    }
-    let rate = 1000.0 * minority as f64 / opps as f64;
-    (1.0 - (rate / k_rate).max(0.0)).clamp(0.0, 1.0)
+/// A site's two channel scores at knee `k` (0 where the channel is absent).
+fn site_scores(s: &SiteEval, k: f64) -> (f64, f64) {
+    let intr = s.intrinsic.map_or(0.0, |f| f.dominance * rarity_abs(f.minority, k));
+    let pos = s.positional.map_or(0.0, |f| f.dominance * rarity_abs(f.minority, k));
+    (intr, pos)
 }
 
-/// Per-word case profile. Midflow counts define the intrinsic profile (Step 1,
-/// forced uppercase censored); forced counts feed the positional channel and
-/// the soft-censoring re-estimate.
-#[derive(Default, Clone)]
-struct WProfile {
-    mid_up: u32,
-    mid_lo: u32,
-    for_up: u32,
-    for_lo: u32,
-}
-
-impl WProfile {
-    fn mid_total(&self) -> u32 {
-        self.mid_up + self.mid_lo
-    }
-    fn for_total(&self) -> u32 {
-        self.for_up + self.for_lo
-    }
-    fn total(&self) -> u32 {
-        self.mid_total() + self.for_total()
-    }
-    fn total_lower(&self) -> u32 {
-        self.mid_lo + self.for_lo
-    }
-    fn total_upper(&self) -> u32 {
-        self.mid_up + self.for_up
-    }
-    /// All-position capitalized: uppercase-majority over *every* occurrence,
-    /// not just midflow. The censoring-shadow denominator — a proper noun seen
-    /// mostly at forced positions is capitalized in truth even where hard
-    /// censoring (midflow-only) can no longer classify it.
-    fn is_cap_allpos(&self) -> bool {
-        let up = self.total_upper();
-        let n = up + self.total_lower();
-        n > 0 && wilson_lb(up as f64, n as f64, CASING_Z) > 0.5
-    }
-    /// Hard-censoring intrinsic dominance of the capitalized form: Wilson lower
-    /// bound of `mid_up / mid_total` (midflow only — Step 1's censoring).
-    fn cap_dom_hard(&self) -> f64 {
-        wilson_lb(self.mid_up as f64, self.mid_total() as f64, CASING_Z)
-    }
-    fn is_cap_hard(&self) -> bool {
-        self.mid_total() > 0 && self.cap_dom_hard() > 0.5
-    }
-    fn is_lower_hard(&self) -> bool {
-        self.mid_total() > 0
-            && wilson_lb(self.mid_lo as f64, self.mid_total() as f64, CASING_Z) > 0.5
-    }
-    /// Soft-censoring capitalized share: forced uppercase re-enters the
-    /// intrinsic profile with weight `1 − habit` (a single re-estimate after
-    /// the positional habit is known — no full EM). `habit` is the pooled
-    /// lexicon-restricted forced-uppercase dominance.
-    fn cap_dom_soft(&self, habit: f64) -> f64 {
-        let up = self.mid_up as f64 + (1.0 - habit) * self.for_up as f64;
-        wilson_lb(up, up + self.mid_lo as f64, CASING_Z)
-    }
-    fn is_cap_soft(&self, habit: f64) -> bool {
-        let up = self.mid_up as f64 + (1.0 - habit) * self.for_up as f64;
-        let n = up + self.mid_lo as f64;
-        n > 0.0 && self.cap_dom_soft(habit) > 0.5
-    }
-    fn is_lower_soft(&self, habit: f64) -> bool {
-        let up = self.mid_up as f64 + (1.0 - habit) * self.for_up as f64;
-        let n = up + self.mid_lo as f64;
-        n > 0.0 && wilson_lb(self.mid_lo as f64, n, CASING_Z) > 0.5
+/// The site's quadrant (`None` = not a clean anomaly candidate).
+fn site_quad(s: &SiteEval) -> Option<&'static str> {
+    match (s.intrinsic.is_some(), s.positional.is_some()) {
+        (true, true) => Some("both"),
+        (true, false) => Some("intrinsic"),
+        (false, true) => Some("positional"),
+        (false, false) => None,
     }
 }
 
-/// Per-glyph forced-position habit. `naive` pools all words (the current rule's
-/// estimate); `lex` restricts to intrinsically-lowercase words (removes the
-/// proper-noun confound). Book-initial is keyed `None`.
-#[derive(Default, Clone)]
-struct GlyphHabit {
-    glyph: Option<char>,
-    naive_up: u64,
-    naive_lo: u64,
-    naive_total: u64,
-    lex_up: u64,
-    lex_total: u64,
-}
-
-impl GlyphHabit {
-    fn naive_dom(&self) -> f64 {
-        wilson_lb(self.naive_up as f64, self.naive_total as f64, CASING_Z)
-    }
-    fn lex_dom(&self) -> f64 {
-        wilson_lb(self.lex_up as f64, self.lex_total as f64, CASING_Z)
+fn pos_glyph(pos: PosClass) -> Option<char> {
+    match pos {
+        PosClass::ForcedAfterTerminal(g) => Some(g),
+        _ => None,
     }
 }
 
-/// One surfaced site for human review.
+/// One tracked anchor's factors, so its score is recomputable at any k.
+#[derive(Clone)]
+struct AnchorHit {
+    corpus: String,
+    sid: String,
+    word: String,
+    quad: &'static str,
+    intr: Option<(f64, u64, u64)>,
+    pos: Option<(f64, u64, u64)>,
+}
+
+impl AnchorHit {
+    fn score(&self, k: f64) -> f64 {
+        let i = self.intr.map_or(0.0, |(d, m, _)| d * rarity_abs(m, k));
+        let p = self.pos.map_or(0.0, |(d, m, _)| d * rarity_abs(m, k));
+        i.max(p)
+    }
+}
+
+/// One surfaced site sampled for review.
 struct CasingSample {
     sid: String,
     quad: &'static str,
@@ -1327,645 +1245,145 @@ struct CasingSample {
     dom: f64,
     minority: u64,
     opps: u64,
-    rarity: f64,
     score: f64,
-    other: f64,
     ctx: String,
 }
 
-/// One tracked review anchor's post-fix components (packet item 2). Both
-/// channels' factors are kept so the surfacing score is recomputable at any k.
-#[derive(Clone)]
-struct AnchorHit {
-    corpus: String,
-    sid: String,
-    word: String,
-    quad: &'static str,
-    intr_dom: f64,
-    intr_min: u64,
-    intr_opp: u64,
-    pos_dom: f64,
-    pos_min: u64,
-    pos_opp: u64,
-}
-
-impl AnchorHit {
-    /// Surfacing score at absolute knee `k`: the channel this site surfaces on
-    /// (both → the louder), mirroring `SiteScore::score`.
-    fn score(&self, k: f64) -> f64 {
-        let intr = if self.quad == "positional" {
-            0.0
-        } else {
-            self.intr_dom * rarity_abs(self.intr_min, k)
-        };
-        let pos = if self.quad == "intrinsic" {
-            0.0
-        } else {
-            self.pos_dom * rarity_abs(self.pos_min, k)
-        };
-        intr.max(pos)
-    }
-}
-
-/// The full per-corpus casing spike result. Aggregate grids/histograms are
-/// fleet-summable; `samples` is bounded per corpus.
+/// Per-corpus casing result. Grids are `[knee][floor]`, fleet-summable.
 struct CasingCorpus {
     id: String,
     verses: usize,
-    word_types: usize,
-    word_tokens: u64,
-    approx_bytes: usize,
-    habit: Vec<GlyphHabit>,
-    pooled_naive_dom: f64,
-    pooled_lex_dom: f64,
-    cap_types: u64,
-    cap_tokens: u64,
-    shadow_types: u64,
-    shadow_tokens: u64,
-    // sweep grids, surfaced distinct sites, [knee][floor]
-    abs_grid: Vec<[u64; FLOORS.len()]>,
-    // per-channel splits of `abs_grid`, keyed by the site's quadrant (packet
-    // item 1) — same [knee][floor] shape.
-    abs_grid_intr: Vec<[u64; FLOORS.len()]>,
-    abs_grid_pos: Vec<[u64; FLOORS.len()]>,
-    abs_grid_both: Vec<[u64; FLOORS.len()]>,
-    rate_grid: Vec<[u64; FLOORS.len()]>,
-    // named review anchors seen in this corpus (packet item 2).
-    anchors: Vec<AnchorHit>,
-    // score histogram at the reference knee (all lowercase sites), 40 buckets
+    sites: u64,
+    grid_intr: Vec<[u64; PACKET_FLOORS.len()]>,
+    grid_pos: Vec<[u64; PACKET_FLOORS.len()]>,
+    grid_both: Vec<[u64; PACKET_FLOORS.len()]>,
     hist: [u64; 40],
-    // reference-setting counts (abs k=32, floor 0.5, hard censoring)
-    ref_surfaced: u64,
     ref_intrinsic: u64,
     ref_positional: u64,
     ref_both: u64,
-    soft_ref_surfaced: u64,
-    hard_soft_diff: u64,
-    // current-rule (floor 0.98) surfaced set and its fate under the new score
-    current_surfaced: u64,
-    fate_survive: u64,
-    fate_die_rarity: u64,
-    fate_die_habit: u64,
-    fate_both: u64,
-    fate_die_ambiguous: u64,
+    anchors: Vec<AnchorHit>,
     samples: Vec<CasingSample>,
 }
 
-/// A lowercase site's channel components, resolved from the profile + habit.
-struct SiteScore {
-    quad: &'static str,
-    intr_dom: f64,
-    intr_min: u64,
-    intr_opp: u64,
-    pos_dom: f64,
-    pos_min: u64,
-    pos_opp: u64,
-}
-
-impl SiteScore {
-    /// Surfacing score at (knee, k): the max of the applicable channels.
-    fn score(&self, rate_knee: bool, k: f64) -> (f64, f64, f64) {
-        let r = |min: u64, opp: u64| {
-            if rate_knee {
-                rarity_rate(min, opp, k)
-            } else {
-                rarity_abs(min, k)
-            }
-        };
-        let intr = if self.quad == "positional" {
-            0.0
-        } else {
-            self.intr_dom * r(self.intr_min, self.intr_opp)
-        };
-        let pos = if self.quad == "intrinsic" {
-            0.0
-        } else {
-            self.pos_dom * r(self.pos_min, self.pos_opp)
-        };
-        (intr.max(pos), intr, pos)
-    }
-}
-
-/// Classify one lowercase obs into a quadrant and resolve its two-factor
-/// components under a given cap/lower classification. Returns `None` when the
-/// site is not a clean anomaly candidate (midflow-lowercase of a lower word, or
-/// a forced-lowercase of a word the lexicon can't classify).
-fn classify_site(
-    prof: &WProfile,
-    forced: bool,
-    glyph_dom: f64,
-    cap: bool,
-    lower: bool,
-) -> Option<SiteScore> {
-    // Intrinsic components (valid whenever the word is capitalized).
-    let intr_dom = prof.cap_dom_hard(); // dominance factor is always midflow-only
-    let intr_min = prof.total_lower() as u64;
-    let intr_opp = prof.total() as u64;
-    // Positional components (valid whenever the word is forced-position here).
-    let pos_min = prof.for_lo as u64;
-    let pos_opp = prof.for_total() as u64;
-
-    let quad = if cap && forced {
-        "both"
-    } else if cap {
-        "intrinsic"
-    } else if forced && lower {
-        "positional"
-    } else {
-        return None;
-    };
-    Some(SiteScore {
-        quad,
-        intr_dom,
-        intr_min,
-        intr_opp,
-        pos_dom: glyph_dom,
-        pos_min,
-        pos_opp,
-    })
-}
-
-/// Run the full word-level casing spike over one corpus.
+/// Run the real casing model over one corpus and roll up the sweep grids,
+/// reference-setting counts, histogram, tracked anchors, and samples.
 fn analyze_casing(id: String, map: &VerseMap) -> CasingCorpus {
-    use std::collections::HashMap;
-
-    // ── Pass 0: word observations, per book (cross-seam state per `walk_book`).
     let books = ssc_core::verse::by_book(map);
-    let mut obs: Vec<WordObsExperimental> = Vec::new();
-    for verses in books.values() {
-        obs.extend(walk_book_experimental(verses));
-    }
+    let sites = evaluate(&books, CASING_Z);
 
-    // ── Pass 1: intern words, build per-word profiles and cardinality.
-    let mut ids: HashMap<String, u32> = HashMap::new();
-    let mut prof: Vec<WProfile> = Vec::new();
-    let mut key_of: Vec<u32> = Vec::with_capacity(obs.len());
-    let mut approx_bytes = 0usize;
-    for o in &obs {
-        let text = &map[&o.sid];
-        let key = text[o.start as usize..o.end as usize].to_lowercase();
-        let id = *ids.entry(key.clone()).or_insert_with(|| {
-            approx_bytes += key.len() + std::mem::size_of::<WProfile>() + 24;
-            prof.push(WProfile::default());
-            (prof.len() - 1) as u32
-        });
-        key_of.push(id);
-        let p = &mut prof[id as usize];
-        let forced = !matches!(o.pos, PosClassExperimental::Midflow);
-        match (forced, o.case) {
-            (false, FirstCaseExperimental::Upper) => p.mid_up += 1,
-            (false, FirstCaseExperimental::Lower) => p.mid_lo += 1,
-            (true, FirstCaseExperimental::Upper) => p.for_up += 1,
-            (true, FirstCaseExperimental::Lower) => p.for_lo += 1,
-            (_, FirstCaseExperimental::Uncased) => {}
-        }
-    }
-
-    // ── Pass 2: per-glyph habit (naive over all words, lexicon-restricted over
-    // intrinsically-lowercase words — hard classification).
-    let mut habit_map: HashMap<Option<char>, GlyphHabit> = HashMap::new();
-    for (i, o) in obs.iter().enumerate() {
-        let key = match o.pos {
-            PosClassExperimental::Midflow => continue,
-            PosClassExperimental::BookInitial => None,
-            PosClassExperimental::ForcedAfterTerminal(g) => Some(g),
-        };
-        let p = &prof[key_of[i] as usize];
-        let h = habit_map.entry(key).or_insert_with(|| GlyphHabit {
-            glyph: key,
-            ..Default::default()
-        });
-        h.naive_total += 1;
-        match o.case {
-            FirstCaseExperimental::Upper => h.naive_up += 1,
-            FirstCaseExperimental::Lower => h.naive_lo += 1,
-            FirstCaseExperimental::Uncased => {}
-        }
-        if p.is_lower_hard() {
-            h.lex_total += 1;
-            if o.case == FirstCaseExperimental::Upper {
-                h.lex_up += 1;
-            }
-        }
-    }
-    let mut habit: Vec<GlyphHabit> = habit_map.into_values().collect();
-    habit.sort_by_key(|h| std::cmp::Reverse(h.naive_total));
-    let habit_dom: HashMap<Option<char>, f64> =
-        habit.iter().map(|h| (h.glyph, h.lex_dom())).collect();
-
-    // Pooled habits (naive vs lexicon over ALL forced positions) and the soft
-    // reweight base.
-    let (mut n_up, mut n_tot, mut l_up, mut l_tot) = (0u64, 0u64, 0u64, 0u64);
-    for h in &habit {
-        n_up += h.naive_up;
-        n_tot += h.naive_total;
-        l_up += h.lex_up;
-        l_tot += h.lex_total;
-    }
-    let pooled_naive_dom = wilson_lb(n_up as f64, n_tot as f64, CASING_Z);
-    let pooled_lex_dom = wilson_lb(l_up as f64, l_tot as f64, CASING_Z);
-    let habit_pooled = pooled_lex_dom; // soft reweight base (1 − habit)
-
-    // ── Cardinality + censoring shadow (over hard-cap word types/tokens).
-    let mut cap_types = 0u64;
-    let mut cap_tokens = 0u64;
-    let mut shadow_types = 0u64;
-    let mut shadow_tokens = 0u64;
-    for p in &prof {
-        // All-position capitalized words (not the hard-censored view) so the
-        // shadow can count the words hard censoring loses.
-        if p.is_cap_allpos() {
-            let up = p.total_upper() as u64;
-            cap_types += 1;
-            cap_tokens += up;
-            // ≥90% of the word's uppercase evidence is forced-position.
-            if up > 0 && p.for_up as f64 / up as f64 >= 0.9 {
-                shadow_types += 1;
-                shadow_tokens += up;
-            }
-        }
-    }
-
-    // ── Judge pass: classify every lowercase site, sweep, histogram, samples,
-    // hard-vs-soft, current-rule fate.
-    let mut abs_grid = vec![[0u64; FLOORS.len()]; ABS_KS.len()];
-    let mut abs_grid_intr = vec![[0u64; FLOORS.len()]; ABS_KS.len()];
-    let mut abs_grid_pos = vec![[0u64; FLOORS.len()]; ABS_KS.len()];
-    let mut abs_grid_both = vec![[0u64; FLOORS.len()]; ABS_KS.len()];
-    let mut rate_grid = vec![[0u64; FLOORS.len()]; RATE_KS.len()];
-    let mut anchors: Vec<AnchorHit> = Vec::new();
-    let anchor_corpus = ANCHORS.iter().any(|a| a.0 == id);
+    let nk = PACKET_KS.len();
+    let mut grid_intr = vec![[0u64; PACKET_FLOORS.len()]; nk];
+    let mut grid_pos = vec![[0u64; PACKET_FLOORS.len()]; nk];
+    let mut grid_both = vec![[0u64; PACKET_FLOORS.len()]; nk];
     let mut hist = [0u64; 40];
-    let mut ref_surfaced = 0u64;
-    let (mut ref_intrinsic, mut ref_positional, mut ref_both) = (0u64, 0u64, 0u64);
-    let mut soft_ref_surfaced = 0u64;
-    let mut hard_soft_diff = 0u64;
-    let mut current_surfaced = 0u64;
-    let (
-        mut fate_survive,
-        mut fate_die_rarity,
-        mut fate_die_habit,
-        mut fate_both,
-        mut fate_die_ambiguous,
-    ) = (0u64, 0u64, 0u64, 0u64, 0u64);
+    let (mut ref_i, mut ref_p, mut ref_b) = (0u64, 0u64, 0u64);
+    let mut anchors: Vec<AnchorHit> = Vec::new();
     let mut samples: Vec<CasingSample> = Vec::new();
+    let anchor_corpus = ANCHORS.iter().any(|a| a.0 == id);
+    let mut n_sites = 0u64;
 
-    for (i, o) in obs.iter().enumerate() {
-        if o.case != FirstCaseExperimental::Lower {
-            continue;
-        }
-        let p = &prof[key_of[i] as usize];
-        let (forced, glyph_key) = match o.pos {
-            PosClassExperimental::Midflow => (false, None),
-            PosClassExperimental::BookInitial => (true, None),
-            PosClassExperimental::ForcedAfterTerminal(g) => (true, Some(g)),
-        };
-        let glyph_dom = if forced {
-            habit_dom.get(&glyph_key).copied().unwrap_or(0.0)
-        } else {
-            0.0
-        };
+    for s in &sites {
+        let Some(quad) = site_quad(s) else { continue };
+        n_sites += 1;
+        let text = &map[&s.sid];
+        let word = text[s.start as usize..s.end as usize].to_lowercase();
 
-        // Current-rule fate: the live rule surfaces bare-terminal (not
-        // book-initial) lowercase sites whose per-glyph NAIVE dominance clears
-        // 0.98. Track each such site's new destiny.
-        if let PosClassExperimental::ForcedAfterTerminal(g) = o.pos {
-            let naive = habit
-                .iter()
-                .find(|h| h.glyph == Some(g))
-                .map(|h| h.naive_dom())
-                .unwrap_or(0.0);
-            if naive >= CURRENT_FLOOR {
-                current_surfaced += 1;
-                let cap = p.is_cap_hard();
-                if cap {
-                    fate_both += 1;
-                } else if p.is_lower_hard() {
-                    let pos = glyph_dom * rarity_abs(p.for_lo as u64, REF_ABS_K);
-                    if pos >= REF_FLOOR {
-                        fate_survive += 1;
-                    } else if glyph_dom < REF_FLOOR {
-                        fate_die_habit += 1;
-                    } else {
-                        fate_die_rarity += 1;
-                    }
-                } else {
-                    fate_die_ambiguous += 1;
-                }
-            }
-        }
-
-        // Hard-censoring classification and site.
-        let cap = p.is_cap_hard();
-        let lower = p.is_lower_hard();
-        let site = classify_site(p, forced, glyph_dom, cap, lower);
-
-        // Soft-censoring classification (for the hard-vs-soft diff only).
-        let cap_s = p.is_cap_soft(habit_pooled);
-        let lower_s = p.is_lower_soft(habit_pooled);
-        let site_s = classify_site(p, forced, glyph_dom, cap_s, lower_s);
-        let soft_surf = site_s
-            .as_ref()
-            .map(|s| s.score(false, REF_ABS_K).0 >= REF_FLOOR)
-            .unwrap_or(false);
-
-        // Named-anchor capture (packet item 2): record even when the site is
-        // not a clean anomaly candidate, so an anchor that dies as
-        // unclassifiable is still visible.
-        if anchor_corpus {
-            let sid_s = o.sid.to_string();
-            let word_l = map[&o.sid][o.start as usize..o.end as usize].to_lowercase();
-            if ANCHORS
-                .iter()
-                .any(|&(ac, asid, aw)| ac == id && asid == sid_s && aw == word_l)
-            {
-                let (quad, id_dom, i_min, i_opp, p_dom, p_min, p_opp) = match &site {
-                    Some(s) => (
-                        s.quad, s.intr_dom, s.intr_min, s.intr_opp, s.pos_dom, s.pos_min, s.pos_opp,
-                    ),
-                    None => (
-                        "unclassified",
-                        p.cap_dom_hard(),
-                        p.total_lower() as u64,
-                        p.total() as u64,
-                        glyph_dom,
-                        p.for_lo as u64,
-                        p.for_total() as u64,
-                    ),
-                };
-                anchors.push(AnchorHit {
-                    corpus: id.clone(),
-                    sid: sid_s,
-                    word: word_l,
-                    quad,
-                    intr_dom: id_dom,
-                    intr_min: i_min,
-                    intr_opp: i_opp,
-                    pos_dom: p_dom,
-                    pos_min: p_min,
-                    pos_opp: p_opp,
-                });
-            }
-        }
-
-        let Some(site) = site else {
-            if soft_surf {
-                hard_soft_diff += 1; // surfaced under soft only
-            }
-            continue;
-        };
-
-        let (ref_score, intr_s, pos_s) = site.score(false, REF_ABS_K);
-        hist[((ref_score.clamp(0.0, 0.999_999)) * 40.0) as usize] += 1;
-        let hard_surf = ref_score >= REF_FLOOR;
-        if hard_surf != soft_surf {
-            hard_soft_diff += 1;
-        }
-        if soft_surf {
-            soft_ref_surfaced += 1;
-        }
-
-        // Sweep grids (skip sites that can never clear the lowest floor —
-        // dominance caps the score, since rarity ≤ 1).
-        let max_dom = site.intr_dom.max(site.pos_dom);
-        if max_dom >= FLOORS[0] {
-            for (ki, &k) in ABS_KS.iter().enumerate() {
-                let s = site.score(false, k).0;
-                for (fi, &fl) in FLOORS.iter().enumerate() {
-                    if s >= fl {
-                        abs_grid[ki][fi] += 1;
-                        match site.quad {
-                            "intrinsic" => abs_grid_intr[ki][fi] += 1,
-                            "positional" => abs_grid_pos[ki][fi] += 1,
-                            _ => abs_grid_both[ki][fi] += 1,
-                        }
-                    }
-                }
-            }
-            for (ki, &k) in RATE_KS.iter().enumerate() {
-                let s = site.score(true, k).0;
-                for (fi, &fl) in FLOORS.iter().enumerate() {
-                    if s >= fl {
-                        rate_grid[ki][fi] += 1;
+        // Sweep grids.
+        for (ki, &k) in PACKET_KS.iter().enumerate() {
+            let (is, ps) = site_scores(s, k);
+            let surf = is.max(ps);
+            for (fi, &fl) in PACKET_FLOORS.iter().enumerate() {
+                if surf >= fl {
+                    match quad {
+                        "intrinsic" => grid_intr[ki][fi] += 1,
+                        "positional" => grid_pos[ki][fi] += 1,
+                        _ => grid_both[ki][fi] += 1,
                     }
                 }
             }
         }
 
-        if hard_surf {
-            ref_surfaced += 1;
-            match site.quad {
-                "intrinsic" => ref_intrinsic += 1,
-                "positional" => ref_positional += 1,
-                _ => ref_both += 1,
+        // Reference setting (k=32, floor 0.95): counts, histogram, samples.
+        let (is, ps) = site_scores(s, REF_K);
+        let surf = is.max(ps);
+        hist[(surf.clamp(0.0, 0.999_999) * 40.0) as usize] += 1;
+        if surf >= REF_FLOOR {
+            match quad {
+                "intrinsic" => ref_i += 1,
+                "positional" => ref_p += 1,
+                _ => ref_b += 1,
             }
-            // Bounded sample capture: the two-factor components of the surfacing
-            // channel (the louder of the two for a both-site).
             if samples.len() < 400 {
-                let text = &map[&o.sid];
-                let word = text[o.start as usize..o.end as usize].to_string();
-                let (dom, min, opp, other) = if pos_s >= intr_s {
-                    (site.pos_dom, site.pos_min, site.pos_opp, intr_s)
+                let (dom, min, opp) = if ps >= is {
+                    let f = s.positional.unwrap();
+                    (f.dominance, f.minority, f.opportunities)
                 } else {
-                    (site.intr_dom, site.intr_min, site.intr_opp, pos_s)
+                    let f = s.intrinsic.unwrap();
+                    (f.dominance, f.minority, f.opportunities)
                 };
-                let rar = if opp > 0 && ref_score > 0.0 { ref_score / dom.max(1e-9) } else { 1.0 };
                 samples.push(CasingSample {
-                    sid: o.sid.to_string(),
-                    quad: site.quad,
-                    word,
-                    glyph: glyph_key,
+                    sid: s.sid.to_string(),
+                    quad,
+                    word: text[s.start as usize..s.end as usize].to_string(),
+                    glyph: pos_glyph(s.pos),
                     dom,
                     minority: min,
                     opps: opp,
-                    rarity: rar.min(1.0),
-                    score: ref_score,
-                    other,
-                    ctx: casing_ctx(text, o.start as usize, o.end as usize),
+                    score: surf,
+                    ctx: casing_ctx(text, s.start as usize, s.end as usize),
                 });
             }
+        }
+
+        // Anchor capture.
+        if anchor_corpus
+            && ANCHORS.iter().any(|&(ac, asid, aw)| ac == id && asid == s.sid.to_string() && aw == word)
+        {
+            anchors.push(AnchorHit {
+                corpus: id.clone(),
+                sid: s.sid.to_string(),
+                word,
+                quad,
+                intr: s.intrinsic.map(|f| (f.dominance, f.minority, f.opportunities)),
+                pos: s.positional.map(|f| (f.dominance, f.minority, f.opportunities)),
+            });
         }
     }
 
     CasingCorpus {
         id,
         verses: map.len(),
-        word_types: prof.len(),
-        word_tokens: obs.len() as u64,
-        approx_bytes,
-        habit,
-        pooled_naive_dom,
-        pooled_lex_dom,
-        cap_types,
-        cap_tokens,
-        shadow_types,
-        shadow_tokens,
-        abs_grid,
-        abs_grid_intr,
-        abs_grid_pos,
-        abs_grid_both,
-        rate_grid,
-        anchors,
+        sites: n_sites,
+        grid_intr,
+        grid_pos,
+        grid_both,
         hist,
-        ref_surfaced,
-        ref_intrinsic,
-        ref_positional,
-        ref_both,
-        soft_ref_surfaced,
-        hard_soft_diff,
-        current_surfaced,
-        fate_survive,
-        fate_die_rarity,
-        fate_die_habit,
-        fate_both,
-        fate_die_ambiguous,
+        ref_intrinsic: ref_i,
+        ref_positional: ref_p,
+        ref_both: ref_b,
+        anchors,
         samples,
     }
 }
 
-/// ~24 chars of lead-in plus the flagged word neighbourhood, whitespace
-/// flattened — the review context for a casing sample.
+/// ~24 chars of lead-in plus the flagged word, whitespace flattened.
 fn casing_ctx(text: &str, start: usize, end: usize) -> String {
-    let ctx_start = text[..start]
-        .char_indices()
-        .rev()
-        .nth(23)
-        .map(|(i, _)| i)
-        .unwrap_or(0);
-    let ctx_end = text[end..]
-        .char_indices()
-        .nth(24)
-        .map(|(i, _)| end + i)
-        .unwrap_or(text.len());
+    let ctx_start = text[..start].char_indices().rev().nth(23).map(|(i, _)| i).unwrap_or(0);
+    let ctx_end = text[end..].char_indices().nth(24).map(|(i, _)| end + i).unwrap_or(text.len());
     text[ctx_start..ctx_end].replace(['\t', '\n'], " ")
 }
 
-fn glyph_str(g: Option<char>) -> String {
-    match g {
-        None => "^book/∅".to_string(),
-        Some(c) => format!("{c:?}"),
-    }
-}
-
-/// Detailed single-corpus casing report.
-fn casing_single_report(c: &CasingCorpus) {
-    println!("=== casing spike: {} ({} verses) ===", c.id, c.verses);
-    println!(
-        "word types {}  tokens {}  approx table bytes {} ({:.1} B/type)",
-        c.word_types,
-        c.word_tokens,
-        c.approx_bytes,
-        c.approx_bytes as f64 / c.word_types.max(1) as f64
-    );
-
-    println!("\nnaive vs lexicon-restricted positional habit (proper-noun confound):");
-    println!(
-        "  pooled: naive_dom={:.4}  lex_dom={:.4}  delta={:+.4}",
-        c.pooled_naive_dom,
-        c.pooled_lex_dom,
-        c.pooled_naive_dom - c.pooled_lex_dom
-    );
-    println!(
-        "  {:<10} {:>8} {:>8} {:>8} {:>9} {:>9} {:>8}",
-        "glyph", "events", "naive%", "n_dom", "lex_events", "lex_dom", "delta"
-    );
-    for h in c.habit.iter().take(12) {
-        println!(
-            "  {:<10} {:>8} {:>7.1}% {:>8.4} {:>9} {:>9.4} {:>+8.4}",
-            glyph_str(h.glyph),
-            h.naive_total,
-            100.0 * h.naive_up as f64 / h.naive_total.max(1) as f64,
-            h.naive_dom(),
-            h.lex_total,
-            h.lex_dom(),
-            h.naive_dom() - h.lex_dom(),
-        );
-    }
-
-    println!("\ncensoring shadow (cap words whose upper evidence is ≥90% forced):");
-    println!(
-        "  cap types {}  shadow types {} ({:.1}%)  |  cap upper-tokens {}  shadow tokens {} ({:.1}%)",
-        c.cap_types,
-        c.shadow_types,
-        100.0 * c.shadow_types as f64 / c.cap_types.max(1) as f64,
-        c.cap_tokens,
-        c.shadow_tokens,
-        100.0 * c.shadow_tokens as f64 / c.cap_tokens.max(1) as f64,
-    );
-
-    println!(
-        "\nreference setting (abs k=32, floor 0.5, hard): surfaced {} (intrinsic {}, positional {}, both {})",
-        c.ref_surfaced, c.ref_intrinsic, c.ref_positional, c.ref_both
-    );
-    println!(
-        "  soft-censoring surfaced {}  |  hard-vs-soft differing verdicts {}",
-        c.soft_ref_surfaced, c.hard_soft_diff
-    );
-
-    println!("\ncurrent rule (floor 0.98) surfaced {} sites — fate under new positional score:", c.current_surfaced);
-    println!(
-        "  survive {}  die(recurrence) {}  die(habit=proper-noun confound) {}  both-quadrant {}  die(word unclassifiable) {}",
-        c.fate_survive, c.fate_die_rarity, c.fate_die_habit, c.fate_both, c.fate_die_ambiguous
-    );
-
-    print_casing_sweep(c);
-    print_casing_hist(&c.hist);
-
-    println!("\ntop surfaced samples (ref knee):");
-    let mut s: Vec<&CasingSample> = c.samples.iter().collect();
-    s.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
-    print_casing_samples(s.iter().take(20).copied());
-    println!("\nnear-floor surfaced samples:");
-    print_casing_samples(s.iter().rev().take(10).copied());
-}
-
-fn print_casing_samples<'a>(it: impl Iterator<Item = &'a CasingSample>) {
-    for s in it {
-        println!(
-            "  {:<10} {:<10} [{}] g={} dom={:.3} min={} opp={} rar={:.3} score={:.3}{} | {}",
-            s.sid,
-            s.quad,
-            s.word,
-            glyph_str(s.glyph),
-            s.dom,
-            s.minority,
-            s.opps,
-            s.rarity,
-            s.score,
-            if s.quad == "both" {
-                format!(" other={:.3}", s.other)
-            } else {
-                String::new()
-            },
-            s.ctx,
-        );
-    }
-}
-
-fn print_casing_sweep(c: &CasingCorpus) {
-    println!("\nsurfaced-site volume — absolute knee (rows = k), floors across:");
-    print!("  {:>5}", "k\\fl");
-    for fl in FLOORS {
-        print!("  {fl:>6.2}");
+fn print_casing_grid(name: &str, grid: &[[u64; PACKET_FLOORS.len()]]) {
+    println!("  [{name}] rows = floor, cols = k");
+    print!("    {:>6}", "fl\\k");
+    for k in PACKET_KS {
+        print!("  {:>8}", format!("k={k:.0}"));
     }
     println!();
-    for (ki, &k) in ABS_KS.iter().enumerate() {
-        print!("  {k:>5.0}");
-        for fi in 0..FLOORS.len() {
-            print!("  {:>6}", c.abs_grid[ki][fi]);
-        }
-        println!();
-    }
-    println!("surfaced-site volume — rate knee (rows = per-1k minority cutoff):");
-    print!("  {:>5}", "r\\fl");
-    for fl in FLOORS {
-        print!("  {fl:>6.2}");
-    }
-    println!();
-    for (ki, &k) in RATE_KS.iter().enumerate() {
-        print!("  {k:>5.1}");
-        for fi in 0..FLOORS.len() {
-            print!("  {:>6}", c.rate_grid[ki][fi]);
+    for (fi, &fl) in PACKET_FLOORS.iter().enumerate() {
+        print!("    {fl:>6.2}");
+        for row in grid {
+            print!("  {:>8}", row[fi]);
         }
         println!();
     }
@@ -1973,7 +1391,7 @@ fn print_casing_sweep(c: &CasingCorpus) {
 
 fn print_casing_hist(hist: &[u64; 40]) {
     let total: u64 = hist.iter().sum();
-    println!("\nscore histogram at ref knee ({} sites, 40 buckets):", total);
+    println!("\nscore histogram at ref knee (k=32) — {total} sites, 40 buckets:");
     for (i, &n) in hist.iter().enumerate() {
         if n == 0 {
             continue;
@@ -1982,6 +1400,48 @@ fn print_casing_hist(hist: &[u64; 40]) {
         let bar = "#".repeat((n as f64).sqrt() as usize);
         println!("  [{lo:.3},{:.3}) {n:>7} {bar}", lo + 0.025);
     }
+}
+
+fn print_casing_samples(samples: &[&CasingSample]) {
+    for s in samples {
+        println!(
+            "    {:<11} {:<10} [{}] g={} dom={:.3} min={} opp={} score={:.3} | {}",
+            s.sid,
+            s.quad,
+            s.word,
+            s.glyph.map(|c| format!("{c:?}")).unwrap_or_else(|| "^".to_string()),
+            s.dom,
+            s.minority,
+            s.opps,
+            s.score,
+            s.ctx,
+        );
+    }
+}
+
+/// Detailed single-corpus casing report.
+fn casing_single_report(c: &CasingCorpus) {
+    println!("=== casing (ADR 0051): {} ({} verses) ===", c.id, c.verses);
+    println!("classifiable lowercase sites: {}", c.sites);
+    println!(
+        "\nreference setting (k=32, floor 0.95): surfaced {} (intrinsic {}, positional {}, both {})",
+        c.ref_intrinsic + c.ref_positional + c.ref_both,
+        c.ref_intrinsic,
+        c.ref_positional,
+        c.ref_both
+    );
+    println!("\nsurfaced-site volume sweep:");
+    print_casing_grid("intrinsic", &c.grid_intr);
+    print_casing_grid("positional", &c.grid_pos);
+    print_casing_grid("both-quadrant", &c.grid_both);
+    print_casing_hist(&c.hist);
+
+    let mut s: Vec<&CasingSample> = c.samples.iter().collect();
+    s.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
+    println!("\ntop surfaced samples (ref knee):");
+    print_casing_samples(&s.iter().take(20).copied().collect::<Vec<_>>());
+    println!("\nnear-floor surfaced samples:");
+    print_casing_samples(&s.iter().rev().take(10).copied().collect::<Vec<_>>());
 }
 
 /// Fleet aggregate over every vref corpus in `dir`.
@@ -2001,6 +1461,7 @@ fn casing_fleet(dir: &Path) {
     eprintln!("casing fleet: {total} corpora in {}", dir.display());
 
     let done = AtomicUsize::new(0);
+    let t0 = std::time::Instant::now();
     let corpora: Vec<CasingCorpus> = files
         .par_iter()
         .map(|path| {
@@ -2012,229 +1473,46 @@ fn casing_fleet(dir: &Path) {
                 analyze_casing(id, &map)
             };
             let n = done.fetch_add(1, Ordering::Relaxed) + 1;
-            if n % 100 == 0 {
+            if n.is_multiple_of(100) {
                 eprintln!("  …{n}/{total}");
             }
             c
         })
         .collect();
+    eprintln!("casing fleet evaluate: {:?}", t0.elapsed());
 
     // Fleet aggregates.
-    let mut abs_grid = vec![[0u64; FLOORS.len()]; ABS_KS.len()];
-    let mut rate_grid = vec![[0u64; FLOORS.len()]; RATE_KS.len()];
+    let nk = PACKET_KS.len();
+    let (mut ref_i, mut ref_p, mut ref_b) = (0u64, 0u64, 0u64);
     let mut hist = [0u64; 40];
-    let (mut ref_surf, mut ref_i, mut ref_p, mut ref_b) = (0u64, 0u64, 0u64, 0u64);
-    let (mut soft_surf, mut hs_diff) = (0u64, 0u64);
-    let (mut cur_surf, mut f_surv, mut f_rar, mut f_hab, mut f_both, mut f_amb) =
-        (0u64, 0u64, 0u64, 0u64, 0u64, 0u64);
     let mut corpora_with_ref = 0u32;
-    let mut deltas: Vec<f64> = Vec::new();
-    let mut types_v: Vec<usize> = Vec::new();
-    let mut bytes_v: Vec<usize> = Vec::new();
-    let mut shadow_type_frac: Vec<f64> = Vec::new();
-    let mut shadow_tok_frac: Vec<f64> = Vec::new();
     for c in &corpora {
-        for ki in 0..ABS_KS.len() {
-            for fi in 0..FLOORS.len() {
-                abs_grid[ki][fi] += c.abs_grid[ki][fi];
-            }
-        }
-        for ki in 0..RATE_KS.len() {
-            for fi in 0..FLOORS.len() {
-                rate_grid[ki][fi] += c.rate_grid[ki][fi];
-            }
-        }
-        for b in 0..40 {
-            hist[b] += c.hist[b];
-        }
-        ref_surf += c.ref_surfaced;
         ref_i += c.ref_intrinsic;
         ref_p += c.ref_positional;
         ref_b += c.ref_both;
-        soft_surf += c.soft_ref_surfaced;
-        hs_diff += c.hard_soft_diff;
-        cur_surf += c.current_surfaced;
-        f_surv += c.fate_survive;
-        f_rar += c.fate_die_rarity;
-        f_hab += c.fate_die_habit;
-        f_both += c.fate_both;
-        f_amb += c.fate_die_ambiguous;
-        if c.ref_surfaced > 0 {
+        for (h, ch) in hist.iter_mut().zip(&c.hist) {
+            *h += ch;
+        }
+        if c.ref_intrinsic + c.ref_positional + c.ref_both > 0 {
             corpora_with_ref += 1;
         }
-        if c.cap_types > 0 && c.pooled_naive_dom > 0.0 {
-            deltas.push(c.pooled_naive_dom - c.pooled_lex_dom);
-        }
-        if c.word_types > 0 {
-            types_v.push(c.word_types);
-            bytes_v.push(c.approx_bytes);
-        }
-        if c.cap_types > 0 {
-            shadow_type_frac.push(c.shadow_types as f64 / c.cap_types as f64);
-            if c.cap_tokens > 0 {
-                shadow_tok_frac.push(c.shadow_tokens as f64 / c.cap_tokens as f64);
-            }
-        }
     }
 
-    let pct = |v: &mut Vec<f64>, q: f64| -> f64 {
-        if v.is_empty() {
-            return 0.0;
-        }
-        v.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        v[((v.len() - 1) as f64 * q) as usize]
-    };
-    let pctu = |v: &mut Vec<usize>, q: f64| -> usize {
-        if v.is_empty() {
-            return 0;
-        }
-        v.sort_unstable();
-        v[((v.len() - 1) as f64 * q) as usize]
-    };
-
-    println!("=== CASING TWO-FACTOR SPIKE — fleet aggregate ({} corpora) ===", corpora.len());
-
-    println!("\n-- reference setting (absolute knee k=32, floor 0.5, hard censoring) --");
+    println!("=== CASING TWO-FACTOR (ADR 0051) — fleet aggregate ({} corpora) ===", corpora.len());
     println!(
-        "  surfaced sites: {ref_surf}  (intrinsic {ref_i}, positional {ref_p}, both {ref_b})  across {corpora_with_ref} corpora"
-    );
-    println!("  soft-censoring surfaced: {soft_surf}  |  hard-vs-soft differing verdicts: {hs_diff}");
-
-    println!("\n-- current rule (floor 0.98) surfaced set and its fate --");
-    println!("  current-rule surfaced sites (fleet): {cur_surf}");
-    println!(
-        "  fate: survive {f_surv}  die(recurrence) {f_rar}  die(habit / proper-noun confound) {f_hab}  both-quadrant {f_both}  die(word unclassifiable) {f_amb}"
+        "\n-- reference setting (k=32, floor 0.95) --\n  surfaced: {}  (intrinsic {ref_i}, positional {ref_p}, both {ref_b})  across {corpora_with_ref} corpora",
+        ref_i + ref_p + ref_b
     );
 
-    println!("\n-- naive vs lexicon-restricted habit delta (proper-noun confound), per-corpus pooled --");
-    println!(
-        "  corpora with a habit: {}  |  delta p10 {:.4}  p50 {:.4}  p90 {:.4}  max {:.4}",
-        deltas.len(),
-        pct(&mut deltas, 0.10),
-        pct(&mut deltas, 0.50),
-        pct(&mut deltas, 0.90),
-        pct(&mut deltas, 1.0),
-    );
-
-    println!("\n-- censoring shadow (fraction of cap words whose upper evidence is ≥90% forced) --");
-    println!(
-        "  TYPES frac  p50 {:.3}  p90 {:.3}  max {:.3}",
-        pct(&mut shadow_type_frac, 0.5),
-        pct(&mut shadow_type_frac, 0.9),
-        pct(&mut shadow_type_frac, 1.0),
-    );
-    println!(
-        "  TOKENS frac p50 {:.3}  p90 {:.3}  max {:.3}",
-        pct(&mut shadow_tok_frac, 0.5),
-        pct(&mut shadow_tok_frac, 0.9),
-        pct(&mut shadow_tok_frac, 1.0),
-    );
-
-    println!("\n-- per-corpus word-table cardinality (future word-level RuleStats sizing) --");
-    println!(
-        "  word types   p50 {}  p90 {}  max {}",
-        pctu(&mut types_v, 0.5),
-        pctu(&mut types_v, 0.9),
-        pctu(&mut types_v, 1.0),
-    );
-    println!(
-        "  approx bytes p50 {}  p90 {}  max {}",
-        pctu(&mut bytes_v, 0.5),
-        pctu(&mut bytes_v, 0.9),
-        pctu(&mut bytes_v, 1.0),
-    );
-
-    println!("\n-- surfaced-site volume by knee shape / k / floor (fleet) --");
-    println!("absolute knee (rows = k):");
-    print!("  {:>6}", "k\\fl");
-    for fl in FLOORS {
-        print!("  {fl:>8.2}");
-    }
-    println!();
-    for (ki, &k) in ABS_KS.iter().enumerate() {
-        print!("  {k:>6.0}");
-        for fi in 0..FLOORS.len() {
-            print!("  {:>8}", abs_grid[ki][fi]);
-        }
-        println!();
-    }
-    println!("rate knee (rows = per-1k minority cutoff):");
-    print!("  {:>6}", "r\\fl");
-    for fl in FLOORS {
-        print!("  {fl:>8.2}");
-    }
-    println!();
-    for (ki, &k) in RATE_KS.iter().enumerate() {
-        print!("  {k:>6.1}");
-        for fi in 0..FLOORS.len() {
-            print!("  {:>8}", rate_grid[ki][fi]);
-        }
-        println!();
-    }
-
-    print_casing_hist(&hist);
-
-    // Noisiest corpora at the reference setting.
-    let mut ranked: Vec<&CasingCorpus> = corpora.iter().filter(|c| c.ref_surfaced > 0).collect();
-    ranked.sort_by_key(|c| std::cmp::Reverse(c.ref_surfaced));
-    println!("\n-- top-15 noisiest corpora (ref setting surfaced) --");
-    for c in ranked.iter().take(15) {
-        println!(
-            "  {:<24} surfaced {:>6}  (i {}, p {}, b {})  delta {:+.3}",
-            c.id,
-            c.ref_surfaced,
-            c.ref_intrinsic,
-            c.ref_positional,
-            c.ref_both,
-            c.pooled_naive_dom - c.pooled_lex_dom
-        );
-    }
-
-    // A spread of surfaced samples from major-language corpora, for review.
-    const MAJOR: &[&str] = &[
-        "eng-web", "eng-kjv", "engwebster", "WA-en-ulb", "spaRV1909", "WA-es-419-ulb",
-        "fraLSG", "WA-fr-ulb", "porblt", "WA-pt-br-ulb", "ita1885", "ron1924", "deu1912",
-        "swhulb", "WA-sw-ulb", "ind", "nld", "vie1934", "tglulb",
-    ];
-    println!("\n-- surfaced samples from major-language corpora (ref knee) --");
-    for c in &corpora {
-        if !MAJOR.contains(&c.id.as_str()) || c.samples.is_empty() {
-            continue;
-        }
-        let mut s: Vec<&CasingSample> = c.samples.iter().collect();
-        s.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
-        println!("  [{}] surfaced {} (i {}, p {}, b {}):", c.id, c.ref_surfaced, c.ref_intrinsic, c.ref_positional, c.ref_both);
-        for sm in s.iter().take(3) {
-            println!(
-                "    {:<10} {:<10} [{}] g={} dom={:.3} min={} opp={} rar={:.3} score={:.3} | {}",
-                sm.sid, sm.quad, sm.word, glyph_str(sm.glyph),
-                sm.dom, sm.minority, sm.opps, sm.rarity, sm.score, sm.ctx,
-            );
-        }
-    }
-
-    // ═══════════════════════════════════════════════════════════════════════
-    // FLOOR-DECISION PACKET — the settled design (absolute knee, soft
-    // censoring, all marks kept, default-off) leaves per-channel floors and k
-    // open. These sections size that choice: per-channel volume, tracked
-    // anchors, near-floor review samples, and the German/Danish noun storm.
-    // ═══════════════════════════════════════════════════════════════════════
-    let ki_of = |k: f64| ABS_KS.iter().position(|&x| (x - k).abs() < 1e-9).unwrap();
-    let fi_of = |f: f64| FLOORS.iter().position(|&x| (x - f).abs() < 1e-9).unwrap();
-
-    println!("\n════════ FLOOR-DECISION PACKET (post-hyphen-fix) ════════");
-
-    // Packet 1 — per-channel surfaced volume, affected corpora, top-5 share.
+    // Packet 1 — per-channel volume, affected corpora, top-5 corpus share.
+    // `chan`: 0 = intrinsic, 1 = positional, 2 = both.
     let channel_cell = |chan: u8, ki: usize, fi: usize| -> (u64, u32, f64) {
         let mut counts: Vec<u64> = corpora
             .iter()
-            .map(|c| {
-                let g = match chan {
-                    0 => &c.abs_grid_intr,
-                    1 => &c.abs_grid_pos,
-                    _ => &c.abs_grid_both,
-                };
-                g[ki][fi]
+            .map(|c| match chan {
+                0 => c.grid_intr[ki][fi],
+                1 => c.grid_pos[ki][fi],
+                _ => c.grid_both[ki][fi],
             })
             .filter(|&n| n > 0)
             .collect();
@@ -2244,99 +1522,119 @@ fn casing_fleet(dir: &Path) {
         let top5: u64 = counts.iter().take(5).sum();
         (total, affected, if total > 0 { top5 as f64 / total as f64 } else { 0.0 })
     };
-    println!(
-        "\n-- packet 1: per-channel surfaced volume | rows = floor, cols = k | total (affected corpora; top-5 share) --"
-    );
+    println!("\n-- packet 1: per-channel surfaced volume | total (affected corpora; top-5 share) --");
     for (chan, name) in [(0u8, "intrinsic"), (1, "positional"), (2, "both-quadrant")] {
-        println!("  [{name}]");
+        println!("  [{name}]  rows = floor, cols = k");
         print!("    {:>6}", "fl\\k");
         for k in PACKET_KS {
             print!("  {:>22}", format!("k={k:.0}"));
         }
         println!();
-        for &fl in &PACKET_FLOORS {
+        for (fi, &fl) in PACKET_FLOORS.iter().enumerate() {
             print!("    {fl:>6.2}");
-            for &k in &PACKET_KS {
-                let (t, a, s) = channel_cell(chan, ki_of(k), fi_of(fl));
-                print!("  {:>22}", format!("{t} ({a}; {:.0}%)", s * 100.0));
+            for ki in 0..nk {
+                let (t, a, sh) = channel_cell(chan, ki, fi);
+                print!("  {:>22}", format!("{t} ({a}; {:.0}%)", sh * 100.0));
             }
             println!();
         }
     }
 
-    // Packet 2 — named anchor fates.
+    // Packet 2 — anchor fates.
     let all_anchors: Vec<&AnchorHit> = corpora.iter().flat_map(|c| c.anchors.iter()).collect();
-    println!("\n-- packet 2: anchor fates (post-fix) — channel factors, score@k, alive floors at k=32 --");
+    println!("\n-- packet 2: anchor fates — factors, score@k, alive floors at k=32 --");
     for &(ac, asid, aw) in ANCHORS {
-        match all_anchors
-            .iter()
-            .find(|h| h.corpus == ac && h.sid == asid && h.word == aw)
-        {
+        match all_anchors.iter().find(|h| h.corpus == ac && h.sid == asid && h.word == aw) {
             Some(h) => {
                 let (s8, s16, s32) = (h.score(8.0), h.score(16.0), h.score(32.0));
-                let alive: Vec<String> = PACKET_FLOORS
-                    .iter()
-                    .filter(|&&fl| s32 >= fl)
-                    .map(|fl| format!("{fl:.2}"))
-                    .collect();
+                let alive: Vec<String> = PACKET_FLOORS.iter().filter(|&&fl| s32 >= fl).map(|fl| format!("{fl:.2}")).collect();
+                let ifac = h.intr.map(|(d, m, o)| format!("i(d{d:.3} m{m} o{o})")).unwrap_or_default();
+                let pfac = h.pos.map(|(d, m, o)| format!("p(d{d:.3} m{m} o{o})")).unwrap_or_default();
                 println!(
-                    "  {:<11} {:<9} {:<11} {:<12} i(d{:.3} m{} o{}) p(d{:.3} m{} o{})  s@8={:.3} @16={:.3} @32={:.3}  alive≥[{}]",
-                    ac, asid, aw, h.quad,
-                    h.intr_dom, h.intr_min, h.intr_opp,
-                    h.pos_dom, h.pos_min, h.pos_opp,
-                    s8, s16, s32,
+                    "  {ac:<11} {asid:<9} {aw:<11} {:<11} {ifac} {pfac}  s@8={s8:.3} @16={s16:.3} @32={s32:.3}  alive≥[{}]",
+                    h.quad,
                     if alive.is_empty() { "dead@0.80+".to_string() } else { alive.join(",") },
                 );
             }
-            None => println!(
-                "  {ac:<11} {asid:<9} {aw:<11} — not captured (not a lowercase anomaly candidate post-fix)"
-            ),
+            None => println!("  {ac:<11} {asid:<9} {aw:<11} — not captured (not a lowercase anomaly candidate)"),
         }
     }
 
-    // Packet 3 — near-floor review samples from major corpora (0.90 / 0.95 bands).
-    println!("\n-- packet 3: near-floor surfaced samples from major corpora --");
-    for (lo, hi, label) in [(0.88_f64, 0.915_f64, "0.90 band"), (0.94, 0.965, "0.95 band")] {
-        let mut band: Vec<(&str, &CasingSample)> = Vec::new();
-        for c in &corpora {
-            if !MAJOR.contains(&c.id.as_str()) {
-                continue;
-            }
-            for s in &c.samples {
-                if s.score >= lo && s.score <= hi {
-                    band.push((c.id.as_str(), s));
-                }
-            }
-        }
-        band.sort_by(|a, b| b.1.score.partial_cmp(&a.1.score).unwrap());
-        band.truncate(12);
-        println!("  [{label}]  ({} shown)", band.len());
-        for (cid, s) in &band {
-            println!(
-                "    {:<12} {:<9} {:<11} [{}] g={} dom={:.3} min={} opp={} score={:.3} | {}",
-                cid, s.sid, s.quad, s.word, glyph_str(s.glyph),
-                s.dom, s.minority, s.opps, s.score, s.ctx,
-            );
-        }
+    print_casing_hist(&hist);
+
+    // Noisiest corpora at the reference setting.
+    let mut ranked: Vec<&CasingCorpus> = corpora
+        .iter()
+        .filter(|c| c.ref_intrinsic + c.ref_positional + c.ref_both > 0)
+        .collect();
+    ranked.sort_by_key(|c| std::cmp::Reverse(c.ref_intrinsic + c.ref_positional + c.ref_both));
+    println!("\n-- top-15 noisiest corpora (ref setting) --");
+    for c in ranked.iter().take(15) {
+        println!(
+            "  {:<24} surfaced {:>6}  (i {}, p {}, b {})",
+            c.id,
+            c.ref_intrinsic + c.ref_positional + c.ref_both,
+            c.ref_intrinsic,
+            c.ref_positional,
+            c.ref_both
+        );
     }
 
-    // Packet 4 — German/Danish noun storm: surfaced count by floor at k=32.
-    println!("\n-- packet 4: German/Danish noun-storm — surfaced count by floor (k=32) --");
-    print!("  {:<10}", "corpus");
-    print!("  {:>7}", "0.50");
-    for &fl in &PACKET_FLOORS {
-        print!("  {:>7}", format!("{fl:.2}"));
+    // Samples from major-language corpora.
+    const MAJOR: &[&str] = &[
+        "eng-web", "eng-kjv", "engwebster", "WA-en-ulb", "spaRV1909", "WA-es-419-ulb",
+        "fraLSG", "WA-fr-ulb", "porblt", "ita1885", "ron1924", "deu1912", "swhulb",
+        "WA-sw-ulb", "ind", "nld", "vie1934", "tglulb",
+    ];
+    println!("\n-- surfaced samples from major-language corpora (ref knee) --");
+    for c in &corpora {
+        if !MAJOR.contains(&c.id.as_str()) || c.samples.is_empty() {
+            continue;
+        }
+        let mut s: Vec<&CasingSample> = c.samples.iter().collect();
+        s.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
+        println!("  [{}] surfaced {} (i {}, p {}, b {}):", c.id, c.ref_intrinsic + c.ref_positional + c.ref_both, c.ref_intrinsic, c.ref_positional, c.ref_both);
+        print_casing_samples(&s.iter().take(3).copied().collect::<Vec<_>>());
     }
-    println!();
-    for id in ["dan1931", "deutkw", "deu1912"] {
-        if let Some(c) = corpora.iter().find(|c| c.id == id) {
-            let ki = ki_of(32.0);
-            print!("  {id:<10}");
-            print!("  {:>7}", c.abs_grid[ki][fi_of(0.5)]);
-            for &fl in &PACKET_FLOORS {
-                print!("  {:>7}", c.abs_grid[ki][fi_of(fl)]);
-            }
-            println!();
+}
+
+/// Casing stats-size probe: reduce every corpus with the real
+/// `SentenceInitialLowercase` rule and report the serialized `CasingStats`
+/// JSON byte size (the wire size the shell round-trips) — p50/p90/max plus a
+/// few named corpora.
+fn casing_size(dir: &Path) {
+    use rayon::prelude::*;
+    use ssc_core::config::CasingConfig;
+    use ssc_core::signals::casing::SentenceInitialLowercase;
+
+    let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
+        .unwrap_or_else(|e| panic!("read {}: {e}", dir.display()))
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "txt"))
+        .collect();
+    files.sort();
+    let rule = SentenceInitialLowercase { cfg: CasingConfig::default() };
+    let mut rows: Vec<(String, usize)> = files
+        .par_iter()
+        .map(|path| {
+            let id = path.file_stem().unwrap().to_string_lossy().to_string();
+            let map = load_corpus(path);
+            let books = ssc_core::verse::by_book(&map);
+            let (stats, _) = rule.reduce(&books, None, None);
+            let bytes = serde_json::to_string(&stats).map(|s| s.len()).unwrap_or(0);
+            (id, bytes)
+        })
+        .collect();
+    rows.sort_by_key(|r| r.1);
+    let n = rows.len();
+    let pct = |q: f64| rows[((n - 1) as f64 * q) as usize].1;
+    println!("casing CasingStats JSON size over {n} corpora:");
+    println!("  p50 {} B  p90 {} B  max {} B", pct(0.5), pct(0.9), pct(1.0));
+    println!("  largest: {} ({} B)", rows[n - 1].0, rows[n - 1].1);
+    for id in ["eng-kjv", "deu1912", "swhulb", "vie1934"] {
+        if let Some((_, b)) = rows.iter().find(|r| r.0 == id) {
+            println!("  {id}: {b} B");
         }
     }
 }

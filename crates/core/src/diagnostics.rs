@@ -79,6 +79,7 @@ define_rule_ids! {
     BracketBalance           => "punct.bracket-balance",
     PunctuationSpacingAnomaly => "punct.spacing-anomaly",
     SentenceInitialLowercase => "case.sentence-initial-lowercase",
+    InconsistentWordCasing   => "case.inconsistent-word-casing",
 }
 
 impl std::fmt::Display for RuleId {
@@ -198,14 +199,25 @@ pub enum FindingArgs {
     /// majority is `max(spaced, attached)` and `total = spaced + attached`.
     #[cfg_attr(feature = "serde", serde(rename = "spacing-convention"))]
     SpacingConvention { mark: char, spaced: u32, attached: u32 },
-    /// `case.sentence-initial-lowercase`: the sentence-initial glyph's
-    /// corpus-wide uppercase-vs-total counts, so the consumer can render
-    /// "sentence-initial `к` is uppercase 98% of the time (n = 520)" — the
-    /// descriptive rate behind the Wilson-bound `score` (ADR 0048). The
-    /// flagged token is the lowercase minority; `upper / total` is the
-    /// majority uppercase share.
+    /// `case.sentence-initial-lowercase`: the forced-position habit's
+    /// corpus-wide uppercase-vs-total counts among words the lexicon calls
+    /// intrinsically lowercase, so the consumer can render "after `.` this
+    /// translation capitalizes in 512 of 520 places" — the descriptive rate
+    /// behind the Wilson-bound `score` (ADR 0048, 0051). The flagged token is
+    /// the lowercase minority; `upper / total` is the majority uppercase
+    /// share. `glyph` is the terminal that forced the position, or `None` for
+    /// the book-initial word (which has no terminal glyph).
     #[cfg_attr(feature = "serde", serde(rename = "casing-convention"))]
-    CasingConvention { glyph: char, upper: u32, total: u32 },
+    CasingConvention { glyph: Option<char>, upper: u32, total: u32 },
+    /// `case.inconsistent-word-casing`: the flagged word's corpus-wide
+    /// capitalized-vs-total counts, so the consumer can render "this
+    /// translation writes ‘jesus’ capitalized in 1315 of 1316 places; here it
+    /// is lowercase" — the descriptive rate behind the Wilson-bound `score`
+    /// (ADR 0048, 0051). The flagged occurrence is the lowercase minority;
+    /// `upper / total` is the majority capitalized share. `word` is the
+    /// case-folded form (the lexicon key).
+    #[cfg_attr(feature = "serde", serde(rename = "word-casing"))]
+    WordCasing { word: String, upper: u32, total: u32 },
     /// `lex.punct-only-token`: how rare this stranded-punctuation pattern is —
     /// `count` occurrences across `units` lexical units (ADR 0048). The plain
     /// rarity behind the score; the flagged mark is in the finding's `range`.

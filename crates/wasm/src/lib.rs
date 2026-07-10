@@ -35,15 +35,19 @@ pub struct ProportionalityOverrides {
     pub min_verses: Option<usize>,
 }
 
-/// Partial overrides for `case.sentence-initial-lowercase`'s knobs. Omitted
-/// fields keep core's calibrated defaults (`emit_score_min` 0.98,
-/// `confidence_z` 1.96).
+/// Partial overrides for the casing pair (`case.sentence-initial-lowercase`
+/// and `case.inconsistent-word-casing`, which share one config). Omitted
+/// fields keep core's calibrated defaults (ADR 0051): `emit_score_min` 0.95,
+/// `recurrence_k` 32, `confidence_z` 1.96.
 #[derive(Deserialize, Tsify, Default)]
 #[tsify(from_wasm_abi)]
 pub struct CasingOverrides {
     #[serde(default)]
     #[tsify(optional)]
     pub emit_score_min: Option<f32>,
+    #[serde(default)]
+    #[tsify(optional)]
+    pub recurrence_k: Option<f32>,
     #[serde(default)]
     #[tsify(optional)]
     pub confidence_z: Option<f32>,
@@ -232,6 +236,9 @@ fn build_config(config: Option<SousConfig>) -> Config {
         if let Some(cas) = c.casing {
             if let Some(v) = cas.emit_score_min {
                 cfg.casing.emit_score_min = v;
+            }
+            if let Some(v) = cas.recurrence_k {
+                cfg.casing.recurrence_k = v;
             }
             if let Some(v) = cas.confidence_z {
                 cfg.casing.confidence_z = v;
@@ -485,7 +492,11 @@ mod tests {
             // DuplicateWord ships default-off; enabling it exercises the rules map.
             rules: Some([(RuleId::DuplicateWord, true)].into_iter().collect()),
             proportionality: Some(ProportionalityOverrides { z_threshold: Some(2.5), min_verses: Some(10) }),
-            casing: Some(CasingOverrides { emit_score_min: Some(0.8), confidence_z: Some(1.5) }),
+            casing: Some(CasingOverrides {
+                emit_score_min: Some(0.8),
+                recurrence_k: Some(24.0),
+                confidence_z: Some(1.5),
+            }),
             punctuation_adjacency: Some(PunctuationAdjacencyOverrides {
                 convention_rate: Some(0.4),
                 confidence_z: Some(2.1),
@@ -522,6 +533,7 @@ mod tests {
         assert_eq!(cfg.proportionality.z_threshold, 2.5);
         assert_eq!(cfg.proportionality.min_verses, 10);
         assert_eq!(cfg.casing.emit_score_min, 0.8);
+        assert_eq!(cfg.casing.recurrence_k, 24.0);
         assert_eq!(cfg.casing.confidence_z, 1.5);
         assert_eq!(cfg.punctuation_adjacency.convention_rate, 0.4);
         assert_eq!(cfg.punctuation_adjacency.confidence_z, 2.1);

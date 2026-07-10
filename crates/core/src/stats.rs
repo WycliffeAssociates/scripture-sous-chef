@@ -23,11 +23,12 @@ use crate::signals::script_mixing::MixedScriptStats;
 /// variant per stateful rule. The orchestration treats it opaquely; each
 /// rule reduces into / judges from its own variant.
 ///
-/// What each variant caches is deliberately small: casing's lowercase sites and
-/// proportionality's per-verse ratios are sparse; punctuation adjacency and
-/// repeated-character-run cache only **aggregate counts** (never per-occurrence
-/// sites — those re-derive from the text at `judge`), so convention-heavy
-/// corpora stay small.
+/// What each variant caches varies: proportionality's per-verse ratios are
+/// sparse; punctuation adjacency and repeated-character-run cache only
+/// **aggregate counts** (never per-occurrence sites — those re-derive from the
+/// text at `judge`). Casing (ADR 0051) caches a per-book **word case table** —
+/// larger, but raw and mergeable, with the lexicon and per-glyph habit derived
+/// at `judge`; both casing rules share it and it round-trips like the others.
 /// Zero-width space carries no variant here: it is judged per-verse and
 /// deterministically by `uni.redundant-zero-width-space` (ADR 0027), which needs
 /// no corpus statistics.
