@@ -24,10 +24,7 @@ export interface Finding {
 }
 
 /**
- * Cached casing statistics, keyed by book so an edit supersedes only its book
- * (`BookId` crosses the wire as its `\"GEN\"` string). Corpus-wide aggregates,
- * the lexicon classification, and the per-glyph habit are all derived at
- * `judge` from the merged table — the per-book state is raw tallies only.
+ * Cached casing statistics, keyed by book so an edit supersedes only its book.
  */
 export interface CasingStats {
     per_book: Record<string, BookCasing>;
@@ -94,9 +91,7 @@ export interface Analysis {
 }
 
 /**
- * Forced-position first-letter tallies after one key (a terminal glyph, or —
- * stored separately — book-initial): how often the word appeared uppercase
- * vs lowercase there. Raw and mergeable.
+ * Forced-position first-letter tallies after one key. Raw and mergeable.
  */
 export interface ForcedTally {
     upper?: number;
@@ -158,9 +153,8 @@ export interface BookPunctOnlyToken {
 export interface BookCasing {
     words: Record<string, WordStats>;
     /**
-     * Cased (upper or lower) word-start observations in the book — the
-     * emergent gate input, counted before pruning so a caseless book reads
-     * zero even though its (uncased) word entries are dropped.
+     * Cased word-start observations in the book — the emergent gate input,
+     * counted before pruning.
      */
     cased_starts: number;
 }
@@ -233,17 +227,18 @@ export interface RatioObs {
 }
 
 /**
- * One word\'s raw case tallies within one book: mid-flow upper/lower (the
- * intrinsic profile) and forced upper/lower, the latter split by the terminal
- * glyph so the lexicon-restricted per-glyph habit is derivable at judge time
- * (`book_initial` is the no-glyph forced key). All raw — no censoring, no
- * habit — so book-supersede holds.
+ * One word\'s raw case tallies within one book. Mid-flow upper/lower (the
+ * intrinsic profile), forced upper/lower split by the *bare* terminal glyph
+ * (`after_glyph`) and by the *quote-context* glyph (`after_quote`, the `.\"`
+ * classes ADR 0051 discarded to mid-flow), and book-initial. All raw — no
+ * censoring, no trust — so book-supersede holds.
  */
 export interface WordStats {
     mid_upper?: number;
     mid_lower?: number;
     book_initial?: ForcedTally;
     after_glyph?: Record<string, ForcedTally>;
+    after_quote?: Record<string, ForcedTally>;
 }
 
 /**
@@ -318,13 +313,14 @@ export interface MixedScriptOverrides {
 /**
  * Partial overrides for the casing pair (`case.sentence-initial-lowercase`
  * and `case.inconsistent-word-casing`, which share one config). Omitted
- * fields keep core\'s calibrated defaults (ADR 0051): `emit_score_min` 0.95,
- * `recurrence_k` 32, `confidence_z` 1.96.
+ * fields keep core\'s calibrated defaults (ADR 0051/0052): `emit_score_min`
+ * 0.95, `recurrence_k` 32, `confidence_z` 1.96, `trust_gate` 0.90.
  */
 export interface CasingOverrides {
     emit_score_min?: number;
     recurrence_k?: number;
     confidence_z?: number;
+    trust_gate?: number;
 }
 
 /**
@@ -332,11 +328,12 @@ export interface CasingOverrides {
  * variant per stateful rule. The orchestration treats it opaquely; each
  * rule reduces into / judges from its own variant.
  *
- * What each variant caches is deliberately small: casing\'s lowercase sites and
- * proportionality\'s per-verse ratios are sparse; punctuation adjacency and
- * repeated-character-run cache only **aggregate counts** (never per-occurrence
- * sites — those re-derive from the text at `judge`), so convention-heavy
- * corpora stay small.
+ * What each variant caches varies: proportionality\'s per-verse ratios are
+ * sparse; punctuation adjacency and repeated-character-run cache only
+ * **aggregate counts** (never per-occurrence sites — those re-derive from the
+ * text at `judge`). Casing (ADR 0051) caches a per-book **word case table** —
+ * larger, but raw and mergeable, with the lexicon and per-glyph habit derived
+ * at `judge`; both casing rules share it and it round-trips like the others.
  * Zero-width space carries no variant here: it is judged per-verse and
  * deterministically by `uni.redundant-zero-width-space` (ADR 0027), which needs
  * no corpus statistics.
@@ -365,7 +362,7 @@ export type RuleId = "lex.excess-h-whitespace" | "hyg.tab-in-body" | "hyg.contro
  * collected into `Vec`s and never copied on a hot path, so this costs
  * nothing real (ADR 0016).
  */
-export type FindingArgs = { kind: "length-ratio"; ratio_pct: number; scope: LengthRatioScope } | { kind: "bracket-window"; window: DelimObservation[]; measure: BracketMeasure; majority: number; total: number } | { kind: "spacing-convention"; mark: string; spaced: number; attached: number } | { kind: "casing-convention"; glyph: string | null; upper: number; total: number } | { kind: "word-casing"; word: string; upper: number; total: number } | { kind: "punct-only-rate"; count: number; units: number } | { kind: "adjacency-evidence"; pattern: string; k: number; lead_n: number; books: number; corpus: number } | { kind: "script-mix-evidence"; k: number; n: number; books: number; corpus: number } | { kind: "repeat-evidence"; ch: string; run: number } | { kind: "duplicate-word"; first_sid: string };
+export type FindingArgs = { kind: "length-ratio"; ratio_pct: number; scope: LengthRatioScope } | { kind: "bracket-window"; window: DelimObservation[]; measure: BracketMeasure; majority: number; total: number } | { kind: "spacing-convention"; mark: string; spaced: number; attached: number } | { kind: "casing-convention"; glyph: string | null; quoted: boolean; upper: number; total: number } | { kind: "word-casing"; word: string; upper: number; total: number } | { kind: "punct-only-rate"; count: number; units: number } | { kind: "adjacency-evidence"; pattern: string; k: number; lead_n: number; books: number; corpus: number } | { kind: "script-mix-evidence"; k: number; n: number; books: number; corpus: number } | { kind: "repeat-evidence"; ch: string; run: number } | { kind: "duplicate-word"; first_sid: string };
 
 /**
  * The catalog plus the shared sensitivity dial: labelled `emit_score_min`
