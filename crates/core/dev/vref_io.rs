@@ -23,8 +23,7 @@ use ssc_core::{Sid, VerseMap};
 // This module is shared via `#[path]`; not every includer calls every fn.
 #[allow(dead_code)]
 pub fn load_corpus(path: &Path) -> VerseMap {
-    let text = fs::read_to_string(path)
-        .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    let text = fs::read_to_string(path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
     text.lines()
         .filter_map(|line| {
             let (sid, verse) = line.split_once('\t')?;

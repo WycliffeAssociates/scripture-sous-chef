@@ -354,3 +354,97 @@ a small number of real typos. Adopt the titlecase-shape tightening (round 5)
 before this factor enters an ADR or `RuleStats`. Closure threshold, knee, and
 the other three factors remain unfrozen; N stays census-only; P/S still await
 separate adjudication.
+
+(Correction, noted in round 5: this section's kill table has a transcription
+slip at knee ≤8 — retained should read 11,936, not 12,336, which copied
+round 3's ≤8 value; the row's other columns are correct.)
+
+## Round 5 — titlecase shape, not capital-initial
+
+Round 5 tightens the proper-noun-shape discount's shape condition exactly as
+round 4 recommended: from "capital-initial" (uppercase first letter) to
+**titlecase shape** — uppercase first letter AND at least one following
+lowercase letter in the token. Everything else is unchanged: sole containing
+word type is a hapax, occurrence at a non-forced position, forced-position
+guard as-is (book-initial or after a bare attached terminal; verse-initial is
+NOT forced, per `CLAUDE.md`). Lone single capitals (`Q`, `I`) and all-caps
+tokens (`YÖ`, `EVE`) are capital-initial but not titlecase, so they fall back
+to **retained** — the safe, still-flagged direction. Measurement code only, as
+before.
+
+### Delta vs round 4
+
+At the representative 0.01% closure threshold, the proper-noun kill drops from
+396/400 sites to **354 (knee ≤1) / 358 (knee ≤2…≤8)** — i.e. **42 sites return
+to retained at every knee** — and the kill column stays knee-insensitive (its
+defining signature). Retained rows absorb exactly those 42 sites:
+
+| Knee | Base | Closure | Lexical | Proper-noun | Retained |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| ≤1 | 3,710 | 1,770 (47.7%) | 277 (7.5%) | **354 (9.5%)** | 1,309 |
+| ≤2 | 7,836 | 4,044 (51.6%) | 935 (11.9%) | **358 (4.6%)** | 2,499 |
+| ≤3 | 11,883 | 6,189 (52.1%) | 1,445 (12.2%) | **358 (3.0%)** | 3,891 |
+| ≤4 | 16,355 | 8,777 (53.7%) | 1,773 (10.8%) | **358 (2.2%)** | 5,447 |
+| ≤5 | 20,480 | 11,302 (55.2%) | 1,973 (9.6%) | **358 (1.7%)** | 6,847 |
+| ≤6 | 25,490 | 14,284 (56.0%) | 2,225 (8.7%) | **358 (1.4%)** | 8,623 |
+| ≤7 | 29,963 | 16,797 (56.1%) | 2,526 (8.4%) | **358 (1.2%)** | 10,282 |
+| ≤8 | 34,947 | 19,733 (56.5%) | 2,878 (8.2%) | **358 (1.0%)** | 11,978 |
+
+The closure and lexical columns are identical to round 4 (the change touches
+only the shape branch), and closure's threshold behaviour is unchanged: 0.01%
+still opens 1,496/1,504 corpora with the eight Han/Hangul + Blackfoot corpora
+closed — the third consecutive round at the same sweet spot.
+
+**The three named round-4 wrongly-eaten sites are all retained now**, verified
+by per-corpus runs:
+
+- WA-dje-reg MAT 11:4 — the lone `Q` token: retained. The corpus's only
+  remaining proper-noun discount is `Ẇ` in the titlecase `Ẇati` (JHN 19:13),
+  which is correct behaviour.
+- WA-dso-ulb ACT 1:13 — the stray Latin `I` at the end of a Devanagari verse:
+  retained; the corpus now has zero proper-noun discounts.
+- WA-es-419-ulb ZEC 3:4 — `Ö` in all-caps `YÖ` (the `YO` typo): retained; zero
+  proper-noun discounts (the `Ü`→`vergüenza` lexical kill from round 3 is
+  untouched, as expected).
+
+### Sample adjudication
+
+**Kill table (20 of 360 proper-shape leads; closure ≤0.1%, knee ≤3).** Every
+sampled kill is titlecase-shaped and reads as a genuine name or name-like
+token: `Ruth`, `Jesus`/`Jesús`, `Qwirini`/`Quiriniusi` (Quirinius),
+`Alexandre`/`Alejandro`, `Ṣur` (Tyre), `Alàtalla`, `Roma`, `Kulène` (Cyrene),
+`Xatche`, `Aqila`, `Ève`, `Ɍuwa` (in `Ƙofar Ɍuwa`, Water Gate), `Tesalómị`
+(Thessalonica). No lone-capital or all-caps shapes appear — the round-4 leak
+class is gone from the kill side.
+
+**Retained table (30 of 3,858 leads; closure ≤0.1%, knee ≤3, survives all four
+factors).** Still dominated by the intended lowercase script-intrusion typos
+(Latin letters inside Amharic/Assamese/Telugu/Arabic), plus the correctly
+guard-spared capitals (`QMunu` after a colon — forced position; `x` in
+`Alexander` — multi-word-type). Did genuine names leak back into retained? The
+only name-class arrivals among the 42 returned sites are **all-caps** forms —
+e.g. `Í` in `ELOÍ LAMA SABATAI` (WA-aoa MRK 15:34) — which is precisely the
+conservative cost round 4 priced in: an all-caps name stays flagged rather
+than risk eating all-caps typos like `YÖ`. **No titlecase name leaked back**;
+every round-4 sampled genuine name remains discounted.
+
+### Round-5 verdict — measurement complete
+
+The titlecase tightening behaves exactly as predicted: it spares every genuine
+name in the samples, returns the three known wrongly-eaten sites (and 39 more
+of the same shapes) to retained, and keeps the kill column knee-insensitive.
+The four-factor L-lane stack — letter-scalar closure, small absolute knee,
+lexical concentration, titlecase proper-noun shape — is now
+**measurement-complete**: no further spike rounds are planned for the L lane.
+
+Two decisions remain for the ADR, and this spike explicitly does **not**
+freeze them:
+
+1. **Closure threshold** — 0.01% has been stable across rounds 3–5 (opens
+   1,496/1,504; keeps the Han/Hangul fleet closed) and is the recommended
+   candidate, but it is a recommendation, not a frozen constant.
+2. **Knee choice** — retained volume grows roughly linearly with the knee
+   (1,309 → 11,978 across ≤1…≤8 at 0.01%), so the knee is a genuine volume
+   lever that must be chosen on review-capacity grounds at ADR time.
+
+N stays census-only; P/S still await their separate sample adjudication.

@@ -163,6 +163,29 @@ ADR: tighten to a **titlecase shape** (initial upper + ≥1 following lower), wh
 spares every genuine name and drops the risky shapes back to retained (the safe
 direction). Nothing frozen.
 
+**Round 5 progress (2026-07-10)** — the titlecase tightening landed and the
+L-lane spike is **measurement-complete**
+([calibration report](../calibration/2026-07-10-rare-glyph-spike.md) Round 5).
+The shape condition is now titlecase (upper first + ≥1 following lower) instead
+of bare capital-initial; at the representative 0.01% closure the proper-noun
+kill drops 396/400 → 354/358 sites — 42 sites return to retained at every knee,
+still knee-insensitive. All three named round-4 wrongly-eaten sites (WA-dje
+MAT 11:4 lone `Q`, WA-dso ACT 1:13 stray `I`, WA-es-419 ZEC 3:4 `YÖ`) are
+confirmed retained by per-corpus runs; sampled kills are all titlecase genuine
+names, and the only name-class leak-back into retained is all-caps forms
+(`ELOÍ`) — the priced-in conservative cost. Two decisions remain for the ADR
+and are deliberately NOT frozen: the closure threshold (0.01% stable across
+rounds 3–5, the recommended candidate) and the knee (a linear volume lever,
+1,309 → 11,978 retained across ≤1…≤8). Step 3 (ADR + rule + `RuleStats`) can
+start from this surface; N stays census-only, P/S await adjudication.
+
+**Provisional defaults chosen (2026-07-10, user decision)** — closure
+threshold **0.01%** (a writing-system truth question: fixed internal
+default + advanced override, never a preset row) and knee **≤2** (this
+rule's sensitivity dial; conservative/normal/aggressive rows come later
+from the truncation experiment like every other rule's). To be frozen
+formally in the rule's ADR when Step 3 runs.
+
 **Why first** — Smallest, fully independent, and its tally is the
 future glyph-census accumulator, so it de-risks the absolute-mode
 discussion with real data.

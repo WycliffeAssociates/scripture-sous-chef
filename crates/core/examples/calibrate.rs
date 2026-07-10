@@ -1774,10 +1774,95 @@ fn is_letter_token(word: &str) -> bool {
     has_letter
 }
 
+/// Round-5 titlecase-shape + forced-position facts for one letter-token
+/// occurrence. `titlecase` is the name-shape test — uppercase first letter AND
+/// at least one following lowercase letter (round 4 used bare capital-initial,
+/// which leaked on lone capitals `Q`/`I` and all-caps common words like `YÖ`);
+/// `forced` is the casing machinery's forced-position test (book-initial, or a
+/// word that consumed a bare attached terminal — verse-initial is NOT forced,
+/// per `CLAUDE.md`). Only consulted for hapax words, so recording each word's
+/// latest occurrence is sufficient.
+#[derive(Clone, Copy)]
+struct WordShape {
+    titlecase: bool,
+    forced: bool,
+}
+
+/// Advance the pending-terminal machine over a gap (all scalars between two
+/// letter tokens), mirroring `casing::advance_gap`. The pending state is
+/// `None` = no terminal seen; `Some(false)` = a bare/quoted terminal is
+/// pending; `Some(true)` = a non-quote intervening punctuation collapsed the
+/// boundary to mid-flow (`...`).
+fn glyph_advance_gap(gap: &str, pending: &mut Option<bool>, prev_letter: &mut bool) {
+    for c in gap.chars() {
+        let cl = class_of(c);
+        if cl.is_whitespace() || cl.is_numeric() {
+            *prev_letter = false;
+        } else if cl.is_alphabetic() {
+            *prev_letter = true;
+        } else {
+            match pending {
+                Some(collapsed) => {
+                    if !cl.is_quote() {
+                        *collapsed = true;
+                    }
+                }
+                None if *prev_letter => *pending = Some(false),
+                None => {}
+            }
+            *prev_letter = false;
+        }
+    }
+}
+
+/// Walk each book in canonical order, mirroring `casing::walk_book`'s pending-
+/// terminal machine (carried across verse seams, reset per book; the book's
+/// first word is forced), and record each letter token's capital-initial +
+/// forced facts. Keyed by the same lowercase letter-token key the lexical
+/// machinery uses, so the round-4 proper-noun test can look up a rare glyph's
+/// hapax container. Only pure-letter tokens are recorded, matching the tokens
+/// that feed `letter_words`/`glyph_words` (a hyphen-joined name is two ordinary
+/// letter tokens in both, never one compound span).
+fn letter_word_shapes(map: &VerseMap) -> BTreeMap<String, WordShape> {
+    let mut shapes: BTreeMap<String, WordShape> = BTreeMap::new();
+    for verses in ssc_core::verse::by_book(map).values() {
+        let mut pending: Option<bool> = None;
+        let mut book_initial = true;
+        for (_, text) in verses {
+            let mut prev_letter = false;
+            let mut cursor = 0usize;
+            for token in tokenize(text) {
+                let word = token.span.slice(text);
+                if !is_letter_token(word) {
+                    // Not a word for the casing walk; its text stays in the gap
+                    // the next letter token sees (cursor deliberately unmoved).
+                    continue;
+                }
+                glyph_advance_gap(&text[cursor..token.span.start], &mut pending, &mut prev_letter);
+                let mut word_chars = word.chars();
+                let first = word_chars.next().unwrap();
+                // Titlecase shape: uppercase first letter AND >=1 following
+                // lowercase letter. Spares genuine names (Quirinius, Roma) while
+                // returning lone capitals and all-caps tokens to retained.
+                let titlecase = class_of(first).is_uppercase()
+                    && word_chars.any(|c| class_of(c).is_lowercase());
+                let forced = book_initial || matches!(pending.take(), Some(false));
+                book_initial = false;
+                shapes.insert(word.to_lowercase(), WordShape { titlecase, forced });
+                prev_letter = word.chars().next_back().is_some_and(|c| class_of(c).is_alphabetic());
+                cursor = token.span.end;
+            }
+            glyph_advance_gap(&text[cursor..], &mut pending, &mut prev_letter);
+        }
+    }
+    shapes
+}
+
 fn letter_round2(
     inventory: &BTreeMap<char, u64>,
     word_tokens: BTreeMap<String, u64>,
     glyph_words: BTreeMap<char, BTreeMap<String, u64>>,
+    shapes: &BTreeMap<String, WordShape>,
 ) -> LetterRound2 {
     let tokens: u64 = word_tokens.values().sum();
     let hapax_types = word_tokens.values().filter(|&&count| count == 1).count() as u64;
@@ -1803,6 +1888,7 @@ fn letter_round2(
                 count,
                 lexical_word: None,
                 lexical_word_tokens: 0,
+                proper_noun_shape: false,
             });
             continue;
         };
@@ -1816,11 +1902,35 @@ fn letter_round2(
             }
             _ => (None, 0),
         };
+        // Round-5 proper-noun-shape discount: only where the recurring-word
+        // lexical discount did NOT already fire. It applies when the glyph's
+        // sole containing word type is a hapax (occurs once) AND that lone
+        // occurrence is titlecase-shaped (upper first + >=1 following lower) AND
+        // at a non-forced (mid-flow) position. A capital at a forced position is
+        // capitalised for position reasons — shape says nothing — so no discount
+        // there (the flag survives). The titlecase test (round 5, was bare
+        // capital-initial) returns lone capitals and all-caps tokens to
+        // retained. Bicameral-only by construction: `titlecase` is false for
+        // caseless scripts, so the branch never fires for them.
+        let proper_noun_shape = lexical_word.is_none()
+            && words.len() == 1
+            && accounted == count
+            && words.values().next().is_some_and(|&occ| occ == count)
+            && words
+                .keys()
+                .next()
+                .and_then(|word| {
+                    (word_tokens.get(word).copied().unwrap_or(0) == 1)
+                        .then(|| shapes.get(word))
+                        .flatten()
+                })
+                .is_some_and(|shape| shape.titlecase && !shape.forced);
         rare.push(LetterRare {
             glyph,
             count,
             lexical_word,
             lexical_word_tokens,
+            proper_noun_shape,
         });
     }
     rare.sort_by_key(|candidate| (candidate.count, candidate.glyph));
@@ -1892,6 +2002,9 @@ struct LetterRare {
     count: u64,
     lexical_word: Option<String>,
     lexical_word_tokens: u64,
+    /// Round-5: the glyph's sole container is a titlecase-shaped hapax word at a
+    /// non-forced position, so its capital is shape (a name), not position.
+    proper_noun_shape: bool,
 }
 
 struct LetterRound2 {
@@ -1937,6 +2050,7 @@ struct GlyphCorpus {
     samples: Vec<GlyphSample>,
     letter_round2: LetterRound2,
     retained_samples: Vec<GlyphSample>,
+    proper_samples: Vec<GlyphSample>,
 }
 
 /// The fleet keeps calibration rollups, not a corpus's full scalar inventory.
@@ -1952,6 +2066,7 @@ struct GlyphFleetSummary {
     samples: Vec<GlyphSample>,
     letter_round2: LetterRound2,
     retained_samples: Vec<GlyphSample>,
+    proper_samples: Vec<GlyphSample>,
 }
 
 impl From<GlyphCorpus> for GlyphFleetSummary {
@@ -1967,6 +2082,7 @@ impl From<GlyphCorpus> for GlyphFleetSummary {
             samples: corpus.samples,
             letter_round2: corpus.letter_round2,
             retained_samples: corpus.retained_samples,
+            proper_samples: corpus.proper_samples,
         }
     }
 }
@@ -2056,27 +2172,35 @@ fn glyph_samples(id: &str, map: &VerseMap, candidates: &[GlyphCandidate]) -> Vec
     samples
 }
 
-/// Retained review leads: rare letter glyphs (count ≤ knee) that survive the
-/// lexical-concentration discount, so a human can adjudicate signal quality on
-/// the set the rule would actually keep in a closed-alphabet corpus. Whether the
-/// corpus itself clears closure is decided at fleet time.
-fn glyph_retained_samples(id: &str, map: &VerseMap, round2: &LetterRound2) -> Vec<GlyphSample> {
-    let mut wanted: BTreeMap<char, u64> = BTreeMap::new();
+/// Review leads for rare letter glyphs (count ≤ knee) that survive the lexical-
+/// concentration discount, split into two adjudication sets so a human can judge
+/// signal quality on the set the rule would keep in a closed-alphabet corpus:
+/// `(proper_killed, retained)`. `proper_killed` is what the round-4 proper-noun-
+/// shape discount removes (expect Quirinius-class names); `retained` is what
+/// survives all four factors (expect script-intrusion typos). Whether the corpus
+/// itself clears closure is decided at fleet time.
+fn glyph_retained_samples(
+    id: &str,
+    map: &VerseMap,
+    round2: &LetterRound2,
+) -> (Vec<GlyphSample>, Vec<GlyphSample>) {
+    // glyph -> (count, is_proper_killed)
+    let mut wanted: BTreeMap<char, (u64, bool)> = BTreeMap::new();
     for candidate in round2
         .rare
         .iter()
         .filter(|c| c.count <= RETAINED_SAMPLE_KNEE && c.lexical_word.is_none())
     {
-        wanted.insert(candidate.glyph, candidate.count);
+        wanted.insert(candidate.glyph, (candidate.count, candidate.proper_noun_shape));
     }
-    let mut samples = Vec::new();
+    let (mut proper, mut retained) = (Vec::new(), Vec::new());
     for (sid, text) in map {
         if wanted.is_empty() {
             break;
         }
         for (start, glyph) in text.char_indices() {
-            let Some(count) = wanted.remove(&glyph) else { continue };
-            samples.push(GlyphSample {
+            let Some((count, is_proper)) = wanted.remove(&glyph) else { continue };
+            let sample = GlyphSample {
                 corpus: id.to_string(),
                 sid: sid.to_string(),
                 glyph,
@@ -2084,11 +2208,17 @@ fn glyph_retained_samples(id: &str, map: &VerseMap, round2: &LetterRound2) -> Ve
                 count,
                 lane_total: round2.letter_scalars,
                 context: glyph_context(text, start, start + glyph.len_utf8()),
-            });
+            };
+            if is_proper {
+                proper.push(sample);
+            } else {
+                retained.push(sample);
+            }
         }
     }
-    samples.sort_by_key(|sample| (sample.count, sample.glyph));
-    samples
+    proper.sort_by_key(|sample| (sample.count, sample.glyph));
+    retained.sort_by_key(|sample| (sample.count, sample.glyph));
+    (proper, retained)
 }
 
 fn analyze_glyphs(id: String, map: &VerseMap) -> GlyphCorpus {
@@ -2152,8 +2282,9 @@ fn analyze_glyphs(id: String, map: &VerseMap) -> GlyphCorpus {
         .map(|&rate| glyph_sweep(&candidates, |c| glyph_rarity_rate(c.count, c.lane_total, rate)))
         .collect();
     let samples = glyph_samples(&id, map, &candidates);
-    let letter_round2 = letter_round2(&inventory, letter_words, letter_glyph_words);
-    let retained_samples = glyph_retained_samples(&id, map, &letter_round2);
+    let shapes = letter_word_shapes(map);
+    let letter_round2 = letter_round2(&inventory, letter_words, letter_glyph_words, &shapes);
+    let (proper_samples, retained_samples) = glyph_retained_samples(&id, map, &letter_round2);
 
     GlyphCorpus {
         id,
@@ -2168,6 +2299,7 @@ fn analyze_glyphs(id: String, map: &VerseMap) -> GlyphCorpus {
         samples,
         letter_round2,
         retained_samples,
+        proper_samples,
     }
 }
 
@@ -2236,6 +2368,7 @@ struct LetterRound2Tally {
     base: GlyphSweep,
     closure_killed: GlyphSweep,
     lexical_killed: GlyphSweep,
+    proper_killed: GlyphSweep,
     retained: GlyphSweep,
 }
 
@@ -2248,6 +2381,7 @@ fn add_letter_round2_tally(total: &mut LetterRound2Tally, add: LetterRound2Tally
     add_glyph_sweep(&mut total.base, add.base);
     add_glyph_sweep(&mut total.closure_killed, add.closure_killed);
     add_glyph_sweep(&mut total.lexical_killed, add.lexical_killed);
+    add_glyph_sweep(&mut total.proper_killed, add.proper_killed);
     add_glyph_sweep(&mut total.retained, add.retained);
 }
 
@@ -2263,6 +2397,8 @@ fn letter_round2_tally(round2: &LetterRound2, max_count: u64, closed_alphabet: b
             add_glyph_sweep(&mut out.closure_killed, candidate_sweep);
         } else if candidate.lexical_word.is_some() {
             add_glyph_sweep(&mut out.lexical_killed, candidate_sweep);
+        } else if candidate.proper_noun_shape {
+            add_glyph_sweep(&mut out.proper_killed, candidate_sweep);
         } else {
             add_glyph_sweep(&mut out.retained, candidate_sweep);
         }
@@ -2288,12 +2424,15 @@ fn print_letter_round2_single(round2: &LetterRound2) {
     for max_count in LETTER_RARE_MAX_COUNTS {
         let tally = letter_round2_tally(round2, max_count, true);
         println!(
-            "    <= {max_count}: base {}/{}  lexical-discount {}/{} ({:.1}%)  retained {}/{}",
+            "    <= {max_count}: base {}/{}  lexical-discount {}/{} ({:.1}%)  proper-noun {}/{} ({:.1}%)  retained {}/{}",
             tally.base.types,
             tally.base.sites,
             tally.lexical_killed.types,
             tally.lexical_killed.sites,
             kill_rate(tally.lexical_killed.sites, tally.base.sites),
+            tally.proper_killed.types,
+            tally.proper_killed.sites,
+            kill_rate(tally.proper_killed.sites, tally.base.sites),
             tally.retained.types,
             tally.retained.sites,
         );
@@ -2307,6 +2446,15 @@ fn print_letter_round2_single(round2: &LetterRound2) {
             candidate.count,
             candidate.lexical_word.as_deref().unwrap_or_default(),
             candidate.lexical_word_tokens,
+        );
+    }
+    let proper: Vec<_> = round2.rare.iter().filter(|candidate| candidate.proper_noun_shape).collect();
+    println!("  proper-noun-shape discounts (first {} of {}):", proper.len().min(20), proper.len());
+    for candidate in proper.iter().take(20) {
+        println!(
+            "    {:<15} count={} (titlecase-shaped hapax word at a non-forced position)",
+            glyph_label(candidate.glyph),
+            candidate.count,
         );
     }
 }
@@ -2389,6 +2537,7 @@ fn glyph_fleet(dir: &Path) {
     // scalar closure), retained review leads, and lexical-kill mechanism leads.
     let mut flips: Vec<(String, u64, u64)> = Vec::new();
     let mut retained_samples: Vec<GlyphSample> = Vec::new();
+    let mut proper_samples: Vec<GlyphSample> = Vec::new();
     let mut lexical_kill_leads: Vec<(String, char, String, u64)> = Vec::new();
     let t0 = std::time::Instant::now();
     let done = AtomicUsize::new(0);
@@ -2478,6 +2627,7 @@ fn glyph_fleet(dir: &Path) {
                 }
             }
             retained_samples.extend(corpus.retained_samples.iter().cloned());
+            proper_samples.extend(corpus.proper_samples.iter().cloned());
         }
         samples.extend(corpus.samples);
         for (pair, &count) in &corpus.decomposed_pairs {
@@ -2508,12 +2658,14 @@ fn glyph_fleet(dir: &Path) {
         for (knee_index, &max_count) in LETTER_RARE_MAX_COUNTS.iter().enumerate() {
             let tally = round2[threshold_index][knee_index];
             println!(
-                "    <= {max_count}: base {:>6}; closure -{:>6} ({:>5.1}%); lexical -{:>6} ({:>5.1}%); keep {:>6}",
+                "    <= {max_count}: base {:>6}; closure -{:>6} ({:>5.1}%); lexical -{:>6} ({:>5.1}%); proper-noun -{:>6} ({:>5.1}%); keep {:>6}",
                 tally.base.sites,
                 tally.closure_killed.sites,
                 kill_rate(tally.closure_killed.sites, tally.base.sites),
                 tally.lexical_killed.sites,
                 kill_rate(tally.lexical_killed.sites, tally.base.sites),
+                tally.proper_killed.sites,
+                kill_rate(tally.proper_killed.sites, tally.base.sites),
                 tally.retained.sites,
             );
         }
@@ -2561,8 +2713,33 @@ fn glyph_fleet(dir: &Path) {
         );
     }
 
+    // Round-5 proper-noun-kill table: ~20 diverse sites the shape discount
+    // removes (letter, count<=3, non-lexical, titlecase-shaped hapax at a
+    // non-forced position). Expect Quirinius-class names; the round-4 leaks
+    // (lone capitals, all-caps common words) should no longer appear here.
+    proper_samples.sort_by_key(|s| (s.corpus.clone(), s.count, s.glyph));
+    proper_samples.dedup_by(|a, b| a.corpus == b.corpus && a.glyph == b.glyph);
+    let mut proper_diverse: Vec<GlyphSample> = Vec::new();
+    let mut proper_per_corpus: BTreeMap<String, u64> = BTreeMap::new();
+    for sample in &proper_samples {
+        let seen = proper_per_corpus.entry(sample.corpus.clone()).or_default();
+        if *seen < 2 {
+            *seen += 1;
+            proper_diverse.push(sample.clone());
+        }
+    }
+    println!(
+        "\nround-5 proper-noun-kill table ({} of {} proper-shape leads; closure<={:.3}%, knee<={}):",
+        proper_diverse.len().min(20),
+        proper_samples.len(),
+        RETAINED_SAMPLE_THRESHOLD * 100.0,
+        RETAINED_SAMPLE_KNEE,
+    );
+    print_glyph_samples(&proper_diverse.into_iter().take(20).collect::<Vec<_>>());
+
     // Retained review table: ~30 diverse retained sites (letter, count<=3, not
-    // lexical) in corpora open at the representative closure threshold.
+    // lexical, not proper-noun-shape) in corpora open at the representative
+    // closure threshold — what survives all four factors.
     retained_samples.sort_by_key(|s| (s.corpus.clone(), s.count, s.glyph));
     retained_samples.dedup_by(|a, b| a.corpus == b.corpus && a.glyph == b.glyph);
     let mut diverse: Vec<GlyphSample> = Vec::new();
@@ -2575,7 +2752,7 @@ fn glyph_fleet(dir: &Path) {
         }
     }
     println!(
-        "\nretained review table ({} of {} retained leads; closure<={:.3}%, knee<={}, non-lexical):",
+        "\nretained review table ({} of {} retained leads; closure<={:.3}%, knee<={}, non-lexical, non-proper-noun — survives all four factors):",
         diverse.len().min(30),
         retained_samples.len(),
         RETAINED_SAMPLE_THRESHOLD * 100.0,
@@ -2688,6 +2865,83 @@ mod glyph_tests {
             .find(|candidate| candidate.glyph == 'X')
             .unwrap();
         assert!(x.lexical_word.is_none());
+    }
+
+    fn rare(corpus: &GlyphCorpus, glyph: char) -> &LetterRare {
+        corpus.letter_round2.rare.iter().find(|c| c.glyph == glyph).unwrap()
+    }
+
+    #[test]
+    fn proper_noun_shape_discounts_titlecase_hapax_at_midflow() {
+        // `Q` occurs once, inside the hapax name `Quirinius`, mid-flow (a common
+        // word precedes it, no terminal). Its lone container is titlecase-shaped
+        // (upper first + following lower) and at a non-forced position ⇒
+        // proper-noun-shape discount fires. The recurring-word lexical discount
+        // does not (the container is a hapax).
+        let map = one_verse("in the days of Quirinius the governor");
+        let corpus = analyze_glyphs("quirinius".to_string(), &map);
+        let q = rare(&corpus, 'Q');
+        assert!(q.lexical_word.is_none());
+        assert!(q.proper_noun_shape);
+    }
+
+    #[test]
+    fn proper_noun_shape_spares_lone_capital_token() {
+        // Round-5 tightening: a lone one-letter uppercase token (`Q` standing
+        // alone mid-flow, the round-4 WA-dje MAT 11:4 leak) is capital-initial
+        // but NOT titlecase (no following lowercase letter), so the discount no
+        // longer fires — the stray capital stays flagged (the safe direction).
+        let map = one_verse("he said to them Q go and tell the news");
+        let corpus = analyze_glyphs("lone-capital".to_string(), &map);
+        let q = rare(&corpus, 'Q');
+        assert!(q.lexical_word.is_none());
+        assert!(!q.proper_noun_shape);
+    }
+
+    #[test]
+    fn proper_noun_shape_spares_all_caps_token() {
+        // Round-5 tightening: an all-caps token carrying a stray glyph (the
+        // Spanish `YÖ`-for-`YO` leak, WA-es-419 ZEC 3:4) is capital-initial but
+        // has no following lowercase letter, so it is not titlecase and the
+        // discount does not fire — the genuine typo stays flagged.
+        let map = one_verse("and the voice cried YÖ am the one who speaks");
+        let corpus = analyze_glyphs("all-caps".to_string(), &map);
+        let o = rare(&corpus, 'Ö');
+        assert!(o.lexical_word.is_none());
+        assert!(!o.proper_noun_shape);
+    }
+
+    #[test]
+    fn proper_noun_shape_spares_capital_at_a_forced_position() {
+        // Same name, but now the word after a bare terminal: the capital is
+        // position-forced, so shape says nothing and the discount must NOT fire
+        // (conservative — the flag survives).
+        let map = one_verse("it happened then. Quirinius ruled the land");
+        let corpus = analyze_glyphs("forced".to_string(), &map);
+        let q = rare(&corpus, 'Q');
+        assert!(!q.proper_noun_shape);
+    }
+
+    #[test]
+    fn proper_noun_shape_spares_book_initial_capital() {
+        // Book-initial is forced with no terminal glyph (CLAUDE.md), so a rare
+        // glyph inside the very first word gets no shape discount.
+        let map = one_verse("Quirinius governed the far country");
+        let corpus = analyze_glyphs("book-initial".to_string(), &map);
+        let q = rare(&corpus, 'Q');
+        assert!(!q.proper_noun_shape);
+    }
+
+    #[test]
+    fn proper_noun_shape_ignores_lowercase_script_intrusion() {
+        // A stray `q` intruding into an otherwise-lowercase word is not capital-
+        // initial, so the shape branch never fires — script-intrusion typos in
+        // ordinary lowercase words stay flagged (bicameral-only by construction
+        // also means caseless scripts, which have no uppercase, never qualify).
+        let map = one_verse("she walked into the woqden house today");
+        let corpus = analyze_glyphs("intrusion".to_string(), &map);
+        let q = rare(&corpus, 'q');
+        assert!(!q.proper_noun_shape);
     }
 }
 
