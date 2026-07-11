@@ -233,3 +233,31 @@ duplicate casing walk collapse into the one tokenization), and the
 - **One pending-terminal machine for casing + rare-glyph**: would change
   behavior (different word units); the machine *definition* is shared, the
   instances are not.
+
+## Follow-up (same branch): per-type verdict memoization in the casing judges
+
+The two casing judges' verdict — the Wilson-bound two-factor score — is a
+pure function of the word *type* and its position class: `positional(key,
+pos)` for `case.sentence-initial-lowercase`, `intrinsic(key)` for
+`case.inconsistent-word-casing`. It never reads the individual occurrence;
+the occurrence only contributes the finding's `sid`/span. Recomputing it
+per `LowerSite` therefore repeated identical math hundreds of thousands of
+times per corpus, with the common result being the cheap-to-cache "no
+finding" (below floor, no model entry, or not forced). `judge_casing` now
+takes a `verdict` closure (memoizable, `(key, pos) → Option<V>`) and a
+`materialize` closure (per-site, verdict → `Finding`), with a per-book
+`HashMap<(&str, PosClass), Option<V>>` memo local to the per-book closure —
+no shared state, so the `parallel` feature needed nothing. Output order and
+bytes are unchanged (full-fleet `--dump-findings` under both configs is
+byte-identical before/after).
+
+Measured (WA-en-ulb, `--time` min-of-5, serial release):
+
+| config        | before     | after      |
+|---------------|------------|------------|
+| defaults      | 284.9 ms   | 290.4 ms (noise; casing off under defaults) |
+| everything-on | 2066.7 ms  | 1857.7 ms (−10%) |
+
+`analyze/changed_edit_MAT` (criterion, defaults): no change detected
+(p = 0.71), as expected with the casing rules default-off. Full-fleet
+everything-on dump user time: 1033 s → 989 s (−4% across all rules).

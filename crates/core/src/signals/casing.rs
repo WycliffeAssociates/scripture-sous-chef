@@ -136,7 +136,7 @@ pub struct ClassKey {
 /// Everything else — including a token after *non-quote* intervening
 /// punctuation (`...`) — is [`Midflow`](PosClass::Midflow). Verse-initial is
 /// NOT forced (`CLAUDE.md`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PosClass {
     /// The first word of the book — forced with no terminal glyph.
     BookInitial,
@@ -1014,13 +1014,19 @@ fn any_cased(stats: &CasingStats) -> bool {
 }
 
 /// Shared judge skeleton: build the corpus model, recover each book's lowercase
-/// sites, and let `emit` turn a site into at most one finding.
-fn judge_casing(
+/// sites, and turn each into at most one finding via a memoized two-step
+/// evaluation. `verdict` is the expensive Wilson-bound math — a pure function
+/// of `(key, pos)`, never the individual occurrence — so it is computed once
+/// per distinct `(key, pos)` seen in a book and cached in a per-book memo.
+/// `materialize` is the cheap per-site step that turns a cached verdict into
+/// a `Finding` at the site's own span.
+fn judge_casing<V: Clone + Sync + Send>(
     stats: &RuleStats,
     books: &Books<'_>,
     sites: Option<&rule::RuleSites>,
     cfg: &CasingConfig,
-    emit: impl Fn(&LowerSite, &Model) -> Option<Finding> + Sync,
+    verdict: impl Fn(&str, PosClass, &Model) -> Option<V> + Sync,
+    materialize: impl Fn(&LowerSite, &V) -> Finding + Sync,
 ) -> Vec<Finding> {
     let RuleStats::Casing(stats) = stats else {
         return Vec::new();
@@ -1038,16 +1044,24 @@ fn judge_casing(
     let mut out: Vec<Finding> = rule::map_books(books, |book, verses| {
         let mut found = Vec::new();
         if let Some(book_sites) = forwarded.and_then(|m| m.get(&book)) {
+            let mut memo: HashMap<(&str, PosClass), Option<V>> = HashMap::new();
             for site in book_sites {
-                if let Some(f) = emit(site, &model) {
-                    found.push(f);
+                let v = memo
+                    .entry((site.key.as_str(), site.pos))
+                    .or_insert_with(|| verdict(&site.key, site.pos, &model));
+                if let Some(v) = v {
+                    found.push(materialize(site, v));
                 }
             }
         } else {
             let (_, walked) = walk_book(verses);
+            let mut memo: HashMap<(&str, PosClass), Option<V>> = HashMap::new();
             for site in &walked {
-                if let Some(f) = emit(site, &model) {
-                    found.push(f);
+                let v = memo
+                    .entry((site.key.as_str(), site.pos))
+                    .or_insert_with(|| verdict(&site.key, site.pos, &model));
+                if let Some(v) = v {
+                    found.push(materialize(site, v));
                 }
             }
         }
@@ -1096,27 +1110,35 @@ impl StatefulRule for SentenceInitialLowercase {
     ) -> Vec<Finding> {
         let k = clamp_count(self.cfg.recurrence_k);
         let floor = f64::from(clamp_unit(self.cfg.emit_score_min));
-        judge_casing(stats, books, sites, &self.cfg, |site, model| {
-            let f = model.positional(&site.key, site.pos)?;
-            let score = f.dominance * rarity(f.minority, k);
-            if score < floor {
-                return None;
-            }
-            let (glyph, quoted) = site.pos.habit_glyph();
-            Some(Finding {
+        judge_casing(
+            stats,
+            books,
+            sites,
+            &self.cfg,
+            |key, pos, model| {
+                let f = model.positional(key, pos)?;
+                let score = f.dominance * rarity(f.minority, k);
+                if score < floor {
+                    return None;
+                }
+                let (glyph, quoted) = pos.habit_glyph();
+                Some((
+                    score,
+                    glyph,
+                    quoted,
+                    f.raw_major.min(u64::from(u32::MAX)) as u32,
+                    f.raw_total.min(u64::from(u32::MAX)) as u32,
+                ))
+            },
+            |site, &(score, glyph, quoted, upper, total)| Finding {
                 sid: site.sid,
                 code: SENTENCE_INITIAL_LOWERCASE,
                 severity: Severity::Info,
                 range: site_span(site),
                 score: Some(score as f32),
-                args: Some(FindingArgs::CasingConvention {
-                    glyph,
-                    quoted,
-                    upper: f.raw_major.min(u64::from(u32::MAX)) as u32,
-                    total: f.raw_total.min(u64::from(u32::MAX)) as u32,
-                }),
-            })
-        })
+                args: Some(FindingArgs::CasingConvention { glyph, quoted, upper, total }),
+            },
+        )
     }
 }
 
@@ -1152,25 +1174,32 @@ impl StatefulRule for InconsistentWordCasing {
     ) -> Vec<Finding> {
         let k = clamp_count(self.cfg.recurrence_k);
         let floor = f64::from(clamp_unit(self.cfg.emit_score_min));
-        judge_casing(stats, books, sites, &self.cfg, |site, model| {
-            let f = model.intrinsic(&site.key)?;
-            let score = f.dominance * rarity(f.minority, k);
-            if score < floor {
-                return None;
-            }
-            Some(Finding {
+        judge_casing(
+            stats,
+            books,
+            sites,
+            &self.cfg,
+            |key, _pos, model| {
+                let f = model.intrinsic(key)?;
+                let score = f.dominance * rarity(f.minority, k);
+                if score < floor {
+                    return None;
+                }
+                Some((
+                    score,
+                    f.raw_major.min(u64::from(u32::MAX)) as u32,
+                    f.raw_total.min(u64::from(u32::MAX)) as u32,
+                ))
+            },
+            |site, &(score, upper, total)| Finding {
                 sid: site.sid,
                 code: INCONSISTENT_WORD_CASING,
                 severity: Severity::Info,
                 range: site_span(site),
                 score: Some(score as f32),
-                args: Some(FindingArgs::WordCasing {
-                    word: site.key.clone(),
-                    upper: f.raw_major.min(u64::from(u32::MAX)) as u32,
-                    total: f.raw_total.min(u64::from(u32::MAX)) as u32,
-                }),
-            })
-        })
+                args: Some(FindingArgs::WordCasing { word: site.key.clone(), upper, total }),
+            },
+        )
     }
 }
 
