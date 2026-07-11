@@ -69,6 +69,12 @@ isn't visible from the code alone.
 | 0050 | 2026-07-09 | [`punct.spacing-anomaly` scores dominance × minority-recurrence rarity](0050-spacing-minority-recurrence-factor.md) | Accepted (amends 0029/0033) |
 | 0051 | 2026-07-10 | [Casing rebuilt on a word lexicon — two-factor scores, two rules from one module](0051-casing-two-factor-word-lexicon.md) | Accepted (supersedes 0035's scoring) |
 | 0052 | 2026-07-10 | [`terminal_strength` — learned mark trust gates casing's positional flagging, weights its censoring discount](0052-terminal-strength-mark-trust.md) | Accepted (builds on 0051) |
+| 0053 | 2026-07-10 | [`uni.rare-glyph` — the letter (L) lane, with a glyph-census substrate](0053-rare-glyph-letter-lane.md) | Accepted |
+| 0054 | 2026-07-10 | [Spacing attachment signatures — pooled class-conditioned per-side conventions](0054-spacing-attachment-signatures.md) | Accepted (amends 0050) |
+| 0055 | 2026-07-10 | [`case.mixed-case-word` — the interior-capital anomaly](0055-mixed-case-word.md) | Accepted |
+| 0056 | 2026-07-10 | [Rare-glyph reduce: page-table census, surface-deferred attribution](0056-rare-glyph-reduce-page-table.md) | Accepted |
+| 0057 | 2026-07-11 | [The event-stream engine — one fused book walk, every rule a listener](0057-event-stream-engine.md) | Accepted (supersedes 0044's fusion rejection) |
+| 0058 | 2026-07-11 | [The census (absolute mode) — `census(map) → Inventory`, the event stream's first subscriber](0058-census-absolute-mode.md) | Accepted (ratifies the 2026-07-10 plan) |
 
 ## Format
 

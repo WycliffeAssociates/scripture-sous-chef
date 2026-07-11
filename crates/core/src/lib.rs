@@ -250,15 +250,20 @@ pub fn analyze_stateful(
 
     // Assemble each rule's fresh stats + forwarded sites (ADR 0044) from the
     // fused per-book outputs. A rule enabled this call always gets an entry —
-    // possibly empty — exactly as its own reduce produced; a book outside the
-    // `counted` scope contributed nothing, so it is absent from both (its
-    // counts carry from the prior; judge re-scans it for spans).
+    // possibly empty — exactly as its own reduce produced. A book outside the
+    // `counted` scope contributes **sites only** (the walk visited it for
+    // anchors; its counts carry from the prior through the supersede merge),
+    // so the judge phase is site-driven for every supplied book and never
+    // re-scans — except the deliberately site-free rules (proportionality
+    // never scans; rare-glyph / mixed-case re-scan by design, ADR 0053/0055).
     use std::collections::BTreeMap;
     let casing_fresh = plan.casing.then(|| {
         let (mut pb, mut st) = (BTreeMap::new(), BTreeMap::new());
         for (&book, o) in fused.iter_mut() {
             if let Some((bc, s)) = o.casing.take() {
-                pb.insert(book, bc);
+                if o.counted {
+                    pb.insert(book, bc);
+                }
                 st.insert(book, s);
             }
         }
@@ -271,7 +276,9 @@ pub fn analyze_stateful(
         let (mut pb, mut st) = (BTreeMap::new(), BTreeMap::new());
         for (&book, o) in fused.iter_mut() {
             if let Some((bc, s)) = o.adjacency.take() {
-                pb.insert(book, bc);
+                if o.counted {
+                    pb.insert(book, bc);
+                }
                 st.insert(book, s);
             }
         }
@@ -286,7 +293,9 @@ pub fn analyze_stateful(
         let (mut pb, mut st) = (BTreeMap::new(), BTreeMap::new());
         for (&book, o) in fused.iter_mut() {
             if let Some((bc, s)) = o.spacing.take() {
-                pb.insert(book, bc);
+                if o.counted {
+                    pb.insert(book, bc);
+                }
                 st.insert(book, s);
             }
         }
@@ -301,7 +310,9 @@ pub fn analyze_stateful(
         let (mut pb, mut st) = (BTreeMap::new(), BTreeMap::new());
         for (&book, o) in fused.iter_mut() {
             if let Some((bc, s)) = o.repeated_run.take() {
-                pb.insert(book, bc);
+                if o.counted {
+                    pb.insert(book, bc);
+                }
                 st.insert(book, s);
             }
         }
@@ -316,7 +327,9 @@ pub fn analyze_stateful(
         let (mut pb, mut st) = (BTreeMap::new(), BTreeMap::new());
         for (&book, o) in fused.iter_mut() {
             if let Some((bc, s)) = o.punct_only.take() {
-                pb.insert(book, bc);
+                if o.counted {
+                    pb.insert(book, bc);
+                }
                 st.insert(book, s);
             }
         }
@@ -329,7 +342,9 @@ pub fn analyze_stateful(
         let (mut pb, mut st) = (BTreeMap::new(), BTreeMap::new());
         for (&book, o) in fused.iter_mut() {
             if let Some((bc, s)) = o.mixed_script.take() {
-                pb.insert(book, bc);
+                if o.counted {
+                    pb.insert(book, bc);
+                }
                 st.insert(book, s);
             }
         }

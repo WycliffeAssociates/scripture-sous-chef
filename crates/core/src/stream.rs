@@ -121,6 +121,25 @@ impl WalkPlan {
         n
     }
 
+    /// The products the site-bearing listeners need on an *uncounted* book
+    /// (anchor collection only — the site-free rules skip such books).
+    fn anchor_needs(&self) -> Needs {
+        let mut n = Needs::default();
+        if self.casing {
+            n.tokens = true;
+        }
+        if self.adjacency || self.punct_only {
+            n.tape = true;
+        }
+        if self.spacing || self.repeated_run {
+            n.graphemes = true;
+        }
+        if self.repeated_run || self.mixed_script {
+            n.tokens = true;
+        }
+        n
+    }
+
     /// The products the always-on (project) listeners need.
     fn project_needs(&self) -> Needs {
         let mut n = Needs::default();
@@ -136,9 +155,17 @@ impl WalkPlan {
 
 /// One book's fused-walk outputs: each enabled counting listener's
 /// `(book stats, sites)`, the project listeners' outputs, and the book's
-/// token cache slice.
+/// token cache slice. For a book outside the `counted` scope (ADR 0043) the
+/// walk still runs the site-bearing listeners — the judge phase consumes the
+/// sites (ADR 0044) instead of re-scanning the book per rule — but the
+/// assembly discards the stats half (`counted == false`), so the carried
+/// prior counts stay authoritative. Site-free rules (proportionality,
+/// rare-glyph, mixed-case) skip uncounted books entirely.
 #[derive(Default)]
 pub(crate) struct BookOut {
+    /// Whether the counting listeners' stats are valid for the supersede
+    /// merge (the book was in the reduce scope).
+    pub counted: bool,
     pub casing: Option<(casing::BookCasing, Vec<casing::LowerSite>)>,
     pub adjacency: Option<(punctuation::BookPunctuationAdjacency, Vec<(Sid, crate::span::Span)>)>,
     pub spacing: Option<(punctuation::BookPunctuationSpacing, Vec<punctuation::SpacingSite>)>,
@@ -179,19 +206,22 @@ fn walk_book(
     source: Option<&VerseMap>,
     plan: &WalkPlan,
 ) -> BookOut {
+    // Site-bearing listeners run on every book — for an uncounted book their
+    // stats are discarded but their sites feed the judge (the anchor
+    // collection of the port's phase 2); site-free listeners run only where
+    // they count.
     let needs = if count {
         plan.counting_needs().union(plan.project_needs())
     } else {
-        plan.project_needs().union(Needs::default())
+        plan.anchor_needs().union(plan.project_needs())
     };
 
-    // Counting listeners (only for counted books).
-    let mut casing_acc = (count && plan.casing).then(casing::CasingAcc::new);
-    let mut adjacency_acc = (count && plan.adjacency).then(punctuation::AdjacencyAcc::new);
-    let mut spacing_acc = (count && plan.spacing).then(punctuation::SpacingAcc::new);
-    let mut repeated_acc = (count && plan.repeated_run).then(lexical::RepeatedRunAcc::new);
-    let mut punct_only_acc = (count && plan.punct_only).then(lexical::PunctOnlyAcc::new);
-    let mut mixed_script_acc = (count && plan.mixed_script).then(script_mixing::MixedScriptAcc::new);
+    let mut casing_acc = plan.casing.then(casing::CasingAcc::new);
+    let mut adjacency_acc = plan.adjacency.then(punctuation::AdjacencyAcc::new);
+    let mut spacing_acc = plan.spacing.then(punctuation::SpacingAcc::new);
+    let mut repeated_acc = plan.repeated_run.then(lexical::RepeatedRunAcc::new);
+    let mut punct_only_acc = plan.punct_only.then(lexical::PunctOnlyAcc::new);
+    let mut mixed_script_acc = plan.mixed_script.then(script_mixing::MixedScriptAcc::new);
     let mut rare_glyph_acc = (count && plan.rare_glyph).then(rare_glyph::RareGlyphAcc::new);
     let mut mixed_case_acc = (count && plan.mixed_case).then(mixed_case::MixedCaseAcc::new);
     let mut prop_acc =
@@ -264,6 +294,7 @@ fn walk_book(
     }
 
     BookOut {
+        counted: count,
         casing: casing_acc.map(casing::CasingAcc::finish),
         adjacency: adjacency_acc.map(punctuation::AdjacencyAcc::finish),
         spacing: spacing_acc.map(punctuation::SpacingAcc::finish),

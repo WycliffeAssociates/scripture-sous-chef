@@ -1259,6 +1259,64 @@ mod tests {
     use super::*;
     use crate::sid::BookId;
 
+    /// The streaming listener's cross-seam state (carried left edge, the
+    /// at-most-one buffered seam-right opportunity) must reproduce the batch
+    /// walk (`for_each_spacing_opportunity`, which pre-computes every verse's
+    /// edges) exactly — same per-mark cells, same sites in the same order.
+    /// Covers: mark at verse end resolved by the next verse, empty and
+    /// whitespace-only verses between them, a leading mark reading the
+    /// previous verse's class across the seam, and a trailing mark at book
+    /// end (abstain).
+    #[test]
+    fn streaming_spacing_walk_equals_batch_walk() {
+        let books: &[&[&str]] = &[
+            &["word,", "next words."],
+            &["end.", "", "   ", "Next verse!"],
+            &["a ,", ")", "7", ". lead", "tail ."],
+            &["", "only."],
+            &[".", ",", "!"],
+        ];
+        for (bi, verses) in books.iter().enumerate() {
+            let vs: Vec<(Sid, &str)> = verses
+                .iter()
+                .enumerate()
+                .map(|(i, t)| {
+                    (Sid::new(BookId::from_str("GEN").unwrap(), 1, (i + 1) as u16), *t)
+                })
+                .collect();
+
+            // Batch reference.
+            let mut ref_cells: BTreeMap<char, [u64; SIDE_CELLS]> = BTreeMap::new();
+            let mut ref_sites: Vec<(Sid, char, Option<SideRead>, Option<SideRead>, Span, Span)> =
+                Vec::new();
+            for_each_spacing_opportunity(&vs, |sid, opp| {
+                let cell = ref_cells.entry(opp.mark).or_insert([0u64; SIDE_CELLS]);
+                if let Some(r) = opp.left {
+                    cell[cell_index(Side::Left, r.class, r.form)] += 1;
+                }
+                if let Some(r) = opp.right {
+                    cell[cell_index(Side::Right, r.class, r.form)] += 1;
+                }
+                ref_sites.push((sid, opp.mark, opp.left, opp.right, opp.left_span, opp.right_span));
+            });
+
+            // Streaming listener over the same verses.
+            let (book, sites) = crate::stream::drive_book(
+                &vs,
+                crate::stream::Needs { graphemes: true, ..Default::default() },
+                SpacingAcc::new(),
+                |a, v, _| a.verse(v),
+                SpacingAcc::finish,
+            );
+            let got_sites: Vec<_> = sites
+                .iter()
+                .map(|s| (s.sid, s.mark, s.left, s.right, s.left_span, s.right_span))
+                .collect();
+            assert_eq!(book.per_mark, ref_cells, "cells for book #{bi}");
+            assert_eq!(got_sites, ref_sites, "sites for book #{bi}");
+        }
+    }
+
     // These first tests pin the *candidate extraction* (`adjacency_candidates`)
     // — the spans that enter stats. They are the old deterministic rule's tests,
     // now testing which runs become candidates rather than which are verdicts:
