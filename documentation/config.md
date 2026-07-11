@@ -567,3 +567,12 @@ For corpora with straight-quote inconsistency:
 | `debug/<corpus>.clusters.json` | Aggregated clusters with `score_breakdown` showing every weight, evidence, and multiplier that built each score |
 
 The CLI's stdout shows surfaced clusters by default; pass `--all` to print everything (including unsurfaced).
+
+
+## The census is config-independent
+
+`census(map) → Inventory` (ADR 0058) has no entry in this document by
+design: nothing in `Config` — rule enablement or any knob — can change a
+census count, a sort, or a row. Its one option, `example_cap`, is a
+presentation capacity (how many example sites ride along per row), not a
+judgment knob.

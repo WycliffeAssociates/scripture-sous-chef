@@ -218,3 +218,20 @@ The first file found wins. Pass `--config <path>` to override.
 Both extensions accept JSONC syntax (`//` line and `/* */` block
 comments are stripped before parsing); the extension is purely a
 hint for editor highlighting.
+
+
+## The census (`census(map) → Inventory`, ADR 0058)
+
+A second pure entrypoint beside `analyze`: exhaustive counts with no
+thresholds and no judgment, rendered for a human. Eight lanes in fixed
+order — `letters.glyphs`, `punct.runs`, `punct.mark-spacing`,
+`punct.brackets`, `punct.format-classes`, `numbers.token-shapes`,
+`words.case-shapes`, `words.case-variants` — each a `Section { id,
+lane_total, rows }` whose `lane_total` is the lane's denominator. A `Row`
+is `{ key, count, examples }`: a typed closed `RowKey`, the raw count
+(never filtered), and up to `example_cap` (default 8) example sites —
+the first occurrence per book, in book order. Rows sort ascending by
+count (ties by key) so the rare tail floats up. The census is
+**config-independent**: it ignores the rule enable set and every knob.
+Serialization is plain serde JSON; the wasm/Tsify surface ships with the
+editor rendering as a follow-up.

@@ -1281,6 +1281,35 @@ into their actual `sous-chef.toml`. We never silently override user config.
 
 ---
 
+
+### 5.10 The event-stream execution engine (ADR 0057)
+
+Everything in §3–§5 describes *what* each rule computes; since ADR 0057 the
+engine computes it over **one fused walk**. Think of the corpus as a stream
+of books, each book a stream of verses: for every verse the walker decodes
+and classifies the text once into the scalar tape (ADR 0045), segments
+grapheme clusters once, and tokenizes words once, then hands that shared
+view to every enabled rule's *listener* — a small struct owning that rule's
+per-book accumulation. State that legitimately flows across verse seams
+(casing's pending sentence terminal, bracket stacks, duplicate-word's tail,
+spacing's cross-seam neighbour reads) lives inside the listener and resets
+only at book boundaries, because the book — never the verse — is the
+discourse unit (§0.1).
+
+The observe/judge split (ADR 0017) is unchanged: listeners produce the same
+aggregate-only per-book stats and the same call-ephemeral candidate sites
+(ADR 0044), and judges are corpus-wide math over the merged stats plus those
+sites. The fused walk now collects sites for *every* supplied book —
+including books whose counts carry from the prior in a `changed`-scoped
+call — so the judge phase is site-driven and never re-scans text. The
+census (§ADR 0058) is the same walk's second subscriber: its accumulators
+count what the rules' extractors see, with no thresholds, so report and
+squiggles can never disagree.
+
+Each rule's `reduce` survives as a single-listener driver over the same
+walk, which is what keeps every rule independently testable and calibratable
+— the fusion shares traversal, never verdicts.
+
 ## 6. What "data" we actually need
 
 Reframing the research report's data section for our reality:
