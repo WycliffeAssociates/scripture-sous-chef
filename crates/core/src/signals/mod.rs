@@ -4,9 +4,11 @@
 //! all behind the same `analyze` contract (ADR 0010, ADR 0017).
 
 pub mod bracket_balance;
+pub mod case_shape;
 pub mod casing;
 pub mod hygiene;
 pub mod lexical;
+pub mod mixed_case;
 pub mod proportionality;
 pub mod punctuation;
 pub mod rare_glyph;

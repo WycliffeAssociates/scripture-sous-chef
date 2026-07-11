@@ -101,6 +101,10 @@ pub enum RuleSites {
     /// its judge re-scans the supplied books (the `sites`-free path) rather than
     /// forward every letter occurrence (ADR 0044, ADR 0053).
     RareGlyph,
+    /// `case.mixed-case-word` carries no sites: surviving candidates are rare, so
+    /// its judge re-scans the supplied books (the `sites`-free path) rather than
+    /// forward every OtherMixed occurrence (ADR 0044, ADR 0055).
+    MixedCase,
 }
 
 /// Pair each site with its verse's text by walking a book's verses and its
@@ -255,6 +259,9 @@ pub fn stateful_rules(config: &Config) -> Vec<Box<dyn StatefulRule>> {
         }),
         Box::new(signals::rare_glyph::RareGlyph {
             cfg: config.rare_glyph,
+        }),
+        Box::new(signals::mixed_case::MixedCaseWord {
+            cfg: config.mixed_case,
         }),
     ]
 }

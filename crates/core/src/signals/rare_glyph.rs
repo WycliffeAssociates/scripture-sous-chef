@@ -75,6 +75,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::charclass::class_of;
 use crate::config::RareGlyphConfig;
+use crate::signals::case_shape;
 use crate::diagnostics::{Finding, FindingArgs, RuleId, Severity};
 use crate::evidence::{clamp_count, clamp_unit};
 use crate::rule::{self, StatefulRule, TokenCache};
@@ -428,10 +429,10 @@ fn walk_book(verses: &[(Sid, &str)], tokens: Option<&TokenCache>) -> BookGlyphs 
             book_initial = false;
 
             let key = word.to_lowercase();
-            let mut chars = word.chars();
-            let first = chars.next().unwrap();
-            let titlecase =
-                class_of(first).is_uppercase() && chars.any(|c| class_of(c).is_lowercase());
+            // Titlecase name shape via the shared helper (ADR 0055): upper first
+            // + ≥1 lowercase — deliberately looser than mixed-case's strict
+            // `Title` (it admits `McDonald`), documented in `signals::case_shape`.
+            let titlecase = case_shape::is_titlecase_name(word);
             let info = words.entry(key.clone()).or_default();
             info.tokens = info.tokens.saturating_add(1);
             info.titlecase = titlecase;

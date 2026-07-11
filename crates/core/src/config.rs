@@ -489,6 +489,45 @@ impl Default for RareGlyphConfig {
     }
 }
 
+/// Knobs for `case.mixed-case-word` (ADR 0055). Per case-folded word type, the
+/// rule scores an interior-capital (`wOrd`) occurrence as `dominance(word's
+/// not-other-mixed share) × rarity(other-mixed count)`. Position is irrelevant
+/// (a mid-word capital is position-independent), so — unlike the casing pair —
+/// there is no `trust_gate`. Ships **default-off** (a writing-system question:
+/// does this translation use capital letters at all?).
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
+pub struct MixedCaseConfig {
+    /// Minimum score to emit — the two-factor evidence (dominance × rarity).
+    /// `0.95` mirrors the casing floor (ADR 0051/0055): the spike's histogram is
+    /// spacing-like (a huge ≈0 spike from conventions/hapaxes plus a thin flat
+    /// tail), so the floor is a modest dial within that tail, not a load-bearing
+    /// discriminator. Sanitised through `clamp_unit`.
+    pub emit_score_min: f32,
+    /// The absolute recurrence knee `k`: how many OtherMixed occurrences (beyond
+    /// the first) drive the **rarity** factor to zero — `rarity = 1 − (other −
+    /// 1)/k`. A mixed form seen once is a slip (`rarity = 1`); one that recurs
+    /// past `k` is the corpus's own convention (`rarity → 0`, silent) — this is
+    /// what excuses `TUHANlah`/`baYuda`/`HaElohim` with **no name list**. `32`
+    /// mirrors the casing knee (ADR 0051/0055). Sanitised through `clamp_count`.
+    pub recurrence_k: f32,
+    /// Wilson confidence for the dominance estimate. Shrinks a small-sample
+    /// not-other-mixed majority toward 0.5, so a barely-observed word can't
+    /// assert a convention. `1.96` ≈ 95%. Sanitised through `clamp_z`.
+    pub confidence_z: f32,
+}
+
+impl Default for MixedCaseConfig {
+    fn default() -> Self {
+        Self {
+            emit_score_min: 0.95,
+            recurrence_k: 32.0,
+            confidence_z: 1.96,
+        }
+    }
+}
+
 /// Which rules to run, plus per-rule knobs. A rule **absent** from
 /// `rules` is enabled (default-on); map it to `false` to disable.
 /// Disabled rules are skipped before they run, not filtered after — so
@@ -516,6 +555,8 @@ pub struct Config {
     pub mixed_script: MixedScriptConfig,
     #[cfg_attr(feature = "serde", serde(default))]
     pub rare_glyph: RareGlyphConfig,
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub mixed_case: MixedCaseConfig,
 }
 
 impl Config {
@@ -538,6 +579,7 @@ impl Config {
             RuleId::SentenceInitialLowercase,
             RuleId::InconsistentWordCasing,
             RuleId::RareGlyph,
+            RuleId::MixedCaseWord,
         ])
     }
 

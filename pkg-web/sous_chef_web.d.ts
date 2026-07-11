@@ -31,6 +31,14 @@ export interface CasingStats {
 }
 
 /**
+ * Cached mixed-case statistics, keyed by book so an edit supersedes only its
+ * book. Corpus-wide profiles are the sums over books, derived at `judge`.
+ */
+export interface MixedCaseStats {
+    per_book: Record<string, BookMixedCase>;
+}
+
+/**
  * Cached mixed-script aggregates, keyed by book so an edit supersedes only its
  * book. Corpus-wide counts are the sums over books, derived at `judge`.
  */
@@ -178,6 +186,13 @@ export interface BookGlyphs {
 }
 
 /**
+ * One book\'s contribution: the per-word shape table.
+ */
+export interface BookMixedCase {
+    words?: Record<string, ShapeProfile>;
+}
+
+/**
  * One book\'s contribution: the pruned word table plus the cased-word-start
  * count that drives the emergent gate.
  */
@@ -198,6 +213,17 @@ export interface BookCasing {
  */
 export interface BookPunctuationSpacing {
     per_mark: Record<string, number[]>;
+}
+
+/**
+ * One case-folded word type\'s raw shape counts within one book. Raw and
+ * mergeable — no dominance, no censoring — so book-supersede holds.
+ */
+export interface ShapeProfile {
+    lower?: number;
+    title?: number;
+    allcaps?: number;
+    other?: number;
 }
 
 /**
@@ -273,6 +299,17 @@ export interface WordStats {
     book_initial?: ForcedTally;
     after_glyph?: Record<string, ForcedTally>;
     after_quote?: Record<string, ForcedTally>;
+}
+
+/**
+ * Partial overrides for `case.mixed-case-word`\'s corpus-relative score.
+ * Omitted fields keep core\'s defaults (ADR 0055): `emit_score_min` 0.95,
+ * `recurrence_k` 32, `confidence_z` 1.96.
+ */
+export interface MixedCaseOverrides {
+    emit_score_min?: number;
+    recurrence_k?: number;
+    confidence_z?: number;
 }
 
 /**
@@ -384,7 +421,7 @@ export interface CasingOverrides {
  * deterministically by `uni.redundant-zero-width-space` (ADR 0027), which needs
  * no corpus statistics.
  */
-export type RuleStats = { Casing: CasingStats } | { Proportionality: ProportionalityStats } | { PunctuationAdjacency: PunctuationAdjacencyStats } | { PunctuationSpacing: PunctuationSpacingStats } | { RepeatedCharacterRun: RepeatedCharacterRunStats } | { PunctOnlyToken: PunctOnlyTokenStats } | { MixedScript: MixedScriptStats } | { GlyphInventory: RareGlyphStats };
+export type RuleStats = { Casing: CasingStats } | { Proportionality: ProportionalityStats } | { PunctuationAdjacency: PunctuationAdjacencyStats } | { PunctuationSpacing: PunctuationSpacingStats } | { RepeatedCharacterRun: RepeatedCharacterRunStats } | { PunctOnlyToken: PunctOnlyTokenStats } | { MixedScript: MixedScriptStats } | { GlyphInventory: RareGlyphStats } | { MixedCase: MixedCaseStats };
 
 /**
  * Stable, machine-readable rule identity — a **closed set**.
@@ -395,7 +432,7 @@ export type RuleStats = { Casing: CasingStats } | { Proportionality: Proportiona
  * config and localisation off: Rust via [`RuleId::ALL`] +
  * exhaustive `match`; TS via the `Tsify` string union.
  */
-export type RuleId = "lex.excess-h-whitespace" | "hyg.tab-in-body" | "hyg.control-chars" | "hyg.zero-width-misuse" | "hyg.empty-verse" | "hyg.invalid-codepoint" | "hyg.replacement-run" | "prop.length-ratio" | "struct.source-marker-leftover" | "struct.merge-conflict-marker" | "punct.adjacency-anomaly" | "lex.duplicate-word" | "lex.punct-only-token" | "uni.combining-mark-without-base" | "uni.redundant-zero-width-space" | "uni.mixed-script-in-token" | "lex.repeated-character-run" | "uni.mixed-numeral-systems" | "punct.bracket-balance" | "punct.spacing-anomaly" | "case.sentence-initial-lowercase" | "case.inconsistent-word-casing" | "uni.rare-glyph";
+export type RuleId = "lex.excess-h-whitespace" | "hyg.tab-in-body" | "hyg.control-chars" | "hyg.zero-width-misuse" | "hyg.empty-verse" | "hyg.invalid-codepoint" | "hyg.replacement-run" | "prop.length-ratio" | "struct.source-marker-leftover" | "struct.merge-conflict-marker" | "punct.adjacency-anomaly" | "lex.duplicate-word" | "lex.punct-only-token" | "uni.combining-mark-without-base" | "uni.redundant-zero-width-space" | "uni.mixed-script-in-token" | "lex.repeated-character-run" | "uni.mixed-numeral-systems" | "punct.bracket-balance" | "punct.spacing-anomaly" | "case.sentence-initial-lowercase" | "case.inconsistent-word-casing" | "uni.rare-glyph" | "case.mixed-case-word";
 
 /**
  * Structured message arguments — the additive payload ADR 0010 §6
@@ -408,7 +445,7 @@ export type RuleId = "lex.excess-h-whitespace" | "hyg.tab-in-body" | "hyg.contro
  * collected into `Vec`s and never copied on a hot path, so this costs
  * nothing real (ADR 0016).
  */
-export type FindingArgs = { kind: "length-ratio"; ratio_pct: number; scope: LengthRatioScope } | { kind: "bracket-window"; window: DelimObservation[]; measure: BracketMeasure; majority: number; total: number } | { kind: "spacing-convention"; mark: string; signature: string; count: number; total: number } | { kind: "casing-convention"; glyph: string | null; quoted: boolean; upper: number; total: number } | { kind: "word-casing"; word: string; upper: number; total: number } | { kind: "punct-only-rate"; count: number; units: number } | { kind: "adjacency-evidence"; pattern: string; k: number; lead_n: number; books: number; corpus: number } | { kind: "script-mix-evidence"; k: number; n: number; books: number; corpus: number } | { kind: "repeat-evidence"; ch: string; run: number } | { kind: "duplicate-word"; first_sid: string } | { kind: "rare-glyph"; glyph: string; count: number };
+export type FindingArgs = { kind: "length-ratio"; ratio_pct: number; scope: LengthRatioScope } | { kind: "bracket-window"; window: DelimObservation[]; measure: BracketMeasure; majority: number; total: number } | { kind: "spacing-convention"; mark: string; signature: string; count: number; total: number } | { kind: "casing-convention"; glyph: string | null; quoted: boolean; upper: number; total: number } | { kind: "word-casing"; word: string; upper: number; total: number } | { kind: "punct-only-rate"; count: number; units: number } | { kind: "adjacency-evidence"; pattern: string; k: number; lead_n: number; books: number; corpus: number } | { kind: "script-mix-evidence"; k: number; n: number; books: number; corpus: number } | { kind: "repeat-evidence"; ch: string; run: number } | { kind: "duplicate-word"; first_sid: string } | { kind: "rare-glyph"; glyph: string; count: number } | { kind: "mixed-case-word"; word: string; other: number; total: number };
 
 /**
  * The catalog plus the shared sensitivity dial: labelled `emit_score_min`
@@ -476,6 +513,7 @@ export interface SousConfig {
     punct_only_token?: PunctOnlyTokenOverrides;
     mixed_script?: MixedScriptOverrides;
     rare_glyph?: RareGlyphOverrides;
+    mixed_case?: MixedCaseOverrides;
 }
 
 /**

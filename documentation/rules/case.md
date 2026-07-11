@@ -2,20 +2,28 @@
 
 Source: `crates/core/src/signals/casing.rs`.
 
-Two rules from one module and one shared per-word case lexicon (ADR 0051,
-superseding ADR 0035's per-glyph dominance). An occurrence's case is modelled
-as the OR of two causes: the position forces uppercase, or the word is
-intrinsically capitalized. Censoring is one-directional — uppercase at a forced
-position is uninformative about the word; lowercase is informative everywhere.
-Both rules score a lowercase site as `dominance × rarity` and share one config
-(`Config.casing`: `emit_score_min` 0.95, `recurrence_k` 32, `confidence_z`
-1.96). Both ship **default OFF**.
+Three rules from this family. Two share one per-word case lexicon (ADR 0051,
+superseding ADR 0035's per-glyph dominance); the third,
+[`case.mixed-case-word`](#casemixed-case-word--an-interior-capital-slip)
+(ADR 0055), rides its own compact shape table for the *interior*-capital
+phenomenon.
+
+**The casing pair** (`case.sentence-initial-lowercase`,
+`case.inconsistent-word-casing`) model an occurrence's case as the OR of two
+causes: the position forces uppercase, or the word is intrinsically
+capitalized. Censoring is one-directional — uppercase at a forced position is
+uninformative about the word; lowercase is informative everywhere. Both score a
+lowercase site as `dominance × rarity` and share one config (`Config.casing`:
+`emit_score_min` 0.95, `recurrence_k` 32, `confidence_z` 1.96). All three rules
+ship **default OFF**.
 
 Forced positions are structural: a word right after a *bare* attached terminal
 glyph (the pending-terminal machine, carried across verse seams), plus the
 book-initial word. **Never verse-initial** — verses are addressing, not
-discourse (`CLAUDE.md`). The word unit is a UAX #29 token with letter-flanked
-hyphen compounds merged (`Bar-jesus` is one word), pure-number tokens dropped.
+discourse (`CLAUDE.md`). The pair's word unit is a UAX #29 token with letter-
+flanked hyphen compounds merged (`Bar-jesus` is one word), pure-number tokens
+dropped; `case.mixed-case-word` uses the *unmerged* letter-run token instead
+(see its section).
 
 ---
 
@@ -117,3 +125,61 @@ the merge). Findings are recovered from the forwarded reduce sites, or by
 re-walking a book counted from the prior (ADR 0044). See ADR 0017 (stateful
 shape), 0042 (book fan-out), 0044 (reduce→judge sites), 0050 (two-factor
 precedent), and the 2026-07-09 casing calibration doc.
+
+---
+
+## `case.mixed-case-word` — an interior-capital slip
+
+> **Severity** Info · **Default** OFF · **Scope** stateful (per-book word shape table) · **Knobs** `emit_score_min` (0.95), `recurrence_k` (32), `confidence_z` (1.96) · **ADR** 0017, 0050, 0055
+
+**Flags** — A word written with a capital letter *inside* it (`wOrd`, `DIos`,
+`MUngu`, `FIls`, `asÍ`) — an OtherMixed shape: it has both cases and is neither
+Titlecase nor ALLCAPS — where this translation almost always writes that exact
+word in a clean shape. `score = dominance(word's not-other-mixed share) ×
+rarity(this mixed form's recurrence)`.
+
+**Clean (learned silent)** — A word the translation itself writes OtherMixed
+repeatedly (the recurrence factor collapses it — a convention, not a slip):
+`McX` name shapes, `LORD`-inflected forms (`TUHANlah`), Bantu class prefixes
+(`baYuda`), Hebrew construct forms (`HaElohim ×419`) — **excused with no
+hardcoded list**. A word dominantly written OtherMixed (a live convention) has
+dominance ≈ 0 and stays silent. A **hapax** mixed word stays silent (it has no
+clean-shape mass, so dominance is 0). Single cased letters (`I`, `A`) are never
+OtherMixed; caseless scripts have no shape.
+
+**Why it matters** — The Shift-key-slip catch, judged against how *this
+translation* writes that exact word — not a dictionary. Its bulk (657 of the
+950 fleet reference sites) is *first-upper* mixed words (`DIos`, `McDonald`),
+which the casing pair is blind to (they fire only on lowercase word-starts).
+**Position is irrelevant** — a mid-word capital is position-independent, so
+this rule imports none of the casing pair's forced-position / trust / censoring
+machinery (verified on the fleet, not assumed).
+
+**Token unit** — the plain UAX #29 **letter-run** word, *not* casing's
+hyphen-merged unit: `Obed-Edom` is two Titlecase tokens, never one mixed one.
+
+**Boundary (ADR 0055)** — one phenomenon, one finding: a *first-lower* mixed
+word (`asÍ`) overlaps the casing pair's lowercase-site domain, so
+`case.sentence-initial-lowercase` and `case.inconsistent-word-casing` **skip
+OtherMixed tokens** — the interior-capital defect is reported here, once, not
+twice as a spurious lowercase-start finding.
+
+**Not this rule** — Missing-space run-ons (`deJésus`) are real defects but a
+*spacing* phenomenon; they surface as hapax mixed forms, so this rule stays
+silent on them (they belong to the spacing / attachment lane).
+
+**Config** — `Config.mixed_case` (`emit_score_min` 0.95, `recurrence_k` 32,
+`confidence_z` 1.96). **Stricter:** raise `emit_score_min` or lower
+`recurrence_k`. **Looser:** the reverse.
+
+**Stats / ADR ties** — Per book, a word→four-shape-count table
+(`lower`/`title`/`allcaps`/`other`), raw and mergeable; dominance and the
+recurrence knee are judge-time sums over the merged table. Every **cased** word
+is kept — mixed-only pruning is unsound because a candidate's clean-shape mass
+(which drives dominance) is spread across books (see the module doc). Judge
+forwards no sites and re-scans for spans (ADR 0044), like `uni.rare-glyph`. The
+shape classifier and the titlecase name-shape helper live in
+`signals::case_shape`, shared with `uni.rare-glyph` (whose `is_titlecase_name`
+is intentionally looser — see ADR 0055). Shipped by the
+[mixed-case spike](../calibration/2026-07-10-mixedcase-spike.md); the production
+rule reproduces its 950-finding reference count exactly.

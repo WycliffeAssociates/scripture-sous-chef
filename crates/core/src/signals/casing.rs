@@ -77,6 +77,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use crate::analysis::association::Table2;
 use crate::charclass::class_of;
+use crate::signals::case_shape::{case_shape, CaseShape};
 use crate::config::CasingConfig;
 use crate::diagnostics::{Finding, FindingArgs, RuleId, Severity};
 use crate::evidence::{clamp_count, clamp_unit, clamp_z, wilson_lower_bound};
@@ -936,7 +937,18 @@ fn walk_book(verses: &[(Sid, &str)]) -> (BookCasing, Vec<LowerSite>) {
             }
             let key = text[w.start..w.end].to_lowercase();
             bc.words.entry(key.clone()).or_default().record(pos, case);
-            if case == Case::Lower {
+            // Boundary predicate (ADR 0055): an OtherMixed token (`asÍ`,
+            // `word-wOrd`) is `case.mixed-case-word`'s to report — its interior
+            // capital is the defect, not its incidental lowercase initial. Skip
+            // the lowercase site so the phenomenon is reported once, not twice.
+            // The word still tallied above, so it keeps contributing to the
+            // lexicon/habit; only the flag candidate is suppressed. (An
+            // OtherMixed word whose first letter is uppercase never reaches here
+            // — `case` would be `Upper` — so this only touches the first-lower
+            // overlap class.)
+            if case == Case::Lower
+                && case_shape(&text[w.start..w.end]) != Some(CaseShape::OtherMixed)
+            {
                 sites.push(LowerSite {
                     sid: *sid,
                     start: w.start as u32,

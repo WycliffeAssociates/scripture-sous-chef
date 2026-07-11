@@ -81,6 +81,7 @@ define_rule_ids! {
     SentenceInitialLowercase => "case.sentence-initial-lowercase",
     InconsistentWordCasing   => "case.inconsistent-word-casing",
     RareGlyph                => "uni.rare-glyph",
+    MixedCaseWord            => "case.mixed-case-word",
 }
 
 impl std::fmt::Display for RuleId {
@@ -261,6 +262,14 @@ pub enum FindingArgs {
     /// corpus-wide eligible (single-script letter-token) occurrence count.
     #[cfg_attr(feature = "serde", serde(rename = "rare-glyph"))]
     RareGlyph { glyph: char, count: u32 },
+    /// `case.mixed-case-word`: the flagged word's corpus-wide OtherMixed-vs-total
+    /// counts, so the consumer can render "this translation writes ‘dios’ with an
+    /// interior capital 1 of 41 places" — the descriptive rate behind the
+    /// Wilson-bound `score` (ADR 0048, 0055). The flagged occurrence (the mixed
+    /// form) is in the finding's `range`; `word` is the case-folded key, `other`
+    /// the mixed-shape count, `total` all cased occurrences of the word.
+    #[cfg_attr(feature = "serde", serde(rename = "mixed-case-word"))]
+    MixedCaseWord { word: String, other: u32, total: u32 },
 }
 
 /// One addressable content finding in one verse.

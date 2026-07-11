@@ -15,6 +15,7 @@ use crate::diagnostics::RuleId;
 use crate::sid::BookId;
 use crate::signals::casing::CasingStats;
 use crate::signals::lexical::{PunctOnlyTokenStats, RepeatedCharacterRunStats};
+use crate::signals::mixed_case::MixedCaseStats;
 use crate::signals::proportionality::ProportionalityStats;
 use crate::signals::punctuation::{PunctuationAdjacencyStats, PunctuationSpacingStats};
 use crate::signals::rare_glyph::RareGlyphStats;
@@ -48,6 +49,10 @@ pub enum RuleStats {
     /// census substrate) plus word-level detail confined to locally-rare
     /// letters. Named for its dual role as the future glyph census accumulator.
     GlyphInventory(RareGlyphStats),
+    /// `case.mixed-case-word` (ADR 0055): per book, a word→four-shape-count table
+    /// (`lower`/`title`/`allcaps`/`other`). Raw and mergeable; dominance and the
+    /// recurrence knee are judge-time sums over the merged table.
+    MixedCase(MixedCaseStats),
 }
 
 impl RuleStats {
@@ -78,6 +83,9 @@ impl RuleStats {
             (RuleStats::GlyphInventory(a), RuleStats::GlyphInventory(b)) => {
                 RuleStats::GlyphInventory(a.merge(b))
             }
+            (RuleStats::MixedCase(a), RuleStats::MixedCase(b)) => {
+                RuleStats::MixedCase(a.merge(b))
+            }
             // Mismatched variants can't occur via `analyze_stateful` (it keys
             // prior and fresh by the same `RuleId`). For malformed cached input
             // the **fresh** reduction wins — never the stale prior. The left
@@ -92,7 +100,8 @@ impl RuleStats {
                 | RuleStats::RepeatedCharacterRun(_)
                 | RuleStats::PunctOnlyToken(_)
                 | RuleStats::MixedScript(_)
-                | RuleStats::GlyphInventory(_),
+                | RuleStats::GlyphInventory(_)
+                | RuleStats::MixedCase(_),
                 fresh,
             ) => fresh,
         }
@@ -109,6 +118,7 @@ impl RuleStats {
             RuleStats::PunctOnlyToken(p) => p.remove_book(book),
             RuleStats::MixedScript(m) => m.remove_book(book),
             RuleStats::GlyphInventory(g) => g.remove_book(book),
+            RuleStats::MixedCase(m) => m.remove_book(book),
         }
     }
 }

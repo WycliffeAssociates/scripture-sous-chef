@@ -248,6 +248,15 @@ pub fn card(id: RuleId) -> RuleCard {
             ),
             CorpusRelative,
         ),
+        RuleId::MixedCaseWord => (
+            "Odd capital inside a word",
+            "A word with a capital letter in the middle (\u{201C}wOrd\u{201D}, \u{201C}DIos\u{201D}), where your translation almost always writes that word normally.",
+            "Judged against how this translation itself writes that exact word: a stray Shift-key slip stands out, while intentional mid-word capitals your text uses repeatedly (name styles like \u{201C}McDonald\u{201D}, prefix-and-name spellings, inflected all-caps names) are left alone.",
+            Some(
+                "Does your writing system use capital letters? Turn this on to catch accidental capitals struck in the middle of a word.",
+            ),
+            CorpusRelative,
+        ),
     };
     RuleCard {
         code: id,
@@ -408,6 +417,12 @@ pub fn message(id: RuleId, args: Option<&FindingArgs>) -> String {
             ),
             _ => "A letter this translation almost never uses.".into(),
         },
+        RuleId::MixedCaseWord => match args {
+            Some(FindingArgs::MixedCaseWord { word, other, total }) => format!(
+                "‘{word}’ has a capital in the middle here — this translation writes it that way {other} of {total} times."
+            ),
+            _ => "A word with an unexpected capital letter in the middle.".into(),
+        },
     }
 }
 
@@ -458,6 +473,7 @@ mod tests {
                 RuleId::SentenceInitialLowercase,
                 RuleId::InconsistentWordCasing,
                 RuleId::RareGlyph,
+                RuleId::MixedCaseWord,
             ]
         );
     }

@@ -201,8 +201,19 @@ pub fn analyze_stateful(
     } else {
         0
     };
-    let token_cache: Option<rule::TokenCache> =
-        (project_token.len() + repeated_run_scans + mixed_script_scans + rare_glyph_scans >= 2)
+    // Mixed-case tokenizes in both reduce (per-word shape table) and judge
+    // (re-scan to locate the surviving OtherMixed occurrences), like rare-glyph.
+    let mixed_case_scans = if config.is_enabled(RuleId::MixedCaseWord) {
+        2
+    } else {
+        0
+    };
+    let token_cache: Option<rule::TokenCache> = (project_token.len()
+        + repeated_run_scans
+        + mixed_script_scans
+        + rare_glyph_scans
+        + mixed_case_scans
+        >= 2)
             .then(|| build_token_cache(target));
 
     // The per-verse phase is embarrassingly parallel — each verse is judged
