@@ -206,10 +206,10 @@ export interface BookCasing {
 }
 
 /**
- * One book\'s per-mark **signature tables**: a 16-cell histogram of joint
- * `(left, right)` context per mark (ADR 0054). **No sites** — spans re-derive
- * from the text at `judge`, so this stays a few dozen bytes per mark even
- * corpus-wide.
+ * One book\'s per-mark **per-side tallies**: the four counters above, one set
+ * per mark (ADR 0054 amendment, replacing the [u64; 16] joint signature table).
+ * **No sites** — spans re-derive from the text at `judge`, so this stays a few
+ * dozen bytes per mark even corpus-wide.
  */
 export interface BookPunctuationSpacing {
     per_mark: Record<string, number[]>;
@@ -284,6 +284,19 @@ export interface RatioObs {
     sid: string;
     ratio: number;
     len: number;
+}
+
+/**
+ * One violated side of a `punct.spacing-anomaly` finding (ADR 0054 amendment):
+ * the observed minority `form` (`\"attached\"` or `\"spaced\"`), how many of the
+ * mark\'s judged occurrences **on this side** take that form (`count`), and the
+ * side\'s total judged occupancy `N_side` (`total`). `count / total` is the
+ * descriptive rate the Wilson-bound `score` deliberately isn\'t (ADR 0048).
+ */
+export interface SpacingSide {
+    form: string;
+    count: number;
+    total: number;
 }
 
 /**
@@ -445,7 +458,7 @@ export type RuleId = "lex.excess-h-whitespace" | "hyg.tab-in-body" | "hyg.contro
  * collected into `Vec`s and never copied on a hot path, so this costs
  * nothing real (ADR 0016).
  */
-export type FindingArgs = { kind: "length-ratio"; ratio_pct: number; scope: LengthRatioScope } | { kind: "bracket-window"; window: DelimObservation[]; measure: BracketMeasure; majority: number; total: number } | { kind: "spacing-convention"; mark: string; signature: string; count: number; total: number } | { kind: "casing-convention"; glyph: string | null; quoted: boolean; upper: number; total: number } | { kind: "word-casing"; word: string; upper: number; total: number } | { kind: "punct-only-rate"; count: number; units: number } | { kind: "adjacency-evidence"; pattern: string; k: number; lead_n: number; books: number; corpus: number } | { kind: "script-mix-evidence"; k: number; n: number; books: number; corpus: number } | { kind: "repeat-evidence"; ch: string; run: number } | { kind: "duplicate-word"; first_sid: string } | { kind: "rare-glyph"; glyph: string; count: number } | { kind: "mixed-case-word"; word: string; other: number; total: number };
+export type FindingArgs = { kind: "length-ratio"; ratio_pct: number; scope: LengthRatioScope } | { kind: "bracket-window"; window: DelimObservation[]; measure: BracketMeasure; majority: number; total: number } | { kind: "spacing-convention"; mark: string; left: SpacingSide | null; right: SpacingSide | null } | { kind: "casing-convention"; glyph: string | null; quoted: boolean; upper: number; total: number } | { kind: "word-casing"; word: string; upper: number; total: number } | { kind: "punct-only-rate"; count: number; units: number } | { kind: "adjacency-evidence"; pattern: string; k: number; lead_n: number; books: number; corpus: number } | { kind: "script-mix-evidence"; k: number; n: number; books: number; corpus: number } | { kind: "repeat-evidence"; ch: string; run: number } | { kind: "duplicate-word"; first_sid: string } | { kind: "rare-glyph"; glyph: string; count: number } | { kind: "mixed-case-word"; word: string; other: number; total: number };
 
 /**
  * The catalog plus the shared sensitivity dial: labelled `emit_score_min`

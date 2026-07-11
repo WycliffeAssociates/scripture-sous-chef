@@ -226,25 +226,26 @@ impl Default for PunctuationAdjacencyConfig {
     }
 }
 
-/// Knobs for `punct.spacing-anomaly`. The rule learns, per punctuation mark, the
-/// distribution of its **attachment signatures** — the joint `(left, right)`
-/// context over {letter, space, punct, digit} — and flags occurrences in a
-/// signature *rare for that mark in this corpus*, scored by how dominant the
-/// complement is (ADR 0048) times the signature's recurrence rarity (ADR 0050),
-/// generalised to joint signatures by ADR 0054. The grapheme-governed
-/// opportunity scan is fixed; these values are the whole judgment surface. Ships
-/// **default-disabled** until the consumer opts into a spacing pass.
+/// Knobs for `punct.spacing-anomaly`. The rule learns, per punctuation mark, **two
+/// per-side conventions** — is the mark `attached` (letter neighbour) or `spaced`
+/// (whitespace/seam) on its left, and independently on its right — and flags
+/// occurrences whose side form is *rare for that mark in this corpus*, scored by
+/// how dominant the side's majority is (ADR 0048) times the form's recurrence
+/// rarity (ADR 0050); a punct/digit neighbour abstains (ADR 0054 amendment —
+/// per-side factorization). The grapheme-governed opportunity scan is fixed;
+/// these values are the whole judgment surface. Ships **default-disabled** until
+/// the consumer opts into a spacing pass.
 /// Scores are always finite: `judge` sanitises out-of-range / NaN input here.
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default))]
 pub struct PunctuationSpacingConfig {
     /// **The user-facing decision threshold**: emit an occurrence in a rare
-    /// signature only when its two-factor evidence — the *conservative*
-    /// dominance of the signature's complement (a Wilson lower bound) **times**
-    /// the signature's recurrence rarity — is at least this value (ADR 0054
-    /// generalises the ADR 0029/0050 minority form to a joint signature). Before
-    /// ADR 0050 the score was dominance alone
+    /// side form only when its two-factor evidence — the *conservative*
+    /// dominance of that side's majority (a Wilson lower bound) **times** the
+    /// form's recurrence rarity — is at least this value (ADR 0054 amendment
+    /// factors the ADR 0029/0050 minority form into two per-side binaries).
+    /// Before ADR 0050 the score was dominance alone
     /// and this read as a literal convention share; now a strong convention
     /// whose minority *recurs* is discounted by the rarity factor, so the floor
     /// is a two-factor cutoff, not a share. Raising it surfaces less; it is
@@ -260,9 +261,9 @@ pub struct PunctuationSpacingConfig {
     /// **rarity** factor to zero — the recurrence knee that makes the score
     /// two-factor: `score = dominance(complement) × rarity(count)` where
     /// `rarity = 1 − min(count − 1, K) / K` and the effective knee
-    /// `K = minority_recurrence_k + minority_rate_per_10k · N / 10 000` scales
-    /// with the mark's total occurrences `N` (ADR 0050, retained under 16-cell
-    /// signature denominators by ADR 0054). A signature seen once is a rare slip
+    /// `K = minority_recurrence_k + minority_rate_per_10k · N_side / 10 000`
+    /// scales with the side's judged occupancy `N_side` (ADR 0050, retained under
+    /// the per-side denominators by the ADR 0054 amendment). A form seen once is a rare slip
     /// against a strong convention (`rarity = 1`, surfaces); one that recurs at
     /// scale is the text's *second* convention (`rarity → 0`, silent) — the
     /// resolution that separates ne_udb's attached `!`/`,` slips (keep, and its

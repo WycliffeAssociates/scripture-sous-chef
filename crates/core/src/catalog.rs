@@ -358,21 +358,28 @@ pub fn message(id: RuleId, args: Option<&FindingArgs>) -> String {
             _ => "A word this translation usually capitalizes, written lowercase here.".into(),
         },
         RuleId::PunctuationSpacingAnomaly => match args {
-            Some(FindingArgs::SpacingConvention { mark, signature, count, total }) => {
-                let (left, right) = signature.split_once('|').unwrap_or((signature, ""));
-                let side = |c: &str| match c {
-                    "letter" => "a letter",
-                    "space" => "a space",
-                    "digit" => "a digit",
-                    _ => "punctuation",
+            Some(FindingArgs::SpacingConvention { mark, left, right }) => {
+                let clause = |s: &crate::diagnostics::SpacingSide, side: &str| {
+                    let verb = if s.form == "attached" { "attached" } else { "spaced" };
+                    format!(
+                        "{verb} on the {side} in only {} of {} places ({}%)",
+                        s.count,
+                        s.total,
+                        pct(s.count, s.total),
+                    )
                 };
-                format!(
-                    "‘{mark}’ has {} before it and {} after it here — a spacing \
-                     this translation uses in only {count} of {total} places ({}%).",
-                    side(left),
-                    side(right),
-                    pct(*count, *total),
-                )
+                let parts: Vec<String> = [
+                    left.as_ref().map(|s| clause(s, "left")),
+                    right.as_ref().map(|s| clause(s, "right")),
+                ]
+                .into_iter()
+                .flatten()
+                .collect();
+                if parts.is_empty() {
+                    "This mark is spaced differently from this translation’s usual style.".into()
+                } else {
+                    format!("‘{mark}’ is {} here.", parts.join("; and "))
+                }
             }
             _ => "This mark is spaced differently from this translation’s usual style.".into(),
         },

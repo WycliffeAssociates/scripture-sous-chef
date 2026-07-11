@@ -1,7 +1,9 @@
 # ADR 0054: `punct.spacing-anomaly` — joint attachment signatures
 
 - **Date:** 2026-07-10
-- **Status:** Accepted
+- **Status:** Accepted — **but the 16-cell model below was superseded the same
+  day by the per-side factorization amendment at the end of this file. Read that
+  first; the 16-cell sections are lineage.**
 - **Supersedes / amends:** [ADR 0029](0029-punctuation-spacing-corpus-relative.md)
   (the before-only binary spaced/attached verdict — **superseded**),
   [ADR 0050](0050-spacing-minority-recurrence-factor.md) (the volume-scaled
@@ -192,3 +194,132 @@ old stats shape is deleted, no compat shim.**
 - **Quote attachment** as a first-class context (beyond `punct`) rides the parked
   quote work (ADR 0039).
 - **Preset rows** for the knee, from the truncation experiment.
+
+---
+
+## Amendment (same day, 2026-07-10): per-side factorization
+
+**Status of this amendment: Accepted — supersedes the 16-cell decision above.**
+The 16-cell joint-signature model shipped, was measured on the fleet, and was
+adjudicated by the user the same day. It is replaced by **two conditional
+per-side binaries**. The sections above are kept as the lineage record; where
+they conflict with this amendment, this amendment wins.
+
+### Why the 16-cell model was wrong
+
+At shipped defaults the joint model produced **115,883 fleet findings**
+(~78/corpus vs the old before-only rule's ~2.6). Two mechanisms, both structural:
+
+1. **Sixteen cells means up to fifteen flaggable minorities per mark.** The
+   punct/digit *context* classes — added to dissolve the special cases — became
+   flaggable *combinations* in their own right. The worst offenders were
+   quote-adjacent sites (`,"`, `."`): the closing quote read `punct`, so a comma
+   that the old rule deliberately excluded now carried a `letter|punct`
+   signature that could be the rare minority and fire. The exclusion list had
+   not been dissolved so much as *inverted into findings*.
+2. **The descriptive-share dominance factor degenerates in a multinomial.** The
+   score used `dominance = wilson_lower_bound(N − count, N, z)` — the complement
+   of one cell. In a 16-way split the complement of any small cell is ≈
+   everything, so dominance ≈ 1 for every rare cell and the score collapsed to
+   *rarity alone* — rarity without any "and the majority genuinely disagrees"
+   check. Rare-*because-the-context-is-rare* fired as loudly as rare-*because-
+   misplaced*.
+
+### The model (user ruling — "attached L, attached R? Or spaced. That's 3 part.")
+
+Per mark, per side (left, right), classify the side's context into three cases:
+
+- **letter → `attached`** (the mark clings to a word),
+- **space → `spaced`** (whitespace crossed, **or** the verse/book seam reached
+  with only whitespace between — the seam reads as whitespace, ADR 0054's
+  no-edge ruling unchanged),
+- **punct / digit → abstention** — *the attached-vs-spaced question does not
+  apply on that side.* Not a category; the occurrence contributes nothing to
+  that side's tally and can never be flagged there.
+
+Two **binary** conventions are learned per mark — left `attached`-vs-`spaced`
+and right `attached`-vs-`spaced` — each over **only** the occurrences where that
+side's question applies. The abstention is the whole fix for mechanism (1):
+quote-adjacent `,"`/`."` abstain on the quote side (returning quote-adjacency to
+unjudged-by-structure until the boundary-class work), and numeric `1:1` colons
+abstain on **both** sides — structural silence, not a flaggable combo. Mechanism
+(2) is fixed because a binary's complement *is* its one opposing form, so
+`dominance` recovers its ADR 0029 meaning ("the other convention genuinely holds
+the field").
+
+**Verdict.** Per side, per form,
+`score = dominance(the side's majority, N_side, z) × rarity(minority recurrence,
+volume-scaled knee on N_side)` — the ADR 0050 shape, scored over each side's
+judged occupancy `N_side` independently. An occurrence violating **both** sides
+is **one** finding (both sides reported in args). No verdict when a side has no
+dominant convention (it scores below the floor on its own) or abstains.
+
+A structural observation that makes the regression trivial to reason about: the
+**left-side binary is exactly the old ADR 0029/0050 before-only rule** (attached
+-vs-spaced on the governing left neighbour). So every old win is reproduced by
+the left side by construction; the right side is pure new after-side coverage.
+
+### Stats and args
+
+- `RuleStats::PunctuationSpacing` caches, per book, `per_mark: BTreeMap<char,
+  [u64; 4]>` — the four counters `[l_attached, l_spaced, r_attached, r_spaced]`
+  (was `[u64; 16]`). Merge/remove_book and the ADR 0044 site-forwarding are
+  unchanged. **Pre-alpha: the 16-cell shape is deleted, no shim.**
+- `FindingArgs::SpacingConvention { mark, left: Option<SpacingSide>, right:
+  Option<SpacingSide> }`, where `SpacingSide { form, count, total }` names the
+  violated side's observed minority form and its `count / N_side` descriptive
+  share (ADR 0048). A side absent from the args either abstained or was not
+  violated. The span highlights the violated side's neighbourhood (crossed
+  whitespace where a space *is*, attached neighbour where one *belongs*), unioned
+  across both sides when both fire.
+- Wasm packages regenerated (`npm run build:wasm`) — the `SpacingSide` interface,
+  the `spacing-convention` args shape, and the `[u64; 4]` stats cell are in the
+  emitted `.d.ts`.
+
+### Knee re-sweep (per-side denominators)
+
+`calibrate --spacing-sweep corpora/vref` (production per-side rule, floor 0.5,
+z 1.96), total fleet findings (corpora with ≥1):
+
+| k \ rate/10k | 0 | 20 | 40 | 80 |
+| ---: | ---: | ---: | ---: | ---: |
+| 16 | 2,787 (562) | 6,152 (595) | 8,370 (599) | 11,155 (606) |
+| **32** | 4,756 (589) | 7,401 (604) | **9,644 (609)** | 12,217 (611) |
+| 64 | 7,226 (609) | 9,343 (613) | 11,568 (614) | 13,779 (618) |
+
+The ADR 0050 family (**k = 32, rate = 40/10k, floor 0.5, z 1.96**) is retained
+unchanged — it lands the fleet at **9,644**, the same order of magnitude as the
+old before-only rule's 3,928 plus genuine after-side coverage, and **~8% of the
+16-cell model's 115,883**. The volume-scaled knee is still required: ne_udb's
+verse-final dandas ride it (its count climbs 34 → 76 from the rate term, exactly
+the ADR 0050 danda-rescue behaviour under the new left-side denominators).
+
+**Six regression corpora at the shipped cell — old before-only rule vs 16-cell
+vs per-side:**
+
+| corpus | old before-only | 16-cell | **per-side** | note |
+| --- | ---: | ---: | ---: | --- |
+| engwebster | 4 | 127 | **4** | spaced period-typography collapses; genuine spaced-`!` slips kept |
+| WA-kmr-IQ-badini-reg | 11 | 75 | **20** | 1,289 spaced ` ،` convention collapses; old slips kept + after-side |
+| udu | 0 | 35 | **0** | single-mark systematic use — silent (the 16-cell 35 were context artifacts) |
+| WA-ne-udb | 66 | 124 | **76** | `,`/`!` anchors **and** the verse-final dandas kept (rate term, 34 → 76); + after-side |
+| WA-pa-ulb | 25 | 135 | **25** | spaced `? !` convention collapses; slips kept |
+| mya | 4 | 150 | **15** | spaced-final convention collapses; old slips kept + after-side |
+
+Every old kept-site survives (nothing nonzero fell to zero); every storm the
+16-cell model created collapses back (udu 35 → 0, pa_ulb 135 → 25, mya 150 → 15,
+engwebster 127 → 4). The increases over the old rule (kmr-IQ 11 → 20, ne_udb
+66 → 76, mya 4 → 15) are the honest after-side coverage the before-only rule
+structurally could not see.
+
+### Consequences delta
+
+- The round-1 "rare-*context* digit signature" FP class (ADR 0054 §Consequences)
+  is **retired**: digit neighbours now abstain, so a `digit`-flanked mark in a
+  digit-sparse corpus is never judged. The `mark × context` volume floor listed
+  under future work is no longer needed for that class.
+- Quote-specific attachment remains parked (ADR 0039); until then the quote side
+  abstains rather than reading `punct`.
+- `calibrate`'s historical `--signatures` spike (16-cell/25-cell lineage) is left
+  compiling as the measurement record; `--spacing-sweep` drives the production
+  per-side rule and prints the table above.

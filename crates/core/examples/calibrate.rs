@@ -81,12 +81,13 @@ fn main() {
             punct_calib(Path::new(t));
             return;
         }
-        // Punctuation spacing knee/floor sweep + regression (ADR 0054): over the
-        // vref fleet, the total `punct.spacing-anomaly` finding count for a grid
-        // of (minority_recurrence_k, minority_rate_per_10k) at floor 0.5, plus
-        // the six ADR 0050 calibration corpora at each cell — the before/after
-        // regression counter and the ADR 0054 knee-sweep evidence, driven by the
-        // production rule under the 16-cell signature denominators.
+        // Punctuation spacing knee/floor sweep + regression (ADR 0054 amend.):
+        // over the vref fleet, the total `punct.spacing-anomaly` finding count
+        // for a grid of (minority_recurrence_k, minority_rate_per_10k) at floor
+        // 0.5, plus the six ADR 0050 calibration corpora at each cell — the
+        // before/after regression counter and the ADR 0054 amendment knee-sweep
+        // evidence, driven by the production rule under the per-side (left/right
+        // attached-vs-spaced) denominators.
         [flag, dir] if flag == "--spacing-sweep" => {
             spacing_fleet_sweep(Path::new(dir));
             return;
@@ -1115,7 +1116,7 @@ fn spacing_fleet_sweep(dir: &Path) {
     }
 
     println!("=== punct.spacing-anomaly fleet knee/floor sweep (floor 0.5, z 1.96) ===");
-    println!("production 16-cell signature rule; cells = total fleet findings (corpora with ≥1)");
+    println!("production per-side (left/right) rule; cells = total fleet findings (corpora with ≥1)");
     print!("      {:>6}", "k\\rate");
     for &rate in RATES {
         print!("  {:>14}", format!("{rate:.0}/10k"));

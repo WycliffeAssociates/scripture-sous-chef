@@ -129,6 +129,20 @@ pub struct DelimObservation {
     pub matched: bool,
 }
 
+/// One violated side of a `punct.spacing-anomaly` finding (ADR 0054 amendment):
+/// the observed minority `form` (`"attached"` or `"spaced"`), how many of the
+/// mark's judged occurrences **on this side** take that form (`count`), and the
+/// side's total judged occupancy `N_side` (`total`). `count / total` is the
+/// descriptive rate the Wilson-bound `score` deliberately isn't (ADR 0048).
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+pub struct SpacingSide {
+    pub form: String,
+    pub count: u32,
+    pub total: u32,
+}
+
 /// Which of `punct.bracket-balance`'s two corpus conventions a finding
 /// broke — so the consumer knows which descriptive sentence the counts in
 /// [`FindingArgs::BracketWindow`] belong to. `Pairing`: the family is closed
@@ -194,15 +208,19 @@ pub enum FindingArgs {
         majority: u32,
         total: u32,
     },
-    /// `punct.spacing-anomaly`: the mark's **attachment signature** here and its
-    /// corpus-wide rarity (ADR 0054), so the consumer can render "`,` is written
-    /// letter|letter in 3 of 1053 places" — the descriptive rate behind the
-    /// Wilson-bound `score` (ADR 0048). `signature` is the flagged joint
-    /// `(left, right)` context label (e.g. `"letter|space"`, `"digit|digit"`);
-    /// `count` is that signature's occurrences and `total = N` the mark's total
-    /// occurrences. The flagged signature is always a rare one for this mark.
+    /// `punct.spacing-anomaly`: the mark's **per-side spacing** here against its
+    /// corpus convention (ADR 0054 amendment), so the consumer can render "`,` is
+    /// attached on the right in only 1 of 1053 places" — the descriptive rate
+    /// behind the Wilson-bound `score` (ADR 0048). Each side present in the args
+    /// is one this occurrence violated (its form is the rare minority for that
+    /// side); a side whose neighbour is punct/digit abstains and is absent. An
+    /// occurrence can violate one or both sides — a single finding carries both.
     #[cfg_attr(feature = "serde", serde(rename = "spacing-convention"))]
-    SpacingConvention { mark: char, signature: String, count: u32, total: u32 },
+    SpacingConvention {
+        mark: char,
+        left: Option<SpacingSide>,
+        right: Option<SpacingSide>,
+    },
     /// `case.sentence-initial-lowercase`: the forced-position habit's
     /// corpus-wide uppercase-vs-total counts among words the lexicon calls
     /// intrinsically lowercase, so the consumer can render "after `.` this

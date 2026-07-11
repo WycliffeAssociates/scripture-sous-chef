@@ -263,6 +263,20 @@ FP surfaces to price at ADR time: rare-*context* signatures (digit side in
 digit-sparse corpora) and the 2-D dilution of a genuine before-side slip.
 Nothing frozen; next is step 2 sample adjudication → ADR.
 
+**Status: DONE (2026-07-10).** Shipped as ADR 0054. The 16-cell joint model
+landed, was fleet-measured at 115,883 findings (~78/corpus), and was superseded
+the **same day** by the per-side factorization amendment (user ruling "attached
+L, attached R? Or spaced. That's 3 part."): two conditional binaries per mark
+(left/right `attached`-vs-`spaced`), a punct/digit neighbour **abstaining** on
+that side. That killed the two 16-cell degeneracies — quote-adjacent `,"`/`."`
+flaggable combos and multinomial-dominance-≈1 — and brought the fleet to
+**9,644** at shipped defaults (k=32, rate=40, floor 0.5, z 1.96), a fraction of
+115,883 and the same order of magnitude as the old before-only rule's 3,928 plus
+genuine after-side coverage. Stats are `[u64; 4]` per mark per book; args are
+`SpacingConvention { mark, left, right }`. Six-corpus regression kept every old
+win and collapsed every 16-cell storm. Wasm regenerated. See the
+[ADR 0054 amendment](../adrs/0054-spacing-attachment-signatures.md#amendment-same-day-2026-07-10-per-side-factorization).
+
 **Spike round 2 (2026-07-10, user ruling)** — the `edge` category was a verse
 special case in disguise and is **removed**: the seam reads as whitespace
 (CLAUDE.md — a terminal is never attached across a seam), context classes are
