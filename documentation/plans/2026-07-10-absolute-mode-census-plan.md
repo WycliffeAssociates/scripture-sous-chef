@@ -83,6 +83,25 @@ supply. So census always walks fresh, and **agreement with the rules is
 enforced by equivalence tests, not by sharing state** (see Tests). This is
 the concrete meaning of "same walks, second accumulator."
 
+**Standing note for the census ADR — the event-stream convergence
+(2026-07-11 discussion):** three independent findings now point at one
+future architecture, and the census ADR should record the vocabulary even
+if it builds none of it: (1) ADR 0056 deferred rare-glyph's remaining cost
+to a *shared word walk* — casing, mixed-case, and rare-glyph each re-walk
+tokens; (2) the census itself is "one more subscriber" to the same walk;
+(3) judge-phase cost (the survey posture's ~1.3 s, largely serial) is
+*site re-location*, not counting — stats stay aggregate-only for the wire,
+so judge re-walks text to anchor spans, and on incremental calls it
+re-walks clean books whose counts it already trusts. The resolution shape
+(user, 2026-07-11): one walker emitting typed events (scalar, grapheme,
+word boundary, mark-with-context) carrying the stream-order state (pending
+terminal, bracket stacks) once; counting listeners (= reduce), site
+listeners (= judge's anchors) collected in the same pass and **memoized
+per book in memory, never on the wire** — judge becomes math over settled
+aggregates plus cached anchors, O(dirty book) per call instead of
+O(corpus). Not for now; the census's accumulators should simply be written
+so they could become listeners without reshaping.
+
 **Visibility bumps needed (same-crate, mechanical):**
 
 - `signals::punctuation::adjacency_candidates` (`fn`, punctuation.rs:328) →
