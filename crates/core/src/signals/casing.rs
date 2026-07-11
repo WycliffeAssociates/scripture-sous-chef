@@ -890,9 +890,12 @@ fn is_letter(c: char) -> bool {
 /// The verse's word units: UAX #29 word tokens, then adjacent tokens joined
 /// across a single letter-flanked hyphen merged into one span. Pure-number
 /// tokens are dropped. `tokens` is the verse's shared tokenization (the fused
-/// walk's product; the standalone driver tokenizes itself).
-fn compound_words(text: &str, tokens: &[crate::token::Token]) -> Vec<Span> {
-    let mut out: Vec<Span> = Vec::new();
+/// walk's product; the standalone driver tokenizes itself). Writes into
+/// `out` (clear + refill) instead of allocating a fresh `Vec` per verse — the
+/// caller reuses one buffer across a book's verses (ADR 0057 allocation-diet
+/// follow-up).
+fn compound_words(text: &str, tokens: &[crate::token::Token], out: &mut Vec<Span>) {
+    out.clear();
     for t in tokens.iter().copied() {
         if let Some(prev) = out.last_mut() {
             let gap = &text[prev.end..t.span.start];
@@ -909,7 +912,6 @@ fn compound_words(text: &str, tokens: &[crate::token::Token]) -> Vec<Span> {
         out.push(t.span);
     }
     out.retain(|s| text[s.start..s.end].chars().any(is_letter));
-    out
 }
 
 /// The pending-terminal state across a gap between words. `mark` is the
@@ -987,6 +989,9 @@ pub(crate) struct CasingAcc {
     sites: Vec<LowerSite>,
     pending: Option<Pending>,
     book_initial: bool,
+    /// Reusable `compound_words` scratch buffer (ADR 0057 allocation-diet
+    /// follow-up) — cleared and refilled each verse instead of allocating.
+    words_buf: Vec<Span>,
 }
 
 impl CasingAcc {
@@ -999,16 +1004,21 @@ impl CasingAcc {
             sites: Vec::new(),
             pending: None,
             book_initial: true,
+            words_buf: Vec::new(),
         }
     }
 
     pub(crate) fn verse(&mut self, v: &stream::VerseInputs<'_, '_>) {
         let (sid, text) = (v.sid, v.text);
-        let words = compound_words(text, v.tokens);
+        compound_words(text, v.tokens, &mut self.words_buf);
         let mut prev_letter = false;
         let mut cursor = 0usize;
 
-        for w in &words {
+        // Indexed (not `for w in &self.words_buf`): `w` is a `Copy` value
+        // read out per iteration, so the loop body is free to mutate other
+        // `self` fields without holding a borrow of `words_buf` open.
+        for i in 0..self.words_buf.len() {
+            let w = self.words_buf[i];
             advance_gap(&text[cursor..w.start], &mut self.pending, &mut prev_letter);
 
             let first = text[w.start..w.end].chars().next().unwrap();

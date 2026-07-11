@@ -27,14 +27,23 @@ pub struct Token {
 /// Split a verse's text into word tokens on UAX #29 word boundaries.
 /// Deterministic, allocation-light, sub-millisecond on verse-sized input.
 pub fn tokenize(text: &str) -> Vec<Token> {
-    text.unicode_word_indices()
-        .map(|(start, word)| Token {
-            span: Span {
-                start,
-                end: start + word.len(),
-            },
-        })
-        .collect()
+    let mut buf = Vec::new();
+    tokenize_into(text, &mut buf);
+    buf
+}
+
+/// Same as [`tokenize`], but writes into a caller-owned buffer (`clear` +
+/// refill) instead of allocating a fresh `Vec` — the fused walk's hot
+/// per-verse path reuses one buffer across a book's verses (ADR 0057
+/// allocation-diet follow-up).
+pub(crate) fn tokenize_into(text: &str, buf: &mut Vec<Token>) {
+    buf.clear();
+    buf.extend(text.unicode_word_indices().map(|(start, word)| Token {
+        span: Span {
+            start,
+            end: start + word.len(),
+        },
+    }));
 }
 
 #[cfg(test)]

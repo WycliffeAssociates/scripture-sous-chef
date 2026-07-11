@@ -299,7 +299,7 @@ fn walk_book(
             grapheme::segment_tape(text, &tape_buf, &mut graphemes_buf);
         }
         if needs.tokens {
-            tokens_buf = token::tokenize(text);
+            token::tokenize_into(text, &mut tokens_buf);
         }
         if needs.folds {
             fold_letter_tokens(text, &tokens_buf, &mut folds_buf);
@@ -406,7 +406,7 @@ pub(crate) fn drive_book<A, T>(
             grapheme::segment_tape(text, &tape_buf, &mut graphemes_buf);
         }
         if needs.tokens {
-            tokens_buf = token::tokenize(text);
+            token::tokenize_into(text, &mut tokens_buf);
         }
         if needs.folds {
             fold_letter_tokens(text, &tokens_buf, &mut folds_buf);
