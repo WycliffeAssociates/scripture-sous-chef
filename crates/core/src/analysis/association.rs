@@ -30,6 +30,33 @@ pub enum AssociationTest {
     FisherExact,
 }
 
+/// Which statistic backs [`Table2::association_score`] on a **sparse** table
+/// (`min_expected_cell < 5`). Internal seam, deliberately not user-facing (no
+/// `Config`/wire surface): measurement (2026-07-11, WA-en-ulb everything-on)
+/// showed the "fallback" is actually the dominant path — 51,629 of 53,844
+/// association calls (95.9%) route to Fisher and account for 99.97% of
+/// association time (~8.9 µs vs ~59 ns per call) — because the per-juror 2×2
+/// tables of casing's word-reshuffle witness are intrinsically sparse (the
+/// after-class cell is small for almost every juror), not because the Cochran
+/// threshold is wrong. A fleet experiment routing everything through G² moved
+/// zero findings (142 sixth-decimal score wiggles on one rule, max |Δscore|
+/// 6.1e-5) and cut the everything-on English analyze roughly in half again;
+/// the numbers live in the switch-introducing commit for adjudication.
+/// Flipping the variant below is the whole change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExactTest {
+    /// Today's behavior: two-sided Fisher exact surprise on sparse tables.
+    Fisher,
+    /// Dunning G² everywhere, sparse included (candidate; not yet adopted).
+    /// Unconstructed while `EXACT_TEST` stays at `Fisher` — the variant IS the
+    /// seam, kept so adoption is a one-line flip.
+    #[allow(dead_code)]
+    G2Only,
+}
+
+/// The active sparse-table strategy. `Fisher` is the shipped default.
+const EXACT_TEST: ExactTest = ExactTest::Fisher;
+
 impl Table2 {
     pub const fn new(a: u64, b: u64, c: u64, d: u64) -> Self {
         Self { a, b, c, d }
@@ -52,11 +79,12 @@ impl Table2 {
             + xlogx(n))
     }
 
-    /// Dunning on well-populated tables, Fisher surprise `−2 ln(p)` on sparse.
+    /// Dunning on well-populated tables; on sparse tables, whatever
+    /// [`EXACT_TEST`] selects (Fisher surprise `−2 ln(p)` by default).
     pub fn association_score(&self) -> f64 {
-        match self.association_test() {
-            AssociationTest::DunningG2 => self.g2(),
-            AssociationTest::FisherExact => {
+        match (EXACT_TEST, self.association_test()) {
+            (_, AssociationTest::DunningG2) | (ExactTest::G2Only, _) => self.g2(),
+            (ExactTest::Fisher, AssociationTest::FisherExact) => {
                 let p = self.fisher_two_sided_p();
                 if p <= 0.0 { f64::INFINITY } else { -2.0 * p.ln() }
             }
