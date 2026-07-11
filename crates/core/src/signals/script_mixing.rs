@@ -51,6 +51,7 @@ use crate::script::{script_of, ScriptTag};
 use crate::sid::{BookId, Sid};
 use crate::span::Span;
 use crate::stats::RuleStats;
+use crate::stream;
 use crate::token::{tokenize, Token};
 use crate::verse::{Books, VerseMap};
 
@@ -104,7 +105,7 @@ pub struct MixedScriptSite {
 #[derive(Debug, Clone, Default, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
-struct BookMixedScript {
+pub(crate) struct BookMixedScript {
     signature_counts: BTreeMap<String, u64>,
     script_tokens: BTreeMap<String, u64>,
 }
@@ -116,7 +117,7 @@ struct BookMixedScript {
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct MixedScriptStats {
     #[cfg_attr(feature = "wasm", tsify(type = "Record<string, BookMixedScript>"))]
-    per_book: BTreeMap<BookId, BookMixedScript>,
+    pub(crate) per_book: BTreeMap<BookId, BookMixedScript>,
 }
 
 impl MixedScriptStats {
@@ -148,11 +149,25 @@ impl StatefulRule for MixedScriptInToken {
         _source: Option<&VerseMap>,
         tokens: Option<&TokenCache>,
     ) -> (RuleStats, rule::RuleSites) {
+        // Thin driver over the shared listener (the fused walk feeds the same
+        // `MixedScriptAcc`); kept for calibration/tests. The shared token
+        // cache is ignored — the driver tokenizes each verse once, which is
+        // exactly what the cache would supply.
+        let _ = tokens;
         let mut per_book = BTreeMap::new();
         let mut sites = BTreeMap::new();
-        for (book, (counts, book_sites)) in
-            rule::map_books(books, |book, verses| (book, reduce_book(verses, tokens)))
-        {
+        for (book, (counts, book_sites)) in rule::map_books(books, |book, verses| {
+            (
+                book,
+                stream::drive_book(
+                    verses,
+                    stream::Needs { tokens: true, ..Default::default() },
+                    MixedScriptAcc::new(),
+                    |a, v, _| a.verse(v),
+                    MixedScriptAcc::finish,
+                ),
+            )
+        }) {
             per_book.insert(book, counts);
             sites.insert(book, book_sites);
         }
@@ -307,30 +322,47 @@ fn mixed_tokens(text: &str, tokens: &[Token]) -> Vec<(String, Span)> {
     out
 }
 
-/// Reduce one book to aggregate counts, returning the candidate sites alongside
-/// (forwarded reduce→judge within a call, ADR 0044; the *stats* carry no sites).
-fn reduce_book(
-    verses: &[(Sid, &str)],
-    tokens: Option<&TokenCache>,
-) -> (BookMixedScript, Vec<MixedScriptSite>) {
-    let mut signature_counts: BTreeMap<String, u64> = BTreeMap::new();
-    let mut script_tokens: BTreeMap<String, u64> = BTreeMap::new();
-    let mut sites = Vec::new();
-    for &(sid, text) in verses {
-        let toks = verse_tokens(sid, text, tokens);
-        for tok in toks.iter() {
-            let scripts = token_scripts(tok.span.slice(text));
+/// The mixed-script counting listener: one book's aggregate counts plus the
+/// candidate sites (forwarded reduce→judge within a call, ADR 0044; the
+/// *stats* carry no sites). Fed per verse by the fused walk.
+pub(crate) struct MixedScriptAcc {
+    signature_counts: BTreeMap<String, u64>,
+    script_tokens: BTreeMap<String, u64>,
+    sites: Vec<MixedScriptSite>,
+}
+
+impl MixedScriptAcc {
+    pub(crate) fn new() -> Self {
+        MixedScriptAcc {
+            signature_counts: BTreeMap::new(),
+            script_tokens: BTreeMap::new(),
+            sites: Vec::new(),
+        }
+    }
+
+    pub(crate) fn verse(&mut self, v: &stream::VerseInputs<'_, '_>) {
+        for tok in v.tokens {
+            let scripts = token_scripts(tok.span.slice(v.text));
             for &s in &scripts {
-                *script_tokens.entry(tag_key(s)).or_default() += 1;
+                *self.script_tokens.entry(tag_key(s)).or_default() += 1;
             }
             if scripts.len() >= 2 {
                 let sig = signature(&scripts);
-                *signature_counts.entry(sig.clone()).or_default() += 1;
-                sites.push(MixedScriptSite { sid, sig, span: tok.span });
+                *self.signature_counts.entry(sig.clone()).or_default() += 1;
+                self.sites.push(MixedScriptSite { sid: v.sid, sig, span: tok.span });
             }
         }
     }
-    (BookMixedScript { signature_counts, script_tokens }, sites)
+
+    pub(crate) fn finish(self) -> (BookMixedScript, Vec<MixedScriptSite>) {
+        (
+            BookMixedScript {
+                signature_counts: self.signature_counts,
+                script_tokens: self.script_tokens,
+            },
+            self.sites,
+        )
+    }
 }
 
 #[cfg(test)]

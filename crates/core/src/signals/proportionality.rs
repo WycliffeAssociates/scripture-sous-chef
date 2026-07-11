@@ -30,6 +30,7 @@ use crate::rule::{self, StatefulRule, TokenCache};
 use crate::sid::{BookId, Sid};
 use crate::span::Span;
 use crate::stats::RuleStats;
+use crate::stream;
 use crate::verse::{Books, VerseMap};
 
 pub const PROJECT_LENGTH_RATIO: RuleId = RuleId::ProjectLengthRatio;
@@ -45,7 +46,7 @@ const MAD_TO_SIGMA: f64 = 0.6745;
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
-struct RatioObs {
+pub(crate) struct RatioObs {
     #[cfg_attr(feature = "wasm", tsify(type = "string"))]
     sid: Sid,
     ratio: f32,
@@ -59,7 +60,7 @@ struct RatioObs {
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct ProportionalityStats {
     #[cfg_attr(feature = "wasm", tsify(type = "Record<string, RatioObs[]>"))]
-    per_book: BTreeMap<BookId, Vec<RatioObs>>,
+    pub(crate) per_book: BTreeMap<BookId, Vec<RatioObs>>,
 }
 
 impl ProportionalityStats {
@@ -78,6 +79,40 @@ impl ProportionalityStats {
 
 pub struct ProjectLengthRatio {
     pub cfg: ProportionalityConfig,
+}
+
+/// The proportionality counting listener: one book's target/reference ratio
+/// bucket. Needs no shared products — "length" is the grapheme count of both
+/// sides (the source has no tape), so it counts via the shared char walk.
+pub(crate) struct ProportionalityAcc<'s> {
+    source: Option<&'s VerseMap>,
+    bucket: Vec<RatioObs>,
+}
+
+impl<'s> ProportionalityAcc<'s> {
+    pub(crate) fn new(source: Option<&'s VerseMap>) -> Self {
+        ProportionalityAcc { source, bucket: Vec::new() }
+    }
+
+    pub(crate) fn verse(&mut self, v: &stream::VerseInputs<'_, '_>) {
+        let Some(src_text) = self.source.and_then(|s| s.get(&v.sid)) else {
+            return;
+        };
+        let t = crate::grapheme::count(v.text);
+        let s = crate::grapheme::count(src_text);
+        if t == 0 || s == 0 {
+            return;
+        }
+        self.bucket.push(RatioObs {
+            sid: v.sid,
+            ratio: (t as f64 / s as f64) as f32,
+            len: v.text.len() as u32,
+        });
+    }
+
+    pub(crate) fn finish(self) -> Vec<RatioObs> {
+        self.bucket
+    }
 }
 
 impl StatefulRule for ProjectLengthRatio {
@@ -99,23 +134,16 @@ impl StatefulRule for ProjectLengthRatio {
         // edited book that lost its ratios would keep re-emitting the prior
         // reduction's stale findings.
         let per_book = rule::map_books(books, |book, verses| {
-            let mut bucket = Vec::new();
-            for (sid, text) in verses {
-                let Some(src_text) = source.and_then(|s| s.get(sid)) else {
-                    continue;
-                };
-                let t = crate::grapheme::count(text);
-                let s = crate::grapheme::count(src_text);
-                if t == 0 || s == 0 {
-                    continue;
-                }
-                bucket.push(RatioObs {
-                    sid: *sid,
-                    ratio: (t as f64 / s as f64) as f32,
-                    len: text.len() as u32,
-                });
-            }
-            (book, bucket)
+            (
+                book,
+                stream::drive_book(
+                    verses,
+                    stream::Needs::default(),
+                    ProportionalityAcc::new(source),
+                    |a, v, _| a.verse(v),
+                    ProportionalityAcc::finish,
+                ),
+            )
         })
         .into_iter()
         .collect();

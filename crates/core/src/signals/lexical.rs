@@ -15,6 +15,7 @@ use crate::rule::{self, ProjectTokenRule, StatefulRule, TokenCache};
 use crate::sid::{BookId, Sid};
 use crate::span::Span;
 use crate::stats::RuleStats;
+use crate::stream;
 use crate::tape::TapeEntry;
 use crate::token::{Token, tokenize};
 use crate::verse::{Books, VerseMap};
@@ -110,6 +111,28 @@ fn eq_ignore_case(a: &str, b: &str) -> bool {
         .eq(b.chars().flat_map(char::to_lowercase))
 }
 
+/// The duplicate-word listener: one book's cross-verse doubling walk, tail
+/// carried across verse seams (chapter-gated). Fed per verse by the fused
+/// walk; `check_book` drives it for direct trait callers.
+pub(crate) struct DuplicateWordAcc<'t> {
+    tail: Option<Tail<'t>>,
+    found: Vec<Finding>,
+}
+
+impl<'t> DuplicateWordAcc<'t> {
+    pub(crate) fn new() -> Self {
+        DuplicateWordAcc { tail: None, found: Vec::new() }
+    }
+
+    pub(crate) fn verse(&mut self, v: &stream::VerseInputs<'t, '_>) {
+        duplicate_word_verse(v.sid, v.text, v.tokens, &mut self.tail, &mut self.found);
+    }
+
+    pub(crate) fn finish(self) -> Vec<Finding> {
+        self.found
+    }
+}
+
 fn check_book(verses: &[(Sid, &str)], cache: Option<&TokenCache>, out: &mut Vec<Finding>) {
     let mut tail: Option<Tail> = None;
     for &(sid, text) in verses {
@@ -123,11 +146,24 @@ fn check_book(verses: &[(Sid, &str)], cache: Option<&TokenCache>, out: &mut Vec<
                 &owned
             }
         };
+        duplicate_word_verse(sid, text, tokens, &mut tail, out);
+    }
+}
 
+/// One verse of the duplicate-word walk — the shared body behind
+/// [`DuplicateWordAcc`] and [`check_book`].
+fn duplicate_word_verse<'t>(
+    sid: Sid,
+    text: &'t str,
+    tokens: &[Token],
+    tail: &mut Option<Tail<'t>>,
+    out: &mut Vec<Finding>,
+) {
+    {
         // Cross-verse boundary: the carried last word meeting this verse's
         // first word, with only whitespace (or a bare verse break) between
         // them. Gated to the same chapter — adjacency does not cross `\c`.
-        if let (Some(t), Some(first)) = (&tail, tokens.first())
+        if let (Some(t), Some(first)) = (&*tail, tokens.first())
             && t.chapter == sid.chapter
         {
             let prev_tail = &t.text[t.last_end..];
@@ -165,7 +201,7 @@ fn check_book(verses: &[(Sid, &str)], cache: Option<&TokenCache>, out: &mut Vec<
         // Carry this verse's last word forward; a verse with no word tokens
         // (empty / punctuation-only) breaks adjacency — its content sits
         // between any flanking words — so it clears the carry.
-        tail = tokens.last().map(|last| Tail {
+        *tail = tokens.last().map(|last| Tail {
             sid,
             chapter: sid.chapter,
             text,
@@ -225,7 +261,7 @@ pub const PUNCT_ONLY_TOKEN: RuleId = RuleId::PunctOnlyToken;
 #[derive(Debug, Clone, Default, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
-struct BookPunctOnlyToken {
+pub(crate) struct BookPunctOnlyToken {
     lexical_units: u64,
     chunks: BTreeMap<String, u64>,
 }
@@ -237,7 +273,7 @@ struct BookPunctOnlyToken {
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct PunctOnlyTokenStats {
     #[cfg_attr(feature = "wasm", tsify(type = "Record<string, BookPunctOnlyToken>"))]
-    per_book: BTreeMap<BookId, BookPunctOnlyToken>,
+    pub(crate) per_book: BTreeMap<BookId, BookPunctOnlyToken>,
 }
 
 impl PunctOnlyTokenStats {
@@ -268,23 +304,21 @@ impl StatefulRule for PunctOnlyToken {
         _source: Option<&VerseMap>,
         _tokens: Option<&TokenCache>,
     ) -> (RuleStats, rule::RuleSites) {
+        // Thin driver over the shared listener (the fused walk feeds the same
+        // `PunctOnlyAcc`); kept for calibration/tests.
         let mut per_book = BTreeMap::new();
         let mut sites = BTreeMap::new();
         for (book, (counts, book_sites)) in rule::map_books(books, |book, verses| {
-            let mut out = BookPunctOnlyToken::default();
-            let mut book_sites = Vec::new();
-            let mut tape = Vec::new();
-            for &(sid, text) in verses {
-                out.lexical_units += text.split_whitespace().count() as u64;
-                crate::tape::build(text, &mut tape);
-                for span in scan_punct_only_token_tape(text, &tape) {
-                    *out.chunks
-                        .entry(punct_only_pattern_key(span.slice(text)))
-                        .or_default() += 1;
-                    book_sites.push((sid, span));
-                }
-            }
-            (book, (out, book_sites))
+            (
+                book,
+                stream::drive_book(
+                    verses,
+                    stream::Needs { tape: true, ..Default::default() },
+                    PunctOnlyAcc::new(),
+                    |a, v, _| a.verse(v),
+                    PunctOnlyAcc::finish,
+                ),
+            )
         }) {
             per_book.insert(book, counts);
             sites.insert(book, book_sites);
@@ -377,6 +411,36 @@ impl StatefulRule for PunctOnlyToken {
         .collect();
         out.sort_by_key(|finding| (finding.sid, finding.range.start, finding.range.end));
         out
+    }
+}
+
+/// The punct-only-token counting listener: one book's whitespace-unit count
+/// and per-chunk candidate counts, plus the forwarded sites. Fed per verse by
+/// the fused walk.
+pub(crate) struct PunctOnlyAcc {
+    out: BookPunctOnlyToken,
+    sites: Vec<(Sid, Span)>,
+}
+
+impl PunctOnlyAcc {
+    pub(crate) fn new() -> Self {
+        PunctOnlyAcc { out: BookPunctOnlyToken::default(), sites: Vec::new() }
+    }
+
+    pub(crate) fn verse(&mut self, v: &stream::VerseInputs<'_, '_>) {
+        self.out.lexical_units += v.text.split_whitespace().count() as u64;
+        for span in scan_punct_only_token_tape(v.text, v.tape) {
+            *self
+                .out
+                .chunks
+                .entry(punct_only_pattern_key(span.slice(v.text)))
+                .or_default() += 1;
+            self.sites.push((v.sid, span));
+        }
+    }
+
+    pub(crate) fn finish(self) -> (BookPunctOnlyToken, Vec<(Sid, Span)>) {
+        (self.out, self.sites)
     }
 }
 
@@ -513,7 +577,7 @@ pub const REPEATED_CHARACTER_RUN: RuleId = RuleId::RepeatedCharacterRun;
 #[derive(Debug, Clone, Default, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
-struct BookRepeatedCharacterRun {
+pub(crate) struct BookRepeatedCharacterRun {
     lexical_units: u64,
     cluster_runs: BTreeMap<String, u64>,
     run_words: BTreeMap<String, u64>,
@@ -529,7 +593,7 @@ pub struct RepeatedCharacterRunStats {
         feature = "wasm",
         tsify(type = "Record<string, BookRepeatedCharacterRun>")
     )]
-    per_book: BTreeMap<BookId, BookRepeatedCharacterRun>,
+    pub(crate) per_book: BTreeMap<BookId, BookRepeatedCharacterRun>,
 }
 
 impl RepeatedCharacterRunStats {
@@ -560,10 +624,24 @@ impl StatefulRule for RepeatedCharacterRun {
         _source: Option<&VerseMap>,
         tokens: Option<&TokenCache>,
     ) -> (RuleStats, rule::RuleSites) {
+        // Thin driver over the shared listener (the fused walk feeds the same
+        // `RepeatedRunAcc`); kept for calibration/tests. The shared per-analyze
+        // token cache is ignored — the driver tokenizes each verse once, which
+        // is exactly what the cache would supply.
+        let _ = tokens;
         let mut per_book = BTreeMap::new();
         let mut sites = BTreeMap::new();
         for (book, (counts, book_sites)) in rule::map_books(books, |book, verses| {
-            (book, reduce_repeated_run_book(verses, tokens))
+            (
+                book,
+                stream::drive_book(
+                    verses,
+                    stream::Needs { graphemes: true, tokens: true, ..Default::default() },
+                    RepeatedRunAcc::new(),
+                    |a, v, _| a.verse(v),
+                    RepeatedRunAcc::finish,
+                ),
+            )
         }) {
             per_book.insert(book, counts);
             sites.insert(book, book_sites);
@@ -706,55 +784,55 @@ impl StatefulRule for RepeatedCharacterRun {
     }
 }
 
-fn reduce_repeated_run_book(
-    verses: &[(Sid, &str)],
-    cache: Option<&TokenCache>,
-) -> (BookRepeatedCharacterRun, Vec<(Sid, Span)>) {
-    let mut out = BookRepeatedCharacterRun::default();
-    let mut sites = Vec::new();
-    let mut tape = Vec::new();
-    let mut graphemes = Vec::new();
-    let mut word_graphemes = Vec::new();
-    for (sid, text) in verses {
-        // The shared per-analyze cache saves this rule's tokenization pass
-        // (it is one of the reasons the cache exists — ADR 0042); absent a
-        // cache entry, tokenize inline exactly as before.
-        let owned: Vec<Token>;
-        let tokens: &[Token] = match cache.and_then(|c| c.get(sid)) {
-            Some(t) => t,
-            None => {
-                owned = tokenize(text);
-                &owned
-            }
-        };
+/// The repeated-run counting listener: one book's aggregate counts plus the
+/// forwarded sites. Fed per verse by the fused walk (shared tape-driven
+/// graphemes and shared tokens — the same products its per-rule walk built).
+pub(crate) struct RepeatedRunAcc {
+    out: BookRepeatedCharacterRun,
+    sites: Vec<(Sid, Span)>,
+    word_graphemes: Vec<GSpan>,
+}
+
+impl RepeatedRunAcc {
+    pub(crate) fn new() -> Self {
+        RepeatedRunAcc {
+            out: BookRepeatedCharacterRun::default(),
+            sites: Vec::new(),
+            word_graphemes: Vec::new(),
+        }
+    }
+
+    pub(crate) fn verse(&mut self, v: &stream::VerseInputs<'_, '_>) {
         // UAX #29 intentionally has no dictionary segmentation for Thai/Lao
         // and can yield one token per grapheme there. Whitespace chunks are a
         // stable, script-neutral normalization unit: word-like in spaced text,
         // verse-span-like in scriptio continua. Word recurrence still uses the
         // UAX tokens below because it applies only when one contains the run.
-        out.lexical_units += text.split_whitespace().count() as u64;
-        crate::tape::build(text, &mut tape);
-        segment_tape(text, &tape, &mut graphemes);
-        let runs = scan_repeated_character_run(text, &graphemes);
-        for span in &runs {
-            *out.cluster_runs
-                .entry(repeated_run_cluster(span.slice(text)))
+        self.out.lexical_units += v.text.split_whitespace().count() as u64;
+        for span in scan_repeated_character_run(v.text, v.graphemes) {
+            *self
+                .out
+                .cluster_runs
+                .entry(repeated_run_cluster(span.slice(v.text)))
                 .or_default() += 1;
-            sites.push((*sid, *span));
+            self.sites.push((v.sid, span));
         }
-        for token in tokens {
-            let word = token.span.slice(text);
+        for token in v.tokens {
+            let word = token.span.slice(v.text);
             if word.chars().take(3).count() < 3 {
                 continue;
             }
             let folded = word.to_lowercase();
-            segment(&folded, &mut word_graphemes);
-            if !scan_repeated_character_run(&folded, &word_graphemes).is_empty() {
-                *out.run_words.entry(folded).or_default() += 1;
+            segment(&folded, &mut self.word_graphemes);
+            if !scan_repeated_character_run(&folded, &self.word_graphemes).is_empty() {
+                *self.out.run_words.entry(folded).or_default() += 1;
             }
         }
     }
-    (out, sites)
+
+    pub(crate) fn finish(self) -> (BookRepeatedCharacterRun, Vec<(Sid, Span)>) {
+        (self.out, self.sites)
+    }
 }
 
 fn containing_word<'a>(text: &'a str, tokens: &[Token], run: Span) -> Option<&'a str> {

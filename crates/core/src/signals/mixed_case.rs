@@ -80,6 +80,7 @@ use crate::charclass::class_of;
 use crate::sid::{BookId, Sid};
 use crate::span::Span;
 use crate::stats::RuleStats;
+use crate::stream;
 use crate::token::{tokenize, Token};
 use crate::verse::{Books, VerseMap};
 
@@ -95,7 +96,7 @@ fn rarity(minority: u64, k: f64) -> f64 {
 /// marks — the letter-run word unit. Numeric and mixed `q1`-style tokens are
 /// excluded, matching the spike's token unit (ADR 0055). Mirrors
 /// `signals::rare_glyph::is_letter_token`.
-fn is_letter_token(word: &str) -> bool {
+pub(crate) fn is_letter_token(word: &str) -> bool {
     let mut has_letter = false;
     for c in word.chars() {
         let cl = class_of(c);
@@ -119,19 +120,19 @@ fn is_zero(n: &u32) -> bool {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default))]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
-struct ShapeProfile {
+pub(crate) struct ShapeProfile {
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "is_zero"))]
     #[cfg_attr(feature = "wasm", tsify(optional))]
-    lower: u32,
+    pub(crate) lower: u32,
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "is_zero"))]
     #[cfg_attr(feature = "wasm", tsify(optional))]
-    title: u32,
+    pub(crate) title: u32,
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "is_zero"))]
     #[cfg_attr(feature = "wasm", tsify(optional))]
-    allcaps: u32,
+    pub(crate) allcaps: u32,
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "is_zero"))]
     #[cfg_attr(feature = "wasm", tsify(optional))]
-    other: u32,
+    pub(crate) other: u32,
 }
 
 impl ShapeProfile {
@@ -167,9 +168,9 @@ impl ShapeProfile {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default))]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
-struct BookMixedCase {
+pub(crate) struct BookMixedCase {
     #[cfg_attr(feature = "wasm", tsify(type = "Record<string, ShapeProfile>"))]
-    words: BTreeMap<String, ShapeProfile>,
+    pub(crate) words: BTreeMap<String, ShapeProfile>,
 }
 
 /// Cached mixed-case statistics, keyed by book so an edit supersedes only its
@@ -179,7 +180,7 @@ struct BookMixedCase {
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct MixedCaseStats {
     #[cfg_attr(feature = "wasm", tsify(type = "Record<string, BookMixedCase>"))]
-    per_book: BTreeMap<BookId, BookMixedCase>,
+    pub(crate) per_book: BTreeMap<BookId, BookMixedCase>,
 }
 
 impl MixedCaseStats {
@@ -212,8 +213,24 @@ impl StatefulRule for MixedCaseWord {
         _source: Option<&VerseMap>,
         tokens: Option<&TokenCache>,
     ) -> (RuleStats, rule::RuleSites) {
+        // Thin driver over the shared listener (the fused walk feeds the same
+        // `MixedCaseAcc`); kept for calibration/tests. The shared token cache
+        // is ignored — the driver tokenizes each verse once, which is exactly
+        // what the cache would supply.
+        let _ = tokens;
         let mut per_book = BTreeMap::new();
-        for (book, bmc) in rule::map_books(books, |book, verses| (book, walk_book(verses, tokens))) {
+        for (book, bmc) in rule::map_books(books, |book, verses| {
+            (
+                book,
+                stream::drive_book(
+                    verses,
+                    stream::Needs { tokens: true, ..Default::default() },
+                    MixedCaseAcc::new(),
+                    |a, v, _| a.verse(v),
+                    MixedCaseAcc::finish,
+                ),
+            )
+        }) {
             per_book.insert(book, bmc);
         }
         (
@@ -332,24 +349,34 @@ fn verse_tokens<'a>(
     }
 }
 
-/// Walk one book, tallying each cased letter-run token's shape into its
-/// case-folded word type. No position tracking — a mid-word capital is
-/// position-independent (ADR 0055). Caseless tokens have no shape and are
-/// dropped (the sole pruning; every cased word is kept for dominance mass).
-fn walk_book(verses: &[(Sid, &str)], tokens: Option<&TokenCache>) -> BookMixedCase {
-    let mut words: BTreeMap<String, ShapeProfile> = BTreeMap::new();
-    for &(sid, text) in verses {
-        let toks = verse_tokens(sid, text, tokens);
-        for tok in toks.iter() {
-            let word = tok.span.slice(text);
+/// The mixed-case counting listener — walks one book, tallying each cased
+/// letter-run token's shape into its case-folded word type. No position
+/// tracking — a mid-word capital is position-independent (ADR 0055). Caseless
+/// tokens have no shape and are dropped (the sole pruning; every cased word
+/// is kept for dominance mass). Fed per verse by the fused walk.
+pub(crate) struct MixedCaseAcc {
+    words: BTreeMap<String, ShapeProfile>,
+}
+
+impl MixedCaseAcc {
+    pub(crate) fn new() -> Self {
+        MixedCaseAcc { words: BTreeMap::new() }
+    }
+
+    pub(crate) fn verse(&mut self, v: &stream::VerseInputs<'_, '_>) {
+        for tok in v.tokens {
+            let word = tok.span.slice(v.text);
             if !is_letter_token(word) {
                 continue;
             }
             let Some(shape) = case_shape(word) else { continue };
-            words.entry(word.to_lowercase()).or_default().record(shape);
+            self.words.entry(word.to_lowercase()).or_default().record(shape);
         }
     }
-    BookMixedCase { words }
+
+    pub(crate) fn finish(self) -> BookMixedCase {
+        BookMixedCase { words: self.words }
+    }
 }
 
 #[cfg(test)]

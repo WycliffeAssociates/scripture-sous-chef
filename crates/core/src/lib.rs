@@ -12,6 +12,7 @@
 
 pub mod analysis;
 pub mod catalog;
+pub mod census;
 pub mod charclass;
 mod charclass_table;
 pub mod config;
@@ -24,12 +25,14 @@ pub mod sid;
 pub mod signals;
 pub mod span;
 pub mod stats;
+mod stream;
 mod tape;
 pub mod token;
 pub mod unicode;
 pub mod verse;
 
 pub use catalog::{RuleCard, SENSITIVITY_STOPS, Verdict, rule_cards};
+pub use census::{CensusOptions, Inventory, census};
 pub use config::{
     BracketBalanceConfig, CasingConfig, Config, ProportionalityConfig, PunctOnlyTokenConfig,
     PunctuationAdjacencyConfig, PunctuationSpacingConfig, RepeatedCharacterRunConfig,
@@ -52,26 +55,6 @@ pub use verse::VerseMap;
 /// the analysis scope: pass a verse, a book, or a whole project.
 pub fn analyze(target: &VerseMap, source: Option<&VerseMap>) -> Vec<Finding> {
     analyze_with_config(target, source, &Config::v1_defaults())
-}
-
-/// Tokenize every verse once, keyed by `Sid`, so token-consuming rules share
-/// a single UAX #29 word scan instead of each repeating it.
-fn build_token_cache(target: &VerseMap) -> rule::TokenCache {
-    #[cfg(feature = "parallel")]
-    {
-        use rayon::prelude::*;
-        target
-            .par_iter()
-            .map(|(&sid, text)| (sid, crate::token::tokenize(text)))
-            .collect()
-    }
-    #[cfg(not(feature = "parallel"))]
-    {
-        target
-            .iter()
-            .map(|(&sid, text)| (sid, crate::token::tokenize(text)))
-            .collect()
-    }
 }
 
 /// All findings for one verse from the per-verse rules. The verse's scalar
@@ -159,14 +142,6 @@ pub fn analyze_stateful(
         .into_iter()
         .filter(|r| config.is_enabled(r.id()))
         .collect();
-    let project: Vec<_> = rule::project_rules(config)
-        .into_iter()
-        .filter(|r| config.is_enabled(r.id()))
-        .collect();
-    let project_token: Vec<_> = rule::project_token_rules()
-        .into_iter()
-        .filter(|r| config.is_enabled(r.id()))
-        .collect();
     let stateful: Vec<_> = rule::stateful_rules(config)
         .into_iter()
         .filter(|r| config.is_enabled(r.id()))
@@ -176,45 +151,31 @@ pub fn analyze_stateful(
     // process-wide `class_of` lookup, so there is nothing to build or thread
     // per analyze.
 
-    // Tokenize the corpus once and share it whenever ≥2 full tokenization
-    // passes would otherwise happen — the UAX #29 word scan is a top cost on
-    // space-free / non-Latin scripts. Repeated-character-run tokenizes in
-    // **both** reduce and judge, so it counts as two; mixed-script-in-token
-    // tokenizes in reduce (its judge re-emits from forwarded sites), so it
-    // counts as one (ADR 0042, ADR 0047). With 0–1 passes the lone consumer
-    // tokenizes inline and no cache is built.
-    let repeated_run_scans = if config.is_enabled(RuleId::RepeatedCharacterRun) {
-        2
-    } else {
-        0
+    // The fused walk plan: which listeners the enabled rule set puts on the
+    // one book walk (the event-stream engine — see `stream`). Both casing
+    // rules share one word-table walk; the project rules (bracket-balance,
+    // duplicate-word) ride the same walk as always-on listeners over every
+    // supplied book. `collect_tokens` retains each verse's tokenization as
+    // the shared cache for the token-consuming judges (repeated-run's
+    // containing-word lookup; rare-glyph / mixed-case / mixed-script re-scans).
+    let plan = stream::WalkPlan {
+        casing: config.is_enabled(RuleId::SentenceInitialLowercase)
+            || config.is_enabled(RuleId::InconsistentWordCasing),
+        adjacency: config.is_enabled(RuleId::PunctuationAdjacencyAnomaly),
+        spacing: config.is_enabled(RuleId::PunctuationSpacingAnomaly),
+        repeated_run: config.is_enabled(RuleId::RepeatedCharacterRun),
+        punct_only: config.is_enabled(RuleId::PunctOnlyToken),
+        mixed_script: config.is_enabled(RuleId::MixedScriptInToken),
+        rare_glyph: config.is_enabled(RuleId::RareGlyph),
+        mixed_case: config.is_enabled(RuleId::MixedCaseWord),
+        proportionality: config.is_enabled(RuleId::ProjectLengthRatio),
+        bracket: config.is_enabled(RuleId::BracketBalance),
+        duplicate: config.is_enabled(RuleId::DuplicateWord),
+        collect_tokens: config.is_enabled(RuleId::RepeatedCharacterRun)
+            || config.is_enabled(RuleId::RareGlyph)
+            || config.is_enabled(RuleId::MixedCaseWord)
+            || config.is_enabled(RuleId::MixedScriptInToken),
     };
-    let mixed_script_scans = if config.is_enabled(RuleId::MixedScriptInToken) {
-        1
-    } else {
-        0
-    };
-    // Rare-glyph tokenizes in **both** reduce (word-level candidate detail) and
-    // judge (re-scan to locate the ultra-rare survivors), so it counts as two
-    // (ADR 0053), like repeated-character-run.
-    let rare_glyph_scans = if config.is_enabled(RuleId::RareGlyph) {
-        2
-    } else {
-        0
-    };
-    // Mixed-case tokenizes in both reduce (per-word shape table) and judge
-    // (re-scan to locate the surviving OtherMixed occurrences), like rare-glyph.
-    let mixed_case_scans = if config.is_enabled(RuleId::MixedCaseWord) {
-        2
-    } else {
-        0
-    };
-    let token_cache: Option<rule::TokenCache> = (project_token.len()
-        + repeated_run_scans
-        + mixed_script_scans
-        + rare_glyph_scans
-        + mixed_case_scans
-        >= 2)
-            .then(|| build_token_cache(target));
 
     // The per-verse phase is embarrassingly parallel — each verse is judged
     // from its own text by `Sync` rules. Under the `parallel` feature it fans
@@ -254,45 +215,234 @@ pub fn analyze_stateful(
     // rebuild this grouping.
     let books = verse::by_book(target);
 
-    for r in &project {
-        out.extend(r.check(&books, source));
-    }
-    for r in &project_token {
-        out.extend(r.check(&books, source, token_cache.as_ref()));
-    }
-
     // The reduce scope (ADR 0043): with a prior and `changed`, only the named
     // books are re-counted — the others' counts carry forward through the
-    // supersede merge untouched. The filtered view borrows the same verse
-    // slices, so this is a key-subset copy, not a text copy. Without a prior
-    // there are no carried counts, so `changed` is ignored for correctness.
-    let scoped;
-    let reduce_books: &verse::Books<'_> = match (&prior, changed) {
-        (Some(_), Some(list)) => {
-            scoped = books
-                .iter()
-                .filter(|(b, _)| list.contains(b))
-                .map(|(b, v)| (*b, v.clone()))
-                .collect();
-            &scoped
-        }
-        _ => &books,
+    // supersede merge untouched. The walk still visits every supplied book
+    // (the project listeners' and the token cache's scope); `counted` only
+    // gates the counting listeners. Without a prior there are no carried
+    // counts, so `changed` is ignored for correctness.
+    let counted: Option<&[BookId]> = match (&prior, changed) {
+        (Some(_), Some(list)) => Some(list),
+        _ => None,
     };
 
-    // Stateful rules: reduce this call's verses, supersede the prior cache at
-    // book granularity, judge the whole merged corpus from the cache.
+    // ONE walk per verse per book (the event-stream engine): tape, graphemes
+    // and tokens are each built once per verse and every enabled listener is
+    // fed in-pass — this replaces the per-rule corpus walks the reduce phase
+    // used to run. Fan-out per book under `parallel` (ADR 0042).
+    let mut fused = stream::walk_fused(&books, counted, source, &plan);
+    let token_cache: Option<rule::TokenCache> =
+        plan.collect_tokens.then(|| stream::assemble_token_cache(&mut fused));
+
+    // Project findings, from the fused listeners' per-book outputs.
+    if plan.bracket {
+        let matches: Vec<_> = fused
+            .values_mut()
+            .map(|b| b.bracket.take().expect("bracket listener ran on every book"))
+            .collect();
+        out.extend(signals::bracket_balance::emit(matches, &config.bracket_balance));
+    }
+    if plan.duplicate {
+        for b in fused.values_mut() {
+            out.extend(b.duplicate.take().expect("duplicate listener ran on every book"));
+        }
+    }
+
+    // Assemble each rule's fresh stats + forwarded sites (ADR 0044) from the
+    // fused per-book outputs. A rule enabled this call always gets an entry —
+    // possibly empty — exactly as its own reduce produced; a book outside the
+    // `counted` scope contributed nothing, so it is absent from both (its
+    // counts carry from the prior; judge re-scans it for spans).
+    use std::collections::BTreeMap;
+    let casing_fresh = plan.casing.then(|| {
+        let (mut pb, mut st) = (BTreeMap::new(), BTreeMap::new());
+        for (&book, o) in fused.iter_mut() {
+            if let Some((bc, s)) = o.casing.take() {
+                pb.insert(book, bc);
+                st.insert(book, s);
+            }
+        }
+        (
+            signals::casing::CasingStats { per_book: pb },
+            rule::RuleSites::Casing(st),
+        )
+    });
+    let mut adjacency_fresh = plan.adjacency.then(|| {
+        let (mut pb, mut st) = (BTreeMap::new(), BTreeMap::new());
+        for (&book, o) in fused.iter_mut() {
+            if let Some((bc, s)) = o.adjacency.take() {
+                pb.insert(book, bc);
+                st.insert(book, s);
+            }
+        }
+        (
+            RuleStats::PunctuationAdjacency(signals::punctuation::PunctuationAdjacencyStats {
+                per_book: pb,
+            }),
+            rule::RuleSites::PunctuationAdjacency(st),
+        )
+    });
+    let mut spacing_fresh = plan.spacing.then(|| {
+        let (mut pb, mut st) = (BTreeMap::new(), BTreeMap::new());
+        for (&book, o) in fused.iter_mut() {
+            if let Some((bc, s)) = o.spacing.take() {
+                pb.insert(book, bc);
+                st.insert(book, s);
+            }
+        }
+        (
+            RuleStats::PunctuationSpacing(signals::punctuation::PunctuationSpacingStats {
+                per_book: pb,
+            }),
+            rule::RuleSites::PunctuationSpacing(st),
+        )
+    });
+    let mut repeated_fresh = plan.repeated_run.then(|| {
+        let (mut pb, mut st) = (BTreeMap::new(), BTreeMap::new());
+        for (&book, o) in fused.iter_mut() {
+            if let Some((bc, s)) = o.repeated_run.take() {
+                pb.insert(book, bc);
+                st.insert(book, s);
+            }
+        }
+        (
+            RuleStats::RepeatedCharacterRun(signals::lexical::RepeatedCharacterRunStats {
+                per_book: pb,
+            }),
+            rule::RuleSites::RepeatedCharacterRun(st),
+        )
+    });
+    let mut punct_only_fresh = plan.punct_only.then(|| {
+        let (mut pb, mut st) = (BTreeMap::new(), BTreeMap::new());
+        for (&book, o) in fused.iter_mut() {
+            if let Some((bc, s)) = o.punct_only.take() {
+                pb.insert(book, bc);
+                st.insert(book, s);
+            }
+        }
+        (
+            RuleStats::PunctOnlyToken(signals::lexical::PunctOnlyTokenStats { per_book: pb }),
+            rule::RuleSites::PunctOnlyToken(st),
+        )
+    });
+    let mut mixed_script_fresh = plan.mixed_script.then(|| {
+        let (mut pb, mut st) = (BTreeMap::new(), BTreeMap::new());
+        for (&book, o) in fused.iter_mut() {
+            if let Some((bc, s)) = o.mixed_script.take() {
+                pb.insert(book, bc);
+                st.insert(book, s);
+            }
+        }
+        (
+            RuleStats::MixedScript(signals::script_mixing::MixedScriptStats { per_book: pb }),
+            rule::RuleSites::MixedScript(st),
+        )
+    });
+    let mut rare_glyph_fresh = plan.rare_glyph.then(|| {
+        let mut pb = BTreeMap::new();
+        for (&book, o) in fused.iter_mut() {
+            if let Some(bg) = o.rare_glyph.take() {
+                pb.insert(book, bg);
+            }
+        }
+        (
+            RuleStats::GlyphInventory(signals::rare_glyph::RareGlyphStats { per_book: pb }),
+            rule::RuleSites::RareGlyph,
+        )
+    });
+    let mut mixed_case_fresh = plan.mixed_case.then(|| {
+        let mut pb = BTreeMap::new();
+        for (&book, o) in fused.iter_mut() {
+            if let Some(bmc) = o.mixed_case.take() {
+                pb.insert(book, bmc);
+            }
+        }
+        (
+            RuleStats::MixedCase(signals::mixed_case::MixedCaseStats { per_book: pb }),
+            rule::RuleSites::MixedCase,
+        )
+    });
+    let mut proportionality_fresh = plan.proportionality.then(|| {
+        let mut pb = BTreeMap::new();
+        for (&book, o) in fused.iter_mut() {
+            if let Some(bucket) = o.proportionality.take() {
+                pb.insert(book, bucket);
+            }
+        }
+        (
+            RuleStats::Proportionality(signals::proportionality::ProportionalityStats {
+                per_book: pb,
+            }),
+            rule::RuleSites::Proportionality,
+        )
+    });
+    drop(fused);
+
+    // Stateful rules: supersede the prior cache at book granularity, judge the
+    // whole merged corpus from the cache.
     //
     // Deliberately sequential over rules: pooling all rules' reduces/judges
     // into two rule×book task pools was tried (2026-07-07) and measured at
-    // parity-to-slightly-worse (see ADR 0042's rejected alternatives) — each
-    // rule's own per-book fan already saturates the workers, and interleaving
-    // six rules' working sets costs locality. The simple loop wins.
+    // parity-to-slightly-worse (see ADR 0042's rejected alternatives). The
+    // counting itself now happens once, fused, above.
     let mut stats = prior.unwrap_or_default();
     for r in &stateful {
-        // Reduce hands back the candidate sites it visited (ADR 0044) so the
-        // same-call judge below never re-scans a book counted this call.
-        let (fresh, sites) = r.reduce(reduce_books, source, token_cache.as_ref());
-        let merged = match stats.take(r.id()) {
+        let id = r.id();
+        let sites_slot;
+        // The fused walk's fresh stats + forwarded sites for this rule (ADR
+        // 0044). Both casing rules share the one word-table walk: each takes a
+        // clone of the stats (the wire shape keeps one entry per rule id, as
+        // before) and judges from the same site list.
+        let (fresh, sites_ref): (RuleStats, &rule::RuleSites) = match id {
+            RuleId::SentenceInitialLowercase | RuleId::InconsistentWordCasing => {
+                let (cs, ss) = casing_fresh
+                    .as_ref()
+                    .expect("enabled casing rule implies the casing listener ran");
+                (RuleStats::Casing(cs.clone()), ss)
+            }
+            RuleId::PunctuationAdjacencyAnomaly => {
+                let (st, ss) = adjacency_fresh.take().expect("listener ran");
+                sites_slot = ss;
+                (st, &sites_slot)
+            }
+            RuleId::PunctuationSpacingAnomaly => {
+                let (st, ss) = spacing_fresh.take().expect("listener ran");
+                sites_slot = ss;
+                (st, &sites_slot)
+            }
+            RuleId::RepeatedCharacterRun => {
+                let (st, ss) = repeated_fresh.take().expect("listener ran");
+                sites_slot = ss;
+                (st, &sites_slot)
+            }
+            RuleId::PunctOnlyToken => {
+                let (st, ss) = punct_only_fresh.take().expect("listener ran");
+                sites_slot = ss;
+                (st, &sites_slot)
+            }
+            RuleId::MixedScriptInToken => {
+                let (st, ss) = mixed_script_fresh.take().expect("listener ran");
+                sites_slot = ss;
+                (st, &sites_slot)
+            }
+            RuleId::RareGlyph => {
+                let (st, ss) = rare_glyph_fresh.take().expect("listener ran");
+                sites_slot = ss;
+                (st, &sites_slot)
+            }
+            RuleId::MixedCaseWord => {
+                let (st, ss) = mixed_case_fresh.take().expect("listener ran");
+                sites_slot = ss;
+                (st, &sites_slot)
+            }
+            RuleId::ProjectLengthRatio => {
+                let (st, ss) = proportionality_fresh.take().expect("listener ran");
+                sites_slot = ss;
+                (st, &sites_slot)
+            }
+            other => unreachable!("{other:?} is not a stateful rule"),
+        };
+        let merged = match stats.take(id) {
             Some(prev) => prev.merge(fresh),
             None => fresh,
         };
@@ -300,11 +450,11 @@ pub fn analyze_stateful(
         // — keeping the returned findings to one scope and projectable
         // against the text the caller supplied this call.
         out.extend(
-            r.judge(&merged, &books, token_cache.as_ref(), Some(&sites))
+            r.judge(&merged, &books, token_cache.as_ref(), Some(sites_ref))
                 .into_iter()
                 .filter(|f| target.contains_key(&f.sid)),
         );
-        stats.insert(r.id(), merged);
+        stats.insert(id, merged);
     }
 
     // Deterministic order, independent of the `parallel` feature (ADR 0018):

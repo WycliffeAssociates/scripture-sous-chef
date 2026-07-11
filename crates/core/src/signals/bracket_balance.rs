@@ -37,6 +37,7 @@ use crate::diagnostics::{
 };
 use crate::evidence;
 use crate::rule::{self, ProjectRule};
+use crate::stream;
 use crate::sid::Sid;
 use crate::span::Span;
 use crate::verse::{Books, VerseMap};
@@ -48,22 +49,22 @@ pub struct BracketBalance {
 }
 
 /// One delimiter occurrence in a book, in canonical order.
-struct DelimEvent {
+pub(crate) struct DelimEvent {
     /// Index of the verse within its book (0-based, canonical order).
     vi: usize,
-    sid: Sid,
+    pub(crate) sid: Sid,
     /// Byte offset of the glyph within its verse text.
-    offset: usize,
-    glyph: char,
+    pub(crate) offset: usize,
+    pub(crate) glyph: char,
     /// The family key: the pair's open glyph (for a closer, its opener).
-    family: char,
-    is_open: bool,
+    pub(crate) family: char,
+    pub(crate) is_open: bool,
 }
 
 /// One book's match results.
-struct BookMatch {
-    events: Vec<DelimEvent>,
-    matched: Vec<bool>,
+pub(crate) struct BookMatch {
+    pub(crate) events: Vec<DelimEvent>,
+    pub(crate) matched: Vec<bool>,
     orphans: Vec<usize>,
     /// Matched pairs as `(open_idx, close_idx)`.
     pairs: Vec<(usize, usize)>,
@@ -85,13 +86,23 @@ impl ProjectRule for BracketBalance {
 
     // Brackets are intrinsic to the target; the reference is irrelevant.
     fn check(&self, books: &Books<'_>, _source: Option<&VerseMap>) -> Vec<Finding> {
-        let window = self.cfg.window_verses as usize;
-        let z = evidence::clamp_z(self.cfg.confidence_z);
-        let floor = f64::from(evidence::clamp_unit(self.cfg.emit_score_min));
-
         // Pass 1 — match every book (independent; fans out per book under
-        // `parallel`, ADR 0042), then accumulate corpus-wide family tallies.
-        let books: Vec<BookMatch> = rule::map_books(books, |_book, verses| match_book(verses));
+        // `parallel`, ADR 0042). The fused walk feeds the same `BracketAcc`;
+        // this driver is kept for direct callers.
+        let matches: Vec<BookMatch> = rule::map_books(books, |_book, verses| match_book(verses));
+        emit(matches, &self.cfg)
+    }
+}
+
+/// The corpus-relative scoring over every book's match results (ADR 0037):
+/// accumulate family tallies, then emit orphans by pairing dominance and long
+/// matched pairs by short-span dominance. Shared by [`ProjectRule::check`] and
+/// the fused walk.
+pub(crate) fn emit(books: Vec<BookMatch>, cfg: &BracketBalanceConfig) -> Vec<Finding> {
+    {
+        let window = cfg.window_verses as usize;
+        let z = evidence::clamp_z(cfg.confidence_z);
+        let floor = f64::from(evidence::clamp_unit(cfg.emit_score_min));
 
         let mut families: BTreeMap<char, FamilyTally> = BTreeMap::new();
         for b in &books {
@@ -170,6 +181,28 @@ impl ProjectRule for BracketBalance {
     }
 }
 
+/// The bracket-balance listener: one book's delimiter events collected per
+/// verse (the shared tape supplies classification); the LIFO matching runs at
+/// book end. The stack legitimately crosses verse seams — the book is the
+/// discourse unit.
+pub(crate) struct BracketAcc {
+    events: Vec<DelimEvent>,
+}
+
+impl BracketAcc {
+    pub(crate) fn new() -> Self {
+        BracketAcc { events: Vec::new() }
+    }
+
+    pub(crate) fn verse(&mut self, v: &stream::VerseInputs<'_, '_>, vi: usize) {
+        collect_events(v.sid, v.tape, vi, &mut self.events);
+    }
+
+    pub(crate) fn finish(self) -> BookMatch {
+        lifo_match(self.events)
+    }
+}
+
 fn finding(
     e: &DelimEvent,
     score: f64,
@@ -218,39 +251,49 @@ fn inventory(b: &BookMatch, vi: usize, window: usize) -> Vec<DelimObservation> {
         .collect()
 }
 
-/// LIFO-match one book's delimiter stream, whole-book (no distance cutoff).
+/// LIFO-match one book's delimiter stream, whole-book (no distance cutoff) —
+/// the standalone driver over [`BracketAcc`]'s two halves.
 fn match_book(verses: &[(Sid, &str)]) -> BookMatch {
-    let mut events: Vec<DelimEvent> = Vec::new();
-    let mut tape = Vec::new();
-    for (vi, (sid, text)) in verses.iter().enumerate() {
-        crate::tape::build(text, &mut tape);
-        for e in &tape {
-            // One fused-table read (from the tape) gates the pair lookups:
-            // every UCD paired bracket is GC Ps/Pe ⊂ punctuation (pinned by
-            // test below), so the binary/linear searches run only on the rare
-            // punctuation char — not per letter of the whole corpus.
-            if !e.cl.is_punctuation() {
-                continue;
-            }
-            let ch = e.ch;
-            let (family, is_open) = if bracket_close_of(ch).is_some() {
-                (ch, true)
-            } else if let Some(open) = bracket_open_of(ch) {
-                (open, false)
-            } else {
-                continue;
-            };
-            events.push(DelimEvent {
-                vi,
-                sid: *sid,
-                offset: e.off as usize,
-                glyph: ch,
-                family,
-                is_open,
-            });
-        }
-    }
+    stream::drive_book(
+        verses,
+        stream::Needs { tape: true, ..Default::default() },
+        BracketAcc::new(),
+        |a, v, vi| a.verse(v, vi),
+        BracketAcc::finish,
+    )
+}
 
+/// One verse's delimiter events, appended in text order.
+fn collect_events(sid: Sid, tape: &[crate::tape::TapeEntry], vi: usize, events: &mut Vec<DelimEvent>) {
+    for e in tape {
+        // One fused-table read (from the tape) gates the pair lookups:
+        // every UCD paired bracket is GC Ps/Pe ⊂ punctuation (pinned by
+        // test below), so the binary/linear searches run only on the rare
+        // punctuation char — not per letter of the whole corpus.
+        if !e.cl.is_punctuation() {
+            continue;
+        }
+        let ch = e.ch;
+        let (family, is_open) = if bracket_close_of(ch).is_some() {
+            (ch, true)
+        } else if let Some(open) = bracket_open_of(ch) {
+            (open, false)
+        } else {
+            continue;
+        };
+        events.push(DelimEvent {
+            vi,
+            sid,
+            offset: e.off as usize,
+            glyph: ch,
+            family,
+            is_open,
+        });
+    }
+}
+
+/// The whole-book LIFO matching over the collected event stream.
+fn lifo_match(events: Vec<DelimEvent>) -> BookMatch {
     let mut matched = vec![false; events.len()];
     let mut orphans: Vec<usize> = Vec::new();
     let mut pairs: Vec<(usize, usize)> = Vec::new();

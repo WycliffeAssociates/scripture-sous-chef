@@ -85,7 +85,7 @@ use crate::rule::{self, StatefulRule, TokenCache};
 use crate::sid::{BookId, Sid};
 use crate::span::Span;
 use crate::stats::RuleStats;
-use crate::token::tokenize;
+use crate::stream;
 use crate::verse::{Books, VerseMap};
 
 pub const SENTENCE_INITIAL_LOWERCASE: RuleId = RuleId::SentenceInitialLowercase;
@@ -323,7 +323,7 @@ impl WordStats {
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct CasingStats {
     #[cfg_attr(feature = "wasm", tsify(type = "Record<string, BookCasing>"))]
-    per_book: BTreeMap<BookId, BookCasing>,
+    pub(crate) per_book: BTreeMap<BookId, BookCasing>,
 }
 
 /// One book's contribution: the pruned word table plus the cased-word-start
@@ -331,7 +331,7 @@ pub struct CasingStats {
 #[derive(Debug, Clone, Default, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
-struct BookCasing {
+pub(crate) struct BookCasing {
     #[cfg_attr(feature = "wasm", tsify(type = "Record<string, WordStats>"))]
     words: BTreeMap<String, WordStats>,
     /// Cased word-start observations in the book — the emergent gate input,
@@ -823,10 +823,11 @@ fn is_letter(c: char) -> bool {
 
 /// The verse's word units: UAX #29 word tokens, then adjacent tokens joined
 /// across a single letter-flanked hyphen merged into one span. Pure-number
-/// tokens are dropped.
-fn compound_words(text: &str) -> Vec<Span> {
+/// tokens are dropped. `tokens` is the verse's shared tokenization (the fused
+/// walk's product; the standalone driver tokenizes itself).
+fn compound_words(text: &str, tokens: &[crate::token::Token]) -> Vec<Span> {
     let mut out: Vec<Span> = Vec::new();
-    for t in tokenize(text) {
+    for t in tokens.iter().copied() {
         if let Some(prev) = out.last_mut() {
             let gap = &text[prev.end..t.span.start];
             let mut g = gap.chars();
@@ -903,22 +904,34 @@ pub(crate) fn pos_of(book_initial: bool, taken: Option<Pending>) -> PosClass {
     }
 }
 
-/// Scan one book's verses in canonical order, accumulating the raw per-word
-/// table and producing the lowercase flag candidates. The pending terminal is
-/// carried across verse seams; the book-initial word is forced.
-fn walk_book(verses: &[(Sid, &str)]) -> (BookCasing, Vec<LowerSite>) {
-    let mut bc = BookCasing::default();
-    let mut sites = Vec::new();
-    let mut pending: Option<Pending> = None;
-    let mut book_initial = true;
+/// The casing counting listener: one book's raw per-word table plus the
+/// lowercase flag candidates, fed per verse by the fused walk. The pending
+/// terminal is carried across verse seams; the book-initial word is forced.
+pub(crate) struct CasingAcc {
+    bc: BookCasing,
+    sites: Vec<LowerSite>,
+    pending: Option<Pending>,
+    book_initial: bool,
+}
 
-    for (sid, text) in verses {
-        let words = compound_words(text);
+impl CasingAcc {
+    pub(crate) fn new() -> Self {
+        CasingAcc {
+            bc: BookCasing::default(),
+            sites: Vec::new(),
+            pending: None,
+            book_initial: true,
+        }
+    }
+
+    pub(crate) fn verse(&mut self, v: &stream::VerseInputs<'_, '_>) {
+        let (sid, text) = (v.sid, v.text);
+        let words = compound_words(text, v.tokens);
         let mut prev_letter = false;
         let mut cursor = 0usize;
 
         for w in &words {
-            advance_gap(&text[cursor..w.start], &mut pending, &mut prev_letter);
+            advance_gap(&text[cursor..w.start], &mut self.pending, &mut prev_letter);
 
             let first = text[w.start..w.end].chars().next().unwrap();
             let fcl = class_of(first);
@@ -929,14 +942,14 @@ fn walk_book(verses: &[(Sid, &str)]) -> (BookCasing, Vec<LowerSite>) {
             } else {
                 Case::Uncased
             };
-            let pos = pos_of(book_initial, pending.take());
-            book_initial = false;
+            let pos = pos_of(self.book_initial, self.pending.take());
+            self.book_initial = false;
 
             if case != Case::Uncased {
-                bc.cased_starts += 1;
+                self.bc.cased_starts += 1;
             }
             let key = text[w.start..w.end].to_lowercase();
-            bc.words.entry(key.clone()).or_default().record(pos, case);
+            self.bc.words.entry(key.clone()).or_default().record(pos, case);
             // Boundary predicate (ADR 0055): an OtherMixed token (`asÍ`,
             // `word-wOrd`) is `case.mixed-case-word`'s to report — its interior
             // capital is the defect, not its incidental lowercase initial. Skip
@@ -949,8 +962,8 @@ fn walk_book(verses: &[(Sid, &str)]) -> (BookCasing, Vec<LowerSite>) {
             if case == Case::Lower
                 && case_shape(&text[w.start..w.end]) != Some(CaseShape::OtherMixed)
             {
-                sites.push(LowerSite {
-                    sid: *sid,
+                self.sites.push(LowerSite {
+                    sid,
                     start: w.start as u32,
                     end: w.end as u32,
                     key,
@@ -961,11 +974,26 @@ fn walk_book(verses: &[(Sid, &str)]) -> (BookCasing, Vec<LowerSite>) {
             prev_letter = text[w.start..w.end].chars().next_back().is_some_and(is_letter);
             cursor = w.end;
         }
-        advance_gap(&text[cursor..], &mut pending, &mut prev_letter);
+        advance_gap(&text[cursor..], &mut self.pending, &mut prev_letter);
     }
 
-    bc.words.retain(|_, w| w.has_case());
-    (bc, sites)
+    pub(crate) fn finish(mut self) -> (BookCasing, Vec<LowerSite>) {
+        self.bc.words.retain(|_, w| w.has_case());
+        (self.bc, self.sites)
+    }
+}
+
+/// Scan one book's verses — the standalone driver over [`CasingAcc`], used by
+/// the judge's re-scan path (a prior-carried book has no forwarded sites) and
+/// the calibration API.
+fn walk_book(verses: &[(Sid, &str)]) -> (BookCasing, Vec<LowerSite>) {
+    stream::drive_book(
+        verses,
+        stream::Needs { tokens: true, ..Default::default() },
+        CasingAcc::new(),
+        |a, v, _| a.verse(v),
+        CasingAcc::finish,
+    )
 }
 
 /// Shared reduce for both casing rules: walk each book once.

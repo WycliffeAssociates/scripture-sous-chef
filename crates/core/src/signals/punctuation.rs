@@ -18,6 +18,7 @@ use crate::evidence::{clamp_count, clamp_rate, clamp_unit, clamp_z, dominance, f
 use crate::sid::{BookId, Sid};
 use crate::span::Span;
 use crate::stats::RuleStats;
+use crate::stream;
 use crate::tape::TapeEntry;
 use crate::verse::{Books, VerseMap};
 
@@ -46,7 +47,7 @@ pub const PUNCTUATION_ADJACENCY_ANOMALY: RuleId = RuleId::PunctuationAdjacencyAn
 #[derive(Debug, Clone, Default, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
-struct BookPunctuationAdjacency {
+pub(crate) struct BookPunctuationAdjacency {
     lead_opportunities: BTreeMap<char, u64>,
     pattern_counts: BTreeMap<String, u64>,
 }
@@ -62,7 +63,7 @@ pub struct PunctuationAdjacencyStats {
         feature = "wasm",
         tsify(type = "Record<string, BookPunctuationAdjacency>")
     )]
-    per_book: BTreeMap<BookId, BookPunctuationAdjacency>,
+    pub(crate) per_book: BTreeMap<BookId, BookPunctuationAdjacency>,
 }
 
 impl PunctuationAdjacencyStats {
@@ -94,11 +95,23 @@ impl StatefulRule for PunctuationAdjacencyAnomaly {
         _source: Option<&VerseMap>,
         _tokens: Option<&TokenCache>,
     ) -> (RuleStats, rule::RuleSites) {
+        // Thin driver over the shared listener (the fused walk feeds the same
+        // `AdjacencyAcc`); kept for calibration/tests — `analyze_stateful`
+        // walks all rules fused.
         let mut per_book = BTreeMap::new();
         let mut sites = BTreeMap::new();
-        for (book, (bc, book_sites)) in
-            rule::map_books(books, |book, verses| (book, reduce_book(verses)))
-        {
+        for (book, (bc, book_sites)) in rule::map_books(books, |book, verses| {
+            (
+                book,
+                stream::drive_book(
+                    verses,
+                    stream::Needs { tape: true, ..Default::default() },
+                    AdjacencyAcc::new(),
+                    |a, v, _| a.verse(v),
+                    AdjacencyAcc::finish,
+                ),
+            )
+        }) {
             per_book.insert(book, bc);
             sites.insert(book, book_sites);
         }
@@ -244,29 +257,44 @@ impl StatefulRule for PunctuationAdjacencyAnomaly {
     }
 }
 
-/// Reduce one book to aggregate counts, returning the candidate sites
-/// alongside (forwarded reduce→judge within a call — ADR 0044; the *stats*
-/// still carry no sites).
-fn reduce_book(verses: &[(Sid, &str)]) -> (BookPunctuationAdjacency, Vec<(Sid, Span)>) {
-    let mut lead_opportunities: BTreeMap<char, u64> = BTreeMap::new();
-    let mut pattern_counts: BTreeMap<String, u64> = BTreeMap::new();
-    let mut sites = Vec::new();
-    let mut tape = Vec::new();
-    for (sid, text) in verses {
-        crate::tape::build(text, &mut tape);
-        count_lead_opportunities(&tape, &mut lead_opportunities);
-        for span in adjacency_candidates(&tape) {
-            *pattern_counts.entry(span.slice(text).to_string()).or_default() += 1;
-            sites.push((*sid, span));
+/// The adjacency counting listener: one book's aggregate counts plus the
+/// candidate sites (forwarded reduce→judge within a call — ADR 0044; the
+/// *stats* still carry no sites). Fed per verse by the fused walk.
+pub(crate) struct AdjacencyAcc {
+    lead_opportunities: BTreeMap<char, u64>,
+    pattern_counts: BTreeMap<String, u64>,
+    sites: Vec<(Sid, Span)>,
+}
+
+impl AdjacencyAcc {
+    pub(crate) fn new() -> Self {
+        AdjacencyAcc {
+            lead_opportunities: BTreeMap::new(),
+            pattern_counts: BTreeMap::new(),
+            sites: Vec::new(),
         }
     }
-    (
-        BookPunctuationAdjacency {
-            lead_opportunities,
-            pattern_counts,
-        },
-        sites,
-    )
+
+    pub(crate) fn verse(&mut self, v: &stream::VerseInputs<'_, '_>) {
+        count_lead_opportunities(v.tape, &mut self.lead_opportunities);
+        for span in adjacency_candidates(v.tape) {
+            *self
+                .pattern_counts
+                .entry(span.slice(v.text).to_string())
+                .or_default() += 1;
+            self.sites.push((v.sid, span));
+        }
+    }
+
+    pub(crate) fn finish(self) -> (BookPunctuationAdjacency, Vec<(Sid, Span)>) {
+        (
+            BookPunctuationAdjacency {
+                lead_opportunities: self.lead_opportunities,
+                pattern_counts: self.pattern_counts,
+            },
+            self.sites,
+        )
+    }
 }
 
 /// Count, per punctuation glyph, the number of positions where it **begins a
@@ -277,7 +305,7 @@ fn reduce_book(verses: &[(Sid, &str)]) -> (BookPunctuationAdjacency, Vec<(Sid, S
 /// runs never inflate their own denominator. Excluded candidate patterns
 /// (`...`, `--`) still count here as lead-glyph opportunities — they are
 /// suppressed from *extraction*, not from the opportunity pool.
-fn count_lead_opportunities(tape: &[TapeEntry], out: &mut BTreeMap<char, u64>) {
+pub(crate) fn count_lead_opportunities(tape: &[TapeEntry], out: &mut BTreeMap<char, u64>) {
     let mut prev: Option<char> = None;
     for e in tape {
         if e.cl.is_punctuation() && prev != Some(e.ch) {
@@ -326,6 +354,19 @@ pub(crate) fn is_quote_char(c: char) -> bool {
 /// candidates, as before — extraction is not changed while the verdict model
 /// is. Spans slice the exact candidate run out of `text`.
 fn adjacency_candidates(tape: &[TapeEntry]) -> Vec<Span> {
+    adjacency_runs(tape, false)
+}
+
+/// Every adjacency run **including the known-safe set** (`...`, `--`, `?!`,
+/// `!?`, `?`-runs) — the census's extraction (rows are never filtered; the
+/// safe-list subtraction is the rule's policy, not the count's).
+pub(crate) fn adjacency_runs_all(tape: &[TapeEntry]) -> Vec<Span> {
+    adjacency_runs(tape, true)
+}
+
+/// The shared run extraction; `include_safe` keeps the known-safe patterns
+/// the rule's candidate set subtracts.
+fn adjacency_runs(tape: &[TapeEntry], include_safe: bool) -> Vec<Span> {
     let mut spans = Vec::new();
 
     // A tape scalar is a sentence separator (mixed-run class) iff its fused
@@ -353,9 +394,10 @@ fn adjacency_candidates(tape: &[TapeEntry]) -> Vec<Span> {
         // `...` ellipsis and `--` em-dash substitutes are universal typography;
         // a run of 3+ `?` is `hyg.replacement-run`'s finding (encoding-
         // conversion damage), skipped here to avoid double-reporting.
-        let allowed = (c == '.' && count == 3)
-            || (c == '-' && count == 2)
-            || (c == '?' && count >= 3);
+        let allowed = !include_safe
+            && ((c == '.' && count == 3)
+                || (c == '-' && count == 2)
+                || (c == '?' && count >= 3));
         if count >= 2 && !allowed {
             spans.push(Span { start, end });
         }
@@ -381,7 +423,7 @@ fn adjacency_candidates(tape: &[TapeEntry]) -> Vec<Span> {
             j += 1;
         }
         let identical = run.chars().all(|x| x == c); // pass 1's business
-        let allowed = run == "?!" || run == "!?";
+        let allowed = !include_safe && (run == "?!" || run == "!?");
         if run.chars().count() >= 2 && !identical && !allowed {
             spans.push(Span { start, end });
         }
@@ -523,7 +565,19 @@ impl Side {
 /// amendment, replacing the `[u64; 4]` per-side shape). A `(side, class)` pool's
 /// two counts sum to its judged occupancy `N_pool`; a side is judged only where
 /// it has a neighbour (a book edge with no neighbour across the seam abstains).
-const SIDE_CELLS: usize = CLASS_COUNT * 2 * 2;
+pub(crate) const SIDE_CELLS: usize = CLASS_COUNT * 2 * 2;
+
+/// Split a mark's packed counters into `(attached, spaced)` totals over both
+/// sides and all classes — the census's per-mark profile (its equivalence
+/// with the rule's cells is by construction: form is the low bit).
+pub(crate) fn mark_attached_spaced(cells: &[u64; SIDE_CELLS]) -> (u64, u64) {
+    let mut att = 0u64;
+    let mut sp = 0u64;
+    for (i, &n) in cells.iter().enumerate() {
+        if i % 2 == 0 { att += n } else { sp += n }
+    }
+    (att, sp)
+}
 
 /// Packed-counter index for a `(side, class, form)` triple.
 const fn cell_index(side: Side, class: PoolClass, form: SideForm) -> usize {
@@ -537,9 +591,9 @@ const fn cell_index(side: Side, class: PoolClass, form: SideForm) -> usize {
 #[derive(Debug, Clone, Default, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
-struct BookPunctuationSpacing {
+pub(crate) struct BookPunctuationSpacing {
     #[cfg_attr(feature = "wasm", tsify(type = "Record<string, number[]>"))]
-    per_mark: BTreeMap<char, [u64; SIDE_CELLS]>,
+    pub(crate) per_mark: BTreeMap<char, [u64; SIDE_CELLS]>,
 }
 
 /// Cached spacing aggregates, keyed by book code so an edit supersedes only its
@@ -552,7 +606,7 @@ pub struct PunctuationSpacingStats {
         feature = "wasm",
         tsify(type = "Record<string, BookPunctuationSpacing>")
     )]
-    per_book: BTreeMap<BookId, BookPunctuationSpacing>,
+    pub(crate) per_book: BTreeMap<BookId, BookPunctuationSpacing>,
 }
 
 impl PunctuationSpacingStats {
@@ -584,29 +638,21 @@ impl StatefulRule for PunctuationSpacingAnomaly {
         _source: Option<&VerseMap>,
         _tokens: Option<&TokenCache>,
     ) -> (RuleStats, rule::RuleSites) {
+        // Thin driver over the shared listener (the fused walk feeds the same
+        // `SpacingAcc`); kept for calibration/tests.
         let mut per_book = BTreeMap::new();
         let mut sites = BTreeMap::new();
         for (book, (counts, book_sites)) in rule::map_books(books, |book, verses| {
-            let mut per_mark: BTreeMap<char, [u64; SIDE_CELLS]> = BTreeMap::new();
-            let mut book_sites = Vec::new();
-            for_each_spacing_opportunity(verses, |sid, opp| {
-                let cell = per_mark.entry(opp.mark).or_insert([0u64; SIDE_CELLS]);
-                if let Some(r) = opp.left {
-                    cell[cell_index(Side::Left, r.class, r.form)] += 1;
-                }
-                if let Some(r) = opp.right {
-                    cell[cell_index(Side::Right, r.class, r.form)] += 1;
-                }
-                book_sites.push(SpacingSite {
-                    sid,
-                    mark: opp.mark,
-                    left: opp.left,
-                    right: opp.right,
-                    left_span: opp.left_span,
-                    right_span: opp.right_span,
-                });
-            });
-            (book, (BookPunctuationSpacing { per_mark }, book_sites))
+            (
+                book,
+                stream::drive_book(
+                    verses,
+                    stream::Needs { graphemes: true, ..Default::default() },
+                    SpacingAcc::new(),
+                    |a, v, _| a.verse(v),
+                    SpacingAcc::finish,
+                ),
+            )
         }) {
             per_book.insert(book, counts);
             sites.insert(book, book_sites);
@@ -968,6 +1014,61 @@ fn spacing_opportunities(
     left_cross: Option<PoolClass>,
     right_cross: Option<PoolClass>,
 ) -> Vec<SpacingOpportunity> {
+    walk_opportunities(text, graphemes, left_cross)
+        .into_iter()
+        .map(|raw| raw.resolve(right_cross))
+        .collect()
+}
+
+/// One extracted opportunity whose right side may still be unresolved: a mark
+/// whose rightward whitespace walk reached the verse end reads its neighbour
+/// class across the seam, which a streaming walk only knows when the *next*
+/// non-empty verse arrives. At most one raw opportunity per verse can be
+/// `right: Seam`, and it is necessarily the verse's last (anything after the
+/// mark is whitespace, so no later mark exists).
+struct RawOpportunity {
+    mark: char,
+    left: Option<SideRead>,
+    right: RightState,
+    left_span: Span,
+    right_span: Span,
+}
+
+enum RightState {
+    /// Resolved within the verse (or an in-verse abstain can't happen — a
+    /// non-seam right always has a neighbour).
+    Resolved(Option<SideRead>),
+    /// Hit the verse seam: form is `Spaced`, class read across in book order.
+    Seam,
+}
+
+impl RawOpportunity {
+    fn resolve(self, right_cross: Option<PoolClass>) -> SpacingOpportunity {
+        let right = match self.right {
+            RightState::Resolved(r) => r,
+            RightState::Seam => right_cross.map(|class| SideRead {
+                class,
+                form: SideForm::Spaced,
+            }),
+        };
+        SpacingOpportunity {
+            mark: self.mark,
+            left: self.left,
+            right,
+            left_span: self.left_span,
+            right_span: self.right_span,
+        }
+    }
+}
+
+/// The extraction walk shared by the batch path ([`spacing_opportunities`])
+/// and the streaming listener ([`SpacingAcc`]): every lone candidate scalar's
+/// per-side reads, with the right seam left unresolved.
+fn walk_opportunities(
+    text: &str,
+    graphemes: &[GSpan],
+    left_cross: Option<PoolClass>,
+) -> Vec<RawOpportunity> {
     let mut out = Vec::new();
     for (idx, gs) in graphemes.iter().enumerate() {
         let g = gs.slice(text);
@@ -1022,19 +1123,16 @@ fn spacing_opportunities(
             }
         }
         let (right, span_end) = if k + 1 >= graphemes.len() {
-            (
-                right_cross.map(|class| SideRead { class, form: SideForm::Spaced }),
-                mark_end,
-            )
+            (RightState::Seam, mark_end)
         } else {
             let nb = graphemes[k + 1];
             let class = neighbour_class(nb.slice(text));
             let form = if right_ws { SideForm::Spaced } else { SideForm::Attached };
             let span_end = if right_ws { graphemes[k].range().end } else { nb.range().end };
-            (Some(SideRead { class, form }), span_end)
+            (RightState::Resolved(Some(SideRead { class, form })), span_end)
         };
 
-        out.push(SpacingOpportunity {
+        out.push(RawOpportunity {
             mark,
             left,
             right,
@@ -1043,6 +1141,113 @@ fn spacing_opportunities(
         });
     }
     out
+}
+
+/// The spacing counting listener: one book's per-mark tallies plus the
+/// forwarded sites, fed per verse by the fused walk. Carries the cross-seam
+/// state the batch walk pre-computed: the nearest previous non-empty verse's
+/// trailing edge class (a mark's left seam read), and the at-most-one
+/// opportunity whose right side awaits the next non-empty verse's leading
+/// edge. Both resolve exactly as the batch walk's `left_cross`/`right_cross`
+/// (repo CLAUDE.md: the seam reads as whitespace, its class read across it in
+/// book order; a book edge with no neighbour abstains).
+pub(crate) struct SpacingAcc {
+    per_mark: BTreeMap<char, [u64; SIDE_CELLS]>,
+    sites: Vec<SpacingSite>,
+    left_cross: Option<PoolClass>,
+    pending: Option<PendingSeam>,
+}
+
+/// A buffered right-seam opportunity: everything but the right read is known.
+struct PendingSeam {
+    sid: Sid,
+    mark: char,
+    left: Option<SideRead>,
+    left_span: Span,
+    right_span: Span,
+}
+
+impl SpacingAcc {
+    pub(crate) fn new() -> Self {
+        SpacingAcc {
+            per_mark: BTreeMap::new(),
+            sites: Vec::new(),
+            left_cross: None,
+            pending: None,
+        }
+    }
+
+    fn record(
+        &mut self,
+        sid: Sid,
+        mark: char,
+        left: Option<SideRead>,
+        right: Option<SideRead>,
+        left_span: Span,
+        right_span: Span,
+    ) {
+        let cell = self.per_mark.entry(mark).or_insert([0u64; SIDE_CELLS]);
+        if let Some(r) = left {
+            cell[cell_index(Side::Left, r.class, r.form)] += 1;
+        }
+        if let Some(r) = right {
+            cell[cell_index(Side::Right, r.class, r.form)] += 1;
+        }
+        self.sites.push(SpacingSite { sid, mark, left, right, left_span, right_span });
+    }
+
+    fn resolve_pending(&mut self, right_cross: Option<PoolClass>) {
+        if let Some(p) = self.pending.take() {
+            let right = right_cross.map(|class| SideRead { class, form: SideForm::Spaced });
+            self.record(p.sid, p.mark, p.left, right, p.left_span, p.right_span);
+        }
+    }
+
+    pub(crate) fn verse(&mut self, v: &stream::VerseInputs<'_, '_>) {
+        // This verse's edges under the same predicate as `verse_edge_classes`.
+        let nonws = |gs: &GSpan| {
+            let s = gs.slice(v.text);
+            (!s.is_empty() && !s.chars().all(is_spacing_ws)).then(|| neighbour_class(s))
+        };
+        let first_edge = v.graphemes.iter().find_map(nonws);
+
+        // A non-empty verse resolves the previous verse's seam-right mark —
+        // before its own opportunities, preserving site order. An empty /
+        // all-whitespace verse (no edge) has no opportunities and leaves both
+        // carried states untouched, exactly like the batch walk's `find_map`
+        // skipping it.
+        if first_edge.is_some() {
+            self.resolve_pending(first_edge);
+        }
+
+        for raw in walk_opportunities(v.text, v.graphemes, self.left_cross) {
+            match raw.right {
+                RightState::Resolved(right) => {
+                    self.record(v.sid, raw.mark, raw.left, right, raw.left_span, raw.right_span);
+                }
+                RightState::Seam => {
+                    debug_assert!(self.pending.is_none(), "≤1 seam-right mark per verse");
+                    self.pending = Some(PendingSeam {
+                        sid: v.sid,
+                        mark: raw.mark,
+                        left: raw.left,
+                        left_span: raw.left_span,
+                        right_span: raw.right_span,
+                    });
+                }
+            }
+        }
+
+        if let Some(last_edge) = v.graphemes.iter().rev().find_map(nonws) {
+            self.left_cross = Some(last_edge);
+        }
+    }
+
+    pub(crate) fn finish(mut self) -> (BookPunctuationSpacing, Vec<SpacingSite>) {
+        // Book edge: no neighbour across the seam — the side abstains.
+        self.resolve_pending(None);
+        (BookPunctuationSpacing { per_mark: self.per_mark }, self.sites)
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────
