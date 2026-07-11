@@ -399,6 +399,17 @@ mod tests {
         }
     }
 
+    /// `is_uppercase` over every scalar — the sample in `matches_std_predicates`
+    /// only spot-checks a handful of scripts, and this bit backs a hot-path
+    /// swap (`rare_glyph`'s per-word fold-needed check) so it earns the full
+    /// sweep like the ADR-0046 family bits above.
+    #[test]
+    fn uppercase_bit_equals_std_predicate_over_all_scalars() {
+        for c in all_scalars() {
+            assert_eq!(class_of(c).is_uppercase(), c.is_uppercase(), "upper {c:?}");
+        }
+    }
+
     #[test]
     fn quote_bit_equals_engine_set_over_all_scalars() {
         // The exact 14-char engine set (mirror of punctuation::is_quote_char).
