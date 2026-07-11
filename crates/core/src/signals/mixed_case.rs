@@ -71,6 +71,8 @@
 
 use std::collections::BTreeMap;
 
+use rustc_hash::FxHashMap;
+
 use crate::config::MixedCaseConfig;
 use crate::diagnostics::{Finding, FindingArgs, RuleId, Severity};
 use crate::evidence::{clamp_count, clamp_unit, clamp_z, wilson_lower_bound};
@@ -354,13 +356,25 @@ fn verse_tokens<'a>(
 /// tracking — a mid-word capital is position-independent (ADR 0055). Caseless
 /// tokens have no shape and are dropped (the sole pruning; every cased word
 /// is kept for dominance mass). Fed per verse by the fused walk.
+///
+/// Per-book word-type interner (mirrors `CasingAcc`, ADR 0057 allocation-diet
+/// follow-up): folded key → id, tallying into the id-indexed `profiles` (one
+/// hash probe per token) instead of a `BTreeMap<String, _>` entry walk (log n
+/// string memcmps per token, on every occurrence — not just per distinct
+/// type). The pinned sorted `words` shape is rebuilt once in `finish`.
 pub(crate) struct MixedCaseAcc {
-    words: BTreeMap<String, ShapeProfile>,
+    intern: FxHashMap<String, u32>,
+    keys: Vec<String>,
+    profiles: Vec<ShapeProfile>,
 }
 
 impl MixedCaseAcc {
     pub(crate) fn new() -> Self {
-        MixedCaseAcc { words: BTreeMap::new() }
+        MixedCaseAcc {
+            intern: FxHashMap::default(),
+            keys: Vec::new(),
+            profiles: Vec::new(),
+        }
     }
 
     pub(crate) fn verse(&mut self, v: &stream::VerseInputs<'_, '_>) {
@@ -368,12 +382,26 @@ impl MixedCaseAcc {
             let Some(folded) = folded else { continue };
             let word = tok.span.slice(v.text);
             let Some(shape) = case_shape(word) else { continue };
-            self.words.entry(folded.clone().into_owned()).or_default().record(shape);
+            let id = match self.intern.get(folded.as_ref()) {
+                Some(&id) => id,
+                None => {
+                    let id = self.keys.len() as u32;
+                    let key = folded.clone().into_owned();
+                    self.intern.insert(key.clone(), id);
+                    self.keys.push(key);
+                    self.profiles.push(ShapeProfile::default());
+                    id
+                }
+            };
+            self.profiles[id as usize].record(shape);
         }
     }
 
     pub(crate) fn finish(self) -> BookMixedCase {
-        BookMixedCase { words: self.words }
+        // Every interned key was a cased word with ≥1 recorded shape (the sole
+        // pruning — caseless tokens never intern), so no filter is needed here.
+        let words = self.keys.into_iter().zip(self.profiles).collect();
+        BookMixedCase { words }
     }
 }
 

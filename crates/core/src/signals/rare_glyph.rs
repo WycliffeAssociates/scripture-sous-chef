@@ -473,13 +473,22 @@ impl CensusPages {
 /// single-script eligibility is a property of the surface string.
 pub(crate) struct RareGlyphAcc {
     census: CensusPages,
-    // Hash maps during the walk (a String-keyed BTreeMap walk per token was
-    // ~200 ms/Bible); both convert to the stats' sorted shape at book end.
-    // FxHashMap: internal-only (never serialized), fast non-cryptographic
-    // hashing on the hot per-word walk (ADR 0057 allocation-diet follow-up).
-    words: FxHashMap<String, WordInfo>,
+    // Per-book word-type interner (mirrors `CasingAcc`/`MixedCaseAcc`, ADR
+    // 0057 allocation-diet follow-up): folded key → id, one hash probe per
+    // token via `intern`, replacing the previous contains_key+get_mut double
+    // probe. `word_keys`/`word_info` are id-indexed; the pinned sorted
+    // `words` map (filtered to locally-rare survivors) is rebuilt once in
+    // `finish`.
+    intern: FxHashMap<String, u32>,
+    word_keys: Vec<String>,
+    word_info: Vec<WordInfo>,
     // Distinct eligible surface forms → occurrence count (original case — the
-    // glyphs attributed are the surface's, not the folded key's).
+    // glyphs attributed are the surface's, not the folded key's). Kept a
+    // plain hash map, not interned: it is already O(1)-hash per occurrence
+    // (no BTreeMap memcmp cost to remove, unlike `words` before this pass),
+    // and its keys are a *different* case-fold domain than `word_keys` (raw
+    // surface vs folded type) — a second interner here would add complexity
+    // for no measured win.
     surfaces: FxHashMap<String, u32>,
     pending: Option<casing::Pending>,
     book_initial: bool,
@@ -489,7 +498,9 @@ impl RareGlyphAcc {
     pub(crate) fn new() -> Self {
         RareGlyphAcc {
             census: CensusPages::new(),
-            words: FxHashMap::default(),
+            intern: FxHashMap::default(),
+            word_keys: Vec::new(),
+            word_info: Vec::new(),
             surfaces: FxHashMap::default(),
             pending: None,
             book_initial: true,
@@ -523,11 +534,20 @@ impl RareGlyphAcc {
             // Fold to the key without allocating for the already-lowercase
             // majority, and clone map keys only on first sight — computed once
             // per token by the fused walk (`stream::fold_letter_tokens`), not
-            // per listener.
-            if !self.words.contains_key(key.as_ref()) {
-                self.words.insert(key.clone().into_owned(), WordInfo::default());
-            }
-            let info = self.words.get_mut(key.as_ref()).expect("just inserted");
+            // per listener. One hash probe per token via the interner (was
+            // contains_key + get_mut, two probes).
+            let id = match self.intern.get(key.as_ref()) {
+                Some(&id) => id,
+                None => {
+                    let id = self.word_keys.len() as u32;
+                    let owned = key.clone().into_owned();
+                    self.intern.insert(owned.clone(), id);
+                    self.word_keys.push(owned);
+                    self.word_info.push(WordInfo::default());
+                    id
+                }
+            };
+            let info = &mut self.word_info[id as usize];
             info.tokens = info.tokens.saturating_add(1);
             info.titlecase = titlecase;
             info.forced = forced;
@@ -570,8 +590,12 @@ impl RareGlyphAcc {
         glyph_words.retain(|_, ws| ws.values().copied().sum::<u32>() <= RARE_CAP);
         let keep: BTreeSet<String> =
             glyph_words.values().flat_map(|ws| ws.keys().cloned()).collect();
-        let words: BTreeMap<String, WordInfo> =
-            self.words.into_iter().filter(|(k, _)| keep.contains(k)).collect();
+        let words: BTreeMap<String, WordInfo> = self
+            .word_keys
+            .into_iter()
+            .zip(self.word_info)
+            .filter(|(k, _)| keep.contains(k.as_str()))
+            .collect();
 
         BookGlyphs { inventory: self.census.into_map(), rare: glyph_words, words }
     }
