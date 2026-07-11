@@ -75,6 +75,7 @@ isn't visible from the code alone.
 | 0056 | 2026-07-10 | [Rare-glyph reduce: page-table census, surface-deferred attribution](0056-rare-glyph-reduce-page-table.md) | Accepted |
 | 0057 | 2026-07-11 | [The event-stream engine — one fused book walk, every rule a listener](0057-event-stream-engine.md) | Accepted (supersedes 0044's fusion rejection) |
 | 0058 | 2026-07-11 | [The census (absolute mode) — `census(map) → Inventory`, the event stream's first subscriber](0058-census-absolute-mode.md) | Accepted (ratifies the 2026-07-10 plan) |
+| 0059 | 2026-07-11 | [Association goes G²-only — retire the Fisher fallback as the default](0059-association-g2-only.md) | Accepted |
 
 ## Format
 

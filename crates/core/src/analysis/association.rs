@@ -1,8 +1,10 @@
 //! 2×2 association tests for sparse language evidence.
 //!
-//! Dunning's `G²` on the fast path (every expected cell ≥ 5), two-sided
-//! Fisher's exact on sparse margins. Both move the same direction: larger =
-//! "less likely coincidence." Casing's `terminal_strength` word-reshuffle
+//! Dunning's `G²` on the fast path (every expected cell ≥ 5); sparse margins
+//! also use `G²` since ADR 0059 (Fisher's exact two-sided surprise is kept as
+//! the other [`ExactTest`] arm, not the shipped default). Both statistics
+//! move the same direction: larger = "less likely coincidence." Casing's
+//! `terminal_strength` word-reshuffle
 //! witness (ADR 0052) aggregates a per-juror [`Table2::association_score`] over
 //! a class's following-word distribution; the machinery is factored here so a
 //! future positional rule or the planned inventory mode reads the same code.
@@ -38,24 +40,25 @@ pub enum AssociationTest {
 /// association time (~8.9 µs vs ~59 ns per call) — because the per-juror 2×2
 /// tables of casing's word-reshuffle witness are intrinsically sparse (the
 /// after-class cell is small for almost every juror), not because the Cochran
-/// threshold is wrong. A fleet experiment routing everything through G² moved
-/// zero findings (142 sixth-decimal score wiggles on one rule, max |Δscore|
-/// 6.1e-5) and cut the everything-on English analyze roughly in half again;
-/// the numbers live in the switch-introducing commit for adjudication.
-/// Flipping the variant below is the whole change.
+/// threshold is wrong. Adopted as `G2Only` — see
+/// [ADR 0059](../../../../documentation/adrs/0059-association-g2-only.md) for
+/// the fleet-drift and perf record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ExactTest {
-    /// Today's behavior: two-sided Fisher exact surprise on sparse tables.
-    Fisher,
-    /// Dunning G² everywhere, sparse included (candidate; not yet adopted).
-    /// Unconstructed while `EXACT_TEST` stays at `Fisher` — the variant IS the
-    /// seam, kept so adoption is a one-line flip.
+    /// Two-sided Fisher exact surprise on sparse tables (pre-ADR-0059
+    /// default). Retained as the other arm; still directly exercised by the
+    /// textbook fixtures below.
     #[allow(dead_code)]
+    Fisher,
+    /// Dunning G² everywhere, sparse included. Shipped default since ADR
+    /// 0059 (fleet drift: 142 sixth-decimal jitters on
+    /// `case.inconsistent-word-casing`, zero verdict flips, −34% on
+    /// WA-en-ulb everything-on).
     G2Only,
 }
 
-/// The active sparse-table strategy. `Fisher` is the shipped default.
-const EXACT_TEST: ExactTest = ExactTest::Fisher;
+/// The active sparse-table strategy. `G2Only` since ADR 0059.
+const EXACT_TEST: ExactTest = ExactTest::G2Only;
 
 impl Table2 {
     pub const fn new(a: u64, b: u64, c: u64, d: u64) -> Self {
@@ -80,7 +83,7 @@ impl Table2 {
     }
 
     /// Dunning on well-populated tables; on sparse tables, whatever
-    /// [`EXACT_TEST`] selects (Fisher surprise `−2 ln(p)` by default).
+    /// [`EXACT_TEST`] selects (G² everywhere by default, ADR 0059).
     pub fn association_score(&self) -> f64 {
         match (EXACT_TEST, self.association_test()) {
             (_, AssociationTest::DunningG2) | (ExactTest::G2Only, _) => self.g2(),
@@ -253,11 +256,16 @@ mod tests {
         assert!((p - 0.002_759_456).abs() < 1e-8, "got {p}");
     }
 
+    /// Since ADR 0059, `EXACT_TEST` is `G2Only`, so even a sparse table
+    /// (`association_test() == FisherExact`) scores via `g2()`, not Fisher
+    /// surprise. Fisher itself is still directly tested above
+    /// (`fisher_two_sided_matches_textbook_fixture`) — only the switch
+    /// changed, not the fn.
     #[test]
-    fn sparse_association_score_is_fisher_surprise() {
+    fn sparse_association_score_uses_g2_since_adr_0059() {
         let t = Table2::new(1, 9, 8, 6);
-        let expected = -2.0 * t.fisher_two_sided_p().ln();
-        assert!((t.association_score() - expected).abs() < 1e-9);
+        assert_eq!(t.association_test(), AssociationTest::FisherExact);
+        assert!((t.association_score() - t.g2()).abs() < 1e-9);
     }
 
     /// The Lanczos `ln_gamma` reproduces small factorials exactly enough that
