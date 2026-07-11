@@ -396,24 +396,37 @@ fn adjacency_candidates(tape: &[TapeEntry]) -> Vec<Span> {
 // Punctuation spacing anomaly (corpus-relative, aggregate-only stateful)
 // ─────────────────────────────────────────────────────────────────────
 
-/// Every separator mark carries **two per-side spacing conventions** — is it
-/// *attached* (a letter neighbour) or *spaced* (whitespace, or the verse/book
-/// seam) on its **left**, and independently on its **right**? A mark whose form
-/// on a side is the rare minority against that side's dominant convention is the
-/// anomaly (ADR 0054 amendment — the per-side factorization, superseding the
-/// 16-cell joint model of the day's earlier ADR 0054 decision and the ADR 0029
-/// before-only binary). A punct/digit neighbour is an **abstention** on that
-/// side — the attached-vs-spaced question does not apply — so quote-adjacent
-/// `,"`/`."` (right side abstains) and numeric `1:1` colons (both sides abstain)
-/// are unjudged by structure rather than flaggable combos. One mechanism covers:
-/// `word,word` (right side attached against a spaced-right convention — invisible
-/// to the before-only rule), `away!Why?`, swapped Spanish `¿`/`?`, and a
-/// verse-leading `.word` (left = space via the seam). Per side, `score =
-/// dominance(the side's majority) × rarity(minority recurrence)` — ADR 0048
+/// Every separator mark carries, **per side and conditioned on the neighbour's
+/// content class**, a binary *attached*-vs-*spaced* convention. The insight
+/// (ADR 0054 second amendment, the pooled class-conditioned model): the typist
+/// chooses the **space**, not the neighbour — so condition on the content and
+/// judge the choice. For each `(mark, side, class)` where `class ∈ {Letter,
+/// Number, Punct}` is the fused-Class of the **first non-whitespace neighbour**
+/// on that side, the judged bit is *did whitespace get crossed* — `Spaced` if
+/// so (the verse/book **seam** counts as whitespace, its neighbour class read
+/// **across** the seam in book order; repo `CLAUDE.md`), `Attached` if the mark
+/// clings directly to the neighbour. A form that is the rare minority against
+/// its **own class pool's** Wilson-dominant convention is the anomaly.
+///
+/// **No top-level fallback** (user ruling): a side is judged by its class pool
+/// only; a pool without a Wilson-dominant convention is silent. This is what
+/// dissolves the old special cases into structural silence and kills the spike's
+/// `?)` over-reach — a `?` before `)` lands in the mark's `Punct` pool, judged
+/// only if that pool holds a convention; it never falls through to an all-class
+/// bucket. Quote is **merged into `Punct`** (user ruling); the period's `."`
+/// divergence is logged (ADR 0054 2nd amend.) as evidence for a possible future
+/// per-mark split. One mechanism covers: `word,word` (attached-right against a
+/// spaced-right Letter convention — invisible to the old before-only rule),
+/// `away!Why?`, swapped Spanish `¿`/`?`, verse-leading `.word` (left = spaced
+/// via the seam), the `7. 8` cross-reference vs `7.8` decimal split (both in the
+/// `Number` pool), and medial `word.word` run-ons. Per side per pool, `score =
+/// dominance(the pool's majority) × rarity(minority recurrence)` — ADR 0048
 /// descriptive-share dominance, ADR 0050 volume-scaled recurrence knee, scored
-/// over each side's judged occupancy `N_side`. Candidate domain unchanged: GC
-/// `Po` minus quotes (ADR 0033), lone scalars only. Ships **default-disabled**
-/// until the consumer opts into a spacing pass.
+/// over each pool's judged occupancy `N_pool`. Candidate domain widened to GC
+/// `Po` minus quotes **plus GC `Pd`** (dashes/hyphens/maqaf; user ruling), lone
+/// scalars only. A book-edge side with no neighbour even across the seam
+/// abstains. Ships **default-disabled** until the consumer opts into a spacing
+/// pass.
 pub const PUNCTUATION_SPACING_ANOMALY: RuleId = RuleId::PunctuationSpacingAnomaly;
 
 /// Horizontal whitespace that can separate a word from a clinging mark.
@@ -421,20 +434,18 @@ fn is_spacing_ws(c: char) -> bool {
     matches!(c, ' ' | '\t' | '\u{00A0}' | '\u{202F}')
 }
 
-/// A separator mark's *judged* form on one side (ADR 0054 amendment — per-side
-/// factorization). Only these two forms enter a side's convention:
+/// A separator mark's *judged* form on one side — the binary bit inside a class
+/// pool (ADR 0054 2nd amendment — pooled class-conditioned model):
 ///
-/// - `Attached` — the neighbour cluster is a letter (the mark clings to a word).
+/// - `Attached` — the mark clings directly to the neighbour (no whitespace).
 /// - `Spaced` — horizontal whitespace was crossed to reach the neighbour, **or**
-///   the verse/book seam was reached with only whitespace between (the seam
-///   reads as whitespace, never its own category — repo `CLAUDE.md`; a terminal
-///   is never attached across a seam).
+///   the verse/book seam was reached (the seam reads as whitespace, never its
+///   own category — repo `CLAUDE.md`; a terminal is never attached across a
+///   seam). The neighbour's *class* is still read across the seam, in book order.
 ///
-/// A punct/digit neighbour is neither: it is an **abstention** (`None` from
-/// [`classify_side`]) — the occurrence contributes nothing to that side's tally
-/// and can never be flagged there. This returns quote-adjacent `,"`/`."` and
-/// numeric `1:1` colons to unjudged-by-structure, where the 16-cell joint model
-/// had made them flaggable punct/digit combinations.
+/// The form is orthogonal to the neighbour's class: a `Number`-pool
+/// `.` can be `Attached` (`7.8`, a decimal) or `Spaced` (`verse. 3`, a
+/// cross-reference), and the pool learns which is the convention.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SideForm {
     Attached,
@@ -456,8 +467,42 @@ impl SideForm {
     }
 }
 
+/// The content class of a mark's first non-whitespace neighbour — the **pool**
+/// its attached-vs-spaced binary is conditioned on (ADR 0054 2nd amendment).
+/// Quote is merged into `Punct` (user ruling). A `Number` neighbour is a
+/// (non-quote) numeric scalar; a `Letter` neighbour is any cluster containing an
+/// alphabetic scalar (a decomposed base + combining letter still counts);
+/// everything else — another mark, a quote, a bracket, a symbol — is `Punct`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PoolClass {
+    Letter,
+    Number,
+    Punct,
+}
+
+impl PoolClass {
+    const fn index(self) -> usize {
+        match self {
+            Self::Letter => 0,
+            Self::Number => 1,
+            Self::Punct => 2,
+        }
+    }
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Letter => "letter",
+            Self::Number => "number",
+            Self::Punct => "punct",
+        }
+    }
+}
+
+/// The number of content classes: `Letter`, `Number`, `Punct`.
+const CLASS_COUNT: usize = 3;
+
 /// Which side of a mark a convention describes; `base` is its offset into the
-/// four packed per-mark counters `[l_attached, l_spaced, r_attached, r_spaced]`.
+/// twelve packed per-mark counters (a side owns a contiguous `2 · CLASS_COUNT`
+/// block).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Side {
     Left,
@@ -468,21 +513,27 @@ impl Side {
     const fn base(self) -> usize {
         match self {
             Self::Left => 0,
-            Self::Right => 2,
+            Self::Right => CLASS_COUNT * 2,
         }
     }
 }
 
-/// Four packed per-mark counters: `[l_attached, l_spaced, r_attached, r_spaced]`
-/// (ADR 0054 amendment). Each side's two counts sum to that side's judged
-/// occupancy `N_side`; a side is judged only where its neighbour is a letter or
-/// whitespace (punct/digit abstains).
-const SIDE_CELLS: usize = 4;
+/// Twelve packed per-mark counters: `[side][class][form]`, side ∈ {left, right},
+/// class ∈ {Letter, Number, Punct}, form ∈ {attached, spaced} (ADR 0054 2nd
+/// amendment, replacing the `[u64; 4]` per-side shape). A `(side, class)` pool's
+/// two counts sum to its judged occupancy `N_pool`; a side is judged only where
+/// it has a neighbour (a book edge with no neighbour across the seam abstains).
+const SIDE_CELLS: usize = CLASS_COUNT * 2 * 2;
 
-/// One book's per-mark **per-side tallies**: the four counters above, one set
-/// per mark (ADR 0054 amendment, replacing the [u64; 16] joint signature table).
-/// **No sites** — spans re-derive from the text at `judge`, so this stays a few
-/// dozen bytes per mark even corpus-wide.
+/// Packed-counter index for a `(side, class, form)` triple.
+const fn cell_index(side: Side, class: PoolClass, form: SideForm) -> usize {
+    side.base() + class.index() * 2 + form.index()
+}
+
+/// One book's per-mark **per-side per-class tallies**: the twelve counters
+/// above, one set per mark (ADR 0054 2nd amendment, replacing the `[u64; 4]`
+/// per-side table). **No sites** — spans re-derive from the text at `judge`, so
+/// this stays a few dozen bytes per mark even corpus-wide.
 #[derive(Debug, Clone, Default, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
@@ -536,31 +587,25 @@ impl StatefulRule for PunctuationSpacingAnomaly {
         let mut per_book = BTreeMap::new();
         let mut sites = BTreeMap::new();
         for (book, (counts, book_sites)) in rule::map_books(books, |book, verses| {
-            let mut tape = Vec::new();
-            let mut graphemes = Vec::new();
             let mut per_mark: BTreeMap<char, [u64; SIDE_CELLS]> = BTreeMap::new();
             let mut book_sites = Vec::new();
-            for &(sid, text) in verses {
-                crate::tape::build(text, &mut tape);
-                grapheme::segment_tape(text, &tape, &mut graphemes);
-                for opp in spacing_opportunities(text, &graphemes) {
-                    let cell = per_mark.entry(opp.mark).or_insert([0u64; SIDE_CELLS]);
-                    if let Some(f) = opp.left {
-                        cell[Side::Left.base() + f.index()] += 1;
-                    }
-                    if let Some(f) = opp.right {
-                        cell[Side::Right.base() + f.index()] += 1;
-                    }
-                    book_sites.push(SpacingSite {
-                        sid,
-                        mark: opp.mark,
-                        left: opp.left,
-                        right: opp.right,
-                        left_span: opp.left_span,
-                        right_span: opp.right_span,
-                    });
+            for_each_spacing_opportunity(verses, |sid, opp| {
+                let cell = per_mark.entry(opp.mark).or_insert([0u64; SIDE_CELLS]);
+                if let Some(r) = opp.left {
+                    cell[cell_index(Side::Left, r.class, r.form)] += 1;
                 }
-            }
+                if let Some(r) = opp.right {
+                    cell[cell_index(Side::Right, r.class, r.form)] += 1;
+                }
+                book_sites.push(SpacingSite {
+                    sid,
+                    mark: opp.mark,
+                    left: opp.left,
+                    right: opp.right,
+                    left_span: opp.left_span,
+                    right_span: opp.right_span,
+                });
+            });
             (book, (BookPunctuationSpacing { per_mark }, book_sites))
         }) {
             per_book.insert(book, counts);
@@ -599,17 +644,19 @@ impl StatefulRule for PunctuationSpacingAnomaly {
         let minority_rate = clamp_count(self.cfg.minority_rate_per_10k);
         let floor = f64::from(clamp_unit(self.cfg.emit_score_min));
 
-        // A mark's verdict — the composed two-factor score of each of its two
-        // forms on each side — is identical for every occurrence sharing a side
-        // form, so compute it once per mark.
+        // A mark's verdict — each `(side, class)` pool's two-factor score — is
+        // identical for every occurrence sharing a pool + form, so compute it
+        // once per mark.
         let verdicts: BTreeMap<char, MarkVerdict> = totals
             .iter()
-            .map(|(&mark, counts)| (mark, mark_verdict(counts, z, minority_k, minority_rate)))
+            .map(|(&mark, counts)| {
+                (mark, mark_verdict(counts, z, minority_k, minority_rate, floor))
+            })
             .collect();
 
         // Recover spans (aggregate-only state holds none): from the forwarded
         // reduce sites where this call scanned the book (ADR 0044) — the site
-        // carries mark + per-side forms + span pieces, so this path never
+        // carries mark + per-side class/form + span pieces, so this path never
         // touches text — by re-scanning otherwise. Both paths fan out per book
         // (ADR 0042).
         let forwarded = match sites {
@@ -618,48 +665,64 @@ impl StatefulRule for PunctuationSpacingAnomaly {
         };
         let score = |sid: Sid,
                      mark: char,
-                     left: Option<SideForm>,
-                     right: Option<SideForm>,
+                     left: Option<SideRead>,
+                     right: Option<SideRead>,
                      left_span: Span,
                      right_span: Span,
                      found: &mut Vec<Finding>| {
             let Some(v) = verdicts.get(&mark) else {
                 return;
             };
-            // Score each judged side independently; a side abstains (None) when
-            // its neighbour is punct/digit. A side is anomalous only when its
-            // form's composed score (dominance of the side's majority × minority
-            // rarity, ADR 0050/0054) clears the floor. An occurrence violating
-            // both sides is ONE finding carrying both.
-            let ls = left.map_or(0.0, |f| v.left.scores[f.index()]);
-            let rs = right.map_or(0.0, |f| v.right.scores[f.index()]);
-            let left_hit = ls >= floor;
-            let right_hit = rs >= floor;
-            if !left_hit && !right_hit {
+            // Score each judged side by ITS CLASS POOL ONLY (no fallback, user
+            // ruling): the side is anomalous only when its pool holds a
+            // Wilson-dominant convention AND this form's composed score clears
+            // the floor. A pool without a convention, or a side that abstained
+            // (a book edge with no neighbour), is silent. An occurrence
+            // violating both sides is ONE finding carrying both.
+            let hit = |sv: &SideVerdict, r: Option<SideRead>| -> Option<PoolHit> {
+                let r = r?;
+                let pv = &sv.pools[r.class.index()];
+                if !pv.holds {
+                    return None;
+                }
+                let s = pv.scores[r.form.index()];
+                (s >= floor).then(|| PoolHit {
+                    score: s,
+                    class: r.class,
+                    form: r.form,
+                    count: pv.counts[r.form.index()],
+                    n: pv.n,
+                })
+            };
+            let lh = hit(&v.left, left);
+            let rh = hit(&v.right, right);
+            if lh.is_none() && rh.is_none() {
                 return;
             }
-            let side_arg = |f: SideForm, sv: &SideVerdict| SpacingSide {
-                form: f.label().to_string(),
-                count: sv.counts[f.index()].min(u64::from(u32::MAX)) as u32,
-                total: sv.n.min(u64::from(u32::MAX)) as u32,
+            let side_arg = |h: &PoolHit| SpacingSide {
+                form: h.form.label().to_string(),
+                class: h.class.label().to_string(),
+                count: h.count.min(u64::from(u32::MAX)) as u32,
+                total: h.n.min(u64::from(u32::MAX)) as u32,
             };
-            let left_arg = left.filter(|_| left_hit).map(|f| side_arg(f, &v.left));
-            let right_arg = right.filter(|_| right_hit).map(|f| side_arg(f, &v.right));
+            let left_arg = lh.as_ref().map(side_arg);
+            let right_arg = rh.as_ref().map(side_arg);
             // Highlight the violated side's neighbourhood — the crossed
             // whitespace / attached neighbour where the anomaly sits — union
             // when both sides fire.
-            let range = match (left_hit, right_hit) {
+            let range = match (lh.is_some(), rh.is_some()) {
                 (true, true) => Span { start: left_span.start, end: right_span.end },
                 (true, false) => left_span,
                 (false, true) => right_span,
                 (false, false) => unreachable!("guarded above"),
             };
+            let sc = lh.as_ref().map_or(0.0, |h| h.score).max(rh.as_ref().map_or(0.0, |h| h.score));
             found.push(Finding {
                 sid,
                 code: PUNCTUATION_SPACING_ANOMALY,
                 severity: Severity::Info,
                 range,
-                score: Some(ls.max(rs) as f32),
+                score: Some(sc as f32),
                 args: Some(FindingArgs::SpacingConvention {
                     mark,
                     left: left_arg,
@@ -674,15 +737,9 @@ impl StatefulRule for PunctuationSpacingAnomaly {
                     score(s.sid, s.mark, s.left, s.right, s.left_span, s.right_span, &mut found);
                 }
             } else {
-                let mut tape = Vec::new();
-                let mut graphemes = Vec::new();
-                for &(sid, text) in verses {
-                    crate::tape::build(text, &mut tape);
-                    grapheme::segment_tape(text, &tape, &mut graphemes);
-                    for opp in spacing_opportunities(text, &graphemes) {
-                        score(sid, opp.mark, opp.left, opp.right, opp.left_span, opp.right_span, &mut found);
-                    }
-                }
+                for_each_spacing_opportunity(verses, |sid, opp| {
+                    score(sid, opp.mark, opp.left, opp.right, opp.left_span, opp.right_span, &mut found);
+                });
             }
             found
         })
@@ -694,10 +751,15 @@ impl StatefulRule for PunctuationSpacingAnomaly {
     }
 }
 
-/// One side's two-factor verdict: the judged occupancy `N_side`, its
-/// `[attached, spaced]` counts, and each form's composed score.
-struct SideVerdict {
-    /// `N_side` — occurrences where this side is judged (letter or space).
+/// One `(side, class)` pool's two-factor verdict: whether the pool holds a
+/// Wilson-dominant convention (the no-fallback gate), its judged occupancy
+/// `N_pool`, its `[attached, spaced]` counts, and each form's composed score.
+struct PoolVerdict {
+    /// Whether the pool's majority is Wilson-dominant at the floor — the
+    /// "the other convention genuinely holds the field" gate. A pool that does
+    /// not hold is **silent** (no top-level fallback; user ruling).
+    holds: bool,
+    /// `N_pool` — occurrences on this side whose neighbour is of this class.
     n: u64,
     /// `[attached, spaced]` counts (sums to `n`).
     counts: [u64; 2],
@@ -705,34 +767,53 @@ struct SideVerdict {
     scores: [f64; 2],
 }
 
+/// One side's three class pools (`Letter`, `Number`, `Punct`), indexed by
+/// [`PoolClass::index`].
+struct SideVerdict {
+    pools: [PoolVerdict; CLASS_COUNT],
+}
+
 /// A mark's corpus verdict: an independent [`SideVerdict`] per side (ADR 0054
-/// amendment — per-side factorization).
+/// 2nd amendment — pooled class-conditioned model).
 struct MarkVerdict {
     left: SideVerdict,
     right: SideVerdict,
 }
 
-/// The two-factor verdict for one side's `[attached, spaced]` binary (ADR 0048
-/// dominance, ADR 0050 recurrence). Each form is scored independently:
+/// A flagged side's resolved verdict pieces, carried from the pool-gated hit
+/// test to the finding args.
+struct PoolHit {
+    score: f64,
+    class: PoolClass,
+    form: SideForm,
+    count: u64,
+    n: u64,
+}
+
+/// The two-factor verdict for one pool's `[attached, spaced]` binary (ADR 0048
+/// dominance, ADR 0050 recurrence), plus its Wilson-dominance gate (ADR 0054
+/// 2nd amendment — no fallback). Each form is scored independently:
 ///
-/// - `dominance = wilson_lower_bound(N_side − count, N_side, z)` — the
+/// - `dominance = wilson_lower_bound(N_pool − count, N_pool, z)` — the
 ///   *conservative dominance of the majority* (a binary's complement *is* its
-///   majority): how strongly the side's **other** form holds the field. The
-///   dominant form (`count ≈ N_side`) has a tiny complement ⇒ score ≈ 0 ⇒
-///   silent; a rare one ⇒ ≈ 1. A side with no dominant form (a near-even split)
-///   scores below the floor on its own — no special-case tie handling needed.
+///   majority): how strongly the pool's **other** form holds the field. The
+///   dominant form (`count ≈ N_pool`) has a tiny complement ⇒ score ≈ 0 ⇒
+///   silent; a rare one ⇒ ≈ 1.
 /// - `rarity = 1 − min(count − 1, K) / K` — a linear recurrence knee (ADR 0028's
-///   shape) whose width scales with the side's volume:
-///   `K = minority_k + rate_per_10k · N_side / 10 000` (ADR 0050 amendment,
-///   retained under per-side denominators by the ADR 0054 amendment knee
-///   re-sweep). Slips accumulate with opportunities, so at large `N_side` the
-///   flag boundary is a *rate* while thin marks get the absolute base
-///   `minority_k`. A form seen once is `rarity = 1` (a rare slip); one recurring
-///   past `K` is `rarity = 0` (a second convention). Removing occurrences
-///   *raises* the surviving ones' score — clean-as-you-go sharpens the signal.
-fn side_verdict(counts: [u64; 2], z: f64, minority_k: f64, rate_per_10k: f64) -> SideVerdict {
+///   shape) whose width scales with the pool's volume:
+///   `K = minority_k + rate_per_10k · N_pool / 10 000` (ADR 0050 amendment,
+///   retained under per-pool denominators by the ADR 0054 2nd amendment). A form
+///   seen once is `rarity = 1` (a rare slip); one recurring past `K` is
+///   `rarity = 0` (a second convention). Removing occurrences *raises* the
+///   surviving ones' score — clean-as-you-go sharpens the signal.
+///
+/// `holds` gates the whole pool: `wilson_lower_bound(majority, N_pool, z) ≥
+/// floor`. A near-even split, or a thin pool, fails it (Wilson self-gates, no
+/// min-samples) and the pool is silent — no all-class fallback.
+fn pool_verdict(counts: [u64; 2], z: f64, minority_k: f64, rate_per_10k: f64, floor: f64) -> PoolVerdict {
     let n = counts[0] + counts[1];
     let mut scores = [0.0f64; 2];
+    let holds = n > 0 && dominance(counts[0].max(counts[1]), n, z) >= floor;
     if n > 0 {
         let knee = minority_k + rate_per_10k * n as f64 / 10_000.0;
         for (i, &count) in counts.iter().enumerate() {
@@ -744,24 +825,49 @@ fn side_verdict(counts: [u64; 2], z: f64, minority_k: f64, rate_per_10k: f64) ->
             scores[i] = dominance * (1.0 - recurrence);
         }
     }
-    SideVerdict { n, counts, scores }
+    PoolVerdict { holds, n, counts, scores }
 }
 
-/// A mark's verdict from its four packed counters (ADR 0054 amendment).
-fn mark_verdict(counts: &[u64; SIDE_CELLS], z: f64, minority_k: f64, rate_per_10k: f64) -> MarkVerdict {
+/// One side's three pools from its contiguous six-counter block
+/// `[l0_att, l0_sp, l1_att, l1_sp, l2_att, l2_sp]`.
+fn side_verdict(block: &[u64], z: f64, minority_k: f64, rate_per_10k: f64, floor: f64) -> SideVerdict {
+    let pool = |ci: usize| {
+        pool_verdict([block[ci * 2], block[ci * 2 + 1]], z, minority_k, rate_per_10k, floor)
+    };
+    SideVerdict { pools: [pool(0), pool(1), pool(2)] }
+}
+
+/// A mark's verdict from its twelve packed counters (ADR 0054 2nd amendment).
+fn mark_verdict(
+    counts: &[u64; SIDE_CELLS],
+    z: f64,
+    minority_k: f64,
+    rate_per_10k: f64,
+    floor: f64,
+) -> MarkVerdict {
+    let mid = Side::Right.base();
     MarkVerdict {
-        left: side_verdict([counts[0], counts[1]], z, minority_k, rate_per_10k),
-        right: side_verdict([counts[2], counts[3]], z, minority_k, rate_per_10k),
+        left: side_verdict(&counts[..mid], z, minority_k, rate_per_10k, floor),
+        right: side_verdict(&counts[mid..], z, minority_k, rate_per_10k, floor),
     }
 }
 
-/// One separator-mark occurrence: the mark, its judged form on each side (or
+/// A mark's judged read on one side: the neighbour's content class (the pool)
+/// and the attached-vs-spaced form (the bit). A side with no neighbour (a book
+/// edge whose seam-cross found nothing) has no `SideRead` — it abstains.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SideRead {
+    pub(crate) class: PoolClass,
+    pub(crate) form: SideForm,
+}
+
+/// One separator/dash-mark occurrence: the mark, its read on each side (or
 /// `None` where that side abstains), and the neighbourhood span to highlight for
 /// each side if it is flagged.
 struct SpacingOpportunity {
     mark: char,
-    left: Option<SideForm>,
-    right: Option<SideForm>,
+    left: Option<SideRead>,
+    right: Option<SideRead>,
     /// `[left neighbourhood … mark end)` — highlighted when the left side fires.
     left_span: Span,
     /// `[mark start … right neighbourhood)` — highlighted when the right fires.
@@ -774,45 +880,101 @@ struct SpacingOpportunity {
 pub struct SpacingSite {
     pub(crate) sid: Sid,
     pub(crate) mark: char,
-    pub(crate) left: Option<SideForm>,
-    pub(crate) right: Option<SideForm>,
+    pub(crate) left: Option<SideRead>,
+    pub(crate) right: Option<SideRead>,
     pub(crate) left_span: Span,
     pub(crate) right_span: Span,
 }
 
-/// Classify a non-whitespace neighbour grapheme into a *judged* side form, or
-/// `None` (abstain). A cluster containing a letter (incl. base + combining mark,
-/// so a decomposed word-final letter still counts) → `Attached`; a punct/digit
-/// neighbour (another mark, a quote, a bracket, a symbol, a number) → `None`,
-/// the attached-vs-spaced question does not apply there.
-fn classify_neighbour(cluster: &str) -> Option<SideForm> {
+/// A candidate mark: a separator (GC `Po` minus quotes, ADR 0033) **or** a dash
+/// (GC `Pd`; ADR 0054 2nd amendment widens the domain). A carrying combining
+/// cluster excludes it (checked by the caller, lone-scalar guard).
+fn is_candidate_mark(c: char) -> bool {
+    is_separator_punct(c) || crate::unicode::is_dash_punctuation(c)
+}
+
+/// Classify a non-whitespace neighbour cluster into its content [`PoolClass`].
+/// A cluster containing an alphabetic scalar (incl. base + combining mark, so a
+/// decomposed word-final letter still counts) → `Letter`; a leading (non-quote)
+/// numeric scalar → `Number`; everything else — another mark, a quote, a
+/// bracket, a symbol — → `Punct` (quote merged into `Punct`, user ruling).
+fn neighbour_class(cluster: &str) -> PoolClass {
     if cluster.chars().any(|c| class_of(c).is_alphabetic()) {
-        Some(SideForm::Attached)
+        PoolClass::Letter
+    } else if cluster
+        .chars()
+        .next()
+        .is_some_and(|c| class_of(c).is_numeric() && !class_of(c).is_quote())
+    {
+        PoolClass::Number
     } else {
-        None
+        PoolClass::Punct
     }
 }
 
-/// Extract every separator mark's per-side spacing forms from a verse. A lone
-/// separator-punct scalar (GC `Po` minus quotes, ADR 0033; a mark carrying a
-/// combining cluster is excluded) is an opportunity — the left neighbour need
-/// **not** be a letter. Each side: walk over horizontal whitespace, then
-/// classify the first non-whitespace grapheme. Whitespace crossed **or** the
-/// verse/book seam reached (only whitespace between) is `Spaced`; a letter is
-/// `Attached`; a punct/digit neighbour is an **abstention** (`None`), which is
-/// what dissolves the old special cases (numeric `1:1` colons, cluster tails,
-/// quote-adjacent `,"`/`."`) into structural silence rather than flaggable
-/// combinations. The per-side span highlights where the space is (the crossed
+/// First / last non-whitespace grapheme's [`PoolClass`] in a verse — the edge a
+/// neighbouring verse's mark reaches across the seam (book order). `None` when a
+/// verse is empty or all-whitespace.
+fn verse_edge_classes(text: &str, graphemes: &[GSpan]) -> (Option<PoolClass>, Option<PoolClass>) {
+    let nonws = |gs: &GSpan| {
+        let s = gs.slice(text);
+        (!s.is_empty() && !s.chars().all(is_spacing_ws)).then(|| neighbour_class(s))
+    };
+    (graphemes.iter().find_map(nonws), graphemes.iter().rev().find_map(nonws))
+}
+
+/// Walk every spacing opportunity in a **book** (the parallel-walk unit,
+/// ADR 0042), resolving each mark's cross-seam neighbour class from its
+/// book-ordered verse neighbours (the seam reads as whitespace, its class read
+/// across; repo `CLAUDE.md`). Each verse is grapheme-segmented once; a book edge
+/// with no neighbour across the seam yields `None` on that side (abstain).
+fn for_each_spacing_opportunity(verses: &[(Sid, &str)], mut f: impl FnMut(Sid, &SpacingOpportunity)) {
+    let mut per_verse: Vec<Vec<GSpan>> = Vec::with_capacity(verses.len());
+    for (_, text) in verses {
+        let mut g = Vec::new();
+        grapheme::segment(text, &mut g);
+        per_verse.push(g);
+    }
+    let edges: Vec<(Option<PoolClass>, Option<PoolClass>)> = verses
+        .iter()
+        .zip(&per_verse)
+        .map(|((_, t), g)| verse_edge_classes(t, g))
+        .collect();
+    for (vi, (sid, text)) in verses.iter().enumerate() {
+        // Nearest previous verse's LAST edge (left of a verse-leading mark), and
+        // nearest next verse's FIRST edge (right of a verse-trailing mark).
+        let left_cross = (0..vi).rev().find_map(|jj| edges[jj].1);
+        let right_cross = (vi + 1..verses.len()).find_map(|jj| edges[jj].0);
+        for opp in spacing_opportunities(text, &per_verse[vi], left_cross, right_cross) {
+            f(*sid, &opp);
+        }
+    }
+}
+
+/// Extract every candidate mark's per-side reads from a verse. A lone candidate
+/// scalar (GC `Po` minus quotes **or** GC `Pd`; a mark carrying a combining
+/// cluster is excluded) is an opportunity — the neighbour need **not** be a
+/// letter. Each side: walk over horizontal whitespace, then read the first
+/// non-whitespace grapheme's class (the pool) and whether whitespace was crossed
+/// (the form). Whitespace crossed **or** the verse/book seam reached is
+/// `Spaced` — and at the seam the class is read across it, in book order
+/// (`left_cross` / `right_cross`); a book edge with no neighbour abstains
+/// (`None`). The per-side span highlights where the space is (the crossed
 /// whitespace run) or where it belongs (the attached neighbour grapheme), so the
 /// highlight works for a missing space after a mark as well as before it.
-fn spacing_opportunities(text: &str, graphemes: &[GSpan]) -> Vec<SpacingOpportunity> {
+fn spacing_opportunities(
+    text: &str,
+    graphemes: &[GSpan],
+    left_cross: Option<PoolClass>,
+    right_cross: Option<PoolClass>,
+) -> Vec<SpacingOpportunity> {
     let mut out = Vec::new();
     for (idx, gs) in graphemes.iter().enumerate() {
         let g = gs.slice(text);
-        // A lone separator-punct scalar — a mark carrying a combining cluster is
-        // not a clean site, so require the grapheme to be exactly the mark.
+        // A lone candidate scalar — a mark carrying a combining cluster is not a
+        // clean site, so require the grapheme to be exactly the mark.
         let mark = match g.chars().next() {
-            Some(c) if g.len() == c.len_utf8() && is_separator_punct(c) => c,
+            Some(c) if g.len() == c.len_utf8() && is_candidate_mark(c) => c,
             _ => continue,
         };
         let mark_start = gs.start as usize;
@@ -833,11 +995,18 @@ fn spacing_opportunities(text: &str, graphemes: &[GSpan]) -> Vec<SpacingOpportun
             }
         }
         let (left, span_start) = if j == 0 {
-            (Some(SideForm::Spaced), mark_start) // seam reads as whitespace
-        } else if left_ws {
-            (Some(SideForm::Spaced), graphemes[j].start as usize) // start of the crossed ws run
+            // Seam: form spaced, class read across the seam (book order).
+            (
+                left_cross.map(|class| SideRead { class, form: SideForm::Spaced }),
+                mark_start,
+            )
         } else {
-            (classify_neighbour(graphemes[j - 1].slice(text)), graphemes[j - 1].start as usize)
+            let nb = graphemes[j - 1];
+            let class = neighbour_class(nb.slice(text));
+            let form = if left_ws { SideForm::Spaced } else { SideForm::Attached };
+            // Highlight the crossed ws run (spaced) or the attached neighbour.
+            let span_start = if left_ws { graphemes[j].start as usize } else { nb.start as usize };
+            (Some(SideRead { class, form }), span_start)
         };
 
         // Right: the mirror.
@@ -853,11 +1022,16 @@ fn spacing_opportunities(text: &str, graphemes: &[GSpan]) -> Vec<SpacingOpportun
             }
         }
         let (right, span_end) = if k + 1 >= graphemes.len() {
-            (Some(SideForm::Spaced), mark_end) // seam
-        } else if right_ws {
-            (Some(SideForm::Spaced), graphemes[k].range().end) // end of the crossed ws run
+            (
+                right_cross.map(|class| SideRead { class, form: SideForm::Spaced }),
+                mark_end,
+            )
         } else {
-            (classify_neighbour(graphemes[k + 1].slice(text)), graphemes[k + 1].range().end)
+            let nb = graphemes[k + 1];
+            let class = neighbour_class(nb.slice(text));
+            let form = if right_ws { SideForm::Spaced } else { SideForm::Attached };
+            let span_end = if right_ws { graphemes[k].range().end } else { nb.range().end };
+            (Some(SideRead { class, form }), span_end)
         };
 
         out.push(SpacingOpportunity {
@@ -1301,7 +1475,7 @@ mod tests {
         assert!(four > two, "longer run scores higher: !!!!={four} > !!={two}");
     }
 
-    // ── punctuation spacing anomaly — per-side conventions (ADR 0054 amend.) ─
+    // ── punct spacing anomaly — pooled class-conditioned model (ADR 0054 2nd) ─
 
     fn sp_rule(cfg: PunctuationSpacingConfig) -> PunctuationSpacingAnomaly {
         PunctuationSpacingAnomaly { cfg }
@@ -1315,18 +1489,44 @@ mod tests {
     fn sp_run(map: &VerseMap, r: &PunctuationSpacingAnomaly) -> Vec<Finding> {
         r.judge(&r.reduce(&crate::verse::by_book(map), None, None).0, &crate::verse::by_book(map), None, None)
     }
+    /// An isolated verse: both seams are book edges (no cross neighbour), so a
+    /// verse-edge mark abstains on the seam side.
     fn opps_of(text: &str) -> Vec<SpacingOpportunity> {
+        opps_cross(text, None, None)
+    }
+    /// A verse with explicit cross-seam neighbour classes (as `for_each_*`
+    /// resolves them from book neighbours), to unit-test seam behaviour.
+    fn opps_cross(text: &str, l: Option<PoolClass>, r: Option<PoolClass>) -> Vec<SpacingOpportunity> {
         let mut g = Vec::new();
         grapheme::segment(text, &mut g);
-        spacing_opportunities(text, &g)
+        spacing_opportunities(text, &g, l, r)
     }
-    /// Build the four packed per-mark counters `[l_att, l_sp, r_att, r_sp]`.
-    fn tbl(l_att: u64, l_sp: u64, r_att: u64, r_sp: u64) -> [u64; SIDE_CELLS] {
-        [l_att, l_sp, r_att, r_sp]
+    fn read(class: PoolClass, form: SideForm) -> Option<SideRead> {
+        Some(SideRead { class, form })
     }
-    /// English attach-comma corpus: `attached` verses `"word, word"` (the comma
-    /// reads attached-left, spaced-right) and `spaced` verses `"word , word"` (a
-    /// space-before slip, spaced on both sides).
+    /// Walk a single-book map's opportunities in book order (resolving cross-seam
+    /// classes), returning `(sid, mark, left, right)` per occurrence.
+    fn book_opps(map: &VerseMap) -> Vec<(Sid, char, Option<SideRead>, Option<SideRead>)> {
+        let verses: Vec<(Sid, &str)> = map.iter().map(|(s, t)| (*s, t.as_str())).collect();
+        let mut out = Vec::new();
+        for_each_spacing_opportunity(&verses, |sid, opp| out.push((sid, opp.mark, opp.left, opp.right)));
+        out
+    }
+    /// Build the twelve packed per-mark counters from per-side `[att, sp]` pools
+    /// keyed by class (letter, number, punct).
+    fn tbl(l: [[u64; 2]; CLASS_COUNT], r: [[u64; 2]; CLASS_COUNT]) -> [u64; SIDE_CELLS] {
+        let mut c = [0u64; SIDE_CELLS];
+        for (ci, cls) in [PoolClass::Letter, PoolClass::Number, PoolClass::Punct].iter().enumerate() {
+            c[cell_index(Side::Left, *cls, SideForm::Attached)] = l[ci][0];
+            c[cell_index(Side::Left, *cls, SideForm::Spaced)] = l[ci][1];
+            c[cell_index(Side::Right, *cls, SideForm::Attached)] = r[ci][0];
+            c[cell_index(Side::Right, *cls, SideForm::Spaced)] = r[ci][1];
+        }
+        c
+    }
+    /// English attach-comma corpus: `attached` verses `"word, word"` (comma reads
+    /// attached-left / spaced-right, both in the Letter pool) and `spaced` verses
+    /// `"word , word"` (a space-before slip — spaced-left in the Letter pool).
     fn commas(attached: usize, spaced: usize) -> VerseMap {
         let mut v: Vec<(u16, String)> = Vec::new();
         let mut n = 1u16;
@@ -1341,153 +1541,155 @@ mod tests {
         book("GEN", &v)
     }
 
-    // ── side-form extraction ─────────────────────────────────────────────
+    // ── side read extraction: class + form ────────────────────────────────
 
     #[test]
     fn every_separator_mark_is_an_opportunity_on_both_sides() {
-        // The candidate domain no longer requires a letter to the left: a mark
-        // is an opportunity wherever it appears, judged independently per side.
         let o = opps_of("word, word");
         assert_eq!(o.len(), 1);
         assert_eq!(o[0].mark, ',');
-        assert_eq!(o[0].left, Some(SideForm::Attached)); // clings to "word"
-        assert_eq!(o[0].right, Some(SideForm::Spaced)); // space after
+        assert_eq!(o[0].left, read(PoolClass::Letter, SideForm::Attached));
+        assert_eq!(o[0].right, read(PoolClass::Letter, SideForm::Spaced));
     }
 
     #[test]
-    fn cluster_tail_abstains_on_the_punct_side_not_excluded() {
-        // `word?!`: BOTH marks are opportunities now. The `!` reads punct on the
-        // left (the old rule silently skipped it) ⇒ that side ABSTAINS (None),
-        // not a flaggable punct combo. Its right (seam) is judged spaced.
-        let o = opps_of("word?!");
-        assert_eq!(o.len(), 2, "both ? and ! are opportunities");
-        let bang = o.iter().find(|x| x.mark == '!').unwrap();
-        assert_eq!(bang.left, None, "the ! abstains on its punct (left) side");
-        assert_eq!(bang.right, Some(SideForm::Spaced), "seam right ⇒ spaced");
-        let q = o.iter().find(|x| x.mark == '?').unwrap();
-        assert_eq!(q.left, Some(SideForm::Attached)); // clings to "word"
-        assert_eq!(q.right, None, "the ? abstains on its punct (right) side");
+    fn a_number_neighbour_selects_the_number_pool() {
+        // `7.8` decimal: attached to digits both sides ⇒ Number pool, attached.
+        // `7. 8` cross-reference: attached-left, spaced-right, SAME Number pool.
+        let dec = opps_of("7.8");
+        assert_eq!(dec[0].left, read(PoolClass::Number, SideForm::Attached));
+        assert_eq!(dec[0].right, read(PoolClass::Number, SideForm::Attached));
+        let refr = opps_of("7. 8");
+        assert_eq!(refr[0].left, read(PoolClass::Number, SideForm::Attached));
+        assert_eq!(refr[0].right, read(PoolClass::Number, SideForm::Spaced));
     }
 
     #[test]
-    fn numeric_colon_abstains_on_both_sides() {
-        // `1:1` — the colon has a digit on each side ⇒ both sides abstain, so it
-        // never enters either convention. (Structural silence, not an exclusion
-        // list: a rare letter-flanked colon in the same corpus WOULD be judged.)
-        let o = opps_of("chapter 1:1 verse");
-        assert_eq!(o.len(), 1);
-        assert_eq!(o[0].mark, ':');
-        assert_eq!((o[0].left, o[0].right), (None, None));
+    fn a_punct_neighbour_selects_the_punct_pool_quote_merged() {
+        // `word?!`: the `!` reads punct-left (the `?`) ⇒ Punct pool, attached.
+        // Quote merged into Punct: `word."` reads Punct-attached on the right.
+        let cluster = opps_of("word?!");
+        let bang = cluster.iter().find(|x| x.mark == '!').unwrap();
+        assert_eq!(bang.left, read(PoolClass::Punct, SideForm::Attached));
+        let quote = opps_of("word.\" then");
+        let p = quote.iter().find(|x| x.mark == '.').unwrap();
+        assert_eq!(p.left, read(PoolClass::Letter, SideForm::Attached));
+        assert_eq!(p.right, read(PoolClass::Punct, SideForm::Attached));
     }
 
     #[test]
-    fn quote_adjacent_mark_abstains_on_the_quote_side() {
-        // `word."` and `word,"`: the quote is punct ⇒ that side abstains,
-        // returning quote-adjacency to unjudged-by-structure (ADR 0054 amend.).
-        // The word side is still judged.
-        let period = opps_of("word.\" then");
-        let p = period.iter().find(|x| x.mark == '.').unwrap();
-        assert_eq!(p.left, Some(SideForm::Attached)); // clings to "word"
-        assert_eq!(p.right, None, "the closing quote side abstains");
-        let comma = opps_of("word,\" said");
-        let c = comma.iter().find(|x| x.mark == ',').unwrap();
-        assert_eq!(c.left, Some(SideForm::Attached));
-        assert_eq!(c.right, None);
-    }
-
-    #[test]
-    fn verse_seam_reads_as_whitespace_not_a_category() {
-        // A verse-leading `.word`: the (absent) left neighbour is the seam, which
-        // reads as spaced — never its own category (ADR 0054 / CLAUDE.md). So a
-        // verse-leading attached mark is ordinary spaced-left / attached-right
-        // coverage, pooled with mid-verse twins.
-        let lead = opps_of(".word");
-        assert_eq!(lead.len(), 1);
-        assert_eq!((lead[0].left, lead[0].right), (Some(SideForm::Spaced), Some(SideForm::Attached)));
-        // A verse-final mark: right neighbour is the seam ⇒ spaced.
-        let fin = opps_of("word.");
-        assert_eq!((fin[0].left, fin[0].right), (Some(SideForm::Attached), Some(SideForm::Spaced)));
-        // …identical to a mid-verse `word. word` full stop, so they pool.
+    fn a_book_edge_side_abstains_but_a_cross_seam_side_reads_across() {
+        let edge = opps_of("word.");
+        assert_eq!(edge[0].left, read(PoolClass::Letter, SideForm::Attached));
+        assert_eq!(edge[0].right, None, "book-edge trailing mark abstains");
+        let crossed = opps_cross("word.", None, Some(PoolClass::Letter));
+        assert_eq!(crossed[0].right, read(PoolClass::Letter, SideForm::Spaced));
         let mid = opps_of("word. word");
-        assert_eq!((mid[0].left, mid[0].right), (fin[0].left, fin[0].right));
+        assert_eq!((crossed[0].left, crossed[0].right), (mid[0].left, mid[0].right));
+    }
+
+    #[test]
+    fn cross_seam_class_is_resolved_from_book_neighbours() {
+        let vm = book("GEN", &[(1, "see verse.".to_string()), (2, "3 fish".to_string())]);
+        let o = book_opps(&vm);
+        let v1_period = o.iter().find(|(s, m, ..)| *s == sid("GEN", 1) && *m == '.').unwrap();
+        assert_eq!(v1_period.3, read(PoolClass::Number, SideForm::Spaced));
+        let vm2 = book("GEN", &[(1, "amen".to_string()), (2, ".word".to_string())]);
+        let o2 = book_opps(&vm2);
+        let lead = o2.iter().find(|(s, m, ..)| *s == sid("GEN", 2) && *m == '.').unwrap();
+        assert_eq!(lead.2, read(PoolClass::Letter, SideForm::Spaced));
+    }
+
+    #[test]
+    fn first_and_last_verse_book_edges_abstain() {
+        let vm = book("GEN", &[(1, ".open".to_string()), (2, "close.".to_string())]);
+        let o = book_opps(&vm);
+        let lead = o.iter().find(|(s, m, ..)| *s == sid("GEN", 1) && *m == '.').unwrap();
+        assert_eq!(lead.2, None, "book-initial leading mark abstains on the left");
+        let trail = o.iter().find(|(s, m, ..)| *s == sid("GEN", 2) && *m == '.').unwrap();
+        assert_eq!(trail.3, None, "book-final trailing mark abstains on the right");
+    }
+
+    #[test]
+    fn pd_dashes_are_in_the_candidate_domain() {
+        let hy = opps_of("co-operate");
+        assert_eq!(hy.len(), 1);
+        assert_eq!(hy[0].mark, '-');
+        assert_eq!(hy[0].left, read(PoolClass::Letter, SideForm::Attached));
+        assert_eq!(hy[0].right, read(PoolClass::Letter, SideForm::Attached));
+        let maqaf = opps_of("\u{05D0}\u{05BE}\u{05D1}");
+        assert_eq!(maqaf.len(), 1);
+        assert_eq!(maqaf[0].mark, '\u{05BE}');
     }
 
     #[test]
     fn a_mark_carrying_a_combining_cluster_is_excluded() {
-        // A comma fused with a combining acute is not a lone scalar ⇒ skipped.
         assert!(opps_of("a,\u{0301}b").is_empty());
-        // But a decomposed word-final LETTER (base + combining) still counts as a
-        // letter neighbour — the comma is a clean attached-left site.
         let o = opps_of("cafe\u{0301}, then");
         assert_eq!(o.len(), 1);
         assert_eq!(o[0].mark, ',');
-        assert_eq!(o[0].left, Some(SideForm::Attached));
+        assert_eq!(o[0].left, read(PoolClass::Letter, SideForm::Attached));
     }
 
-    // ── verdict units (dominance × rarity per side) ──────────────────────
+    // ── verdict units (pool dominance × rarity, no fallback) ──────────────
 
     const WIDE_K: f64 = 1.0e9;
 
     #[test]
-    fn dominance_reads_as_the_majority_share_at_z_zero() {
-        // z=0 ⇒ Wilson lower bound is the observed rate, so a form's score (wide
-        // knee ⇒ rarity≈1) is the share held by the side's MAJORITY (a binary's
-        // complement is its majority). [attached=25, spaced=75], N=100.
-        let v = side_verdict([25, 75], 0.0, WIDE_K, 0.0);
-        assert!((v.scores[0] - 0.75).abs() < 1e-6, "attached score = complement .75, got {}", v.scores[0]);
-        assert!((v.scores[1] - 0.25).abs() < 1e-6, "spaced score = complement .25, got {}", v.scores[1]);
+    fn dominance_reads_as_the_pool_majority_share_at_z_zero() {
+        let v = pool_verdict([25, 75], 0.0, WIDE_K, 0.0, 0.5);
+        assert!(v.holds);
+        assert!((v.scores[0] - 0.75).abs() < 1e-6, "attached score {}", v.scores[0]);
+        assert!((v.scores[1] - 0.25).abs() < 1e-6, "spaced score {}", v.scores[1]);
     }
 
     #[test]
-    fn a_sole_form_side_is_silent() {
-        // A side seen in one form only: complement 0 ⇒ dominance 0 ⇒ score 0.
-        let v = side_verdict([40, 0], 1.96, 24.0, 0.0);
+    fn a_sole_form_pool_is_silent() {
+        let v = pool_verdict([40, 0], 1.96, 24.0, 0.0, 0.5);
+        assert!(v.holds);
         assert_eq!(v.scores, [0.0, 0.0]);
     }
 
     #[test]
+    fn a_pool_without_a_dominant_convention_does_not_hold() {
+        assert!(!pool_verdict([40, 40], 1.96, 24.0, 0.0, 0.5).holds);
+        assert!(!pool_verdict([1, 1], 1.96, 24.0, 0.0, 0.5).holds);
+        assert!(!pool_verdict([2, 0], 1.96, 24.0, 0.0, 0.5).holds);
+    }
+
+    #[test]
     fn rarity_fades_as_a_minority_form_recurs_at_fixed_dominance() {
-        // Same ~1:200 rarity ratio, minority count 1 → 8 → 500: the composed
-        // score strictly falls — a hapax slip stays high, a recurring minority is
-        // a second convention and collapses.
-        let s = |min: u64, maj: u64| side_verdict([maj, min], 1.96, 24.0, 0.0).scores[1];
-        let s1 = s(1, 200);
-        let s8 = s(8, 1600);
-        let s500 = s(500, 100_000);
+        let s = |min: u64, maj: u64| pool_verdict([maj, min], 1.96, 24.0, 0.0, 0.5).scores[1];
+        let (s1, s8, s500) = (s(1, 200), s(8, 1600), s(500, 100_000));
         assert!(s1 > s8 && s8 > s500, "{s1} {s8} {s500}");
-        assert_eq!(s500, 0.0, "500 ≫ k ⇒ rarity 0 ⇒ silent");
+        assert_eq!(s500, 0.0);
     }
 
     #[test]
-    fn the_knee_widens_with_side_volume() {
-        // ADR 0050 amendment, retained under per-side denominators (ADR 0054
-        // amend.): 17 minority among 38k opportunities stays loud (K≈184); the
-        // same 17 on a thin side is discounted; rate 0 collapses the heavy side
-        // to the pure absolute knee.
-        let heavy = side_verdict([38_000, 17], 1.96, 32.0, 40.0).scores[1];
-        let thin = side_verdict([380, 17], 1.96, 32.0, 40.0).scores[1];
-        let absolute = side_verdict([38_000, 17], 1.96, 32.0, 0.0).scores[1];
-        assert!(heavy > 0.85, "heavy stays loud: {heavy}");
-        assert!(thin < heavy, "same count on a thin side is discounted: {thin}");
-        assert!(absolute < 0.51, "rate 0 reproduces the pure absolute knee: {absolute}");
+    fn the_knee_widens_with_pool_volume() {
+        let heavy = pool_verdict([38_000, 17], 1.96, 32.0, 40.0, 0.5).scores[1];
+        let thin = pool_verdict([380, 17], 1.96, 32.0, 40.0, 0.5).scores[1];
+        let absolute = pool_verdict([38_000, 17], 1.96, 32.0, 0.0, 0.5).scores[1];
+        assert!(heavy > 0.85, "heavy {heavy}");
+        assert!(thin < heavy, "thin {thin}");
+        assert!(absolute < 0.51, "absolute {absolute}");
     }
 
     #[test]
-    fn mark_verdict_splits_the_four_counters_into_two_sides() {
-        // The packed [l_att, l_sp, r_att, r_sp] feeds two independent sides.
-        let v = mark_verdict(&tbl(25, 75, 90, 10), 0.0, WIDE_K, 0.0);
-        assert_eq!((v.left.n, v.right.n), (100, 100));
-        assert!((v.left.scores[0] - 0.75).abs() < 1e-6); // attached-left minority
-        assert!((v.right.scores[1] - 0.90).abs() < 1e-6); // spaced-right minority
+    fn mark_verdict_splits_the_twelve_counters_into_two_sides_and_three_pools() {
+        let counts = tbl([[25, 75], [0, 0], [0, 0]], [[0, 0], [90, 10], [0, 0]]);
+        let v = mark_verdict(&counts, 0.0, WIDE_K, 0.0, 0.5);
+        assert_eq!(v.left.pools[PoolClass::Letter.index()].n, 100);
+        assert_eq!(v.right.pools[PoolClass::Number.index()].n, 100);
+        assert!((v.left.pools[PoolClass::Letter.index()].scores[0] - 0.75).abs() < 1e-6);
+        assert!((v.right.pools[PoolClass::Number.index()].scores[1] - 0.90).abs() < 1e-6);
+        assert!(!v.left.pools[PoolClass::Number.index()].holds);
     }
 
-    // ── corpus behaviour ────────────────────────────────────────────────
+    // ── corpus behaviour ───────────────────────────────────────────────────
 
     #[test]
     fn a_no_dominant_convention_mark_is_silent() {
-        // A near-even comma split (attach-left ≈ space-left) has no dominant
-        // left convention: complement ≈ 0.5 dominance AND high minority count
-        // drives rarity to 0 ⇒ silent at the default floor.
         assert!(sp_run(&commas(40, 40), &sp_default()).is_empty());
         assert!(sp_run(&commas(1, 1), &sp_default()).is_empty());
     }
@@ -1499,39 +1701,35 @@ mod tests {
     }
 
     #[test]
-    fn a_rare_before_side_slip_surfaces() {
-        // 3 space-before commas against 100 attached: spaced-left is a rare form
-        // for a corpus whose comma attaches on the left ⇒ surfaces.
+    fn a_rare_before_side_slip_surfaces_in_the_letter_pool() {
         let f = sp_run(&commas(100, 3), &sp_default());
         assert_eq!(f.len(), 3);
         for x in &f {
             assert_eq!(x.severity, Severity::Info);
             assert!(x.score.unwrap() > 0.5);
-            // The violated side is the left; the right is a sole-form (silent).
             match &x.args {
                 Some(FindingArgs::SpacingConvention { left: Some(s), right: None, .. }) => {
                     assert_eq!(s.form, "spaced");
+                    assert_eq!(s.class, "letter");
                 }
-                other => panic!("expected a left-side spaced violation, got {other:?}"),
+                other => panic!("expected a left-side spaced/letter violation, got {other:?}"),
             }
         }
     }
 
     #[test]
     fn word_comma_word_missing_space_after_surfaces() {
-        // NEW COVERAGE the before-only rule could never see: `word,word` — the
-        // comma is attached on the RIGHT against a spaced-right convention.
         let mut v: Vec<(u16, String)> = (1..=100).map(|i| (i, "word, word".to_string())).collect();
-        v.push((200, "word,word".to_string())); // missing space after
+        v.push((200, "word,word".to_string()));
         let f = sp_run(&book("GEN", &v), &sp_default());
         assert_eq!(f.len(), 1);
         assert_eq!(f[0].sid, sid("GEN", 200));
         let slip = v.iter().find(|(n, _)| *n == 200).map(|(_, t)| t.clone()).unwrap();
-        // The right side fired; highlight is mark → attached right neighbour.
         assert_eq!(f[0].range.slice(&slip), ",w");
         match &f[0].args {
             Some(FindingArgs::SpacingConvention { left: None, right: Some(s), .. }) => {
                 assert_eq!(s.form, "attached");
+                assert_eq!(s.class, "letter");
             }
             other => panic!("expected a right-side attached violation, got {other:?}"),
         }
@@ -1539,22 +1737,16 @@ mod tests {
 
     #[test]
     fn away_bang_why_after_side_anomaly_surfaces() {
-        // `away!Why` — the `!` is attached on the right against a spaced-right
-        // majority (`Stop! Go`). The after-side anomaly surfaces.
         let mut v: Vec<(u16, String)> = (1..=60).map(|i| (i, "Stop! Go".to_string())).collect();
         v.push((200, "away!Why".to_string()));
         let f = sp_run(&book("GEN", &v), &sp_default());
         let bang: Vec<_> = f.iter().filter(|x| x.sid == sid("GEN", 200)).collect();
-        assert_eq!(bang.len(), 1, "the run-together ! surfaces");
+        assert_eq!(bang.len(), 1);
     }
 
     #[test]
     fn spanish_reversed_open_question_mark_surfaces_both_sides() {
-        // `¿` normally opens (spaced-left via the seam, attached-right onto the
-        // word). A `¿` used with a letter to its left and a space to its right
-        // (`así¿ no`, a swapped/misplaced open mark) violates BOTH sides ⇒ ONE
-        // finding carrying both. The per-corpus truth, not a stereotype.
-        let mut v: Vec<(u16, String)> = (1..=50).map(|i| (i, "\u{00BF}Qué?".to_string())).collect();
+        let mut v: Vec<(u16, String)> = (1..=50).map(|i| (i, "espacio \u{00BF}Qué?".to_string())).collect();
         v.push((100, "así\u{00BF} no".to_string()));
         let f = sp_run(&book("GEN", &v), &sp_default());
         let hits: Vec<_> = f.iter().filter(|x| x.sid == sid("GEN", 100)).collect();
@@ -1562,33 +1754,50 @@ mod tests {
         match &hits[0].args {
             Some(FindingArgs::SpacingConvention { mark, left: Some(l), right: Some(r) }) => {
                 assert_eq!(*mark, '\u{00BF}');
-                assert_eq!(l.form, "attached"); // letter to its left
-                assert_eq!(r.form, "spaced"); // space to its right
+                assert_eq!((l.form.as_str(), l.class.as_str()), ("attached", "letter"));
+                assert_eq!((r.form.as_str(), r.class.as_str()), ("spaced", "letter"));
             }
             other => panic!("expected a two-sided SpacingConvention, got {other:?}"),
         }
     }
 
+    // ── dissolved special cases: now judged inside their pools ─────────────
+
     #[test]
-    fn numeric_colon_is_silent_by_abstention_when_frequent() {
-        // A reference-heavy corpus where the colon is always digit-flanked: both
-        // sides abstain ⇒ nothing enters either convention ⇒ silent by structure.
+    fn numeric_colon_learns_silent_in_the_number_pool() {
         let v: Vec<(u16, String)> = (1..=100).map(|i| (i, "see 1:1 and 2:2".to_string())).collect();
-        assert!(sp_run(&book("GEN", &v), &sp_default()).is_empty(), "digit-flanked colon is silent");
+        assert!(sp_run(&book("GEN", &v), &sp_default()).is_empty(), "digit-flanked attached colon is silent");
+
+        let mut v2: Vec<(u16, String)> = (1..=200).map(|i| (i, "at 1:1 here".to_string())).collect();
+        v2.push((300, "at 1: 1 here".to_string()));
+        let f = sp_run(&book("GEN", &v2), &sp_default());
+        assert_eq!(f.iter().filter(|x| x.sid == sid("GEN", 300)).count(), 1);
+        assert!(f.iter().all(|x| x.sid == sid("GEN", 300)));
     }
 
     #[test]
-    fn cluster_tail_is_silent_by_abstention() {
-        // A corpus that routinely writes `?!`: the `!` abstains on its punct
-        // (left) side; its spaced-right form is the sole form ⇒ silent.
+    fn cluster_tail_learns_silent_in_the_punct_pool() {
         let v: Vec<(u16, String)> = (1..=100).map(|i| (i, "what?! really?!".to_string())).collect();
-        assert!(sp_run(&book("GEN", &v), &sp_default()).is_empty(), "cluster tail is silent");
+        assert!(sp_run(&book("GEN", &v), &sp_default()).is_empty(), "cluster tail is silent by its Punct pool");
+    }
+
+    #[test]
+    fn medial_period_flags_but_medial_hyphen_is_conventional() {
+        let mut v: Vec<(u16, String)> = (1..=120).map(|i| (i, "a end. Next one.".to_string())).collect();
+        v.push((300, "a run.together word.".to_string()));
+        let f = sp_run(&book("GEN", &v), &sp_default());
+        assert!(f.iter().any(|x| x.sid == sid("GEN", 300)), "medial period surfaces");
+
+        let hy: Vec<(u16, String)> = (1..=100).map(|i| (i, "co-operate and re-enter".to_string())).collect();
+        assert!(sp_run(&book("GEN", &hy), &sp_default()).is_empty(), "conventional medial hyphen is silent");
+        let mut hy2 = hy.clone();
+        hy2.push((300, "a - b co-operate".to_string()));
+        let fh = sp_run(&book("GEN", &hy2), &sp_default());
+        assert!(fh.iter().any(|x| x.sid == sid("GEN", 300)), "lone spaced hyphen surfaces");
     }
 
     #[test]
     fn a_recurring_minority_goes_silent_as_a_second_convention() {
-        // 400 space-before commas ≫ knee ⇒ a second convention ⇒ silent; a
-        // minority of 8 against a strong convention still surfaces.
         assert!(sp_run(&commas(6000, 400), &sp_default()).is_empty());
         let few = sp_run(&commas(1200, 8), &sp_default());
         assert_eq!(few.len(), 8);
@@ -1596,9 +1805,6 @@ mod tests {
 
     #[test]
     fn clean_as_you_go_raises_the_surviving_slips_score() {
-        // Removing minority occurrences RAISES the survivors' score (rarity
-        // climbs back toward 1). Floor 0 emits every judged side (incl. the ~0
-        // majority), so select the slip by its left-side `spaced` form.
         let score_of = |sp: usize| {
             sp_run(&commas(1000, sp), &sp_rule(sp_no_floor()))
                 .iter()
@@ -1614,12 +1820,10 @@ mod tests {
 
     #[test]
     fn spans_point_at_the_spacing_neighborhood() {
-        // Space-before slip → the errant whitespace + mark (left side) highlighted.
         let vm = commas(100, 1);
         let f = sp_run(&vm, &sp_default());
         assert_eq!(f.len(), 1);
         assert_eq!(f[0].range.slice(&vm[&f[0].sid]), " ,");
-        // Attached-after slip → the mark + attached right neighbour highlighted.
         let mut v: Vec<(u16, String)> = (1..=100).map(|i| (i, "word, word".to_string())).collect();
         v.push((200, "word,word".to_string()));
         let vm2 = book("GEN", &v);
@@ -1629,19 +1833,16 @@ mod tests {
 
     #[test]
     fn both_sides_span_is_the_union() {
-        // A doubly-violated mark spans from the left neighbourhood to the right.
-        let mut v: Vec<(u16, String)> = (1..=50).map(|i| (i, "\u{00BF}Qué?".to_string())).collect();
+        let mut v: Vec<(u16, String)> = (1..=50).map(|i| (i, "espacio \u{00BF}Qué?".to_string())).collect();
         v.push((100, "así\u{00BF} no".to_string()));
         let vm = book("GEN", &v);
         let f = sp_run(&vm, &sp_default());
         let hit = f.iter().find(|x| x.sid == sid("GEN", 100)).unwrap();
-        // "así¿ no": from the attached "í" through the crossed space after ¿.
         assert_eq!(hit.range.slice(&vm[&sid("GEN", 100)]), "í\u{00BF} ");
     }
 
     #[test]
-    fn finding_carries_the_side_form_and_counts() {
-        // The descriptive payload (ADR 0048): the violated side, its form + share.
+    fn finding_carries_the_side_form_class_and_counts() {
         let f = sp_run(&commas(100, 3), &sp_default());
         assert_eq!(f.len(), 3);
         for x in &f {
@@ -1649,7 +1850,8 @@ mod tests {
                 Some(FindingArgs::SpacingConvention { mark, left: Some(s), right: None }) => {
                     assert_eq!(*mark, ',');
                     assert_eq!(s.form, "spaced");
-                    assert_eq!((s.count, s.total), (3, 103)); // 3 spaced of 103 left-judged
+                    assert_eq!(s.class, "letter");
+                    assert_eq!((s.count, s.total), (3, 103));
                 }
                 other => panic!("expected a left-side SpacingConvention, got {other:?}"),
             }
@@ -1661,9 +1863,9 @@ mod tests {
     #[test]
     fn incremental_score_is_corpus_wide_not_book_local() {
         let r = sp_default();
-        let gen_map = commas(100, 0); // GEN establishes attached-left / spaced-right
+        let gen_map = commas(100, 0);
         let mut exo = VerseMap::new();
-        exo.insert(sid("EXO", 1), "word,word".to_string()); // one attached-right slip
+        exo.insert(sid("EXO", 1), "word,word".to_string());
         let mut full = gen_map.clone();
         full.extend(exo.clone());
 
@@ -1683,24 +1885,19 @@ mod tests {
 
     #[test]
     fn removing_a_book_drops_its_contribution() {
-        // Default floor: the "silent" guarantee is against the shipped 0.5, since
-        // the model relies on the floor (there is no tie special-case).
         let r = sp_default();
-        let gen_map = commas(100, 0); // 100 attached-left / spaced-right commas
+        let gen_map = commas(100, 0);
         let mut exo = VerseMap::new();
-        exo.insert(sid("EXO", 1), "word,word".to_string()); // attached-right slip
-        exo.insert(sid("EXO", 2), "word, word".to_string()); // spaced-right
+        exo.insert(sid("EXO", 1), "word,word".to_string());
+        exo.insert(sid("EXO", 2), "word, word".to_string());
         let mut full = gen_map;
         full.extend(exo.clone());
 
         let RuleStats::PunctuationSpacing(mut stats) = r.reduce(&crate::verse::by_book(&full), None, None).0 else {
             unreachable!()
         };
-        // Pooled with GEN: the attached-right comma is a rare form ⇒ surfaces.
         let before = r.judge(&RuleStats::PunctuationSpacing(stats.clone()), &crate::verse::by_book(&exo), None, None);
         assert!(before.iter().any(|f| f.sid == sid("EXO", 1)));
-        // Drop GEN: EXO alone is 1 attached-right : 1 spaced-right → no dominant
-        // right convention (dominance ≈ 0.09) ⇒ silent at the floor.
         stats.remove_book(BookId::from_str("GEN").unwrap());
         assert!(r.judge(&RuleStats::PunctuationSpacing(stats), &crate::verse::by_book(&exo), None, None).is_empty());
     }

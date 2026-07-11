@@ -206,10 +206,10 @@ export interface BookCasing {
 }
 
 /**
- * One book\'s per-mark **per-side tallies**: the four counters above, one set
- * per mark (ADR 0054 amendment, replacing the [u64; 16] joint signature table).
- * **No sites** — spans re-derive from the text at `judge`, so this stays a few
- * dozen bytes per mark even corpus-wide.
+ * One book\'s per-mark **per-side per-class tallies**: the twelve counters
+ * above, one set per mark (ADR 0054 2nd amendment, replacing the `[u64; 4]`
+ * per-side table). **No sites** — spans re-derive from the text at `judge`, so
+ * this stays a few dozen bytes per mark even corpus-wide.
  */
 export interface BookPunctuationSpacing {
     per_mark: Record<string, number[]>;
@@ -287,14 +287,17 @@ export interface RatioObs {
 }
 
 /**
- * One violated side of a `punct.spacing-anomaly` finding (ADR 0054 amendment):
- * the observed minority `form` (`\"attached\"` or `\"spaced\"`), how many of the
- * mark\'s judged occurrences **on this side** take that form (`count`), and the
- * side\'s total judged occupancy `N_side` (`total`). `count / total` is the
- * descriptive rate the Wilson-bound `score` deliberately isn\'t (ADR 0048).
+ * One violated side of a `punct.spacing-anomaly` finding (ADR 0054 2nd
+ * amendment — the pooled class-conditioned model): the observed minority `form`
+ * (`\"attached\"` or `\"spaced\"`) against the neighbour-content pool `class`
+ * (`\"letter\"`, `\"number\"`, or `\"punct\"`) that judged it, how many of the mark\'s
+ * occurrences **in that pool** take this form (`count`), and the pool\'s judged
+ * occupancy `N_pool` (`total`). `count / total` is the descriptive rate the
+ * Wilson-bound `score` deliberately isn\'t (ADR 0048).
  */
 export interface SpacingSide {
     form: string;
+    class: string;
     count: number;
     total: number;
 }

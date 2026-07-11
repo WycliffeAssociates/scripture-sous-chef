@@ -315,6 +315,22 @@ yet acted on. Open items for an ADR: guard the top-level fallback against
 thin-pool over-reach (`?)` parentheticals), the knee re-sweep, and the Pd-dash
 domain decision. Nothing frozen.
 
+**Status: SHIPPED (2026-07-11) — pooled class-conditioned model in production.**
+User-adjudicated Design A, with three rulings that closed the spike's open
+items: (1) **no top-level fallback** — a side is judged by its class pool only,
+which removes the 4,950 fallback flags and kills the `?)` over-reach at the
+source; (2) **quote merged into Punct** — the quote sub-tally is out of
+production stats (the period's `."` divergence logged as future-split evidence);
+(3) **domain widened to GC `Pd`** (hyphens/dashes/maqaf). Production stats are
+`[u64; 12]` per mark per book (`[side][class][form]`), replacing `[u64; 4]`;
+`SpacingSide` gains a `class` field. At the shipped cell (k=32, rate=40, floor
+0.5, z 1.96) the fleet is **27,024 findings across 1,360 corpora**; the six
+regression corpora reproduce **100%** of the previous per-side rule's findings
+(**140/140**, incl. mya's one Punct-pool site). Knee constants unchanged. Wasm
+regenerated. `calibrate --pooled-spacing` stays as the historical spike;
+`--spacing-sweep` drives the production rule. See the
+[ADR 0054 second amendment](../adrs/0054-spacing-attachment-signatures.md#second-amendment-2026-07-11-pooled-class-conditioned-model).
+
 **Steps** —
 1. `calibrate --signatures` spike: per-mark signature distributions
    fleet-wide; verify the predicted frequent signatures dominate

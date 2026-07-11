@@ -361,8 +361,13 @@ pub fn message(id: RuleId, args: Option<&FindingArgs>) -> String {
             Some(FindingArgs::SpacingConvention { mark, left, right }) => {
                 let clause = |s: &crate::diagnostics::SpacingSide, side: &str| {
                     let verb = if s.form == "attached" { "attached" } else { "spaced" };
+                    let nbr = match s.class.as_str() {
+                        "number" => "a number",
+                        "punct" => "a mark",
+                        _ => "a word",
+                    };
                     format!(
-                        "{verb} on the {side} in only {} of {} places ({}%)",
+                        "{verb} on the {side} to {nbr} in only {} of {} places ({}%)",
                         s.count,
                         s.total,
                         pct(s.count, s.total),

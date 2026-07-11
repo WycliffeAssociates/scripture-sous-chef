@@ -160,118 +160,130 @@ still reads as broad ⇒ suppressed — an ingest-level concern, out of per-vers
 scope.
 
 ---
+## `punct.spacing-anomaly` — pooled class-conditioned spacing
 
-## `punct.spacing-anomaly` — corpus-relative attachment signatures
+> **Severity** Info · **Default** off · **Scope** stateful (aggregate-only) · **Knobs** `emit_score_min` (default 0.5), `confidence_z` (default 1.96), `minority_recurrence_k` (default 32), `minority_rate_per_10k` (default 40) · **Source** `punctuation.rs` · **ADR** 0029, 0033, 0050, 0054 (2nd amendment)
 
-> **Severity** Info · **Default** off · **Scope** stateful (aggregate-only) · **Knobs** `emit_score_min` (default 0.5), `confidence_z` (default 1.96), `minority_recurrence_k` (default 32), `minority_rate_per_10k` (default 40) · **Source** `punctuation.rs` · **ADR** 0029, 0033, 0050, 0054
+**Flags** — A separator mark (GC `Po` minus quotes — `. , ; : ? !` and equally
+danda `।`, Arabic `۔ ، ؟ ؛`, Ethiopic `። ፤ ፥`, Burmese `။ ၊`, Khmer `។`) **or a
+dash** (GC `Pd` — hyphen `-`, en/em-dash `– —`, Hebrew maqaf `־`; ADR 0054 2nd
+amendment) written in a **per-side spacing form rare for that mark, against
+neighbours of the same content class, in this corpus**, with a continuous
+`score`. The model (ADR 0054 2nd amendment — the pooled class-conditioned model,
+superseding the same-day 16-cell joint model and the per-side first amendment):
+*the typist chooses the space, not the neighbour — so condition on the content
+and judge the choice.* For each `(mark, side, class)` where `class ∈ {Letter,
+Number, Punct}` is the content class of the **first non-whitespace neighbour** on
+that side, a binary *attached*-vs-*spaced* is learned **within that pool**. The
+judged bit is *whether whitespace was crossed* — the neighbour's class is read
+even across the verse/book seam (in book order); a book edge with no neighbour
+abstains.
 
-**Flags** — A separator-punctuation mark (GC `Po` minus quotes, ADR 0033 —
-`. , ; : ? !` and equally danda `।`, Arabic `۔ ، ؟ ؛`, Ethiopic `። ፤ ፥`,
-Burmese `။ ၊`, Khmer `។`) written in a **per-side spacing form rare for that
-mark in this corpus**, with a continuous `score`. Each mark carries **two
-conditional binary conventions** — is it *attached* (a letter neighbour) or
-*spaced* (whitespace, or the verse/book seam) on its **left**, and independently
-on its **right** (ADR 0054 amendment — per-side factorization, superseding the
-same-day 16-cell joint model and the ADR 0029 before-only binary). A punct/digit
-neighbour **abstains** on that side — the attached-vs-spaced question does not
-apply:
-- a spaced `,` in a corpus that attaches commas (English) → spaced-left is a rare
-  form → high score
+- a spaced `,` in a corpus that attaches commas to letters (English) → the Letter
+  pool's spaced-left is a rare form → high score
 - an *attached* `?` in a corpus that spaces `? !` (French, `pa_ulb`) → high score
-- **new after-side coverage** the before-only rule could never see: `word,word`
-  (comma attached-right against a spaced-right convention), `away!Why` (`!`
-  attached-right), a verse-leading `.word` (`.` spaced-left via the seam)
+- **content-conditioned coverage** the per-side model could not judge: `verse. 3`
+  (a `.` spaced from a **number** where the corpus writes chapter:verse refs
+  attached) vs `7.8` (a decimal, attached) — the *same* Number pool, different
+  form; `1: 1` (a mis-spaced colon in a `1:1` corpus)
+- **after-side coverage**: `word,word` (comma attached-right against a
+  spaced-right Letter convention), `away!Why`, a verse-leading `.word`
 - a swapped Spanish `¿` used with a letter to its left and a space to its right
-  (`así¿ no`) violates **both** sides against its spaced-left / attached-right
-  opening convention → one finding carrying both
+  (`así¿ no`) violates **both** Letter pools → one finding carrying both
+- a lone spaced hyphen in a hyphenation corpus (medial `-` normally both-attached)
 
-**Clean (learned silent)** — The dominant form on each side of each mark, any
-side with **no dominant form** (a near-even split scores below the floor on its
-own — no tie special-case), a side seen in one form only, and a **rare form that
-recurs at scale** (ADR 0050): engwebster's spaced `; : ? !` period typography,
-kmr-IQ's 1,289 spaced ` ،`. A recurring minority is the text's *second
-convention*, not a slip. The old hard-coded exclusions are silent by
-**abstention** (ADR 0054 amendment) — no exclusion list and no flaggable
-punct/digit combos: numeric `1:1` colons abstain on **both** sides (digit-
-flanked), cluster tails (`?!`'s `!`) abstain on their punct side, and
-quote-adjacent `,"`/`."` abstain on the quote side (quote-adjacency returns to
-unjudged-by-structure until the boundary-class work). Verse-leading/-final marks
-read the seam as whitespace (`spaced`), pooled with their mid-verse twins.
+**Clean (learned silent)** — The dominant form of each pool, any pool with **no
+Wilson-dominant convention** (a near-even split, or a thin pool — Wilson
+self-gates, no min-samples), a pool seen in one form only, and a **rare form that
+recurs at scale** (ADR 0050) — the text's *second convention*, not a slip. The
+old hard-coded exclusions are now silent **by their pools' conventions**, not by
+an exclusion list: a numeric `1:1` colon is judged in the **Number** pool and, if
+the corpus always attaches it, its attached sole form scores 0; a cluster tail
+(`?!`'s `!`) is judged in the **Punct** pool (its neighbour the `?`) and goes
+silent the same way. **No top-level fallback** (user ruling): a side is judged by
+its class pool *only* — a pool that holds no convention is silent, never routed
+to an all-class bucket. This is what kills the spike's `?)` over-reach: a `?`
+before `)` lands in a thin `Punct` pool that holds nothing, so it stays quiet.
+Verse-edge marks read the seam as whitespace (`spaced`) with the neighbour class
+read across it, pooling with their mid-verse twins.
 
-**Why it matters** — Whether a mark is spaced or attached, and on which side, is
-a *per-mark convention*, not a universal rule. The predecessor
-`punct.space-before-punct` flagged all whitespace-before-punct as a typo and
-fired **6159 times** on `pa_ulb`, where spacing `? !` is the norm. This rule
-learns each mark's signature distribution and flags only the rare ones, in
-**every** direction — including the missing-space-*after* the before-only ADR
-0029 rule structurally could not catch.
+**Why it matters** — Whether a mark is spaced or attached, on which side, **and
+against what kind of neighbour**, is a per-mark convention, not a universal rule.
+The predecessor `punct.space-before-punct` fired 6159 times on `pa_ulb`, where
+spacing `? !` is the norm. Conditioning on the neighbour's class is what lets the
+rule judge a spacing choice *against its content* — a mis-spaced chapter:verse
+colon (`Sam 118: 26`) is invisible to a model that only sees "there is
+whitespace"; the Number pool sees it is spaced where refs attach.
 
 **Score — two factors: dominance × rarity (ADR 0048/0050/0054)** — Per mark, sum
-the per-book four counters `[l_attached, l_spaced, r_attached, r_spaced]`. Each
-side is scored independently over its judged occupancy `N_side` (only the
-occurrences whose neighbour on that side is a letter or whitespace; punct/digit
-abstains). Each form holding `count` of `N_side` scores:
+the per-book **twelve** counters `[side][class][form]` (2 sides × 3 classes × 2
+forms). Each `(side, class)` pool is scored independently over its judged
+occupancy `N_pool`. A pool holds a convention iff its majority is Wilson-dominant
+at the floor. Each form holding `count` of `N_pool` scores:
 
 ```
-dominance = wilson_lower_bound(N_side − count, N_side, confidence_z)   // the majority
-K         = minority_recurrence_k + minority_rate_per_10k · N_side / 10 000
+dominance = wilson_lower_bound(N_pool − count, N_pool, confidence_z)   // the majority
+K         = minority_recurrence_k + minority_rate_per_10k · N_pool / 10 000
 rarity    = 1 − min(count − 1, K) / K
 score     = dominance × rarity
 ```
 
-- **dominance** is the conservative share held by the side's *majority* (a
-  binary's complement **is** its one opposing form, so this recovers ADR 0029's
-  literal opposing-convention meaning). The dominant form has a tiny complement
-  ⇒ score ≈ 0 ⇒ silent; a rare one ⇒ ≈ 1. A side with no dominant form stays
-  quiet with no special-case tie handling.
-- **rarity** (ADR 0050, retained under per-side denominators by the ADR 0054
-  amendment knee re-sweep) is a linear recurrence knee on the form's count whose
-  width grows with the side's volume: at large `N_side` the flag boundary is a
-  *rate*, while thin marks get the absolute base `k`. A form seen once is
-  `rarity = 1` (a rare slip); one recurring past the knee is `rarity = 0` (a
-  second convention).
+- **dominance** is the conservative share held by the pool's *majority* (a
+  binary's complement **is** its opposing form). The dominant form ⇒ score ≈ 0 ⇒
+  silent; a rare one ⇒ ≈ 1. A pool with no dominant form stays quiet, no tie
+  handling — and with no fallback, a pool that does not hold flags nothing.
+- **rarity** (ADR 0050, retained under per-pool denominators) is a linear
+  recurrence knee whose width grows with the pool's volume: at large `N_pool` the
+  flag boundary is a *rate*, thin pools get the absolute base `k`. A form seen
+  once is `rarity = 1`; one recurring past the knee is `rarity = 0`.
 
 An occurrence is scored on each side independently; one violating **both** sides
-is a single finding carrying both. A deliberate dynamic follows from the product:
-**fixing occurrences raises the score of the remaining ones** (rarity climbs back
-toward 1) — clean-as-you-go sharpens the signal.
+is a single finding carrying both. **Fixing occurrences raises the score of the
+remaining ones** (rarity climbs back toward 1) — clean-as-you-go sharpens the
+signal.
 
 **Presentation** — `FindingArgs::SpacingConvention { mark, left, right }` where
-each present side is a `SpacingSide { form, count, total }` — the violated side's
-observed minority form (`"attached"` / `"spaced"`), its `count`, and that side's
-`total = N_side` (ADR 0048). A side that abstained or was not violated is absent.
+each present side is a `SpacingSide { form, class, count, total }` — the violated
+side's observed minority form (`"attached"` / `"spaced"`), the neighbour-content
+`class` that judged it (`"letter"` / `"number"` / `"punct"`), its `count`, and
+the pool's `total = N_pool` (ADR 0048). So the message names the pool: "`:` is
+spaced on the right to a number in only 1 of 214 places." A side that abstained
+(book edge), whose pool held no convention, or that was not violated, is absent.
 The span highlights the violated side's *neighbourhood*: the crossed whitespace
 run where a space **is**, or the attached neighbour grapheme where a space
 **belongs** (`,w` for a run-together-after comma, ` ,` for a spaced-before one),
 unioned across both sides when both fire.
 
-**Config** — `emit_score_min` (default **0.5**) is the emission floor on the
-two-factor score; `minority_recurrence_k` (default **32**) and
+**Config** — `emit_score_min` (default **0.5**) is the emission floor and the
+per-pool Wilson-dominance gate; `minority_recurrence_k` (default **32**) and
 `minority_rate_per_10k` (default **40**) are the volume-scaled recurrence knee
-(the rate term is required to keep ne_udb's verse-final dandas near the floor —
-ADR 0054); `confidence_z` (default 1.96) is an advanced Wilson-confidence knob.
-There is deliberately no `convention_rate` and no `min_samples`. Constants
-carried from ADR 0050 and re-verified under the per-side denominators (ADR 0054
-amendment knee re-sweep); the knee is a pure sensitivity dial.
+(the rate term keeps ne_udb's verse-final dandas near the floor — ADR 0050);
+`confidence_z` (default 1.96) is an advanced Wilson-confidence knob. No
+`convention_rate`, no `min_samples`. Constants carried from ADR 0050 and
+re-verified under the per-pool denominators (ADR 0054 2nd amendment). At the
+shipped cell the fleet lands at **27,024 findings across 1,360 corpora**; the
+six ADR 0050 regression corpora reproduce **100%** of the previous per-side
+rule's findings (140/140, incl. mya's one Punct-pool site).
 
-**Nuance & ADR ties** — Context classification per side: a neighbour cluster with
-an alphabetic scalar (incl. a decomposed base + combining letter) is `attached`;
-crossed whitespace **or** the verse/book **seam** (which reads as whitespace,
-never its own category — repo `CLAUDE.md`: a terminal is never attached across a
-seam, ADR 0054's no-edge ruling) is `spaced`; a punct/digit neighbour
-**abstains** (the question does not apply). Quotes stay out of the candidate mark
-set (ADR 0033) and, as a *neighbour*, abstain (they no longer read `punct` — the
-16-cell model's quote-adjacency findings were the chief driver of its finding
-storm). The two-step redesign took the fleet count from 3,928 (old before-only
-binary) up to 115,883 (the same-day 16-cell joint model) and back to **9,644**
-(the per-side amendment at shipped defaults) — the intended
-broadening (genuine after-side coverage the before-only rule could not see); the
-rule is default-off. See ADR 0029 (dominance), 0033 (separator class), 0050
-(recurrence knee), and 0054 (joint signatures + the per-side amendment).
+**Nuance & ADR ties** — Neighbour classification: a cluster with an alphabetic
+scalar (incl. a decomposed base + combining letter) → `Letter`; a leading
+non-quote numeric scalar → `Number`; everything else — another mark, a **quote**,
+a bracket, a symbol — → `Punct` (quote **merged** into Punct, user ruling). The
+verse/book seam reads as whitespace (`spaced`), never its own category (repo
+`CLAUDE.md`: a terminal is never attached across a seam, ADR 0054's no-edge
+ruling), and the neighbour class is read across it in book order. The redesign
+took the fleet count from 3,928 (old before-only binary) → 115,883 (same-day
+16-cell) → 9,644 (per-side amendment) → **27,024** (pooled model at shipped
+defaults) — the last rise being genuine content-conditioned number/punct/dash
+coverage the per-side model abstained on. Default-off. See ADR 0029 (dominance),
+0033 (`Po` separator class), 0050 (recurrence knee), and 0054 + its second
+amendment (the pooled class-conditioned model).
 
-**Open issues / future work** — The 16-cell model's rare-*context* digit
-false-positive class is **retired** by the amendment: digit neighbours now
-abstain, so a digit-flanked mark in a digit-sparse corpus is never judged. A
-`mark × script` fallback dimension is deferred until calibration shows both
-buckets carry evidence. Quote-specific attachment rides the parked quote work
-(ADR 0039); until then the quote side abstains.
+**Open issues / future work** — **Known priced-in false-positive class:
+ellipsis adjacency** — the trailing `.` of `...Word` reads Letter/Attached on the
+right, so in a spaced-period corpus it can read as a medial run-on
+(documented, not fixed; floor/knee-shaped). The period's `."` divergence from
+other-punct is logged evidence for a possible future **per-mark quote split**
+(the spike's quote sub-tally; `,`/`:` track, so a blanket split is not yet
+warranted). A `mark × script` fallback dimension is deferred until calibration
+shows both buckets carry evidence.

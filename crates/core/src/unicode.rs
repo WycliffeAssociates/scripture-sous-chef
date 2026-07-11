@@ -91,6 +91,40 @@ pub fn is_decimal_digit(c: char) -> bool {
     crate::charclass::class_of(c).is_decimal_digit()
 }
 
+/// Dash punctuation (General_Category `Pd`) — hyphens, dashes, and the Hebrew
+/// maqaf. The fused `Class` table carries no `Pd` bit (it distinguishes only
+/// `Po`, ADR 0022/0033), so — following this module's "enumerate exactly the
+/// codepoints we mean, named, with precise semantics" policy — this is the
+/// explicit `Pd` set that occurs in scripture corpora: ASCII hyphen-minus, the
+/// Unicode hyphen/dash block (U+2010..=U+2015), the fullwidth/small-form
+/// variants, and the Armenian, Hebrew, Mongolian, and Canadian-Syllabics
+/// dashes. Widens the `punct.spacing-anomaly` candidate domain beyond `Po`
+/// (ADR 0054 second amendment): a word-medial both-attached `-`/`‑`/maqaf is a
+/// hyphenation convention and stays silent, while a lone spaced dash in such a
+/// corpus is the anomaly. Kept out of the *adjacency* rule's separator class,
+/// which is `Po`-only (`--` em-dash substitutes are legitimate typography).
+pub fn is_dash_punctuation(c: char) -> bool {
+    matches!(
+        c,
+        '-' | '\u{2010}'
+            | '\u{2011}'
+            | '\u{2012}'
+            | '\u{2013}'
+            | '\u{2014}'
+            | '\u{2015}'
+            | '\u{FE58}'
+            | '\u{FE63}'
+            | '\u{FF0D}'
+            | '\u{058A}'
+            | '\u{05BE}'
+            | '\u{1400}'
+            | '\u{1806}'
+            | '\u{2E17}'
+            | '\u{301C}'
+            | '\u{30A0}'
+    )
+}
+
 /// Numeral-system identity of a decimal digit: the zero codepoint of its
 /// contiguous Nd block (every Unicode decimal-digit block is a run of ten
 /// starting at its zero). `None` for non-digits. Shared by

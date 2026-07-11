@@ -129,16 +129,19 @@ pub struct DelimObservation {
     pub matched: bool,
 }
 
-/// One violated side of a `punct.spacing-anomaly` finding (ADR 0054 amendment):
-/// the observed minority `form` (`"attached"` or `"spaced"`), how many of the
-/// mark's judged occurrences **on this side** take that form (`count`), and the
-/// side's total judged occupancy `N_side` (`total`). `count / total` is the
-/// descriptive rate the Wilson-bound `score` deliberately isn't (ADR 0048).
+/// One violated side of a `punct.spacing-anomaly` finding (ADR 0054 2nd
+/// amendment — the pooled class-conditioned model): the observed minority `form`
+/// (`"attached"` or `"spaced"`) against the neighbour-content pool `class`
+/// (`"letter"`, `"number"`, or `"punct"`) that judged it, how many of the mark's
+/// occurrences **in that pool** take this form (`count`), and the pool's judged
+/// occupancy `N_pool` (`total`). `count / total` is the descriptive rate the
+/// Wilson-bound `score` deliberately isn't (ADR 0048).
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct SpacingSide {
     pub form: String,
+    pub class: String,
     pub count: u32,
     pub total: u32,
 }

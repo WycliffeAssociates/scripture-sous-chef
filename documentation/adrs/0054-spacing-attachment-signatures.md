@@ -1,9 +1,10 @@
 # ADR 0054: `punct.spacing-anomaly` — joint attachment signatures
 
 - **Date:** 2026-07-10
-- **Status:** Accepted — **but the 16-cell model below was superseded the same
-  day by the per-side factorization amendment at the end of this file. Read that
-  first; the 16-cell sections are lineage.**
+- **Status:** Accepted — **but every model below is superseded by the SECOND
+  amendment at the very end of this file (2026-07-11, the pooled
+  class-conditioned model). Read that first; the 16-cell decision and the
+  per-side first amendment are lineage.**
 - **Supersedes / amends:** [ADR 0029](0029-punctuation-spacing-corpus-relative.md)
   (the before-only binary spaced/attached verdict — **superseded**),
   [ADR 0050](0050-spacing-minority-recurrence-factor.md) (the volume-scaled
@@ -323,3 +324,157 @@ structurally could not see.
 - `calibrate`'s historical `--signatures` spike (16-cell/25-cell lineage) is left
   compiling as the measurement record; `--spacing-sweep` drives the production
   per-side rule and prints the table above.
+
+---
+
+## Second amendment (2026-07-11): pooled class-conditioned model
+
+**Status of this amendment: Accepted — supersedes both the 16-cell decision and
+the first (per-side) amendment above.** The per-side rule shipped and was
+measured on the fleet; the user then adjudicated the pooled class-conditioned
+model, head-to-head against a rival, in the
+[pooled-spacing spike](../calibration/2026-07-10-pooled-spacing-spike.md)
+(user-approved 2026-07-11). It replaces the two unconditioned per-side binaries
+with the same two per-side binaries **conditioned on the neighbour's content
+class**. The sections above are kept as lineage; where they conflict, this
+amendment wins.
+
+### Why the per-side model was widened
+
+The first amendment's fix — `punct`/`digit` neighbours **abstain** — was correct
+that a quote-adjacent `,"` should not be a flaggable `letter|punct` *combination*
+(the 16-cell bug), but it threw away real signal. A colon is spaced differently
+before a digit (`1: 1` is a mis-spaced chapter:verse ref) than before a letter,
+and the abstention made both invisible. The insight the user named: **the typist
+chooses the space, not the neighbour — so condition on the content and judge the
+choice.** A `.` before a number is a legitimate pool with its own convention
+(`7.8` decimal attached vs `verse. 3` cross-reference spaced); abstaining on it
+is silence where there is a learnable convention.
+
+### The model (user-adjudicated)
+
+Per `(mark, side, class)` where `class ∈ {Letter, Number, Punct}` is the
+fused-Class of the **first non-whitespace neighbour** on that side, a binary
+*attached*-vs-*spaced* is learned **within that pool**:
+
+- **class** (which pool): the neighbour's content — `Letter` (any cluster with an
+  alphabetic scalar, incl. decomposed base + combining letter), `Number` (a
+  leading non-quote numeric scalar), or `Punct` (everything else: another mark, a
+  quote, a bracket, a symbol).
+- **form** (the judged bit): *was whitespace crossed* — `Spaced` if so (the
+  verse/book **seam** counts as whitespace, ADR 0054's no-edge ruling unchanged),
+  `Attached` if the mark clings directly. The neighbour's class is read **across**
+  the seam, in book order (the book is the parallel-walk unit, ADR 0042); a
+  **book-edge side with no neighbour even across the seam abstains**. No
+  forcedness/censoring reasoning — the seam is an ordinary spaced observation
+  whose class is the neighbour across it (repo `CLAUDE.md`).
+
+The form is orthogonal to the class: a `Number`-pool `.` can be `Attached`
+(`7.8`) or `Spaced` (`verse. 3`), and the pool learns which is its convention.
+
+**Verdict.** Per `(side, class)` pool, per form,
+`score = dominance(the pool's majority, N_pool, z) × rarity(minority recurrence,
+volume-scaled knee on N_pool)` — the ADR 0050 shape, scored over each pool's
+judged occupancy `N_pool` independently. An occurrence violating both sides is
+**one** finding carrying both.
+
+### The three user rulings
+
+1. **No top-level fallback.** A site's side is judged by its class pool **only**;
+   a pool without a Wilson-dominant convention is silent. The spike measured a
+   two-level hierarchy (class pool → top-level all-class fallback) that added
+   4,950 flagged sides — including the `?)` parenthetical over-reach the spike
+   flagged as a thin-pool artifact (§4 caveat). The user's call removes the
+   fallback entirely: this kills the over-reach at the source. A `?` before `)`
+   lands in the mark's `Punct` pool; if that pool is thin (engwebster's 13
+   `?`-before-`)`), it holds no convention and the site is silent — no fallthrough.
+
+2. **Quote merged into `Punct`.** The model reads three classes; the quote
+   sub-tally the spike carried (as measurement) is **not** in production stats.
+   Logged evidence for a possible future per-mark split: the period's `."`
+   genuinely diverges from other-punct (`.` `"`-adjacent attaches 77% vs
+   other-punct spaces 71%, spike §1), while `,`/`:` track — so a blanket quote
+   split is not warranted, but the period's divergence is on record.
+
+3. **Domain widened to GC `Pd`.** Candidate marks = GC `Po` minus quotes
+   (ADR 0033) **plus** GC `Pd` (hyphens/dashes/maqaf). The spike's dash
+   conventions justify it: a word-medial both-attached `-`/`‑`/maqaf is the
+   hyphenation convention and stays silent, while a lone spaced dash in such a
+   corpus is the anomaly; conventionally-spaced em/en-dashes learn their own
+   convention per corpus. The fused `Class` table carries no `Pd` bit, so the
+   set is the explicit `unicode::is_dash_punctuation` enumeration (the dashes
+   that occur in scripture corpora). `Pd` marks flow through the same lone-scalar
+   / combining-cluster guards as `Po`.
+
+### Stats and args
+
+- `RuleStats::PunctuationSpacing` caches, per book, `per_mark: BTreeMap<char,
+  [u64; 12]>` — twelve counters `[side][class][form]` (2 sides × 3 classes × 2
+  forms), replacing the first amendment's `[u64; 4]`. Merge/remove_book and the
+  ADR 0044 site-forwarding are unchanged. **Pre-alpha: the `[u64; 4]` shape is
+  deleted, no shim.**
+- `FindingArgs::SpacingConvention { mark, left: Option<SpacingSide>, right:
+  Option<SpacingSide> }` unchanged in shape; `SpacingSide` gains a `class` field
+  (`"letter"` / `"number"` / `"punct"`) alongside `form` / `count` / `total`, so
+  the descriptive message names the pool that judged the side ("`:` spaced on the
+  right to a number in only 1 of 214 places"). A side absent from the args either
+  abstained (book edge), its pool held no convention, or it was not violated.
+- Wasm packages regenerated (`npm run build:wasm`) — the `class` field is in the
+  emitted `SpacingSide` interface in both `pkg-web` and `pkg-bundler`.
+
+### Fleet numbers (production rule, `calibrate --spacing-sweep corpora/vref`)
+
+The production pooled rule at the ADR 0050 family (**k = 32, rate = 40/10k,
+floor 0.5, z 1.96**, retained unchanged) lands the fleet at **27,024 findings
+across 1,360 corpora**. This is the spike's Design A (27,772 findings, with the
+fallback and without `Pd`) minus the removed top-level fallback, plus the widened
+`Pd` dash lane — in the predicted band. The full knee/rate sweep:
+
+| k \ rate/10k | 0 | 20 | 40 | 80 |
+| ---: | ---: | ---: | ---: | ---: |
+| 16 | 10,213 (1,269) | 14,398 (1,285) | 16,942 (1,293) | 21,024 (1,307) |
+| **32** | 20,522 (1,350) | 24,160 (1,356) | **27,024 (1,360)** | 31,055 (1,366) |
+| 64 | 37,370 (1,403) | 40,381 (1,406) | 43,555 (1,407) | 47,475 (1,408) |
+
+### Six-corpus regression — every shipped win reproduced
+
+Captured the **old** per-side rule's findings for the six ADR 0050 corpora
+before the rewrite, then joined the **new** pooled rule against them by
+`(sid, mark byte-offset, violated side)`:
+
+| corpus | old per-side findings | pooled reproduces |
+| --- | ---: | ---: |
+| engwebster | 4 | **4** |
+| WA-kmr-IQ-badini-reg | 20 | **20** |
+| udu | 0 | **0** |
+| WA-ne-udb | 76 | **76** |
+| WA-pa-ulb | 25 | **25** |
+| mya | 15 | **15** |
+| **total** | **140** | **140** |
+
+**100% reproduction (140/140), including mya's one punct-pool site** (EZK 48:30
+`။`, whose left neighbour is a `Punct` mark, not a letter — reproduced by its
+`Punct` pool, not a fallback). Removing the fallback cannot drop these because
+every shipped finding lands in a real class pool (`Letter`, or mya's one in
+`Punct`); the `Pd` widening only adds a separate lane. The new rule's *total*
+per-corpus counts rise above these (engwebster 4→23, ne_udb 76→101, etc.) — that
+increase is the genuine new number/punct/dash coverage the old rule could not
+see, not a regression.
+
+### Consequences delta
+
+- **The rare-*content* FP class stays retired**, but for a different reason than
+  the first amendment: digit/punct neighbours no longer abstain — they form real
+  pools — but a pool that is thin or has no dominant convention self-gates on
+  Wilson (no fallback to re-admit it). The spike confirmed the rival immediate
+  4-way model over-flags rare content 3.4× worse precisely because it cannot
+  condition the spacing choice on content.
+- **Known priced-in FP class (documented, not fixed): ellipsis adjacency.** The
+  trailing `.` of an ellipsis `...Word` reads `Letter`/`Attached` on the right
+  (the `.` before `W`), so in a spaced-period corpus it can flag as a medial
+  run-on (spike §2, kpg/kos/twi NUM 21:14 `"...Waheb`). Floor/knee-shaped, same
+  family as the shipped rule's other tail behaviour.
+- **The two-level hierarchy telemetry is retired** — there is no second level.
+  The `calibrate --pooled-spacing` spike (which measured the fallback and the
+  quote sub-split) is left compiling as the historical measurement record;
+  `--spacing-sweep` drives the production pooled rule and prints the table above.
