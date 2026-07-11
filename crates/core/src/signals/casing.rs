@@ -73,7 +73,9 @@
 //! the lexicon-lowercase habit or the (bicameral) witnesses. Every cased word is
 //! kept with raw tallies.
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
+use std::sync::Arc;
 
 use crate::analysis::association::Table2;
 use crate::charclass::class_of;
@@ -441,11 +443,12 @@ fn tv_distance(p: &HashMap<&str, u64>, q: &HashMap<&str, u64>, jurors: &[&str]) 
 /// counts, baseline word-start distribution) are reindexed here from the
 /// per-word forced tallies — the reshuffle witness is case-free, so a word's
 /// forced upper+lower after a class is its occurrence count there.
-fn build_trust(words: &HashMap<&str, WordStats>, z: f64) -> HashMap<ClassKey, f64> {
+fn build_trust(words: &HashMap<String, WordStats>, z: f64) -> HashMap<ClassKey, f64> {
     // Baseline word-start distribution + per-class aftermath (reindex).
     let mut word_start_total: HashMap<&str, u64> = HashMap::new();
     let mut after: HashMap<ClassKey, HashMap<&str, u64>> = HashMap::new();
-    for (&key, w) in words {
+    for (key, w) in words {
+        let key = key.as_str();
         let total = w.all_total();
         if total == 0 {
             continue;
@@ -576,8 +579,14 @@ fn build_trust(words: &HashMap<&str, WordStats>, z: f64) -> HashMap<ClassKey, f6
 
 /// The lexicon-restricted per-class habit, plus the corpus trust map (ADR
 /// 0052). Built corpus-wide at judge over the merged table.
-struct Model<'a> {
-    words: HashMap<&'a str, WordStats>,
+///
+/// Owns its word table (rather than borrowing `&'a str` out of the input
+/// `CasingStats`) specifically so it can be cached independent of the
+/// caller's borrow — see [`Model::build`]'s within-process memo (perf note
+/// below `judge_casing`: both casing rules build the identical model from
+/// the same merged stats within one `analyze` call).
+struct Model {
+    words: HashMap<String, WordStats>,
     /// Per class trust; `None`-keyed book-initial is always fully trusted.
     trust: HashMap<ClassKey, f64>,
     /// Lexicon-restricted capitalize-after-class counts (up, total). `None` =
@@ -598,15 +607,56 @@ pub struct Factors {
     pub raw_total: u64,
 }
 
-impl<'a> Model<'a> {
-    fn build(stats: &'a CasingStats, cfg: &CasingConfig) -> Model<'a> {
+// Within-process memo for `Model::build` (perf note above `judge_casing`):
+// `SentenceInitialLowercase` and `InconsistentWordCasing` both build the
+// identical model from the same merged `CasingStats` + `CasingConfig` inside
+// one `analyze_stateful` call — the Fisher/G² association math in
+// `build_trust` is ~44% of everything-on self-time on English, so rebuilding
+// it twice per call is pure waste. Keyed by *content* equality (both
+// `CasingStats` and `CasingConfig` already derive `PartialEq`), not by
+// reference identity — the two calls pass distinct clones with identical
+// content, so identity-keying would never hit. A size-2 LRU is enough to
+// catch the two adjacent judge calls; it is not a correctness dependency —
+// a miss just rebuilds.
+thread_local! {
+    static MODEL_CACHE: RefCell<Vec<(CasingStats, CasingConfig, Arc<Model>)>> =
+        const { RefCell::new(Vec::new()) };
+}
+
+const MODEL_CACHE_CAP: usize = 2;
+
+impl Model {
+    fn build(stats: &CasingStats, cfg: &CasingConfig) -> Arc<Model> {
+        if let Some(hit) = MODEL_CACHE.with(|c| {
+            c.borrow()
+                .iter()
+                .find(|(s, c, _)| s == stats && c == cfg)
+                .map(|(_, _, m)| Arc::clone(m))
+        }) {
+            return hit;
+        }
+
+        let model = Arc::new(Self::build_uncached(stats, cfg));
+
+        MODEL_CACHE.with(|c| {
+            let mut c = c.borrow_mut();
+            if c.len() >= MODEL_CACHE_CAP {
+                c.remove(0);
+            }
+            c.push((stats.clone(), *cfg, Arc::clone(&model)));
+        });
+
+        model
+    }
+
+    fn build_uncached(stats: &CasingStats, cfg: &CasingConfig) -> Model {
         let z = clamp_z(cfg.confidence_z);
         let gate = f64::from(clamp_unit(cfg.trust_gate));
         // Corpus-wide word table: sum each book's raw tallies.
-        let mut words: HashMap<&str, WordStats> = HashMap::new();
+        let mut words: HashMap<String, WordStats> = HashMap::new();
         for bc in stats.per_book.values() {
             for (key, w) in &bc.words {
-                words.entry(key.as_str()).or_default().add(w);
+                words.entry(key.clone()).or_default().add(w);
             }
         }
 
