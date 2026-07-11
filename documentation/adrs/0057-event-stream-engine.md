@@ -319,3 +319,61 @@ the same shape step 3 removed from casing, but their judges are re-scan
 based so only the accumulator side transfers), and a Cow fast-path for
 casing's compound-span fold (needs a gate that is exact under the
 context-sensitive fold, not just `any(is_uppercase)`).
+
+### Round 2 (same branch): FxHash, interned rare-glyph/mixed-case, buffer reuse
+
+The next samply round attributed SipHash hashing ~6.5%, `memcmp` ~8.1%
+(String-keyed maps in the rare-glyph/mixed-case accumulators), and
+allocator free ~5.2% of all-on self-time. Three steps, each gated on the
+full-fleet `--dump-findings` oracle under both configs (byte-identical
+throughout), both test suites, clippy, and the wasm check; the whole set
+additionally gated on the `--dump-incremental` oracle (echo + complete
+snapshot + a serde stats digest per corpus, both configs) against the
+pre-round tree — stats content is byte-identical, which the findings
+dumps alone do not guard.
+
+1. **FxHash for internal hot-path maps.** `rustc-hash` added as a
+   workspace dependency (tiny, no_std-friendly, no serde surface —
+   inlining an FxHasher was considered and rejected since the crate is
+   the rustc-vetted single source). Swapped: casing's per-book interner
+   and judge memo, rare-glyph's word/surface walk maps, and
+   `rule::TokenCache`. No serialized map was touched; `Model` and every
+   `RuleStats` shape keep their std/BTree types.
+2. **Interned ids in the rare-glyph and mixed-case accumulators** (the
+   round-1 deferral). `MixedCaseAcc`'s per-token `BTreeMap<String,_>`
+   entry walk and `RareGlyphAcc`'s contains+get double probe became one
+   FxHashMap interner probe into id-indexed vecs; the pinned sorted
+   stats shapes are rebuilt once at `finish`. rare-glyph's `surfaces`
+   map deliberately stays a plain hash map: it is already one probe per
+   occurrence and keys original-case surfaces (a different domain from
+   the folded type keys), so an interner there wins nothing. Judges are
+   re-scan based for both rules (ADR 0053/0055) — only the walk side
+   transfers, and the wire is unchanged.
+3. **Per-verse scratch-buffer reuse in the fused walk.**
+   `token::tokenize_into` (clear + refill into the walk's `tokens_buf`,
+   both `walk_book` and `drive_book`; the `collect_tokens` path still
+   `mem::take`s the verse's vec into the cache — that allocation is
+   retained by design) and casing's `compound_words` writing into a
+   `CasingAcc`-owned buffer instead of returning a fresh `Vec<Span>`
+   per verse — matching the tape/grapheme buffer precedent.
+
+**Proportionality's sourceless per-verse counting was audited and left
+alone**: `ProportionalityAcc::verse` already early-returns before any
+`grapheme::count` when no source verse exists (`source.and_then(get)`),
+and the remaining sourceless product — the per-book *empty* buckets —
+is serialized deliberately (an empty bucket must supersede a prior
+book's ratios on merge, or a book that lost its reference keeps
+re-emitting stale findings). Nothing to gate.
+
+Measured (`--time` min-of-5, serial release, idle machine; steps
+cumulative):
+
+| corpus / config       | before    | after step 1 | final (steps 1–3) |
+|-----------------------|-----------|--------------|--------------------|
+| WA-en-ulb defaults    | 289.2 ms  | 287.6 ms     | 280.7 ms (noise; word rules off) |
+| WA-en-ulb everything  | 828.0 ms  | 782.4 ms     | 673.9 ms (−18.6%)  |
+| WA-hi-ulb defaults    | 437.6 ms  | 451.8 ms     | 433.5 ms (noise)   |
+| WA-hi-ulb everything  | 883.3 ms  | 843.9 ms     | 821.3 ms (−7.0%)   |
+
+Full-fleet everything-on dump user time: 630 s → 551 s (−12.5%,
+measured before/after steps 1–2; step 3 landed after that sweep).
