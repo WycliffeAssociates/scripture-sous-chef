@@ -106,7 +106,7 @@ impl StatefulRule for PunctuationAdjacencyAnomaly {
                 stream::drive_book(
                     verses,
                     stream::Needs { tape: true, ..Default::default() },
-                    AdjacencyAcc::new(),
+                    AdjacencyAcc::new(true),
                     |a, v, _| a.verse(v),
                     AdjacencyAcc::finish,
                 ),
@@ -264,24 +264,32 @@ pub(crate) struct AdjacencyAcc {
     lead_opportunities: BTreeMap<char, u64>,
     pattern_counts: BTreeMap<String, u64>,
     sites: Vec<(Sid, Span)>,
+    /// `false` on a prior-carried book (anchor mode): candidates still feed
+    /// the sites; the opportunity/pattern tallies are skipped.
+    counting: bool,
 }
 
 impl AdjacencyAcc {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(counting: bool) -> Self {
         AdjacencyAcc {
             lead_opportunities: BTreeMap::new(),
             pattern_counts: BTreeMap::new(),
             sites: Vec::new(),
+            counting,
         }
     }
 
     pub(crate) fn verse(&mut self, v: &stream::VerseInputs<'_, '_>) {
-        count_lead_opportunities(v.tape, &mut self.lead_opportunities);
+        if self.counting {
+            count_lead_opportunities(v.tape, &mut self.lead_opportunities);
+        }
         for span in adjacency_candidates(v.tape) {
-            *self
-                .pattern_counts
-                .entry(span.slice(v.text).to_string())
-                .or_default() += 1;
+            if self.counting {
+                *self
+                    .pattern_counts
+                    .entry(span.slice(v.text).to_string())
+                    .or_default() += 1;
+            }
             self.sites.push((v.sid, span));
         }
     }

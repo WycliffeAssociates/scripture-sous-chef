@@ -134,7 +134,9 @@ impl WalkPlan {
         if self.spacing || self.repeated_run {
             n.graphemes = true;
         }
-        if self.repeated_run || self.mixed_script {
+        // Repeated-run's anchor mode skips its per-token word fold, so it
+        // needs no tokens on an uncounted book; mixed-script still reads them.
+        if self.mixed_script {
             n.tokens = true;
         }
         n
@@ -217,11 +219,11 @@ fn walk_book(
     };
 
     let mut casing_acc = plan.casing.then(casing::CasingAcc::new);
-    let mut adjacency_acc = plan.adjacency.then(punctuation::AdjacencyAcc::new);
+    let mut adjacency_acc = plan.adjacency.then(|| punctuation::AdjacencyAcc::new(count));
     let mut spacing_acc = plan.spacing.then(punctuation::SpacingAcc::new);
-    let mut repeated_acc = plan.repeated_run.then(lexical::RepeatedRunAcc::new);
-    let mut punct_only_acc = plan.punct_only.then(lexical::PunctOnlyAcc::new);
-    let mut mixed_script_acc = plan.mixed_script.then(script_mixing::MixedScriptAcc::new);
+    let mut repeated_acc = plan.repeated_run.then(|| lexical::RepeatedRunAcc::new(count));
+    let mut punct_only_acc = plan.punct_only.then(|| lexical::PunctOnlyAcc::new(count));
+    let mut mixed_script_acc = plan.mixed_script.then(|| script_mixing::MixedScriptAcc::new(count));
     let mut rare_glyph_acc = (count && plan.rare_glyph).then(rare_glyph::RareGlyphAcc::new);
     let mut mixed_case_acc = (count && plan.mixed_case).then(mixed_case::MixedCaseAcc::new);
     let mut prop_acc =

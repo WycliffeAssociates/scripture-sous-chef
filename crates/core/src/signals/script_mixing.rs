@@ -162,7 +162,7 @@ impl StatefulRule for MixedScriptInToken {
                 stream::drive_book(
                     verses,
                     stream::Needs { tokens: true, ..Default::default() },
-                    MixedScriptAcc::new(),
+                    MixedScriptAcc::new(true),
                     |a, v, _| a.verse(v),
                     MixedScriptAcc::finish,
                 ),
@@ -329,26 +329,34 @@ pub(crate) struct MixedScriptAcc {
     signature_counts: BTreeMap<String, u64>,
     script_tokens: BTreeMap<String, u64>,
     sites: Vec<MixedScriptSite>,
+    /// `false` on a prior-carried book (anchor mode): mixed tokens still
+    /// feed the sites; the signature/script tallies are skipped.
+    counting: bool,
 }
 
 impl MixedScriptAcc {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(counting: bool) -> Self {
         MixedScriptAcc {
             signature_counts: BTreeMap::new(),
             script_tokens: BTreeMap::new(),
             sites: Vec::new(),
+            counting,
         }
     }
 
     pub(crate) fn verse(&mut self, v: &stream::VerseInputs<'_, '_>) {
         for tok in v.tokens {
             let scripts = token_scripts(tok.span.slice(v.text));
-            for &s in &scripts {
-                *self.script_tokens.entry(tag_key(s)).or_default() += 1;
+            if self.counting {
+                for &s in &scripts {
+                    *self.script_tokens.entry(tag_key(s)).or_default() += 1;
+                }
             }
             if scripts.len() >= 2 {
                 let sig = signature(&scripts);
-                *self.signature_counts.entry(sig.clone()).or_default() += 1;
+                if self.counting {
+                    *self.signature_counts.entry(sig.clone()).or_default() += 1;
+                }
                 self.sites.push(MixedScriptSite { sid: v.sid, sig, span: tok.span });
             }
         }

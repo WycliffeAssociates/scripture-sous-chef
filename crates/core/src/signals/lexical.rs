@@ -314,7 +314,7 @@ impl StatefulRule for PunctOnlyToken {
                 stream::drive_book(
                     verses,
                     stream::Needs { tape: true, ..Default::default() },
-                    PunctOnlyAcc::new(),
+                    PunctOnlyAcc::new(true),
                     |a, v, _| a.verse(v),
                     PunctOnlyAcc::finish,
                 ),
@@ -420,21 +420,29 @@ impl StatefulRule for PunctOnlyToken {
 pub(crate) struct PunctOnlyAcc {
     out: BookPunctOnlyToken,
     sites: Vec<(Sid, Span)>,
+    /// `false` on a prior-carried book (anchor mode): the extraction still
+    /// runs — the judge needs the sites — but the aggregate tallies are
+    /// skipped, since the assembly discards them (ADR 0057 phase 2).
+    counting: bool,
 }
 
 impl PunctOnlyAcc {
-    pub(crate) fn new() -> Self {
-        PunctOnlyAcc { out: BookPunctOnlyToken::default(), sites: Vec::new() }
+    pub(crate) fn new(counting: bool) -> Self {
+        PunctOnlyAcc { out: BookPunctOnlyToken::default(), sites: Vec::new(), counting }
     }
 
     pub(crate) fn verse(&mut self, v: &stream::VerseInputs<'_, '_>) {
-        self.out.lexical_units += v.text.split_whitespace().count() as u64;
+        if self.counting {
+            self.out.lexical_units += v.text.split_whitespace().count() as u64;
+        }
         for span in scan_punct_only_token_tape(v.text, v.tape) {
-            *self
-                .out
-                .chunks
-                .entry(punct_only_pattern_key(span.slice(v.text)))
-                .or_default() += 1;
+            if self.counting {
+                *self
+                    .out
+                    .chunks
+                    .entry(punct_only_pattern_key(span.slice(v.text)))
+                    .or_default() += 1;
+            }
             self.sites.push((v.sid, span));
         }
     }
@@ -637,7 +645,7 @@ impl StatefulRule for RepeatedCharacterRun {
                 stream::drive_book(
                     verses,
                     stream::Needs { graphemes: true, tokens: true, ..Default::default() },
-                    RepeatedRunAcc::new(),
+                    RepeatedRunAcc::new(true),
                     |a, v, _| a.verse(v),
                     RepeatedRunAcc::finish,
                 ),
@@ -791,14 +799,19 @@ pub(crate) struct RepeatedRunAcc {
     out: BookRepeatedCharacterRun,
     sites: Vec<(Sid, Span)>,
     word_graphemes: Vec<GSpan>,
+    /// `false` on a prior-carried book (anchor mode): run extraction feeds
+    /// the sites; the aggregate tallies — including the per-token word-
+    /// recurrence fold, this rule's expensive half — are skipped.
+    counting: bool,
 }
 
 impl RepeatedRunAcc {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(counting: bool) -> Self {
         RepeatedRunAcc {
             out: BookRepeatedCharacterRun::default(),
             sites: Vec::new(),
             word_graphemes: Vec::new(),
+            counting,
         }
     }
 
@@ -808,15 +821,20 @@ impl RepeatedRunAcc {
         // stable, script-neutral normalization unit: word-like in spaced text,
         // verse-span-like in scriptio continua. Word recurrence still uses the
         // UAX tokens below because it applies only when one contains the run.
-        self.out.lexical_units += v.text.split_whitespace().count() as u64;
         for span in scan_repeated_character_run(v.text, v.graphemes) {
-            *self
-                .out
-                .cluster_runs
-                .entry(repeated_run_cluster(span.slice(v.text)))
-                .or_default() += 1;
+            if self.counting {
+                *self
+                    .out
+                    .cluster_runs
+                    .entry(repeated_run_cluster(span.slice(v.text)))
+                    .or_default() += 1;
+            }
             self.sites.push((v.sid, span));
         }
+        if !self.counting {
+            return;
+        }
+        self.out.lexical_units += v.text.split_whitespace().count() as u64;
         for token in v.tokens {
             let word = token.span.slice(v.text);
             if word.chars().take(3).count() < 3 {
