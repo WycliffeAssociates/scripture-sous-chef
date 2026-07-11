@@ -261,3 +261,61 @@ Measured (WA-en-ulb, `--time` min-of-5, serial release):
 `analyze/changed_edit_MAT` (criterion, defaults): no change detected
 (p = 0.71), as expected with the casing rules default-off. Full-fleet
 everything-on dump user time: 1033 s → 989 s (−4% across all rules).
+
+## Follow-up (same branch): allocation diet — predicates, one fold, interned ids
+
+Three profile-driven cuts from the samply leave-one-out round
+(`_platform_memcmp` 7.1% of English self-time from String-keyed map
+lookups; `to_lowercase` + conversions ~6.3% on Devanagari from each word
+rule folding the same token independently; `unicode_data::alphabetic::
+lookup_slow` 6.6% on Devanagari from std predicates bypassing the fused
+`Class` table). Each step gated separately on the full-fleet
+`--dump-findings` oracle under both configs (byte-identical throughout),
+both test suites, clippy, and the wasm check.
+
+1. **Predicates via the fused table.** Audit of std char-predicate calls
+   (`is_alphabetic`/`is_uppercase`/`is_lowercase`/`is_numeric`) on the hot
+   paths found every site already reading `class_of` except one —
+   rare-glyph's per-word fold-needed gate (`chars().any(char::is_uppercase)`).
+   Swapped, and the `UPPER` bit earned the all-scalar sweep test the
+   ADR-0046 family bits have. `to_lowercase`/`to_uppercase` are conversions,
+   not predicates — untouched.
+2. **Fold once per word token.** `mixed_case` and `rare_glyph` key their
+   word tables by the identical fold (`to_lowercase` gated by the same
+   `is_letter_token`). The walker now computes a `folds` lane (index-aligned
+   `Option<Cow<str>>` per token, `None` for non-letter tokens; the Cow
+   borrows for the already-lowercase majority) once per verse in
+   `stream::fold_letter_tokens`, consumed by both listeners on the fused
+   *and* the standalone `drive_book` path. **`casing` was deliberately not
+   unified**: its unit is the hyphen-merged compound span, not the raw
+   token, so its fold input differs (context-sensitive `to_lowercase` —
+   final sigma — over the merged span); forcing it through the token lane
+   risked silent key drift.
+3. **Interned word-type ids in the casing pair.** `CasingAcc` interns each
+   folded type per book (`HashMap<String,u32>` + `Vec<String>`), tallies
+   into an id-indexed `Vec<WordStats>` (one hash probe per word, replacing
+   the `BTreeMap<String,_>` entry walk's log-n string memcmps per token),
+   rebuilds the pinned sorted stats shape once at `finish`, and forwards
+   `CasingSites { keys, sites }` with `LowerSite.key: u32`. The judge memo
+   hashes `(u32, PosClass)`. Strictly internal to one analyze call — the
+   `RuleStats` serde wire is byte-identical and `RuleSites` remains
+   in-memory-only (ADR 0044). The `Model` stays String-keyed: it is
+   corpus-wide while ids are per-book, and the memo already amortizes its
+   lookups to one per distinct (type, pos-class) per book.
+
+Measured (`--time` min-of-5, serial release; steps cumulative):
+
+| corpus / config       | before    | after step 2 | after step 3 |
+|-----------------------|-----------|--------------|--------------|
+| WA-en-ulb defaults    | 284.9 ms  | 280.2 ms     | 286.7 ms (noise; casing/word rules off) |
+| WA-en-ulb everything  | 895.9 ms  | 872.1 ms     | 804.9 ms (−10.2%) |
+| WA-hi-ulb defaults    | 453.5 ms  | 434.5 ms     | 431.5 ms (−4.9%) |
+| WA-hi-ulb everything  | 940.0 ms  | 923.7 ms     | 863.7 ms (−8.1%) |
+
+Deferred as follow-ups: extending the interning pattern to
+`rare_glyph`/`mixed_case` accumulators (both still key their per-book
+tables by `String`; `mixed_case` walks a `BTreeMap<String,_>` per token —
+the same shape step 3 removed from casing, but their judges are re-scan
+based so only the accumulator side transfers), and a Cow fast-path for
+casing's compound-span fold (needs a gate that is exact under the
+context-sensitive fold, not just `any(is_uppercase)`).
