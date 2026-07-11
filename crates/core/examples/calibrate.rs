@@ -28,6 +28,7 @@
 //!   cargo run --release -p ssc-core --example calibrate -- --fleet corpora/vref [out.html]
 
 use std::collections::BTreeMap;
+use std::io::Write;
 use std::path::Path;
 
 use ssc_core::config::{
@@ -234,6 +235,30 @@ fn main() {
         // per-corpus summary on stderr.
         [flag, t] if flag == "--punct-only" => {
             punct_only_calib(Path::new(t));
+            return;
+        }
+        // Behavior oracle (event-stream port): deterministic, sorted,
+        // line-per-finding dump of `analyze_with_config` over a corpus file or
+        // a whole vref directory, under either the v1 defaults or the
+        // everything-on config. Byte-identical dumps across the port are the
+        // acceptance gate. Source (proportionality reference) is WA-en-ulb
+        // when present in the directory, else none.
+        [flag, path, out, cfg_name] if flag == "--dump-findings" => {
+            dump_findings(Path::new(path), Path::new(out), cfg_name);
+            return;
+        }
+        // Incremental oracle: for each corpus, mutate one verse, then run the
+        // complete-snapshot call (whole corpus + prior + changed=[book]) and
+        // dump its findings + a stats digest. Pins the prior/merge/changed
+        // path across the port.
+        [flag, path, out, cfg_name] if flag == "--dump-incremental" => {
+            dump_incremental(Path::new(path), Path::new(out), cfg_name);
+            return;
+        }
+        // Wall-clock probe: min-of-5 analyze_with_config on one corpus under
+        // both configs (build serial or --features parallel to compare).
+        [flag, t] if flag == "--time" => {
+            time_configs(Path::new(t));
             return;
         }
         // Fleet survey: every rule over every corpus in a vref directory,
@@ -6506,5 +6531,187 @@ mod pooled_tests {
         cell[1][SubClass::Number.index()][0] = 1; // one attached number-right
         let cc = a_class_counts(&cell, 1, PClass::Number);
         assert!(!pool_holds_convention(cc[0], cc[1]), "N=1 number pool holds no convention");
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Behavior oracle for the event-stream port (Phase 0). Deterministic dumps
+// of the real `analyze_with_config` / `analyze_stateful` outputs; byte-
+// identical dumps across the port are the acceptance gate.
+// ─────────────────────────────────────────────────────────────────────────
+
+/// The two oracle configs: shipped defaults, and everything-on (all rules
+/// enabled, knobs at their defaults).
+fn oracle_config(name: &str) -> Config {
+    match name {
+        "default" => Config::v1_defaults(),
+        "all" => {
+            let mut cfg = Config::v1_defaults();
+            for &id in RuleId::ALL {
+                cfg.rules.insert(id, true);
+            }
+            cfg
+        }
+        other => panic!("unknown oracle config {other:?} (want default|all)"),
+    }
+}
+
+fn oracle_files(path: &Path) -> Vec<std::path::PathBuf> {
+    if path.is_dir() {
+        let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(path)
+            .unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|x| x == "txt"))
+            .collect();
+        files.sort();
+        files
+    } else {
+        vec![path.to_path_buf()]
+    }
+}
+
+/// The proportionality reference: WA-en-ulb from the same directory, if there.
+fn oracle_source(path: &Path) -> Option<VerseMap> {
+    let dir = if path.is_dir() { path } else { path.parent()? };
+    let src = dir.join("WA-en-ulb.txt");
+    src.exists().then(|| load_corpus(&src))
+}
+
+fn write_findings(
+    out: &mut impl Write,
+    corpus: &str,
+    tag: &str,
+    findings: &[Finding],
+) {
+    for f in findings {
+        let score = f.score.map_or_else(|| "-".to_string(), |s| format!("{s:.6}"));
+        let args = f
+            .args
+            .as_ref()
+            .map_or_else(|| "-".to_string(), |a| serde_json::to_string(a).unwrap());
+        writeln!(
+            out,
+            "{corpus}\t{tag}\t{}\t{}\t{}\t{}\t{:?}\t{score}\t{args}",
+            f.sid,
+            f.code.code(),
+            f.range.start,
+            f.range.end,
+            f.severity,
+        )
+        .unwrap();
+    }
+}
+
+fn dump_findings(path: &Path, out_path: &Path, cfg_name: &str) {
+    let cfg = oracle_config(cfg_name);
+    let source = oracle_source(path);
+    let files = oracle_files(path);
+    let total = files.len();
+    let mut out = std::io::BufWriter::new(std::fs::File::create(out_path).unwrap());
+    for (i, file) in files.iter().enumerate() {
+        let id = file.file_stem().unwrap().to_string_lossy().to_string();
+        let target = load_corpus(file);
+        let findings = analyze_with_config(&target, source.as_ref(), &cfg);
+        write_findings(&mut out, &id, "full", &findings);
+        if (i + 1) % 100 == 0 {
+            eprintln!("{}/{total}", i + 1);
+        }
+    }
+    eprintln!("dumped {total} corpora ({cfg_name}) -> {}", out_path.display());
+}
+
+/// FNV-1a 64 over a string — a dependency-free stats digest.
+fn fnv64(s: &str) -> u64 {
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in s.as_bytes() {
+        h ^= u64::from(*b);
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    h
+}
+
+/// A fixed, multi-rule-provoking edit applied to the last verse of the first
+/// book: doubles punctuation, excess whitespace, a rare glyph, a mixed-case
+/// word, a spaced comma, an unbalanced paren.
+const EDIT_TEXT: &str = "He fell ,, the  gate stood.. qQx deJésus (broken";
+
+fn dump_incremental(path: &Path, out_path: &Path, cfg_name: &str) {
+    let cfg = oracle_config(cfg_name);
+    let source = oracle_source(path);
+    let files = oracle_files(path);
+    // Every 8th corpus (plus the first): the incremental gate needs breadth,
+    // not the whole fleet, and this dump runs three analyses per corpus.
+    let files: Vec<_> = files.into_iter().step_by(8).collect();
+    let total = files.len();
+    let mut out = std::io::BufWriter::new(std::fs::File::create(out_path).unwrap());
+    for (i, file) in files.iter().enumerate() {
+        let id = file.file_stem().unwrap().to_string_lossy().to_string();
+        let target = load_corpus(file);
+        if target.is_empty() {
+            continue;
+        }
+        let (_, prior) =
+            ssc_core::analyze_stateful(&target, source.as_ref(), &cfg, None, None);
+        // The edit: last verse of the first book.
+        let first_book = target.keys().next().unwrap().book;
+        let edit_sid = *target
+            .keys()
+            .take_while(|s| s.book == first_book)
+            .last()
+            .unwrap();
+        let mut edited = target.clone();
+        edited.insert(edit_sid, EDIT_TEXT.to_string());
+
+        // Local echo: edited book only + prior.
+        let echo_map: VerseMap = edited
+            .iter()
+            .filter(|(s, _)| s.book == first_book)
+            .map(|(s, t)| (*s, t.clone()))
+            .collect();
+        let (echo, _) = ssc_core::analyze_stateful(
+            &echo_map,
+            source.as_ref(),
+            &cfg,
+            Some(prior.clone()),
+            None,
+        );
+        write_findings(&mut out, &id, "echo", &echo);
+
+        // Complete snapshot: whole corpus + prior + changed=[book].
+        let (snap, stats) = ssc_core::analyze_stateful(
+            &edited,
+            source.as_ref(),
+            &cfg,
+            Some(prior),
+            Some(&[first_book]),
+        );
+        write_findings(&mut out, &id, "snap", &snap);
+        let js = serde_json::to_string(&stats).unwrap();
+        writeln!(out, "{id}\tstats\t{}\t{:016x}", js.len(), fnv64(&js)).unwrap();
+        if (i + 1) % 20 == 0 {
+            eprintln!("{}/{total}", i + 1);
+        }
+    }
+    eprintln!(
+        "dumped {total} corpora incremental ({cfg_name}) -> {}",
+        out_path.display()
+    );
+}
+
+fn time_configs(path: &Path) {
+    let target = load_corpus(path);
+    let source = oracle_source(path);
+    for name in ["default", "all"] {
+        let cfg = oracle_config(name);
+        let mut best = f64::INFINITY;
+        for _ in 0..5 {
+            let t0 = std::time::Instant::now();
+            let f = analyze_with_config(&target, source.as_ref(), &cfg);
+            let dt = t0.elapsed().as_secs_f64() * 1000.0;
+            std::hint::black_box(f);
+            best = best.min(dt);
+        }
+        println!("{name}: {best:.1} ms (min of 5)");
     }
 }
