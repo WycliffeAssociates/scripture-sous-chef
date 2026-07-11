@@ -220,7 +220,7 @@ pub(crate) struct BookOut {
     /// Whether the counting listeners' stats are valid for the supersede
     /// merge (the book was in the reduce scope).
     pub counted: bool,
-    pub casing: Option<(casing::BookCasing, Vec<casing::LowerSite>)>,
+    pub casing: Option<(casing::BookCasing, casing::CasingSites)>,
     pub adjacency: Option<(punctuation::BookPunctuationAdjacency, Vec<(Sid, crate::span::Span)>)>,
     pub spacing: Option<(punctuation::BookPunctuationSpacing, Vec<punctuation::SpacingSite>)>,
     pub repeated_run: Option<(lexical::BookRepeatedCharacterRun, Vec<(Sid, crate::span::Span)>)>,

@@ -90,7 +90,7 @@ pub trait ProjectTokenRule: Sync {
 /// spans. Proportionality carries no sites: its judge emits from cached
 /// ratios and never scans.
 pub enum RuleSites {
-    Casing(BTreeMap<BookId, Vec<signals::casing::LowerSite>>),
+    Casing(BTreeMap<BookId, signals::casing::CasingSites>),
     Proportionality,
     PunctuationAdjacency(BTreeMap<BookId, Vec<(Sid, Span)>>),
     PunctuationSpacing(BTreeMap<BookId, Vec<signals::punctuation::SpacingSite>>),

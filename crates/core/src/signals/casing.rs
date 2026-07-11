@@ -862,8 +862,22 @@ pub struct LowerSite {
     pub(crate) sid: Sid,
     pub(crate) start: u32,
     pub(crate) end: u32,
-    pub(crate) key: String,
+    /// Interned word-type id — an index into the owning [`CasingSites`]'
+    /// `keys` table (per-book, first-sight order). A `Copy` id instead of a
+    /// `String` so the judge memo hashes a `(u32, PosClass)` instead of
+    /// re-hashing/memcmp-ing the folded string per site occurrence.
+    pub(crate) key: u32,
     pub(crate) pos: PosClass,
+}
+
+/// One book's lowercase sites plus the per-book word-type interner that
+/// resolves each site's `key` id back to its case-folded string. Strictly
+/// in-memory (ADR 0044 posture — sites never serialize, never outlive the
+/// analyze call); ids are meaningful only against this book's `keys`.
+pub struct CasingSites {
+    /// id → folded word-type key, in first-sight order during the book walk.
+    pub(crate) keys: Vec<String>,
+    pub(crate) sites: Vec<LowerSite>,
 }
 
 /// True iff `c` is a cased/uncased letter (GC L*).
@@ -958,7 +972,16 @@ pub(crate) fn pos_of(book_initial: bool, taken: Option<Pending>) -> PosClass {
 /// lowercase flag candidates, fed per verse by the fused walk. The pending
 /// terminal is carried across verse seams; the book-initial word is forced.
 pub(crate) struct CasingAcc {
-    bc: BookCasing,
+    /// Cased word-start observations (the emergent-gate input).
+    cased_starts: u32,
+    /// Per-book word-type interner: folded key → id, and id → key. The walk
+    /// tallies into the id-indexed `word_stats` (one hash probe per word)
+    /// instead of a `BTreeMap<String, _>` entry walk (log n string memcmps
+    /// per word) — the stats' pinned sorted shape is rebuilt once in
+    /// `finish`.
+    intern: HashMap<String, u32>,
+    keys: Vec<String>,
+    word_stats: Vec<WordStats>,
     sites: Vec<LowerSite>,
     pending: Option<Pending>,
     book_initial: bool,
@@ -967,7 +990,10 @@ pub(crate) struct CasingAcc {
 impl CasingAcc {
     pub(crate) fn new() -> Self {
         CasingAcc {
-            bc: BookCasing::default(),
+            cased_starts: 0,
+            intern: HashMap::new(),
+            keys: Vec::new(),
+            word_stats: Vec::new(),
             sites: Vec::new(),
             pending: None,
             book_initial: true,
@@ -996,10 +1022,23 @@ impl CasingAcc {
             self.book_initial = false;
 
             if case != Case::Uncased {
-                self.bc.cased_starts += 1;
+                self.cased_starts += 1;
             }
+            // The fold is deliberately the exact `str::to_lowercase` of the
+            // compound-word span (context-sensitive: final sigma etc.), same
+            // as it always was — no fast-path gate, so no drift.
             let key = text[w.start..w.end].to_lowercase();
-            self.bc.words.entry(key.clone()).or_default().record(pos, case);
+            let id = match self.intern.get(&key) {
+                Some(&id) => id,
+                None => {
+                    let id = self.keys.len() as u32;
+                    self.intern.insert(key.clone(), id);
+                    self.keys.push(key);
+                    self.word_stats.push(WordStats::default());
+                    id
+                }
+            };
+            self.word_stats[id as usize].record(pos, case);
             // Boundary predicate (ADR 0055): an OtherMixed token (`asÍ`,
             // `word-wOrd`) is `case.mixed-case-word`'s to report — its interior
             // capital is the defect, not its incidental lowercase initial. Skip
@@ -1016,7 +1055,7 @@ impl CasingAcc {
                     sid,
                     start: w.start as u32,
                     end: w.end as u32,
-                    key,
+                    key: id,
                     pos,
                 });
             }
@@ -1027,16 +1066,28 @@ impl CasingAcc {
         advance_gap(&text[cursor..], &mut self.pending, &mut prev_letter);
     }
 
-    pub(crate) fn finish(mut self) -> (BookCasing, Vec<LowerSite>) {
-        self.bc.words.retain(|_, w| w.has_case());
-        (self.bc, self.sites)
+    pub(crate) fn finish(self) -> (BookCasing, CasingSites) {
+        // Rebuild the stats' pinned sorted word table (dropping caseless
+        // words, exactly the old `retain`); the interner strings live on in
+        // the sites half so ids stay resolvable at judge.
+        let words: BTreeMap<String, WordStats> = self
+            .keys
+            .iter()
+            .zip(&self.word_stats)
+            .filter(|(_, w)| w.has_case())
+            .map(|(k, w)| (k.clone(), w.clone()))
+            .collect();
+        (
+            BookCasing { words, cased_starts: self.cased_starts },
+            CasingSites { keys: self.keys, sites: self.sites },
+        )
     }
 }
 
 /// Scan one book's verses — the standalone driver over [`CasingAcc`], used by
 /// the judge's re-scan path (a prior-carried book has no forwarded sites) and
 /// the calibration API.
-fn walk_book(verses: &[(Sid, &str)]) -> (BookCasing, Vec<LowerSite>) {
+fn walk_book(verses: &[(Sid, &str)]) -> (BookCasing, CasingSites) {
     stream::drive_book(
         verses,
         stream::Needs { tokens: true, ..Default::default() },
@@ -1047,7 +1098,7 @@ fn walk_book(verses: &[(Sid, &str)]) -> (BookCasing, Vec<LowerSite>) {
 }
 
 /// Shared reduce for both casing rules: walk each book once.
-fn reduce_casing(books: &Books<'_>) -> (CasingStats, BTreeMap<BookId, Vec<LowerSite>>) {
+fn reduce_casing(books: &Books<'_>) -> (CasingStats, BTreeMap<BookId, CasingSites>) {
     let mut per_book = BTreeMap::new();
     let mut sites = BTreeMap::new();
     for (book, (bc, book_sites)) in rule::map_books(books, |book, verses| (book, walk_book(verses)))
@@ -1076,7 +1127,7 @@ fn judge_casing<V: Clone + Sync + Send>(
     sites: Option<&rule::RuleSites>,
     cfg: &CasingConfig,
     verdict: impl Fn(&str, PosClass, &Model) -> Option<V> + Sync,
-    materialize: impl Fn(&LowerSite, &V) -> Finding + Sync,
+    materialize: impl Fn(&LowerSite, &str, &V) -> Finding + Sync,
 ) -> Vec<Finding> {
     let RuleStats::Casing(stats) = stats else {
         return Vec::new();
@@ -1091,29 +1142,28 @@ fn judge_casing<V: Clone + Sync + Send>(
         Some(rule::RuleSites::Casing(m)) => Some(m),
         _ => None,
     };
+    // Per-site loop over one book's sites: the memo hashes the Copy
+    // `(id, PosClass)` pair — the folded string is resolved through the
+    // book's interner only on a memo miss (once per distinct pair).
+    let emit = |book_sites: &CasingSites, found: &mut Vec<Finding>| {
+        let keys = &book_sites.keys;
+        let mut memo: HashMap<(u32, PosClass), Option<V>> = HashMap::new();
+        for site in &book_sites.sites {
+            let v = memo
+                .entry((site.key, site.pos))
+                .or_insert_with(|| verdict(&keys[site.key as usize], site.pos, &model));
+            if let Some(v) = v {
+                found.push(materialize(site, &keys[site.key as usize], v));
+            }
+        }
+    };
     let mut out: Vec<Finding> = rule::map_books(books, |book, verses| {
         let mut found = Vec::new();
         if let Some(book_sites) = forwarded.and_then(|m| m.get(&book)) {
-            let mut memo: HashMap<(&str, PosClass), Option<V>> = HashMap::new();
-            for site in book_sites {
-                let v = memo
-                    .entry((site.key.as_str(), site.pos))
-                    .or_insert_with(|| verdict(&site.key, site.pos, &model));
-                if let Some(v) = v {
-                    found.push(materialize(site, v));
-                }
-            }
+            emit(book_sites, &mut found);
         } else {
             let (_, walked) = walk_book(verses);
-            let mut memo: HashMap<(&str, PosClass), Option<V>> = HashMap::new();
-            for site in &walked {
-                let v = memo
-                    .entry((site.key.as_str(), site.pos))
-                    .or_insert_with(|| verdict(&site.key, site.pos, &model));
-                if let Some(v) = v {
-                    found.push(materialize(site, v));
-                }
-            }
+            emit(&walked, &mut found);
         }
         found
     })
@@ -1180,7 +1230,7 @@ impl StatefulRule for SentenceInitialLowercase {
                     f.raw_total.min(u64::from(u32::MAX)) as u32,
                 ))
             },
-            |site, &(score, glyph, quoted, upper, total)| Finding {
+            |site, _key, &(score, glyph, quoted, upper, total)| Finding {
                 sid: site.sid,
                 code: SENTENCE_INITIAL_LOWERCASE,
                 severity: Severity::Info,
@@ -1241,13 +1291,13 @@ impl StatefulRule for InconsistentWordCasing {
                     f.raw_total.min(u64::from(u32::MAX)) as u32,
                 ))
             },
-            |site, &(score, upper, total)| Finding {
+            |site, key, &(score, upper, total)| Finding {
                 sid: site.sid,
                 code: INCONSISTENT_WORD_CASING,
                 severity: Severity::Info,
                 range: site_span(site),
                 score: Some(score as f32),
-                args: Some(FindingArgs::WordCasing { word: site.key.clone(), upper, total }),
+                args: Some(FindingArgs::WordCasing { word: key.to_owned(), upper, total }),
             },
         )
     }
@@ -1279,14 +1329,15 @@ pub fn evaluate(books: &Books<'_>, cfg: &CasingConfig) -> Vec<SiteEval> {
     let model = Model::build(&stats, cfg);
     let mut out = Vec::new();
     for book_sites in sites_map.values() {
-        for site in book_sites {
+        let keys = &book_sites.keys;
+        for site in &book_sites.sites {
             out.push(SiteEval {
                 sid: site.sid,
                 start: site.start,
                 end: site.end,
                 pos: site.pos,
-                intrinsic: model.intrinsic(&site.key),
-                positional: model.positional(&site.key, site.pos),
+                intrinsic: model.intrinsic(&keys[site.key as usize]),
+                positional: model.positional(&keys[site.key as usize], site.pos),
             });
         }
     }
