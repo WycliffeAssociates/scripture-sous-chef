@@ -97,6 +97,10 @@ pub enum RuleSites {
     RepeatedCharacterRun(BTreeMap<BookId, Vec<(Sid, Span)>>),
     PunctOnlyToken(BTreeMap<BookId, Vec<(Sid, Span)>>),
     MixedScript(BTreeMap<BookId, Vec<signals::script_mixing::MixedScriptSite>>),
+    /// `uni.rare-glyph` carries no sites: surviving candidates are ultra-rare, so
+    /// its judge re-scans the supplied books (the `sites`-free path) rather than
+    /// forward every letter occurrence (ADR 0044, ADR 0053).
+    RareGlyph,
 }
 
 /// Pair each site with its verse's text by walking a book's verses and its
@@ -248,6 +252,9 @@ pub fn stateful_rules(config: &Config) -> Vec<Box<dyn StatefulRule>> {
         }),
         Box::new(signals::script_mixing::MixedScriptInToken {
             cfg: config.mixed_script,
+        }),
+        Box::new(signals::rare_glyph::RareGlyph {
+            cfg: config.rare_glyph,
         }),
     ]
 }

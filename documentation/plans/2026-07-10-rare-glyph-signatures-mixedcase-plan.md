@@ -194,15 +194,15 @@ discussion with real data.
 
 **Claim** — Every separator mark has a corpus-learned **attachment
 signature**: joint (left, right) context over {letter, space, punct,
-digit, edge}. A mark occurring in a signature rare *for that mark in
-this corpus* is the anomaly. One mechanism then covers: `word,word`
+digit}. A mark occurring in a signature rare *for that mark in this
+corpus* is the anomaly. One mechanism then covers: `word,word`
 (missing space after — invisible today, the before-side is majority),
 `away!Why?`, swapped Spanish `¿`/`?` and `¡`/`!` (both Po, in class),
 and wrong-order mark+quote combos once quotes ever enter.
 
-**Shape** — Categorical, not binary majority/minority: a mark
-legitimately holds several frequent signatures (`.` has `letter|space`
-and `letter|edge`), so this is descriptive-share territory (ADR 0048):
+**Shape** — Categorical, not binary majority/minority: a mark can
+legitimately hold more than one frequent signature, so this is
+descriptive-share territory (ADR 0048):
 `score = rare_signature_share_dominance × minority_recurrence`.
 
 - Candidate domain unchanged: GC `Po` minus quotes (ADR 0033). Quotes
@@ -210,14 +210,20 @@ and `letter|edge`), so this is descriptive-share territory (ADR 0048):
 - `digit` becomes a context class instead of an exclusion — numeric
   `1:1` colons stop being a special case and become a (frequent,
   silent) signature. Same for cluster tails (`?!`'s `!` reads
-  `punct|space`) and verse-edge marks: the special-case exclusion list
-  in `spacing_opportunities` should mostly dissolve into signature
+  `punct|space`): the special-case exclusion list in
+  `spacing_opportunities` should mostly dissolve into signature
   categories. Each dissolved special case must reappear as a synthetic
   test proving it's now *learned* silent rather than exempted.
-- Verse **edge is addressing, not discourse** — but as a *context
-  category* it is honest (it describes glyph adjacency, asserts
-  nothing discourse-shaped). The casing-rule seam-carrying logic is
-  unaffected.
+- **No verse-edge category** (ruling 2026-07-10, corrects the round-1
+  spike). Verses are addressing only; the model cares solely about
+  grapheme adjacency — clinging left/right/both vs spaced. Per
+  CLAUDE.md, a terminal at a seam is *not attached* across it, so the
+  verse (and book) seam reads as **whitespace** in the signature: a
+  verse-final `.` is simply `letter|space`, pooled with its mid-verse
+  twins. Consequence measured in the spike re-run: the pools merge, the
+  denominators match the old rule's, and the ne_udb danda dilution
+  (42 sites silenced by the `letter|space` vs `letter|edge` split)
+  should resolve on its own.
 
 **Supersession** — `PunctuationSpacingStats` (spaced/attached per mark)
 is replaced by per-mark signature tables. Pre-alpha: delete, don't
@@ -226,12 +232,50 @@ verdict model or is renamed at ADR time; its ADR 0050 recurrence
 constants re-sweep under the new denominators (a signature's
 opportunity pool ≠ the old binary pool).
 
-**Status (2026-07-10)** — **not started**: no spike, no ADR, the
+**Status (2026-07-10)** — **spike steps 1–2 done**; no ADR yet, the
 before-only `PunctuationSpacingStats` still ships. Before designing,
 read [ADR 0052](../adrs/0052-terminal-strength-mark-trust.md): its
 boundary classes (mark + close-quote context) and this rule's attachment
 signatures are the same idea at different granularities — share one
 class vocabulary rather than inventing a parallel one.
+
+**Spike progress (2026-07-10)** — `calibrate --signatures` implemented
+(harness-only; `punctuation.rs` untouched) and swept over all 1,504
+corpora (~17 s):
+[calibration report](../calibration/2026-07-10-attachment-signatures-spike.md).
+The joint (left, right) signature model over {letter, space, punct, digit,
+edge} **confirms the hypothesis** — every mark has one/two dominant
+signatures (silent) and a thin rare tail; sanity anchors land as predicted
+(English `,`→`letter|space` 95%, Spanish `¿`→`space/edge|letter`; fraLSG
+*attaches* `?` while pa_ulb spaces it — per-corpus truth, not a stereotype).
+**ADR 0050 wins survive**: live-surfaced sites are kept 100% on engwebster
+(4), kmr-IQ (11), udu (0), pa_ulb (25), mya (4); ne_udb keeps its `!`(9)+`,`(15)
+anchors but re-adjudicates 42 dandas to silent (the 2-D split dilutes
+`letter|space` vs `letter|edge` below floor — the "denominators changed"
+caveat: **the 0050 knee must be re-swept**, not inherited). **All three
+special cases dissolve** into learned-silent signatures (numeric `1:1` 97.3%
+silent, cluster tails 96.9%, verse-edge 99.8%) — no exclusion list, each
+pinned by a synthetic test. New after-side coverage (`word,word`,
+`away!Why`) is real and clean at ~1.0. Histogram = one huge silent spike +
+thin flat tail (neither spacing-bimodal nor casing-fat-mid), so floor/knee
+are a pure sensitivity dial (volume is near-linear in both knee forms). Two
+FP surfaces to price at ADR time: rare-*context* signatures (digit side in
+digit-sparse corpora) and the 2-D dilution of a genuine before-side slip.
+Nothing frozen; next is step 2 sample adjudication → ADR.
+
+**Spike round 2 (2026-07-10, user ruling)** — the `edge` category was a verse
+special case in disguise and is **removed**: the seam reads as whitespace
+(CLAUDE.md — a terminal is never attached across a seam), context classes are
+{letter, space, punct, digit}, 16 signatures. Re-run
+([report](../calibration/2026-07-10-attachment-signatures-spike.md) Round 2):
+pools merge (`.`→`letter|space` 90.2%), all regression corpora keep 100%, and
+the ne_udb danda question **resolves** — the remaining 40-site drop at the
+reference cell is purely the flat-k=32 spike knee vs the live rule's
+volume-scaled knee (same score once the same knee is applied), i.e. the
+already-known "re-sweep the knee at ADR time" item, not a model defect. The
+2-D-dilution FP surface is retired; rare-context digit signatures remain the
+one FP class to price. Stats shape for production: `[u64; 16]` per mark per
+book.
 
 **Steps** —
 1. `calibrate --signatures` spike: per-mark signature distributions
@@ -271,6 +315,42 @@ with boundary classes). Build as a second consumer of that table, not a
 second walk. Note `walk_book_experimental` no longer exists — the
 production walk and `evaluate()` API in `signals/casing.rs` are the
 prototyping surface now (`calibrate --casing` drives them).
+
+**Spike progress (2026-07-10)** — `calibrate --mixedcase` implemented
+(harness-only; `casing.rs` and all production code untouched) and swept
+over all 1,504 corpora (~22 s):
+[calibration report](../calibration/2026-07-10-mixedcase-spike.md). Token
+unit = the plain UAX letter-run word (no hyphen merge, so `Obed-Edom` is
+two Titlecase tokens); `OtherMixed` = has-both-cases and not Title/AllCaps
+⇒ always an interior capital, with single-letter and caseless guards (six
+synthetic tests). Findings: mixed-case is rare (0.19% of cased tokens; 7 of
+the clean major Latin corpora have **zero**). **Route A (within-word)
+is the rule** — ~950 sites @ ref (k=32, floor 0.95) across 540 corpora,
+high-quality real interior-cap slips (`DIos`, `MUngu`, `FIls`, `asÍ`), and
+recurrence excuses **every** convention with no hardcoded list (Bantu
+concord `baYuda`/`yaYahweh`, Hebrew construct `HaElohim ×419`,
+`TUHANlah ×22`, recurring run-ons). **Route B (hapax corpus-fallback) does
+NOT earn its volume** — 16× larger (15,439), almost entirely (a) missing-
+space run-ons `deJésus`/`porJonatán` (a spacing phenomenon) and (b)
+productive-morphology hapaxes in convention-rich corpora
+(`HaMaarechet ×1`, `waYahathi ×1`), because the corpus not-other-mixed
+dominance is ≈1 everywhere and so non-discriminating (the same multinomial-
+dominance-is-1 problem rule 1 hit). Route A already leaves hapaxes safely
+silent; **recommend hapaxes stay silent.** **Position is irrelevant**
+(forced/mid OtherMixed-rate ratio 0.964) — do NOT import casing's censoring
+machinery; assumption verified, not assumed. Histogram is spacing-like
+(95.9% at ≈0 + a thin flat tail), so floor is a modest dial. **Boundary vs
+casing v2:** first-upper OtherMixed (81k; 657 of the 950 flagged) is
+casing-invisible and unambiguously mixed-case's; first-lower OtherMixed
+overlaps casing's lowercase-site domain (≤430 forced flagged sites) —
+propose a casing-side skip of OtherMixed tokens so the interior-capital
+phenomenon is reported once. Titlecase definition must be a shared helper
+with rule 1 (rare-glyph's `Title` is looser on purpose). Absolute knee
+(min=1 hapax-shape slips at rarity 1). Nothing frozen; next is ADR + rule +
+`RuleStats` (a second consumer of the ADR 0051 word table). Build note: the
+lib was mid-refactor by the concurrent rare-glyph agent, so the fleet ran in
+a throwaway worktree at clean commit `ac44183` — re-run the synthetic tests
+once the lib compiles.
 
 ---
 

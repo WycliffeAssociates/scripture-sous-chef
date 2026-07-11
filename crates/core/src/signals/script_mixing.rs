@@ -60,7 +60,11 @@ pub const MIXED_SCRIPT_IN_TOKEN: RuleId = RuleId::MixedScriptInToken;
 /// (Common/Inherited/Unknown — digits, punctuation, marks, unassigned) carries
 /// no script identity and never participates, so a word around a comma or a
 /// digit is not "mixed".
-fn token_scripts(word: &str) -> Vec<ScriptTag> {
+///
+/// `pub(crate)`: `signals::rare_glyph` reuses this exact predicate (ADR 0053) so
+/// the "mixed-script tokens are this rule's" ownership boundary uses one
+/// definition (a token is mixed iff `token_scripts(word).len() >= 2`).
+pub(crate) fn token_scripts(word: &str) -> Vec<ScriptTag> {
     let mut set: BTreeSet<ScriptTag> = BTreeSet::new();
     for c in word.chars() {
         if let Some(t) = script_of(c) {

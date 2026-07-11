@@ -156,6 +156,24 @@ pub struct MixedScriptOverrides {
     pub emit_score_min: Option<f32>,
 }
 
+/// Partial overrides for `uni.rare-glyph`'s corpus-relative score. Omitted
+/// fields keep core's calibrated defaults (ADR 0053): `closure_threshold`
+/// 0.0001 (the alphabet-closure gate — an advanced writing-system knob),
+/// `recurrence_k` 2 (the sensitivity dial), `emit_score_min` 0.5.
+#[derive(Deserialize, Tsify, Default)]
+#[tsify(from_wasm_abi)]
+pub struct RareGlyphOverrides {
+    #[serde(default)]
+    #[tsify(optional)]
+    pub closure_threshold: Option<f32>,
+    #[serde(default)]
+    #[tsify(optional)]
+    pub recurrence_k: Option<f32>,
+    #[serde(default)]
+    #[tsify(optional)]
+    pub emit_score_min: Option<f32>,
+}
+
 /// Which rules to run, plus per-rule knobs. `rules` maps a rule code to a
 /// flag; omit a rule to keep it enabled (default-on). TS: `{ rules?:
 /// Partial<Record<RuleId, boolean>>, proportionality?: … }` — `RuleId` is
@@ -188,6 +206,9 @@ pub struct SousConfig {
     #[serde(default)]
     #[tsify(optional)]
     pub mixed_script: Option<MixedScriptOverrides>,
+    #[serde(default)]
+    #[tsify(optional)]
+    pub rare_glyph: Option<RareGlyphOverrides>,
 }
 
 /// A finding as the editor sees it: UTF-16 ranges; `code`/`severity` are
@@ -318,6 +339,17 @@ fn build_config(config: Option<SousConfig>) -> Config {
             }
             if let Some(v) = m.emit_score_min {
                 cfg.mixed_script.emit_score_min = v;
+            }
+        }
+        if let Some(g) = c.rare_glyph {
+            if let Some(v) = g.closure_threshold {
+                cfg.rare_glyph.closure_threshold = v;
+            }
+            if let Some(v) = g.recurrence_k {
+                cfg.rare_glyph.recurrence_k = v;
+            }
+            if let Some(v) = g.emit_score_min {
+                cfg.rare_glyph.emit_score_min = v;
             }
         }
     }
@@ -534,6 +566,11 @@ mod tests {
                 breadth_min_books: Some(4),
                 emit_score_min: Some(0.6),
             }),
+            rare_glyph: Some(RareGlyphOverrides {
+                closure_threshold: Some(0.0002),
+                recurrence_k: Some(3.0),
+                emit_score_min: Some(0.6),
+            }),
         }));
 
         assert!(cfg.is_enabled(RuleId::DuplicateWord));
@@ -563,6 +600,9 @@ mod tests {
         assert_eq!(cfg.mixed_script.breadth_z, 2.0);
         assert_eq!(cfg.mixed_script.breadth_min_books, 4);
         assert_eq!(cfg.mixed_script.emit_score_min, 0.6);
+        assert_eq!(cfg.rare_glyph.closure_threshold, 0.0002);
+        assert_eq!(cfg.rare_glyph.recurrence_k, 3.0);
+        assert_eq!(cfg.rare_glyph.emit_score_min, 0.6);
     }
 
     /// The corpus-relative `punct.spacing-anomaly` survives an incremental,

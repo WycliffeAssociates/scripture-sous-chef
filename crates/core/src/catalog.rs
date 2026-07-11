@@ -239,6 +239,15 @@ pub fn card(id: RuleId) -> RuleCard {
             ),
             CorpusRelative,
         ),
+        RuleId::RareGlyph => (
+            "Barely-used letter",
+            "A letter that appears only a handful of times in the whole translation, where your text otherwise uses a settled alphabet.",
+            "Learned against your own letter inventory: a stray letter from the wrong keyboard (a lone \u{201C}q\u{201D} in a 13-letter alphabet) stands out — while names carrying an unusual letter, and writing systems that keep minting new characters, are left alone.",
+            Some(
+                "Does your translation use a fixed, settled alphabet (most do)? Turn this on to catch stray letters that don\u{2019}t belong; leave it off for writing systems with an open-ended character set.",
+            ),
+            CorpusRelative,
+        ),
     };
     RuleCard {
         code: id,
@@ -390,6 +399,12 @@ pub fn message(id: RuleId, args: Option<&FindingArgs>) -> String {
             ),
             _ => "A letter repeated more than this translation otherwise does.".into(),
         },
+        RuleId::RareGlyph => match args {
+            Some(FindingArgs::RareGlyph { glyph, count }) => format!(
+                "The letter ‘{glyph}’ appears only {count} times in this whole translation."
+            ),
+            _ => "A letter this translation almost never uses.".into(),
+        },
     }
 }
 
@@ -439,6 +454,7 @@ mod tests {
                 RuleId::PunctuationSpacingAnomaly,
                 RuleId::SentenceInitialLowercase,
                 RuleId::InconsistentWordCasing,
+                RuleId::RareGlyph,
             ]
         );
     }

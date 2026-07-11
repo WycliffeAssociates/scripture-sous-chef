@@ -193,8 +193,16 @@ pub fn analyze_stateful(
     } else {
         0
     };
+    // Rare-glyph tokenizes in **both** reduce (word-level candidate detail) and
+    // judge (re-scan to locate the ultra-rare survivors), so it counts as two
+    // (ADR 0053), like repeated-character-run.
+    let rare_glyph_scans = if config.is_enabled(RuleId::RareGlyph) {
+        2
+    } else {
+        0
+    };
     let token_cache: Option<rule::TokenCache> =
-        (project_token.len() + repeated_run_scans + mixed_script_scans >= 2)
+        (project_token.len() + repeated_run_scans + mixed_script_scans + rare_glyph_scans >= 2)
             .then(|| build_token_cache(target));
 
     // The per-verse phase is embarrassingly parallel — each verse is judged

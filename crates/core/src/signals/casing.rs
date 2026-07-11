@@ -147,7 +147,7 @@ pub enum PosClass {
 }
 
 impl PosClass {
-    fn is_forced(self) -> bool {
+    pub(crate) fn is_forced(self) -> bool {
         !matches!(self, PosClass::Midflow)
     }
 
@@ -848,15 +848,18 @@ fn compound_words(text: &str) -> Vec<Span> {
 /// candidate terminal (first punctuation after a letter); `quote` records a
 /// close-quote glyph seen after it; `other` records any *non-quote* intervening
 /// punctuation, which collapses the boundary to mid-flow (`...`).
+///
+/// `pub(crate)`: `signals::rare_glyph` reuses this exact pending-terminal
+/// machine (ADR 0053) so the forced-position definition lives in one place.
 #[derive(Clone, Copy)]
-struct Pending {
+pub(crate) struct Pending {
     mark: char,
     quote: bool,
     other: bool,
 }
 
 /// Advance the pending-terminal machine over a gap (all non-word scalars).
-fn advance_gap(gap: &str, pending: &mut Option<Pending>, prev_letter: &mut bool) {
+pub(crate) fn advance_gap(gap: &str, pending: &mut Option<Pending>, prev_letter: &mut bool) {
     for c in gap.chars() {
         let cl = class_of(c);
         if cl.is_whitespace() || cl.is_numeric() {
@@ -885,7 +888,7 @@ fn advance_gap(gap: &str, pending: &mut Option<Pending>, prev_letter: &mut bool)
 /// Resolve a taken pending state to the next word's position class. Non-quote
 /// intervening punctuation collapses to mid-flow (ADR 0051); a bare terminal or
 /// a terminal-then-close-quote becomes the boundary class (ADR 0052).
-fn pos_of(book_initial: bool, taken: Option<Pending>) -> PosClass {
+pub(crate) fn pos_of(book_initial: bool, taken: Option<Pending>) -> PosClass {
     if book_initial {
         return PosClass::BookInitial;
     }

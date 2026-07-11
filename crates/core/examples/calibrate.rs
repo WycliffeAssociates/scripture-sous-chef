@@ -19,6 +19,8 @@
 //!   cargo run --release -p ssc-core --example calibrate -- --repeat corpora/vref/WA-en-ulb.txt [rate K]
 //!   # rare-glyph inventory and recurrence-knee spike (one corpus or fleet):
 //!   cargo run --release -p ssc-core --example calibrate -- --glyphs corpora/vref
+//!   # mark attachment-signatures spike (one corpus or fleet):
+//!   cargo run --release -p ssc-core --example calibrate -- --signatures corpora/vref
 //!   # fleet survey → self-contained HTML report (all rules, floors zeroed,
 //!   # every corpus in the directory; out defaults to target/fleet-report.html):
 //!   cargo run --release -p ssc-core --example calibrate -- --fleet corpora/vref [out.html]
@@ -120,6 +122,37 @@ fn main() {
             } else {
                 let id = p.file_stem().unwrap().to_string_lossy().to_string();
                 glyph_single_report(&analyze_glyphs(id, &load_corpus(p)));
+            }
+            return;
+        }
+        // Mark attachment-signatures SPIKE (plan rule 2, steps 1–2). For every
+        // separator mark (GC Po minus quotes), the joint (left, right) context
+        // signature over {letter, space, punct, digit, edge}; scored corpus-
+        // relative as dominance-of-complement × minority recurrence. A file
+        // prints a per-corpus report; a vref directory runs the fleet sweep.
+        [flag, path] if flag == "--signatures" => {
+            let p = Path::new(path);
+            if p.is_dir() {
+                signature_fleet(p);
+            } else {
+                let id = p.file_stem().unwrap().to_string_lossy().to_string();
+                signature_single_report(&analyze_signatures(id, &load_corpus(p)));
+            }
+            return;
+        }
+        // Mixed-case word SPIKE (plan rule 3, measurement only). Per case-folded
+        // letter-run word, the profile of observed case shapes {lower, Title,
+        // ALLCAPS, other-mixed}; an `other-mixed` (`wOrd`) occurrence is scored
+        // by the within-word route (dominance × rarity) and, for hapax words, by
+        // a corpus-level fallback. A file prints a per-corpus report; a vref
+        // directory runs the fleet sweep.
+        [flag, path] if flag == "--mixedcase" => {
+            let p = Path::new(path);
+            if p.is_dir() {
+                mixedcase_fleet(p);
+            } else {
+                let id = p.file_stem().unwrap().to_string_lossy().to_string();
+                mixedcase_single_report(&analyze_mixedcase(id, &load_corpus(p)));
             }
             return;
         }
@@ -2946,6 +2979,1005 @@ mod glyph_tests {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Mark attachment-signatures SPIKE (plan rule 2, steps 1–2). Measurement only —
+// nothing frozen, production `punctuation.rs` untouched; every symbol here is
+// harness-local (`sig_*` / `Ctx` / `Sig*`). It generalises the live
+// `punct.spacing-anomaly` before-only binary (spaced/attached) to a joint
+// (left, right) context signature over {letter, space, punct, digit},
+// scored corpus-relative as `dominance(complement) × rarity(minority)` — the
+// ADR 0048/0050 shape one dimension wider. NO `edge` category (2026-07-10
+// ruling): verses are addressing only; the model cares solely about grapheme
+// adjacency, so the verse/book seam reads as WHITESPACE. A verse-final `.` is
+// `letter|space`, pooled with mid-verse `letter|space` (per repo CLAUDE.md a
+// terminal is never "attached" across a seam, and the seam asserts nothing
+// else).
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// A separator mark's neighbour category on one side. Mirrors the live spacing
+/// rule's governing-neighbour logic (`spacing_opportunities`): walk over
+/// horizontal whitespace, then classify the first non-whitespace grapheme.
+/// `Space` = whitespace was crossed (the live `spaced` bit) OR the verse seam
+/// reached — the seam is whitespace to this model, never its own category.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Ctx {
+    Letter,
+    Space,
+    Punct,
+    Digit,
+}
+
+impl Ctx {
+    const ALL: [Self; 4] = [Self::Letter, Self::Space, Self::Punct, Self::Digit];
+    const fn index(self) -> usize {
+        match self {
+            Self::Letter => 0,
+            Self::Space => 1,
+            Self::Punct => 2,
+            Self::Digit => 3,
+        }
+    }
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Letter => "letter",
+            Self::Space => "space",
+            Self::Punct => "punct",
+            Self::Digit => "digit",
+        }
+    }
+}
+
+/// Number of joint signatures (4 left × 4 right).
+const SIG_CELLS: usize = 16;
+
+/// A signature index (0..SIG_CELLS) packs `(left, right)`.
+fn sig_index(left: Ctx, right: Ctx) -> usize {
+    left.index() * 4 + right.index()
+}
+fn sig_ctx(index: usize) -> (Ctx, Ctx) {
+    (Ctx::ALL[index / 4], Ctx::ALL[index % 4])
+}
+fn sig_label(index: usize) -> String {
+    let (l, r) = sig_ctx(index);
+    format!("{}|{}", l.label(), r.label())
+}
+
+const SIG_Z: f64 = 1.96;
+const SIG_ABS_KS: [f64; 5] = [8.0, 16.0, 32.0, 64.0, 128.0];
+const SIG_RATE_PER_10K: [f64; 4] = [10.0, 20.0, 40.0, 80.0];
+const SIG_FLOORS: [f64; 3] = [0.5, 0.75, 0.9];
+/// Reference cell for the "surfaced" volume, histogram, samples, specials and
+/// regression join — the ADR 0050 spacing analog (absolute knee 32, floor 0.5,
+/// z 1.96). NOT a proposed default.
+const SIG_REF_K: f64 = 32.0;
+const SIG_REF_FLOOR: f64 = 0.5;
+const SAMPLE_CAP: usize = 12;
+
+/// The ADR 0050 calibration corpora, with the doc's short id. `my_juds` has no
+/// file in the current vref fleet (pre-rename); `mya` is the Burmese stand-in
+/// (same spaced-final ` ၏` phenomenon, 46,617 finals).
+const SIG_REGRESSION: &[(&str, &str)] = &[
+    ("engwebster", "engwebster"),
+    ("WA-kmr-IQ-badini-reg", "kmr-IQ"),
+    ("udu", "udu"),
+    ("WA-ne-udb", "ne_udb"),
+    ("WA-pa-ulb", "pa_ulb"),
+    ("mya", "my_juds→mya"),
+];
+
+/// Focus marks for the fleet-wide summed distribution table.
+const SIG_FOCUS_MARKS: &[char] = &[
+    '.', ',', ';', ':', '?', '!', '\u{00BF}', '\u{00A1}', '\u{0964}', '\u{06D4}', '\u{060C}',
+    '\u{061F}', '\u{061B}', '\u{1362}', '\u{1364}', '\u{1365}', '\u{104A}', '\u{104B}', '\u{17D4}',
+    '/',
+];
+
+/// Named per-corpus sanity checks (corpus, marks to print).
+const SIG_SANITY: &[(&str, &[char])] = &[
+    ("eng-web", &[',', '.']),
+    ("spaRV1909", &['\u{00BF}', '\u{00A1}', '?', '!']),
+    ("WA-es-419-ulb", &['\u{00BF}', '?']),
+    ("fraLSG", &['?', '!', ';', ':']),
+    ("WA-pa-ulb", &['?', '!', ':']),
+];
+
+/// Wilson lower bound — a harness-local copy of `evidence::wilson_lower_bound`
+/// (that module is `pub(crate)`, unreachable from an example). Kept
+/// byte-for-byte so the spike's dominance matches the production factor.
+fn sig_wilson_lb(k: u64, n: u64, z: f64) -> f64 {
+    let z = z.max(0.0);
+    let n = n as f64;
+    let p = (k as f64 / n).clamp(0.0, 1.0);
+    let z2 = z * z;
+    let denom = 1.0 + z2 / n;
+    let center = (p + z2 / (2.0 * n)) / denom;
+    let margin = (z / denom) * (p * (1.0 - p) / n + z2 / (4.0 * n * n)).sqrt();
+    (center - margin).clamp(0.0, 1.0)
+}
+
+/// Conservative dominance of the *complement* of one signature: how strongly the
+/// mark's other signatures hold the field (ADR 0029/0048). A dominant signature
+/// (count ≈ total) has a tiny complement ⇒ ~0 ⇒ silent; a rare one ⇒ ~1.
+fn sig_dominance(count: u64, total: u64) -> f64 {
+    if total == 0 {
+        return 0.0;
+    }
+    sig_wilson_lb(total.saturating_sub(count), total, SIG_Z)
+}
+
+/// Two-factor signature score at an absolute recurrence knee `k`
+/// (`dominance(complement) × rarity(count)`), reusing the shared `rarity_abs`.
+fn sig_score_abs(count: u64, total: u64, k: f64) -> f64 {
+    sig_dominance(count, total) * rarity_abs(count, k)
+}
+
+/// Same score at a volume-scaled (rate) knee `K = 1 + rate·total/10k`.
+fn sig_score_rate(count: u64, total: u64, rate: f64) -> f64 {
+    sig_score_abs(count, total, 1.0 + rate * total as f64 / 10_000.0)
+}
+
+fn sig_is_spacing_ws(c: char) -> bool {
+    matches!(c, ' ' | '\t' | '\u{00A0}' | '\u{202F}')
+}
+
+/// The live spacing rule's candidate domain: GC `Po` minus quotes (ADR 0033).
+fn sig_is_separator(c: char) -> bool {
+    ssc_core::unicode::is_other_punctuation(c) && !class_of(c).is_quote()
+}
+
+/// Classify a non-whitespace neighbour grapheme into a context category.
+/// Letters (incl. base+combining clusters) → `Letter`; a leading numeric →
+/// `Digit`; everything else non-word (punct, symbols, lone marks) → `Punct`.
+fn sig_categorize(cluster: &str) -> Ctx {
+    if cluster.chars().any(|c| class_of(c).is_alphabetic()) {
+        return Ctx::Letter;
+    }
+    match cluster.chars().next() {
+        Some(c) if class_of(c).is_numeric() => Ctx::Digit,
+        _ => Ctx::Punct,
+    }
+}
+
+/// One separator-mark occurrence's joint context signature.
+struct SigOpp {
+    mark: char,
+    left: Ctx,
+    right: Ctx,
+    /// The verse seam was reached on that side (with only whitespace between).
+    /// The side already reads `Space` — the seam IS whitespace to the model —
+    /// these bools exist only for the dissolved-special-case tally and the
+    /// new-coverage filter, never as a context category.
+    left_seam: bool,
+    right_seam: bool,
+    /// Byte offset of the mark scalar within the verse (the join key with the
+    /// live rule's finding, whose `range.end` is the mark end).
+    mark_off: usize,
+}
+
+/// Extract every separator mark's `(left, right)` signature from a verse.
+/// Unlike the live `spacing_opportunities`, the left neighbour need not be a
+/// letter — a digit / punct context becomes its own signature rather than an
+/// exclusion (the plan's dissolved-special-case dividend), and the verse seam
+/// reads as whitespace (`Space`). A mark carrying a combining cluster is
+/// excluded exactly as in the live rule.
+fn signature_opportunities(text: &str, graphemes: &[ssc_core::grapheme::GSpan]) -> Vec<SigOpp> {
+    let mut out = Vec::new();
+    for (idx, gs) in graphemes.iter().enumerate() {
+        let g = gs.slice(text);
+        let mark = match g.chars().next() {
+            Some(c) if g.len() == c.len_utf8() && sig_is_separator(c) => c,
+            _ => continue,
+        };
+        // Left: walk over horizontal whitespace to the governing neighbour.
+        let mut j = idx;
+        let mut left_ws = false;
+        while j > 0 {
+            let ps = graphemes[j - 1].slice(text);
+            if !ps.is_empty() && ps.chars().all(sig_is_spacing_ws) {
+                left_ws = true;
+                j -= 1;
+            } else {
+                break;
+            }
+        }
+        let left_seam = j == 0;
+        let left = if left_seam || left_ws {
+            Ctx::Space
+        } else {
+            sig_categorize(graphemes[j - 1].slice(text))
+        };
+        // Right: the mirror.
+        let mut k = idx;
+        let mut right_ws = false;
+        while k + 1 < graphemes.len() {
+            let ns = graphemes[k + 1].slice(text);
+            if !ns.is_empty() && ns.chars().all(sig_is_spacing_ws) {
+                right_ws = true;
+                k += 1;
+            } else {
+                break;
+            }
+        }
+        let right_seam = k + 1 >= graphemes.len();
+        let right = if right_seam || right_ws {
+            Ctx::Space
+        } else {
+            sig_categorize(graphemes[k + 1].slice(text))
+        };
+        out.push(SigOpp { mark, left, right, left_seam, right_seam, mark_off: gs.start as usize });
+    }
+    out
+}
+
+/// One sampled site for human review.
+#[derive(Clone)]
+struct SigSample {
+    corpus: String,
+    sid: String,
+    mark: char,
+    sig: usize,
+    count: u64,
+    total: u64,
+    score: f64,
+    ctx: String,
+}
+
+/// Keep the top-`cap` samples by score.
+fn push_capped(v: &mut Vec<SigSample>, s: SigSample, cap: usize) {
+    if v.len() < cap {
+        v.push(s);
+    } else if let Some((i, min)) = v
+        .iter()
+        .enumerate()
+        .min_by(|a, b| a.1.score.partial_cmp(&b.1.score).unwrap())
+        && s.score > min.score
+    {
+        v[i] = s;
+    }
+}
+
+fn sig_context(text: &str, start: usize, end: usize) -> String {
+    let before = text[..start].char_indices().rev().nth(24).map(|(i, _)| i).unwrap_or(0);
+    let after = text[end..].char_indices().nth(24).map(|(i, _)| end + i).unwrap_or(text.len());
+    text[before..after].replace(['\t', '\n'], " ")
+}
+
+/// Per-corpus signature result, fleet-summable.
+struct SigCorpus {
+    id: String,
+    verses: usize,
+    total_scalars: u64,
+    digit_scalars: u64,
+    /// mark → 16-cell signature histogram (seam pooled into `space`; the
+    /// seam-involved subset is tallied into `verse_edge` during analysis and
+    /// not stored — the seam is whitespace to this model).
+    marks: BTreeMap<char, [u64; SIG_CELLS]>,
+    ref_hist: [u64; 40],
+    ref_surfaced: u64,
+    /// Surfaced-occurrence volume grids `[knee][floor]`.
+    abs_grid: Vec<[u64; SIG_FLOORS.len()]>,
+    rate_grid: Vec<[u64; SIG_FLOORS.len()]>,
+    /// Dissolved special cases at the reference cell: (total occurrences, of
+    /// which score < floor ⇒ learned-silent).
+    colon_num: (u64, u64),
+    cluster_tail: (u64, u64),
+    verse_edge: (u64, u64),
+    /// Surfaced occurrences whose signature carries a `Digit` side — the
+    /// rare-context (not misplacement) false-positive class.
+    digit_surfaced: u64,
+    surfaced_samples: Vec<SigSample>,
+    new_coverage: Vec<SigSample>,
+    fp_samples: Vec<SigSample>,
+}
+
+fn sig_bucket(score: f64) -> usize {
+    (score.clamp(0.0, 0.999_999) * 40.0) as usize
+}
+
+fn analyze_signatures(id: String, map: &VerseMap) -> SigCorpus {
+    let mut marks: BTreeMap<char, [u64; SIG_CELLS]> = BTreeMap::new();
+    let mut seam_marks: BTreeMap<char, [u64; SIG_CELLS]> = BTreeMap::new();
+    let mut total_scalars = 0u64;
+    let mut digit_scalars = 0u64;
+    let mut graphemes = Vec::new();
+
+    // Pass 1 — build the per-mark signature distribution + scalar tallies.
+    for text in map.values() {
+        for c in text.chars() {
+            total_scalars += 1;
+            if class_of(c).is_numeric() {
+                digit_scalars += 1;
+            }
+        }
+        graphemes.clear();
+        ssc_core::grapheme::segment(text, &mut graphemes);
+        for opp in signature_opportunities(text, &graphemes) {
+            let i = sig_index(opp.left, opp.right);
+            marks.entry(opp.mark).or_insert([0u64; SIG_CELLS])[i] += 1;
+            if opp.left_seam || opp.right_seam {
+                seam_marks.entry(opp.mark).or_insert([0u64; SIG_CELLS])[i] += 1;
+            }
+        }
+    }
+
+    // Derive scored rollups from the distribution.
+    let mut ref_hist = [0u64; 40];
+    let mut ref_surfaced = 0u64;
+    let mut abs_grid = vec![[0u64; SIG_FLOORS.len()]; SIG_ABS_KS.len()];
+    let mut rate_grid = vec![[0u64; SIG_FLOORS.len()]; SIG_RATE_PER_10K.len()];
+    let (mut colon_num, mut cluster_tail, mut verse_edge) = ((0u64, 0u64), (0u64, 0u64), (0u64, 0u64));
+    let mut digit_surfaced = 0u64;
+
+    for counts in marks.values() {
+        let total: u64 = counts.iter().sum();
+        for (i, &count) in counts.iter().enumerate() {
+            if count == 0 {
+                continue;
+            }
+            let (l, r) = sig_ctx(i);
+            let ref_s = sig_score_abs(count, total, SIG_REF_K);
+            ref_hist[sig_bucket(ref_s)] += count;
+            let surfaced = ref_s >= SIG_REF_FLOOR;
+            if surfaced {
+                ref_surfaced += count;
+                if l == Ctx::Digit || r == Ctx::Digit {
+                    digit_surfaced += count;
+                }
+            }
+            // Dissolved special cases (counted at the reference cell).
+            if l == Ctx::Digit && r == Ctx::Digit {
+                colon_num.0 += count;
+                colon_num.1 += u64::from(!surfaced) * count;
+            }
+            if l == Ctx::Punct {
+                cluster_tail.0 += count;
+                cluster_tail.1 += u64::from(!surfaced) * count;
+            }
+            // Sweep grids.
+            for (ki, &k) in SIG_ABS_KS.iter().enumerate() {
+                let s = sig_score_abs(count, total, k);
+                for (fi, &fl) in SIG_FLOORS.iter().enumerate() {
+                    if s >= fl {
+                        abs_grid[ki][fi] += count;
+                    }
+                }
+            }
+            for (ki, &rate) in SIG_RATE_PER_10K.iter().enumerate() {
+                let s = sig_score_rate(count, total, rate);
+                for (fi, &fl) in SIG_FLOORS.iter().enumerate() {
+                    if s >= fl {
+                        rate_grid[ki][fi] += count;
+                    }
+                }
+            }
+        }
+    }
+
+    // Dissolved verse-edge special case: seam-involved occurrences (a walk
+    // that reached the verse boundary), judged by the score of their pooled
+    // space-read signature — the seam contributes no category of its own.
+    for (mark, scounts) in &seam_marks {
+        let counts = &marks[mark];
+        let total: u64 = counts.iter().sum();
+        for (i, &n) in scounts.iter().enumerate() {
+            if n == 0 {
+                continue;
+            }
+            let surfaced = sig_score_abs(counts[i], total, SIG_REF_K) >= SIG_REF_FLOOR;
+            verse_edge.0 += n;
+            verse_edge.1 += u64::from(!surfaced) * n;
+        }
+    }
+
+    // Pass 2 — bounded samples (surfaced / new-coverage / digit-context FP).
+    let mut surfaced_samples = Vec::new();
+    let mut new_coverage = Vec::new();
+    let mut fp_samples = Vec::new();
+    for (sid, text) in map {
+        graphemes.clear();
+        ssc_core::grapheme::segment(text, &mut graphemes);
+        for opp in signature_opportunities(text, &graphemes) {
+            let counts = &marks[&opp.mark];
+            let total: u64 = counts.iter().sum();
+            let i = sig_index(opp.left, opp.right);
+            let count = counts[i];
+            let score = sig_score_abs(count, total, SIG_REF_K);
+            if score < SIG_REF_FLOOR {
+                continue;
+            }
+            let make = || SigSample {
+                corpus: id.clone(),
+                sid: sid.to_string(),
+                mark: opp.mark,
+                sig: i,
+                count,
+                total,
+                score,
+                ctx: sig_context(text, opp.mark_off, opp.mark_off + opp.mark.len_utf8()),
+            };
+            push_capped(&mut surfaced_samples, make(), SAMPLE_CAP);
+            // New coverage = an anomaly on the AFTER side, invisible to the
+            // before-only live rule: mark attached to a following word/glyph
+            // (`word,word`, `away!Why`, and a verse-leading `.word`).
+            if opp.right == Ctx::Letter {
+                push_capped(&mut new_coverage, make(), SAMPLE_CAP);
+            }
+            if opp.left == Ctx::Digit || opp.right == Ctx::Digit {
+                push_capped(&mut fp_samples, make(), SAMPLE_CAP);
+            }
+        }
+    }
+
+    SigCorpus {
+        id,
+        verses: map.len(),
+        total_scalars,
+        digit_scalars,
+        marks,
+        ref_hist,
+        ref_surfaced,
+        abs_grid,
+        rate_grid,
+        colon_num,
+        cluster_tail,
+        verse_edge,
+        digit_surfaced,
+        surfaced_samples,
+        new_coverage,
+        fp_samples,
+    }
+}
+
+/// Print one mark's top signatures by share.
+fn print_mark_dist(mark: char, counts: &[u64; SIG_CELLS], top: usize) {
+    let total: u64 = counts.iter().sum();
+    if total == 0 {
+        return;
+    }
+    let mut cells: Vec<(usize, u64)> = counts
+        .iter()
+        .enumerate()
+        .filter(|(_, n)| **n > 0)
+        .map(|(i, &n)| (i, n))
+        .collect();
+    cells.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
+    let shown: Vec<String> = cells
+        .iter()
+        .take(top)
+        .map(|(i, n)| {
+            format!(
+                "{}={} ({:.1}% s={:.2})",
+                sig_label(*i),
+                n,
+                *n as f64 * 100.0 / total as f64,
+                sig_score_abs(*n, total, SIG_REF_K),
+            )
+        })
+        .collect();
+    println!(
+        "  {:?} U+{:04X}  N={:<7} sigs={:<2} | {}",
+        mark,
+        mark as u32,
+        total,
+        cells.len(),
+        shown.join("  "),
+    );
+}
+
+fn print_sig_samples(samples: &[SigSample]) {
+    for s in samples {
+        println!(
+            "  {:<22} {:<10} {:?} {:<13} count={:<5} N={:<7} score={:.3} | {}",
+            s.corpus,
+            s.sid,
+            s.mark,
+            sig_label(s.sig),
+            s.count,
+            s.total,
+            s.score,
+            s.ctx,
+        );
+    }
+}
+
+fn print_sig_hist(hist: &[u64; 40]) {
+    let total: u64 = hist.iter().sum();
+    println!("\nsignature-score histogram over all mark occurrences (ref knee k=32) — {total} occurrences:");
+    for (i, &n) in hist.iter().enumerate() {
+        if n == 0 {
+            continue;
+        }
+        let lo = i as f64 / 40.0;
+        let bar = "#".repeat((n as f64).sqrt() as usize);
+        println!("  [{lo:.3},{:.3}) {n:>9} {bar}", lo + 0.025);
+    }
+}
+
+fn print_sig_grids(abs: &[[u64; SIG_FLOORS.len()]], rate: &[[u64; SIG_FLOORS.len()]]) {
+    println!("\nsurfaced-occurrence volume sweep (cells = occurrences whose signature clears the floor):");
+    let header = || {
+        print!("    {:>8}", "knee");
+        for fl in SIG_FLOORS {
+            print!("  {:>10}", format!("floor {fl:.2}"));
+        }
+        println!();
+    };
+    println!("  absolute knee K = k:");
+    header();
+    for (&k, row) in SIG_ABS_KS.iter().zip(abs) {
+        print!("    {k:>8.0}");
+        for &cell in row {
+            print!("  {cell:>10}");
+        }
+        println!();
+    }
+    println!("  rate knee K = 1 + rate·N/10k:");
+    header();
+    for (&rate, row) in SIG_RATE_PER_10K.iter().zip(rate) {
+        print!("    {rate:>8.0}");
+        for &cell in row {
+            print!("  {cell:>10}");
+        }
+        println!();
+    }
+}
+
+fn silent_pct(pair: (u64, u64)) -> f64 {
+    pair.1 as f64 * 100.0 / pair.0.max(1) as f64
+}
+
+/// Detailed single-corpus signature report.
+fn signature_single_report(c: &SigCorpus) {
+    println!("=== ATTACHMENT-SIGNATURES SPIKE: {} ({} verses) ===", c.id, c.verses);
+    println!(
+        "separator-mark occurrences: {}  distinct marks: {}  digit share of scalars: {:.3}%",
+        c.marks.values().map(|m| m.iter().sum::<u64>()).sum::<u64>(),
+        c.marks.len(),
+        c.digit_scalars as f64 * 100.0 / c.total_scalars.max(1) as f64,
+    );
+    println!("\nper-mark signature distributions (top 6, ref-knee score shown):");
+    let mut order: Vec<(&char, &[u64; SIG_CELLS])> = c.marks.iter().collect();
+    order.sort_by_key(|(_, m)| std::cmp::Reverse(m.iter().sum::<u64>()));
+    for (mark, counts) in order {
+        print_mark_dist(*mark, counts, 6);
+    }
+    print_sig_grids(&c.abs_grid, &c.rate_grid);
+    print_sig_hist(&c.ref_hist);
+    println!(
+        "\nreference cell (k=32, floor 0.5): surfaced {} occurrences ({} digit-context)",
+        c.ref_surfaced, c.digit_surfaced
+    );
+    println!("\ndissolved special cases (ref cell; silent = learned below floor):");
+    println!(
+        "  numeric-flanked (digit|digit): {} occ, {:.1}% silent",
+        c.colon_num.0,
+        silent_pct(c.colon_num)
+    );
+    println!(
+        "  cluster tail   (punct|*)     : {} occ, {:.1}% silent",
+        c.cluster_tail.0,
+        silent_pct(c.cluster_tail)
+    );
+    println!(
+        "  verse edge     (edge|* / *|edge): {} occ, {:.1}% silent",
+        c.verse_edge.0,
+        silent_pct(c.verse_edge)
+    );
+    let mut s = c.surfaced_samples.clone();
+    s.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
+    println!("\ntop surfaced samples (ref cell):");
+    print_sig_samples(&s);
+    let mut nc = c.new_coverage.clone();
+    nc.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
+    println!("\nnew-coverage samples (after-side anomaly, invisible to the live rule):");
+    print_sig_samples(&nc);
+    if SIG_REGRESSION.iter().any(|&(id, _)| id == c.id) {
+        println!("\n-- regression vs the live spacing rule --");
+        signature_regression(&c.id);
+    }
+}
+
+/// Regression: for the sites the live `punct.spacing-anomaly` surfaces today
+/// (shipped defaults), what does the signature model say? Reloads the corpus,
+/// runs the production rule, and joins by (sid, mark byte-offset).
+fn signature_regression(id: &str) {
+    use std::collections::HashMap;
+
+    let path = Path::new("corpora/vref").join(format!("{id}.txt"));
+    let map = load_corpus(&path);
+    if map.is_empty() {
+        println!("  {id}: (no corpus file)");
+        return;
+    }
+    let books = ssc_core::verse::by_book(&map);
+
+    // Live rule at shipped defaults, floor 0 — every scored minority site, so we
+    // can split by the shipped floor ourselves.
+    let live = PunctuationSpacingAnomaly {
+        cfg: PunctuationSpacingConfig { emit_score_min: 0.0, ..Default::default() },
+    };
+    let live_floor = f64::from(PunctuationSpacingConfig::default().emit_score_min);
+    let findings = live.judge(&live.reduce(&books, None, None).0, &books, None, None);
+
+    // Signature distribution + a (sid, mark_off) → signature index lookup.
+    let mut marks: BTreeMap<char, [u64; SIG_CELLS]> = BTreeMap::new();
+    let mut site_sig: HashMap<(ssc_core::Sid, usize), usize> = HashMap::new();
+    let mut graphemes = Vec::new();
+    for (sid, text) in &map {
+        graphemes.clear();
+        ssc_core::grapheme::segment(text, &mut graphemes);
+        for opp in signature_opportunities(text, &graphemes) {
+            let i = sig_index(opp.left, opp.right);
+            marks.entry(opp.mark).or_insert([0u64; SIG_CELLS])[i] += 1;
+            site_sig.insert((*sid, opp.mark_off), i);
+        }
+    }
+    let sig_verdict = |mark: char, sig: usize| -> (u64, u64, f64) {
+        let counts = &marks[&mark];
+        let total: u64 = counts.iter().sum();
+        let count = counts[sig];
+        (count, total, sig_score_abs(count, total, SIG_REF_K))
+    };
+
+    let mut live_surfaced = 0u64;
+    let mut kept = 0u64;
+    let mut dropped = 0u64;
+    let mut rows: Vec<String> = Vec::new();
+    for f in &findings {
+        let Some(FindingArgs::SpacingConvention { mark, .. }) = f.args else { continue };
+        let live_score = f.score.unwrap_or(0.0) as f64;
+        if live_score < live_floor {
+            continue;
+        }
+        live_surfaced += 1;
+        let mark_off = f.range.end - mark.len_utf8();
+        let Some(&sig) = site_sig.get(&(f.sid, mark_off)) else {
+            rows.push(format!("    {:<10} {:?} live={:.3} | (no signature match)", f.sid.to_string(), mark, live_score));
+            continue;
+        };
+        let (count, total, s) = sig_verdict(mark, sig);
+        if s >= SIG_REF_FLOOR {
+            kept += 1;
+        } else {
+            dropped += 1;
+        }
+        if rows.len() < 14 {
+            rows.push(format!(
+                "    {:<10} {:?} live={:.3} → sig {} count={}/{} score={:.3} [{}]",
+                f.sid.to_string(),
+                mark,
+                live_score,
+                sig_label(sig),
+                count,
+                total,
+                s,
+                if s >= SIG_REF_FLOOR { "KEPT" } else { "dropped" },
+            ));
+        }
+    }
+    // Signature-model surfaced total (ref cell) for context.
+    let mut sig_surfaced = 0u64;
+    for counts in marks.values() {
+        let total: u64 = counts.iter().sum();
+        for &count in counts.iter() {
+            if count > 0 && sig_score_abs(count, total, SIG_REF_K) >= SIG_REF_FLOOR {
+                sig_surfaced += count;
+            }
+        }
+    }
+
+    println!(
+        "  {id}: live surfaced today {live_surfaced} → signature model KEEPS {kept}, drops {dropped}  (signature-model total surfaced at ref: {sig_surfaced})"
+    );
+    for r in &rows {
+        println!("{r}");
+    }
+}
+
+/// Fleet aggregate over every vref corpus in `dir`.
+fn signature_fleet(dir: &Path) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use rayon::prelude::*;
+
+    let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
+        .unwrap_or_else(|e| panic!("read {}: {e}", dir.display()))
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "txt"))
+        .collect();
+    files.sort();
+    let total = files.len();
+    eprintln!("signatures fleet: {total} corpora in {}", dir.display());
+
+    let done = AtomicUsize::new(0);
+    let t0 = std::time::Instant::now();
+    let corpora: Vec<SigCorpus> = files
+        .par_iter()
+        .map(|path| {
+            let id = path.file_stem().unwrap().to_string_lossy().to_string();
+            let c = analyze_signatures(id, &load_corpus(path));
+            let n = done.fetch_add(1, Ordering::Relaxed) + 1;
+            if n.is_multiple_of(200) {
+                eprintln!("  …{n}/{total}");
+            }
+            c
+        })
+        .collect();
+    eprintln!("signatures fleet analyze: {:?}", t0.elapsed());
+
+    // Aggregates.
+    let mut ref_hist = [0u64; 40];
+    let mut ref_surfaced = 0u64;
+    let mut digit_surfaced = 0u64;
+    let mut abs_grid = vec![[0u64; SIG_FLOORS.len()]; SIG_ABS_KS.len()];
+    let mut rate_grid = vec![[0u64; SIG_FLOORS.len()]; SIG_RATE_PER_10K.len()];
+    let (mut colon_num, mut cluster_tail, mut verse_edge) = ((0u64, 0u64), (0u64, 0u64), (0u64, 0u64));
+    let mut focus: BTreeMap<char, [u64; SIG_CELLS]> = BTreeMap::new();
+    let mut mark_occ_total = 0u64;
+    // Noisiest-by-digit-context corpora (FP class), with digit share.
+    let mut digit_rows: Vec<(String, u64, f64)> = Vec::new();
+    let mut new_coverage: Vec<SigSample> = Vec::new();
+    let mut fp_samples: Vec<SigSample> = Vec::new();
+    let mut surfaced_samples: Vec<SigSample> = Vec::new();
+
+    for c in &corpora {
+        for (h, ch) in ref_hist.iter_mut().zip(&c.ref_hist) {
+            *h += ch;
+        }
+        ref_surfaced += c.ref_surfaced;
+        digit_surfaced += c.digit_surfaced;
+        for (g, cg) in abs_grid.iter_mut().zip(&c.abs_grid) {
+            for (x, y) in g.iter_mut().zip(cg) {
+                *x += y;
+            }
+        }
+        for (g, cg) in rate_grid.iter_mut().zip(&c.rate_grid) {
+            for (x, y) in g.iter_mut().zip(cg) {
+                *x += y;
+            }
+        }
+        colon_num.0 += c.colon_num.0;
+        colon_num.1 += c.colon_num.1;
+        cluster_tail.0 += c.cluster_tail.0;
+        cluster_tail.1 += c.cluster_tail.1;
+        verse_edge.0 += c.verse_edge.0;
+        verse_edge.1 += c.verse_edge.1;
+        for (&mark, counts) in &c.marks {
+            mark_occ_total += counts.iter().sum::<u64>();
+            if SIG_FOCUS_MARKS.contains(&mark) {
+                let e = focus.entry(mark).or_insert([0u64; SIG_CELLS]);
+                for (x, y) in e.iter_mut().zip(counts) {
+                    *x += y;
+                }
+            }
+        }
+        if c.digit_surfaced > 0 {
+            digit_rows.push((
+                c.id.clone(),
+                c.digit_surfaced,
+                c.digit_scalars as f64 * 100.0 / c.total_scalars.max(1) as f64,
+            ));
+        }
+        new_coverage.extend(c.new_coverage.iter().cloned());
+        fp_samples.extend(c.fp_samples.iter().cloned());
+        surfaced_samples.extend(c.surfaced_samples.iter().cloned());
+    }
+    eprintln!("signatures fleet tally: {:?}", t0.elapsed());
+
+    println!("=== ATTACHMENT-SIGNATURES SPIKE — fleet aggregate ({total} corpora) ===");
+    println!("total separator-mark occurrences: {mark_occ_total}");
+
+    println!("\n-- fleet-summed per-mark signature distributions (major marks; top 6) --");
+    println!("   (raw counts summed across corpora mix conventions — a shape check, not a per-corpus verdict)");
+    for &mark in SIG_FOCUS_MARKS {
+        if let Some(counts) = focus.get(&mark) {
+            print_mark_dist(mark, counts, 6);
+        }
+    }
+
+    println!("\n-- per-corpus sanity checks --");
+    for &(id, wanted) in SIG_SANITY {
+        let Some(c) = corpora.iter().find(|c| c.id == id) else {
+            println!("  {id}: (absent from fleet)");
+            continue;
+        };
+        println!("  [{id}]");
+        for &mark in wanted {
+            if let Some(counts) = c.marks.get(&mark) {
+                print_mark_dist(mark, counts, 5);
+            } else {
+                println!("  {mark:?} U+{:04X}  (not present)", mark as u32);
+            }
+        }
+    }
+
+    print_sig_grids(&abs_grid, &rate_grid);
+    print_sig_hist(&ref_hist);
+    println!("\nreference cell (k=32, floor 0.5): surfaced {ref_surfaced} occurrences ({digit_surfaced} digit-context)");
+
+    println!("\n-- dissolved special cases (fleet; ref cell; silent = learned below floor) --");
+    println!(
+        "  numeric-flanked (digit|digit): {:>10} occ, {:.2}% silent  (the `1:1` colon class)",
+        colon_num.0,
+        silent_pct(colon_num)
+    );
+    println!(
+        "  cluster tail   (punct|*)     : {:>10} occ, {:.2}% silent  (the `?!`-tail `!` class)",
+        cluster_tail.0,
+        silent_pct(cluster_tail)
+    );
+    println!(
+        "  verse edge     (edge involved): {:>10} occ, {:.2}% silent  (verse-leading/trailing marks)",
+        verse_edge.0,
+        silent_pct(verse_edge)
+    );
+
+    println!("\n-- regression vs the live spacing rule (ADR 0050 calibration corpora) --");
+    for &(id, short) in SIG_REGRESSION {
+        println!("  ({short})");
+        signature_regression(id);
+    }
+
+    // New-coverage review table: diverse after-side anomalies, ≤2 per corpus.
+    new_coverage.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap()
+            .then_with(|| a.corpus.cmp(&b.corpus))
+    });
+    let mut nc_diverse: Vec<SigSample> = Vec::new();
+    let mut per_corpus: BTreeMap<String, u64> = BTreeMap::new();
+    for s in &new_coverage {
+        let seen = per_corpus.entry(s.corpus.clone()).or_default();
+        if *seen < 2 {
+            *seen += 1;
+            nc_diverse.push(s.clone());
+        }
+        if nc_diverse.len() >= 24 {
+            break;
+        }
+    }
+    println!("\n-- new-coverage samples: after-side anomalies the live rule cannot see (up to 24) --");
+    print_sig_samples(&nc_diverse);
+
+    // False-positive focus: noisiest digit-context corpora + a sample.
+    digit_rows.sort_by(|a, b| b.1.cmp(&a.1));
+    println!("\n-- false-positive focus: rare-CONTEXT signatures (digit side), noisiest corpora --");
+    println!("   digit_surfaced = surfaced occurrences with a digit neighbour; a low digit share means the context is rare, not the mark misplaced");
+    for (id, n, share) in digit_rows.iter().take(15) {
+        println!("  {id:<24} digit-context surfaced {n:>6}  (digit scalars {share:.3}% of corpus)");
+    }
+    fp_samples.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap()
+            .then_with(|| a.corpus.cmp(&b.corpus))
+    });
+    let mut fp_diverse: Vec<SigSample> = Vec::new();
+    let mut fp_per_corpus: BTreeMap<String, u64> = BTreeMap::new();
+    for s in &fp_samples {
+        let seen = fp_per_corpus.entry(s.corpus.clone()).or_default();
+        if *seen < 2 {
+            *seen += 1;
+            fp_diverse.push(s.clone());
+        }
+        if fp_diverse.len() >= 16 {
+            break;
+        }
+    }
+    println!("\n  digit-context sample sites (up to 16):");
+    print_sig_samples(&fp_diverse);
+
+    // Overall surfaced samples (top by score, diversified).
+    surfaced_samples.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap()
+            .then_with(|| a.corpus.cmp(&b.corpus))
+    });
+    let mut top_diverse: Vec<SigSample> = Vec::new();
+    let mut top_per_corpus: BTreeMap<String, u64> = BTreeMap::new();
+    for s in &surfaced_samples {
+        let seen = top_per_corpus.entry(s.corpus.clone()).or_default();
+        if *seen < 2 {
+            *seen += 1;
+            top_diverse.push(s.clone());
+        }
+        if top_diverse.len() >= 20 {
+            break;
+        }
+    }
+    println!("\n-- top surfaced samples fleet-wide (up to 20, ≤2 per corpus) --");
+    print_sig_samples(&top_diverse);
+}
+
+#[cfg(test)]
+mod signature_tests {
+    use super::*;
+
+    fn seg(text: &str) -> Vec<ssc_core::grapheme::GSpan> {
+        let mut g = Vec::new();
+        ssc_core::grapheme::segment(text, &mut g);
+        g
+    }
+    fn sigs(text: &str) -> Vec<(char, Ctx, Ctx)> {
+        signature_opportunities(text, &seg(text))
+            .into_iter()
+            .map(|o| (o.mark, o.left, o.right))
+            .collect()
+    }
+
+    #[test]
+    fn comma_before_and_after_side() {
+        // English attached comma: letter on the left, space on the right.
+        assert_eq!(sigs("word, word"), vec![(',', Ctx::Letter, Ctx::Space)]);
+        // Spaced-before comma: the live rule's minority form ⇒ space|space.
+        assert_eq!(sigs("word , word"), vec![(',', Ctx::Space, Ctx::Space)]);
+        // Missing space after (invisible to the before-only live rule).
+        assert_eq!(sigs("word,word"), vec![(',', Ctx::Letter, Ctx::Letter)]);
+    }
+
+    #[test]
+    fn numeric_colon_is_a_digit_signature_not_an_exclusion() {
+        // `1:1` — the live rule drops it (no letter governs); here it is a
+        // first-class digit|digit signature.
+        assert_eq!(sigs("1:1"), vec![(':', Ctx::Digit, Ctx::Digit)]);
+    }
+
+    #[test]
+    fn cluster_tail_reads_punct_on_the_left() {
+        // `?!` — `?` is letter|punct, its tail `!` is punct|space (the plan's
+        // prediction). Both are ordinary signatures, no special case.
+        assert_eq!(
+            sigs("what?! yes"),
+            vec![('?', Ctx::Letter, Ctx::Punct), ('!', Ctx::Punct, Ctx::Space)]
+        );
+    }
+
+    #[test]
+    fn away_then_capital_is_letter_letter() {
+        // `away!Why` — the `!` clings to a following word: letter|letter.
+        assert_eq!(sigs("away!Why"), vec![('!', Ctx::Letter, Ctx::Letter)]);
+    }
+
+    #[test]
+    fn verse_seam_reads_as_whitespace_not_a_category() {
+        // Ruling 2026-07-10: verses are addressing only; a terminal is never
+        // "attached" across a seam, so the seam pools with `space`. A
+        // verse-leading mark reads space on the left; a verse-trailing mark
+        // reads space on the right (with or without literal trailing ws).
+        assert_eq!(sigs(".word"), vec![('.', Ctx::Space, Ctx::Letter)]);
+        assert_eq!(sigs("word."), vec![('.', Ctx::Letter, Ctx::Space)]);
+        assert_eq!(sigs("word.  "), vec![('.', Ctx::Letter, Ctx::Space)]);
+    }
+
+    #[test]
+    fn combining_cluster_mark_is_excluded_like_the_live_rule() {
+        // A separator mark carrying a combining accent is not a clean site.
+        let text = "word\u{0301}. next"; // the '.' is clean; ensure the accent on 'd' does not create a mark site
+        let s = sigs(text);
+        assert_eq!(s, vec![('.', Ctx::Letter, Ctx::Space)]);
+    }
+
+    #[test]
+    fn quotes_are_not_separator_marks() {
+        // Straight quotes are GC Po but excluded by the quote predicate.
+        assert!(sigs("\"hi\"").is_empty());
+    }
+
+    #[test]
+    fn score_is_dominance_of_complement_times_rarity() {
+        // One rare signature against a strong majority scores high; the
+        // dominant one scores ~0.
+        // 100 occurrences: 99 in signature A, 1 in signature B.
+        assert!(sig_score_abs(1, 100, 32.0) > 0.9, "rare minority is high");
+        assert!(sig_score_abs(99, 100, 32.0) < 0.1, "dominant signature is silent");
+        // A recurring minority is discounted toward a second convention.
+        assert!(sig_score_abs(40, 100, 32.0) < sig_score_abs(1, 100, 32.0));
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // terminal_strength SPIKE (shortlist 2/3). Per-mark boundary trust wired into
 // ADR 0051 casing; reports witness measurements, per-mark fleet trust, the W2
 // variant comparison (genealogy guard), the sigmoid refit evidence, and the
@@ -3373,5 +4405,685 @@ fn terminal_gate_sweep(
             .map(|c| format!("{}(base_pos {})", c.id, c.gate.base_pos))
             .collect::<Vec<_>>().join(", ");
         println!("  T={t:.2}: {} corpora  [largest: {names}]", losers.len());
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Mixed-case word SPIKE (plan rule 3). A word written in an internal-capital
+// shape (`wOrd`, `McDonald`, `kiSwahili`, `LORDs`) is a slip unless it is a
+// convention the recurrence machinery excuses. Harness-only: no production
+// rule, `RuleStats`, or `CasingConfig` is touched (READ-ONLY). The token unit
+// is the plain UAX #29 letter-run word (`is_letter_token`), so `Obed-Edom`
+// splits into two Titlecase tokens and never reads as one mixed-case word —
+// this is deliberately NOT the hyphen-merged `compound_words` the casing walk
+// uses, matching the plan's "letter-run tokens" unit for rule 3. Sweep
+// constants (PACKET_KS/PACKET_FLOORS/REF_K/REF_FLOOR) and `rarity_abs` are
+// shared with the casing spike; `sig_wilson_lb` is the harness-local Wilson.
+// ═══════════════════════════════════════════════════════════════════════════
+
+const MC_Z: f64 = 1.96;
+/// Corpora sampled in the fleet report for the convention-class adjudication.
+const MC_MAJOR: &[&str] = &[
+    "eng-web", "eng-kjv", "engwebster", "WA-en-ulb", "spaRV1909", "WA-es-419-ulb",
+    "fraLSG", "WA-fr-ulb", "porblt", "deu1912", "swhulb", "WA-sw-ulb", "WA-bem-reg",
+    "ind", "nld", "vie1934", "tglulb", "ron1924", "engojb",
+];
+
+/// A word's observed case shape over its **cased** letters (marks and caseless
+/// letters ignored). `OtherMixed` is the `wOrd` candidate: it has both cases and
+/// is neither Titlecase nor ALLCAPS, so it necessarily carries an *internal*
+/// capital (an uppercase letter that is not the first cased letter).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum McShape {
+    Lower,
+    Title,
+    AllCaps,
+    OtherMixed,
+}
+
+/// Classify a letter-run token by the case sequence of its cased letters.
+/// `None` = no cased letter (caseless script / marks only): no shape, not a
+/// candidate, not counted in the cased denominator. A single cased letter is
+/// Lower or AllCaps, never OtherMixed (the single-letter guard the plan warns
+/// about: a lone `I`/`A` must not read as mixed). Combining marks and non-cased
+/// letters inside a cased word are skipped, so an intra-word caseless glyph
+/// cannot by itself manufacture a mixed shape.
+fn mc_classify(word: &str) -> Option<McShape> {
+    let mut cases: Vec<bool> = Vec::new(); // true = uppercase
+    for c in word.chars() {
+        let cl = class_of(c);
+        if cl.is_uppercase() {
+            cases.push(true);
+        } else if cl.is_lowercase() {
+            cases.push(false);
+        }
+    }
+    if cases.is_empty() {
+        return None;
+    }
+    let up = cases.iter().filter(|&&u| u).count();
+    let n = cases.len();
+    Some(if up == 0 {
+        McShape::Lower
+    } else if up == n {
+        McShape::AllCaps
+    } else if cases[0] && cases[1..].iter().all(|&u| !u) {
+        McShape::Title
+    } else {
+        McShape::OtherMixed
+    })
+}
+
+/// True iff the first *cased* letter of a mixed word is uppercase — the
+/// boundary axis against casing v2. An upper-first OtherMixed word (`McDonald`,
+/// `LORDs`) has an uppercase first letter, so casing (which fires only on a
+/// lowercase word-start) never sees it: it is unambiguously mixed-case's. A
+/// lower-first OtherMixed word (`wOrd`, `kiSwahili`) shares casing's
+/// lowercase-site domain and is the overlap class.
+fn mc_first_cased_upper(word: &str) -> bool {
+    word.chars()
+        .find_map(|c| {
+            let cl = class_of(c);
+            if cl.is_uppercase() {
+                Some(true)
+            } else if cl.is_lowercase() {
+                Some(false)
+            } else {
+                None
+            }
+        })
+        .unwrap_or(false)
+}
+
+/// One word type's shape profile within a corpus (raw counts). `other_first_upper`
+/// and `other_forced` split the OtherMixed occurrences by the two axes the spike
+/// adjudicates (casing overlap, and position-independence).
+#[derive(Clone, Copy, Default)]
+struct McProfile {
+    lower: u64,
+    title: u64,
+    allcaps: u64,
+    other: u64,
+    other_first_upper: u64,
+    other_forced: u64,
+}
+
+impl McProfile {
+    fn total(&self) -> u64 {
+        self.lower + self.title + self.allcaps + self.other
+    }
+    fn not_other(&self) -> u64 {
+        self.total() - self.other
+    }
+}
+
+/// One OtherMixed occurrence, retained (capped) only to draw review samples;
+/// the volume grids come analytically from the per-type profiles, not these.
+struct McCand {
+    sid: ssc_core::Sid,
+    start: u32,
+    end: u32,
+    key: String,
+    first_upper: bool,
+    forced: bool,
+}
+
+/// One sampled OtherMixed site for the review tables.
+struct McSample {
+    corpus: String,
+    sid: String,
+    word: String,
+    route: &'static str,
+    other: u64,
+    word_total: u64,
+    dom: f64,
+    score: f64,
+    first_upper: bool,
+    forced: bool,
+    ctx: String,
+}
+
+/// Per-corpus mixed-case result. Grids are `[knee][floor]`, fleet-summable.
+struct McCorpus {
+    id: String,
+    verses: usize,
+    cased_tokens: u64,
+    other_tokens: u64,
+    other_types: u64,
+    hapax_other_types: u64,
+    recurring_other_types: u64,
+    corpus_dominance: f64,
+    // Route 4 — position: OtherMixed vs all-cased at forced / mid positions.
+    cased_forced: u64,
+    other_forced: u64,
+    cased_mid: u64,
+    other_mid: u64,
+    // Boundary vs casing v2: OtherMixed occurrences by first-cased-letter case.
+    other_first_upper: u64,
+    other_first_lower: u64,
+    // Of the ref-flagged (route A) OtherMixed sites, the same two splits.
+    flagged_first_upper: u64,
+    flagged_forced: u64,
+    // Volume grids: sites (occurrences) surfaced. [knee][floor].
+    grid_within: Vec<[u64; PACKET_FLOORS.len()]>,
+    grid_fallback: Vec<[u64; PACKET_FLOORS.len()]>,
+    hist_within: [u64; 40],
+    ref_within: u64,
+    ref_fallback: u64,
+    flagged_samples: Vec<McSample>,
+    excused_samples: Vec<McSample>,
+    fallback_samples: Vec<McSample>,
+}
+
+/// Walk each book mirroring `casing::walk_book`'s pending-terminal machine
+/// (carried across verse seams, reset per book, book-initial forced), over the
+/// plain UAX letter-run tokens. Returns the per-type profiles, corpus counters,
+/// and a capped list of OtherMixed occurrences for sampling.
+fn mc_walk(
+    map: &VerseMap,
+) -> (
+    BTreeMap<String, McProfile>,
+    [u64; 4], // cased_forced, other_forced, cased_mid, other_mid
+    Vec<McCand>,
+) {
+    let mut profiles: BTreeMap<String, McProfile> = BTreeMap::new();
+    let mut counters = [0u64; 4];
+    let mut cands: Vec<McCand> = Vec::new();
+    const CAND_CAP: usize = 8000;
+
+    for (_book, verses) in ssc_core::verse::by_book(map) {
+        let mut pending: Option<bool> = None;
+        let mut book_initial = true;
+        for (sid, text) in verses {
+            let mut prev_letter = false;
+            let mut cursor = 0usize;
+            for token in tokenize(text) {
+                let word = token.span.slice(text);
+                if !is_letter_token(word) {
+                    continue; // its text stays in the gap the next word sees
+                }
+                glyph_advance_gap(&text[cursor..token.span.start], &mut pending, &mut prev_letter);
+                let forced = book_initial || matches!(pending.take(), Some(false));
+                book_initial = false;
+                prev_letter = word.chars().next_back().is_some_and(|c| class_of(c).is_alphabetic());
+                cursor = token.span.end;
+
+                let Some(shape) = mc_classify(word) else { continue };
+                let entry = profiles.entry(word.to_lowercase()).or_default();
+                let is_forced = forced;
+                if is_forced {
+                    counters[0] += 1;
+                } else {
+                    counters[2] += 1;
+                }
+                match shape {
+                    McShape::Lower => entry.lower += 1,
+                    McShape::Title => entry.title += 1,
+                    McShape::AllCaps => entry.allcaps += 1,
+                    McShape::OtherMixed => {
+                        entry.other += 1;
+                        let first_upper = mc_first_cased_upper(word);
+                        if first_upper {
+                            entry.other_first_upper += 1;
+                        }
+                        if is_forced {
+                            entry.other_forced += 1;
+                            counters[1] += 1;
+                        } else {
+                            counters[3] += 1;
+                        }
+                        if cands.len() < CAND_CAP {
+                            cands.push(McCand {
+                                sid,
+                                start: token.span.start as u32,
+                                end: token.span.end as u32,
+                                key: word.to_lowercase(),
+                                first_upper,
+                                forced: is_forced,
+                            });
+                        }
+                    }
+                }
+            }
+            glyph_advance_gap(&text[cursor..], &mut pending, &mut prev_letter);
+        }
+    }
+    (profiles, counters, cands)
+}
+
+fn analyze_mixedcase(id: String, map: &VerseMap) -> McCorpus {
+    let (profiles, counters, cands) = mc_walk(map);
+    let [cased_forced, other_forced, cased_mid, other_mid] = counters;
+    let cased_tokens: u64 = profiles.values().map(McProfile::total).sum();
+    let other_tokens: u64 = profiles.values().map(|p| p.other).sum();
+    let other_first_upper: u64 = profiles.values().map(|p| p.other_first_upper).sum();
+    // Corpus-level "tokens are not other-mixed" dominance — the route-B factor.
+    let corpus_dominance = sig_wilson_lb(cased_tokens.saturating_sub(other_tokens), cased_tokens, MC_Z);
+
+    let nk = PACKET_KS.len();
+    let mut grid_within = vec![[0u64; PACKET_FLOORS.len()]; nk];
+    let mut grid_fallback = vec![[0u64; PACKET_FLOORS.len()]; nk];
+    let mut hist_within = [0u64; 40];
+    let (mut ref_within, mut ref_fallback) = (0u64, 0u64);
+    let (mut other_types, mut hapax_other_types, mut recurring_other_types) = (0u64, 0u64, 0u64);
+    let (mut flagged_first_upper, mut flagged_forced) = (0u64, 0u64);
+
+    // Category sets for sampling, decided at the reference cell (k=32, 0.95).
+    use std::collections::HashSet;
+    let mut flagged: HashSet<String> = HashSet::new();
+    let mut fallback_keys: HashSet<String> = HashSet::new();
+    // Excused = recurring OtherMixed (other >= 2) that route A leaves silent.
+    let mut excused: Vec<(String, u64, u64)> = Vec::new();
+
+    for (key, p) in &profiles {
+        if p.other == 0 {
+            continue;
+        }
+        other_types += 1;
+        if p.total() == 1 {
+            hapax_other_types += 1;
+        }
+        if p.other >= 2 {
+            recurring_other_types += 1;
+        }
+        let dom = sig_wilson_lb(p.not_other(), p.total(), MC_Z);
+
+        // Route A (within-word): each OtherMixed occurrence surfaces iff the
+        // type's score clears the floor.
+        for (ki, &k) in PACKET_KS.iter().enumerate() {
+            let sc = dom * rarity_abs(p.other, k);
+            for (fi, &fl) in PACKET_FLOORS.iter().enumerate() {
+                if sc >= fl {
+                    grid_within[ki][fi] += p.other;
+                }
+            }
+        }
+        let sc_ref = dom * rarity_abs(p.other, REF_K);
+        hist_within[(sc_ref.clamp(0.0, 0.999_999) * 40.0) as usize] += p.other;
+        if sc_ref >= REF_FLOOR {
+            ref_within += p.other;
+            flagged.insert(key.clone());
+            flagged_first_upper += p.other_first_upper;
+            flagged_forced += p.other_forced;
+        } else if p.other >= 2 {
+            excused.push((key.clone(), p.other, p.total()));
+        }
+
+        // Route B (corpus fallback) — hapax OtherMixed words only (route A is
+        // structurally silent for them: not_other == 0 ⇒ dominance 0). Score is
+        // corpus_dominance × rarity(1, k) = corpus_dominance (knee-independent).
+        if p.total() == 1 {
+            for (ki, _k) in PACKET_KS.iter().enumerate() {
+                for (fi, &fl) in PACKET_FLOORS.iter().enumerate() {
+                    if corpus_dominance >= fl {
+                        grid_fallback[ki][fi] += 1;
+                    }
+                }
+            }
+            if corpus_dominance >= REF_FLOOR {
+                ref_fallback += 1;
+                fallback_keys.insert(key.clone());
+            }
+        }
+    }
+
+    excused.sort_by_key(|(_, other, _)| std::cmp::Reverse(*other));
+    let excused_set: HashSet<&str> = excused.iter().take(30).map(|(k, _, _)| k.as_str()).collect();
+
+    // Draw review samples from the capped candidate list.
+    let (mut flagged_samples, mut fallback_samples, mut excused_samples) =
+        (Vec::new(), Vec::new(), Vec::new());
+    let mut excused_seen: HashSet<String> = HashSet::new();
+    for c in &cands {
+        let Some(p) = profiles.get(&c.key) else { continue };
+        let text = &map[&c.sid];
+        let word = text[c.start as usize..c.end as usize].to_string();
+        let dom = sig_wilson_lb(p.not_other(), p.total(), MC_Z);
+        let mk = |route: &'static str, score: f64| McSample {
+            corpus: id.clone(),
+            sid: c.sid.to_string(),
+            word: word.clone(),
+            route,
+            other: p.other,
+            word_total: p.total(),
+            dom,
+            score,
+            first_upper: c.first_upper,
+            forced: c.forced,
+            ctx: casing_ctx(text, c.start as usize, c.end as usize),
+        };
+        if flagged.contains(&c.key) && flagged_samples.len() < 60 {
+            flagged_samples.push(mk("within", dom * rarity_abs(p.other, REF_K)));
+        } else if fallback_keys.contains(&c.key) && fallback_samples.len() < 60 {
+            fallback_samples.push(mk("fallback", corpus_dominance));
+        } else if excused_set.contains(c.key.as_str())
+            && excused_seen.insert(c.key.clone())
+            && excused_samples.len() < 40
+        {
+            excused_samples.push(mk("excused", dom * rarity_abs(p.other, REF_K)));
+        }
+    }
+
+    McCorpus {
+        id,
+        verses: map.len(),
+        cased_tokens,
+        other_tokens,
+        other_types,
+        hapax_other_types,
+        recurring_other_types,
+        corpus_dominance,
+        cased_forced,
+        other_forced,
+        cased_mid,
+        other_mid,
+        other_first_upper,
+        other_first_lower: other_tokens.saturating_sub(other_first_upper),
+        flagged_first_upper,
+        flagged_forced,
+        grid_within,
+        grid_fallback,
+        hist_within,
+        ref_within,
+        ref_fallback,
+        flagged_samples,
+        excused_samples,
+        fallback_samples,
+    }
+}
+
+fn print_mc_grid(name: &str, grid: &[[u64; PACKET_FLOORS.len()]]) {
+    println!("  [{name}] rows = floor, cols = k");
+    print!("    {:>6}", "fl\\k");
+    for k in PACKET_KS {
+        print!("  {:>10}", format!("k={k:.0}"));
+    }
+    println!();
+    for (fi, &fl) in PACKET_FLOORS.iter().enumerate() {
+        print!("    {fl:>6.2}");
+        for row in grid {
+            print!("  {:>10}", row[fi]);
+        }
+        println!();
+    }
+}
+
+fn print_mc_hist(hist: &[u64; 40]) {
+    let total: u64 = hist.iter().sum();
+    println!("\nroute-A score histogram at ref knee (k=32) — {total} OtherMixed sites, 40 buckets:");
+    for (i, &n) in hist.iter().enumerate() {
+        if n == 0 {
+            continue;
+        }
+        let lo = i as f64 / 40.0;
+        let bar = "#".repeat((n as f64).sqrt() as usize);
+        println!("  [{lo:.3},{:.3}) {n:>8} {bar}", lo + 0.025);
+    }
+}
+
+fn print_mc_samples(samples: &[&McSample]) {
+    for s in samples {
+        println!(
+            "    {:<12} {:<9} [{}] {} {} dom={:.3} other={} wtot={} score={:.3} | {}",
+            s.sid,
+            s.route,
+            s.word,
+            if s.first_upper { "Up1" } else { "lo1" },
+            if s.forced { "FORCED" } else { "mid" },
+            s.dom,
+            s.other,
+            s.word_total,
+            s.score,
+            s.ctx,
+        );
+    }
+}
+
+fn mixedcase_single_report(c: &McCorpus) {
+    println!("=== mixed-case word SPIKE: {} ({} verses) ===", c.id, c.verses);
+    println!(
+        "cased letter-run tokens: {}  |  OtherMixed tokens: {} ({:.4}%)  types: {} (hapax {}, recurring>=2 {})",
+        c.cased_tokens,
+        c.other_tokens,
+        c.other_tokens as f64 * 100.0 / c.cased_tokens.max(1) as f64,
+        c.other_types,
+        c.hapax_other_types,
+        c.recurring_other_types,
+    );
+    println!("corpus 'not-other-mixed' dominance (route-B factor): {:.4}", c.corpus_dominance);
+    println!(
+        "\nposition (route 4): OtherMixed rate  forced {:.4}% ({}/{})  vs  mid {:.4}% ({}/{})",
+        c.other_forced as f64 * 100.0 / c.cased_forced.max(1) as f64,
+        c.other_forced,
+        c.cased_forced,
+        c.other_mid as f64 * 100.0 / c.cased_mid.max(1) as f64,
+        c.other_mid,
+        c.cased_mid,
+    );
+    println!(
+        "boundary vs casing v2: OtherMixed first-letter  upper {} (casing-invisible)  lower {} (overlaps casing)",
+        c.other_first_upper, c.other_first_lower
+    );
+    println!(
+        "\nreference cell (k=32, floor 0.95): route-A within {}  |  route-B hapax-fallback {}",
+        c.ref_within, c.ref_fallback
+    );
+    println!("  of ref-flagged route-A sites: first-upper {}  forced-position {}", c.flagged_first_upper, c.flagged_forced);
+    println!("\n-- route-A (within-word) volume sweep --");
+    print_mc_grid("within-word", &c.grid_within);
+    println!("\n-- route-B (corpus hapax fallback) volume sweep --");
+    print_mc_grid("hapax-fallback", &c.grid_fallback);
+    print_mc_hist(&c.hist_within);
+
+    let mut fs: Vec<&McSample> = c.flagged_samples.iter().collect();
+    fs.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
+    println!("\ntop route-A flagged samples:");
+    print_mc_samples(&fs.iter().take(25).copied().collect::<Vec<_>>());
+    println!("\nexcused recurring-convention samples (route A silent):");
+    print_mc_samples(&c.excused_samples.iter().take(25).collect::<Vec<_>>());
+    println!("\nroute-B hapax-fallback samples:");
+    print_mc_samples(&c.fallback_samples.iter().take(25).collect::<Vec<_>>());
+}
+
+fn mixedcase_fleet(dir: &Path) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use rayon::prelude::*;
+
+    let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
+        .unwrap_or_else(|e| panic!("read {}: {e}", dir.display()))
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "txt"))
+        .collect();
+    files.sort();
+    let total = files.len();
+    eprintln!("mixedcase fleet: {total} corpora in {}", dir.display());
+
+    let done = AtomicUsize::new(0);
+    let t0 = std::time::Instant::now();
+    let corpora: Vec<McCorpus> = files
+        .par_iter()
+        .map(|path| {
+            let id = path.file_stem().unwrap().to_string_lossy().to_string();
+            let map = load_corpus(path);
+            let c = analyze_mixedcase(id, &map);
+            let n = done.fetch_add(1, Ordering::Relaxed) + 1;
+            if n.is_multiple_of(200) {
+                eprintln!("  …{n}/{total}");
+            }
+            c
+        })
+        .collect();
+    eprintln!("mixedcase fleet evaluate: {:?}", t0.elapsed());
+
+    let nk = PACKET_KS.len();
+    let mut grid_within = vec![[0u64; PACKET_FLOORS.len()]; nk];
+    let mut grid_fallback = vec![[0u64; PACKET_FLOORS.len()]; nk];
+    let mut hist = [0u64; 40];
+    let (mut ref_within, mut ref_fallback) = (0u64, 0u64);
+    let (mut cased, mut other) = (0u64, 0u64);
+    let (mut cf, mut of, mut cm, mut om) = (0u64, 0u64, 0u64, 0u64);
+    let (mut fup, mut flo) = (0u64, 0u64);
+    let (mut fl_up, mut fl_forced) = (0u64, 0u64);
+    let mut corpora_with_ref = 0u32;
+    for c in &corpora {
+        for ki in 0..nk {
+            for fi in 0..PACKET_FLOORS.len() {
+                grid_within[ki][fi] += c.grid_within[ki][fi];
+                grid_fallback[ki][fi] += c.grid_fallback[ki][fi];
+            }
+        }
+        for (h, ch) in hist.iter_mut().zip(&c.hist_within) {
+            *h += ch;
+        }
+        ref_within += c.ref_within;
+        ref_fallback += c.ref_fallback;
+        cased += c.cased_tokens;
+        other += c.other_tokens;
+        cf += c.cased_forced;
+        of += c.other_forced;
+        cm += c.cased_mid;
+        om += c.other_mid;
+        fup += c.other_first_upper;
+        flo += c.other_first_lower;
+        fl_up += c.flagged_first_upper;
+        fl_forced += c.flagged_forced;
+        if c.ref_within + c.ref_fallback > 0 {
+            corpora_with_ref += 1;
+        }
+    }
+
+    println!("=== MIXED-CASE WORD SPIKE — fleet aggregate ({} corpora) ===", corpora.len());
+    println!(
+        "\ncased letter-run tokens {cased}  |  OtherMixed {other} ({:.4}% of cased)",
+        other as f64 * 100.0 / cased.max(1) as f64
+    );
+    println!(
+        "\n-- reference cell (k=32, floor 0.95) --\n  route-A within {ref_within}  |  route-B hapax-fallback {ref_fallback}  across {corpora_with_ref} corpora"
+    );
+    println!(
+        "  of ref-flagged route-A sites: first-letter-upper {fl_up} (casing-invisible), forced-position {fl_forced}"
+    );
+
+    println!("\n-- route 4 (position independence): OtherMixed rate forced vs mid --");
+    println!(
+        "  forced {:.4}% ({of}/{cf})   mid {:.4}% ({om}/{cm})   ratio forced/mid = {:.3}",
+        of as f64 * 100.0 / cf.max(1) as f64,
+        om as f64 * 100.0 / cm.max(1) as f64,
+        (of as f64 / cf.max(1) as f64) / (om as f64 / cm.max(1) as f64).max(1e-12),
+    );
+    println!(
+        "\n-- boundary vs casing v2: all OtherMixed by first-cased-letter --\n  first-upper {fup} (casing-invisible: casing fires only on lowercase word-starts)  first-lower {flo} (overlaps casing's lowercase-site domain)"
+    );
+
+    println!("\n-- route-A (within-word) volume sweep (surfaced OtherMixed sites) --");
+    print_mc_grid("within-word", &grid_within);
+    println!("\n-- route-B (corpus hapax fallback) volume sweep --");
+    print_mc_grid("hapax-fallback", &grid_fallback);
+    print_mc_hist(&hist);
+
+    // Noisiest corpora by route-A ref volume, with storm diagnosis inputs.
+    let mut ranked: Vec<&McCorpus> = corpora.iter().filter(|c| c.ref_within + c.ref_fallback > 0).collect();
+    ranked.sort_by_key(|c| std::cmp::Reverse(c.ref_within + c.ref_fallback));
+    println!("\n-- top-20 noisiest corpora (ref cell) --");
+    println!(
+        "  {:<20} {:>8} {:>8} {:>9} {:>10} {:>8}",
+        "corpus", "withinA", "hapaxB", "other%", "corpusDom", "hapaxTy"
+    );
+    for c in ranked.iter().take(20) {
+        println!(
+            "  {:<20} {:>8} {:>8} {:>8.3}% {:>10.4} {:>8}",
+            c.id,
+            c.ref_within,
+            c.ref_fallback,
+            c.other_tokens as f64 * 100.0 / c.cased_tokens.max(1) as f64,
+            c.corpus_dominance,
+            c.hapax_other_types,
+        );
+    }
+
+    // Convention-class adjudication across major-language corpora.
+    println!("\n-- convention adjudication (major corpora): flagged (route A), excused (recurring), hapax (route B) --");
+    for c in &corpora {
+        if !MC_MAJOR.contains(&c.id.as_str()) {
+            continue;
+        }
+        println!(
+            "\n[{}] other {} ({:.3}%) corpusDom {:.4} | ref withinA {} hapaxB {}",
+            c.id,
+            c.other_tokens,
+            c.other_tokens as f64 * 100.0 / c.cased_tokens.max(1) as f64,
+            c.corpus_dominance,
+            c.ref_within,
+            c.ref_fallback,
+        );
+        let mut fs: Vec<&McSample> = c.flagged_samples.iter().collect();
+        fs.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
+        if !fs.is_empty() {
+            println!("  flagged (route A):");
+            print_mc_samples(&fs.iter().take(4).copied().collect::<Vec<_>>());
+        }
+        if !c.excused_samples.is_empty() {
+            println!("  excused (recurring convention):");
+            print_mc_samples(&c.excused_samples.iter().take(4).collect::<Vec<_>>());
+        }
+        if !c.fallback_samples.is_empty() {
+            println!("  hapax (route B only):");
+            print_mc_samples(&c.fallback_samples.iter().take(4).collect::<Vec<_>>());
+        }
+    }
+}
+
+#[cfg(test)]
+mod mixedcase_tests {
+    use super::{McShape, mc_classify, mc_first_cased_upper};
+
+    #[test]
+    fn plain_shapes() {
+        assert_eq!(mc_classify("word"), Some(McShape::Lower));
+        assert_eq!(mc_classify("Word"), Some(McShape::Title));
+        assert_eq!(mc_classify("WORD"), Some(McShape::AllCaps));
+        assert_eq!(mc_classify("wOrd"), Some(McShape::OtherMixed));
+    }
+
+    #[test]
+    fn single_letter_is_never_mixed() {
+        assert_eq!(mc_classify("I"), Some(McShape::AllCaps));
+        assert_eq!(mc_classify("a"), Some(McShape::Lower));
+    }
+
+    #[test]
+    fn caseless_has_no_shape() {
+        // Han / digits-only-ish: no cased letter ⇒ None (not a candidate).
+        assert_eq!(mc_classify("好"), None);
+        assert_eq!(mc_classify("1"), None);
+    }
+
+    #[test]
+    fn convention_shapes_are_othermixed() {
+        // McX names, class-prefix orthographies, inflected all-caps names.
+        assert_eq!(mc_classify("McDonald"), Some(McShape::OtherMixed));
+        assert_eq!(mc_classify("kiSwahili"), Some(McShape::OtherMixed));
+        assert_eq!(mc_classify("iPhone"), Some(McShape::OtherMixed));
+        assert_eq!(mc_classify("LORDs"), Some(McShape::OtherMixed));
+        // Pure ALLCAPS YHWH stays AllCaps — not a mixed candidate at all.
+        assert_eq!(mc_classify("LORD"), Some(McShape::AllCaps));
+    }
+
+    #[test]
+    fn combining_marks_and_caseless_do_not_manufacture_mixing() {
+        // Base + combining acute (decomposed é): still Lower.
+        assert_eq!(mc_classify("cafe\u{0301}"), Some(McShape::Lower));
+        // Title with a trailing combining mark stays Title.
+        assert_eq!(mc_classify("A\u{0301}bc"), Some(McShape::Title));
+    }
+
+    #[test]
+    fn first_cased_axis() {
+        assert!(mc_first_cased_upper("McDonald"));
+        assert!(mc_first_cased_upper("LORDs"));
+        assert!(!mc_first_cased_upper("wOrd"));
+        assert!(!mc_first_cased_upper("kiSwahili"));
     }
 }

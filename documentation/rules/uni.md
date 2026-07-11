@@ -159,6 +159,76 @@ positives (ADR 0027).
 
 ---
 
+## `uni.rare-glyph` — a letter this translation barely ever uses
+
+> **Severity** Info · **Default** off · **Scope** corpus-relative (stateful) ·
+> **Knobs** `closure_threshold`, `recurrence_k`, `emit_score_min` · **Source**
+> `rare_glyph.rs` · **ADR** 0053
+
+**Flags** — A **letter** that appears only a handful of times in the whole
+translation, where the translation otherwise uses a settled alphabet:
+- a stray `q` in a Hawaiian corpus (Latin keyboard, 13-letter alphabet) — same
+  script, so `uni.mixed-script-in-token` can't see it
+- a lone Cyrillic-free `x` slipped into a text that never uses it
+
+**Clean (not flagged)** — a rare-but-real letter carried by a **name**
+(`Xerxes`, `Quirinius` — a titlecase one-off, discounted as a proper noun); a
+rare letter whose every occurrence sits inside one **recurring** word (a
+borrowed term the text uses on purpose, discounted as lexical); **any** letter
+in a writing system with an open-ended character set (Han/Hangul), where the
+whole lane self-silences; and cross-script intruders (a Latin `o` inside a
+Telugu word — that is `uni.mixed-script-in-token`'s finding).
+
+**Why it matters** — A letter the corpus's own writing system barely uses is
+usually a stray from the wrong keyboard or a paste artifact — invisible in a
+glance, but it corrupts search and sorting. Judged against the translation's own
+letter inventory, not a dictionary: the text defines its alphabet, and only the
+odd letters out surface.
+
+**Verdict model** — Four factors, all learned from the corpus (ADR 0053):
+1. an **alphabet-closure gate** — if a large share of the text's letters are
+   one-offs (an open-ended script like Han/Hangul), the lane goes silent
+   entirely; a settled alphabet opens it;
+2. a **rarity knee** on the letter's own count (`score = 1 − (count − 1)/k`) —
+   a letter seen once scores highest, fading to silent past `k`;
+3. a **lexical-concentration discount** — all occurrences inside one recurring
+   word ⇒ an imported term, not a slip;
+4. a **titlecase proper-noun discount** — a rare letter in a titlecase one-off
+   name at a mid-sentence position ⇒ a name, not a typo (a lone capital or an
+   all-caps word is *not* titlecase and stays flagged).
+
+**Config** — `closure_threshold` (default 0.0001) is the alphabet-closure gate:
+the hapax-letter share above which the writing system is judged open-ended and
+the lane self-disables. It is a **writing-system truth question**, an advanced
+override, **not** a preset row. `recurrence_k` (default 2) is the sensitivity
+dial — how many times a letter may appear before it stops counting as rare.
+`emit_score_min` (default 0.5) is the emission floor.
+
+**Nuance & ADR ties** — **L (letter) lane only** in v1: digits (`N`) are
+census-only, punctuation/symbols (`P`/`S`) await adjudication (ADR 0053). But the
+stats tally **every** scalar per book — the accumulator is the substrate the
+future glyph census reuses (the reason this rule was built first). **Combining
+marks (M)** are excluded from candidacy (`char` keys and NFC are incompatible —
+a normalized-grapheme inventory is a later upgrade); **Z/C and the hygiene
+classes** are excluded so this never becomes a second hygiene rule.
+**Mixed-script tokens are `uni.mixed-script-in-token`'s** (ADR 0034: one
+phenomenon, one finding) — a candidate inside a two-script token is skipped, a
+script-Common glyph in a single-script token stays eligible. The forced-position
+definition and the mixed-script predicate are reused from `signals::casing` and
+`signals::script_mixing`, not re-implemented. State is aggregate-only,
+book-superseding (ADR 0017); spans re-derive at judge (ADR 0044). Ships
+default-off — turn it on when the translation uses a fixed alphabet.
+
+**Open issues / future work** — The `N`/`P`/`S` lanes (census-only or pending
+adjudication), conservative/normal/aggressive `recurrence_k` **preset rows**
+(from the truncation experiment), **normalized-grapheme inventory keys** (to lift
+the M exclusion and fold the composed/decomposed residual into an honest
+signal), and the **glyph census** proper (this rule's inventory is its
+substrate). A rare letter living only inside non-letter (`q1`) or mixed-script
+tokens is deliberately left to those surfaces, not flagged here.
+
+---
+
 ## `uni.mixed-numeral-systems` — digits from two numeral systems in one verse
 
 > **Severity** Warning · **Default** on · **Scope** per-verse · **Knobs** none

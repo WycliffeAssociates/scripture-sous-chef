@@ -80,6 +80,7 @@ define_rule_ids! {
     PunctuationSpacingAnomaly => "punct.spacing-anomaly",
     SentenceInitialLowercase => "case.sentence-initial-lowercase",
     InconsistentWordCasing   => "case.inconsistent-word-casing",
+    RareGlyph                => "uni.rare-glyph",
 }
 
 impl std::fmt::Display for RuleId {
@@ -252,6 +253,12 @@ pub enum FindingArgs {
     /// spans both words. See ADR 0016 (amendment).
     #[cfg_attr(feature = "serde", serde(rename = "duplicate-word"))]
     DuplicateWord { first_sid: String },
+    /// `uni.rare-glyph`: the flagged letter and how many times it occurs in the
+    /// whole translation (ADR 0053) — the plain rarity fact behind the score.
+    /// The flagged occurrence is in the finding's `range`; `count` is the
+    /// corpus-wide eligible (single-script letter-token) occurrence count.
+    #[cfg_attr(feature = "serde", serde(rename = "rare-glyph"))]
+    RareGlyph { glyph: char, count: u32 },
 }
 
 /// One addressable content finding in one verse.

@@ -9,6 +9,7 @@ pub mod hygiene;
 pub mod lexical;
 pub mod proportionality;
 pub mod punctuation;
+pub mod rare_glyph;
 pub mod script_mixing;
 pub mod structural;
 pub mod whitespace;

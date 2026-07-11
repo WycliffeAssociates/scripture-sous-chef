@@ -17,6 +17,7 @@ use crate::signals::casing::CasingStats;
 use crate::signals::lexical::{PunctOnlyTokenStats, RepeatedCharacterRunStats};
 use crate::signals::proportionality::ProportionalityStats;
 use crate::signals::punctuation::{PunctuationAdjacencyStats, PunctuationSpacingStats};
+use crate::signals::rare_glyph::RareGlyphStats;
 use crate::signals::script_mixing::MixedScriptStats;
 
 /// Per-rule cached statistics — a **closed** union like `FindingArgs`, one
@@ -43,6 +44,10 @@ pub enum RuleStats {
     RepeatedCharacterRun(RepeatedCharacterRunStats),
     PunctOnlyToken(PunctOnlyTokenStats),
     MixedScript(MixedScriptStats),
+    /// `uni.rare-glyph` (ADR 0053): per book, the full scalar inventory (the
+    /// census substrate) plus word-level detail confined to locally-rare
+    /// letters. Named for its dual role as the future glyph census accumulator.
+    GlyphInventory(RareGlyphStats),
 }
 
 impl RuleStats {
@@ -70,6 +75,9 @@ impl RuleStats {
             (RuleStats::MixedScript(a), RuleStats::MixedScript(b)) => {
                 RuleStats::MixedScript(a.merge(b))
             }
+            (RuleStats::GlyphInventory(a), RuleStats::GlyphInventory(b)) => {
+                RuleStats::GlyphInventory(a.merge(b))
+            }
             // Mismatched variants can't occur via `analyze_stateful` (it keys
             // prior and fresh by the same `RuleId`). For malformed cached input
             // the **fresh** reduction wins — never the stale prior. The left
@@ -83,7 +91,8 @@ impl RuleStats {
                 | RuleStats::PunctuationSpacing(_)
                 | RuleStats::RepeatedCharacterRun(_)
                 | RuleStats::PunctOnlyToken(_)
-                | RuleStats::MixedScript(_),
+                | RuleStats::MixedScript(_)
+                | RuleStats::GlyphInventory(_),
                 fresh,
             ) => fresh,
         }
@@ -99,6 +108,7 @@ impl RuleStats {
             RuleStats::RepeatedCharacterRun(r) => r.remove_book(book),
             RuleStats::PunctOnlyToken(p) => p.remove_book(book),
             RuleStats::MixedScript(m) => m.remove_book(book),
+            RuleStats::GlyphInventory(g) => g.remove_book(book),
         }
     }
 }

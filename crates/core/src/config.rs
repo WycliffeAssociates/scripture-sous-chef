@@ -438,6 +438,51 @@ impl Default for MixedScriptConfig {
     }
 }
 
+/// Knobs for `uni.rare-glyph` (L lane; ADR 0053). The rule learns the corpus's
+/// own letter inventory and flags a letter that is *locally* almost absent,
+/// after a learned alphabet-closure gate and two discounts (lexical
+/// concentration, titlecase proper-noun shape). Ships **default-off** (a
+/// language question — does this writing system have a settled alphabet?).
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
+pub struct RareGlyphConfig {
+    /// The **alphabet-closure gate**: the hapax letter-scalar occurrence share
+    /// (`hapax L-scalar types / total L-scalar occurrences`) above which the
+    /// corpus is judged to have an *open* inventory (Han/Hangul-like) and the L
+    /// lane self-silences. A **writing-system truth question**, not a
+    /// sensitivity dial — an advanced override, never a preset row. `0.0001`
+    /// (0.01%) opens 1,496/1,504 fleet corpora, leaving exactly the Han/Hangul
+    /// fleet closed; stable across spike rounds 3–5 (ADR 0053). Sanitised
+    /// through `clamp_unit`.
+    pub closure_threshold: f32,
+    /// The absolute recurrence knee `k`: a letter seen once scores `1`, fading
+    /// linearly to `0` past `k` occurrences — `rarity = 1 − (count − 1)/k`. This
+    /// is the rule's **sensitivity dial**; conservative/normal/aggressive preset
+    /// rows come later from the truncation experiment. `2` frozen as the default
+    /// (ADR 0053). Clamped to the internal `RARE_CAP` (the per-book word-detail
+    /// retention bound) so a candidate can never exceed what the stats retained.
+    /// Sanitised through `clamp_count`.
+    pub recurrence_k: f32,
+    /// Minimum score to emit. The score is the knee's `rarity` (dominance is not
+    /// a factor here — the closure gate and the two discounts are binary, and a
+    /// multinomial inventory's dominance is ≈1 for every candidate, ADR 0053).
+    /// `0.5` keeps both a hapax (`1.0`) and a twice-seen letter (`0.5`) at the
+    /// default knee; raise it to surface only hapaxes. Sanitised through
+    /// `clamp_unit`.
+    pub emit_score_min: f32,
+}
+
+impl Default for RareGlyphConfig {
+    fn default() -> Self {
+        Self {
+            closure_threshold: 0.0001,
+            recurrence_k: 2.0,
+            emit_score_min: 0.5,
+        }
+    }
+}
+
 /// Which rules to run, plus per-rule knobs. A rule **absent** from
 /// `rules` is enabled (default-on); map it to `false` to disable.
 /// Disabled rules are skipped before they run, not filtered after — so
@@ -463,6 +508,8 @@ pub struct Config {
     pub punct_only_token: PunctOnlyTokenConfig,
     #[cfg_attr(feature = "serde", serde(default))]
     pub mixed_script: MixedScriptConfig,
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub rare_glyph: RareGlyphConfig,
 }
 
 impl Config {
@@ -484,6 +531,7 @@ impl Config {
             RuleId::PunctuationSpacingAnomaly,
             RuleId::SentenceInitialLowercase,
             RuleId::InconsistentWordCasing,
+            RuleId::RareGlyph,
         ])
     }
 
