@@ -394,14 +394,68 @@ fn verse_tokens<'a>(
     }
 }
 
+/// Per-256-codepoint census pages, lazily allocated. The census must touch
+/// every scalar of every verse, so its per-scalar op has to be an array
+/// increment, not a map walk — a `BTreeMap::entry` here cost more than the
+/// whole default pipeline (+609 ms on a full Bible; ADR 0056). Script-agnostic:
+/// Ethiopic or CJK pages allocate exactly like ASCII's.
+struct CensusPages {
+    pages: Vec<Option<Box<[u32; 256]>>>,
+}
+
+impl CensusPages {
+    fn new() -> Self {
+        CensusPages { pages: Vec::new() }
+    }
+
+    #[inline]
+    fn bump(&mut self, c: char) {
+        let cp = c as usize;
+        let page = cp >> 8;
+        if page >= self.pages.len() {
+            self.pages.resize_with(page + 1, || None);
+        }
+        let slot = self.pages[page].get_or_insert_with(|| Box::new([0u32; 256]));
+        let e = &mut slot[cp & 0xFF];
+        *e = e.saturating_add(1);
+    }
+
+    fn into_map(self) -> BTreeMap<char, u32> {
+        let mut out = BTreeMap::new();
+        for (pi, page) in self.pages.into_iter().enumerate() {
+            let Some(page) = page else { continue };
+            for (i, &n) in page.iter().enumerate() {
+                if n > 0
+                    && let Some(c) = char::from_u32(((pi << 8) | i) as u32)
+                {
+                    out.insert(c, n);
+                }
+            }
+        }
+        out
+    }
+}
+
 /// Walk one book in canonical order: tally every scalar (census), and record
 /// word-level detail for eligible letter tokens, carrying casing's pending-
 /// terminal machine across verse seams (reset per book) for the forced-position
 /// fact. Then prune to locally-rare letter glyphs and the words they reference.
+///
+/// Glyph→word attribution is deferred to book end and derived from *distinct
+/// surface forms*: per-occurrence attribution paid a map walk and a `String`
+/// clone per letter (~3.5M for a Bible), while a book's distinct surfaces
+/// number in the thousands. Equivalent by construction — a surface's letters ×
+/// its occurrence count is exactly what the per-occurrence loop tallied, and
+/// single-script eligibility is a property of the surface string.
 fn walk_book(verses: &[(Sid, &str)], tokens: Option<&TokenCache>) -> BookGlyphs {
-    let mut inventory: BTreeMap<char, u32> = BTreeMap::new();
+    let mut census = CensusPages::new();
     let mut glyph_words: BTreeMap<char, BTreeMap<String, u32>> = BTreeMap::new();
-    let mut words: BTreeMap<String, WordInfo> = BTreeMap::new();
+    // Hash maps during the walk (a String-keyed BTreeMap walk per token was
+    // ~200 ms/Bible); both convert to the stats' sorted shape at book end.
+    let mut words: std::collections::HashMap<String, WordInfo> = std::collections::HashMap::new();
+    // Distinct eligible surface forms → occurrence count (original case — the
+    // glyphs attributed are the surface's, not the folded key's).
+    let mut surfaces: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
 
     let mut pending: Option<casing::Pending> = None;
     let mut book_initial = true;
@@ -409,8 +463,7 @@ fn walk_book(verses: &[(Sid, &str)], tokens: Option<&TokenCache>) -> BookGlyphs 
     for &(sid, text) in verses {
         // Census: every scalar.
         for c in text.chars() {
-            let e = inventory.entry(c).or_default();
-            *e = e.saturating_add(1);
+            census.bump(c);
         }
 
         // Word-level walk over letter tokens; non-letter tokens stay in the gap
@@ -428,22 +481,30 @@ fn walk_book(verses: &[(Sid, &str)], tokens: Option<&TokenCache>) -> BookGlyphs 
             let forced = !matches!(casing::pos_of(book_initial, pending.take()), PosClass::Midflow);
             book_initial = false;
 
-            let key = word.to_lowercase();
             // Titlecase name shape via the shared helper (ADR 0055): upper first
             // + ≥1 lowercase — deliberately looser than mixed-case's strict
             // `Title` (it admits `McDonald`), documented in `signals::case_shape`.
             let titlecase = case_shape::is_titlecase_name(word);
-            let info = words.entry(key.clone()).or_default();
+            // Fold to the key without allocating for the already-lowercase
+            // majority, and clone map keys only on first sight.
+            let key: std::borrow::Cow<'_, str> = if word.chars().any(char::is_uppercase) {
+                std::borrow::Cow::Owned(word.to_lowercase())
+            } else {
+                std::borrow::Cow::Borrowed(word)
+            };
+            if !words.contains_key(key.as_ref()) {
+                words.insert(key.clone().into_owned(), WordInfo::default());
+            }
+            let info = words.get_mut(key.as_ref()).expect("just inserted");
             info.tokens = info.tokens.saturating_add(1);
             info.titlecase = titlecase;
             info.forced = forced;
 
-            // Glyph attribution: eligible (single-script) letter tokens only.
-            if token_scripts(word).len() < 2 {
-                for g in word.chars().filter(|&g| is_letter_scalar(g)) {
-                    let e = glyph_words.entry(g).or_default().entry(key.clone()).or_default();
-                    *e = e.saturating_add(1);
-                }
+            // Glyph attribution defers to book end; record the surface once.
+            if let Some(n) = surfaces.get_mut(word) {
+                *n = n.saturating_add(1);
+            } else {
+                surfaces.insert(word.to_string(), 1);
             }
 
             prev_letter = word.chars().next_back().is_some_and(|c| class_of(c).is_alphabetic());
@@ -452,12 +513,32 @@ fn walk_book(verses: &[(Sid, &str)], tokens: Option<&TokenCache>) -> BookGlyphs 
         casing::advance_gap(&text[cursor..], &mut pending, &mut prev_letter);
     }
 
-    // Prune to locally-rare letter glyphs, then to the words they reference.
+    // Derive glyph→word attribution from the distinct surfaces: eligible
+    // (single-script) surfaces only, each letter occurrence in the surface
+    // contributing the surface's count to (glyph → folded key).
+    for (surface, &n) in &surfaces {
+        if token_scripts(surface).len() >= 2 {
+            continue;
+        }
+        let key = surface.to_lowercase();
+        for g in surface.chars().filter(|&g| is_letter_scalar(g)) {
+            let ws = glyph_words.entry(g).or_default();
+            if let Some(e) = ws.get_mut(key.as_str()) {
+                *e = e.saturating_add(n);
+            } else {
+                ws.insert(key.clone(), n);
+            }
+        }
+    }
+
+    // Prune to locally-rare letter glyphs, then to the words they reference
+    // (sorting the survivors into the stats' BTreeMap shape).
     glyph_words.retain(|_, ws| ws.values().copied().sum::<u32>() <= RARE_CAP);
     let keep: BTreeSet<String> = glyph_words.values().flat_map(|ws| ws.keys().cloned()).collect();
-    words.retain(|k, _| keep.contains(k));
+    let words: BTreeMap<String, WordInfo> =
+        words.into_iter().filter(|(k, _)| keep.contains(k)).collect();
 
-    BookGlyphs { inventory, rare: glyph_words, words }
+    BookGlyphs { inventory: census.into_map(), rare: glyph_words, words }
 }
 
 
