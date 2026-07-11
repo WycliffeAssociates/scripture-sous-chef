@@ -77,6 +77,8 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
+use rustc_hash::FxHashMap;
+
 use crate::analysis::association::Table2;
 use crate::charclass::class_of;
 use crate::signals::case_shape::{case_shape, CaseShape};
@@ -979,7 +981,7 @@ pub(crate) struct CasingAcc {
     /// instead of a `BTreeMap<String, _>` entry walk (log n string memcmps
     /// per word) — the stats' pinned sorted shape is rebuilt once in
     /// `finish`.
-    intern: HashMap<String, u32>,
+    intern: FxHashMap<String, u32>,
     keys: Vec<String>,
     word_stats: Vec<WordStats>,
     sites: Vec<LowerSite>,
@@ -991,7 +993,7 @@ impl CasingAcc {
     pub(crate) fn new() -> Self {
         CasingAcc {
             cased_starts: 0,
-            intern: HashMap::new(),
+            intern: FxHashMap::default(),
             keys: Vec::new(),
             word_stats: Vec::new(),
             sites: Vec::new(),
@@ -1147,7 +1149,7 @@ fn judge_casing<V: Clone + Sync + Send>(
     // book's interner only on a memo miss (once per distinct pair).
     let emit = |book_sites: &CasingSites, found: &mut Vec<Finding>| {
         let keys = &book_sites.keys;
-        let mut memo: HashMap<(u32, PosClass), Option<V>> = HashMap::new();
+        let mut memo: FxHashMap<(u32, PosClass), Option<V>> = FxHashMap::default();
         for site in &book_sites.sites {
             let v = memo
                 .entry((site.key, site.pos))

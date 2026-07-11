@@ -371,7 +371,7 @@ fn walk_book(
 
 /// Assemble the shared [`TokenCache`] from the fused walk's per-book slices.
 pub(crate) fn assemble_token_cache(out: &mut BTreeMap<BookId, BookOut>) -> TokenCache {
-    let mut cache = TokenCache::new();
+    let mut cache = TokenCache::default();
     for book in out.values_mut() {
         if let Some(vs) = book.tokens.take() {
             for (sid, toks) in vs {

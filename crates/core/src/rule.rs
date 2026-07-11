@@ -17,7 +17,9 @@
 //! execution cadence (every keystroke vs on save) is the orchestrator's.
 //! There is deliberately no hot/cold tier in the type system.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
+
+use rustc_hash::FxHashMap;
 
 use crate::config::Config;
 use crate::diagnostics::{Finding, RuleId, Severity};
@@ -34,7 +36,10 @@ use crate::verse::{Books, VerseMap};
 /// single time instead of once per rule (the UAX #29 word scan is a top
 /// cost on space-free and non-Latin scripts). Built only when ≥2 token
 /// consumers are enabled — see `analyze_stateful`.
-pub type TokenCache = HashMap<Sid, Vec<Token>>;
+/// FxHashMap: internal-only (never serialized, never crosses the wasm
+/// boundary), fast non-cryptographic hashing on the hot per-book walk (ADR
+/// 0057 allocation-diet follow-up).
+pub type TokenCache = FxHashMap<Sid, Vec<Token>>;
 
 /// The hot, stateless majority. `check` reads the verse's prebuilt scalar tape
 /// (ADR 0045) — one shared decode+classify pass the runner does per verse —

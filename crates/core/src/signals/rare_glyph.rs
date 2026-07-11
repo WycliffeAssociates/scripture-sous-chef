@@ -73,6 +73,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use rustc_hash::FxHashMap;
+
 use crate::charclass::class_of;
 use crate::config::RareGlyphConfig;
 use crate::signals::case_shape;
@@ -473,10 +475,12 @@ pub(crate) struct RareGlyphAcc {
     census: CensusPages,
     // Hash maps during the walk (a String-keyed BTreeMap walk per token was
     // ~200 ms/Bible); both convert to the stats' sorted shape at book end.
-    words: std::collections::HashMap<String, WordInfo>,
+    // FxHashMap: internal-only (never serialized), fast non-cryptographic
+    // hashing on the hot per-word walk (ADR 0057 allocation-diet follow-up).
+    words: FxHashMap<String, WordInfo>,
     // Distinct eligible surface forms → occurrence count (original case — the
     // glyphs attributed are the surface's, not the folded key's).
-    surfaces: std::collections::HashMap<String, u32>,
+    surfaces: FxHashMap<String, u32>,
     pending: Option<casing::Pending>,
     book_initial: bool,
 }
@@ -485,8 +489,8 @@ impl RareGlyphAcc {
     pub(crate) fn new() -> Self {
         RareGlyphAcc {
             census: CensusPages::new(),
-            words: std::collections::HashMap::new(),
-            surfaces: std::collections::HashMap::new(),
+            words: FxHashMap::default(),
+            surfaces: FxHashMap::default(),
             pending: None,
             book_initial: true,
         }
