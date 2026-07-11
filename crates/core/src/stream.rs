@@ -31,8 +31,10 @@
 //! calibration and tests) — the fused path and the trait path share one
 //! accumulator implementation per rule, so they cannot drift.
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 
+use crate::charclass::class_of;
 use crate::diagnostics::Finding;
 use crate::grapheme::{self, GSpan};
 use crate::rule::{self, TokenCache};
@@ -57,15 +59,24 @@ pub(crate) struct VerseInputs<'t, 'b> {
     pub tape: &'b [TapeEntry],
     pub graphemes: &'b [GSpan],
     pub tokens: &'b [Token],
+    /// Each token's case-folded word-type key, index-aligned with `tokens`
+    /// (`None` where the token isn't a letter token — the same tokens
+    /// `mixed_case`/`rare_glyph` already skip). Computed once per token by
+    /// the walk (see `fold_letter_tokens`) instead of once per listener —
+    /// `mixed_case` and `rare_glyph` key by the identical fold, so this
+    /// replaces two `to_lowercase` calls per word with one.
+    pub folds: &'b [Option<Cow<'t, str>>],
 }
 
 /// Which per-verse products a walk must build. Graphemes are tape-driven, so
-/// `graphemes` implies `tape`.
+/// `graphemes` implies `tape`; folds are token-driven, so `folds` implies
+/// `tokens`.
 #[derive(Clone, Copy, Default)]
 pub(crate) struct Needs {
     pub tape: bool,
     pub graphemes: bool,
     pub tokens: bool,
+    pub folds: bool,
 }
 
 impl Needs {
@@ -73,8 +84,46 @@ impl Needs {
         Needs {
             tape: self.tape || o.tape || self.graphemes || o.graphemes,
             graphemes: self.graphemes || o.graphemes,
-            tokens: self.tokens || o.tokens,
+            tokens: self.tokens || o.tokens || self.folds || o.folds,
+            folds: self.folds || o.folds,
         }
+    }
+}
+
+/// Case-fold each verse token to its lowercase word-type key, once per token.
+/// `mixed_case` and `rare_glyph` both key their per-book word tables by this
+/// exact fold (`word.to_lowercase()` gated by `mixed_case::is_letter_token`,
+/// the same predicate both already use) — computing it once here instead of
+/// once per listener removes a redundant `to_lowercase` pass per listener.
+/// Cow fast-path (mirrors `rare_glyph`'s original path): a token with no
+/// uppercase scalar borrows `text` directly; only a token with an uppercase
+/// scalar allocates.
+///
+/// `casing` is deliberately NOT fed by this table: its word unit is
+/// `compound_words` (hyphen-merged spans, not raw tokens) and its letter gate
+/// admits tokens with non-letter scalars alongside letters, so its fold is
+/// not always the same string as a single token's fold — unifying it risked
+/// silent drift (e.g. Greek final-sigma at a merge boundary) for a listener
+/// that isn't the measured hotspot. See the ADR for the full reasoning.
+fn fold_letter_tokens<'t>(
+    text: &'t str,
+    tokens: &[Token],
+    buf: &mut Vec<Option<Cow<'t, str>>>,
+) {
+    buf.clear();
+    buf.reserve(tokens.len());
+    for tok in tokens {
+        let word = tok.span.slice(text);
+        if !mixed_case::is_letter_token(word) {
+            buf.push(None);
+            continue;
+        }
+        let folded = if word.chars().any(|c| class_of(c).is_uppercase()) {
+            Cow::Owned(word.to_lowercase())
+        } else {
+            Cow::Borrowed(word)
+        };
+        buf.push(Some(folded));
     }
 }
 
@@ -117,6 +166,9 @@ impl WalkPlan {
         }
         if self.mixed_script || self.rare_glyph || self.mixed_case {
             n.tokens = true;
+        }
+        if self.rare_glyph || self.mixed_case {
+            n.folds = true;
         }
         n
     }
@@ -235,6 +287,7 @@ fn walk_book(
     let mut tape_buf: Vec<TapeEntry> = Vec::new();
     let mut graphemes_buf: Vec<GSpan> = Vec::new();
     let mut tokens_buf: Vec<Token> = Vec::new();
+    let mut folds_buf: Vec<Option<Cow<str>>> = Vec::new();
     let mut cache: Option<Vec<(Sid, Vec<Token>)>> =
         plan.collect_tokens.then(|| Vec::with_capacity(verses.len()));
 
@@ -248,12 +301,16 @@ fn walk_book(
         if needs.tokens {
             tokens_buf = token::tokenize(text);
         }
+        if needs.folds {
+            fold_letter_tokens(text, &tokens_buf, &mut folds_buf);
+        }
         let v = VerseInputs {
             sid,
             text,
             tape: if needs.tape { &tape_buf } else { &[] },
             graphemes: if needs.graphemes { &graphemes_buf } else { &[] },
             tokens: if needs.tokens { &tokens_buf } else { &[] },
+            folds: if needs.folds { &folds_buf } else { &[] },
         };
 
         if let Some(a) = &mut casing_acc {
@@ -336,10 +393,11 @@ pub(crate) fn drive_book<A, T>(
     mut feed: impl FnMut(&mut A, &VerseInputs<'_, '_>, usize),
     finish: impl FnOnce(A) -> T,
 ) -> T {
-    let needs = needs.union(Needs::default()); // normalize graphemes ⇒ tape
+    let needs = needs.union(Needs::default()); // normalize graphemes ⇒ tape, folds ⇒ tokens
     let mut tape_buf: Vec<TapeEntry> = Vec::new();
     let mut graphemes_buf: Vec<GSpan> = Vec::new();
     let mut tokens_buf: Vec<Token> = Vec::new();
+    let mut folds_buf: Vec<Option<Cow<str>>> = Vec::new();
     for (vi, &(sid, text)) in verses.iter().enumerate() {
         if needs.tape {
             tape::build(text, &mut tape_buf);
@@ -350,12 +408,16 @@ pub(crate) fn drive_book<A, T>(
         if needs.tokens {
             tokens_buf = token::tokenize(text);
         }
+        if needs.folds {
+            fold_letter_tokens(text, &tokens_buf, &mut folds_buf);
+        }
         let v = VerseInputs {
             sid,
             text,
             tape: if needs.tape { &tape_buf } else { &[] },
             graphemes: if needs.graphemes { &graphemes_buf } else { &[] },
             tokens: if needs.tokens { &tokens_buf } else { &[] },
+            folds: if needs.folds { &folds_buf } else { &[] },
         };
         feed(&mut acc, &v, vi);
     }

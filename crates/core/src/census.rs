@@ -149,7 +149,7 @@ pub fn census(target: &VerseMap, opts: &CensusOptions) -> Inventory {
     let per_book: Vec<BookCensus> = rule::map_books(&books, |_book, verses| {
         stream::drive_book(
             verses,
-            Needs { tape: true, graphemes: true, tokens: true },
+            Needs { tape: true, graphemes: true, tokens: true, folds: false },
             BookCensusAcc::new(),
             |a, v, vi| a.verse(v, vi),
             BookCensusAcc::finish,

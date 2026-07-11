@@ -224,7 +224,7 @@ impl StatefulRule for MixedCaseWord {
                 book,
                 stream::drive_book(
                     verses,
-                    stream::Needs { tokens: true, ..Default::default() },
+                    stream::Needs { tokens: true, folds: true, ..Default::default() },
                     MixedCaseAcc::new(),
                     |a, v, _| a.verse(v),
                     MixedCaseAcc::finish,
@@ -364,13 +364,11 @@ impl MixedCaseAcc {
     }
 
     pub(crate) fn verse(&mut self, v: &stream::VerseInputs<'_, '_>) {
-        for tok in v.tokens {
+        for (tok, folded) in v.tokens.iter().zip(v.folds) {
+            let Some(folded) = folded else { continue };
             let word = tok.span.slice(v.text);
-            if !is_letter_token(word) {
-                continue;
-            }
             let Some(shape) = case_shape(word) else { continue };
-            self.words.entry(word.to_lowercase()).or_default().record(shape);
+            self.words.entry(folded.clone().into_owned()).or_default().record(shape);
         }
     }
 

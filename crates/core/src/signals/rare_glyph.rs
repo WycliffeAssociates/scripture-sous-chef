@@ -221,7 +221,7 @@ impl StatefulRule for RareGlyph {
                 book,
                 stream::drive_book(
                     verses,
-                    stream::Needs { tokens: true, ..Default::default() },
+                    stream::Needs { tokens: true, folds: true, ..Default::default() },
                     RareGlyphAcc::new(),
                     |a, v, _| a.verse(v),
                     RareGlyphAcc::finish,
@@ -504,11 +504,9 @@ impl RareGlyphAcc {
         // casing walk's gap handling.
         let mut prev_letter = false;
         let mut cursor = 0usize;
-        for tok in v.tokens {
+        for (tok, folded) in v.tokens.iter().zip(v.folds) {
+            let Some(key) = folded else { continue };
             let word = tok.span.slice(text);
-            if !is_letter_token(word) {
-                continue;
-            }
             casing::advance_gap(&text[cursor..tok.span.start], &mut self.pending, &mut prev_letter);
             let forced =
                 !matches!(casing::pos_of(self.book_initial, self.pending.take()), PosClass::Midflow);
@@ -519,12 +517,9 @@ impl RareGlyphAcc {
             // `Title` (it admits `McDonald`), documented in `signals::case_shape`.
             let titlecase = case_shape::is_titlecase_name(word);
             // Fold to the key without allocating for the already-lowercase
-            // majority, and clone map keys only on first sight.
-            let key: std::borrow::Cow<'_, str> = if word.chars().any(char::is_uppercase) {
-                std::borrow::Cow::Owned(word.to_lowercase())
-            } else {
-                std::borrow::Cow::Borrowed(word)
-            };
+            // majority, and clone map keys only on first sight — computed once
+            // per token by the fused walk (`stream::fold_letter_tokens`), not
+            // per listener.
             if !self.words.contains_key(key.as_ref()) {
                 self.words.insert(key.clone().into_owned(), WordInfo::default());
             }
