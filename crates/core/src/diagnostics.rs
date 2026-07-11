@@ -193,13 +193,15 @@ pub enum FindingArgs {
         majority: u32,
         total: u32,
     },
-    /// `punct.spacing-anomaly`: the mark's corpus-wide spaced-vs-attached
-    /// counts, so the consumer can render "`,` is attached 96% of the time
-    /// (n = 1053)" — the descriptive rate behind the Wilson-bound `score`
-    /// (ADR 0048). The flagged occurrence is always the minority form; the
-    /// majority is `max(spaced, attached)` and `total = spaced + attached`.
+    /// `punct.spacing-anomaly`: the mark's **attachment signature** here and its
+    /// corpus-wide rarity (ADR 0054), so the consumer can render "`,` is written
+    /// letter|letter in 3 of 1053 places" — the descriptive rate behind the
+    /// Wilson-bound `score` (ADR 0048). `signature` is the flagged joint
+    /// `(left, right)` context label (e.g. `"letter|space"`, `"digit|digit"`);
+    /// `count` is that signature's occurrences and `total = N` the mark's total
+    /// occurrences. The flagged signature is always a rare one for this mark.
     #[cfg_attr(feature = "serde", serde(rename = "spacing-convention"))]
-    SpacingConvention { mark: char, spaced: u32, attached: u32 },
+    SpacingConvention { mark: char, signature: String, count: u32, total: u32 },
     /// `case.sentence-initial-lowercase`: the forced-position habit's
     /// corpus-wide uppercase-vs-total counts among words the lexicon calls
     /// intrinsically lowercase, so the consumer can render "after `.` this

@@ -349,20 +349,23 @@ pub fn message(id: RuleId, args: Option<&FindingArgs>) -> String {
             _ => "A word this translation usually capitalizes, written lowercase here.".into(),
         },
         RuleId::PunctuationSpacingAnomaly => match args {
-            Some(FindingArgs::SpacingConvention { mark, spaced, attached }) => {
-                let total = spaced + attached;
-                let (form, k) = if attached >= spaced {
-                    ("attached to its word", *attached)
-                } else {
-                    ("spaced from its word", *spaced)
+            Some(FindingArgs::SpacingConvention { mark, signature, count, total }) => {
+                let (left, right) = signature.split_once('|').unwrap_or((signature, ""));
+                let side = |c: &str| match c {
+                    "letter" => "a letter",
+                    "space" => "a space",
+                    "digit" => "a digit",
+                    _ => "punctuation",
                 };
                 format!(
-                    "‘{mark}’ is usually {form} ({k} of {total}, {}%); \
-                     here it is written the other way.",
-                    pct(k, total)
+                    "‘{mark}’ has {} before it and {} after it here — a spacing \
+                     this translation uses in only {count} of {total} places ({}%).",
+                    side(left),
+                    side(right),
+                    pct(*count, *total),
                 )
             }
-            _ => "This mark is spaced the opposite way from this translation’s usual style.".into(),
+            _ => "This mark is spaced differently from this translation’s usual style.".into(),
         },
         RuleId::BracketBalance => match args {
             Some(FindingArgs::BracketWindow { measure: BracketMeasure::Pairing, majority, total, .. }) => {

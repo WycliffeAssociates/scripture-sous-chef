@@ -81,17 +81,14 @@ fn main() {
             punct_calib(Path::new(t));
             return;
         }
-        // Punctuation spacing calibration (ADR 0029, 0050): score distribution
-        // at floor 0, a per-mark two-factor decomposition (dominance × rarity),
-        // and a recurrence-knee sweep. Trailing args are the `k` values to sweep
-        // (default 8 12 16 24 32 48).
-        [flag, t, ks @ ..] if flag == "--spacing" => {
-            let sweep: Vec<f32> = if ks.is_empty() {
-                vec![8.0, 12.0, 16.0, 24.0, 32.0, 48.0]
-            } else {
-                ks.iter().map(|s| s.parse().expect("minority_recurrence_k")).collect()
-            };
-            spacing_calib(Path::new(t), &sweep);
+        // Punctuation spacing knee/floor sweep + regression (ADR 0054): over the
+        // vref fleet, the total `punct.spacing-anomaly` finding count for a grid
+        // of (minority_recurrence_k, minority_rate_per_10k) at floor 0.5, plus
+        // the six ADR 0050 calibration corpora at each cell — the before/after
+        // regression counter and the ADR 0054 knee-sweep evidence, driven by the
+        // production rule under the 16-cell signature denominators.
+        [flag, dir] if flag == "--spacing-sweep" => {
+            spacing_fleet_sweep(Path::new(dir));
             return;
         }
         // Casing two-factor calibration (ADR 0051). `<path>` is a single vref
@@ -1041,121 +1038,122 @@ fn punct_calib(dir: &Path) {
     println!("\nshipped default surfaces: {shipped_n}");
 }
 
-/// One mark's corpus-wide spacing verdict, as recovered from the rule's own
-/// floor-0 findings: the raw split, the (flaggable) minority count, and the
-/// dominance factor (ADR 0029) — the k-independent half of the two-factor score.
-struct MarkRow {
-    mark: char,
-    spaced: u64,
-    attached: u64,
-    minority: u64,
-    dominance: f64,
-}
+/// Punctuation-spacing knee/floor sweep + regression over the vref fleet
+/// (ADR 0054). Drives the **production** `punct.spacing-anomaly` rule (the new
+/// 16-cell signature model) under a grid of `(minority_recurrence_k,
+/// minority_rate_per_10k)` at floor 0.5, reporting the fleet-wide finding total
+/// and the six ADR 0050 calibration corpora at each cell. This is the
+/// before/after regression counter and the ADR 0054 knee-sweep evidence: the
+/// shipped `(32, 40)` cell is the one to compare against the old binary rule's
+/// 3,928 fleet findings, and the six named corpora must keep their kept-sites.
+fn spacing_fleet_sweep(dir: &Path) {
+    use rayon::prelude::*;
 
-/// Punctuation spacing calibration (ADR 0029 dominance × ADR 0050 recurrence
-/// rarity). Prints the production score distribution, the per-mark two-factor
-/// decomposition, and a recurrence-knee (`minority_recurrence_k`) sweep with the
-/// surfaced volume each `k`/floor pair would emit. The dominance factor is
-/// k-independent, so it is recovered once from a wide-knee floor-0 run (where
-/// `rarity ≈ 1 ⇒ score ≈ dominance`) and the sweep is then analytic.
-fn spacing_calib(dir: &Path, sweep: &[f32]) {
-    let corpus = dir.file_name().unwrap().to_string_lossy().to_string();
-    let target = load_corpus(dir);
-    eprintln!("{corpus}: {} verses", target.len());
-    let books = ssc_core::verse::by_book(&target);
+    // ADR 0050 regression corpora (short id → file stem).
+    const REG: &[&str] = &[
+        "engwebster",
+        "WA-kmr-IQ-badini-reg",
+        "udu",
+        "WA-ne-udb",
+        "WA-pa-ulb",
+        "mya",
+    ];
+    // (k, rate) grid; floor fixed at the shipped 0.5. The shipped cell is (32,40).
+    const KS: &[f32] = &[16.0, 32.0, 64.0];
+    const RATES: &[f32] = &[0.0, 20.0, 40.0, 80.0];
 
-    // Production distribution at the *shipped* score (default k, floor 0).
-    let rule = PunctuationSpacingAnomaly {
-        cfg: PunctuationSpacingConfig { emit_score_min: 0.0, ..Default::default() },
+    let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
+        .unwrap_or_else(|e| panic!("read {}: {e}", dir.display()))
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "txt"))
+        .collect();
+    files.sort();
+    let total_corpora = files.len();
+    eprintln!("spacing sweep fleet: {total_corpora} corpora");
+
+    let count = |k: f32, rate: f32, map: &VerseMap| -> usize {
+        let rule = PunctuationSpacingAnomaly {
+            cfg: PunctuationSpacingConfig {
+                emit_score_min: 0.5,
+                confidence_z: 1.96,
+                minority_recurrence_k: k,
+                minority_rate_per_10k: rate,
+            },
+        };
+        let books = ssc_core::verse::by_book(map);
+        rule.judge(&rule.reduce(&books, None, None).0, &books, None, None).len()
     };
-    let t0 = std::time::Instant::now();
-    let findings = rule.judge(&rule.reduce(&books, None, None).0, &books, None, None);
-    eprintln!("spacing reduce+judge: {:?}", t0.elapsed());
-    report_scored("punct.spacing-anomaly", &target, &findings);
 
-    // Recover per-mark (spaced, attached, dominance) from a wide-knee floor-0
-    // run: with k huge the rarity factor is ≈1, so each finding's score is the
-    // dominance, and its args carry the exact corpus-wide split. One finding per
-    // minority-form occurrence ⇒ dedup by mark.
-    let wide = PunctuationSpacingAnomaly {
-        cfg: PunctuationSpacingConfig {
-            emit_score_min: 0.0,
-            minority_recurrence_k: 1.0e9,
-            ..Default::default()
-        },
-    };
-    let wf = wide.judge(&wide.reduce(&books, None, None).0, &books, None, None);
-    let mut rows: BTreeMap<char, MarkRow> = BTreeMap::new();
-    for f in &wf {
-        if let Some(FindingArgs::SpacingConvention { mark, spaced, attached }) = f.args {
-            rows.entry(mark).or_insert_with(|| MarkRow {
-                mark,
-                spaced: spaced as u64,
-                attached: attached as u64,
-                minority: (spaced as u64).min(attached as u64),
-                dominance: f.score.unwrap_or(0.0) as f64,
-            });
+    // Per-corpus: for each (k, rate) cell, the finding count. Reduce fleet in
+    // parallel, summing per cell.
+    let per_corpus: Vec<(String, Vec<usize>)> = files
+        .par_iter()
+        .map(|path| {
+            let id = path.file_stem().unwrap().to_string_lossy().to_string();
+            let map = load_corpus(path);
+            let mut cells = Vec::new();
+            for &k in KS {
+                for &rate in RATES {
+                    cells.push(count(k, rate, &map));
+                }
+            }
+            (id, cells)
+        })
+        .collect();
+
+    let ncells = KS.len() * RATES.len();
+    let mut totals = vec![0usize; ncells];
+    let mut corpora_with = vec![0usize; ncells];
+    for (_, cells) in &per_corpus {
+        for (i, &n) in cells.iter().enumerate() {
+            totals[i] += n;
+            if n > 0 {
+                corpora_with[i] += 1;
+            }
         }
     }
 
-    println!("\nper-mark two-factor decomposition (dominance × rarity, ADR 0050):");
-    println!("  mark  spaced : attached   minority   dominance");
-    for r in rows.values() {
-        let which = if r.spaced < r.attached { "spaced-min" } else { "attached-min" };
-        println!(
-            "  {:?}  {:>7} : {:<7}  min={:<6} dom={:.4}  ({which})",
-            r.mark, r.spaced, r.attached, r.minority, r.dominance
-        );
+    println!("=== punct.spacing-anomaly fleet knee/floor sweep (floor 0.5, z 1.96) ===");
+    println!("production 16-cell signature rule; cells = total fleet findings (corpora with ≥1)");
+    print!("      {:>6}", "k\\rate");
+    for &rate in RATES {
+        print!("  {:>14}", format!("{rate:.0}/10k"));
     }
-
-    // rarity(minority, N, k) with the volume-scaled knee
-    // K = k + rate·N/10k (ADR 0050 amendment); `rate` is the shipped default.
-    let rate = f64::from(PunctuationSpacingConfig::default().minority_rate_per_10k);
-    let rarity = |minority: u64, n: u64, k: f64| -> f64 {
-        let knee = k + rate * n as f64 / 10_000.0;
-        (1.0 - ((minority.saturating_sub(1) as f64) / knee).clamp(0.0, 1.0)).clamp(0.0, 1.0)
-    };
-
-    println!(
-        "\nknee sweep — per-mark score = dominance × rarity(minority, K = k + {rate}·N/10k):"
-    );
-    for r in rows.values() {
-        let n = r.spaced + r.attached;
-        print!("  {:?} (min={:<5} N={:<7} dom={:.3}):", r.mark, r.minority, n, r.dominance);
-        for &k in sweep {
-            let s = r.dominance * rarity(r.minority, n, k as f64);
-            print!("  k{:.0}={:.3}", k, s);
+    println!();
+    for (ki, &k) in KS.iter().enumerate() {
+        print!("      {k:>6.0}");
+        for ri in 0..RATES.len() {
+            let i = ki * RATES.len() + ri;
+            print!("  {:>14}", format!("{} ({})", totals[i], corpora_with[i]));
         }
         println!();
     }
 
-    // Surfaced volume each (k, floor) pair would emit: a mark contributes all
-    // `minority` of its minority-form occurrences iff its score clears the floor.
-    println!("\nsurfaced-occurrence volume by k and floor (rate {rate}/10k):");
-    println!("  {:>6}  {:>10}  {:>10}", "k", "floor 0.50", "floor 0.75");
-    for &k in sweep {
-        let vol = |floor: f64| -> u64 {
-            rows.values()
-                .filter(|r| {
-                    r.dominance * rarity(r.minority, r.spaced + r.attached, k as f64) >= floor
-                })
-                .map(|r| r.minority)
-                .sum()
-        };
-        println!("  {:>6.0}  {:>10}  {:>10}", k, vol(0.5), vol(0.75));
+    println!("\n-- six ADR 0050 regression corpora, findings per (k, rate) cell --");
+    print!("  {:<24}", "corpus");
+    for &k in KS {
+        for &rate in RATES {
+            print!("  {:>8}", format!("{k:.0}/{rate:.0}"));
+        }
     }
-
-    let mut cfg = Config::v1_defaults();
-    cfg.rules.insert(RuleId::PunctuationSpacingAnomaly, true);
-    let shipped = analyze_with_config(&target, None, &cfg)
-        .iter()
-        .filter(|f| f.code == RuleId::PunctuationSpacingAnomaly)
-        .count();
+    println!();
+    for &id in REG {
+        if let Some((_, cells)) = per_corpus.iter().find(|(cid, _)| cid == id) {
+            print!("  {id:<24}");
+            for &n in cells {
+                print!("  {n:>8}");
+            }
+            println!();
+        } else {
+            println!("  {id:<24}  (absent)");
+        }
+    }
+    let shipped_idx = KS.iter().position(|&k| k == 32.0).unwrap() * RATES.len()
+        + RATES.iter().position(|&r| r == 40.0).unwrap();
     println!(
-        "\nshipped default (k {}, rate {}/10k, floor {}, enabled) surfaces: {shipped}",
-        PunctuationSpacingConfig::default().minority_recurrence_k,
-        PunctuationSpacingConfig::default().minority_rate_per_10k,
-        PunctuationSpacingConfig::default().emit_score_min,
+        "\nshipped cell (k=32, rate=40/10k, floor 0.5): {} fleet findings across {} corpora",
+        totals[shipped_idx], corpora_with[shipped_idx]
     );
 }
 
@@ -3629,8 +3627,13 @@ fn signature_regression(id: &str) {
             continue;
         }
         live_surfaced += 1;
-        let mark_off = f.range.end - mark.len_utf8();
-        let Some(&sig) = site_sig.get(&(f.sid, mark_off)) else {
+        // The redesigned rule's span is the mark's *neighbourhood* (ADR 0054),
+        // not the bare mark, so recover the mark scalar's offset by locating it
+        // inside the finding range rather than from `range.end`.
+        let mark_off = map
+            .get(&f.sid)
+            .and_then(|t| t[f.range.start..f.range.end].find(mark).map(|rel| f.range.start + rel));
+        let Some(sig) = mark_off.and_then(|off| site_sig.get(&(f.sid, off)).copied()) else {
             rows.push(format!("    {:<10} {:?} live={:.3} | (no signature match)", f.sid.to_string(), mark, live_score));
             continue;
         };

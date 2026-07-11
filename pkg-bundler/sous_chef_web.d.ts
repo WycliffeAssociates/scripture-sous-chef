@@ -191,11 +191,13 @@ export interface BookCasing {
 }
 
 /**
- * One book\'s per-mark spacing counts. **No sites** — spans re-derive from the
- * text at `judge`, so this stays a few bytes per mark even corpus-wide.
+ * One book\'s per-mark **signature tables**: a 16-cell histogram of joint
+ * `(left, right)` context per mark (ADR 0054). **No sites** — spans re-derive
+ * from the text at `judge`, so this stays a few dozen bytes per mark even
+ * corpus-wide.
  */
 export interface BookPunctuationSpacing {
-    per_mark: Record<string, SpacingCounts>;
+    per_mark: Record<string, number[]>;
 }
 
 /**
@@ -224,16 +226,6 @@ export interface DelimObservation {
     glyph: string;
     role: DelimRole;
     matched: boolean;
-}
-
-/**
- * One mark\'s binary spacing counts: word-adjacent occurrences that are spaced
- * from vs attached to their governing word. `spaced + attached = N`, the
- * opportunity denominator.
- */
-export interface SpacingCounts {
-    spaced: number;
-    attached: number;
 }
 
 /**
@@ -416,7 +408,7 @@ export type RuleId = "lex.excess-h-whitespace" | "hyg.tab-in-body" | "hyg.contro
  * collected into `Vec`s and never copied on a hot path, so this costs
  * nothing real (ADR 0016).
  */
-export type FindingArgs = { kind: "length-ratio"; ratio_pct: number; scope: LengthRatioScope } | { kind: "bracket-window"; window: DelimObservation[]; measure: BracketMeasure; majority: number; total: number } | { kind: "spacing-convention"; mark: string; spaced: number; attached: number } | { kind: "casing-convention"; glyph: string | null; quoted: boolean; upper: number; total: number } | { kind: "word-casing"; word: string; upper: number; total: number } | { kind: "punct-only-rate"; count: number; units: number } | { kind: "adjacency-evidence"; pattern: string; k: number; lead_n: number; books: number; corpus: number } | { kind: "script-mix-evidence"; k: number; n: number; books: number; corpus: number } | { kind: "repeat-evidence"; ch: string; run: number } | { kind: "duplicate-word"; first_sid: string } | { kind: "rare-glyph"; glyph: string; count: number };
+export type FindingArgs = { kind: "length-ratio"; ratio_pct: number; scope: LengthRatioScope } | { kind: "bracket-window"; window: DelimObservation[]; measure: BracketMeasure; majority: number; total: number } | { kind: "spacing-convention"; mark: string; signature: string; count: number; total: number } | { kind: "casing-convention"; glyph: string | null; quoted: boolean; upper: number; total: number } | { kind: "word-casing"; word: string; upper: number; total: number } | { kind: "punct-only-rate"; count: number; units: number } | { kind: "adjacency-evidence"; pattern: string; k: number; lead_n: number; books: number; corpus: number } | { kind: "script-mix-evidence"; k: number; n: number; books: number; corpus: number } | { kind: "repeat-evidence"; ch: string; run: number } | { kind: "duplicate-word"; first_sid: string } | { kind: "rare-glyph"; glyph: string; count: number };
 
 /**
  * The catalog plus the shared sensitivity dial: labelled `emit_score_min`

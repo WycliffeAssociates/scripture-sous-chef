@@ -161,98 +161,105 @@ scope.
 
 ---
 
-## `punct.spacing-anomaly` — corpus-relative punctuation spacing
+## `punct.spacing-anomaly` — corpus-relative attachment signatures
 
-> **Severity** Info · **Default** off · **Scope** stateful (aggregate-only) · **Knobs** `emit_score_min` (default 0.5), `confidence_z` (default 1.96), `minority_recurrence_k` (default 32), `minority_rate_per_10k` (default 40) · **Source** `punctuation.rs` · **ADR** 0029, 0033, 0050
+> **Severity** Info · **Default** off · **Scope** stateful (aggregate-only) · **Knobs** `emit_score_min` (default 0.5), `confidence_z` (default 1.96), `minority_recurrence_k` (default 32), `minority_rate_per_10k` (default 40) · **Source** `punctuation.rs` · **ADR** 0029, 0033, 0050, 0054
 
 **Flags** — A separator-punctuation mark (GC `Po` minus quotes, ADR 0033 —
 `. , ; : ? !` and equally danda `।`, Arabic `۔ ، ؟ ؛`, Ethiopic `። ፤ ፥`,
-Burmese `။ ၊`, Khmer `។`) written in the **minority** spacing form for that
-mark in this corpus, with a continuous `score`:
-- a spaced `,` in a corpus that attaches commas (English) → high score
+Burmese `။ ၊`, Khmer `។`) written in an **attachment signature rare for that
+mark in this corpus**, with a continuous `score`. The signature is the joint
+`(left, right)` context over {letter, space, punct, digit} — 16 cells (ADR
+0054, generalising the ADR 0029 before-only spaced/attached binary):
+- a spaced `,` in a corpus that attaches commas (English) → the `space|…`
+  signature is rare → high score
 - an *attached* `?` in a corpus that spaces `? !` (French, `pa_ulb`) → high score
-- a spaced ` ،` in kmr-IQ against an attached-comma majority, spaced Burmese
-  finals ` ၏` in my_juds against an attached majority — the non-Latin marks
-  the old ASCII candidate list never judged
+- **new after-side coverage** the before-only rule could never see: `word,word`
+  (comma reads `letter|letter`), `away!Why` (`!` reads `letter|letter`), a
+  verse-leading `.word` (`.` reads `space|letter`)
+- a swapped Spanish `¿` used with a letter to its left (`así¿`, `letter|space`)
+  against its `space|letter` opening majority
 
-**Clean (learned silent)** — The majority form for each mark (whatever the
-corpus does most), any mark with **no dominant convention** (near-50/50 stays
-quiet), a mark seen in only one form, and — new in ADR 0050 — a **minority form
-that recurs at scale**: engwebster's spaced `; : ? !` (Webster 1833 period
-typography, hundreds each), kmr-IQ's 1,289 spaced ` ،`, udu's 2,478 spaced `/`.
-A minority recurring past the knee is the text's *second convention*, not a slip.
-Cluster tails (`word?!` — the `!` clings to `?`), closing-quote/paren-then-mark
-(`word" ,`), verse-leading marks, and numeric `1:1` colons never enter the
-opportunity pool.
+**Clean (learned silent)** — The dominant signature(s) for each mark, any mark
+with **no dominant signature** (a near-even split scores below the floor on its
+own — no tie special-case), a mark seen in one signature only, and a **rare
+signature that recurs at scale** (ADR 0050): engwebster's spaced `; : ? !`
+period typography, kmr-IQ's 1,289 spaced ` ،`. A recurring minority is the
+text's *second convention*, not a slip. The old hard-coded exclusions all
+**dissolve into learned-silent signatures** (ADR 0054) — no exclusion list:
+numeric `1:1` colons (`digit|digit`, 97% silent fleet-wide), cluster tails
+(`?!`'s `!` reads `punct|…`, 98% silent), and verse-leading/-final marks (the
+seam reads as whitespace, 99.9% silent). A *rare* `digit|digit` colon in a
+letter-colon corpus correctly still surfaces — the honest behaviour the
+exclusion list could not give.
 
-**Why it matters** — Whether a mark is spaced or attached is a *per-mark
-convention*, not a universal rule. The predecessor `punct.space-before-punct`
-flagged all whitespace-before-punct as a typo and fired **6159 times** on
-`pa_ulb`, where spacing `? !` is the norm — every hit a false positive. This
-rule learns each mark's dominant form and flags only deviations, in **both**
-directions (the old rule could never catch an errant *attached* mark in a
-spacing corpus).
+**Why it matters** — Whether a mark is spaced or attached, and on which side, is
+a *per-mark convention*, not a universal rule. The predecessor
+`punct.space-before-punct` flagged all whitespace-before-punct as a typo and
+fired **6159 times** on `pa_ulb`, where spacing `? !` is the norm. This rule
+learns each mark's signature distribution and flags only the rare ones, in
+**every** direction — including the missing-space-*after* the before-only ADR
+0029 rule structurally could not catch.
 
-**Score — two factors: dominance × rarity (ADR 0050)** — Per mark, count
-word-adjacent occurrences that are `spaced` vs `attached` (`N = spaced +
-attached`); let `minority = min(spaced, attached)`. The score of every
-minority-form occurrence is:
+**Score — two factors: dominance × rarity (ADR 0048/0050/0054)** — Per mark, sum
+the per-book 16-cell signature tables to a corpus table with total `N`. Each
+signature holding `count` occurrences scores:
 
 ```
-dominance = wilson_lower_bound(max(spaced, attached), N, confidence_z)
+dominance = wilson_lower_bound(N − count, N, confidence_z)   // share of the COMPLEMENT
 K         = minority_recurrence_k + minority_rate_per_10k · N / 10 000
-rarity    = 1 − min(minority − 1, K) / K
+rarity    = 1 − min(count − 1, K) / K
 score     = dominance × rarity
 ```
 
-- **dominance** (ADR 0029) is the conservative share held by the *opposing*
-  convention, equivalently `1 − upper_bound(minority_share)`. Confidence-monotone:
-  at a fixed ratio it rises with `N` toward the observed rate.
-- **rarity** (ADR 0050, volume-scaled by the same-day amendment) is a linear
-  recurrence knee on the minority count whose width grows with the mark's
-  volume: slips accumulate with opportunities, so at large `N` the flag
-  boundary is a minority *rate* (≈2 per 1k mark occurrences at the defaults),
-  while thin marks get the absolute base `k` alone — the
-  same shape `lex.repeated-character-run` uses for `word_recurrence_k`. A minority
-  seen once is `rarity = 1` (a rare slip against a strong convention); a minority
-  recurring past `k` is `rarity = 0` (a second convention, silent).
+- **dominance** is the conservative share held by the signature's *complement*
+  (all the mark's other signatures). A dominant signature has a tiny complement
+  ⇒ score ≈ 0 ⇒ silent; a rare one ⇒ ≈ 1. This generalises ADR 0029's opposing
+  convention from *one* form to *all others* — so a mark with no dominant
+  signature stays quiet with no special-case tie handling.
+- **rarity** (ADR 0050, retained under 16-cell denominators by the ADR 0054 knee
+  re-sweep) is a linear recurrence knee on the signature's count whose width
+  grows with the mark's volume: at large `N` the flag boundary is a *rate*
+  (≈2 per 1k mark occurrences), while thin marks get the absolute base `k`. A
+  signature seen once is `rarity = 1` (a rare slip); one recurring past the knee
+  is `rarity = 0` (a second convention).
 
-An exact tie yields no verdict (silent). A deliberate dynamic follows from the
-product: **fixing minority occurrences raises the score of the remaining ones**
-(rarity climbs back toward 1) — clean-as-you-go sharpens the signal on what's
-left.
+A deliberate dynamic follows from the product: **fixing occurrences raises the
+score of the remaining ones** (rarity climbs back toward 1) — clean-as-you-go
+sharpens the signal.
+
+**Presentation** — `FindingArgs::SpacingConvention { mark, signature, count,
+total }` carries the flagged joint signature label (`"letter|letter"`,
+`"space|space"`, …), that signature's `count`, and the mark's `total` (ADR
+0048). The message is direction-neutral. The span highlights the mark's
+*neighbourhood*: the crossed whitespace run where a space **is**, or the attached
+neighbour grapheme where a space **belongs**, on either side (`d,w` for a
+run-together comma, `" , "` for a doubly-spaced one).
 
 **Config** — `emit_score_min` (default **0.5**) is the emission floor on the
-two-factor score. Before ADR 0050 the score was dominance alone and this read as
-a literal convention share ("≥75% dominant"); with the rarity factor folded in
-it is a two-factor cutoff, and it dropped from 0.75 to 0.5 once the recurrence
-knee collapsed the mid-mass that had made 0.75 a volume policy rather than a
-truth cutoff. `minority_recurrence_k` (default **32**) is the recurrence knee;
-`confidence_z` (default 1.96) is an advanced Wilson-confidence knob omitted from
-normal UI. There is deliberately no `convention_rate` and no `min_samples`.
-Defaults frozen at the [2026-07-09 calibration](../calibration/2026-07-09-spacing-minority-recurrence.md);
-`emit_score_min` / `confidence_z` were provisional from 2026-07-06 (ADR 0029).
+two-factor score; `minority_recurrence_k` (default **32**) and
+`minority_rate_per_10k` (default **40**) are the volume-scaled recurrence knee
+(the rate term is required to keep ne_udb's verse-final dandas near the floor —
+ADR 0054); `confidence_z` (default 1.96) is an advanced Wilson-confidence knob.
+There is deliberately no `convention_rate` and no `min_samples`. Constants
+carried from ADR 0050 and re-verified under the 16-cell denominators (ADR 0054
+knee re-sweep); the knee is a pure sensitivity dial (the score histogram is one
+huge silent spike + a thin flat tail).
 
-**Nuance & ADR ties** — Governing neighbour is a *grapheme cluster* containing a
-letter, so a decomposed word-final letter (base + combining mark) still counts.
-The finding message is direction-neutral ("this mark's spacing differs from the
-corpus convention"). Two scorers were rejected en route: `1 − strength(self)`
-(confuses insufficient evidence with rarity — fires on 1:1) and signed contrast
-(confidence-*inverts* as the corpus grows). The `Po` widening (ADR 0033) had
-taken the 106-corpus survey from 2,981 to 12,565 findings, with the caveat that
-"the volume *is* the inconsistency count" — a strong convention whose minority
-recurs thousands of times (kmr-IQ 2,131 ` ،`, engwebster's spaced period
-typography) emitted thousands of findings. ADR 0050 resolves that: the recurrence
-factor reads a recurring minority as a *second convention* and silences it, so
-those storm corpora collapse to their handful of genuine slips (engwebster
-2,209 → a few, kmr-IQ 2,131 → ~11) while ne_udb's strong-convention slips
-(`!` 9, `,` 15) are kept. See ADR 0029, 0033, and 0050.
+**Nuance & ADR ties** — Context classification: a neighbour cluster with an
+alphabetic scalar (incl. a decomposed base + combining letter) reads `letter`; a
+leading numeric reads `digit`; the verse/book **seam reads as whitespace**, never
+its own category (repo `CLAUDE.md`: a terminal is never attached across a seam —
+ADR 0054's no-edge ruling). Quotes stay out of the candidate mark set (ADR 0033)
+but read `punct` as a *context* class. The redesign took the fleet count from
+3,928 (before-only binary) to 115,883 at shipped defaults — the intended
+broadening (after-side + all-context candidacy); the rule is default-off. See
+ADR 0029 (dominance), 0033 (separator class), 0050 (recurrence knee), and 0054
+(joint signatures).
 
-**Open issues / future work** — A `mark × script` fallback dimension (for a mark
-that genuinely follows different conventions across scripts) is deferred until
-calibration shows both buckets carry enough evidence. Digit-adjacent punctuation
-stays out of scope. The recurrence knee cannot distinguish a genuine slip cluster
-from an emerging second convention purely by count when the two coincide in
-magnitude (ne_udb's `?` minority of 18 is discounted the same way am's
-structurally identical `፡` minority of 24 is silenced) — a single knee splits
-them as well as one constant can (2026-07-09 calibration margin).
+**Open issues / future work** — One priced-in false-positive class (ADR 0054): a
+signature rare because the *context* is rare (a `digit|…` mark in a digit-sparse
+corpus), not because the mark is misplaced — a `mark × context` volume floor is
+the obvious future lever. A `mark × script` fallback dimension is deferred until
+calibration shows both buckets carry evidence. Quote-specific attachment (beyond
+the `punct` context class) rides the parked quote work (ADR 0039).

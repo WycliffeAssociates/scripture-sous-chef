@@ -226,20 +226,25 @@ impl Default for PunctuationAdjacencyConfig {
     }
 }
 
-/// Knobs for `punct.spacing-anomaly`. The rule learns, per punctuation mark,
-/// whether the corpus spaces or attaches it, and flags occurrences of the
-/// **minority** form scored by how dominant the opposing convention is (ADR
-/// 0029). The grapheme-governed opportunity scan is fixed; these two values are
-/// the whole judgment surface. Ships **default-disabled** until calibrated.
+/// Knobs for `punct.spacing-anomaly`. The rule learns, per punctuation mark, the
+/// distribution of its **attachment signatures** — the joint `(left, right)`
+/// context over {letter, space, punct, digit} — and flags occurrences in a
+/// signature *rare for that mark in this corpus*, scored by how dominant the
+/// complement is (ADR 0048) times the signature's recurrence rarity (ADR 0050),
+/// generalised to joint signatures by ADR 0054. The grapheme-governed
+/// opportunity scan is fixed; these values are the whole judgment surface. Ships
+/// **default-disabled** until the consumer opts into a spacing pass.
 /// Scores are always finite: `judge` sanitises out-of-range / NaN input here.
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default))]
 pub struct PunctuationSpacingConfig {
-    /// **The user-facing decision threshold**: emit a minority-form occurrence
-    /// only when its two-factor evidence — the majority form's *conservative*
-    /// dominance (a Wilson lower bound) **times** the minority form's rarity —
-    /// is at least this value. Before ADR 0050 the score was dominance alone
+    /// **The user-facing decision threshold**: emit an occurrence in a rare
+    /// signature only when its two-factor evidence — the *conservative*
+    /// dominance of the signature's complement (a Wilson lower bound) **times**
+    /// the signature's recurrence rarity — is at least this value (ADR 0054
+    /// generalises the ADR 0029/0050 minority form to a joint signature). Before
+    /// ADR 0050 the score was dominance alone
     /// and this read as a literal convention share; now a strong convention
     /// whose minority *recurs* is discounted by the rarity factor, so the floor
     /// is a two-factor cutoff, not a share. Raising it surfaces less; it is
@@ -251,21 +256,22 @@ pub struct PunctuationSpacingConfig {
     /// seen a handful of times stays quiet until the evidence accumulates.
     /// `1.96` ≈ 95%.
     pub confidence_z: f32,
-    /// How many minority-form occurrences (beyond the first) drive the
+    /// How many occurrences of a rare signature (beyond the first) drive the
     /// **rarity** factor to zero — the recurrence knee that makes the score
-    /// two-factor: `score = dominance(majority) × rarity(minority)` where
-    /// `rarity = 1 − min(minority − 1, K) / K` and the effective knee
+    /// two-factor: `score = dominance(complement) × rarity(count)` where
+    /// `rarity = 1 − min(count − 1, K) / K` and the effective knee
     /// `K = minority_recurrence_k + minority_rate_per_10k · N / 10 000` scales
-    /// with the mark's total opportunities `N` (ADR 0050, amended same day).
-    /// A minority form seen once is a rare slip against a strong convention
-    /// (`rarity = 1`, surfaces); a minority form that recurs at scale is the
-    /// text's *second* convention (`rarity → 0`, silent) — the resolution that
-    /// separates ne_udb's 9 attached `!` (keep) from engwebster's spaced-
-    /// `; : ? !` period typography and kmr-IQ's 1,289 spaced ` ،` (silence).
-    /// Linear knee, mirroring `lex.repeated-character-run`'s
+    /// with the mark's total occurrences `N` (ADR 0050, retained under 16-cell
+    /// signature denominators by ADR 0054). A signature seen once is a rare slip
+    /// against a strong convention (`rarity = 1`, surfaces); one that recurs at
+    /// scale is the text's *second* convention (`rarity → 0`, silent) — the
+    /// resolution that separates ne_udb's attached `!`/`,` slips (keep, and its
+    /// 40 verse-final dandas at score ≈ 0.55, near the floor) from engwebster's
+    /// spaced-`; : ? !` period typography and kmr-IQ's 1,289 spaced ` ،`
+    /// (silence). Linear knee, mirroring `lex.repeated-character-run`'s
     /// `word_recurrence_k` (ADR 0028); sanitised through `clamp_count`. Fixing
-    /// minority occurrences *raises* the score of the remaining ones
-    /// (clean-as-you-go sharpens the signal) — desired.
+    /// occurrences *raises* the score of the remaining ones (clean-as-you-go
+    /// sharpens the signal) — desired.
     ///
     /// This knob is the knee's **absolute base**: the tolerance at negligible
     /// volume, and the whole tolerance for thin marks.
