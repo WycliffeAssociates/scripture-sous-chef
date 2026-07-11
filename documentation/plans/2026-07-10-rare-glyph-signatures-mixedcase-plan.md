@@ -291,6 +291,30 @@ already-known "re-sweep the knee at ADR time" item, not a model defect. The
 one FP class to price. Stats shape for production: `[u64; 16]` per mark per
 book.
 
+**Pooled class-conditioned re-measurement (2026-07-10, post-0054)** — a follow-up
+spike revisits the after-side model as two rival designs over the 1,504-corpus
+fleet ([report](../calibration/2026-07-10-pooled-spacing-spike.md), harness
+`calibrate --pooled-spacing`). **Design A** (the winner) conditions the per-side
+attached-vs-spaced binary on the first-non-ws neighbour's class {Letter, Number,
+Punct} (crossing seams for the class; seam = an ordinary spaced observation, no
+forcedness), with a two-level hierarchy (class pool → top-level fallback) and a
+quote/non-quote sub-split *inside* Punct kept as data. At the shipped constants
+(z 1.96, knee 32+40/10k, floor 0.5) the fleet is **shipped 9,644 → Design A
+27,772 → Design B 95,232**. Design A reproduces **100%** of shipped wins on all
+six regression corpora (Letter pool alone reproduces all but one — a `။` whose
+neighbour is Punct, not Letter). **Make-or-break confirmed:** the Number pool is
+Wilson-dominant in 887 corpora (334 flag), the Quote sub-pool in 1,352 (1,037
+flag) — real coverage. New digit (`Sam 118: 26`), quote-adjacent (`témoigne :"`),
+and medial-period (`Safán.Ix`) coverage is clean. **Design B (immediate 4-way
+{letter,number,ws,punct}, whitespace terminal) is refuted:** it is structurally
+blind to spaced-side-vs-content (`7. 8` ≡ `7. Next`) and over-flags rare content
+categories 3.4× (33,791 number + 66,508 punct flagged sides — legit neighbours,
+not mis-spacing). The quote sub-split *diverges* from other-punct only for `.`
+(`."` attaches 77% vs other spaces 71%) — evidence for a future quote split, not
+yet acted on. Open items for an ADR: guard the top-level fallback against
+thin-pool over-reach (`?)` parentheticals), the knee re-sweep, and the Pd-dash
+domain decision. Nothing frozen.
+
 **Steps** —
 1. `calibrate --signatures` spike: per-mark signature distributions
    fleet-wide; verify the predicted frequent signatures dominate
