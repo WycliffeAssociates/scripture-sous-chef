@@ -184,7 +184,9 @@ pub fn analyze_stateful(
 
     // The book view is shared by both analysis lanes. A cache only hashes and
     // fingerprints at call entry; the cache-free path remains the shipped
-    // walk and per-verse loop below.
+    // walk and per-verse loop below. `source` is intentionally not part of
+    // the fingerprint: it feeds only proportionality counting, counting
+    // never reads the cache, and no cached lane depends on source.
     let books = verse::by_book(target);
     let mut cache = cache;
     let hashes: BTreeMap<BookId, u128> = match cache.as_deref_mut() {
@@ -275,24 +277,27 @@ pub fn analyze_stateful(
     // A walk-product hit is safe only for a clean book in the complete
     // snapshot shape. Echo and cold calls must walk every supplied book so
     // their counting and emission semantics remain exactly unchanged.
-    let mut walk_books = books.clone();
     let mut cached_books = Vec::new();
+    let mut walk_books = None;
     if let Some(cache) = cache.as_mut() {
+        let mut books_to_walk = books.clone();
         for &book in books.keys() {
             if counted.is_some_and(|list| !list.contains(&book))
                 && let Some(cached) = cache.cloned_walk(book, hashes[&book], &plan)
             {
-                walk_books.remove(&book);
+                books_to_walk.remove(&book);
                 cached_books.push((book, cached));
             }
         }
+        walk_books = Some(books_to_walk);
     }
 
     // ONE walk per verse per book (the event-stream engine): tape, graphemes
     // and tokens are each built once per verse and every enabled listener is
     // fed in-pass — this replaces the per-rule corpus walks the reduce phase
     // used to run. Fan-out per book under `parallel` (ADR 0042).
-    let mut fused = stream::walk_fused(&walk_books, counted, source, &plan);
+    let books_to_walk = walk_books.as_ref().unwrap_or(&books);
+    let mut fused = stream::walk_fused(books_to_walk, counted, source, &plan);
 
     // Write every walked book before assembly takes products out of `fused`.
     // Cached books are then synthesized with empty stats halves: the assembly
@@ -715,6 +720,37 @@ mod tests {
     }
 
     #[test]
+    fn cached_fingerprint_change_rewarms_both_lanes() {
+        let mut target = mk("GEN", &["a  b", "hello"]);
+        target.extend(mk("EXO", &["x\ty", "clean"]));
+        let cfg = Config::all();
+        let mut cache = AnalysisCache::new();
+
+        let (_, _) = analyze_stateful(&target, None, &cfg, None, None, Some(&mut cache));
+        let mut changed_cfg = cfg.clone();
+        changed_cfg.rules.insert(RuleId::BracketBalance, false);
+        let (_, changed_prior) =
+            analyze_stateful(&target, None, &changed_cfg, None, None, Some(&mut cache));
+
+        // A config change clears the old products, so the first call under the
+        // new fingerprint warms both books instead of reading either lane.
+        assert_eq!(cache.lane1_hit_count(), 0);
+        assert_eq!(cache.walk_hit_count(), 0);
+
+        let gen_id = BookId::from_str("GEN").unwrap();
+        let (_, _) = analyze_stateful(
+            &target,
+            None,
+            &changed_cfg,
+            Some(changed_prior),
+            Some(&[gen_id]),
+            Some(&mut cache),
+        );
+        assert_eq!(cache.lane1_hit_count(), 2);
+        assert_eq!(cache.walk_hit_count(), 1, "the clean sibling reuses its re-warmed walk");
+    }
+
+    #[test]
     fn cached_snapshot_matches_cold_snapshot_across_all_walk_lanes() {
         let gen_id = BookId::from_str("GEN").unwrap();
         let exo = BookId::from_str("EXO").unwrap();
@@ -759,6 +795,177 @@ mod tests {
         assert_eq!(cached_stats, scratch_stats);
         assert_eq!(cache.walk_hit_count(), 2, "clean books should reuse walk products");
         assert_eq!(cache.walk_miss_count(), 0, "changed book is walked without a cache probe");
+    }
+
+    #[test]
+    fn cached_content_invalidation_replaces_one_book_and_keeps_sibling_warm() {
+        let gen_id = BookId::from_str("GEN").unwrap();
+        let exo = BookId::from_str("EXO").unwrap();
+        let mut original = mk("GEN", &["a  b", "one"]);
+        original.extend(mk("EXO", &["x\ty", "two"]));
+        let cfg = Config::all();
+        let mut cache = AnalysisCache::new();
+        let (_, prior) = analyze_stateful(&original, None, &cfg, None, None, Some(&mut cache));
+        let old_gen_hash = cache.entry_hash(gen_id).unwrap();
+        let old_exo_hash = cache.entry_hash(exo).unwrap();
+
+        let mut edited = original.clone();
+        edited.insert(Sid::new(gen_id, 1, 1), "changed ,, text".into());
+        let (cold_findings, cold_stats) = analyze_stateful(
+            &edited,
+            None,
+            &cfg,
+            Some(prior.clone()),
+            Some(&[gen_id]),
+            None,
+        );
+        let (cached_findings, cached_stats) = analyze_stateful(
+            &edited,
+            None,
+            &cfg,
+            Some(prior),
+            Some(&[gen_id]),
+            Some(&mut cache),
+        );
+
+        assert_eq!(cached_findings, cold_findings);
+        assert_eq!(cached_stats, cold_stats);
+        assert_ne!(cache.entry_hash(gen_id), Some(old_gen_hash));
+        assert_eq!(cache.entry_hash(exo), Some(old_exo_hash));
+        assert_eq!(cache.walk_hit_count(), 1, "only the unchanged sibling reuses its walk");
+    }
+
+    #[test]
+    fn structurally_changed_book_with_identical_text_recounts() {
+        let gen_id = BookId::from_str("GEN").unwrap();
+        let original: VerseMap = [
+            (Sid::new(gen_id, 1, 1), "same".into()),
+            (Sid::new(gen_id, 1, 2), "text".into()),
+        ]
+        .into_iter()
+        .collect();
+        let restructured: VerseMap = [
+            (Sid::new(gen_id, 1, 1), "same".into()),
+            (Sid::new(gen_id, 2, 1), "text".into()),
+        ]
+        .into_iter()
+        .collect();
+        let cfg = Config::v1_defaults();
+        let mut cache = AnalysisCache::new();
+        let (_, _) = analyze_stateful(&original, None, &cfg, None, None, Some(&mut cache));
+        let old_hash = cache.entry_hash(gen_id).unwrap();
+
+        let (_, _) = analyze_stateful(&restructured, None, &cfg, None, None, Some(&mut cache));
+
+        assert_eq!(cache.lane1_hit_count(), 0, "address changes invalidate the book hash");
+        assert_eq!(cache.lane1_miss_count(), 2);
+        assert_ne!(cache.entry_hash(gen_id), Some(old_hash));
+    }
+
+    #[test]
+    fn clean_book_hash_mismatch_forces_a_walk_even_when_not_named_changed() {
+        let gen_id = BookId::from_str("GEN").unwrap();
+        let exo = BookId::from_str("EXO").unwrap();
+        let mut original = mk("GEN", &["one", "two"]);
+        original.extend(mk("EXO", &["three", "four"]));
+        let cfg = Config::all();
+        let mut cache = AnalysisCache::new();
+        let (_, prior) = analyze_stateful(&original, None, &cfg, None, None, Some(&mut cache));
+        let old_exo_hash = cache.entry_hash(exo).unwrap();
+
+        let mut edited = original.clone();
+        edited.insert(Sid::new(exo, 1, 1), "changed text".into());
+        // This deliberately lies about the edit. The content hash must still
+        // prevent a stale clean-book walk product from being reused.
+        let (cold_findings, cold_stats) = analyze_stateful(
+            &edited,
+            None,
+            &cfg,
+            Some(prior.clone()),
+            Some(&[gen_id]),
+            None,
+        );
+        let (cached_findings, cached_stats) = analyze_stateful(
+            &edited,
+            None,
+            &cfg,
+            Some(prior),
+            Some(&[gen_id]),
+            Some(&mut cache),
+        );
+
+        assert_eq!(cached_findings, cold_findings);
+        assert_eq!(cached_stats, cold_stats);
+        assert_eq!(cache.walk_hit_count(), 0, "the hash-mismatched book must be walked");
+        assert_ne!(cache.entry_hash(exo), Some(old_exo_hash));
+    }
+
+    #[test]
+    fn cached_empty_and_prior_none_calls_reuse_caseless_sentinel() {
+        let cfg = Config::all();
+        let mut cache = AnalysisCache::new();
+        let empty = VerseMap::new();
+        let (_, _) = analyze_stateful(&empty, None, &cfg, None, None, Some(&mut cache));
+        assert_eq!(cache.book_count(), 0);
+
+        let gen_id = BookId::from_str("GEN").unwrap();
+        let caseless = mk("GEN", &["你好"]);
+        let (_, _) = analyze_stateful(&caseless, None, &cfg, None, None, Some(&mut cache));
+        let (_, _) = analyze_stateful(&caseless, None, &cfg, None, None, Some(&mut cache));
+        assert_eq!(cache.lane1_hit_count(), 1, "prior-none calls still reuse pure findings");
+        assert!(cache
+            .books
+            .get(&gen_id)
+            .and_then(|entry| entry.casing.as_ref())
+            .is_some_and(|sites| sites.sites.is_empty()));
+
+        let mut full = caseless.clone();
+        full.extend(mk("EXO", &["a  b"]));
+        let (_, prior) = analyze_stateful(&full, None, &cfg, None, None, Some(&mut cache));
+        let exo = BookId::from_str("EXO").unwrap();
+        let mut edited = full.clone();
+        edited.insert(Sid::new(exo, 1, 1), "edited".into());
+        let walk_hits_before = cache.walk_hit_count();
+        let (_, _) = analyze_stateful(
+            &edited,
+            None,
+            &cfg,
+            Some(prior),
+            Some(&[exo]),
+            Some(&mut cache),
+        );
+        assert_eq!(cache.walk_hit_count(), walk_hits_before + 1);
+    }
+
+    #[test]
+    fn cached_snapshot_never_reads_default_stats_for_clean_books() {
+        let gen_id = BookId::from_str("GEN").unwrap();
+        let mut original = mk("GEN", &["(He said. the gate stood.", "one) word word 12"]);
+        original.extend(mk("EXO", &["a  b, joyfullly", "A1 α qQx"]));
+        let cfg = Config::all();
+        let mut cache = AnalysisCache::new();
+        let (_, prior) = analyze_stateful(&original, None, &cfg, None, None, Some(&mut cache));
+        assert_ne!(prior, Stats::default(), "the clean sibling must carry real prior stats");
+
+        let mut edited = original.clone();
+        edited.insert(Sid::new(gen_id, 1, 1), "changed text".into());
+        let (_, cold_stats) = analyze_stateful(
+            &edited,
+            None,
+            &cfg,
+            Some(prior.clone()),
+            Some(&[gen_id]),
+            None,
+        );
+        let (_, cached_stats) = analyze_stateful(
+            &edited,
+            None,
+            &cfg,
+            Some(prior),
+            Some(&[gen_id]),
+            Some(&mut cache),
+        );
+        assert_eq!(cached_stats, cold_stats);
     }
 
     #[test]

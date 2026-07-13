@@ -1,7 +1,7 @@
 # ADR 0060: Cross-call analysis caches — content-keyed per-book products
 
 - **Date:** 2026-07-13
-- **Status:** Accepted
+- **Status:** Draft
 - **Builds on:** ADR 0042 (book-shaped stateful fan-out), ADR 0043
   (complete-snapshot changed scope), ADR 0057 (fused event-stream engine)
 
@@ -16,6 +16,27 @@ change. The per-verse deterministic lane has the same avoidable cost.
 The interactive consumer needs an explicit cache lifetime across calls. The
 cache is therefore a disposable in-memory handle owned by the caller, not
 implicit global state and not part of the wasm wire surface in this round.
+
+The retained-set planning evidence was:
+
+| corpus | text | sites | live (today's structs) | packed est. |
+| --- | ---: | ---: | ---: | ---: |
+| WA-en-ulb | 3.9 MB | 775,254 | 25.1 MB | 9.8 MB |
+| sim | 1.5 MB | 257,385 | 8.3 MB | 3.3 MB |
+| WA-kmr-IQ-badini-reg | 1.5 MB | 24,174 | 2.4 MB | 0.85 MB |
+| WA-kn-ulb (Kannada) | 10.2 MB | 85,326 | 13.3 MB | 6.8 MB |
+
+The planning cold/warm ladder was:
+
+| call shape | defaults | all-on |
+| --- | ---: | ---: |
+| cold, no prior | ~270 ms | ~694 ms |
+| warm snapshot today (prior + changed) | ~180–230 ms | ~370–470 ms |
+| echo today (dirty book only) | 0.1 / ~15 ms (small/large book) | ~28 / ~60–94 ms |
+| cache-warm snapshot (target) | ~5–25 ms | ~50–120 ms |
+
+These planning values are machine-relative (±20%) and are retained as design
+evidence rather than as a replacement for the targeted measurements below.
 
 ## Decision
 
@@ -77,6 +98,14 @@ setup on the local vref corpora:
 
 The warm numbers exclude cache construction, which is setup work; they
 include the actual `prior + changed` call with a warmed cache.
+
+## Delivery note
+
+The initial implementation landed in `f50e0df` as one combined
+implementation/docs commit rather than the plan's separate Phase 1, Phase 2,
+and Phase 3 commit sets. This follow-up keeps that published history intact
+and makes the deviation explicit for Will's approval; the follow-up commit is
+limited to review findings, regression coverage, and documentation alignment.
 
 ## Alternatives and consequences
 
