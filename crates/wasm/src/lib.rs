@@ -462,6 +462,7 @@ pub fn analyze_vref_stateful(
         &cfg,
         prior,
         changed_ids.as_deref(),
+        None,
     );
     Analysis {
         findings: project(&target_vm, &findings),

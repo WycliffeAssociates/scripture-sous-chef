@@ -49,6 +49,7 @@ pub struct BracketBalance {
 }
 
 /// One delimiter occurrence in a book, in canonical order.
+#[derive(Clone)]
 pub(crate) struct DelimEvent {
     /// Index of the verse within its book (0-based, canonical order).
     vi: usize,
@@ -61,7 +62,9 @@ pub(crate) struct DelimEvent {
     pub(crate) is_open: bool,
 }
 
-/// One book's match results.
+/// One book's match results, retained as a pre-emit product by the analysis
+/// cache when the book content is unchanged.
+#[derive(Clone)]
 pub(crate) struct BookMatch {
     pub(crate) events: Vec<DelimEvent>,
     pub(crate) matched: Vec<bool>,

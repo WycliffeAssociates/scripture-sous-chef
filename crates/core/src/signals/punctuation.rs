@@ -930,7 +930,9 @@ struct SpacingOpportunity {
 
 /// A spacing opportunity with its verse — the reduce→judge forwarded site
 /// (ADR 0044). Carries everything judge's verdict needs, so the site path
-/// never touches text.
+/// never touches text. The native product may also live in the content-keyed
+/// analysis cache between calls.
+#[derive(Clone)]
 pub struct SpacingSite {
     pub(crate) sid: Sid,
     pub(crate) mark: char,

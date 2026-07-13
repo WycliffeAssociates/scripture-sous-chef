@@ -859,7 +859,9 @@ impl Model {
 }
 
 /// A lowercase word-start observed by the book walk — a flag candidate for
-/// either rule. Forwarded reduce→judge within a call (ADR 0044); never stored.
+/// either rule. Forwarded reduce→judge within a call (ADR 0044), and retained
+/// in the content-keyed analysis cache when its owning book is clean.
+#[derive(Clone)]
 pub struct LowerSite {
     pub(crate) sid: Sid,
     pub(crate) start: u32,
@@ -873,9 +875,11 @@ pub struct LowerSite {
 }
 
 /// One book's lowercase sites plus the per-book word-type interner that
-/// resolves each site's `key` id back to its case-folded string. Strictly
-/// in-memory (ADR 0044 posture — sites never serialize, never outlive the
-/// analyze call); ids are meaningful only against this book's `keys`.
+/// resolves each site's `key` id back to its case-folded string. It never
+/// enters serialized stats; ids remain meaningful only against this book's
+/// `keys` table, including when the native product is retained by the
+/// content-keyed analysis cache.
+#[derive(Clone, Default)]
 pub struct CasingSites {
     /// id → folded word-type key, in first-sight order during the book walk.
     pub(crate) keys: Vec<String>,

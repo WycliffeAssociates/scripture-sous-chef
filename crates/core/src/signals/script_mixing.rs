@@ -92,7 +92,9 @@ fn signature(scripts: &[ScriptTag]) -> String {
 
 /// One mixed token, forwarded reduce→judge within a call (ADR 0044). Carries
 /// the signature so judge's per-signature verdict needs no re-derivation, and
-/// the token span to highlight.
+/// the token span to highlight. Clean-book products may be retained by the
+/// content-keyed analysis cache between calls.
+#[derive(Clone)]
 pub struct MixedScriptSite {
     pub(crate) sid: Sid,
     pub(crate) sig: String,

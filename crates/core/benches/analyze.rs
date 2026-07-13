@@ -16,6 +16,8 @@
 //! - `analyze/changed_edit_{3JN,MAT,PSA}` — the complete-snapshot call
 //!   (ADR 0043): whole corpus + prior + `changed=[book]`; counting is
 //!   book-scoped, emission is global
+//! - `analyze/cached_edit_{3JN,PSA}` — the same complete-snapshot call with
+//!   `AnalysisCache` warmed in setup; clean books reuse both cache lanes
 //! - `analyze/full_devanagari`— hi_ulb, the expensive-script case
 //! - `proportionality/nt_vs_bible` — bem_reg vs en_ulb through the rule
 //!
@@ -29,12 +31,12 @@
 
 use std::hint::black_box;
 
-use criterion::{BatchSize, Criterion, Throughput, criterion_group, criterion_main};
+use criterion::{criterion_group, criterion_main, BatchSize, Criterion, Throughput};
 use ssc_core::config::ProportionalityConfig;
 use ssc_core::rule::StatefulRule;
 use ssc_core::script::is_nt_book;
 use ssc_core::signals::proportionality::ProjectLengthRatio;
-use ssc_core::{Config, VerseMap, analyze, analyze_stateful};
+use ssc_core::{analyze, analyze_stateful, AnalysisCache, Config, VerseMap};
 
 #[path = "../dev/vref_io.rs"]
 mod vref_io;
@@ -80,7 +82,7 @@ fn bench_analyze(c: &mut Criterion) {
         // book sizes bounds the range: 3JN (~15 verses, floor), MAT (large),
         // PSA (~2.5k verses, the worst case).
         let cfg = Config::v1_defaults();
-        let (_, cached) = analyze_stateful(&bible, None, &cfg, None, None);
+        let (_, cached) = analyze_stateful(&bible, None, &cfg, None, None, None);
         for code in ["3JN", "MAT", "PSA"] {
             let mut book: VerseMap = bible
                 .iter()
@@ -97,7 +99,14 @@ fn bench_analyze(c: &mut Criterion) {
                 b.iter_batched(
                     || cached.clone(),
                     |prior| {
-                        analyze_stateful(black_box(&book), None, black_box(&cfg), Some(prior), None)
+                        analyze_stateful(
+                            black_box(&book),
+                            None,
+                            black_box(&cfg),
+                            Some(prior),
+                            None,
+                            None,
+                        )
                     },
                     BatchSize::LargeInput,
                 )
@@ -122,6 +131,33 @@ fn bench_analyze(c: &mut Criterion) {
                             black_box(&cfg),
                             Some(prior),
                             Some(black_box(&changed)),
+                            None,
+                        )
+                    },
+                    BatchSize::LargeInput,
+                )
+            });
+
+            // The same complete-snapshot shape with both cache lanes warmed.
+            // Setup is deliberately inside `iter_batched`: Criterion excludes
+            // cache construction from the measured steady-state call while
+            // still proving that every iteration starts from a real warm cache.
+            g.bench_function(format!("cached_edit_{code}"), |b| {
+                b.iter_batched(
+                    || {
+                        let mut cache = AnalysisCache::new();
+                        let (_, prior) =
+                            analyze_stateful(&bible, None, &cfg, None, None, Some(&mut cache));
+                        (prior, cache)
+                    },
+                    |(prior, mut cache)| {
+                        analyze_stateful(
+                            black_box(&edited),
+                            None,
+                            black_box(&cfg),
+                            Some(prior),
+                            Some(black_box(&changed)),
+                            Some(&mut cache),
                         )
                     },
                     BatchSize::LargeInput,

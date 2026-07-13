@@ -26,6 +26,9 @@
 //!   # fleet survey → self-contained HTML report (all rules, floors zeroed,
 //!   # every corpus in the directory; out defaults to target/fleet-report.html):
 //!   cargo run --release -p ssc-core --example calibrate -- --fleet corpora/vref [out.html]
+//!   # incremental oracle with the cross-call analysis cache enabled:
+//!   cargo run --release -p ssc-core --example calibrate -- \
+//!       --dump-incremental-cached corpora/vref /tmp/incremental.tsv default
 
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -45,8 +48,8 @@ use ssc_core::signals::proportionality::ProjectLengthRatio;
 use ssc_core::signals::punctuation::{PunctuationAdjacencyAnomaly, PunctuationSpacingAnomaly};
 use ssc_core::token::tokenize;
 use ssc_core::{
-    BookId, BracketMeasure, Config, Finding, FindingArgs, LengthRatioScope, RuleId, VerseMap,
-    analyze, analyze_with_config,
+    AnalysisCache, BookId, BracketMeasure, Config, Finding, FindingArgs, LengthRatioScope, RuleId,
+    VerseMap, analyze, analyze_with_config,
 };
 
 #[path = "../dev/vref_io.rs"]
@@ -252,7 +255,13 @@ fn main() {
         // dump its findings + a stats digest. Pins the prior/merge/changed
         // path across the port.
         [flag, path, out, cfg_name] if flag == "--dump-incremental" => {
-            dump_incremental(Path::new(path), Path::new(out), cfg_name);
+            dump_incremental(Path::new(path), Path::new(out), cfg_name, false);
+            return;
+        }
+        // Same incremental oracle with the cross-call cache enabled. The
+        // output must remain byte-identical to --dump-incremental.
+        [flag, path, out, cfg_name] if flag == "--dump-incremental-cached" => {
+            dump_incremental(Path::new(path), Path::new(out), cfg_name, true);
             return;
         }
         // Wall-clock probe: min-of-5 analyze_with_config on one corpus under
@@ -6649,7 +6658,7 @@ fn fnv64(s: &str) -> u64 {
 /// word, a spaced comma, an unbalanced paren.
 const EDIT_TEXT: &str = "He fell ,, the  gate stood.. qQx deJésus (broken";
 
-fn dump_incremental(path: &Path, out_path: &Path, cfg_name: &str) {
+fn dump_incremental(path: &Path, out_path: &Path, cfg_name: &str, cached: bool) {
     let cfg = oracle_config(cfg_name);
     let source = oracle_source(path);
     let files = oracle_files(path);
@@ -6664,8 +6673,16 @@ fn dump_incremental(path: &Path, out_path: &Path, cfg_name: &str) {
         if target.is_empty() {
             continue;
         }
+        let mut cache = cached.then(AnalysisCache::new);
         let (_, prior) =
-            ssc_core::analyze_stateful(&target, source.as_ref(), &cfg, None, None);
+            ssc_core::analyze_stateful(
+                &target,
+                source.as_ref(),
+                &cfg,
+                None,
+                None,
+                cache.as_mut(),
+            );
         // The edit: last verse of the first book.
         let first_book = target.keys().next().unwrap().book;
         let edit_sid = *target
@@ -6688,6 +6705,7 @@ fn dump_incremental(path: &Path, out_path: &Path, cfg_name: &str) {
             &cfg,
             Some(prior.clone()),
             None,
+            cache.as_mut(),
         );
         write_findings(&mut out, &id, "echo", &echo);
 
@@ -6698,6 +6716,7 @@ fn dump_incremental(path: &Path, out_path: &Path, cfg_name: &str) {
             &cfg,
             Some(prior),
             Some(&[first_book]),
+            cache.as_mut(),
         );
         write_findings(&mut out, &id, "snap", &snap);
         let js = serde_json::to_string(&stats).unwrap();

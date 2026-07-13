@@ -11,6 +11,7 @@ unicode-properties = { workspace = true }
 # maps, the token cache): fast non-cryptographic hashing, no_std-friendly,
 # never touches a serialized map. See ADR 0057 allocation-diet follow-up.
 rustc-hash = { workspace = true }
+xxhash-rust = { workspace = true }
 serde = { version = "1.0", features = ["derive"], optional = true }
 tsify = { version = "0.5.6", optional = true }
 wasm-bindgen = { version = "0.2", optional = true }

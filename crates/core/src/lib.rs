@@ -14,6 +14,7 @@ pub mod analysis;
 pub mod catalog;
 pub mod census;
 pub mod charclass;
+mod cache;
 mod charclass_table;
 pub mod config;
 pub mod diagnostics;
@@ -31,6 +32,7 @@ pub mod token;
 pub mod unicode;
 pub mod verse;
 
+pub use cache::AnalysisCache;
 pub use catalog::{RuleCard, SENSITIVITY_STOPS, Verdict, rule_cards};
 pub use census::{CensusOptions, Inventory, census};
 pub use config::{
@@ -101,7 +103,7 @@ pub fn analyze_with_config(
 ) -> Vec<Finding> {
     // The one-shot sugar over the stateful entry point: no prior, discard
     // the returned stats (ADR 0017).
-    analyze_stateful(target, source, config, None, None).0
+    analyze_stateful(target, source, config, None, None, None).0
 }
 
 /// Analyze, returning the corpus [`Stats`] so a caller can cache it and feed
@@ -137,7 +139,10 @@ pub fn analyze_stateful(
     config: &Config,
     prior: Option<Stats>,
     changed: Option<&[BookId]>,
+    cache: Option<&mut AnalysisCache>,
 ) -> (Vec<Finding>, Stats) {
+    use std::collections::BTreeMap;
+
     let per_verse: Vec<_> = rule::per_verse_rules()
         .into_iter()
         .filter(|r| config.is_enabled(r.id()))
@@ -177,6 +182,22 @@ pub fn analyze_stateful(
             || config.is_enabled(RuleId::MixedScriptInToken),
     };
 
+    // The book view is shared by both analysis lanes. A cache only hashes and
+    // fingerprints at call entry; the cache-free path remains the shipped
+    // walk and per-verse loop below.
+    let books = verse::by_book(target);
+    let mut cache = cache;
+    let hashes: BTreeMap<BookId, u128> = match cache.as_deref_mut() {
+        Some(cache) => {
+            cache.ensure_fingerprint(config);
+            books
+                .iter()
+                .map(|(&book, verses)| (book, cache::book_hash(verses)))
+                .collect()
+        }
+        None => BTreeMap::new(),
+    };
+
     // The per-verse phase is embarrassingly parallel — each verse is judged
     // from its own text by `Sync` rules. Under the `parallel` feature it fans
     // out over rayon (ADR 0018); otherwise it stays serial. Output is the same
@@ -186,35 +207,60 @@ pub fn analyze_stateful(
     // buffer — a `map_init` per-worker buffer under `parallel`, a plain reused
     // `Vec` serially — and shared by every per-verse rule, replacing their ~10
     // separate `char_indices()` walks with one decode+classify pass.
-    #[cfg(feature = "parallel")]
-    let mut out: Vec<Finding> = {
-        use rayon::prelude::*;
-        target
-            .par_iter()
-            .map_init(Vec::new, |tape_buf, (&sid, text)| {
-                let mask = tape::build_masked(text, tape_buf);
-                verse_findings(sid, text, tape_buf, mask, &per_verse)
-            })
-            .flatten_iter()
-            .collect()
-    };
-    #[cfg(not(feature = "parallel"))]
-    let mut out: Vec<Finding> = {
+    let mut out: Vec<Finding> = if let Some(cache) = cache.as_deref_mut() {
         let mut out = Vec::new();
-        let mut tape_buf = Vec::new();
-        for (&sid, text) in target {
-            let mask = tape::build_masked(text, &mut tape_buf);
-            out.extend(verse_findings(sid, text, &tape_buf, mask, &per_verse));
+        let mut misses = BTreeMap::new();
+        for (&book, verses) in &books {
+            if let Some(findings) = cache.per_verse_hit(book, hashes[&book]) {
+                out.extend(findings);
+            } else {
+                misses.insert(book, verses.clone());
+            }
+        }
+
+        let fresh = rule::map_books(&misses, |book, verses| {
+            let mut findings = Vec::new();
+            let mut tape_buf = Vec::new();
+            for &(sid, text) in verses {
+                let mask = tape::build_masked(text, &mut tape_buf);
+                findings.extend(verse_findings(sid, text, &tape_buf, mask, &per_verse));
+            }
+            (book, findings)
+        });
+        for (book, findings) in fresh {
+            cache.store_per_verse(book, hashes[&book], findings.clone());
+            out.extend(findings);
         }
         out
+    } else {
+        #[cfg(feature = "parallel")]
+        {
+            use rayon::prelude::*;
+            target
+                .par_iter()
+                .map_init(Vec::new, |tape_buf, (&sid, text)| {
+                    let mask = tape::build_masked(text, tape_buf);
+                    verse_findings(sid, text, tape_buf, mask, &per_verse)
+                })
+                .flatten_iter()
+                .collect()
+        }
+        #[cfg(not(feature = "parallel"))]
+        {
+            let mut out = Vec::new();
+            let mut tape_buf = Vec::new();
+            for (&sid, text) in target {
+                let mask = tape::build_masked(text, &mut tape_buf);
+                out.extend(verse_findings(sid, text, &tape_buf, mask, &per_verse));
+            }
+            out
+        }
     };
 
     // The by-book view, computed once and shared by the project and stateful
     // phases — the book is the corpus-scoped unit (supersede granularity,
     // cross-verse seams, and the `parallel` fan-out; ADR 0042). Rules never
     // rebuild this grouping.
-    let books = verse::by_book(target);
-
     // The reduce scope (ADR 0043): with a prior and `changed`, only the named
     // books are re-counted — the others' counts carry forward through the
     // supersede merge untouched. The walk still visits every supplied book
@@ -226,11 +272,86 @@ pub fn analyze_stateful(
         _ => None,
     };
 
+    // A walk-product hit is safe only for a clean book in the complete
+    // snapshot shape. Echo and cold calls must walk every supplied book so
+    // their counting and emission semantics remain exactly unchanged.
+    let mut walk_books = books.clone();
+    let mut cached_books = Vec::new();
+    if let Some(cache) = cache.as_mut() {
+        for &book in books.keys() {
+            if counted.is_some_and(|list| !list.contains(&book))
+                && let Some(cached) = cache.cloned_walk(book, hashes[&book], &plan)
+            {
+                walk_books.remove(&book);
+                cached_books.push((book, cached));
+            }
+        }
+    }
+
     // ONE walk per verse per book (the event-stream engine): tape, graphemes
     // and tokens are each built once per verse and every enabled listener is
     // fed in-pass — this replaces the per-rule corpus walks the reduce phase
     // used to run. Fan-out per book under `parallel` (ADR 0042).
-    let mut fused = stream::walk_fused(&books, counted, source, &plan);
+    let mut fused = stream::walk_fused(&walk_books, counted, source, &plan);
+
+    // Write every walked book before assembly takes products out of `fused`.
+    // Cached books are then synthesized with empty stats halves: the assembly
+    // below inserts those halves only when `counted` is true, so carried stats
+    // remain authoritative while the cached products still feed judges.
+    if let Some(cache) = cache.as_mut() {
+        for (&book, output) in &fused {
+            cache.store_walk(book, hashes[&book], output);
+        }
+        for (book, cached) in cached_books {
+            fused.insert(
+                book,
+                stream::BookOut {
+                    counted: false,
+                    casing: plan
+                        .casing
+                        .then(|| (Default::default(), cached.casing.expect("casing lane hit"))),
+                    adjacency: plan.adjacency.then(|| {
+                        (
+                            Default::default(),
+                            cached.adjacency.expect("adjacency lane hit"),
+                        )
+                    }),
+                    spacing: plan.spacing.then(|| {
+                        (Default::default(), cached.spacing.expect("spacing lane hit"))
+                    }),
+                    repeated_run: plan.repeated_run.then(|| {
+                        (
+                            Default::default(),
+                            cached.repeated_run.expect("repeated-run lane hit"),
+                        )
+                    }),
+                    punct_only: plan.punct_only.then(|| {
+                        (
+                            Default::default(),
+                            cached.punct_only.expect("punct-only lane hit"),
+                        )
+                    }),
+                    mixed_script: plan.mixed_script.then(|| {
+                        (
+                            Default::default(),
+                            cached.mixed_script.expect("mixed-script lane hit"),
+                        )
+                    }),
+                    rare_glyph: None,
+                    mixed_case: None,
+                    proportionality: None,
+                    bracket: plan.bracket.then(|| cached.bracket.expect("bracket lane hit")),
+                    duplicate: plan
+                        .duplicate
+                        .then(|| cached.duplicate.expect("duplicate lane hit")),
+                    tokens: plan
+                        .collect_tokens
+                        .then(|| cached.tokens.expect("token lane hit")),
+                },
+            );
+        }
+    }
+
     let token_cache: Option<rule::TokenCache> =
         plan.collect_tokens.then(|| stream::assemble_token_cache(&mut fused));
 
@@ -256,7 +377,6 @@ pub fn analyze_stateful(
     // so the judge phase is site-driven for every supplied book and never
     // re-scans — except the deliberately site-free rules (proportionality
     // never scans; rare-glyph / mixed-case re-scan by design, ADR 0053/0055).
-    use std::collections::BTreeMap;
     let casing_fresh = plan.casing.then(|| {
         let (mut pb, mut st) = (BTreeMap::new(), BTreeMap::new());
         for (&book, o) in fused.iter_mut() {
@@ -576,6 +696,100 @@ mod tests {
     }
 
     #[test]
+    fn cached_per_verse_lane_reuses_content_keyed_findings() {
+        let mut target = mk("GEN", &["a  b", "hello"]);
+        target.extend(mk("EXO", &["x\ty", "clean"]));
+        let cfg = Config::v1_defaults();
+        let mut cache = AnalysisCache::new();
+
+        let (cold_findings, cold_stats) =
+            analyze_stateful(&target, None, &cfg, None, None, Some(&mut cache));
+        let misses_after_cold = cache.lane1_miss_count();
+        let (warm_findings, warm_stats) =
+            analyze_stateful(&target, None, &cfg, None, None, Some(&mut cache));
+
+        assert_eq!(cold_findings, warm_findings);
+        assert_eq!(cold_stats, warm_stats);
+        assert_eq!(misses_after_cold, 2, "one lane-1 miss per book on cold call");
+        assert_eq!(cache.lane1_hit_count(), 2, "warm call should hit both books");
+    }
+
+    #[test]
+    fn cached_snapshot_matches_cold_snapshot_across_all_walk_lanes() {
+        let gen_id = BookId::from_str("GEN").unwrap();
+        let exo = BookId::from_str("EXO").unwrap();
+        let lev = BookId::from_str("LEV").unwrap();
+        let mut original = VerseMap::new();
+        original.insert(Sid::new(gen_id, 1, 1), "(He said. the gate stood.".into());
+        original.insert(Sid::new(gen_id, 1, 2), "one) word word 12".into());
+        original.insert(Sid::new(exo, 1, 1), "a  b, joyfullly".into());
+        original.insert(Sid::new(exo, 1, 2), "A1 α qQx".into());
+        original.insert(Sid::new(lev, 1, 1), "He said. The gate.".into());
+        original.insert(Sid::new(lev, 1, 2), "clean text".into());
+
+        let cfg = Config::all();
+        let mut cache = AnalysisCache::new();
+        let (cold_cached_findings, cold_cached_stats) =
+            analyze_stateful(&original, None, &cfg, None, None, Some(&mut cache));
+        let (cold_findings, cold_stats) =
+            analyze_stateful(&original, None, &cfg, None, None, None);
+        assert_eq!(cold_cached_findings, cold_findings);
+        assert_eq!(cold_cached_stats, cold_stats);
+
+        let mut edited = original.clone();
+        edited.insert(Sid::new(exo, 1, 2), "A1 α qQx edited".into());
+        let (scratch_findings, scratch_stats) = analyze_stateful(
+            &edited,
+            None,
+            &cfg,
+            Some(cold_stats.clone()),
+            Some(&[exo]),
+            None,
+        );
+        let (cached_findings, cached_stats) = analyze_stateful(
+            &edited,
+            None,
+            &cfg,
+            Some(cold_cached_stats),
+            Some(&[exo]),
+            Some(&mut cache),
+        );
+
+        assert_eq!(cached_findings, scratch_findings);
+        assert_eq!(cached_stats, scratch_stats);
+        assert_eq!(cache.walk_hit_count(), 2, "clean books should reuse walk products");
+        assert_eq!(cache.walk_miss_count(), 0, "changed book is walked without a cache probe");
+    }
+
+    #[test]
+    fn echo_subset_keeps_sibling_cache_entries_and_matches_cold_echo() {
+        let gen_id = BookId::from_str("GEN").unwrap();
+        let exo = BookId::from_str("EXO").unwrap();
+        let mut full = mk("GEN", &["a  b", "one"]);
+        full.extend(mk("EXO", &["x\ty", "two"]));
+        let cfg = Config::v1_defaults();
+        let mut cache = AnalysisCache::new();
+        let (_, prior) = analyze_stateful(&full, None, &cfg, None, None, Some(&mut cache));
+        let gen_hash = cache.entry_hash(gen_id).unwrap();
+        let exo_hash = cache.entry_hash(exo).unwrap();
+        let echo: VerseMap = full
+            .iter()
+            .filter(|(sid, _)| sid.book == exo)
+            .map(|(sid, text)| (*sid, text.clone()))
+            .collect();
+
+        let (cached_findings, cached_stats) =
+            analyze_stateful(&echo, None, &cfg, Some(prior.clone()), None, Some(&mut cache));
+        let (cold_findings, cold_stats) =
+            analyze_stateful(&echo, None, &cfg, Some(prior), None, None);
+
+        assert_eq!(cached_findings, cold_findings);
+        assert_eq!(cached_stats, cold_stats);
+        assert_eq!(cache.entry_hash(gen_id), Some(gen_hash));
+        assert_eq!(cache.entry_hash(exo), Some(exo_hash));
+    }
+
+    #[test]
     fn analyze_flags_double_space() {
         let target = map(&[("v1", "a  b")]);
         let findings = analyze(&target, None);
@@ -741,7 +955,7 @@ mod tests {
         let cfg = casing_on(0.5, 0.0);
         let target = mks("GEN", &casing_fire(40));
 
-        let (f1, stats) = analyze_stateful(&target, None, &cfg, None, None);
+        let (f1, stats) = analyze_stateful(&target, None, &cfg, None, None, None);
         assert!(
             f1.iter()
                 .any(|f| f.code == RuleId::SentenceInitialLowercase)
@@ -750,7 +964,7 @@ mod tests {
         let json = serde_json::to_string(&stats).unwrap();
         let back: Stats = serde_json::from_str(&json).unwrap();
 
-        let (f2, _) = analyze_stateful(&target, None, &cfg, Some(back), None);
+        let (f2, _) = analyze_stateful(&target, None, &cfg, Some(back), None, None);
         assert_eq!(f1, f2);
     }
 
@@ -767,7 +981,7 @@ mod tests {
         let gen_id = BookId::from_str("GEN").unwrap();
         let exo = BookId::from_str("EXO").unwrap();
 
-        let (f_full, stats) = analyze_stateful(&full, None, &cfg, None, None);
+        let (f_full, stats) = analyze_stateful(&full, None, &cfg, None, None, None);
         assert!(
             f_full
                 .iter()
@@ -779,7 +993,7 @@ mod tests {
                 .any(|f| f.sid.book == exo && f.code == RuleId::SentenceInitialLowercase)
         );
 
-        let (f_inc, _) = analyze_stateful(&mks("EXO", &anomalous), None, &cfg, Some(stats), None);
+        let (f_inc, _) = analyze_stateful(&mks("EXO", &anomalous), None, &cfg, Some(stats), None, None);
         assert!(!f_inc.is_empty());
         assert!(f_inc.iter().all(|f| f.sid.book == exo)); // nothing from GEN
     }
@@ -799,22 +1013,22 @@ mod tests {
             .collect();
         let mut original = mks("GEN", &clean);
         original.extend(mks("EXO", &clean));
-        let (_, prior) = analyze_stateful(&original, None, &cfg, None, None);
+        let (_, prior) = analyze_stateful(&original, None, &cfg, None, None, None);
 
         // Edit GEN only: introduce a lowercase-after-terminal anomaly.
         let mut edited = mks("GEN", &casing_fire(40));
         edited.extend(mks("EXO", &clean));
 
-        let (f_scratch, s_scratch) = analyze_stateful(&edited, None, &cfg, None, None);
+        let (f_scratch, s_scratch) = analyze_stateful(&edited, None, &cfg, None, None, None);
         let gen_id = BookId::from_str("GEN").unwrap();
         let (f_changed, s_changed) =
-            analyze_stateful(&edited, None, &cfg, Some(prior.clone()), Some(&[gen_id]));
+            analyze_stateful(&edited, None, &cfg, Some(prior.clone()), Some(&[gen_id]), None);
         assert_eq!(f_scratch, f_changed);
         assert_eq!(s_scratch, s_changed);
 
         // Without a prior, `changed` is ignored (nothing to carry): still a
         // full recompute, never a tiny-counts corpus.
-        let (f_no_prior, s_no_prior) = analyze_stateful(&edited, None, &cfg, None, Some(&[gen_id]));
+        let (f_no_prior, s_no_prior) = analyze_stateful(&edited, None, &cfg, None, Some(&[gen_id]), None);
         assert_eq!(f_scratch, f_no_prior);
         assert_eq!(s_scratch, s_no_prior);
     }
@@ -839,7 +1053,7 @@ mod tests {
         full.extend(mks("EXO", &exo_anom));
         let exo = BookId::from_str("EXO").unwrap();
 
-        let (f_full, mut stats) = analyze_stateful(&full, None, &cfg, None, None);
+        let (f_full, mut stats) = analyze_stateful(&full, None, &cfg, None, None, None);
         assert!(
             f_full
                 .iter()
@@ -848,7 +1062,7 @@ mod tests {
         );
 
         stats.remove_book(BookId::from_str("GEN").unwrap());
-        let (f_after, _) = analyze_stateful(&mks("EXO", &exo_anom), None, &cfg, Some(stats), None);
+        let (f_after, _) = analyze_stateful(&mks("EXO", &exo_anom), None, &cfg, Some(stats), None, None);
         // EXO's own few observations can't back a confident dominance now.
         assert!(
             f_after
