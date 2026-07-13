@@ -11,3 +11,6 @@ profile.json.gz
 *.profile.json
 *.profile.json.gz
 .codegraph/
+
+# macOS finder cruft
+.DS_Store
