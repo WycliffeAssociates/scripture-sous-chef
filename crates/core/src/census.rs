@@ -131,10 +131,16 @@ pub struct Section {
     pub rows: Vec<Row>,
 }
 
+/// The JSON wire contract version for external consumers (editor shells,
+/// the wasm `census` export). Bump on any breaking shape change.
+pub const INVENTORY_SCHEMA: u32 = 1;
+
 /// The census report: the eight lanes in fixed order.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct Inventory {
+    /// The JSON wire contract version — see [`INVENTORY_SCHEMA`].
+    pub schema: u32,
     pub sections: Vec<Section>,
 }
 
@@ -686,6 +692,7 @@ fn assemble(per_book: Vec<BookCensus>, opts: &CensusOptions) -> Inventory {
     let varying_total = varying_words.len() as u64;
 
     Inventory {
+        schema: INVENTORY_SCHEMA,
         sections: vec![
             Section {
                 id: SectionId::LetterGlyphs,
@@ -920,6 +927,14 @@ mod tests {
             assert_eq!(s.lane_total, 0, "{:?}", s.id);
             assert!(s.rows.is_empty(), "{:?}", s.id);
         }
+    }
+
+    #[test]
+    fn schema_field_serializes_as_wire_contract_version() {
+        let inv = run(&VerseMap::new());
+        assert_eq!(inv.schema, INVENTORY_SCHEMA);
+        let json = serde_json::to_string(&inv).unwrap();
+        assert!(json.contains("\"schema\":1"), "{json}");
     }
 
     #[test]
