@@ -44,6 +44,36 @@ export function analyze_vref_stateful(target, source, config, prior, changed) {
 }
 
 /**
+ * Census a vref text map (ADR 0058): the knob-free absolute-count report
+ * (`ssc_core::Inventory`, eight lanes) as opposed to `analyze`'s judged
+ * findings. `target` is `{ sid -> text }`, same shape as [`analyze_vref`];
+ * `example_cap` bounds the example sites retained per row (omitted ⇒
+ * core's default of 8; a payload-size cap, not a statistical knob).
+ *
+ * Returns the `Inventory` serialized to a JSON **string**, deliberately not
+ * a Tsify-typed object: the wire schema is ADR 0058's `Inventory` and
+ * carries a top-level `schema` version field (currently `1`) that a viewer
+ * checks before parsing. A JS/TS consumer owns its own types for this
+ * shape — census is a cold, occasionally-invoked report, not the hot
+ * `analyze` path that the rest of this boundary optimizes for.
+ * @param {VrefMap} target
+ * @param {number | null} [example_cap]
+ * @returns {string}
+ */
+export function census(target, example_cap) {
+    let deferred1_0;
+    let deferred1_1;
+    try {
+        const ret = wasm.census(target, isLikeNone(example_cap) ? Number.MAX_SAFE_INTEGER : (example_cap) >>> 0);
+        deferred1_0 = ret[0];
+        deferred1_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+    }
+}
+
+/**
  * The shipped English rule catalog — the reference text a consumer renders
  * (or keys a translation off). Complete by construction: one card per
  * `RuleId`.
