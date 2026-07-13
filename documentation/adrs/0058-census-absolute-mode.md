@@ -131,3 +131,39 @@ New check ideas start as scored, convention-learned **rules**; the census
 adopts a lane only by mirroring a shipped rule's extractor or by explicit
 house-style/census-only triage. Anything that would need a threshold to be
 useful belongs in a rule — the census stays permanently knob-free.
+
+## Amendment (2026-07-13) — case-variants row unit
+
+The fleet dry-run (`documentation/calibration/2026-07-11-census-fleet-dry-run.md`)
+forced a call: `words.case-variants` alone carried 1,497,904 fleet rows,
+pushing wire size to p50 287 KB / max 2,018 KB against the plan's ~300 KB
+worst-case estimate, and timing to 2.11× default-analyze against the ≤2×
+budget. The cause: every common word that ever starts a sentence varies
+Title↔lower (`the`/`The`), so a cased corpus carried ~1k rows for
+ordinary sentence casing alone.
+
+Product adjudication: restrict the row unit. A folded word type is a row
+in `words.case-variants` only if (a) it was observed in more than one case
+form (unchanged), **and** (b) at least one of its attested forms has a
+case shape that is `AllCaps` or `OtherMixed` — i.e. not just Title/lower.
+Title↔lower-only variation (`the`/`The`) is excluded because it is
+ordinary sentence casing, already judged by the ADR 0051 casing rules
+(rules judge, census counts — this lane no longer duplicates that
+judgment). `lane_total` for this lane is the count of rows under the new
+definition, consistent with how it counted qualifying word types before.
+
+This is a row-**unit** redefinition, not a filter or threshold knob — the
+census stays knob-free, the same kind of decision as `punct.runs`
+including the safe set in what counts as a run. `AllCaps`/`OtherMixed` are
+closed enum variants of the case-shape signal core already computes, not a
+tunable cutoff.
+
+Re-run after the amendment (see the dry-run doc's "Re-run after the
+row-unit amendment" section): `words.case-variants` fleet rows fell from
+1,497,904 to 37,524; wire size p50 fell from 287 KB to 24 KB (p90 41 KB,
+p99 171 KB, max 942 KB, down from 2,018 KB); timing fell from 2.11× to
+2.02× default-analyze, essentially at the ≤2× budget.
+
+One naming note for the record: the operation is the **census**, the
+output document is the **`Inventory`**; "absolute mode" is a historical
+alias from the design phase, not a name in current use.

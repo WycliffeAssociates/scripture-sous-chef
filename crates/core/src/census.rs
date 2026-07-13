@@ -657,11 +657,20 @@ fn assemble(per_book: Vec<BookCensus>, opts: &CensusOptions) -> Inventory {
         rows
     };
 
-    // Word case-variant rows: only words observed in >1 case form.
+    // Word case-variant rows: only words observed in >1 case form, AND only
+    // when at least one attested form is AllCaps or OtherMixed. Title/lower
+    // variation alone (`the`/`The`) is ordinary sentence casing, already
+    // judged by the ADR 0051 casing rules — see the 2026-07-13 ADR 0058
+    // amendment.
     let varying_words: Vec<Row> = {
         let mut rows: Vec<Row> = word_forms
             .into_iter()
             .filter(|(_, forms)| forms.len() > 1)
+            .filter(|(_, forms)| {
+                forms.keys().any(|form| {
+                    matches!(case_shape(form), Some(CaseShape::AllCaps | CaseShape::OtherMixed))
+                })
+            })
             .map(|(folded, forms)| {
                 let count: u64 = forms.values().sum();
                 let mut forms: Vec<(String, u64)> = forms.into_iter().collect();
@@ -1049,5 +1058,41 @@ mod tests {
         }
         assert_eq!(lane.rows[0].count, 3);
         assert_eq!(lane.lane_total, 1);
+    }
+
+    #[test]
+    fn word_case_variants_excludes_title_lower_only() {
+        // `the`/`The` is ordinary sentence casing (ADR 0051 casing rules'
+        // domain) — no AllCaps/OtherMixed form participates, so no row.
+        let map = book("GEN", &["The men saw the gate"]);
+        let inv = run(&map);
+        let lane = section(&inv, SectionId::WordCaseVariants);
+        assert_eq!(lane.rows.len(), 0);
+        assert_eq!(lane.lane_total, 0);
+    }
+
+    #[test]
+    fn word_case_variants_includes_mixed_form_participation() {
+        // `weird`/`WEIrd` — an OtherMixed form participates, so it rows.
+        let map = book("GEN", &["a weird day", "a WEIrd day"]);
+        let inv = run(&map);
+        let lane = section(&inv, SectionId::WordCaseVariants);
+        assert_eq!(lane.rows.len(), 1);
+        match &lane.rows[0].key {
+            RowKey::WordCaseVariants { folded, .. } => assert_eq!(folded, "weird"),
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(lane.lane_total, 1);
+    }
+
+    #[test]
+    fn word_case_variants_excludes_single_form_words() {
+        // `WEIrd` seen only once (one form) — single-form words are the
+        // mixed-case rule's domain, not this lane's.
+        let map = book("GEN", &["a WEIrd day"]);
+        let inv = run(&map);
+        let lane = section(&inv, SectionId::WordCaseVariants);
+        assert_eq!(lane.rows.len(), 0);
+        assert_eq!(lane.lane_total, 0);
     }
 }

@@ -52,3 +52,39 @@ under 100 KB.
 fleet is clean of controls/invisibles), and `letters.glyphs` volumes match
 the rare-glyph spike's inventory sizes — the census is counting exactly
 what the rules see, which is the point.
+
+## Re-run after the row-unit amendment (2026-07-13)
+
+Same command, same fleet, after restricting `words.case-variants` to rows
+where at least one attested form is `AllCaps`/`OtherMixed` (ADR 0058
+amendment; Title↔lower-only variation no longer rows):
+
+### Volumes per section (fleet totals, rows)
+
+| lane | fleet rows | note |
+| --- | ---: | --- |
+| letters.glyphs | 99,539 | unchanged |
+| punct.runs | 5,262 | unchanged |
+| punct.mark-spacing | 11,778 | unchanged |
+| punct.brackets | 2,281 | unchanged |
+| punct.format-classes | 611 | unchanged |
+| numbers.token-shapes | 5,031 | unchanged |
+| words.case-shapes | 4,760 | unchanged |
+| words.case-variants | **37,524** | down from 1,497,904 |
+
+### Wire size (serde JSON per corpus)
+
+p50 **24 KB** · p90 41 KB · p99 171 KB · max **942 KB** (`cmncbt`).
+
+Down from p50 287 KB / p90 576 KB / p99 1,424 KB / max 2,018 KB. The
+amendment lands the fleet comfortably inside the plan's ~300 KB
+worst-case envelope everywhere except a thin tail (p99/max), which the
+`cmncbt` outlier corpus explains (heavier legitimate allcaps/mixed
+variation, not a bug).
+
+### Timing (the ≤ 2× analyze budget)
+
+- Fleet totals: census 97.0 s vs default-analyze 48.1 s — **2.02×**, down
+  from 2.11×. Essentially at the ≤2× budget; the residual overrun is the
+  shared word-form bookkeeping across all lanes, not case-variants
+  specifically now that its row unit is much smaller.
