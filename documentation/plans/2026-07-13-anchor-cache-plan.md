@@ -47,7 +47,9 @@ Spike harness: a temporary `stream::anchor_spike_report` probe +
 Recreation recipe is §11 Phase 0.
 
 Retained-set sizes (what today's walk already forwards per call — the cache
-adds retention, not collection; **no new hot-path allocation**):
+adds retention, not a new collection pass. The cache does allocate when it
+clones lanes on write-back and on a hit; those costs are explicitly gated in
+Phase 0. It adds no new allocation *inside the fused collection walk*):
 
 | corpus | text | sites | live (today's structs) | packed est. |
 | --- | ---: | ---: | ---: | ---: |
@@ -59,7 +61,8 @@ adds retention, not collection; **no new hot-path allocation**):
 Casing is 86% of the cased-corpus total (`LowerSite` = every lowercase word
 occurrence — the judge consumes all of them); spacing is second (one site per
 mark). All other lanes forward near-findings only. Caseless corpora build
-multi-MB casing key tables with zero sites (don't retain empty lanes).
+multi-MB casing key tables with zero sites (retain a small known-empty lane
+sentinel, not the unused key table; §4.2).
 FxHash content-hashing a full Bible: 0.4–0.8 ms.
 
 Cold/warm ladder (WA-en-ulb, serial, same-process medians; ±20% machine —
@@ -95,7 +98,8 @@ the walk-product lanes are what win all-on.
 - Converting token-consuming judges to site-forwarding.
 - The caseless-interning upstream fix (noted, separate ticket).
 - Any change to stats reduce, supersede, judge logic, or any file under
-  `crates/core/src/signals/` beyond the *permitted derives* in §7.
+  `crates/core/src/signals/` beyond the *permitted derives and required
+  lifetime-comment corrections* in §7.
 
 ## 4. Agreed design (normative)
 
@@ -103,13 +107,15 @@ the walk-product lanes are what win all-on.
 
 - **Per-book content hash.** `fn book_hash(verses: &[(Sid, &str)]) -> u128`
   in `cache.rs`. Iterate the book's verses in `Books` order (already
-  `BTreeMap`-sorted) and hash, per verse: `sid.chapter` (1 byte),
-  `sid.verse` (1 byte), `text.len()` as u32 LE (length prefix — prevents
-  concatenation ambiguity), `text` bytes. Algorithm: **xxh3-128** via the
+  `BTreeMap`-sorted) and hash, per verse: `sid.chapter.to_le_bytes()` (2
+  bytes), `sid.verse.to_le_bytes()` (2 bytes), `text.len()` as u32 LE (length
+  prefix — prevents concatenation ambiguity), `text` bytes. `Sid` stores both
+  chapter and verse as `u16`; **never cast either to `u8`** — truncation would
+  create deterministic cache collisions. Algorithm: **xxh3-128** via the
   `xxhash-rust` crate (features `["xxh3"]`, workspace dependency). 128 bits
   because a collision silently produces wrong findings; non-adversarial
-  setting, so xxh3 suffices. If the measured full-corpus hashing cost
-  exceeds 5 ms on WA-en-ulb, stop and report (expected: ~1 ms).
+  setting, so xxh3 suffices. If the measured full-corpus hashing cost exceeds
+  5 ms on WA-en-ulb, stop and report (expected: ~1 ms).
 - **Config fingerprint** (whole-cache). `xxh3_64` over
   `format!("{config:?}")` bytes, mixed with a `const CACHE_SCHEMA: u32 = 1`.
   `Config` derives `Debug` (verify; if it doesn't, stop and report). Debug
@@ -165,6 +171,21 @@ Notes, all binding:
   *cleared* (fingerprint mismatch / `clear()`), never dropped by absence —
   the `BookId` domain bounds the map. A book supplied in an echo call must
   not evict its 65 siblings.
+- **Hash replacement is atomic across both lanes.** On a content-hash
+  mismatch, replace the entire `BookEntry` before writing the newly computed
+  lane. Never update `entry.hash` or `entry.per_verse` while retaining any
+  lane-2 value from the old hash: doing so would make stale walk products look
+  valid under the new content hash. Pin this with the content-invalidation
+  regression in §8.
+- `Option` means **computed for this hash/config** versus **not computed**,
+  not non-empty versus empty. Every plan-enabled lane that ran is stored as
+  `Some`, including a legitimately empty vector/product. For casing's
+  caseless-book case, where `CasingSites.keys` may be large while
+  `CasingSites.sites` is empty, store `Some(CasingSites::default())` (the
+  known-empty sentinel) rather than retaining the unused key table or writing
+  `None`. This keeps the lane eligible on the next call without retaining the
+  multi-MB table. Add the necessary `Default` derive to `CasingSites` under
+  §7's permitted edits.
 
 ### 4.3 Read/write policy — the call-shape matrix
 
@@ -274,6 +295,11 @@ pub fn analyze_stateful(
 }
 ```
 
+Public surface (binding): declare the implementation module as `mod cache;`
+and re-export the handle from the crate root with
+`pub use cache::AnalysisCache;`. Callers use `ssc_core::AnalysisCache`; the
+cache's entry types and helpers stay crate-private.
+
 Call sites to update with the new parameter (pass `None` unless stated):
 `crates/core/src/lib.rs` (the `analyze`/`analyze_with_config` sugar — 11
 hits incl. tests), `crates/core/benches/analyze.rs` (3 — plus the new cached
@@ -335,7 +361,14 @@ completeness check for missed sites.
   `BookPunctuationSpacing`, `BookRepeatedCharacterRun`,
   `BookPunctOnlyToken`, `BookMixedScript` — verify each; most already
   derive `Default` via `BookOut`'s derive, check individually). No logic
-  changes, no field changes, no formatting churn.
+  changes, no field changes, no formatting churn. `CasingSites` specifically
+  needs `Default` for the known-empty sentinel in §4.2.
+- Update the colocated doc comments on any cached site/product type whose
+  current contract says it is "never stored" or "never outlives the analyze
+  call". The aggregate `RuleStats` wire contract remains unchanged and sites
+  still never serialize, but these native products now legitimately live
+  across calls inside `AnalysisCache`. Comment-only corrections required by
+  that new lifetime are permitted; unrelated documentation churn is not.
 - `crates/core/src/stream.rs`: only what the walk-partition seam needs —
   ideally nothing (partition happens in `lib.rs` by filtering the `Books`
   map passed to `walk_fused`). If `walk_fused`'s signature must change,
@@ -357,12 +390,21 @@ layout. Required list:
    snapshot call (`prior` + `changed=[book2]`) with cache vs without.
    Findings **and** Stats must be `assert_eq!`-identical at every step.
 2. **Lane-1 purity:** cold call with warm lane 1 (same text) skips
-   recomputation (probe via a counter or by asserting entry presence) and
-   yields identical findings.
-3. **Fingerprint invalidation:** change one knob → next call clears (assert
-   `book_count() == 0` before re-warm, via a test-visible accessor).
+   recomputation and yields identical findings. Pin the skip with
+   `#[cfg(test)]` hit/miss counters on `AnalysisCache`; entry presence alone
+   is not evidence that recomputation was skipped. The counters are test-only,
+   never part of the public API.
+3. **Fingerprint invalidation:** unit-test `ensure_fingerprint` directly:
+   populate entries, change one knob, call `ensure_fingerprint`, then assert
+   `book_count() == 0` before any analysis call can re-warm it. The integration
+   call then proves normal re-warming. Do not attempt to observe the empty
+   state only after `analyze_stateful` returns — by then re-warming is
+   intentionally complete.
 4. **Content invalidation:** edit book 2 → its entry hash changes, books 1/3
-   entries untouched (accessor).
+   entries untouched (accessor). Warm **both** lanes first, then make the
+   lane-1 path observe the new hash; assert the old lane-2 products cannot hit
+   under that new hash. This is the regression for the atomic whole-entry
+   replacement invariant in §4.2.
 5. **Changed-promise:** book in `changed` with identical text is re-counted
    (assert via stats digest equality with the no-cache path — not by
    inspecting internals).
@@ -372,7 +414,11 @@ layout. Required list:
 7. **Echo subset:** call with only book 2 supplied + prior; books 1/3
    entries survive (accessor); findings equal no-cache echo.
 8. **Empty map / empty book / prior-None-warm-cache:** no panic, matrix
-   behavior.
+   behavior. Unit-test `book_hash` with an empty slice and prove that otherwise
+   identical Sids using chapter or verse `1` versus `257` hash differently
+   (the `u16` fields must not truncate). With casing enabled on a caseless book,
+   assert the cache stores a small known-empty `Some` lane and the next
+   snapshot records a lane-2 hit instead of walking it again.
 9. **Default-stats-half never read:** a snapshot call where a clean cached
    book's synthesized stats half would change the digest if it were read —
    assert digest equality with the no-cache path.

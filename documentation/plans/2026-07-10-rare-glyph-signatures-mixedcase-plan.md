@@ -427,3 +427,14 @@ ADR 0052; rule 1's tally is its down payment), untranslated words
 doubling (ADR 0039), boundary-class refinement (shortlist item 7 —
 note rule 2's signature table is a step toward it: signatures *are*
 boundary classes at mark granularity).
+
+
+
+
+
+
+
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+
+
