@@ -548,6 +548,29 @@ pub fn stats_remove_book(mut stats: Stats, book: String) -> Stats {
     stats
 }
 
+/// Census a vref text map (ADR 0058): the knob-free absolute-count report
+/// (`ssc_core::Inventory`, eight lanes) as opposed to `analyze`'s judged
+/// findings. `target` is `{ sid -> text }`, same shape as [`analyze_vref`];
+/// `example_cap` bounds the example sites retained per row (omitted ⇒
+/// core's default of 8; a payload-size cap, not a statistical knob).
+///
+/// Returns the `Inventory` serialized to a JSON **string**, deliberately not
+/// a Tsify-typed object: the wire schema is ADR 0058's `Inventory` and
+/// carries a top-level `schema` version field (currently `1`) that a viewer
+/// checks before parsing. A JS/TS consumer owns its own types for this
+/// shape — census is a cold, occasionally-invoked report, not the hot
+/// `analyze` path that the rest of this boundary optimizes for.
+#[wasm_bindgen]
+pub fn census(target: VrefMap, example_cap: Option<u32>) -> String {
+    let target_vm = to_verse_map(&target.0);
+    let opts = match example_cap {
+        Some(cap) => ssc_core::CensusOptions { example_cap: cap as usize },
+        None => ssc_core::CensusOptions::default(),
+    };
+    let inventory = ssc_core::census(&target_vm, &opts);
+    serde_json::to_string(&inventory).expect("Inventory always serializes")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
