@@ -801,18 +801,58 @@ mod tests {
     fn cached_content_invalidation_replaces_one_book_and_keeps_sibling_warm() {
         let gen_id = BookId::from_str("GEN").unwrap();
         let exo = BookId::from_str("EXO").unwrap();
+        let lev = BookId::from_str("LEV").unwrap();
         let mut original = mk("GEN", &["a  b", "one"]);
         original.extend(mk("EXO", &["x\ty", "two"]));
+        original.extend(mk("LEV", &["clean text", "three"]));
         let cfg = Config::all();
         let mut cache = AnalysisCache::new();
         let (_, prior) = analyze_stateful(&original, None, &cfg, None, None, Some(&mut cache));
         let old_gen_hash = cache.entry_hash(gen_id).unwrap();
         let old_exo_hash = cache.entry_hash(exo).unwrap();
+        let old_lev_hash = cache.entry_hash(lev).unwrap();
 
         let mut edited = original.clone();
         edited.insert(Sid::new(gen_id, 1, 1), "changed ,, text".into());
+        // GEN is edited but EXO is named as changed, so GEN remains eligible
+        // for the lane-2 probe after lane 1 replaces its entry by hash.
         let (cold_findings, cold_stats) = analyze_stateful(
             &edited,
+            None,
+            &cfg,
+            Some(prior.clone()),
+            Some(&[exo]),
+            None,
+        );
+        let (cached_findings, cached_stats) = analyze_stateful(
+            &edited,
+            None,
+            &cfg,
+            Some(prior),
+            Some(&[exo]),
+            Some(&mut cache),
+        );
+
+        assert_eq!(cached_findings, cold_findings);
+        assert_eq!(cached_stats, cold_stats);
+        assert_ne!(cache.entry_hash(gen_id), Some(old_gen_hash));
+        assert_eq!(cache.entry_hash(exo), Some(old_exo_hash));
+        assert_eq!(cache.entry_hash(lev), Some(old_lev_hash));
+        assert_eq!(cache.walk_miss_count(), 1, "the edited clean book must miss lane 2");
+        assert_eq!(cache.walk_hit_count(), 1, "the untouched clean sibling reuses lane 2");
+    }
+
+    #[test]
+    fn changed_promise_with_identical_content_matches_uncached_snapshot() {
+        let gen_id = BookId::from_str("GEN").unwrap();
+        let mut target = mk("GEN", &["a  b", "same text"]);
+        target.extend(mk("EXO", &["x\ty", "clean"]));
+        let cfg = Config::v1_defaults();
+        let mut cache = AnalysisCache::new();
+        let (_, prior) = analyze_stateful(&target, None, &cfg, None, None, Some(&mut cache));
+
+        let (cold_findings, cold_stats) = analyze_stateful(
+            &target,
             None,
             &cfg,
             Some(prior.clone()),
@@ -820,7 +860,7 @@ mod tests {
             None,
         );
         let (cached_findings, cached_stats) = analyze_stateful(
-            &edited,
+            &target,
             None,
             &cfg,
             Some(prior),
@@ -830,36 +870,8 @@ mod tests {
 
         assert_eq!(cached_findings, cold_findings);
         assert_eq!(cached_stats, cold_stats);
-        assert_ne!(cache.entry_hash(gen_id), Some(old_gen_hash));
-        assert_eq!(cache.entry_hash(exo), Some(old_exo_hash));
-        assert_eq!(cache.walk_hit_count(), 1, "only the unchanged sibling reuses its walk");
-    }
-
-    #[test]
-    fn structurally_changed_book_with_identical_text_recounts() {
-        let gen_id = BookId::from_str("GEN").unwrap();
-        let original: VerseMap = [
-            (Sid::new(gen_id, 1, 1), "same".into()),
-            (Sid::new(gen_id, 1, 2), "text".into()),
-        ]
-        .into_iter()
-        .collect();
-        let restructured: VerseMap = [
-            (Sid::new(gen_id, 1, 1), "same".into()),
-            (Sid::new(gen_id, 2, 1), "text".into()),
-        ]
-        .into_iter()
-        .collect();
-        let cfg = Config::v1_defaults();
-        let mut cache = AnalysisCache::new();
-        let (_, _) = analyze_stateful(&original, None, &cfg, None, None, Some(&mut cache));
-        let old_hash = cache.entry_hash(gen_id).unwrap();
-
-        let (_, _) = analyze_stateful(&restructured, None, &cfg, None, None, Some(&mut cache));
-
-        assert_eq!(cache.lane1_hit_count(), 0, "address changes invalidate the book hash");
-        assert_eq!(cache.lane1_miss_count(), 2);
-        assert_ne!(cache.entry_hash(gen_id), Some(old_hash));
+        assert_eq!(cache.lane1_hit_count(), 2, "unchanged content reuses lane 1 for both books");
+        assert_eq!(cache.walk_hit_count(), 1, "the clean sibling reuses lane 2");
     }
 
     #[test]
