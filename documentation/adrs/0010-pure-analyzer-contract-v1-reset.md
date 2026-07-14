@@ -1,7 +1,10 @@
 # ADR 0010: Reset master to a pure, addressable analyzer contract
 
 - **Date:** 2026-06-02
-- **Status:** Accepted
+- **Status:** Accepted (representation-specific wording amended by
+  [ADR 0061](0061-finding-address-corpus-keyidx.md), 2026-07-14 — see note at
+  the end; the "pure analyzer, no file IO, byte-offset addressing" contract
+  itself is unchanged)
 
 ## Context
 
@@ -199,4 +202,16 @@ highlightable). Each returns behind the contract above.
   `usfm_onion/src/lint_impl.rs`
 - consumer i18n precedent:
   `scripture-editor-proto-2/src/app/ui/i18n/usfmOnionLocalization.ts`
+
+## Amendment (2026-07-14, ADR 0061)
+
+Point 3's entry signature and point 5's `Finding` shape both named `VerseMap`
+(`{ sid -> text }`) and `Sid`. Both are superseded: the entry points take an
+ordered `Corpus` (`keys`/`texts` parallel arrays, duplicates and caller order
+preserved) and `Finding.sid: Sid` is now `Finding.key_idx: KeyIdx`, a
+call-scoped global index resolved back to the wire `"GEN 1:1"` string only at
+the boundary (`resolve_findings`, or the wasm projection). The
+"scope-agnostic, one entry, byte-offset addressing, no rendered string
+crosses the boundary" contract itself is unchanged — see ADR 0061 for the
+full rationale.
 </invoke>

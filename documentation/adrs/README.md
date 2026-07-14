@@ -77,6 +77,7 @@ isn't visible from the code alone.
 | 0058 | 2026-07-11 | [The census (absolute mode) — `census(map) → Inventory`, the event stream's first subscriber](0058-census-absolute-mode.md) | Accepted (ratifies the 2026-07-10 plan) |
 | 0059 | 2026-07-11 | [Association goes G²-only — retire the Fisher fallback as the default](0059-association-g2-only.md) | Accepted |
 | 0060 | 2026-07-13 | [Cross-call analysis caches — content-keyed per-book products](0060-cross-call-analysis-caches.md) | Draft |
+| 0061 | 2026-07-14 | [Finding addresses become an ordered `Corpus` + `KeyIdx`/`LocalKeyIdx` (retires `Sid`/`BookId`/`VerseMap`)](0061-finding-address-corpus-keyidx.md) | Accepted (amends 0010/0040) |
 
 ## Format
 

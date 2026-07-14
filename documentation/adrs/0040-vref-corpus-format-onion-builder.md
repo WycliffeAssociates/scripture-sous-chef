@@ -1,7 +1,10 @@
 # ADR 0040: One corpus format — self-describing vref files from external producers
 
 - **Date:** 2026-07-07
-- **Status:** Accepted
+- **Status:** Accepted (representation-specific wording amended by
+  [ADR 0061](0061-finding-address-corpus-keyidx.md), 2026-07-14 — see note
+  below; the on-disk format and producer contract in this ADR are
+  unchanged)
 - **Relates to:** [ADR 0010](0010-pure-analyzer-contract-v1-reset.md) (the
   library never reads files or calls onion). Retires the naive USFM loader
   (`crates/core/dev/usfm_naive.rs`) and the playground's copy of it.
@@ -113,3 +116,20 @@ parser lagged.
   *set* reproducible; the bytes are rebuilt, rarely.
 - `ebible-main/` is retired as a *source* (kept only as a regeneration
   reference); `crates/core/dev/usfm_naive.rs` is deleted.
+
+## Amendment (2026-07-14, ADR 0061)
+
+The **on-disk vref format and producer contract above are unchanged.** Two
+representation-specific statements elsewhere in this ADR are superseded:
+
+- Point 3's `Sid::parse` reader (`crates/core/dev/vref_io.rs::load_corpus`)
+  now returns a `Corpus` (ordered `keys`/`texts` arrays, in file order,
+  duplicates preserved) instead of a `VerseMap`, and validates each key
+  against `key::parse_key`'s grammar rather than `Sid::parse`'s numeric
+  chapter/verse parse. A line whose ref fails that grammar is still skipped,
+  matching the original "hand-edited or truncated file" skip semantics.
+- The wasm ingest shape referenced here (`VrefMap = BTreeMap<String,String>`,
+  keyed by sid strings) is retired; the wasm boundary now takes an ordered
+  `VrefCorpus { keys: string[], texts: string[] }`. See ADR 0061 for the full
+  rationale (duplicate keys and caller order cannot survive a map-shaped
+  ingest at any layer).
