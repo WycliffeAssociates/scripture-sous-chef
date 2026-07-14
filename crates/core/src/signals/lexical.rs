@@ -167,7 +167,7 @@ fn duplicate_word_verse<'t>(
             && t.chapter == sid.chapter
         {
             let prev_tail = &t.text[t.last_end..];
-            let head = &text[..first.span.start];
+            let head = &text[..first.span.start as usize];
             let gap_ws = prev_tail.chars().all(char::is_whitespace)
                 && head.chars().all(char::is_whitespace);
             if gap_ws && eq_ignore_case(t.last_word, first.span.slice(text)) {
@@ -205,7 +205,7 @@ fn duplicate_word_verse<'t>(
             sid,
             chapter: sid.chapter,
             text,
-            last_end: last.span.end,
+            last_end: last.span.end as usize,
             last_word: last.span.slice(text),
         });
     }
@@ -217,7 +217,7 @@ fn scan_verse(text: &str, tokens: &[crate::token::Token]) -> Vec<Span> {
     for pair in tokens.windows(2) {
         let [a, b] = pair else { unreachable!() };
         // Whitespace-only gap: "yes, yes" is rhetoric, not a typo.
-        let gap = &text[a.span.end..b.span.start];
+        let gap = &text[a.span.end as usize..b.span.start as usize];
         if gap.is_empty() || !gap.chars().all(char::is_whitespace) {
             continue;
         }
@@ -483,7 +483,7 @@ fn is_ordinary_punct(c: char) -> bool {
 /// by `matches_std_predicates`). Replaces the old recovery that re-found
 /// each chunk with a substring search (`StrSearcher` was ~9 % of an
 /// all-rules corpus pass).
-fn ws_chunks<'a>(text: &'a str, tape: &'a [TapeEntry]) -> impl Iterator<Item = (usize, &'a str)> {
+fn ws_chunks<'a>(text: &'a str, tape: &'a [TapeEntry]) -> impl Iterator<Item = (u32, &'a str)> {
     let mut idx = 0usize;
     std::iter::from_fn(move || {
         // Skip whitespace to the next chunk's start.
@@ -493,17 +493,17 @@ fn ws_chunks<'a>(text: &'a str, tape: &'a [TapeEntry]) -> impl Iterator<Item = (
         if idx >= tape.len() {
             return None;
         }
-        let start = tape[idx].off as usize;
+        let start = tape[idx].off;
         // Advance to the chunk's end (next whitespace, or end of text).
         while idx < tape.len() && !tape[idx].cl.is_whitespace() {
             idx += 1;
         }
         let end = if idx < tape.len() {
-            tape[idx].off as usize
+            tape[idx].off
         } else {
-            text.len()
+            text.len() as u32
         };
-        Some((start, &text[start..end]))
+        Some((start, &text[start as usize..end as usize]))
     })
 }
 
@@ -561,7 +561,7 @@ pub(crate) fn scan_punct_only_token_tape(text: &str, tape: &[TapeEntry]) -> Vec<
         if !legitimate {
             spans.push(Span {
                 start,
-                end: start + chunk.len(),
+                end: start + chunk.len() as u32,
             });
         }
     }
@@ -869,12 +869,12 @@ fn repeated_run_cluster(run: &str) -> String {
 pub fn scan_repeated_character_run(text: &str, graphemes: &[GSpan]) -> Vec<Span> {
     const THRESHOLD: usize = 3;
     let mut spans: Vec<Span> = Vec::new();
-    let mut run_start: Option<usize> = None;
+    let mut run_start: Option<u32> = None;
     let mut run_cluster = "";
     let mut run_len = 0usize;
-    let mut run_end = 0usize;
+    let mut run_end = 0u32;
 
-    let flush = |start: Option<usize>, end: usize, len: usize, spans: &mut Vec<Span>| {
+    let flush = |start: Option<u32>, end: u32, len: usize, spans: &mut Vec<Span>| {
         if let Some(s) = start
             && len >= THRESHOLD
         {
@@ -883,7 +883,7 @@ pub fn scan_repeated_character_run(text: &str, graphemes: &[GSpan]) -> Vec<Span>
     };
 
     for gs in graphemes {
-        let i = gs.start as usize;
+        let i = gs.start;
         let g = gs.slice(text);
         // Letter graphemes only — digit/punct runs are other rules' jobs.
         let is_letter = g
@@ -893,7 +893,7 @@ pub fn scan_repeated_character_run(text: &str, graphemes: &[GSpan]) -> Vec<Span>
             && !g.chars().any(|c| class_of(c).is_decimal_digit());
         if is_letter && g == run_cluster {
             run_len += 1;
-            run_end = i + g.len();
+            run_end = i + g.len() as u32;
             continue;
         }
         flush(run_start, run_end, run_len, &mut spans);
@@ -901,7 +901,7 @@ pub fn scan_repeated_character_run(text: &str, graphemes: &[GSpan]) -> Vec<Span>
             run_start = Some(i);
             run_cluster = g;
             run_len = 1;
-            run_end = i + g.len();
+            run_end = i + g.len() as u32;
         } else {
             run_start = None;
             run_cluster = "";
@@ -1054,7 +1054,7 @@ mod tests {
             "e\u{0301} composed",
         ] {
             let tape = tp(t);
-            let ours: Vec<(usize, &str)> = ws_chunks(t, &tape).collect();
+            let ours: Vec<(u32, &str)> = ws_chunks(t, &tape).collect();
             let oracle: Vec<&str> = t.split_whitespace().collect();
             assert_eq!(
                 ours.iter().map(|&(_, c)| c).collect::<Vec<_>>(),
@@ -1063,6 +1063,7 @@ mod tests {
             );
             let mut offset = 0usize;
             for &(start, chunk) in &ours {
+                let start = start as usize;
                 assert_eq!(&t[start..start + chunk.len()], chunk, "slice {t:?}");
                 assert_eq!(
                     start,

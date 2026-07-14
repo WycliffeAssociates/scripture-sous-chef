@@ -40,8 +40,8 @@ pub(crate) fn tokenize_into(text: &str, buf: &mut Vec<Token>) {
     buf.clear();
     buf.extend(text.unicode_word_indices().map(|(start, word)| Token {
         span: Span {
-            start,
-            end: start + word.len(),
+            start: start as u32,
+            end: (start + word.len()) as u32,
         },
     }));
 }

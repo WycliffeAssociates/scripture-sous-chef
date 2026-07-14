@@ -219,7 +219,7 @@ impl StatefulRule for ProjectLengthRatio {
                     // The finding anchors the whole verse; `sid` carries identity.
                     range: Span {
                         start: 0,
-                        end: o.len as usize,
+                        end: o.len,
                     },
                     score: Some(score_from_z(mag, self.cfg.z_threshold)),
                     args: Some(FindingArgs::LengthRatio {
@@ -364,7 +364,7 @@ mod tests {
         assert_eq!(f.code, PROJECT_LENGTH_RATIO);
         assert_eq!(f.severity, Severity::Warning);
         // Whole-verse anchor.
-        assert_eq!(f.range, Span { start: 0, end: target[&f.sid].len() });
+        assert_eq!(f.range, Span { start: 0, end: target[&f.sid].len() as u32 });
         // A 5× outlier saturates the confidence scale.
         assert_eq!(f.score, Some(1.0));
         let Some(FindingArgs::LengthRatio { ratio_pct, scope }) = f.args else {

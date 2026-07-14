@@ -69,13 +69,13 @@ pub(crate) fn scan_excess_h_whitespace(tape: &[TapeEntry]) -> Vec<Span> {
     while i < tape.len() {
         let e = tape[i];
         if is_h_whitespace(&e) {
-            let run_start = e.off as usize;
+            let run_start = e.off;
             let mut count = 1usize;
-            let mut end = e.off as usize + e.ch.len_utf8();
+            let mut end = e.off + e.ch.len_utf8() as u32;
             let mut j = i + 1;
             while j < tape.len() && is_h_whitespace(&tape[j]) {
                 count += 1;
-                end = tape[j].off as usize + tape[j].ch.len_utf8();
+                end = tape[j].off + tape[j].ch.len_utf8() as u32;
                 j += 1;
             }
             // Only flag runs that follow real content (leading runs are

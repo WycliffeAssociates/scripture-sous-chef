@@ -77,12 +77,12 @@ pub(crate) fn scan_redundant_zwsp(tape: &[TapeEntry]) -> Vec<Span> {
             continue;
         }
         // Consume the maximal U+200B run starting here.
-        let start = tape[i].off as usize;
-        let mut end = start + ZWSP.len_utf8();
+        let start = tape[i].off;
+        let mut end = start + ZWSP.len_utf8() as u32;
         let mut len = 1usize;
         let mut j = i + 1;
         while j < tape.len() && tape[j].ch == ZWSP {
-            end = tape[j].off as usize + ZWSP.len_utf8();
+            end = tape[j].off + ZWSP.len_utf8() as u32;
             len += 1;
             j += 1;
         }
@@ -116,7 +116,7 @@ mod tests {
         let t3 = format!("a{ZW}{ZW}{ZW}b");
         let f3 = scan(&t3);
         assert_eq!(f3.len(), 1);
-        assert_eq!(&t3[f3[0].start..f3[0].end], [ZW, ZW, ZW].concat());
+        assert_eq!(&t3[f3[0].start as usize..f3[0].end as usize], [ZW, ZW, ZW].concat());
     }
 
     #[test]
@@ -145,8 +145,8 @@ mod tests {
         let f = scan(&text);
         assert_eq!(f.len(), 2);
         assert!(f[0].start < f[1].start, "spans stay in text order");
-        assert_eq!(&text[f[0].start..f[0].end], [ZW, ZW].concat());
-        assert_eq!(&text[f[1].start..f[1].end], [ZW, ZW].concat());
+        assert_eq!(&text[f[0].start as usize..f[0].end as usize], [ZW, ZW].concat());
+        assert_eq!(&text[f[1].start as usize..f[1].end as usize], [ZW, ZW].concat());
     }
 
     #[test]

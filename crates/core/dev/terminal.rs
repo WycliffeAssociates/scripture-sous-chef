@@ -187,12 +187,12 @@ fn compound_words(text: &str) -> Vec<Span> {
     let mut out: Vec<Span> = Vec::new();
     for t in tokenize(text) {
         if let Some(prev) = out.last_mut() {
-            let gap = &text[prev.end..t.span.start];
+            let gap = &text[prev.end as usize..t.span.start as usize];
             let mut g = gap.chars();
             let hyphen = matches!(g.next(), Some('\u{002D}' | '\u{2010}')) && g.next().is_none();
             if hyphen
-                && text[..prev.end].chars().next_back().is_some_and(is_letter)
-                && text[t.span.start..].chars().next().is_some_and(is_letter)
+                && text[..prev.end as usize].chars().next_back().is_some_and(is_letter)
+                && text[t.span.start as usize..].chars().next().is_some_and(is_letter)
             {
                 prev.end = t.span.end;
                 continue;
@@ -200,7 +200,7 @@ fn compound_words(text: &str) -> Vec<Span> {
         }
         out.push(t.span);
     }
-    out.retain(|s| text[s.start..s.end].chars().any(is_letter));
+    out.retain(|s| text[s.start as usize..s.end as usize].chars().any(is_letter));
     out
 }
 
@@ -236,7 +236,7 @@ fn walk_corpus(map: &VerseMap) -> Walk {
 
             for span in &words {
                 // Advance the gap, tracking the candidate terminal + context.
-                for c in text[cursor..span.start].chars() {
+                for c in text[cursor..span.start as usize].chars() {
                     let cl = class_of(c);
                     if cl.is_whitespace() || cl.is_numeric() {
                         prev_letter = false;
@@ -265,7 +265,7 @@ fn walk_corpus(map: &VerseMap) -> Walk {
                     }
                 }
 
-                let first = text[span.start..span.end].chars().next().unwrap();
+                let first = text[span.start as usize..span.end as usize].chars().next().unwrap();
                 let fcl = class_of(first);
                 let case = if fcl.is_uppercase() {
                     Case::Upper
@@ -291,7 +291,7 @@ fn walk_corpus(map: &VerseMap) -> Walk {
                 };
                 book_initial = false;
 
-                let key = text[span.start..span.end].to_lowercase();
+                let key = text[span.start as usize..span.end as usize].to_lowercase();
                 if case != Case::Uncased {
                     w.cased_starts += 1;
                 }
@@ -321,11 +321,11 @@ fn walk_corpus(map: &VerseMap) -> Walk {
                 }
 
                 last_word = Some(key);
-                prev_letter = text[span.start..span.end]
+                prev_letter = text[span.start as usize..span.end as usize]
                     .chars()
                     .next_back()
                     .is_some_and(is_letter);
-                cursor = span.end;
+                cursor = span.end as usize;
             }
             // Trailing gap of the verse (pending carries across the seam).
             for c in text[cursor..].chars() {
@@ -1097,16 +1097,18 @@ fn quad_str(q: Quad) -> &'static str {
 }
 
 fn ctx(text: &str, span: Span) -> String {
-    let start = text[..span.start]
+    let span_start = span.start as usize;
+    let span_end = span.end as usize;
+    let start = text[..span_start]
         .char_indices()
         .rev()
         .nth(23)
         .map(|(i, _)| i)
         .unwrap_or(0);
-    let end = text[span.end..]
+    let end = text[span_end..]
         .char_indices()
         .nth(24)
-        .map(|(i, _)| span.end + i)
+        .map(|(i, _)| span_end + i)
         .unwrap_or(text.len());
     text[start..end].replace(['\t', '\n'], " ")
 }
@@ -1167,11 +1169,11 @@ pub fn analyze_corpus(id: String, map: &VerseMap, variant_b: bool) -> TermCorpus
     let (tr_i, tr_p, tr_b) = count(&wired);
 
     // Verdict changes keyed by (sid, span).
-    let base_set: HashMap<(Sid, usize, usize), &Scored> = base
+    let base_set: HashMap<(Sid, u32, u32), &Scored> = base
         .iter()
         .map(|s| ((s.sid, s.span.start, s.span.end), s))
         .collect();
-    let wired_set: HashMap<(Sid, usize, usize), &Scored> = wired
+    let wired_set: HashMap<(Sid, u32, u32), &Scored> = wired
         .iter()
         .map(|s| ((s.sid, s.span.start, s.span.end), s))
         .collect();
@@ -1186,7 +1188,7 @@ pub fn analyze_corpus(id: String, map: &VerseMap, variant_b: bool) -> TermCorpus
                 let text = &map[&sw.sid];
                 samples_promoted.push(PromotedSample {
                     sid: sw.sid.to_string(),
-                    word: text[sw.span.start..sw.span.end].to_string(),
+                    word: text[sw.span.start as usize..sw.span.end as usize].to_string(),
                     ctx: ctx(text, sw.span),
                     class: sw.class.map(|c| c.label()).unwrap_or_default(),
                     trust: sw.trust,
@@ -1198,7 +1200,7 @@ pub fn analyze_corpus(id: String, map: &VerseMap, variant_b: bool) -> TermCorpus
             let text = &map[&sw.sid];
             changes.push(Change {
                 sid: sw.sid.to_string(),
-                word: text[sw.span.start..sw.span.end].to_string(),
+                word: text[sw.span.start as usize..sw.span.end as usize].to_string(),
                 ctx: ctx(text, sw.span),
                 base_score: base_set.get(k).map(|b| b.score).unwrap_or(0.0),
                 tr_score: sw.score,
@@ -1217,7 +1219,7 @@ pub fn analyze_corpus(id: String, map: &VerseMap, variant_b: bool) -> TermCorpus
             let text = &map[&sb.sid];
             changes.push(Change {
                 sid: sb.sid.to_string(),
-                word: text[sb.span.start..sb.span.end].to_string(),
+                word: text[sb.span.start as usize..sb.span.end as usize].to_string(),
                 ctx: ctx(text, sb.span),
                 base_score: sb.score,
                 tr_score: wired_set.get(k).map(|s| s.score).unwrap_or(0.0),
@@ -1334,7 +1336,7 @@ pub fn analyze_corpus(id: String, map: &VerseMap, variant_b: bool) -> TermCorpus
                 .unwrap_or(s.trust);
             readmit_samples.push(ReadmitSample {
                 sid: s.sid.to_string(),
-                word: text[s.span.start..s.span.end].to_string(),
+                word: text[s.span.start as usize..s.span.end as usize].to_string(),
                 ctx: ctx(text, s.span),
                 class: s.class.map(|c| c.label()).unwrap_or_default(),
                 trust: t,
@@ -1370,7 +1372,7 @@ pub fn analyze_corpus(id: String, map: &VerseMap, variant_b: bool) -> TermCorpus
         ) -> Option<&'a Scored> {
             v.iter()
                 .filter(|s| s.sid.to_string() == asid)
-                .find(|s| map[&s.sid][s.span.start..s.span.end].to_lowercase() == aw)
+                .find(|s| map[&s.sid][s.span.start as usize..s.span.end as usize].to_lowercase() == aw)
         }
         let find = |v: &[Scored]| -> Option<(f64, &'static str, f64, f64, String)> {
             find_site(v, map, asid, aw).map(|s| {

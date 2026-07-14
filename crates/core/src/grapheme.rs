@@ -41,8 +41,8 @@ impl GSpan {
     #[inline]
     pub fn range(self) -> Span {
         Span {
-            start: self.start as usize,
-            end: (self.start + self.len) as usize,
+            start: self.start,
+            end: self.start + self.len,
         }
     }
     #[inline]

@@ -902,12 +902,12 @@ fn compound_words(text: &str, tokens: &[crate::token::Token], out: &mut Vec<Span
     out.clear();
     for t in tokens.iter().copied() {
         if let Some(prev) = out.last_mut() {
-            let gap = &text[prev.end..t.span.start];
+            let gap = &text[prev.end as usize..t.span.start as usize];
             let mut g = gap.chars();
             let hyphen = matches!(g.next(), Some('\u{002D}' | '\u{2010}')) && g.next().is_none();
             if hyphen
-                && text[..prev.end].chars().next_back().is_some_and(is_letter)
-                && text[t.span.start..].chars().next().is_some_and(is_letter)
+                && text[..prev.end as usize].chars().next_back().is_some_and(is_letter)
+                && text[t.span.start as usize..].chars().next().is_some_and(is_letter)
             {
                 prev.end = t.span.end;
                 continue;
@@ -915,7 +915,7 @@ fn compound_words(text: &str, tokens: &[crate::token::Token], out: &mut Vec<Span
         }
         out.push(t.span);
     }
-    out.retain(|s| text[s.start..s.end].chars().any(is_letter));
+    out.retain(|s| text[s.start as usize..s.end as usize].chars().any(is_letter));
 }
 
 /// The pending-terminal state across a gap between words. `mark` is the
@@ -1023,9 +1023,9 @@ impl CasingAcc {
         // `self` fields without holding a borrow of `words_buf` open.
         for i in 0..self.words_buf.len() {
             let w = self.words_buf[i];
-            advance_gap(&text[cursor..w.start], &mut self.pending, &mut prev_letter);
+            advance_gap(&text[cursor..w.start as usize], &mut self.pending, &mut prev_letter);
 
-            let first = text[w.start..w.end].chars().next().unwrap();
+            let first = text[w.start as usize..w.end as usize].chars().next().unwrap();
             let fcl = class_of(first);
             let case = if fcl.is_uppercase() {
                 Case::Upper
@@ -1043,7 +1043,7 @@ impl CasingAcc {
             // The fold is deliberately the exact `str::to_lowercase` of the
             // compound-word span (context-sensitive: final sigma etc.), same
             // as it always was — no fast-path gate, so no drift.
-            let key = text[w.start..w.end].to_lowercase();
+            let key = text[w.start as usize..w.end as usize].to_lowercase();
             let id = match self.intern.get(&key) {
                 Some(&id) => id,
                 None => {
@@ -1065,19 +1065,22 @@ impl CasingAcc {
             // — `case` would be `Upper` — so this only touches the first-lower
             // overlap class.)
             if case == Case::Lower
-                && case_shape(&text[w.start..w.end]) != Some(CaseShape::OtherMixed)
+                && case_shape(&text[w.start as usize..w.end as usize]) != Some(CaseShape::OtherMixed)
             {
                 self.sites.push(LowerSite {
                     sid,
-                    start: w.start as u32,
-                    end: w.end as u32,
+                    start: w.start,
+                    end: w.end,
                     key: id,
                     pos,
                 });
             }
 
-            prev_letter = text[w.start..w.end].chars().next_back().is_some_and(is_letter);
-            cursor = w.end;
+            prev_letter = text[w.start as usize..w.end as usize]
+                .chars()
+                .next_back()
+                .is_some_and(is_letter);
+            cursor = w.end as usize;
         }
         advance_gap(&text[cursor..], &mut self.pending, &mut prev_letter);
     }
@@ -1191,7 +1194,7 @@ fn judge_casing<V: Clone + Sync + Send>(
 }
 
 fn site_span(site: &LowerSite) -> Span {
-    Span { start: site.start as usize, end: site.end as usize }
+    Span { start: site.start, end: site.end }
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -1398,7 +1401,7 @@ mod tests {
     }
 
     fn slice<'a>(map: &'a VerseMap, f: &Finding) -> &'a str {
-        &map[&f.sid][f.range.start..f.range.end]
+        &map[&f.sid][f.range.start as usize..f.range.end as usize]
     }
 
     /// Build a corpus by cycling `templates`, one verse each, `reps` cycles.

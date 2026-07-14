@@ -46,8 +46,8 @@ impl PerVerseRule for TabInBody {
 pub fn scan_tab_in_body(text: &str) -> Vec<Span> {
     text.match_indices('\t')
         .map(|(i, _)| Span {
-            start: i,
-            end: i + 1,
+            start: i as u32,
+            end: i as u32 + 1,
         })
         .collect()
 }
@@ -85,16 +85,24 @@ pub(crate) fn scan_control_chars(tape: &[TapeEntry]) -> Vec<Span> {
     let mut spans: Vec<Span> = Vec::new();
     let mut run: Option<(char, Span)> = None;
     for e in tape {
-        let (i, c) = (e.off as usize, e.ch);
+        let (i, c) = (e.off, e.ch);
         let flagged = (is_c0_control(c) && c != '\t' && c != '\n') || is_c1_control(c);
         if flagged {
             match &mut run {
-                Some((rc, span)) if *rc == c && span.end == i => span.end = i + c.len_utf8(),
+                Some((rc, span)) if *rc == c && span.end == i => {
+                    span.end = i + c.len_utf8() as u32
+                }
                 _ => {
                     if let Some((_, span)) = run.take() {
                         spans.push(span);
                     }
-                    run = Some((c, Span { start: i, end: i + c.len_utf8() }));
+                    run = Some((
+                        c,
+                        Span {
+                            start: i,
+                            end: i + c.len_utf8() as u32,
+                        },
+                    ));
                 }
             }
         } else if let Some((_, span)) = run.take() {
@@ -147,7 +155,7 @@ impl PerVerseRule for ZeroWidthMisuse {
 pub(crate) fn scan_zero_width_misuse(tape: &[TapeEntry]) -> Vec<Span> {
     let mut spans = Vec::new();
     for e in tape {
-        let (i, c) = (e.off as usize, e.ch);
+        let (i, c) = (e.off, e.ch);
         if !is_zero_width_or_format(c) {
             continue;
         }
@@ -161,7 +169,7 @@ pub(crate) fn scan_zero_width_misuse(tape: &[TapeEntry]) -> Vec<Span> {
         }
         spans.push(Span {
             start: i,
-            end: i + c.len_utf8(),
+            end: i + c.len_utf8() as u32,
         });
     }
     spans
@@ -200,7 +208,7 @@ pub(crate) fn scan_empty_verse(text: &str, tape: &[TapeEntry]) -> Vec<Span> {
         // Span the whole (whitespace-only or empty) text.
         vec![Span {
             start: 0,
-            end: text.len(),
+            end: text.len() as u32,
         }]
     } else {
         Vec::new()
@@ -239,8 +247,8 @@ pub(crate) fn scan_invalid_codepoint(tape: &[TapeEntry]) -> Vec<Span> {
     for e in tape {
         if is_invalid_text_codepoint(e.ch) {
             spans.push(Span {
-                start: e.off as usize,
-                end: e.off as usize + e.ch.len_utf8(),
+                start: e.off,
+                end: e.off + e.ch.len_utf8() as u32,
             });
         }
     }
@@ -293,7 +301,10 @@ pub fn scan_replacement_run(text: &str) -> Vec<Span> {
                 i += 1;
             }
             if i - start >= MIN_RUN {
-                spans.push(Span { start, end: i });
+                spans.push(Span {
+                    start: start as u32,
+                    end: i as u32,
+                });
             }
         } else {
             i += 1;
@@ -342,8 +353,8 @@ pub(crate) fn scan_combining_mark_without_base(tape: &[TapeEntry]) -> Vec<Span> 
             };
             if baseless {
                 spans.push(Span {
-                    start: e.off as usize,
-                    end: e.off as usize + e.ch.len_utf8(),
+                    start: e.off,
+                    end: e.off + e.ch.len_utf8() as u32,
                 });
             }
         }
@@ -407,16 +418,16 @@ pub(crate) fn scan_mixed_numeral_systems(tape: &[TapeEntry]) -> Vec<Span> {
 
     // Flag maximal runs of minority-system digits.
     let mut spans = Vec::new();
-    let mut run_start: Option<usize> = None;
-    let mut run_end = 0usize;
+    let mut run_start: Option<u32> = None;
+    let mut run_end = 0u32;
     for e in tape {
         let minority = e.cl.is_decimal_digit()
             && numeral_system(e.ch).is_some_and(|sys| sys != majority);
         if minority {
             if run_start.is_none() {
-                run_start = Some(e.off as usize);
+                run_start = Some(e.off);
             }
-            run_end = e.off as usize + e.ch.len_utf8();
+            run_end = e.off + e.ch.len_utf8() as u32;
         } else if let Some(start) = run_start.take() {
             spans.push(Span { start, end: run_end });
         }
@@ -458,7 +469,7 @@ mod tests {
         // U+0007 (BEL, C0), U+0085 (NEL, C1)
         let f = scan_control_chars(&tp("foo\u{0007}bar\u{0085}baz"));
         assert_eq!(f.len(), 2);
-        assert_eq!("foo\u{0007}bar\u{0085}baz"[f[0].start..f[0].end].chars().next(), Some('\u{0007}'));
+        assert_eq!("foo\u{0007}bar\u{0085}baz"[f[0].start as usize..f[0].end as usize].chars().next(), Some('\u{0007}'));
     }
 
     #[test]
@@ -501,7 +512,7 @@ mod tests {
     fn zero_width_flags_bom_in_latin() {
         let f = scan_zero_width_misuse(&tp("foo\u{FEFF}bar"));
         assert_eq!(f.len(), 1);
-        assert_eq!("foo\u{FEFF}bar"[f[0].start..f[0].end].chars().next(), Some('\u{FEFF}'));
+        assert_eq!("foo\u{FEFF}bar"[f[0].start as usize..f[0].end as usize].chars().next(), Some('\u{FEFF}'));
     }
 
     #[test]
@@ -532,7 +543,7 @@ mod tests {
         let f = scan_zero_width_misuse(&tp("a\u{200B}b\u{FEFF}c\u{2060}d\u{202E}e"));
         assert_eq!(f.len(), 3);
         let text = "a\u{200B}b\u{FEFF}c\u{2060}d\u{202E}e";
-        let flagged: Vec<char> = f.iter().map(|s| text[s.start..s.end].chars().next().unwrap()).collect();
+        let flagged: Vec<char> = f.iter().map(|s| text[s.start as usize..s.end as usize].chars().next().unwrap()).collect();
         assert_eq!(flagged, vec!['\u{FEFF}', '\u{2060}', '\u{202E}']);
     }
 
@@ -555,7 +566,7 @@ mod tests {
     fn invalid_codepoint_flags_replacement_char() {
         let f = scan_invalid_codepoint(&tp("god\u{FFFD}created"));
         assert_eq!(f.len(), 1);
-        assert_eq!("god\u{FFFD}created"[f[0].start..f[0].end].chars().next(), Some('\u{FFFD}'));
+        assert_eq!("god\u{FFFD}created"[f[0].start as usize..f[0].end as usize].chars().next(), Some('\u{FFFD}'));
     }
 
     #[test]

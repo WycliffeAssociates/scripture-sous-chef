@@ -404,7 +404,7 @@ fn batch(dir: &Path) {
         for f in fs.iter().take(5) {
             let text = &target[&f.sid];
             let slice: String = f.range.slice(text).chars().take(40).collect();
-            let ctx_start = text[..f.range.start]
+            let ctx_start = text[..f.range.start as usize]
                 .char_indices()
                 .rev()
                 .nth(19)
@@ -556,7 +556,7 @@ fn fleet(dir: &Path, out: &Path) {
                         sid: f.sid.to_string(),
                         score: f.score,
                         slice: display_slice(f.range.slice(text), 24),
-                        ctx: fleet_context(text, f.range.start),
+                        ctx: fleet_context(text, f.range.start as usize),
                     };
                     if sv.len() < 2 {
                         sv.push(sample);
@@ -706,7 +706,7 @@ fn zwsp_calib(dir: &Path) {
     let hyg_zwsp = f
         .iter()
         .filter(|f| f.code == RuleId::ZeroWidthMisuse)
-        .filter(|f| target.get(&f.sid).and_then(|t| t.get(f.range.start..f.range.end)) == Some("\u{200B}"))
+        .filter(|f| target.get(&f.sid).and_then(|t| t.get(f.range.start as usize..f.range.end as usize)) == Some("\u{200B}"))
         .count();
     let redundant: Vec<_> = f.iter().filter(|f| f.code == RuleId::RedundantZeroWidthSpace).collect();
     println!(
@@ -715,7 +715,7 @@ fn zwsp_calib(dir: &Path) {
     );
     for fd in redundant.iter().take(10) {
         if let Some(t) = target.get(&fd.sid) {
-            let n = t.get(fd.range.start..fd.range.end).unwrap_or("").matches('\u{200B}').count();
+            let n = t.get(fd.range.start as usize..fd.range.end as usize).unwrap_or("").matches('\u{200B}').count();
             println!("  {}  run of {n} U+200B", fd.sid);
         }
     }
@@ -894,7 +894,7 @@ fn punct_only_calib(dir: &Path) {
         let text = &target[sid];
         for s in spans {
             let chunk = s.slice(text);
-            let ctx_start = text[..s.start]
+            let ctx_start = text[..s.start as usize]
                 .char_indices()
                 .rev()
                 .nth(19)
@@ -1261,7 +1261,7 @@ fn print_scored<'a>(target: &VerseMap, findings: impl Iterator<Item = &'a Findin
     for f in findings {
         let text = &target[&f.sid];
         let slice: String = f.range.slice(text).chars().take(16).collect();
-        let ctx_start = text[..f.range.start]
+        let ctx_start = text[..f.range.start as usize]
             .char_indices()
             .rev()
             .nth(14)
@@ -1940,7 +1940,7 @@ fn letter_word_shapes(map: &VerseMap) -> BTreeMap<String, WordShape> {
                     // the next letter token sees (cursor deliberately unmoved).
                     continue;
                 }
-                glyph_advance_gap(&text[cursor..token.span.start], &mut pending, &mut prev_letter);
+                glyph_advance_gap(&text[cursor..token.span.start as usize], &mut pending, &mut prev_letter);
                 let mut word_chars = word.chars();
                 let first = word_chars.next().unwrap();
                 // Titlecase shape: uppercase first letter AND >=1 following
@@ -1952,7 +1952,7 @@ fn letter_word_shapes(map: &VerseMap) -> BTreeMap<String, WordShape> {
                 book_initial = false;
                 shapes.insert(word.to_lowercase(), WordShape { titlecase, forced });
                 prev_letter = word.chars().next_back().is_some_and(|c| class_of(c).is_alphabetic());
-                cursor = token.span.end;
+                cursor = token.span.end as usize;
             }
             glyph_advance_gap(&text[cursor..], &mut pending, &mut prev_letter);
         }
@@ -3703,7 +3703,7 @@ fn signature_regression(id: &str) {
         // inside the finding range rather than from `range.end`.
         let mark_off = map
             .get(&f.sid)
-            .and_then(|t| t[f.range.start..f.range.end].find(mark).map(|rel| f.range.start + rel));
+            .and_then(|t| t[f.range.start as usize..f.range.end as usize].find(mark).map(|rel| f.range.start as usize + rel));
         let Some(sig) = mark_off.and_then(|off| site_sig.get(&(f.sid, off)).copied()) else {
             rows.push(format!("    {:<10} {:?} live={:.3} | (no signature match)", f.sid.to_string(), mark, live_score));
             continue;
@@ -4676,11 +4676,11 @@ fn mc_walk(
                 if !is_letter_token(word) {
                     continue; // its text stays in the gap the next word sees
                 }
-                glyph_advance_gap(&text[cursor..token.span.start], &mut pending, &mut prev_letter);
+                glyph_advance_gap(&text[cursor..token.span.start as usize], &mut pending, &mut prev_letter);
                 let forced = book_initial || matches!(pending.take(), Some(false));
                 book_initial = false;
                 prev_letter = word.chars().next_back().is_some_and(|c| class_of(c).is_alphabetic());
-                cursor = token.span.end;
+                cursor = token.span.end as usize;
 
                 let Some(shape) = mc_classify(word) else { continue };
                 let entry = profiles.entry(word.to_lowercase()).or_default();
@@ -6114,7 +6114,7 @@ fn pooled_regression(id: &str) {
         let mark = *mark;
         let mark_off = map
             .get(&f.sid)
-            .and_then(|t| t[f.range.start..f.range.end].find(mark).map(|rel| f.range.start + rel));
+            .and_then(|t| t[f.range.start as usize..f.range.end as usize].find(mark).map(|rel| f.range.start as usize + rel));
         let Some((al, ar, blc, brc)) = mark_off.and_then(|o| reads.get(&(f.sid, o)).copied()) else {
             changed.push(format!("    {:<10} {:?} (no opp match)", f.sid.to_string(), mark));
             continue;

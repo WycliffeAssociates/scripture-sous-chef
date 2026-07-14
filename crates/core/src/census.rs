@@ -264,7 +264,7 @@ impl BookCensusAcc {
             self.scalars_seen += 1;
             let first = self.pages.bump(e.ch);
             if first && is_letter_scalar(e.ch) {
-                let span = Span { start: e.off as usize, end: e.off as usize + e.ch.len_utf8() };
+                let span = Span { start: e.off, end: e.off + e.ch.len_utf8() as u32 };
                 self.glyph_first.entry(e.ch).or_insert((v.sid, span));
             }
             let class: Option<&'static str> = if e.ch == '\t' {
@@ -282,7 +282,7 @@ impl BookCensusAcc {
             };
             if let Some(class) = class {
                 *self.format_counts.entry(class).or_default() += 1;
-                let span = Span { start: e.off as usize, end: e.off as usize + e.ch.len_utf8() };
+                let span = Span { start: e.off, end: e.off + e.ch.len_utf8() as u32 };
                 self.format_first.entry(class).or_insert((v.sid, span));
             }
         }
@@ -319,7 +319,7 @@ impl BookCensusAcc {
             let mut j = i + 1;
             while j < v.tokens.len() {
                 let next = v.tokens[j];
-                let gap = &v.text[end..next.span.start];
+                let gap = &v.text[end as usize..next.span.start as usize];
                 let next_bearing = next
                     .span
                     .slice(v.text)
@@ -332,7 +332,7 @@ impl BookCensusAcc {
                     break;
                 }
             }
-            let window = &v.text[start..end];
+            let window = &v.text[start as usize..end as usize];
             let span = Span { start, end };
             self.digit_tokens += (j - i) as u64;
             for shape in number_shapes(window) {
@@ -576,7 +576,7 @@ fn assemble(per_book: Vec<BookCensus>, opts: &CensusOptions) -> Inventory {
             }
             first_in_book.entry(e.family).or_insert((
                 e.sid,
-                Span { start: e.offset, end: e.offset + e.glyph.len_utf8() },
+                Span { start: e.offset as u32, end: (e.offset + e.glyph.len_utf8()) as u32 },
             ));
         }
         bracket_first.push(first_in_book);

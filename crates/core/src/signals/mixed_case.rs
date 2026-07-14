@@ -429,7 +429,7 @@ mod tests {
     }
 
     fn slice<'a>(map: &'a VerseMap, f: &Finding) -> &'a str {
-        &map[&f.sid][f.range.start..f.range.end]
+        &map[&f.sid][f.range.start as usize..f.range.end as usize]
     }
 
     /// Build a corpus by cycling `templates`, one verse each, `reps` cycles.

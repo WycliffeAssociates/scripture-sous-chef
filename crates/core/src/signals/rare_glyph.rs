@@ -386,12 +386,12 @@ fn emit_verse(
         }
         for (i, c) in word.char_indices() {
             if let Some(&(score, count)) = surviving.get(&c) {
-                let start = tok.span.start + i;
+                let start = tok.span.start + i as u32;
                 out.push(Finding {
                     sid,
                     code: RARE_GLYPH,
                     severity: Severity::Info,
-                    range: Span { start, end: start + c.len_utf8() },
+                    range: Span { start, end: start + c.len_utf8() as u32 },
                     score: Some(score),
                     args: Some(FindingArgs::RareGlyph { glyph: c, count }),
                 });
@@ -522,7 +522,7 @@ impl RareGlyphAcc {
         for (tok, folded) in v.tokens.iter().zip(v.folds) {
             let Some(key) = folded else { continue };
             let word = tok.span.slice(text);
-            casing::advance_gap(&text[cursor..tok.span.start], &mut self.pending, &mut prev_letter);
+            casing::advance_gap(&text[cursor..tok.span.start as usize], &mut self.pending, &mut prev_letter);
             let forced =
                 !matches!(casing::pos_of(self.book_initial, self.pending.take()), PosClass::Midflow);
             self.book_initial = false;
@@ -560,7 +560,7 @@ impl RareGlyphAcc {
             }
 
             prev_letter = word.chars().next_back().is_some_and(|c| class_of(c).is_alphabetic());
-            cursor = tok.span.end;
+            cursor = tok.span.end as usize;
         }
         casing::advance_gap(&text[cursor..], &mut self.pending, &mut prev_letter);
     }
@@ -639,7 +639,7 @@ mod tests {
     }
 
     fn slice<'a>(map: &'a VerseMap, f: &Finding) -> &'a str {
-        &map[&f.sid][f.range.start..f.range.end]
+        &map[&f.sid][f.range.start as usize..f.range.end as usize]
     }
 
     /// The BASE corpus (60 cycles) in `book`, plus any explicit extra verses.

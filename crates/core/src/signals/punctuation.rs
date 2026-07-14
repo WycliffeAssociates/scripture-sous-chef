@@ -390,12 +390,12 @@ fn adjacency_runs(tape: &[TapeEntry], include_safe: bool) -> Vec<Span> {
             i += 1;
             continue;
         }
-        let start = e.off as usize;
-        let mut end = start + c.len_utf8();
+        let start = e.off;
+        let mut end = start + c.len_utf8() as u32;
         let mut count = 1usize;
         let mut j = i + 1;
         while j < tape.len() && tape[j].ch == c {
-            end = tape[j].off as usize + c.len_utf8();
+            end = tape[j].off + c.len_utf8() as u32;
             count += 1;
             j += 1;
         }
@@ -421,12 +421,12 @@ fn adjacency_runs(tape: &[TapeEntry], include_safe: bool) -> Vec<Span> {
             continue;
         }
         let c = e.ch;
-        let start = e.off as usize;
-        let mut end = start + c.len_utf8();
+        let start = e.off;
+        let mut end = start + c.len_utf8() as u32;
         let mut run = String::from(c);
         let mut j = i + 1;
         while j < tape.len() && is_sep(&tape[j]) {
-            end = tape[j].off as usize + tape[j].ch.len_utf8();
+            end = tape[j].off + tape[j].ch.len_utf8() as u32;
             run.push(tape[j].ch);
             j += 1;
         }
@@ -1088,8 +1088,8 @@ fn walk_opportunities(
             Some(c) if g.len() == c.len_utf8() && is_candidate_mark(c) => c,
             _ => continue,
         };
-        let mark_start = gs.start as usize;
-        let mark_end = mark_start + mark.len_utf8();
+        let mark_start = gs.start;
+        let mark_end = mark_start + mark.len_utf8() as u32;
 
         // Left: walk over horizontal whitespace to the governing neighbour. The
         // highlight starts at the whitespace run (spaced) or the neighbour
@@ -1116,7 +1116,7 @@ fn walk_opportunities(
             let class = neighbour_class(nb.slice(text));
             let form = if left_ws { SideForm::Spaced } else { SideForm::Attached };
             // Highlight the crossed ws run (spaced) or the attached neighbour.
-            let span_start = if left_ws { graphemes[j].start as usize } else { nb.start as usize };
+            let span_start = if left_ws { graphemes[j].start } else { nb.start };
             (Some(SideRead { class, form }), span_start)
         };
 

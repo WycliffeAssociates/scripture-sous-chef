@@ -13,8 +13,8 @@ use unicode_segmentation::UnicodeSegmentation;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct Span {
-    pub start: usize,
-    pub end: usize,
+    pub start: u32,
+    pub end: u32,
 }
 
 /// UTF-16 code-unit offsets into the verse text. The JS/web target unit
@@ -23,8 +23,8 @@ pub struct Span {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct Utf16Span {
-    pub start: usize,
-    pub end: usize,
+    pub start: u32,
+    pub end: u32,
 }
 
 /// Grapheme-cluster (user-perceived character) offsets into the verse
@@ -33,12 +33,12 @@ pub struct Utf16Span {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct GraphemeSpan {
-    pub start: usize,
-    pub end: usize,
+    pub start: u32,
+    pub end: u32,
 }
 
 impl Span {
-    pub fn len(&self) -> usize {
+    pub fn len(&self) -> u32 {
         self.end - self.start
     }
 
@@ -49,23 +49,23 @@ impl Span {
     /// Zero-copy borrow of the addressed text. The Rust consumer's
     /// preview path — no allocation.
     pub fn slice<'a>(&self, text: &'a str) -> &'a str {
-        &text[self.start..self.end]
+        &text[self.start as usize..self.end as usize]
     }
 
     /// Project to UTF-16 code-unit offsets against `text`. The wasm
     /// wrapper applies this once at the boundary so JS never converts.
     pub fn to_utf16(&self, text: &str) -> Utf16Span {
         Utf16Span {
-            start: text[..self.start].encode_utf16().count(),
-            end: text[..self.end].encode_utf16().count(),
+            start: text[..self.start as usize].encode_utf16().count() as u32,
+            end: text[..self.end as usize].encode_utf16().count() as u32,
         }
     }
 
     /// Project to grapheme-cluster offsets against `text`.
     pub fn to_graphemes(&self, text: &str) -> GraphemeSpan {
         GraphemeSpan {
-            start: text[..self.start].graphemes(true).count(),
-            end: text[..self.end].graphemes(true).count(),
+            start: text[..self.start as usize].graphemes(true).count() as u32,
+            end: text[..self.end as usize].graphemes(true).count() as u32,
         }
     }
 }
@@ -93,10 +93,10 @@ mod tests {
     fn grapheme_projection_counts_clusters() {
         // Family emoji ZWJ sequence is one grapheme, several codepoints.
         let text = "👨‍👩‍👧x";
-        let x_start = text.len() - 1;
+        let x_start = text.len() as u32 - 1;
         let s = Span {
             start: x_start,
-            end: text.len(),
+            end: text.len() as u32,
         };
         assert_eq!(s.to_graphemes(text), GraphemeSpan { start: 1, end: 2 });
     }

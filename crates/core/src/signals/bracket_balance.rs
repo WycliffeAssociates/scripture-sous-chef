@@ -219,8 +219,8 @@ fn finding(
         code: BRACKET_BALANCE,
         severity: Severity::Info,
         range: Span {
-            start: e.offset,
-            end: e.offset + e.glyph.len_utf8(),
+            start: e.offset as u32,
+            end: (e.offset + e.glyph.len_utf8()) as u32,
         },
         score: Some(score as f32),
         args: Some(FindingArgs::BracketWindow {
