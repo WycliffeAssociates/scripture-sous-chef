@@ -28,11 +28,20 @@ pub struct VrefCorpus {
     pub texts: Vec<String>,
 }
 
-/// Convert caller input to a validated `Corpus`, without panicking on
-/// malformed input — a `CorpusError` (mismatched array lengths, a malformed
-/// key, a noncontiguous book block, …) becomes a rejected `JsError` instead.
-fn to_corpus(v: VrefCorpus) -> Result<Corpus, JsError> {
-    Corpus::try_from_parts(v.keys, v.texts).map_err(|e| JsError::new(&e.to_string()))
+/// Validate caller input into a `Corpus` without panicking on malformed
+/// input (mismatched array lengths, a malformed key, a noncontiguous book
+/// block, …). Kept separate from the `JsError` conversion below so this
+/// validation is natively testable — `JsError::new` itself calls into
+/// wasm-bindgen's JS glue and only works when actually running under wasm.
+fn to_corpus(v: VrefCorpus) -> Result<Corpus, ssc_core::corpus::CorpusError> {
+    Corpus::try_from_parts(v.keys, v.texts)
+}
+
+/// The `#[wasm_bindgen]` boundary conversion: any rejected `Corpus` becomes a
+/// `JsError` (a rejected promise/thrown exception for the caller) rather
+/// than a panic.
+fn to_corpus_or_reject(v: VrefCorpus) -> Result<Corpus, JsError> {
+    to_corpus(v).map_err(|e| JsError::new(&e.to_string()))
 }
 
 /// Partial overrides for `prop.length-ratio`'s knobs. Omitted fields keep
@@ -425,8 +434,8 @@ pub fn analyze_vref(
     source: Option<VrefCorpus>,
     config: Option<SousConfig>,
 ) -> Result<Findings, JsError> {
-    let target = to_corpus(target)?;
-    let source = source.map(to_corpus).transpose()?;
+    let target = to_corpus_or_reject(target)?;
+    let source = source.map(to_corpus_or_reject).transpose()?;
     let cfg = build_config(config);
     let findings = analyze_with_config(&target, source.as_ref(), &cfg);
     Ok(Findings(project(&target, &findings)))
@@ -462,8 +471,8 @@ pub fn analyze_vref_stateful(
     prior: Option<Stats>,
     changed: Option<Vec<String>>,
 ) -> Result<Analysis, JsError> {
-    let target = to_corpus(target)?;
-    let source = source.map(to_corpus).transpose()?;
+    let target = to_corpus_or_reject(target)?;
+    let source = source.map(to_corpus_or_reject).transpose()?;
     let cfg = build_config(config);
     let changed_slugs: Option<Vec<&str>> =
         changed.as_ref().map(|list| list.iter().map(String::as_str).collect());
@@ -572,7 +581,7 @@ pub fn stats_remove_book(mut stats: Stats, book: String) -> Stats {
 /// `analyze` path that the rest of this boundary optimizes for.
 #[wasm_bindgen]
 pub fn census(target: VrefCorpus, example_cap: Option<u32>) -> Result<String, JsError> {
-    let target = to_corpus(target)?;
+    let target = to_corpus_or_reject(target)?;
     let opts = match example_cap {
         Some(cap) => ssc_core::CensusOptions { example_cap: cap as usize },
         None => ssc_core::CensusOptions::default(),
@@ -750,6 +759,23 @@ mod tests {
             .filter(|f| f.code == RuleId::ExcessHWhitespace)
             .collect();
         assert_eq!(hits.len(), 2, "both duplicate entries are analyzed independently");
+    }
+
+    /// A mismatched-length `VrefCorpus` (the wasm wire shape's equivalent of
+    /// a malformed native `Corpus::try_from_parts` call) fails loudly rather
+    /// than silently truncating or panicking. This exercises the same
+    /// validation `to_corpus_or_reject` gates the wasm boundary with —
+    /// `#[wasm_bindgen] pub fn` return `Result<_, JsError>` precisely so a
+    /// `CorpusError` here becomes a rejected call for the JS caller instead
+    /// of a panic (the `JsError` conversion itself needs a real wasm
+    /// runtime, so it isn't exercised by this native test).
+    #[test]
+    fn invalid_parallel_array_lengths_fail_loudly() {
+        let mismatched = VrefCorpus {
+            keys: vec!["GEN 1:1".to_string(), "GEN 1:2".to_string()],
+            texts: vec!["a".to_string()],
+        };
+        assert!(to_corpus(mismatched).is_err());
     }
 
     /// Omitted overrides keep core's defaults; the default-on redundant-ZWSP rule

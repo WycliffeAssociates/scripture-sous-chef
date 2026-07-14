@@ -715,6 +715,57 @@ mod tests {
         assert_eq!(keys, sorted, "findings must be in (key_idx, start, code) order");
     }
 
+    /// Two verses sharing the exact same key string are still independently
+    /// addressable: both get analyzed, and each occurrence keeps its own
+    /// `KeyIdx` rather than collapsing onto one.
+    #[test]
+    fn duplicate_key_entries_are_both_analyzed_with_distinct_key_idx() {
+        let target = Corpus::try_from_parts(
+            vec!["GEN 1:1".to_string(), "GEN 1:1".to_string()],
+            vec!["a  b".to_string(), "c  d".to_string()],
+        )
+        .unwrap();
+        let findings = analyze(&target, None);
+        let hits: Vec<_> = findings
+            .iter()
+            .filter(|f| target.key(f.key_idx) == "GEN 1:1")
+            .collect();
+        assert_eq!(hits.len(), 2, "both duplicate-key verses are analyzed");
+        assert_ne!(
+            hits[0].key_idx, hits[1].key_idx,
+            "each occurrence keeps a distinct KeyIdx"
+        );
+    }
+
+    /// A sub-verse key token (`1a`) survives unchanged through the whole
+    /// pipeline, and a finding against it resolves back to that exact key.
+    #[test]
+    fn sub_verse_key_survives_and_a_finding_resolves_to_it() {
+        let target =
+            Corpus::try_from_parts(vec!["GEN 1:1a".to_string()], vec!["a  b".to_string()]).unwrap();
+        let findings = analyze(&target, None);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(target.key(findings[0].key_idx), "GEN 1:1a");
+    }
+
+    /// `Books` (and therefore emission order) follows the corpus's
+    /// *presented* order, not canonical/alphabetical book order: REV placed
+    /// before GEN in the input must emit REV's finding first.
+    #[test]
+    fn presented_book_order_not_canonical_order_determines_emission_order() {
+        let target = corpus_of(vec![keyed("REV", &["a  b"]), keyed("GEN", &["c\td"])]);
+        let findings = analyze(&target, None);
+        assert!(findings.len() >= 2);
+        assert!(
+            target.key(findings[0].key_idx).starts_with("REV"),
+            "REV's finding emits first, matching presented order"
+        );
+        assert!(
+            target.key(findings.last().unwrap().key_idx).starts_with("GEN"),
+            "GEN's finding emits last"
+        );
+    }
+
     #[test]
     fn cached_per_verse_lane_reuses_content_keyed_findings() {
         let target = corpus_of(vec![keyed("GEN", &["a  b", "hello"]), keyed("EXO", &["x\ty", "clean"])]);
@@ -807,6 +858,80 @@ mod tests {
         assert_eq!(cached_stats, scratch_stats);
         assert_eq!(cache.walk_hit_count(), 2, "clean books should reuse walk products");
         assert_eq!(cache.walk_miss_count(), 0, "changed book is walked without a cache probe");
+    }
+
+    /// Retained per-book cache products are local (`LocalKeyIdx`), rebased to
+    /// a global `KeyIdx` only against the *current* call's `BookGroup::base`
+    /// — never stored as a stale global address. Growing an earlier book
+    /// shifts every later book's base forward; a cache hit on the later book
+    /// must still resolve to its new, shifted keys.
+    #[test]
+    fn cache_rebases_correctly_when_an_earlier_book_grows() {
+        let cfg = Config::all();
+        let mut cache = AnalysisCache::new();
+        let original = corpus_of(vec![keyed("GEN", &["a  b", "one"]), keyed("EXO", &["x\ty", "two"])]);
+        let (_, prior) = analyze_stateful(&original, None, &cfg, None, None, Some(&mut cache));
+
+        // GEN grows by one verse: EXO's global KeyIdx base shifts forward.
+        let grown = corpus_of(vec![
+            keyed("GEN", &["a  b", "one", "extra  space"]),
+            keyed("EXO", &["x\ty", "two"]),
+        ]);
+        let (cached, cached_stats) = analyze_stateful(
+            &grown,
+            None,
+            &cfg,
+            Some(prior.clone()),
+            Some(&["GEN"]),
+            Some(&mut cache),
+        );
+        let (cold, cold_stats) = analyze_stateful(&grown, None, &cfg, Some(prior), Some(&["GEN"]), None);
+
+        assert_eq!(cached, cold, "cache-hit EXO findings must rebase to the shifted keys");
+        assert_eq!(cached_stats, cold_stats);
+        assert_eq!(cache.walk_hit_count(), 1, "EXO reuses its walk product across GEN's growth");
+
+        let exo_hit = cached
+            .iter()
+            .find(|f| grown.key(f.key_idx) == "EXO 1:1")
+            .expect("EXO's tab-in-body finding resolves to its shifted key");
+        assert_eq!(exo_hit.code, signals::hygiene::TAB_IN_BODY);
+    }
+
+    /// The mirror of the growth case: shrinking an earlier book shifts every
+    /// later book's base *backward*, and a cache hit must still rebase
+    /// correctly.
+    #[test]
+    fn cache_rebases_correctly_when_an_earlier_book_shrinks() {
+        let cfg = Config::all();
+        let mut cache = AnalysisCache::new();
+        let original = corpus_of(vec![
+            keyed("GEN", &["a  b", "one", "extra  space"]),
+            keyed("EXO", &["x\ty", "two"]),
+        ]);
+        let (_, prior) = analyze_stateful(&original, None, &cfg, None, None, Some(&mut cache));
+
+        // GEN shrinks by one verse: EXO's global KeyIdx base shifts backward.
+        let shrunk = corpus_of(vec![keyed("GEN", &["a  b", "one"]), keyed("EXO", &["x\ty", "two"])]);
+        let (cached, cached_stats) = analyze_stateful(
+            &shrunk,
+            None,
+            &cfg,
+            Some(prior.clone()),
+            Some(&["GEN"]),
+            Some(&mut cache),
+        );
+        let (cold, cold_stats) = analyze_stateful(&shrunk, None, &cfg, Some(prior), Some(&["GEN"]), None);
+
+        assert_eq!(cached, cold, "cache-hit EXO findings must rebase to the shifted keys");
+        assert_eq!(cached_stats, cold_stats);
+        assert_eq!(cache.walk_hit_count(), 1, "EXO reuses its walk product across GEN's shrink");
+
+        let exo_hit = cached
+            .iter()
+            .find(|f| shrunk.key(f.key_idx) == "EXO 1:1")
+            .expect("EXO's tab-in-body finding resolves to its shifted key");
+        assert_eq!(exo_hit.code, signals::hygiene::TAB_IN_BODY);
     }
 
     #[test]

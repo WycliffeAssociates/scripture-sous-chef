@@ -382,6 +382,50 @@ mod tests {
         rule.judge(&rule.reduce(&books, source, None).0, &books, None, None)
     }
 
+    /// Two duplicate keys on both sides pair first-with-first,
+    /// second-with-second (occurrence ordinal) — never positionally
+    /// (first-source-match-wins), which would falsely flag the second
+    /// duplicate as an outlier.
+    #[test]
+    fn pairs_duplicate_target_keys_to_duplicate_source_keys_by_occurrence_ordinal() {
+        let base = "abcdefghij ".repeat(4); // 44 graphemes, this file's baseline unit
+        let mut target_keys = Vec::new();
+        let mut target_texts = Vec::new();
+        let mut source_keys = Vec::new();
+        let mut source_texts = Vec::new();
+        // Ordinary same-length verses (mild jitter so MAD > 0), enough to
+        // clear the default `min_verses` book-distribution floor.
+        for v in 1..=58u16 {
+            let k = key("GEN", v);
+            source_keys.push(k.clone());
+            source_texts.push(base.clone());
+            target_keys.push(k);
+            target_texts.push(if v % 2 == 0 { format!("{base}x") } else { base.clone() });
+        }
+        // Two duplicate "GEN 1:59" keys on both sides. Ordinal 0 is 5x
+        // longer; ordinal 1 matches the baseline. Correct pairing gives both
+        // target duplicates a ~1.0 ratio (no outlier); positional
+        // first-match pairing would instead compare target ordinal 1 (base
+        // length) against source ordinal 0 (5x length), a false outlier.
+        source_keys.push(key("GEN", 59));
+        source_texts.push(base.repeat(5));
+        source_keys.push(key("GEN", 59));
+        source_texts.push(base.clone());
+        target_keys.push(key("GEN", 59));
+        target_texts.push(base.repeat(5));
+        target_keys.push(key("GEN", 59));
+        target_texts.push(base.clone());
+
+        let target = Corpus::try_from_parts(target_keys, target_texts).unwrap();
+        let source = Corpus::try_from_parts(source_keys, source_texts).unwrap();
+
+        let findings = run(&rule(), &target, Some(&source));
+        assert!(
+            findings.is_empty(),
+            "correct ordinal pairing keeps both duplicate verses at ratio ~1.0, no outliers: {findings:?}"
+        );
+    }
+
     #[test]
     fn uniform_ratios_produce_nothing() {
         // Identical ratios everywhere → MAD == 0 → skip, no findings.
