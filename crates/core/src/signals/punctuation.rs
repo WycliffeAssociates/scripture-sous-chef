@@ -1311,9 +1311,9 @@ mod tests {
             let group = &groups[0];
 
             // Batch reference.
+            type RefSite = (LocalKeyIdx, char, Option<SideRead>, Option<SideRead>, Span, Span);
             let mut ref_cells: BTreeMap<char, [u64; SIDE_CELLS]> = BTreeMap::new();
-            let mut ref_sites: Vec<(LocalKeyIdx, char, Option<SideRead>, Option<SideRead>, Span, Span)> =
-                Vec::new();
+            let mut ref_sites: Vec<RefSite> = Vec::new();
             for_each_spacing_opportunity(group, |local, opp| {
                 let cell = ref_cells.entry(opp.mark).or_insert([0u64; SIDE_CELLS]);
                 if let Some(r) = opp.left {

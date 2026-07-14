@@ -38,10 +38,6 @@ impl KeyIdx {
         KeyIdx(v)
     }
 
-    pub(crate) fn get(self) -> u32 {
-        self.0
-    }
-
     fn try_from_usize(v: usize) -> Result<Self, CorpusError> {
         u32::try_from(v)
             .map(KeyIdx)
@@ -94,9 +90,7 @@ pub(crate) fn rebase(base: KeyIdx, local: LocalKeyIdx) -> KeyIdx {
 /// ever applied to a `KeyIdx` this same call derived from `base`, so the
 /// subtraction and narrowing cannot fail.
 pub(crate) fn unrebase(base: KeyIdx, global: KeyIdx) -> LocalKeyIdx {
-    LocalKeyIdx(
-        u16::try_from(global.0 - base.0).expect("global was rebased from this call's base"),
-    )
+    LocalKeyIdx(u16::try_from(global.0 - base.0).expect("global was rebased from this call's base"))
 }
 
 /// A packed, location-only site: 6 bytes (align 2, no padding). Verse-
@@ -105,7 +99,7 @@ pub(crate) fn unrebase(base: KeyIdx, global: KeyIdx) -> LocalKeyIdx {
 /// that carry extra fields keep `LocalKeyIdx` + `Span` unpacked.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct SiteAddr {
+pub struct SiteAddr {
     pub(crate) local: u16,
     pub(crate) start: u16,
     pub(crate) end: u16,
@@ -316,11 +310,11 @@ pub fn by_book(corpus: &Corpus) -> Books<'_> {
 /// (panics on an out-of-range `idx`, exactly like a slice index) — every
 /// `KeyIdx` on a `Finding` this call returned is valid against this same
 /// `Corpus`.
-pub fn resolve_key<'a>(corpus: &'a Corpus, idx: KeyIdx) -> &'a str {
+pub fn resolve_key(corpus: &Corpus, idx: KeyIdx) -> &str {
     corpus.key(idx)
 }
 
-pub fn resolve_text<'a>(corpus: &'a Corpus, idx: KeyIdx) -> &'a str {
+pub fn resolve_text(corpus: &Corpus, idx: KeyIdx) -> &str {
     corpus.text(idx)
 }
 

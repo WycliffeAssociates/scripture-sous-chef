@@ -415,8 +415,8 @@ fn project(target: &Corpus, findings: &[ssc_core::Finding]) -> Vec<Finding> {
                 sid: target.key(f.key_idx).to_string(),
                 code: f.code,
                 severity: f.severity,
-                start: u16.start as u32,
-                end: u16.end as u32,
+                start: u16.start,
+                end: u16.end,
                 score: f.score,
                 args: f.args.clone(),
             }

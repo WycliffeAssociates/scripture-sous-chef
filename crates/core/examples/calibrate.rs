@@ -1928,11 +1928,8 @@ fn glyph_advance_gap(gap: &str, pending: &mut Option<bool>, prev_letter: &mut bo
             *prev_letter = true;
         } else {
             match pending {
-                Some(collapsed) => {
-                    if !cl.is_quote() {
-                        *collapsed = true;
-                    }
-                }
+                Some(collapsed) if !cl.is_quote() => *collapsed = true,
+                Some(_) => {}
                 None if *prev_letter => *pending = Some(false),
                 None => {}
             }
@@ -3936,7 +3933,7 @@ fn signature_fleet(dir: &Path) {
     print_sig_samples(&nc_diverse);
 
     // False-positive focus: noisiest digit-context corpora + a sample.
-    digit_rows.sort_by(|a, b| b.1.cmp(&a.1));
+    digit_rows.sort_by_key(|b| std::cmp::Reverse(b.1));
     println!("\n-- false-positive focus: rare-CONTEXT signatures (digit side), noisiest corpora --");
     println!("   digit_surfaced = surfaced occurrences with a digit neighbour; a low digit share means the context is rare, not the mark misplaced");
     for (id, n, share) in digit_rows.iter().take(15) {
@@ -4625,7 +4622,6 @@ struct McCand {
 
 /// One sampled OtherMixed site for the review tables.
 struct McSample {
-    corpus: String,
     sid: String,
     word: String,
     route: &'static str,
@@ -4730,8 +4726,8 @@ fn mc_walk(
                         if cands.len() < CAND_CAP {
                             cands.push(McCand {
                                 sid: sid.clone(),
-                                start: token.span.start as u32,
-                                end: token.span.end as u32,
+                                start: token.span.start,
+                                end: token.span.end,
                                 key: word.to_lowercase(),
                                 first_upper,
                                 forced: is_forced,
@@ -4841,7 +4837,6 @@ fn analyze_mixedcase(id: String, map: &Corpus) -> McCorpus {
         let word = text[c.start as usize..c.end as usize].to_string();
         let dom = sig_wilson_lb(p.not_other(), p.total(), MC_Z);
         let mk = |route: &'static str, score: f64| McSample {
-            corpus: id.clone(),
             sid: c.sid.to_string(),
             word: word.clone(),
             route,
@@ -5524,9 +5519,9 @@ fn a_class_counts(cell: &ACell, side: usize, cls: PClass) -> [u64; 2] {
 }
 fn a_top_counts(cell: &ACell, side: usize) -> [u64; 2] {
     let mut r = [0u64; 2];
-    for sub in 0..4 {
-        r[0] += cell[side][sub][0];
-        r[1] += cell[side][sub][1];
+    for sub in &cell[side] {
+        r[0] += sub[0];
+        r[1] += sub[1];
     }
     r
 }
@@ -6095,8 +6090,8 @@ fn pooled_regression(id: &str) {
     // Build the pools + a (key, mark_off) → opp reads lookup.
     let mut a_po: BTreeMap<char, ACell> = BTreeMap::new();
     let mut b_po: BTreeMap<char, BCell> = BTreeMap::new();
-    let mut reads: HashMap<(String, usize), (Option<(bool, SubClass)>, Option<(bool, SubClass)>, BCat, BCat)> =
-        HashMap::new();
+    type OppRead = (Option<(bool, SubClass)>, Option<(bool, SubClass)>, BCat, BCat);
+    let mut reads: HashMap<(String, usize), OppRead> = HashMap::new();
     for_each_pool_opp(&map, |key, _text, opp| {
         if opp.is_dash {
             return;
@@ -6136,10 +6131,8 @@ fn pooled_regression(id: &str) {
         let acell = &a_po[&mark];
         let bcell = &b_po[&mark];
         // Which side(s) did shipped flag?
-        let sides: [(bool, usize, Option<(bool, SubClass)>, BCat); 2] = [
-            (left.is_some(), 0, al, blc),
-            (right.is_some(), 1, ar, brc),
-        ];
+        type SideRead = (bool, usize, Option<(bool, SubClass)>, BCat);
+        let sides: [SideRead; 2] = [(left.is_some(), 0, al, blc), (right.is_some(), 1, ar, brc)];
         let mut op = false;
         let mut lp = false;
         let mut bp = false;
@@ -6383,7 +6376,7 @@ fn pooled_fleet(dir: &Path) {
     println!("\n══ 5. Score histograms + noisiest new-pool corpora + FP adjudication ══");
     print_pool_hist("Design A", &a_hist);
     print_pool_hist("Design B", &b_hist);
-    noisy.sort_by(|a, b| (b.1 + b.2 + b.3).cmp(&(a.1 + a.2 + a.3)));
+    noisy.sort_by_key(|b| std::cmp::Reverse(b.1 + b.2 + b.3));
     println!("\n  noisiest new-pool corpora (number-flag / quote-flag / dash-flag sites):");
     for (id, nf, qf, df) in noisy.iter().take(15) {
         println!("  {id:<26} number {nf:>5}  quote {qf:>5}  dash {df:>5}");
