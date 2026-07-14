@@ -1,9 +1,9 @@
 //! wasm bindings for sous-chef.
 //!
-//! The boundary the editor consumes (web and Tauri). JS hands in
-//! `{ "GEN 1:1": text, … }` maps (onion's vref text — JS reconstructs it
-//! from token sources, or passes onion's projection); sous returns
-//! findings whose ranges are already projected to **UTF-16** so the
+//! The boundary the editor consumes (web and Tauri). JS hands in an ordered
+//! `{ keys: string[], texts: string[] }` corpus (onion's vref text — JS
+//! reconstructs it from token sources, or passes onion's projection); sous
+//! returns findings whose ranges are already projected to **UTF-16** so the
 //! editor resolves them with zero conversion. Byte→UTF-16 conversion
 //! happens once here, at the layer that owns the text. See ADR 0010.
 
@@ -11,16 +11,29 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use ssc_core::{
-    BookId, Config, FindingArgs, RuleId, Severity, Sid, Stats, VerseMap, analyze_stateful,
-    analyze_with_config,
+    Config, Corpus, FindingArgs, RuleId, Severity, Stats, analyze_stateful, analyze_with_config,
 };
 use tsify::Tsify;
 use wasm_bindgen::prelude::*;
 
-/// `{ sid -> text }` as it arrives from JS. TS: `Record<string, string>`.
+/// An ordered, duplicate-preserving vref corpus as it arrives from JS:
+/// parallel `keys`/`texts` arrays in caller-presented order (a `Corpus` is a
+/// duplicate-preserving structure, not a map — unlike the retired
+/// `VrefMap(Record<string, string>)`, this shape cannot silently collapse a
+/// duplicate ref). TS: `{ keys: string[], texts: string[] }`.
 #[derive(Deserialize, Tsify)]
 #[tsify(from_wasm_abi)]
-pub struct VrefMap(pub BTreeMap<String, String>);
+pub struct VrefCorpus {
+    pub keys: Vec<String>,
+    pub texts: Vec<String>,
+}
+
+/// Convert caller input to a validated `Corpus`, without panicking on
+/// malformed input — a `CorpusError` (mismatched array lengths, a malformed
+/// key, a noncontiguous book block, …) becomes a rejected `JsError` instead.
+fn to_corpus(v: VrefCorpus) -> Result<Corpus, JsError> {
+    Corpus::try_from_parts(v.keys, v.texts).map_err(|e| JsError::new(&e.to_string()))
+}
 
 /// Partial overrides for `prop.length-ratio`'s knobs. Omitted fields keep
 /// core's calibrated defaults (`z_threshold` 3.5, `min_verses` 50).
@@ -255,12 +268,6 @@ pub struct Finding {
 #[tsify(into_wasm_abi)]
 pub struct Findings(pub Vec<Finding>);
 
-fn to_verse_map(m: &BTreeMap<String, String>) -> VerseMap {
-    m.iter()
-        .filter_map(|(k, v)| Sid::parse(k).map(|sid| (sid, v.clone())))
-        .collect()
-}
-
 /// Build core's `Config` from the shipped defaults (P2 rules off) plus the
 /// caller's explicit per-rule entries and knob overrides.
 fn build_config(config: Option<SousConfig>) -> Config {
@@ -388,15 +395,15 @@ fn build_config(config: Option<SousConfig>) -> Config {
 }
 
 /// Project core findings (byte ranges) to the editor's UTF-16 ranges,
-/// resolving each against its verse text.
-fn project(target_vm: &VerseMap, findings: &[ssc_core::Finding]) -> Vec<Finding> {
+/// resolving each `key_idx` against its verse text.
+fn project(target: &Corpus, findings: &[ssc_core::Finding]) -> Vec<Finding> {
     findings
         .iter()
         .map(|f| {
-            let text = target_vm.get(&f.sid).map(String::as_str).unwrap_or("");
+            let text = target.text(f.key_idx);
             let u16 = f.range.to_utf16(text);
             Finding {
-                sid: f.sid.to_string(),
+                sid: target.key(f.key_idx).to_string(),
                 code: f.code,
                 severity: f.severity,
                 start: u16.start as u32,
@@ -408,17 +415,21 @@ fn project(target_vm: &VerseMap, findings: &[ssc_core::Finding]) -> Vec<Finding>
         .collect()
 }
 
-/// Analyze a vref text map. `target` is `{ sid -> text }`; `source` is an
-/// optional parallel map; `config` overrides the shipped defaults
-/// (omitted ⇒ `Config::v1_defaults()`: language-agnostic rules on,
-/// convention-dependent rules off). Returns findings with UTF-16 ranges.
+/// Analyze a vref corpus. `source` is an optional parallel corpus; `config`
+/// overrides the shipped defaults (omitted ⇒ `Config::v1_defaults()`:
+/// language-agnostic rules on, convention-dependent rules off). Returns
+/// findings with UTF-16 ranges.
 #[wasm_bindgen]
-pub fn analyze_vref(target: VrefMap, source: Option<VrefMap>, config: Option<SousConfig>) -> Findings {
-    let target_vm = to_verse_map(&target.0);
-    let source_vm = source.as_ref().map(|s| to_verse_map(&s.0));
+pub fn analyze_vref(
+    target: VrefCorpus,
+    source: Option<VrefCorpus>,
+    config: Option<SousConfig>,
+) -> Result<Findings, JsError> {
+    let target = to_corpus(target)?;
+    let source = source.map(to_corpus).transpose()?;
     let cfg = build_config(config);
-    let findings = analyze_with_config(&target_vm, source_vm.as_ref(), &cfg);
-    Findings(project(&target_vm, &findings))
+    let findings = analyze_with_config(&target, source.as_ref(), &cfg);
+    Ok(Findings(project(&target, &findings)))
 }
 
 /// Findings plus the corpus [`Stats`] to cache for incremental re-analysis.
@@ -445,29 +456,29 @@ pub struct Analysis {
 /// (or omit `prior`) for the original re-count-everything behavior.
 #[wasm_bindgen]
 pub fn analyze_vref_stateful(
-    target: VrefMap,
-    source: Option<VrefMap>,
+    target: VrefCorpus,
+    source: Option<VrefCorpus>,
     config: Option<SousConfig>,
     prior: Option<Stats>,
     changed: Option<Vec<String>>,
-) -> Analysis {
-    let target_vm = to_verse_map(&target.0);
-    let source_vm = source.as_ref().map(|s| to_verse_map(&s.0));
+) -> Result<Analysis, JsError> {
+    let target = to_corpus(target)?;
+    let source = source.map(to_corpus).transpose()?;
     let cfg = build_config(config);
-    let changed_ids: Option<Vec<BookId>> = changed
-        .map(|list| list.iter().filter_map(|c| BookId::from_str(c)).collect());
+    let changed_slugs: Option<Vec<&str>> =
+        changed.as_ref().map(|list| list.iter().map(String::as_str).collect());
     let (findings, stats) = analyze_stateful(
-        &target_vm,
-        source_vm.as_ref(),
+        &target,
+        source.as_ref(),
         &cfg,
         prior,
-        changed_ids.as_deref(),
+        changed_slugs.as_deref(),
         None,
     );
-    Analysis {
-        findings: project(&target_vm, &findings),
+    Ok(Analysis {
+        findings: project(&target, &findings),
         stats,
-    }
+    })
 }
 
 /// One rule's human-facing card (ADR 0038): plain-language title, what a
@@ -543,17 +554,15 @@ pub fn rule_catalog() -> RuleCatalog {
 /// (e.g. `"GEN"`); an unknown code is a no-op.
 #[wasm_bindgen]
 pub fn stats_remove_book(mut stats: Stats, book: String) -> Stats {
-    if let Some(b) = BookId::from_str(&book) {
-        stats.remove_book(b);
-    }
+    stats.remove_book(&book);
     stats
 }
 
-/// Census a vref text map (ADR 0058): the knob-free absolute-count report
+/// Census a vref corpus (ADR 0058): the knob-free absolute-count report
 /// (`ssc_core::Inventory`, eight lanes) as opposed to `analyze`'s judged
-/// findings. `target` is `{ sid -> text }`, same shape as [`analyze_vref`];
-/// `example_cap` bounds the example sites retained per row (omitted ⇒
-/// core's default of 8; a payload-size cap, not a statistical knob).
+/// findings. `target` is the same shape as [`analyze_vref`]'s; `example_cap`
+/// bounds the example sites retained per row (omitted ⇒ core's default of 8;
+/// a payload-size cap, not a statistical knob).
 ///
 /// Returns the `Inventory` serialized to a JSON **string**, deliberately not
 /// a Tsify-typed object: the wire schema is ADR 0058's `Inventory` and
@@ -562,14 +571,14 @@ pub fn stats_remove_book(mut stats: Stats, book: String) -> Stats {
 /// shape — census is a cold, occasionally-invoked report, not the hot
 /// `analyze` path that the rest of this boundary optimizes for.
 #[wasm_bindgen]
-pub fn census(target: VrefMap, example_cap: Option<u32>) -> String {
-    let target_vm = to_verse_map(&target.0);
+pub fn census(target: VrefCorpus, example_cap: Option<u32>) -> Result<String, JsError> {
+    let target = to_corpus(target)?;
     let opts = match example_cap {
         Some(cap) => ssc_core::CensusOptions { example_cap: cap as usize },
         None => ssc_core::CensusOptions::default(),
     };
-    let inventory = ssc_core::census(&target_vm, &opts);
-    serde_json::to_string(&inventory).expect("Inventory always serializes")
+    let inventory = ssc_core::census(&target, &opts);
+    Ok(serde_json::to_string(&inventory).expect("Inventory always serializes"))
 }
 
 #[cfg(test)]
@@ -674,7 +683,6 @@ mod tests {
     /// its minority mark corpus-wide, identical to the full analysis.
     #[test]
     fn spacing_anomaly_incremental_round_trips_through_the_boundary() {
-        use std::collections::BTreeMap;
         let enable = || {
             Some(SousConfig {
                 rules: Some([(RuleId::PunctuationSpacingAnomaly, true)].into_iter().collect()),
@@ -682,13 +690,17 @@ mod tests {
             })
         };
         // GEN establishes an attached-comma convention; EXO holds one spaced minority.
-        let mut full: BTreeMap<String, String> = BTreeMap::new();
+        let mut keys = Vec::new();
+        let mut texts = Vec::new();
         for v in 1..=100u16 {
-            full.insert(format!("GEN 1:{v}"), "word, word".to_string());
+            keys.push(format!("GEN 1:{v}"));
+            texts.push("word, word".to_string());
         }
-        full.insert("EXO 1:1".to_string(), "word , word".to_string());
+        keys.push("EXO 1:1".to_string());
+        texts.push("word , word".to_string());
 
-        let analysis = analyze_vref_stateful(VrefMap(full), None, enable(), None, None);
+        let analysis =
+            analyze_vref_stateful(VrefCorpus { keys, texts }, None, enable(), None, None).unwrap();
         let full_score = analysis
             .findings
             .iter()
@@ -701,9 +713,11 @@ mod tests {
             serde_json::from_str(&serde_json::to_string(&analysis.stats).unwrap()).unwrap();
 
         // Re-supply only the edited book; the score must stay corpus-wide.
-        let exo: BTreeMap<String, String> =
-            [("EXO 1:1".to_string(), "word , word".to_string())].into_iter().collect();
-        let inc = analyze_vref_stateful(VrefMap(exo), None, enable(), Some(prior), None);
+        let exo = VrefCorpus {
+            keys: vec!["EXO 1:1".to_string()],
+            texts: vec!["word , word".to_string()],
+        };
+        let inc = analyze_vref_stateful(exo, None, enable(), Some(prior), None).unwrap();
         let hits: Vec<_> = inc
             .findings
             .iter()
@@ -712,6 +726,30 @@ mod tests {
         assert_eq!(hits.len(), 1, "emits only for the edited book");
         assert_eq!(hits[0].sid, "EXO 1:1");
         assert_eq!(hits[0].score, full_score, "incremental score is corpus-wide");
+    }
+
+    /// A duplicate key entry is preserved (not collapsed into one row the
+    /// way the retired `Record<string, string>`-shaped `VrefMap` would have)
+    /// at the wasm boundary: both occurrences are analyzed and independently
+    /// addressable.
+    ///
+    /// (A malformed/mismatched-length `VrefCorpus` is rejected via `JsError`
+    /// rather than panicking — see `to_corpus` — but exercising that path
+    /// needs the wasm-bindgen JS glue, so it's covered by the wasm-side
+    /// integration tests, not this native `cargo test` suite.)
+    #[test]
+    fn duplicate_keys_are_preserved_not_collapsed() {
+        let dup = VrefCorpus {
+            keys: vec!["GEN 1:1".to_string(), "GEN 1:1".to_string()],
+            texts: vec!["a  b".to_string(), "c  d".to_string()],
+        };
+        let findings = analyze_vref(dup, None, None).unwrap();
+        let hits: Vec<_> = findings
+            .0
+            .iter()
+            .filter(|f| f.code == RuleId::ExcessHWhitespace)
+            .collect();
+        assert_eq!(hits.len(), 2, "both duplicate entries are analyzed independently");
     }
 
     /// Omitted overrides keep core's defaults; the default-on redundant-ZWSP rule

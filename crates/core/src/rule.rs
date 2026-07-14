@@ -22,24 +22,26 @@ use std::collections::BTreeMap;
 use rustc_hash::FxHashMap;
 
 use crate::config::Config;
+use crate::corpus::{BookGroup, Books, Corpus, KeyIdx, LocalKeyIdx, SiteAddr};
 use crate::diagnostics::{Finding, RuleId, Severity};
-use crate::sid::{BookId, Sid};
 use crate::signals;
 use crate::span::Span;
 use crate::stats::RuleStats;
 use crate::tape::{Mask, TapeEntry};
 use crate::token::Token;
-use crate::verse::{Books, VerseMap};
 
-/// Per-verse word tokenizations, keyed by `Sid`, computed once per analyze
-/// and shared by every token-consuming rule so the corpus is tokenized a
-/// single time instead of once per rule (the UAX #29 word scan is a top
-/// cost on space-free and non-Latin scripts). Built only when ≥2 token
-/// consumers are enabled — see `analyze_stateful`.
+/// Per-verse word tokenizations, keyed by the current call's global
+/// `KeyIdx`, computed once per analyze and shared by every token-consuming
+/// rule so the corpus is tokenized a single time instead of once per rule
+/// (the UAX #29 word scan is a top cost on space-free and non-Latin
+/// scripts). Built only when ≥2 token consumers are enabled — see
+/// `analyze_stateful`. Global, not local: this cache is rebuilt fresh every
+/// call (never serialized, never retained across calls), so there is no
+/// cross-call stability requirement to preserve by staying book-local.
 /// FxHashMap: internal-only (never serialized, never crosses the wasm
 /// boundary), fast non-cryptographic hashing on the hot per-book walk (ADR
 /// 0057 allocation-diet follow-up).
-pub type TokenCache = FxHashMap<Sid, Vec<Token>>;
+pub type TokenCache = FxHashMap<KeyIdx, Vec<Token>>;
 
 /// The hot, stateless majority. `check` reads the verse's prebuilt scalar tape
 /// (ADR 0045) — one shared decode+classify pass the runner does per verse —
@@ -66,7 +68,7 @@ pub(crate) trait PerVerseRule: Sync {
 /// fan out through [`map_books`] and nobody regroups the corpus.
 pub trait ProjectRule: Sync {
     fn id(&self) -> RuleId;
-    fn check(&self, books: &Books<'_>, source: Option<&VerseMap>) -> Vec<Finding>;
+    fn check(&self, books: &Books<'_>, source: Option<&Corpus>) -> Vec<Finding>;
 }
 
 /// A project-scoped rule that also consults per-verse tokens (e.g.
@@ -77,7 +79,7 @@ pub trait ProjectTokenRule: Sync {
     fn check(
         &self,
         books: &Books<'_>,
-        source: Option<&VerseMap>,
+        source: Option<&Corpus>,
         tokens: Option<&TokenCache>,
     ) -> Vec<Finding>;
 }
@@ -95,13 +97,13 @@ pub trait ProjectTokenRule: Sync {
 /// spans. Proportionality carries no sites: its judge emits from cached
 /// ratios and never scans.
 pub enum RuleSites {
-    Casing(BTreeMap<BookId, signals::casing::CasingSites>),
+    Casing(BTreeMap<Box<str>, signals::casing::CasingSites>),
     Proportionality,
-    PunctuationAdjacency(BTreeMap<BookId, Vec<(Sid, Span)>>),
-    PunctuationSpacing(BTreeMap<BookId, Vec<signals::punctuation::SpacingSite>>),
-    RepeatedCharacterRun(BTreeMap<BookId, Vec<(Sid, Span)>>),
-    PunctOnlyToken(BTreeMap<BookId, Vec<(Sid, Span)>>),
-    MixedScript(BTreeMap<BookId, Vec<signals::script_mixing::MixedScriptSite>>),
+    PunctuationAdjacency(BTreeMap<Box<str>, Vec<SiteAddr>>),
+    PunctuationSpacing(BTreeMap<Box<str>, Vec<signals::punctuation::SpacingSite>>),
+    RepeatedCharacterRun(BTreeMap<Box<str>, Vec<SiteAddr>>),
+    PunctOnlyToken(BTreeMap<Box<str>, Vec<SiteAddr>>),
+    MixedScript(BTreeMap<Box<str>, Vec<signals::script_mixing::MixedScriptSite>>),
     /// `uni.rare-glyph` carries no sites: surviving candidates are ultra-rare, so
     /// its judge re-scans the supplied books (the `sites`-free path) rather than
     /// forward every letter occurrence (ADR 0044, ADR 0053).
@@ -112,24 +114,19 @@ pub enum RuleSites {
     MixedCase,
 }
 
-/// Pair each site with its verse's text by walking a book's verses and its
-/// (verse-ordered) sites together — the site path's replacement for slicing
-/// via a map lookup per site. `f(sid, text, payload)`.
-pub(crate) fn for_each_site_text<'a, T>(
-    verses: &[(Sid, &'a str)],
-    sites: &[(Sid, T)],
-    mut f: impl FnMut(Sid, &'a str, &T),
+/// Pair each packed pure-location site (adjacency / repeated-run /
+/// punct-only) with its verse's text by direct indexing into the owning
+/// `BookGroup` — a site's `LocalKeyIdx` **is** its position in `group.texts`,
+/// so unlike the old `Sid`-sorted merge-walk this never needs to search.
+/// `f(local, text, span)`.
+pub(crate) fn for_each_site_text<'a>(
+    group: &BookGroup<'a>,
+    sites: &[SiteAddr],
+    mut f: impl FnMut(LocalKeyIdx, &'a str, Span),
 ) {
-    let mut vi = verses.iter();
-    let mut cur = vi.next();
-    for (sid, payload) in sites {
-        while cur.is_some_and(|&(vsid, _)| vsid < *sid) {
-            cur = vi.next();
-        }
-        match cur {
-            Some(&(vsid, text)) if vsid == *sid => f(*sid, text, payload),
-            _ => {}
-        }
+    for &addr in sites {
+        let (local, span) = addr.unpack();
+        f(local, group.text(local), span);
     }
 }
 
@@ -155,7 +152,7 @@ pub trait StatefulRule: Sync {
     fn reduce(
         &self,
         books: &Books<'_>,
-        source: Option<&VerseMap>,
+        source: Option<&Corpus>,
         tokens: Option<&TokenCache>,
     ) -> (RuleStats, RuleSites);
     /// Emit findings from the merged corpus `stats`. `books` holds the verses
@@ -176,25 +173,25 @@ pub trait StatefulRule: Sync {
     ) -> Vec<Finding>;
 }
 
-/// Run `f` over every book and collect the outputs **in book order**. Under
-/// the `parallel` feature the books fan out over rayon (ADR 0042); the output
-/// is identical either way — an indexed collect preserves `BTreeMap` key
-/// order, and books are disjoint — so the feature can never change results,
-/// only wall-clock. This is the *one* place the stateful phase's parallelism
-/// lives; rules call it and stay `cfg`-free.
+/// Run `f` over every book and collect the outputs **in `books`' presented
+/// order** (index-aligned with `books`, which is caller order, not canonical
+/// book order — see `Corpus`). Under the `parallel` feature the books fan out
+/// over rayon (ADR 0042); the output is identical either way — an indexed
+/// collect preserves input order, and books are disjoint — so the feature can
+/// never change results, only wall-clock. This is the *one* place the
+/// stateful phase's parallelism lives; rules call it and stay `cfg`-free.
 pub(crate) fn map_books<T: Send>(
     books: &Books<'_>,
-    f: impl Fn(BookId, &[(Sid, &str)]) -> T + Sync,
+    f: impl Fn(&BookGroup<'_>) -> T + Sync,
 ) -> Vec<T> {
     #[cfg(feature = "parallel")]
     {
         use rayon::prelude::*;
-        let entries: Vec<(&BookId, &Vec<(Sid, &str)>)> = books.iter().collect();
-        entries.into_par_iter().map(|(b, v)| f(*b, v)).collect()
+        books.par_iter().map(&f).collect()
     }
     #[cfg(not(feature = "parallel"))]
     {
-        books.iter().map(|(&b, v)| f(b, v)).collect()
+        books.iter().map(&f).collect()
     }
 }
 

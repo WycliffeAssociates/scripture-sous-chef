@@ -12,7 +12,6 @@
 use std::collections::BTreeMap;
 
 use crate::diagnostics::RuleId;
-use crate::sid::BookId;
 use crate::signals::casing::CasingStats;
 use crate::signals::lexical::{PunctOnlyTokenStats, RepeatedCharacterRunStats};
 use crate::signals::mixed_case::MixedCaseStats;
@@ -108,17 +107,17 @@ impl RuleStats {
     }
 
     /// Drop a book's contribution from this rule's cache.
-    fn remove_book(&mut self, book: BookId) {
+    fn remove_book(&mut self, slug: &str) {
         match self {
-            RuleStats::Casing(c) => c.remove_book(book),
-            RuleStats::Proportionality(p) => p.remove_book(book),
-            RuleStats::PunctuationAdjacency(p) => p.remove_book(book),
-            RuleStats::PunctuationSpacing(p) => p.remove_book(book),
-            RuleStats::RepeatedCharacterRun(r) => r.remove_book(book),
-            RuleStats::PunctOnlyToken(p) => p.remove_book(book),
-            RuleStats::MixedScript(m) => m.remove_book(book),
-            RuleStats::GlyphInventory(g) => g.remove_book(book),
-            RuleStats::MixedCase(m) => m.remove_book(book),
+            RuleStats::Casing(c) => c.remove_book(slug),
+            RuleStats::Proportionality(p) => p.remove_book(slug),
+            RuleStats::PunctuationAdjacency(p) => p.remove_book(slug),
+            RuleStats::PunctuationSpacing(p) => p.remove_book(slug),
+            RuleStats::RepeatedCharacterRun(r) => r.remove_book(slug),
+            RuleStats::PunctOnlyToken(p) => p.remove_book(slug),
+            RuleStats::MixedScript(m) => m.remove_book(slug),
+            RuleStats::GlyphInventory(g) => g.remove_book(slug),
+            RuleStats::MixedCase(m) => m.remove_book(slug),
         }
     }
 }
@@ -147,9 +146,9 @@ impl Stats {
     /// Drop a book's cached statistics across every rule — the sanctioned
     /// caller-side deletion (ADR 0017), so a removed book stops contributing
     /// to corpus aggregates and stops emitting findings.
-    pub fn remove_book(&mut self, book: BookId) {
+    pub fn remove_book(&mut self, slug: &str) {
         for stats in self.rules.values_mut() {
-            stats.remove_book(book);
+            stats.remove_book(slug);
         }
     }
 

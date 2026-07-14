@@ -32,27 +32,31 @@
 //! accumulator implementation per rule, so they cannot drift.
 
 use std::borrow::Cow;
-use std::collections::BTreeMap;
 
 use crate::charclass::class_of;
-use crate::diagnostics::Finding;
+use crate::corpus::{BookGroup, Books, Corpus, LocalKeyIdx};
 use crate::grapheme::{self, GSpan};
 use crate::rule::{self, TokenCache};
-use crate::sid::{BookId, Sid};
 use crate::signals::{
     bracket_balance, casing, lexical, mixed_case, proportionality, punctuation, rare_glyph,
     script_mixing,
 };
 use crate::tape::{self, TapeEntry};
 use crate::token::{self, Token};
-use crate::verse::{Books, VerseMap};
 
 /// The shared per-verse view every listener reads. Slices are empty when the
 /// walk plan didn't require that product — a listener only touches what its
 /// [`Needs`] declared.
 pub(crate) struct VerseInputs<'t, 'b> {
-    pub sid: Sid,
-    /// The verse text, borrowed from the caller's `VerseMap` — it outlives
+    /// This verse's raw key string, borrowed from the owning `BookGroup` — a
+    /// listener that needs a structural fact (duplicate-word's chapter gate)
+    /// parses it via `key::parse_key`; nothing here parses it eagerly.
+    pub key: &'t str,
+    /// This verse's position within its book — the address every retained
+    /// per-book product stores. Rebased to a global `KeyIdx` only at
+    /// emission (judge time), against the *current call's* `BookGroup::base`.
+    pub local_idx: LocalKeyIdx,
+    /// The verse text, borrowed from the caller's `Corpus` — it outlives
     /// the walk, so a listener may carry slices of it across verses
     /// (duplicate-word's tail).
     pub text: &'t str,
@@ -221,43 +225,47 @@ pub(crate) struct BookOut {
     /// merge (the book was in the reduce scope).
     pub counted: bool,
     pub casing: Option<(casing::BookCasing, casing::CasingSites)>,
-    pub adjacency: Option<(punctuation::BookPunctuationAdjacency, Vec<(Sid, crate::span::Span)>)>,
+    pub adjacency: Option<(punctuation::BookPunctuationAdjacency, Vec<crate::corpus::SiteAddr>)>,
     pub spacing: Option<(punctuation::BookPunctuationSpacing, Vec<punctuation::SpacingSite>)>,
-    pub repeated_run: Option<(lexical::BookRepeatedCharacterRun, Vec<(Sid, crate::span::Span)>)>,
-    pub punct_only: Option<(lexical::BookPunctOnlyToken, Vec<(Sid, crate::span::Span)>)>,
+    pub repeated_run: Option<(lexical::BookRepeatedCharacterRun, Vec<crate::corpus::SiteAddr>)>,
+    pub punct_only: Option<(lexical::BookPunctOnlyToken, Vec<crate::corpus::SiteAddr>)>,
     pub mixed_script:
         Option<(script_mixing::BookMixedScript, Vec<script_mixing::MixedScriptSite>)>,
     pub rare_glyph: Option<rare_glyph::BookGlyphs>,
     pub mixed_case: Option<mixed_case::BookMixedCase>,
     pub proportionality: Option<Vec<proportionality::RatioObs>>,
     pub bracket: Option<bracket_balance::BookMatch>,
-    pub duplicate: Option<Vec<Finding>>,
-    pub tokens: Option<Vec<(Sid, Vec<Token>)>>,
+    pub duplicate: Option<Vec<lexical::DuplicateHit>>,
+    pub tokens: Option<Vec<(LocalKeyIdx, Vec<Token>)>>,
 }
 
 /// The fused walk over every supplied book, fan-out per book (ADR 0042).
-/// `counted` says which books the counting listeners run for (the ADR 0043
-/// `changed` scope narrows counting, never the project listeners or the token
-/// cache); `None` counts every book.
+/// Output is index-aligned with `books` (its presented order — see
+/// `Corpus`), not keyed by book identity. `counted` says which book *slugs*
+/// the counting listeners run for (the ADR 0043 `changed` scope narrows
+/// counting, never the project listeners or the token cache); `None` counts
+/// every book.
 pub(crate) fn walk_fused(
     books: &Books<'_>,
-    counted: Option<&[BookId]>,
-    source: Option<&VerseMap>,
+    counted: Option<&[&str]>,
+    source: Option<&Corpus>,
     plan: &WalkPlan,
-) -> BTreeMap<BookId, BookOut> {
-    rule::map_books(books, |book, verses| {
-        let count = counted.is_none_or(|list| list.contains(&book));
-        (book, walk_book(verses, count, source, plan))
+) -> Vec<BookOut> {
+    // Built once per analysis (never per book): proportionality pairs by
+    // (key string, occurrence ordinal), not position, across independent
+    // corpora.
+    let source_index = source.map(proportionality::index_source);
+    rule::map_books(books, |group| {
+        let count = counted.is_none_or(|list| list.contains(&group.slug));
+        walk_book(group, count, source_index.as_ref(), plan)
     })
-    .into_iter()
-    .collect()
 }
 
 /// Walk one book's verses once, feeding every listener the plan enables.
 fn walk_book(
-    verses: &[(Sid, &str)],
+    group: &BookGroup<'_>,
     count: bool,
-    source: Option<&VerseMap>,
+    source_index: Option<&proportionality::SourceIndex<'_>>,
     plan: &WalkPlan,
 ) -> BookOut {
     // Site-bearing listeners run on every book — for an uncounted book their
@@ -278,8 +286,8 @@ fn walk_book(
     let mut mixed_script_acc = plan.mixed_script.then(|| script_mixing::MixedScriptAcc::new(count));
     let mut rare_glyph_acc = (count && plan.rare_glyph).then(rare_glyph::RareGlyphAcc::new);
     let mut mixed_case_acc = (count && plan.mixed_case).then(mixed_case::MixedCaseAcc::new);
-    let mut prop_acc =
-        (count && plan.proportionality).then(|| proportionality::ProportionalityAcc::new(source));
+    let mut prop_acc = (count && plan.proportionality)
+        .then(|| proportionality::ProportionalityAcc::new(source_index));
     // Project listeners (every supplied book — their emission scope).
     let mut bracket_acc = plan.bracket.then(bracket_balance::BracketAcc::new);
     let mut duplicate_acc = plan.duplicate.then(lexical::DuplicateWordAcc::new);
@@ -288,10 +296,12 @@ fn walk_book(
     let mut graphemes_buf: Vec<GSpan> = Vec::new();
     let mut tokens_buf: Vec<Token> = Vec::new();
     let mut folds_buf: Vec<Option<Cow<str>>> = Vec::new();
-    let mut cache: Option<Vec<(Sid, Vec<Token>)>> =
-        plan.collect_tokens.then(|| Vec::with_capacity(verses.len()));
+    let mut cache: Option<Vec<(LocalKeyIdx, Vec<Token>)>> =
+        plan.collect_tokens.then(|| Vec::with_capacity(group.len()));
 
-    for (vi, &(sid, text)) in verses.iter().enumerate() {
+    for (vi, (key, text)) in group.keys.iter().zip(group.texts.iter()).enumerate() {
+        let local_idx = LocalKeyIdx::new(vi as u16);
+        let text = text.as_str();
         if needs.tape {
             tape::build(text, &mut tape_buf);
         }
@@ -305,7 +315,8 @@ fn walk_book(
             fold_letter_tokens(text, &tokens_buf, &mut folds_buf);
         }
         let v = VerseInputs {
-            sid,
+            key,
+            local_idx,
             text,
             tape: if needs.tape { &tape_buf } else { &[] },
             graphemes: if needs.graphemes { &graphemes_buf } else { &[] },
@@ -341,14 +352,14 @@ fn walk_book(
             a.verse(&v);
         }
         if let Some(a) = &mut bracket_acc {
-            a.verse(&v, vi);
+            a.verse(&v);
         }
         if let Some(a) = &mut duplicate_acc {
             a.verse(&v);
         }
 
         if let Some(c) = &mut cache {
-            c.push((sid, std::mem::take(&mut tokens_buf)));
+            c.push((local_idx, std::mem::take(&mut tokens_buf)));
         }
     }
 
@@ -369,13 +380,16 @@ fn walk_book(
     }
 }
 
-/// Assemble the shared [`TokenCache`] from the fused walk's per-book slices.
-pub(crate) fn assemble_token_cache(out: &mut BTreeMap<BookId, BookOut>) -> TokenCache {
+/// Assemble the shared [`TokenCache`] from the fused walk's per-book slices,
+/// rebasing each book-local token entry to this call's global `KeyIdx`.
+/// `out` must be index-aligned with `books` (both `walk_fused`'s output
+/// contract).
+pub(crate) fn assemble_token_cache(out: &mut [BookOut], books: &Books<'_>) -> TokenCache {
     let mut cache = TokenCache::default();
-    for book in out.values_mut() {
+    for (group, book) in books.iter().zip(out.iter_mut()) {
         if let Some(vs) = book.tokens.take() {
-            for (sid, toks) in vs {
-                cache.insert(sid, toks);
+            for (local, toks) in vs {
+                cache.insert(crate::corpus::rebase(group.base, local), toks);
             }
         }
     }
@@ -386,11 +400,11 @@ pub(crate) fn assemble_token_cache(out: &mut BTreeMap<BookId, BookOut>) -> Token
 /// `StatefulRule::reduce` (kept for calibration/tests; `analyze_stateful`
 /// itself uses [`walk_fused`]). The listener sees exactly the products the
 /// fused walk would hand it, so the two paths cannot diverge.
-pub(crate) fn drive_book<A, T>(
-    verses: &[(Sid, &str)],
+pub(crate) fn drive_book<'g, A, T>(
+    group: &BookGroup<'g>,
     needs: Needs,
     mut acc: A,
-    mut feed: impl FnMut(&mut A, &VerseInputs<'_, '_>, usize),
+    mut feed: impl FnMut(&mut A, &VerseInputs<'g, '_>),
     finish: impl FnOnce(A) -> T,
 ) -> T {
     let needs = needs.union(Needs::default()); // normalize graphemes ⇒ tape, folds ⇒ tokens
@@ -398,7 +412,9 @@ pub(crate) fn drive_book<A, T>(
     let mut graphemes_buf: Vec<GSpan> = Vec::new();
     let mut tokens_buf: Vec<Token> = Vec::new();
     let mut folds_buf: Vec<Option<Cow<str>>> = Vec::new();
-    for (vi, &(sid, text)) in verses.iter().enumerate() {
+    for (vi, (key, text)) in group.keys.iter().zip(group.texts.iter()).enumerate() {
+        let local_idx = LocalKeyIdx::new(vi as u16);
+        let text = text.as_str();
         if needs.tape {
             tape::build(text, &mut tape_buf);
         }
@@ -412,14 +428,15 @@ pub(crate) fn drive_book<A, T>(
             fold_letter_tokens(text, &tokens_buf, &mut folds_buf);
         }
         let v = VerseInputs {
-            sid,
+            key,
+            local_idx,
             text,
             tape: if needs.tape { &tape_buf } else { &[] },
             graphemes: if needs.graphemes { &graphemes_buf } else { &[] },
             tokens: if needs.tokens { &tokens_buf } else { &[] },
             folds: if needs.folds { &folds_buf } else { &[] },
         };
-        feed(&mut acc, &v, vi);
+        feed(&mut acc, &v);
     }
     finish(acc)
 }

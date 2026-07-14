@@ -48,8 +48,8 @@ use ssc_core::signals::proportionality::ProjectLengthRatio;
 use ssc_core::signals::punctuation::{PunctuationAdjacencyAnomaly, PunctuationSpacingAnomaly};
 use ssc_core::token::tokenize;
 use ssc_core::{
-    AnalysisCache, BookId, BracketMeasure, Config, Finding, FindingArgs, LengthRatioScope, RuleId,
-    VerseMap, analyze, analyze_with_config,
+    AnalysisCache, BracketMeasure, Config, Corpus, Finding, FindingArgs, LengthRatioScope, RuleId,
+    analyze, analyze_with_config,
 };
 
 #[path = "../dev/vref_io.rs"]
@@ -68,9 +68,12 @@ fn main() {
     let (target_dir, source_dir, z_threshold) = match args.as_slice() {
         // Dump a corpus as `{ "GEN 1:1": text, … }` JSON on stdout (ad-hoc).
         [flag, t] if flag == "--json" => {
-            let map: BTreeMap<String, String> = load_corpus(Path::new(t))
+            let corpus = load_corpus(Path::new(t));
+            let map: BTreeMap<String, String> = corpus
+                .keys()
                 .iter()
-                .map(|(sid, text)| (sid.to_string(), text.clone()))
+                .cloned()
+                .zip(corpus.texts().iter().cloned())
                 .collect();
             println!("{}", serde_json::to_string(&map).unwrap());
             return;
@@ -321,12 +324,14 @@ fn main() {
         },
     };
     let t0 = std::time::Instant::now();
-    let findings = rule.judge(&rule.reduce(&ssc_core::verse::by_book(&target), Some(&source), None).0, &ssc_core::verse::by_book(&target), None, None);
+    let books = ssc_core::corpus::by_book(&target);
+    let findings = rule.judge(&rule.reduce(&books, Some(&source), None).0, &books, None, None);
     eprintln!("proportionality check: {:?}", t0.elapsed());
 
-    let mut per_book: BTreeMap<BookId, usize> = BTreeMap::new();
+    let mut per_book: BTreeMap<String, usize> = BTreeMap::new();
     for f in &findings {
-        *per_book.entry(f.sid.book).or_default() += 1;
+        let book = ssc_core::key::parse_key(target.key(f.key_idx)).unwrap().book.to_string();
+        *per_book.entry(book).or_default() += 1;
     }
 
     println!("total findings: {}", findings.len());
@@ -348,7 +353,7 @@ fn main() {
 }
 
 fn print_findings<'a>(
-    target: &VerseMap,
+    target: &Corpus,
     findings: impl Iterator<Item = &'a ssc_core::Finding>,
 ) {
     for f in findings {
@@ -356,11 +361,11 @@ fn print_findings<'a>(
             continue;
         };
         let robust_z = scope_z(&scope);
-        let text = &target[&f.sid];
+        let text = target.text(f.key_idx);
         let preview: String = text.chars().take(60).collect();
         println!(
             "  {:<10} z={:+7.1} ratio={:6.0}% | {}",
-            f.sid.to_string(),
+            target.key(f.key_idx),
             robust_z,
             ratio_pct,
             preview
@@ -391,18 +396,23 @@ fn batch(dir: &Path) {
     }
     println!("total findings: {}\n", findings.len());
     for (rule, fs) in &by_rule {
-        let mut per_book: BTreeMap<BookId, usize> = BTreeMap::new();
+        let mut per_book: BTreeMap<String, usize> = BTreeMap::new();
         for f in fs {
-            *per_book.entry(f.sid.book).or_default() += 1;
+            let book = ssc_core::key::parse_key(target.key(f.key_idx))
+                .unwrap()
+                .book
+                .to_string();
+            *per_book.entry(book).or_default() += 1;
         }
         let (worst_book, worst) = per_book
             .iter()
             .max_by_key(|&(_, n)| *n)
-            .map(|(b, n)| (*b, *n))
+            .map(|(b, n)| (b.clone(), *n))
             .unwrap();
         println!("{rule}: {} (worst book {worst_book}: {worst})", fs.len());
         for f in fs.iter().take(5) {
-            let text = &target[&f.sid];
+            let key = target.key(f.key_idx);
+            let text = target.text(f.key_idx);
             let slice: String = f.range.slice(text).chars().take(40).collect();
             let ctx_start = text[..f.range.start as usize]
                 .char_indices()
@@ -411,7 +421,7 @@ fn batch(dir: &Path) {
                 .map(|(i, _)| i)
                 .unwrap_or(0);
             let ctx: String = text[ctx_start..].chars().take(60).collect();
-            println!("    {:<10} [{slice}] …{ctx}", f.sid.to_string());
+            println!("    {:<10} [{slice}] …{ctx}", key);
         }
     }
 }
@@ -518,7 +528,7 @@ fn fleet(dir: &Path, out: &Path) {
             let id = path.file_stem().unwrap().to_string_lossy().to_string();
             let map = load_corpus(path);
             let verses = map.len();
-            let chars = map.values().map(|t| t.chars().count()).sum();
+            let chars = map.texts().iter().map(|t| t.chars().count()).sum();
             let findings = if verses == 0 {
                 Vec::new()
             } else {
@@ -550,10 +560,10 @@ fn fleet(dir: &Path, out: &Path) {
                     f.score.unwrap_or(0.0) > x.score.unwrap_or(f32::INFINITY)
                 };
                 if sv.len() < 2 || sv.iter().any(better_than) {
-                    let text = &map[&f.sid];
+                    let text = map.text(f.key_idx);
                     let sample = FleetSample {
                         corpus: id.clone(),
-                        sid: f.sid.to_string(),
+                        sid: map.key(f.key_idx).to_string(),
                         score: f.score,
                         slice: display_slice(f.range.slice(text), 24),
                         ctx: fleet_context(text, f.range.start as usize),
@@ -698,7 +708,11 @@ fn zwsp_calib(dir: &Path) {
     let target = load_corpus(dir);
     eprintln!("{} verses", target.len());
 
-    let raw: usize = target.values().map(|t| t.matches('\u{200B}').count()).sum();
+    let raw: usize = target
+        .texts()
+        .iter()
+        .map(|t| t.matches('\u{200B}').count())
+        .sum();
 
     let f = analyze(&target, None);
     // Deterministic hygiene must still flag zero U+200B (checked by slicing the
@@ -706,7 +720,12 @@ fn zwsp_calib(dir: &Path) {
     let hyg_zwsp = f
         .iter()
         .filter(|f| f.code == RuleId::ZeroWidthMisuse)
-        .filter(|f| target.get(&f.sid).and_then(|t| t.get(f.range.start as usize..f.range.end as usize)) == Some("\u{200B}"))
+        .filter(|f| {
+            target
+                .text(f.key_idx)
+                .get(f.range.start as usize..f.range.end as usize)
+                == Some("\u{200B}")
+        })
         .count();
     let redundant: Vec<_> = f.iter().filter(|f| f.code == RuleId::RedundantZeroWidthSpace).collect();
     println!(
@@ -714,10 +733,13 @@ fn zwsp_calib(dir: &Path) {
         redundant.len()
     );
     for fd in redundant.iter().take(10) {
-        if let Some(t) = target.get(&fd.sid) {
-            let n = t.get(fd.range.start as usize..fd.range.end as usize).unwrap_or("").matches('\u{200B}').count();
-            println!("  {}  run of {n} U+200B", fd.sid);
-        }
+        let t = target.text(fd.key_idx);
+        let n = t
+            .get(fd.range.start as usize..fd.range.end as usize)
+            .unwrap_or("")
+            .matches('\u{200B}')
+            .count();
+        println!("  {}  run of {n} U+200B", target.key(fd.key_idx));
     }
 }
 
@@ -746,7 +768,7 @@ fn repeat_calib(dir: &Path, cfg: RepeatedCharacterRunConfig) {
     let mut graphemes = Vec::new();
     let mut word_graphemes = Vec::new();
 
-    for text in target.values() {
+    for text in target.texts() {
         lexical_units += text.split_whitespace().count();
         let tokens = tokenize(text);
         total_tokens += tokens.len();
@@ -799,7 +821,8 @@ fn repeat_calib(dir: &Path, cfg: RepeatedCharacterRunConfig) {
         },
     };
     let t0 = std::time::Instant::now();
-    let repeat = rule.judge(&rule.reduce(&ssc_core::verse::by_book(&target), None, None).0, &ssc_core::verse::by_book(&target), None, None);
+    let books = ssc_core::corpus::by_book(&target);
+    let repeat = rule.judge(&rule.reduce(&books, None, None).0, &books, None, None);
     eprintln!(
         "{corpus}: repeat reduce+judge {:?}; rate={} K={}",
         t0.elapsed(),
@@ -812,7 +835,7 @@ fn repeat_calib(dir: &Path, cfg: RepeatedCharacterRunConfig) {
         "corpus\tsid\tword\tcluster\trun_len\tword_freq\tcluster_runs\tcluster_rate_per_10k\tsame_run_types\ttokens_with_run\tlexical_units\tscore"
     );
     for f in &repeat {
-        let text = &target[&f.sid];
+        let text = target.text(f.key_idx);
         let word = tokenize(text)
             .iter()
             .find(|t| t.span.start <= f.range.start && f.range.end <= t.span.end)
@@ -826,7 +849,7 @@ fn repeat_calib(dir: &Path, cfg: RepeatedCharacterRunConfig) {
         let folded = word.to_lowercase();
         println!(
             "{corpus}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.4}\t{}\t{}\t{}\t{:.6}",
-            f.sid,
+            target.key(f.key_idx),
             word,
             cluster,
             run_len,
@@ -875,8 +898,8 @@ fn punct_only_calib(dir: &Path) {
 
     // Pass 1: count every flagged chunk pattern corpus-wide.
     let mut pattern_count: HashMap<String, usize> = HashMap::new();
-    let mut per_verse: Vec<(ssc_core::Sid, Vec<ssc_core::Span>)> = Vec::new();
-    for (sid, text) in &target {
+    let mut per_verse: Vec<(&str, &str, Vec<ssc_core::Span>)> = Vec::new();
+    for (key, text) in target.keys().iter().zip(target.texts()) {
         let spans = scan_punct_only_token(text);
         if spans.is_empty() {
             continue;
@@ -884,14 +907,13 @@ fn punct_only_calib(dir: &Path) {
         for s in &spans {
             *pattern_count.entry(s.slice(text).to_string()).or_default() += 1;
         }
-        per_verse.push((*sid, spans));
+        per_verse.push((key.as_str(), text.as_str(), spans));
     }
     let total: usize = pattern_count.values().sum();
 
     // Pass 2: emit per-finding rows.
     println!("corpus\tsid\tchunk\tchunk_count\ttotal_findings\tverses\tcontext");
-    for (sid, spans) in &per_verse {
-        let text = &target[sid];
+    for (key, text, spans) in &per_verse {
         for s in spans {
             let chunk = s.slice(text);
             let ctx_start = text[..s.start as usize]
@@ -906,7 +928,7 @@ fn punct_only_calib(dir: &Path) {
                 .collect::<String>()
                 .replace(['\t', '\n'], " ");
             println!(
-                "{corpus}\t{sid}\t{chunk}\t{}\t{total}\t{}\t{ctx}",
+                "{corpus}\t{key}\t{chunk}\t{}\t{total}\t{}\t{ctx}",
                 pattern_count[chunk],
                 target.len(),
             );
@@ -926,7 +948,8 @@ fn punct_only_calib(dir: &Path) {
     let rule = PunctOnlyToken {
         cfg: PunctOnlyTokenConfig { emit_score_min: 0.0, ..Default::default() },
     };
-    let findings = rule.judge(&rule.reduce(&ssc_core::verse::by_book(&target), None, None).0, &ssc_core::verse::by_book(&target), None, None);
+    let books = ssc_core::corpus::by_book(&target);
+    let findings = rule.judge(&rule.reduce(&books, None, None).0, &books, None, None);
     report_scored("lex.punct-only-token", &target, &findings);
     let shipped = PunctOnlyTokenConfig::default().emit_score_min;
     let surfaced = findings
@@ -953,7 +976,7 @@ fn bracket_calib(dir: &Path) {
     let rule = BracketBalance {
         cfg: BracketBalanceConfig { emit_score_min: 0.0, ..Default::default() },
     };
-    let books = ssc_core::verse::by_book(&target);
+    let books = ssc_core::corpus::by_book(&target);
     let t0 = std::time::Instant::now();
     let findings = rule.check(&books, None);
     eprintln!("bracket check: {:?}", t0.elapsed());
@@ -969,7 +992,7 @@ fn bracket_calib(dir: &Path) {
         closes: u64,
     }
     let mut fams: BTreeMap<char, Fam> = BTreeMap::new();
-    for text in target.values() {
+    for text in target.texts() {
         for c in text.chars() {
             if !class_of(c).is_punctuation() {
                 continue;
@@ -999,7 +1022,7 @@ fn bracket_calib(dir: &Path) {
     let mut orphans: BTreeMap<char, u64> = BTreeMap::new();
     let mut long_spans: BTreeMap<char, u64> = BTreeMap::new();
     for f in &findings {
-        let text = &target[&f.sid];
+        let text = target.text(f.key_idx);
         let glyph = f.range.slice(text).chars().next().unwrap();
         let family = bracket_close_of(glyph)
             .map(|_| glyph)
@@ -1052,7 +1075,7 @@ fn bracket_calib(dir: &Path) {
         b.score.unwrap_or(0.0).partial_cmp(&a.score.unwrap_or(0.0)).unwrap()
     });
     for f in samples.iter().take(20) {
-        let text = &target[&f.sid];
+        let text = target.text(f.key_idx);
         let glyph = f.range.slice(text);
         let (measure, window, majority, total) = match &f.args {
             Some(FindingArgs::BracketWindow { measure, window, majority, total }) => {
@@ -1066,7 +1089,7 @@ fn bracket_calib(dir: &Path) {
         };
         println!(
             "  {:<10} score={:.3} {kind} [{glyph}] {majority}/{total}",
-            f.sid.to_string(),
+            target.key(f.key_idx),
             f.score.unwrap_or(0.0),
         );
         // Render the inventory compactly: glyph + role + matched flag, grouped
@@ -1096,7 +1119,8 @@ fn punct_calib(dir: &Path) {
         cfg: PunctuationAdjacencyConfig { emit_score_min: 0.0, ..Default::default() },
     };
     let t0 = std::time::Instant::now();
-    let findings = rule.judge(&rule.reduce(&ssc_core::verse::by_book(&target), None, None).0, &ssc_core::verse::by_book(&target), None, None);
+    let books = ssc_core::corpus::by_book(&target);
+    let findings = rule.judge(&rule.reduce(&books, None, None).0, &books, None, None);
     eprintln!("punct reduce+judge: {:?}", t0.elapsed());
     report_scored("punct.adjacency-anomaly", &target, &findings);
 
@@ -1143,7 +1167,7 @@ fn spacing_fleet_sweep(dir: &Path) {
     let total_corpora = files.len();
     eprintln!("spacing sweep fleet: {total_corpora} corpora");
 
-    let count = |k: f32, rate: f32, map: &VerseMap| -> usize {
+    let count = |k: f32, rate: f32, map: &Corpus| -> usize {
         let rule = PunctuationSpacingAnomaly {
             cfg: PunctuationSpacingConfig {
                 emit_score_min: 0.5,
@@ -1152,7 +1176,7 @@ fn spacing_fleet_sweep(dir: &Path) {
                 minority_rate_per_10k: rate,
             },
         };
-        let books = ssc_core::verse::by_book(map);
+        let books = ssc_core::corpus::by_book(map);
         rule.judge(&rule.reduce(&books, None, None).0, &books, None, None).len()
     };
 
@@ -1231,7 +1255,7 @@ fn spacing_fleet_sweep(dir: &Path) {
 /// Shared score-distribution report for the corpus-relative rules: total
 /// scored sites, how many clear a ladder of floors, and the top/bottom samples
 /// with their exact slice and a little context.
-fn report_scored(name: &str, target: &VerseMap, findings: &[Finding]) {
+fn report_scored(name: &str, target: &Corpus, findings: &[Finding]) {
     println!("\n{name}: {} scored sites (floor 0)", findings.len());
     for floor in [0.5_f32, 0.7, 0.9, 0.99] {
         let n = findings.iter().filter(|f| f.score.unwrap_or(0.0) >= floor).count();
@@ -1257,9 +1281,9 @@ fn report_scored(name: &str, target: &VerseMap, findings: &[Finding]) {
     print_scored(target, by_score.iter().rev().take(5).copied());
 }
 
-fn print_scored<'a>(target: &VerseMap, findings: impl Iterator<Item = &'a Finding>) {
+fn print_scored<'a>(target: &Corpus, findings: impl Iterator<Item = &'a Finding>) {
     for f in findings {
-        let text = &target[&f.sid];
+        let text = target.text(f.key_idx);
         let slice: String = f.range.slice(text).chars().take(16).collect();
         let ctx_start = text[..f.range.start as usize]
             .char_indices()
@@ -1270,7 +1294,7 @@ fn print_scored<'a>(target: &VerseMap, findings: impl Iterator<Item = &'a Findin
         let ctx: String = text[ctx_start..].chars().take(44).collect();
         println!(
             "    {:<10} score={:.3} [{}] …{}",
-            f.sid.to_string(),
+            target.key(f.key_idx),
             f.score.unwrap_or(0.0),
             slice.replace('\u{200B}', "·"),
             ctx.replace('\u{200B}', "·")
@@ -1407,8 +1431,8 @@ struct CasingCorpus {
 
 /// Run the real casing model over one corpus and roll up the sweep grids,
 /// reference-setting counts, histogram, tracked anchors, and samples.
-fn analyze_casing(id: String, map: &VerseMap) -> CasingCorpus {
-    let books = ssc_core::verse::by_book(map);
+fn analyze_casing(id: String, map: &Corpus) -> CasingCorpus {
+    let books = ssc_core::corpus::by_book(map);
     // Production knobs (ADR 0051 floor/k/z + ADR 0052 trust gate 0.90). The
     // sweep below varies floor/k around the reference cell; the trust gate and
     // discount are baked into the returned factors.
@@ -1428,7 +1452,7 @@ fn analyze_casing(id: String, map: &VerseMap) -> CasingCorpus {
     for s in &sites {
         let Some(quad) = site_quad(s) else { continue };
         n_sites += 1;
-        let text = &map[&s.sid];
+        let text = map.text(s.key_idx);
         let word = text[s.start as usize..s.end as usize].to_lowercase();
 
         // Sweep grids.
@@ -1465,7 +1489,7 @@ fn analyze_casing(id: String, map: &VerseMap) -> CasingCorpus {
                     (f.dominance, f.minority, f.opportunities)
                 };
                 samples.push(CasingSample {
-                    sid: s.sid.to_string(),
+                    sid: map.key(s.key_idx).to_string(),
                     quad,
                     word: text[s.start as usize..s.end as usize].to_string(),
                     glyph: pos_glyph(s.pos),
@@ -1480,11 +1504,11 @@ fn analyze_casing(id: String, map: &VerseMap) -> CasingCorpus {
 
         // Anchor capture.
         if anchor_corpus
-            && ANCHORS.iter().any(|&(ac, asid, aw)| ac == id && asid == s.sid.to_string() && aw == word)
+            && ANCHORS.iter().any(|&(ac, asid, aw)| ac == id && asid == map.key(s.key_idx) && aw == word)
         {
             anchors.push(AnchorHit {
                 corpus: id.clone(),
-                sid: s.sid.to_string(),
+                sid: map.key(s.key_idx).to_string(),
                 word,
                 quad,
                 intr: s.intrinsic.map(|f| (f.dominance, f.minority, f.opportunities)),
@@ -1611,7 +1635,7 @@ fn casing_fleet(dir: &Path) {
             let id = path.file_stem().unwrap().to_string_lossy().to_string();
             let map = load_corpus(path);
             let c = if map.is_empty() {
-                analyze_casing(id, &VerseMap::new())
+                analyze_casing(id, &Corpus::try_from_parts(Vec::new(), Vec::new()).unwrap())
             } else {
                 analyze_casing(id, &map)
             };
@@ -1763,7 +1787,7 @@ fn casing_size(dir: &Path) {
         .map(|path| {
             let id = path.file_stem().unwrap().to_string_lossy().to_string();
             let map = load_corpus(path);
-            let books = ssc_core::verse::by_book(&map);
+            let books = ssc_core::corpus::by_book(&map);
             let (stats, _) = rule.reduce(&books, None, None);
             let bytes = serde_json::to_string(&stats).map(|s| s.len()).unwrap_or(0);
             (id, bytes)
@@ -1925,12 +1949,12 @@ fn glyph_advance_gap(gap: &str, pending: &mut Option<bool>, prev_letter: &mut bo
 /// hapax container. Only pure-letter tokens are recorded, matching the tokens
 /// that feed `letter_words`/`glyph_words` (a hyphen-joined name is two ordinary
 /// letter tokens in both, never one compound span).
-fn letter_word_shapes(map: &VerseMap) -> BTreeMap<String, WordShape> {
+fn letter_word_shapes(map: &Corpus) -> BTreeMap<String, WordShape> {
     let mut shapes: BTreeMap<String, WordShape> = BTreeMap::new();
-    for verses in ssc_core::verse::by_book(map).values() {
+    for group in &ssc_core::corpus::by_book(map) {
         let mut pending: Option<bool> = None;
         let mut book_initial = true;
-        for (_, text) in verses {
+        for text in group.texts {
             let mut prev_letter = false;
             let mut cursor = 0usize;
             for token in tokenize(text) {
@@ -2231,7 +2255,7 @@ fn glyph_context(text: &str, start: usize, end: usize) -> String {
 /// Pick one source occurrence for the strongest rare candidates. The samples
 /// are review leads, not stored rule sites: a production rule will forward or
 /// re-scan its own spans under the stateful protocol.
-fn glyph_samples(id: &str, map: &VerseMap, candidates: &[GlyphCandidate]) -> Vec<GlyphSample> {
+fn glyph_samples(id: &str, map: &Corpus, candidates: &[GlyphCandidate]) -> Vec<GlyphSample> {
     let mut ranked: Vec<GlyphCandidate> = candidates
         .iter()
         .copied()
@@ -2246,7 +2270,7 @@ fn glyph_samples(id: &str, map: &VerseMap, candidates: &[GlyphCandidate]) -> Vec
         }
     }
     let mut samples = Vec::new();
-    for (sid, text) in map {
+    for (sid, text) in map.keys().iter().zip(map.texts()) {
         for (start, glyph) in text.char_indices() {
             let Some(candidate) = wanted.remove(&glyph) else { continue };
             samples.push(GlyphSample {
@@ -2283,7 +2307,7 @@ fn glyph_samples(id: &str, map: &VerseMap, candidates: &[GlyphCandidate]) -> Vec
 /// itself clears closure is decided at fleet time.
 fn glyph_retained_samples(
     id: &str,
-    map: &VerseMap,
+    map: &Corpus,
     round2: &LetterRound2,
 ) -> (Vec<GlyphSample>, Vec<GlyphSample>) {
     // glyph -> (count, is_proper_killed)
@@ -2296,7 +2320,7 @@ fn glyph_retained_samples(
         wanted.insert(candidate.glyph, (candidate.count, candidate.proper_noun_shape));
     }
     let (mut proper, mut retained) = (Vec::new(), Vec::new());
-    for (sid, text) in map {
+    for (sid, text) in map.keys().iter().zip(map.texts()) {
         if wanted.is_empty() {
             break;
         }
@@ -2323,7 +2347,7 @@ fn glyph_retained_samples(
     (proper, retained)
 }
 
-fn analyze_glyphs(id: String, map: &VerseMap) -> GlyphCorpus {
+fn analyze_glyphs(id: String, map: &Corpus) -> GlyphCorpus {
     let mut inventory: BTreeMap<char, u64> = BTreeMap::new();
     let mut lane_totals = [0u64; 4];
     let mut decomposed_pairs: BTreeMap<String, u64> = BTreeMap::new();
@@ -2331,7 +2355,7 @@ fn analyze_glyphs(id: String, map: &VerseMap) -> GlyphCorpus {
     let mut letter_glyph_words: BTreeMap<char, BTreeMap<String, u64>> = BTreeMap::new();
     let mut scalar_count = 0u64;
 
-    for text in map.values() {
+    for text in map.texts() {
         let mut previous: Option<char> = None;
         for glyph in text.chars() {
             scalar_count += 1;
@@ -2902,13 +2926,8 @@ fn glyph_fleet(dir: &Path) {
 mod glyph_tests {
     use super::*;
 
-    fn one_verse(text: &str) -> VerseMap {
-        let mut map = VerseMap::new();
-        map.insert(
-            ssc_core::Sid::new(BookId::from_str("GEN").unwrap(), 1, 1),
-            text.to_string(),
-        );
-        map
+    fn one_verse(text: &str) -> Corpus {
+        Corpus::try_from_parts(vec!["GEN 1:1".to_string()], vec![text.to_string()]).unwrap()
     }
 
     #[test]
@@ -3342,7 +3361,7 @@ fn sig_bucket(score: f64) -> usize {
     (score.clamp(0.0, 0.999_999) * 40.0) as usize
 }
 
-fn analyze_signatures(id: String, map: &VerseMap) -> SigCorpus {
+fn analyze_signatures(id: String, map: &Corpus) -> SigCorpus {
     let mut marks: BTreeMap<char, [u64; SIG_CELLS]> = BTreeMap::new();
     let mut seam_marks: BTreeMap<char, [u64; SIG_CELLS]> = BTreeMap::new();
     let mut total_scalars = 0u64;
@@ -3350,7 +3369,7 @@ fn analyze_signatures(id: String, map: &VerseMap) -> SigCorpus {
     let mut graphemes = Vec::new();
 
     // Pass 1 — build the per-mark signature distribution + scalar tallies.
-    for text in map.values() {
+    for text in map.texts() {
         for c in text.chars() {
             total_scalars += 1;
             if class_of(c).is_numeric() {
@@ -3441,7 +3460,7 @@ fn analyze_signatures(id: String, map: &VerseMap) -> SigCorpus {
     let mut surfaced_samples = Vec::new();
     let mut new_coverage = Vec::new();
     let mut fp_samples = Vec::new();
-    for (sid, text) in map {
+    for (sid, text) in map.keys().iter().zip(map.texts()) {
         graphemes.clear();
         ssc_core::grapheme::segment(text, &mut graphemes);
         for opp in signature_opportunities(text, &graphemes) {
@@ -3657,7 +3676,7 @@ fn signature_regression(id: &str) {
         println!("  {id}: (no corpus file)");
         return;
     }
-    let books = ssc_core::verse::by_book(&map);
+    let books = ssc_core::corpus::by_book(&map);
 
     // Live rule at shipped defaults, floor 0 — every scored minority site, so we
     // can split by the shipped floor ourselves.
@@ -3667,17 +3686,17 @@ fn signature_regression(id: &str) {
     let live_floor = f64::from(PunctuationSpacingConfig::default().emit_score_min);
     let findings = live.judge(&live.reduce(&books, None, None).0, &books, None, None);
 
-    // Signature distribution + a (sid, mark_off) → signature index lookup.
+    // Signature distribution + a (key, mark_off) → signature index lookup.
     let mut marks: BTreeMap<char, [u64; SIG_CELLS]> = BTreeMap::new();
-    let mut site_sig: HashMap<(ssc_core::Sid, usize), usize> = HashMap::new();
+    let mut site_sig: HashMap<(String, usize), usize> = HashMap::new();
     let mut graphemes = Vec::new();
-    for (sid, text) in &map {
+    for (key, text) in map.keys().iter().zip(map.texts()) {
         graphemes.clear();
         ssc_core::grapheme::segment(text, &mut graphemes);
         for opp in signature_opportunities(text, &graphemes) {
             let i = sig_index(opp.left, opp.right);
             marks.entry(opp.mark).or_insert([0u64; SIG_CELLS])[i] += 1;
-            site_sig.insert((*sid, opp.mark_off), i);
+            site_sig.insert((key.clone(), opp.mark_off), i);
         }
     }
     let sig_verdict = |mark: char, sig: usize| -> (u64, u64, f64) {
@@ -3698,14 +3717,16 @@ fn signature_regression(id: &str) {
             continue;
         }
         live_surfaced += 1;
+        let key = map.key(f.key_idx);
+        let text = map.text(f.key_idx);
         // The redesigned rule's span is the mark's *neighbourhood* (ADR 0054),
         // not the bare mark, so recover the mark scalar's offset by locating it
         // inside the finding range rather than from `range.end`.
-        let mark_off = map
-            .get(&f.sid)
-            .and_then(|t| t[f.range.start as usize..f.range.end as usize].find(mark).map(|rel| f.range.start as usize + rel));
-        let Some(sig) = mark_off.and_then(|off| site_sig.get(&(f.sid, off)).copied()) else {
-            rows.push(format!("    {:<10} {:?} live={:.3} | (no signature match)", f.sid.to_string(), mark, live_score));
+        let mark_off = text[f.range.start as usize..f.range.end as usize]
+            .find(mark)
+            .map(|rel| f.range.start as usize + rel);
+        let Some(sig) = mark_off.and_then(|off| site_sig.get(&(key.to_string(), off)).copied()) else {
+            rows.push(format!("    {:<10} {:?} live={:.3} | (no signature match)", key, mark, live_score));
             continue;
         };
         let (count, total, s) = sig_verdict(mark, sig);
@@ -3717,7 +3738,7 @@ fn signature_regression(id: &str) {
         if rows.len() < 14 {
             rows.push(format!(
                 "    {:<10} {:?} live={:.3} → sig {} count={}/{} score={:.3} [{}]",
-                f.sid.to_string(),
+                key,
                 mark,
                 live_score,
                 sig_label(sig),
@@ -4594,7 +4615,7 @@ impl McProfile {
 /// One OtherMixed occurrence, retained (capped) only to draw review samples;
 /// the volume grids come analytically from the per-type profiles, not these.
 struct McCand {
-    sid: ssc_core::Sid,
+    sid: String,
     start: u32,
     end: u32,
     key: String,
@@ -4654,7 +4675,7 @@ struct McCorpus {
 /// plain UAX letter-run tokens. Returns the per-type profiles, corpus counters,
 /// and a capped list of OtherMixed occurrences for sampling.
 fn mc_walk(
-    map: &VerseMap,
+    map: &Corpus,
 ) -> (
     BTreeMap<String, McProfile>,
     [u64; 4], // cased_forced, other_forced, cased_mid, other_mid
@@ -4665,10 +4686,10 @@ fn mc_walk(
     let mut cands: Vec<McCand> = Vec::new();
     const CAND_CAP: usize = 8000;
 
-    for (_book, verses) in ssc_core::verse::by_book(map) {
+    for group in &ssc_core::corpus::by_book(map) {
         let mut pending: Option<bool> = None;
         let mut book_initial = true;
-        for (sid, text) in verses {
+        for (sid, text) in group.keys.iter().zip(group.texts) {
             let mut prev_letter = false;
             let mut cursor = 0usize;
             for token in tokenize(text) {
@@ -4708,7 +4729,7 @@ fn mc_walk(
                         }
                         if cands.len() < CAND_CAP {
                             cands.push(McCand {
-                                sid,
+                                sid: sid.clone(),
                                 start: token.span.start as u32,
                                 end: token.span.end as u32,
                                 key: word.to_lowercase(),
@@ -4725,7 +4746,7 @@ fn mc_walk(
     (profiles, counters, cands)
 }
 
-fn analyze_mixedcase(id: String, map: &VerseMap) -> McCorpus {
+fn analyze_mixedcase(id: String, map: &Corpus) -> McCorpus {
     let (profiles, counters, cands) = mc_walk(map);
     let [cased_forced, other_forced, cased_mid, other_mid] = counters;
     let cased_tokens: u64 = profiles.values().map(McProfile::total).sum();
@@ -4743,7 +4764,7 @@ fn analyze_mixedcase(id: String, map: &VerseMap) -> McCorpus {
     let (mut flagged_first_upper, mut flagged_forced) = (0u64, 0u64);
 
     // Category sets for sampling, decided at the reference cell (k=32, 0.95).
-    use std::collections::HashSet;
+    use std::collections::{HashMap, HashSet};
     let mut flagged: HashSet<String> = HashSet::new();
     let mut fallback_keys: HashSet<String> = HashSet::new();
     // Excused = recurring OtherMixed (other >= 2) that route A leaves silent.
@@ -4808,9 +4829,15 @@ fn analyze_mixedcase(id: String, map: &VerseMap) -> McCorpus {
     let (mut flagged_samples, mut fallback_samples, mut excused_samples) =
         (Vec::new(), Vec::new(), Vec::new());
     let mut excused_seen: HashSet<String> = HashSet::new();
+    let key_to_text: HashMap<&str, &str> = map
+        .keys()
+        .iter()
+        .zip(map.texts())
+        .map(|(k, t)| (k.as_str(), t.as_str()))
+        .collect();
     for c in &cands {
         let Some(p) = profiles.get(&c.key) else { continue };
-        let text = &map[&c.sid];
+        let text = key_to_text[c.sid.as_str()];
         let word = text[c.start as usize..c.end as usize].to_string();
         let dom = sig_wilson_lb(p.not_other(), p.total(), MC_Z);
         let mk = |route: &'static str, score: f64| McSample {
@@ -5466,35 +5493,20 @@ fn pool_opps(
 
 /// Iterate every occurrence in book-reading order, resolving each verse's
 /// seam-cross classes from its book neighbours (skipping empty/all-ws verses).
-fn for_each_pool_opp(map: &VerseMap, mut f: impl FnMut(ssc_core::Sid, &str, &PoolOpp)) {
-    // Group the (Sid-sorted) map into book-ordered verse runs.
-    let mut books: Vec<Vec<(ssc_core::Sid, &str)>> = Vec::new();
-    let mut cur: Vec<(ssc_core::Sid, &str)> = Vec::new();
-    let mut cur_book: Option<BookId> = None;
-    for (sid, text) in map {
-        if cur_book != Some(sid.book) {
-            if !cur.is_empty() {
-                books.push(std::mem::take(&mut cur));
-            }
-            cur_book = Some(sid.book);
-        }
-        cur.push((*sid, text.as_str()));
-    }
-    if !cur.is_empty() {
-        books.push(cur);
-    }
-
+fn for_each_pool_opp(map: &Corpus, mut f: impl FnMut(&str, &str, &PoolOpp)) {
+    // Group the corpus (already in book-contiguous order) into book-ordered
+    // verse runs.
     let mut graphemes = Vec::new();
-    for book in &books {
+    for group in &ssc_core::corpus::by_book(map) {
         let edges: Vec<(Option<SubClass>, Option<SubClass>)> =
-            book.iter().map(|(_, t)| verse_edge_subclasses(t)).collect();
-        for (vi, (sid, text)) in book.iter().enumerate() {
+            group.texts.iter().map(|t| verse_edge_subclasses(t)).collect();
+        for (vi, (key, text)) in group.keys.iter().zip(group.texts).enumerate() {
             let left_cross = (0..vi).rev().find_map(|jj| edges[jj].1);
-            let right_cross = (vi + 1..book.len()).find_map(|jj| edges[jj].0);
+            let right_cross = (vi + 1..group.texts.len()).find_map(|jj| edges[jj].0);
             graphemes.clear();
             ssc_core::grapheme::segment(text, &mut graphemes);
             for opp in pool_opps(text, &graphemes, left_cross, right_cross) {
-                f(*sid, text, &opp);
+                f(key, text, &opp);
             }
         }
     }
@@ -5669,10 +5681,10 @@ struct PoolCorpus {
     a_samples: Vec<PoolSample>,
 }
 
-fn analyze_pooled(id: String, map: &VerseMap) -> PoolCorpus {
+fn analyze_pooled(id: String, map: &Corpus) -> PoolCorpus {
     let mut total_scalars = 0u64;
     let mut digit_scalars = 0u64;
-    for text in map.values() {
+    for text in map.texts() {
         for c in text.chars() {
             total_scalars += 1;
             if class_of(c).is_numeric() {
@@ -5722,7 +5734,7 @@ fn analyze_pooled(id: String, map: &VerseMap) -> PoolCorpus {
     }
 
     // Shipped production rule at the reference constants (its default config).
-    let books = ssc_core::verse::by_book(map);
+    let books = ssc_core::corpus::by_book(map);
     let shipped_rule = PunctuationSpacingAnomaly {
         cfg: PunctuationSpacingConfig::default(),
     };
@@ -6073,19 +6085,19 @@ fn pooled_regression(id: &str) {
         println!("  {id}: (no corpus file)");
         return;
     }
-    let books = ssc_core::verse::by_book(&map);
+    let books = ssc_core::corpus::by_book(&map);
     let live = PunctuationSpacingAnomaly {
         cfg: PunctuationSpacingConfig { emit_score_min: 0.0, ..Default::default() },
     };
     let live_floor = f64::from(PunctuationSpacingConfig::default().emit_score_min);
     let findings = live.judge(&live.reduce(&books, None, None).0, &books, None, None);
 
-    // Build the pools + a (sid, mark_off) → opp reads lookup.
+    // Build the pools + a (key, mark_off) → opp reads lookup.
     let mut a_po: BTreeMap<char, ACell> = BTreeMap::new();
     let mut b_po: BTreeMap<char, BCell> = BTreeMap::new();
-    let mut reads: HashMap<(ssc_core::Sid, usize), (Option<(bool, SubClass)>, Option<(bool, SubClass)>, BCat, BCat)> =
+    let mut reads: HashMap<(String, usize), (Option<(bool, SubClass)>, Option<(bool, SubClass)>, BCat, BCat)> =
         HashMap::new();
-    for_each_pool_opp(&map, |sid, _text, opp| {
+    for_each_pool_opp(&map, |key, _text, opp| {
         if opp.is_dash {
             return;
         }
@@ -6099,7 +6111,7 @@ fn pooled_regression(id: &str) {
         let bc = b_po.entry(opp.mark).or_insert([[0u64; 4]; 2]);
         bc[0][opp.b_left.index()] += 1;
         bc[1][opp.b_right.index()] += 1;
-        reads.insert((sid, opp.mark_off), (opp.a_left, opp.a_right, opp.b_left, opp.b_right));
+        reads.insert((key.to_string(), opp.mark_off), (opp.a_left, opp.a_right, opp.b_left, opp.b_right));
     });
 
     let mut shipped = 0u64;
@@ -6112,11 +6124,13 @@ fn pooled_regression(id: &str) {
         }
         shipped += 1;
         let mark = *mark;
-        let mark_off = map
-            .get(&f.sid)
-            .and_then(|t| t[f.range.start as usize..f.range.end as usize].find(mark).map(|rel| f.range.start as usize + rel));
-        let Some((al, ar, blc, brc)) = mark_off.and_then(|o| reads.get(&(f.sid, o)).copied()) else {
-            changed.push(format!("    {:<10} {:?} (no opp match)", f.sid.to_string(), mark));
+        let key = map.key(f.key_idx);
+        let text = map.text(f.key_idx);
+        let mark_off = text[f.range.start as usize..f.range.end as usize]
+            .find(mark)
+            .map(|rel| f.range.start as usize + rel);
+        let Some((al, ar, blc, brc)) = mark_off.and_then(|o| reads.get(&(key.to_string(), o)).copied()) else {
+            changed.push(format!("    {:<10} {:?} (no opp match)", key, mark));
             continue;
         };
         let acell = &a_po[&mark];
@@ -6151,7 +6165,7 @@ fn pooled_regression(id: &str) {
         if (!op || !lp) && changed.len() < 12 {
             changed.push(format!(
                 "    {:<10} {:?} shipped→ A-op {} A-letter {} B {}",
-                f.sid.to_string(),
+                key,
                 mark,
                 if op { "kept" } else { "DROP" },
                 if lp { "kept" } else { "drop" },
@@ -6478,15 +6492,14 @@ mod pooled_tests {
     fn verse_final_mark_reads_spaced_with_next_verse_edge_class() {
         // Two verses in one book: the first ends with a mark, so its right side
         // reaches the seam (spaced) and takes the NEXT verse's first edge class.
-        let vm: VerseMap = [
-            (ssc_core::Sid::new(BookId::from_str("GEN").unwrap(), 1, 1), "Alpha.".to_string()),
-            (ssc_core::Sid::new(BookId::from_str("GEN").unwrap(), 1, 2), "Beta".to_string()),
-        ]
-        .into_iter()
-        .collect();
+        let vm = Corpus::try_from_parts(
+            vec!["GEN 1:1".to_string(), "GEN 1:2".to_string()],
+            vec!["Alpha.".to_string(), "Beta".to_string()],
+        )
+        .unwrap();
         let mut got = None;
-        for_each_pool_opp(&vm, |sid, _t, opp| {
-            if sid.verse == 1 && opp.mark == '.' {
+        for_each_pool_opp(&vm, |key, _t, opp| {
+            if key == "GEN 1:1" && opp.mark == '.' {
                 got = Some((opp.a_left, opp.a_right));
             }
         });
@@ -6499,11 +6512,9 @@ mod pooled_tests {
     fn book_edge_has_no_neighbour() {
         // A mark at the very end of the last verse of the book: right seam finds
         // nothing → no neighbour on that side.
-        let vm: VerseMap = [(ssc_core::Sid::new(BookId::from_str("GEN").unwrap(), 1, 1), "End.".to_string())]
-            .into_iter()
-            .collect();
+        let vm = Corpus::try_from_parts(vec!["GEN 1:1".to_string()], vec!["End.".to_string()]).unwrap();
         let mut got = None;
-        for_each_pool_opp(&vm, |_sid, _t, opp| {
+        for_each_pool_opp(&vm, |_key, _t, opp| {
             if opp.mark == '.' {
                 got = Some(opp.a_right);
             }
@@ -6594,19 +6605,23 @@ fn oracle_files(path: &Path) -> Vec<std::path::PathBuf> {
 }
 
 /// The proportionality reference: WA-en-ulb from the same directory, if there.
-fn oracle_source(path: &Path) -> Option<VerseMap> {
+fn oracle_source(path: &Path) -> Option<Corpus> {
     let dir = if path.is_dir() { path } else { path.parent()? };
     let src = dir.join("WA-en-ulb.txt");
     src.exists().then(|| load_corpus(&src))
 }
 
+/// Write each finding's oracle-column row, resolving `key_idx` back to its
+/// wire-format key string (`GEN 1:1`) via `resolve_findings` so the dumped
+/// column is byte-identical to the pre-migration `sid` column.
 fn write_findings(
     out: &mut impl Write,
-    corpus: &str,
+    corpus_id: &str,
     tag: &str,
+    corpus: &Corpus,
     findings: &[Finding],
 ) {
-    for f in findings {
+    for f in ssc_core::corpus::resolve_findings(corpus, findings) {
         let score = f.score.map_or_else(|| "-".to_string(), |s| format!("{s:.6}"));
         let args = f
             .args
@@ -6614,7 +6629,7 @@ fn write_findings(
             .map_or_else(|| "-".to_string(), |a| serde_json::to_string(a).unwrap());
         writeln!(
             out,
-            "{corpus}\t{tag}\t{}\t{}\t{}\t{}\t{:?}\t{score}\t{args}",
+            "{corpus_id}\t{tag}\t{}\t{}\t{}\t{}\t{:?}\t{score}\t{args}",
             f.sid,
             f.code.code(),
             f.range.start,
@@ -6635,7 +6650,7 @@ fn dump_findings(path: &Path, out_path: &Path, cfg_name: &str) {
         let id = file.file_stem().unwrap().to_string_lossy().to_string();
         let target = load_corpus(file);
         let findings = analyze_with_config(&target, source.as_ref(), &cfg);
-        write_findings(&mut out, &id, "full", &findings);
+        write_findings(&mut out, &id, "full", &target, &findings);
         if (i + 1) % 100 == 0 {
             eprintln!("{}/{total}", i + 1);
         }
@@ -6683,31 +6698,36 @@ fn dump_incremental(path: &Path, out_path: &Path, cfg_name: &str, cached: bool) 
                 None,
                 cache.as_mut(),
             );
-        // The edit: last verse of the first book.
-        let first_book = target.keys().next().unwrap().book;
-        let edit_sid = *target
-            .keys()
-            .take_while(|s| s.book == first_book)
-            .last()
-            .unwrap();
-        let mut edited = target.clone();
-        edited.insert(edit_sid, EDIT_TEXT.to_string());
+        // The edit: last verse of the first book. `Books` from `by_book` is
+        // in presented order, so the first group always starts at position 0
+        // — no need to resolve its global `KeyIdx` base (which this example,
+        // a separate compilation unit, cannot do; `KeyIdx`'s constructor is
+        // crate-private).
+        let first_books = ssc_core::corpus::by_book(&target);
+        let first_group = first_books.first().unwrap();
+        let first_slug = first_group.slug.to_string();
+        let first_len = first_group.keys.len();
+        drop(first_books);
+
+        let mut edited_texts = target.texts().to_vec();
+        edited_texts[first_len - 1] = EDIT_TEXT.to_string();
+        let edited = Corpus::try_from_parts(target.keys().to_vec(), edited_texts).unwrap();
 
         // Local echo: edited book only + prior.
-        let echo_map: VerseMap = edited
-            .iter()
-            .filter(|(s, _)| s.book == first_book)
-            .map(|(s, t)| (*s, t.clone()))
-            .collect();
-        let (echo, _) = ssc_core::analyze_stateful(
-            &echo_map,
+        let echo = Corpus::try_from_parts(
+            edited.keys()[..first_len].to_vec(),
+            edited.texts()[..first_len].to_vec(),
+        )
+        .unwrap();
+        let (echo_findings, _) = ssc_core::analyze_stateful(
+            &echo,
             source.as_ref(),
             &cfg,
             Some(prior.clone()),
             None,
             cache.as_mut(),
         );
-        write_findings(&mut out, &id, "echo", &echo);
+        write_findings(&mut out, &id, "echo", &echo, &echo_findings);
 
         // Complete snapshot: whole corpus + prior + changed=[book].
         let (snap, stats) = ssc_core::analyze_stateful(
@@ -6715,10 +6735,10 @@ fn dump_incremental(path: &Path, out_path: &Path, cfg_name: &str, cached: bool) 
             source.as_ref(),
             &cfg,
             Some(prior),
-            Some(&[first_book]),
+            Some(&[first_slug.as_str()]),
             cache.as_mut(),
         );
-        write_findings(&mut out, &id, "snap", &snap);
+        write_findings(&mut out, &id, "snap", &edited, &snap);
         let js = serde_json::to_string(&stats).unwrap();
         writeln!(out, "{id}\tstats\t{}\t{:016x}", js.len(), fnv64(&js)).unwrap();
         if (i + 1) % 20 == 0 {

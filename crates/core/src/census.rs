@@ -23,8 +23,8 @@
 
 use std::collections::BTreeMap;
 
+use crate::corpus::{self, BookGroup, Corpus};
 use crate::rule;
-use crate::sid::Sid;
 use crate::signals::mixed_case::is_letter_token;
 use crate::signals::case_shape::{CaseShape, case_shape};
 use crate::signals::punctuation::{
@@ -35,7 +35,6 @@ use crate::signals::rare_glyph::{CensusPages, is_letter_scalar};
 use crate::signals::bracket_balance::{BookMatch, BracketAcc};
 use crate::span::Span;
 use crate::stream::{self, Needs, VerseInputs};
-use crate::verse::{self, VerseMap};
 
 /// Presentation capacities only — nothing here can change a count or a sort.
 #[derive(Debug, Clone, Copy)]
@@ -115,7 +114,7 @@ pub struct Row {
     pub key: RowKey,
     pub count: u64,
     /// First occurrence per book until the cap, then stop.
-    pub examples: Vec<(Sid, Span)>,
+    pub examples: Vec<(String, Span)>,
 }
 
 /// One lane of the report: its denominator and its never-filtered rows,
@@ -145,23 +144,23 @@ pub struct Inventory {
 }
 
 /// Count everything in `target`. Pure, cold path, knob-free; accepts any
-/// well-formed `VerseMap` including a single whole-text entry (verses are
+/// well-formed `Corpus` including a single whole-text entry (verses are
 /// reference plumbing — book-stream lanes carry state across seams anyway,
 /// and per-verse-visible adjacency in a coarser map is a documented superset).
-pub fn census(target: &VerseMap, opts: &CensusOptions) -> Inventory {
-    let books = verse::by_book(target);
+pub fn census(target: &Corpus, opts: &CensusOptions) -> Inventory {
+    let books = corpus::by_book(target);
     // The same fan-out as analyze (ADR 0042): one fused walk per book, the
     // census accumulator fed per verse; fan-in merges in book order.
-    let per_book: Vec<BookCensus> = rule::map_books(&books, |_book, verses| {
+    let per_book: Vec<BookCensus> = rule::map_books(&books, |group| {
         stream::drive_book(
-            verses,
+            group,
             Needs { tape: true, graphemes: true, tokens: true, folds: false },
             BookCensusAcc::new(),
-            |a, v, vi| a.verse(v, vi),
-            BookCensusAcc::finish,
+            |a, v| a.verse(v),
+            |acc| acc.finish(group),
         )
     });
-    assemble(per_book, opts)
+    assemble(&books, per_book, opts)
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -169,7 +168,7 @@ pub fn census(target: &VerseMap, opts: &CensusOptions) -> Inventory {
 // ─────────────────────────────────────────────────────────────────────────
 
 /// First-occurrence-in-book example per key.
-type Firsts<K> = BTreeMap<K, (Sid, Span)>;
+type Firsts<K> = BTreeMap<K, (String, Span)>;
 
 struct BookCensusAcc {
     // Letters + format classes ride the scalar walk.
@@ -258,14 +257,14 @@ impl BookCensusAcc {
         }
     }
 
-    fn verse(&mut self, v: &VerseInputs<'_, '_>, vi: usize) {
+    fn verse(&mut self, v: &VerseInputs<'_, '_>) {
         // ── Scalar lanes: glyph census + format classes, one tape read.
         for e in v.tape {
             self.scalars_seen += 1;
             let first = self.pages.bump(e.ch);
             if first && is_letter_scalar(e.ch) {
                 let span = Span { start: e.off, end: e.off + e.ch.len_utf8() as u32 };
-                self.glyph_first.entry(e.ch).or_insert((v.sid, span));
+                self.glyph_first.entry(e.ch).or_insert_with(|| (v.key.to_string(), span));
             }
             let class: Option<&'static str> = if e.ch == '\t' {
                 Some("tab")
@@ -283,7 +282,7 @@ impl BookCensusAcc {
             if let Some(class) = class {
                 *self.format_counts.entry(class).or_default() += 1;
                 let span = Span { start: e.off, end: e.off + e.ch.len_utf8() as u32 };
-                self.format_first.entry(class).or_insert((v.sid, span));
+                self.format_first.entry(class).or_insert_with(|| (v.key.to_string(), span));
             }
         }
 
@@ -295,13 +294,13 @@ impl BookCensusAcc {
                 *n += 1;
             } else {
                 self.run_counts.insert(run.to_string(), 1);
-                self.run_first.insert(run.to_string(), (v.sid, span));
+                self.run_first.insert(run.to_string(), (v.key.to_string(), span));
             }
         }
 
         // ── Mark spacing + brackets: the rules' own listeners, verbatim.
         self.spacing.verse(v);
-        self.brackets.verse(v, vi);
+        self.brackets.verse(v);
 
         // ── Numbers: digit-bearing token windows (consecutive digit-bearing
         // tokens joined across a single ASCII space stay one window, so the
@@ -340,7 +339,7 @@ impl BookCensusAcc {
                     *n += 1;
                 } else {
                     self.shape_counts.insert(shape.clone(), 1);
-                    self.shape_first.insert(shape, (v.sid, span));
+                    self.shape_first.insert(shape, (v.key.to_string(), span));
                 }
             }
             i = j;
@@ -357,7 +356,7 @@ impl BookCensusAcc {
             self.case_shape_counts[idx] += 1;
             self.case_shape_first
                 .entry(CASE_SHAPE_NAMES[idx])
-                .or_insert((v.sid, tok.span));
+                .or_insert_with(|| (v.key.to_string(), tok.span));
             let folded = word.to_lowercase();
             let forms = self.word_forms.entry(folded.clone()).or_default();
             if let Some(n) = forms.get_mut(word) {
@@ -365,11 +364,11 @@ impl BookCensusAcc {
             } else {
                 forms.insert(word.to_string(), 1);
             }
-            self.word_first.entry(folded).or_insert((v.sid, tok.span));
+            self.word_first.entry(folded).or_insert_with(|| (v.key.to_string(), tok.span));
         }
     }
 
-    fn finish(self) -> BookCensus {
+    fn finish(self, group: &BookGroup<'_>) -> BookCensus {
         let (spacing_book, spacing_sites) = self.spacing.finish();
         let mark_occurrences = spacing_sites.len() as u64;
         // First occurrence per (mark, form) in this book, either side — the
@@ -382,7 +381,9 @@ impl BookCensusAcc {
                     SideForm::Attached => 0u8,
                     SideForm::Spaced => 1u8,
                 };
-                mark_form_first.entry((site.mark, f)).or_insert((site.sid, span));
+                mark_form_first
+                    .entry((site.mark, f))
+                    .or_insert_with(|| (group.key(site.local_idx).to_string(), span));
             };
             if let Some(r) = site.left {
                 note(r.form, site.left_span);
@@ -474,7 +475,7 @@ fn number_shapes(window: &str) -> Vec<String> {
 /// the cap) for one keyed lane.
 struct LaneMerge<K: Ord + Clone> {
     counts: BTreeMap<K, u64>,
-    examples: BTreeMap<K, Vec<(Sid, Span)>>,
+    examples: BTreeMap<K, Vec<(String, Span)>>,
     cap: usize,
 }
 
@@ -483,7 +484,7 @@ impl<K: Ord + Clone> LaneMerge<K> {
         LaneMerge { counts: BTreeMap::new(), examples: BTreeMap::new(), cap }
     }
 
-    fn add(&mut self, key: K, count: u64, first: Option<(Sid, Span)>) {
+    fn add(&mut self, key: K, count: u64, first: Option<(String, Span)>) {
         *self.counts.entry(key.clone()).or_default() += count;
         if let Some(site) = first {
             let ex = self.examples.entry(key).or_default();
@@ -507,7 +508,7 @@ impl<K: Ord + Clone> LaneMerge<K> {
     }
 }
 
-fn assemble(per_book: Vec<BookCensus>, opts: &CensusOptions) -> Inventory {
+fn assemble(books: &corpus::Books<'_>, per_book: Vec<BookCensus>, opts: &CensusOptions) -> Inventory {
     let cap = opts.example_cap;
 
     // Letters.
@@ -526,7 +527,7 @@ fn assemble(per_book: Vec<BookCensus>, opts: &CensusOptions) -> Inventory {
     let mut mark_total = 0u64;
     // Brackets.
     let mut bracket_events: BTreeMap<char, (u64, u64)> = BTreeMap::new(); // family → (events, unmatched)
-    let mut bracket_first: Vec<BTreeMap<char, (Sid, Span)>> = Vec::new();
+    let mut bracket_first: Vec<BTreeMap<char, (String, Span)>> = Vec::new();
     let mut bracket_total = 0u64;
     // Numbers.
     let mut shapes = LaneMerge::new(cap);
@@ -535,9 +536,9 @@ fn assemble(per_book: Vec<BookCensus>, opts: &CensusOptions) -> Inventory {
     let mut case_shapes = LaneMerge::new(cap);
     let mut letter_token_total = 0u64;
     let mut word_forms: BTreeMap<String, BTreeMap<String, u64>> = BTreeMap::new();
-    let mut word_examples: BTreeMap<String, Vec<(Sid, Span)>> = BTreeMap::new();
+    let mut word_examples: BTreeMap<String, Vec<(String, Span)>> = BTreeMap::new();
 
-    for mut book in per_book {
+    for (group, mut book) in books.iter().zip(per_book) {
         letter_total += book
             .inventory
             .iter()
@@ -566,7 +567,7 @@ fn assemble(per_book: Vec<BookCensus>, opts: &CensusOptions) -> Inventory {
             }
         }
         // Brackets: family tallies + first event per family in this book.
-        let mut first_in_book: BTreeMap<char, (Sid, Span)> = BTreeMap::new();
+        let mut first_in_book: BTreeMap<char, (String, Span)> = BTreeMap::new();
         for (i, e) in book.brackets.events.iter().enumerate() {
             bracket_total += 1;
             let t = bracket_events.entry(e.family).or_default();
@@ -574,8 +575,8 @@ fn assemble(per_book: Vec<BookCensus>, opts: &CensusOptions) -> Inventory {
             if !book.brackets.matched[i] {
                 t.1 += 1;
             }
-            first_in_book.entry(e.family).or_insert((
-                e.sid,
+            first_in_book.entry(e.family).or_insert_with(|| (
+                group.key(e.local_idx()).to_string(),
                 Span { start: e.offset as u32, end: (e.offset + e.glyph.len_utf8()) as u32 },
             ));
         }
@@ -623,8 +624,8 @@ fn assemble(per_book: Vec<BookCensus>, opts: &CensusOptions) -> Inventory {
                     if examples.len() >= cap {
                         break;
                     }
-                    if let Some(&site) = per_book.get(&(mark, minority)) {
-                        examples.push(site);
+                    if let Some(site) = per_book.get(&(mark, minority)) {
+                        examples.push(site.clone());
                     }
                 }
                 Row {
@@ -648,8 +649,8 @@ fn assemble(per_book: Vec<BookCensus>, opts: &CensusOptions) -> Inventory {
                     if examples.len() >= cap {
                         break;
                     }
-                    if let Some(&site) = per_book.get(&family) {
-                        examples.push(site);
+                    if let Some(site) = per_book.get(&family) {
+                        examples.push(site.clone());
                     }
                 }
                 Row {
@@ -735,27 +736,39 @@ mod tests {
     use super::*;
     use crate::config::{MixedCaseConfig, PunctuationSpacingConfig};
     use crate::rule::StatefulRule;
-    use crate::sid::BookId;
     use crate::stats::RuleStats;
 
-    fn sid(book: &str, v: u16) -> Sid {
-        Sid::new(BookId::from_str(book).unwrap(), 1, v)
+    /// Build a single-book `Corpus`: verses numbered 1..=len in chapter 1.
+    fn book(book: &str, verses: &[&str]) -> Corpus {
+        let keys = (1..=verses.len()).map(|v| format!("{book} 1:{v}")).collect();
+        let texts = verses.iter().map(|t| t.to_string()).collect();
+        Corpus::try_from_parts(keys, texts).unwrap()
     }
 
-    fn book(book: &str, verses: &[&str]) -> VerseMap {
-        verses
-            .iter()
-            .enumerate()
-            .map(|(i, t)| (sid(book, (i + 1) as u16), t.to_string()))
-            .collect()
+    /// Build a multi-book `Corpus`, books laid out in the given presented
+    /// order (each book's verses numbered 1..=len in chapter 1).
+    fn multi_book(parts: &[(&str, &[&str])]) -> Corpus {
+        let mut keys = Vec::new();
+        let mut texts = Vec::new();
+        for (slug, verses) in parts {
+            for (i, t) in verses.iter().enumerate() {
+                keys.push(format!("{slug} 1:{}", i + 1));
+                texts.push(t.to_string());
+            }
+        }
+        Corpus::try_from_parts(keys, texts).unwrap()
+    }
+
+    fn empty_corpus() -> Corpus {
+        Corpus::try_from_parts(Vec::new(), Vec::new()).unwrap()
     }
 
     fn section(inv: &Inventory, id: SectionId) -> &Section {
         inv.sections.iter().find(|s| s.id == id).unwrap()
     }
 
-    fn run(map: &VerseMap) -> Inventory {
-        census(map, &CensusOptions::default())
+    fn run(target: &Corpus) -> Inventory {
+        census(target, &CensusOptions::default())
     }
 
     // ── Equivalence: census counts == the rules' own reduce aggregates. ──
@@ -764,14 +777,15 @@ mod tests {
     /// with a hapax letter — which must appear (rows are never filtered).
     #[test]
     fn glyph_lane_matches_rare_glyph_inventory_and_keeps_hapax() {
-        let map = book("GEN", &["ana mele ka po", "Aha Ela q"]);
-        let inv = run(&map);
+        let corpus = book("GEN", &["ana mele ka po", "Aha Ela q"]);
+        let inv = run(&corpus);
         let glyphs = section(&inv, SectionId::LetterGlyphs);
 
         let rule = crate::signals::rare_glyph::RareGlyph {
             cfg: crate::config::RareGlyphConfig::default(),
         };
-        let (stats, _) = rule.reduce(&verse::by_book(&map), None, None);
+        let books = corpus::by_book(&corpus);
+        let (stats, _) = rule.reduce(&books, None, None);
         let RuleStats::GlyphInventory(gs) = stats else { panic!() };
         let mut expected: BTreeMap<char, u64> = BTreeMap::new();
         for bg in gs.per_book.values() {
@@ -802,8 +816,8 @@ mod tests {
     /// the known-safe set the rule subtracts.
     #[test]
     fn punct_runs_match_adjacency_candidates_plus_safe_set() {
-        let map = book("GEN", &["wait,, what... yes?!", "end.. next -- more"]);
-        let inv = run(&map);
+        let corpus = book("GEN", &["wait,, what... yes?!", "end.. next -- more"]);
+        let inv = run(&corpus);
         let runs = section(&inv, SectionId::PunctRuns);
         let got: BTreeMap<String, u64> = runs
             .rows
@@ -831,14 +845,15 @@ mod tests {
     /// cells (summed over sides and classes).
     #[test]
     fn mark_spacing_matches_rule_tallies() {
-        let map = book("GEN", &["word, word , word", "end. Next"]);
-        let inv = run(&map);
+        let corpus = book("GEN", &["word, word , word", "end. Next"]);
+        let inv = run(&corpus);
         let lane = section(&inv, SectionId::MarkSpacing);
 
         let rule = crate::signals::punctuation::PunctuationSpacingAnomaly {
             cfg: PunctuationSpacingConfig::default(),
         };
-        let (stats, _) = rule.reduce(&verse::by_book(&map), None, None);
+        let books = corpus::by_book(&corpus);
+        let (stats, _) = rule.reduce(&books, None, None);
         let RuleStats::PunctuationSpacing(ps) = stats else { panic!() };
         let mut expected: BTreeMap<char, (u64, u64)> = BTreeMap::new();
         for bp in ps.per_book.values() {
@@ -863,14 +878,15 @@ mod tests {
     /// Case-shape totals equal the mixed-case rule's shape profiles.
     #[test]
     fn case_shapes_match_mixed_case_profiles() {
-        let map = book("GEN", &["The lord GOD spoke aSif", "he said Yes"]);
-        let inv = run(&map);
+        let corpus = book("GEN", &["The lord GOD spoke aSif", "he said Yes"]);
+        let inv = run(&corpus);
         let lane = section(&inv, SectionId::CaseShapes);
 
         let rule = crate::signals::mixed_case::MixedCaseWord {
             cfg: MixedCaseConfig::default(),
         };
-        let (stats, _) = rule.reduce(&verse::by_book(&map), None, None);
+        let books = corpus::by_book(&corpus);
+        let (stats, _) = rule.reduce(&books, None, None);
         let RuleStats::MixedCase(mc) = stats else { panic!() };
         let mut expected: BTreeMap<&str, u64> = BTreeMap::new();
         for bm in mc.per_book.values() {
@@ -899,8 +915,8 @@ mod tests {
     /// verdicts are taken.
     #[test]
     fn bracket_lane_matches_book_stream_matching() {
-        let map = book("GEN", &["open (the aside", "and close) it ] now"]);
-        let inv = run(&map);
+        let corpus = book("GEN", &["open (the aside", "and close) it ] now"]);
+        let inv = run(&corpus);
         let lane = section(&inv, SectionId::Brackets);
         let got: Vec<(char, char, u64, u64)> = lane
             .rows
@@ -921,7 +937,7 @@ mod tests {
 
     #[test]
     fn empty_corpus_yields_all_lanes_empty() {
-        let inv = run(&VerseMap::new());
+        let inv = run(&empty_corpus());
         assert_eq!(inv.sections.len(), 8);
         for s in &inv.sections {
             assert_eq!(s.lane_total, 0, "{:?}", s.id);
@@ -931,7 +947,7 @@ mod tests {
 
     #[test]
     fn schema_field_serializes_as_wire_contract_version() {
-        let inv = run(&VerseMap::new());
+        let inv = run(&empty_corpus());
         assert_eq!(inv.schema, INVENTORY_SCHEMA);
         let json = serde_json::to_string(&inv).unwrap();
         assert!(json.contains("\"schema\":1"), "{json}");
@@ -940,11 +956,14 @@ mod tests {
     #[test]
     fn example_cap_caps_examples_never_counts() {
         // The same rare glyph in five books; cap 2.
-        let mut map = VerseMap::new();
-        for b in ["GEN", "EXO", "LEV", "NUM", "DEU"] {
-            map.extend(book(b, &["ana q ana"]));
-        }
-        let inv = census(&map, &CensusOptions { example_cap: 2 });
+        let corpus = multi_book(&[
+            ("GEN", &["ana q ana"]),
+            ("EXO", &["ana q ana"]),
+            ("LEV", &["ana q ana"]),
+            ("NUM", &["ana q ana"]),
+            ("DEU", &["ana q ana"]),
+        ]);
+        let inv = census(&corpus, &CensusOptions { example_cap: 2 });
         let glyphs = section(&inv, SectionId::LetterGlyphs);
         let q = glyphs
             .rows
@@ -953,16 +972,18 @@ mod tests {
             .unwrap();
         assert_eq!(q.count, 5, "cap must not touch counts");
         assert_eq!(q.examples.len(), 2, "examples capped");
-        // First-per-book order: canonical book order (DEU, EXO...) — BookId
-        // order is canonical, DEU > GEN? Assert deterministic: two runs equal.
-        assert_eq!(inv, census(&map, &CensusOptions { example_cap: 2 }));
+        // First-per-book order now follows the Corpus's presented order
+        // (GEN, EXO, LEV, NUM, DEU here), not canonical BookId order — the
+        // real invariant under test is just that the cap holds on the count
+        // and that the result is deterministic across repeated runs.
+        assert_eq!(inv, census(&corpus, &CensusOptions { example_cap: 2 }));
     }
 
     #[test]
     fn deterministic_and_sorted_ascending() {
-        let map = book("GEN", &["aa bb aa cc.. dd,, dd"]);
-        let a = run(&map);
-        let b = run(&map);
+        let corpus = book("GEN", &["aa bb aa cc.. dd,, dd"]);
+        let a = run(&corpus);
+        let b = run(&corpus);
         assert_eq!(a, b);
         for s in &a.sections {
             for w in s.rows.windows(2) {
@@ -971,10 +992,10 @@ mod tests {
         }
     }
 
-    /// A one-entry whole-text map is legal; book-stream lanes count exactly
-    /// as the split map (the text concatenates identically), and per-verse-
-    /// windowed lanes may only *gain* rows (the documented superset — a seam
-    /// no longer hides adjacency).
+    /// A one-entry whole-text corpus is legal; book-stream lanes count
+    /// exactly as the split corpus (the text concatenates identically), and
+    /// per-verse-windowed lanes may only *gain* rows (the documented
+    /// superset — a seam no longer hides adjacency).
     #[test]
     fn one_entry_map_counts_match_book_stream_lanes() {
         let parts = ["He said. ", "the gate ,, stood (open", ") still."];
@@ -1035,8 +1056,8 @@ mod tests {
 
     #[test]
     fn spaced_digit_window_reads_as_one_shape() {
-        let map = book("GEN", &["a total of 1 000 men"]);
-        let inv = run(&map);
+        let corpus = book("GEN", &["a total of 1 000 men"]);
+        let inv = run(&corpus);
         let lane = section(&inv, SectionId::NumberShapes);
         let got: Vec<&str> = lane
             .rows
@@ -1052,8 +1073,8 @@ mod tests {
 
     #[test]
     fn word_case_variants_only_for_varying_words() {
-        let map = book("GEN", &["The men saw the gate", "THE end"]);
-        let inv = run(&map);
+        let corpus = book("GEN", &["The men saw the gate", "THE end"]);
+        let inv = run(&corpus);
         let lane = section(&inv, SectionId::WordCaseVariants);
         assert_eq!(lane.rows.len(), 1);
         match &lane.rows[0].key {
@@ -1079,8 +1100,8 @@ mod tests {
     fn word_case_variants_excludes_title_lower_only() {
         // `the`/`The` is ordinary sentence casing (ADR 0051 casing rules'
         // domain) — no AllCaps/OtherMixed form participates, so no row.
-        let map = book("GEN", &["The men saw the gate"]);
-        let inv = run(&map);
+        let corpus = book("GEN", &["The men saw the gate"]);
+        let inv = run(&corpus);
         let lane = section(&inv, SectionId::WordCaseVariants);
         assert_eq!(lane.rows.len(), 0);
         assert_eq!(lane.lane_total, 0);
@@ -1089,8 +1110,8 @@ mod tests {
     #[test]
     fn word_case_variants_includes_mixed_form_participation() {
         // `weird`/`WEIrd` — an OtherMixed form participates, so it rows.
-        let map = book("GEN", &["a weird day", "a WEIrd day"]);
-        let inv = run(&map);
+        let corpus = book("GEN", &["a weird day", "a WEIrd day"]);
+        let inv = run(&corpus);
         let lane = section(&inv, SectionId::WordCaseVariants);
         assert_eq!(lane.rows.len(), 1);
         match &lane.rows[0].key {
@@ -1104,8 +1125,8 @@ mod tests {
     fn word_case_variants_excludes_single_form_words() {
         // `WEIrd` seen only once (one form) — single-form words are the
         // mixed-case rule's domain, not this lane's.
-        let map = book("GEN", &["a WEIrd day"]);
-        let inv = run(&map);
+        let corpus = book("GEN", &["a WEIrd day"]);
+        let inv = run(&corpus);
         let lane = section(&inv, SectionId::WordCaseVariants);
         assert_eq!(lane.rows.len(), 0);
         assert_eq!(lane.lane_total, 0);

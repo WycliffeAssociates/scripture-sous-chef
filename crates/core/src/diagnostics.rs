@@ -8,7 +8,7 @@
 //! mapping a range back to a DOM node or source offset is the
 //! orchestrator's job via onion's `segments`. See ADR 0010.
 
-use crate::sid::Sid;
+use crate::corpus::KeyIdx;
 use crate::span::Span;
 
 /// Defines the closed `RuleId` set from a single list, so a rule's
@@ -297,7 +297,7 @@ pub enum FindingArgs {
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct Finding {
-    pub sid: Sid,
+    pub key_idx: KeyIdx,
     pub code: RuleId,
     pub severity: Severity,
     /// Byte offsets into the verse text. Project with `range.to_utf16` /

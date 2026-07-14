@@ -78,17 +78,16 @@ use rustc_hash::FxHashMap;
 use crate::charclass::class_of;
 use crate::config::RareGlyphConfig;
 use crate::signals::case_shape;
+use crate::corpus::{rebase, Books, Corpus, KeyIdx, LocalKeyIdx};
 use crate::diagnostics::{Finding, FindingArgs, RuleId, Severity};
 use crate::evidence::{clamp_count, clamp_unit};
 use crate::rule::{self, StatefulRule, TokenCache};
 use crate::signals::casing::{self, PosClass};
 use crate::signals::script_mixing::token_scripts;
-use crate::sid::{BookId, Sid};
 use crate::span::Span;
 use crate::stats::RuleStats;
 use crate::stream;
 use crate::token::{tokenize, Token};
-use crate::verse::{Books, VerseMap};
 
 pub const RARE_GLYPH: RuleId = RuleId::RareGlyph;
 
@@ -179,7 +178,7 @@ pub(crate) struct BookGlyphs {
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct RareGlyphStats {
     #[cfg_attr(feature = "wasm", tsify(type = "Record<string, BookGlyphs>"))]
-    pub(crate) per_book: BTreeMap<BookId, BookGlyphs>,
+    pub(crate) per_book: BTreeMap<Box<str>, BookGlyphs>,
 }
 
 impl RareGlyphStats {
@@ -192,8 +191,8 @@ impl RareGlyphStats {
     }
 
     /// Drop a book's contribution.
-    pub(crate) fn remove_book(&mut self, book: BookId) {
-        self.per_book.remove(&book);
+    pub(crate) fn remove_book(&mut self, slug: &str) {
+        self.per_book.remove(slug);
     }
 }
 
@@ -209,7 +208,7 @@ impl StatefulRule for RareGlyph {
     fn reduce(
         &self,
         books: &Books<'_>,
-        _source: Option<&VerseMap>,
+        _source: Option<&Corpus>,
         tokens: Option<&TokenCache>,
     ) -> (RuleStats, rule::RuleSites) {
         // Thin driver over the shared listener (the fused walk feeds the same
@@ -218,19 +217,16 @@ impl StatefulRule for RareGlyph {
         // what the cache would supply.
         let _ = tokens;
         let mut per_book = BTreeMap::new();
-        for (book, bg) in rule::map_books(books, |book, verses| {
-            (
-                book,
-                stream::drive_book(
-                    verses,
-                    stream::Needs { tokens: true, folds: true, ..Default::default() },
-                    RareGlyphAcc::new(),
-                    |a, v, _| a.verse(v),
-                    RareGlyphAcc::finish,
-                ),
+        for (group, bg) in books.iter().zip(rule::map_books(books, |group| {
+            stream::drive_book(
+                group,
+                stream::Needs { tokens: true, folds: true, ..Default::default() },
+                RareGlyphAcc::new(),
+                |a, v| a.verse(v),
+                RareGlyphAcc::finish,
             )
-        }) {
-            per_book.insert(book, bg);
+        })) {
+            per_book.insert(Box::from(group.slug), bg);
         }
         (
             RuleStats::GlyphInventory(RareGlyphStats { per_book }),
@@ -355,30 +351,31 @@ impl StatefulRule for RareGlyph {
 
         // ── Recover spans by re-scanning the supplied books. Emit at each
         // eligible occurrence of a surviving glyph (mixed-script tokens skipped).
-        let mut out: Vec<Finding> = rule::map_books(books, |_book, verses| {
+        let mut out: Vec<Finding> = rule::map_books(books, |group| {
             let mut found = Vec::new();
-            for &(sid, text) in verses {
-                emit_verse(sid, text, tokens, &surviving, &mut found);
+            for (vi, text) in group.texts.iter().enumerate() {
+                let key_idx = rebase(group.base, LocalKeyIdx::new(vi as u16));
+                emit_verse(key_idx, text, tokens, &surviving, &mut found);
             }
             found
         })
         .into_iter()
         .flatten()
         .collect();
-        out.sort_by_key(|f| (f.sid, f.range.start, f.range.end));
+        out.sort_by_key(|f| (f.key_idx, f.range.start, f.range.end));
         out
     }
 }
 
 /// Emit a finding at each eligible occurrence of a surviving glyph in one verse.
 fn emit_verse(
-    sid: Sid,
+    key_idx: KeyIdx,
     text: &str,
     tokens: Option<&TokenCache>,
     surviving: &BTreeMap<char, (f32, u32)>,
     out: &mut Vec<Finding>,
 ) {
-    let toks = verse_tokens(sid, text, tokens);
+    let toks = verse_tokens(key_idx, text, tokens);
     for tok in toks.iter() {
         let word = tok.span.slice(text);
         if !is_letter_token(word) || token_scripts(word).len() >= 2 {
@@ -388,7 +385,7 @@ fn emit_verse(
             if let Some(&(score, count)) = surviving.get(&c) {
                 let start = tok.span.start + i as u32;
                 out.push(Finding {
-                    sid,
+                    key_idx,
                     code: RARE_GLYPH,
                     severity: Severity::Info,
                     range: Span { start, end: start + c.len_utf8() as u32 },
@@ -403,11 +400,11 @@ fn emit_verse(
 /// The verse's shared tokens when the runner built a cache, else a fresh
 /// tokenization owned by the caller — the single-consumer fallback.
 fn verse_tokens<'a>(
-    sid: Sid,
+    key_idx: KeyIdx,
     text: &str,
     cache: Option<&'a TokenCache>,
 ) -> std::borrow::Cow<'a, [Token]> {
-    match cache.and_then(|c| c.get(&sid)) {
+    match cache.and_then(|c| c.get(&key_idx)) {
         Some(t) => std::borrow::Cow::Borrowed(t),
         None => std::borrow::Cow::Owned(tokenize(text)),
     }
@@ -605,17 +602,13 @@ impl RareGlyphAcc {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::verse::by_book;
+    use crate::corpus::by_book;
 
     /// A controlled corpus: two templates establish a settled alphabet in both
     /// cases — lowercase {a,n,m,e,l,k,p,o,u,h,i}, uppercase {A,E,O,U} — each
     /// appearing many times, so the only rare letter in any test is the one the
     /// test injects. `q`/`Q` never appear in the base.
     const BASE: [&str; 2] = ["ana mele ka po lu hi", "Aha Ela Ohu Uma"];
-
-    fn sid(book: &str, v: u16) -> Sid {
-        Sid::new(BookId::from_str(book).unwrap(), 1, v)
-    }
 
     /// A test config with a relaxed closure threshold: real corpora have
     /// hundreds of thousands of letter scalars, so one hapax is well below
@@ -632,30 +625,42 @@ mod tests {
         rule(cfg())
     }
 
-    fn run(map: &VerseMap, r: &RareGlyph) -> Vec<Finding> {
+    fn run(map: &Corpus, r: &RareGlyph) -> Vec<Finding> {
         let books = by_book(map);
         let (stats, _) = r.reduce(&books, None, None);
         r.judge(&stats, &books, None, None)
     }
 
-    fn slice<'a>(map: &'a VerseMap, f: &Finding) -> &'a str {
-        &map[&f.sid][f.range.start as usize..f.range.end as usize]
+    fn slice<'a>(map: &'a Corpus, f: &Finding) -> &'a str {
+        &map.text(f.key_idx)[f.range.start as usize..f.range.end as usize]
     }
 
-    /// The BASE corpus (60 cycles) in `book`, plus any explicit extra verses.
-    fn corpus(book: &str, extra: &[(u16, &str)]) -> VerseMap {
-        let mut out = VerseMap::new();
+    /// Raw (keys, texts) for the BASE corpus (60 cycles) in `book`, plus any
+    /// explicit extra verses — split out from `corpus` so multi-corpus tests
+    /// (incremental scoring, book removal) can concatenate or isolate book
+    /// blocks before validating.
+    fn corpus_parts(book: &str, extra: &[(u16, &str)]) -> (Vec<String>, Vec<String>) {
+        let mut keys = Vec::new();
+        let mut texts = Vec::new();
         let mut v = 1u16;
         for _ in 0..60 {
             for t in BASE {
-                out.insert(sid(book, v), t.to_string());
+                keys.push(format!("{book} 1:{v}"));
+                texts.push(t.to_string());
                 v += 1;
             }
         }
         for &(vv, t) in extra {
-            out.insert(sid(book, vv), t.to_string());
+            keys.push(format!("{book} 1:{vv}"));
+            texts.push(t.to_string());
         }
-        out
+        (keys, texts)
+    }
+
+    /// The BASE corpus (60 cycles) in `book`, plus any explicit extra verses.
+    fn corpus(book: &str, extra: &[(u16, &str)]) -> Corpus {
+        let (keys, texts) = corpus_parts(book, extra);
+        Corpus::try_from_parts(keys, texts).unwrap()
     }
 
     // ── closure gate ────────────────────────────────────────────────────
@@ -676,13 +681,16 @@ mod tests {
     /// threshold and the lane goes quiet — even the frozen 0.01% default.
     #[test]
     fn open_inventory_self_silences() {
-        let mut map = VerseMap::new();
+        let mut keys = Vec::new();
+        let mut texts = Vec::new();
         let base = 0x4E00u32; // CJK ideographs (GC Lo), each used once
         for i in 0..40u16 {
             let a = char::from_u32(base + u32::from(i) * 2).unwrap();
             let b = char::from_u32(base + u32::from(i) * 2 + 1).unwrap();
-            map.insert(sid("GEN", i + 1), format!("{a}{b}"));
+            keys.push(format!("GEN 1:{}", i + 1));
+            texts.push(format!("{a}{b}"));
         }
+        let map = Corpus::try_from_parts(keys, texts).unwrap();
         assert!(run(&map, &rule(RareGlyphConfig::default())).is_empty(), "open inventory silent");
         assert!(run(&map, &default_rule()).is_empty(), "silent even at the relaxed gate");
     }
@@ -759,9 +767,15 @@ mod tests {
     /// discounted — its capital is positional, so the flag survives.
     #[test]
     fn forced_position_titlecase_not_discounted() {
-        // Verse 0 sorts first → book-initial (forced). "Qami" starts it.
-        let mut map = corpus("GEN", &[]);
-        map.insert(sid("GEN", 0), "Qami mele nui loa".to_string());
+        // Prepended first in presented order → book-initial (forced). "Qami"
+        // starts it. (`Corpus` order is caller-presented, not canonically
+        // sorted, so the forcing verse must be placed first explicitly.)
+        let mut keys = vec!["GEN 1:0".to_string()];
+        let mut texts = vec!["Qami mele nui loa".to_string()];
+        let (base_keys, base_texts) = corpus_parts("GEN", &[]);
+        keys.extend(base_keys);
+        texts.extend(base_texts);
+        let map = Corpus::try_from_parts(keys, texts).unwrap();
         let f = run(&map, &default_rule());
         assert_eq!(f.len(), 1, "book-initial titlecase is not shape-discounted");
         assert_eq!(slice(&map, &f[0]), "Q");
@@ -784,15 +798,19 @@ mod tests {
     /// rare caseless letter in a closed alphabet surfaces.
     #[test]
     fn caseless_script_still_flags_rare_letter() {
-        let mut map = VerseMap::new();
+        let mut keys = Vec::new();
+        let mut texts = Vec::new();
         let mut v = 1u16;
         for _ in 0..60 {
             for t in ["\u{0915}\u{0916} \u{0917}\u{0918}", "\u{0919}\u{091A} \u{091B}\u{091C}"] {
-                map.insert(sid("GEN", v), t.to_string());
+                keys.push(format!("GEN 1:{v}"));
+                texts.push(t.to_string());
                 v += 1;
             }
         }
-        map.insert(sid("GEN", 500), "\u{0958} \u{0915}\u{0916}".to_string()); // U+0958 QA stray
+        keys.push("GEN 1:500".to_string());
+        texts.push("\u{0958} \u{0915}\u{0916}".to_string()); // U+0958 QA stray
+        let map = Corpus::try_from_parts(keys, texts).unwrap();
         let f = run(&map, &default_rule());
         assert_eq!(f.len(), 1, "rare caseless letter surfaces");
         assert_eq!(slice(&map, &f[0]), "\u{0958}");
@@ -805,12 +823,20 @@ mod tests {
     #[test]
     fn incremental_score_is_corpus_wide() {
         let r = default_rule();
-        let gen_map = corpus("GEN", &[]);
-        let exo: VerseMap = [(sid("EXO", 1), "qami mele".to_string())].into_iter().collect();
-        let mut full = gen_map.clone();
-        full.extend(exo.clone());
+        let (gen_keys, gen_texts) = corpus_parts("GEN", &[]);
+        let gen_map = Corpus::try_from_parts(gen_keys.clone(), gen_texts.clone()).unwrap();
+        let exo_keys = vec!["EXO 1:1".to_string()];
+        let exo_texts = vec!["qami mele".to_string()];
+        let exo = Corpus::try_from_parts(exo_keys.clone(), exo_texts.clone()).unwrap();
 
-        let full_hit = run(&full, &r).into_iter().find(|f| f.sid == sid("EXO", 1)).unwrap();
+        let mut full_keys = gen_keys;
+        full_keys.extend(exo_keys);
+        let mut full_texts = gen_texts;
+        full_texts.extend(exo_texts);
+        let full = Corpus::try_from_parts(full_keys, full_texts).unwrap();
+
+        let full_hit =
+            run(&full, &r).into_iter().find(|f| full.key(f.key_idx) == "EXO 1:1").unwrap();
 
         let merged = r
             .reduce(&by_book(&gen_map), None, None)
@@ -818,7 +844,7 @@ mod tests {
             .merge(r.reduce(&by_book(&exo), None, None).0);
         let inc = r.judge(&merged, &by_book(&exo), None, None);
         assert_eq!(inc.len(), 1);
-        assert_eq!(inc[0].sid, sid("EXO", 1));
+        assert_eq!(exo.key(inc[0].key_idx), "EXO 1:1");
         assert_eq!(inc[0].score, full_hit.score, "incremental score is corpus-wide");
     }
 
@@ -826,14 +852,16 @@ mod tests {
     #[test]
     fn removing_a_book_drops_its_contribution() {
         let r = default_rule();
-        let mut full = corpus("GEN", &[]);
-        full.insert(sid("EXO", 1), "qami".to_string());
+        let (mut keys, mut texts) = corpus_parts("GEN", &[]);
+        keys.push("EXO 1:1".to_string());
+        texts.push("qami".to_string());
+        let full = Corpus::try_from_parts(keys, texts).unwrap();
         let RuleStats::GlyphInventory(mut stats) = r.reduce(&by_book(&full), None, None).0 else {
             unreachable!()
         };
-        assert!(stats.per_book.contains_key(&BookId::from_str("EXO").unwrap()));
-        stats.remove_book(BookId::from_str("EXO").unwrap());
-        assert!(!stats.per_book.contains_key(&BookId::from_str("EXO").unwrap()));
+        assert!(stats.per_book.contains_key("EXO"));
+        stats.remove_book("EXO");
+        assert!(!stats.per_book.contains_key("EXO"));
     }
 
     /// The knee is clamped to `RARE_CAP`, so an over-large configured knee cannot

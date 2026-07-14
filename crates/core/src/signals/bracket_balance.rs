@@ -32,15 +32,14 @@ use std::collections::BTreeMap;
 
 use crate::charclass::{bracket_close_of, bracket_open_of};
 use crate::config::BracketBalanceConfig;
+use crate::corpus::{rebase, BookGroup, Books, Corpus, LocalKeyIdx};
 use crate::diagnostics::{
     BracketMeasure, DelimObservation, DelimRole, Finding, FindingArgs, RuleId, Severity,
 };
 use crate::evidence;
 use crate::rule::{self, ProjectRule};
 use crate::stream;
-use crate::sid::Sid;
 use crate::span::Span;
-use crate::verse::{Books, VerseMap};
 
 pub const BRACKET_BALANCE: RuleId = RuleId::BracketBalance;
 
@@ -48,18 +47,25 @@ pub struct BracketBalance {
     pub cfg: BracketBalanceConfig,
 }
 
-/// One delimiter occurrence in a book, in canonical order.
+/// One delimiter occurrence in a book, in canonical order. `vi` (its verse's
+/// position within the book) doubles as the local address — the same
+/// invariant every other retained per-book product relies on.
 #[derive(Clone)]
 pub(crate) struct DelimEvent {
     /// Index of the verse within its book (0-based, canonical order).
     vi: usize,
-    pub(crate) sid: Sid,
     /// Byte offset of the glyph within its verse text.
     pub(crate) offset: usize,
     pub(crate) glyph: char,
     /// The family key: the pair's open glyph (for a closer, its opener).
     pub(crate) family: char,
     pub(crate) is_open: bool,
+}
+
+impl DelimEvent {
+    pub(crate) fn local_idx(&self) -> LocalKeyIdx {
+        LocalKeyIdx::new(self.vi as u16)
+    }
 }
 
 /// One book's match results, retained as a pre-emit product by the analysis
@@ -88,27 +94,28 @@ impl ProjectRule for BracketBalance {
     }
 
     // Brackets are intrinsic to the target; the reference is irrelevant.
-    fn check(&self, books: &Books<'_>, _source: Option<&VerseMap>) -> Vec<Finding> {
+    fn check(&self, books: &Books<'_>, _source: Option<&Corpus>) -> Vec<Finding> {
         // Pass 1 — match every book (independent; fans out per book under
         // `parallel`, ADR 0042). The fused walk feeds the same `BracketAcc`;
         // this driver is kept for direct callers.
-        let matches: Vec<BookMatch> = rule::map_books(books, |_book, verses| match_book(verses));
-        emit(matches, &self.cfg)
+        let matches: Vec<BookMatch> = rule::map_books(books, match_book);
+        emit(books, &matches, &self.cfg)
     }
 }
 
 /// The corpus-relative scoring over every book's match results (ADR 0037):
 /// accumulate family tallies, then emit orphans by pairing dominance and long
 /// matched pairs by short-span dominance. Shared by [`ProjectRule::check`] and
-/// the fused walk.
-pub(crate) fn emit(books: Vec<BookMatch>, cfg: &BracketBalanceConfig) -> Vec<Finding> {
+/// the fused walk. `groups` and `books` must be index-aligned (both callers'
+/// contract, matching `walk_fused`'s output).
+pub(crate) fn emit(groups: &Books<'_>, books: &[BookMatch], cfg: &BracketBalanceConfig) -> Vec<Finding> {
     {
         let window = cfg.window_verses as usize;
         let z = evidence::clamp_z(cfg.confidence_z);
         let floor = f64::from(evidence::clamp_unit(cfg.emit_score_min));
 
         let mut families: BTreeMap<char, FamilyTally> = BTreeMap::new();
-        for b in &books {
+        for b in books {
             for (i, e) in b.events.iter().enumerate() {
                 let t = families.entry(e.family).or_default();
                 t.events += 1;
@@ -140,7 +147,7 @@ pub(crate) fn emit(books: Vec<BookMatch>, cfg: &BracketBalanceConfig) -> Vec<Fin
         // Pass 2 — emit. Orphans score by pairing dominance; long matched
         // pairs by short-span dominance, anchored at the opener.
         let mut out = Vec::new();
-        for b in &books {
+        for (group, b) in groups.iter().zip(books) {
             for &oi in &b.orphans {
                 let e = &b.events[oi];
                 let score = pairing.get(&e.family).copied().unwrap_or(0.0);
@@ -150,12 +157,13 @@ pub(crate) fn emit(books: Vec<BookMatch>, cfg: &BracketBalanceConfig) -> Vec<Fin
                 let t = families.get(&e.family);
                 let (majority, total) = t.map_or((0, 0), |t| (t.matched_events, t.events));
                 out.push(finding(
+                    group,
                     e,
                     score,
                     BracketMeasure::Pairing,
                     majority,
                     total,
-                    inventory(b, e.vi, window),
+                    inventory(group, b, e.vi, window),
                 ));
             }
             for &(oi, ci) in &b.pairs {
@@ -170,16 +178,17 @@ pub(crate) fn emit(books: Vec<BookMatch>, cfg: &BracketBalanceConfig) -> Vec<Fin
                 let t = families.get(&open.family);
                 let (majority, total) = t.map_or((0, 0), |t| (t.short_pairs, t.pairs));
                 out.push(finding(
+                    group,
                     open,
                     score,
                     BracketMeasure::ShortSpan,
                     majority,
                     total,
-                    inventory(b, open.vi, window),
+                    inventory(group, b, open.vi, window),
                 ));
             }
         }
-        out.sort_by_key(|f| (f.sid, f.range.start, f.range.end));
+        out.sort_by_key(|f| (f.key_idx, f.range.start, f.range.end));
         out
     }
 }
@@ -197,8 +206,8 @@ impl BracketAcc {
         BracketAcc { events: Vec::new() }
     }
 
-    pub(crate) fn verse(&mut self, v: &stream::VerseInputs<'_, '_>, vi: usize) {
-        collect_events(v.sid, v.tape, vi, &mut self.events);
+    pub(crate) fn verse(&mut self, v: &stream::VerseInputs<'_, '_>) {
+        collect_events(v.tape, usize::from(v.local_idx.get()), &mut self.events);
     }
 
     pub(crate) fn finish(self) -> BookMatch {
@@ -207,6 +216,7 @@ impl BracketAcc {
 }
 
 fn finding(
+    group: &BookGroup<'_>,
     e: &DelimEvent,
     score: f64,
     measure: BracketMeasure,
@@ -215,7 +225,7 @@ fn finding(
     inventory: Vec<DelimObservation>,
 ) -> Finding {
     Finding {
-        sid: e.sid,
+        key_idx: rebase(group.base, e.local_idx()),
         code: BRACKET_BALANCE,
         severity: Severity::Info,
         range: Span {
@@ -234,7 +244,7 @@ fn finding(
 
 /// The delimiter inventory within `window` verses of `vi`, so a reviewer
 /// sees the whole context, not just the lone orphan.
-fn inventory(b: &BookMatch, vi: usize, window: usize) -> Vec<DelimObservation> {
+fn inventory(group: &BookGroup<'_>, b: &BookMatch, vi: usize, window: usize) -> Vec<DelimObservation> {
     let lo = vi.saturating_sub(window);
     let hi = vi + window;
     b.events
@@ -242,7 +252,7 @@ fn inventory(b: &BookMatch, vi: usize, window: usize) -> Vec<DelimObservation> {
         .enumerate()
         .filter(|(_, e)| e.vi >= lo && e.vi <= hi)
         .map(|(j, e)| DelimObservation {
-            sid: e.sid.to_string(),
+            sid: group.key(e.local_idx()).to_string(),
             glyph: e.glyph.to_string(),
             role: if e.is_open {
                 DelimRole::Open
@@ -256,18 +266,18 @@ fn inventory(b: &BookMatch, vi: usize, window: usize) -> Vec<DelimObservation> {
 
 /// LIFO-match one book's delimiter stream, whole-book (no distance cutoff) —
 /// the standalone driver over [`BracketAcc`]'s two halves.
-fn match_book(verses: &[(Sid, &str)]) -> BookMatch {
+fn match_book(group: &BookGroup<'_>) -> BookMatch {
     stream::drive_book(
-        verses,
+        group,
         stream::Needs { tape: true, ..Default::default() },
         BracketAcc::new(),
-        |a, v, vi| a.verse(v, vi),
+        |a, v| a.verse(v),
         BracketAcc::finish,
     )
 }
 
 /// One verse's delimiter events, appended in text order.
-fn collect_events(sid: Sid, tape: &[crate::tape::TapeEntry], vi: usize, events: &mut Vec<DelimEvent>) {
+fn collect_events(tape: &[crate::tape::TapeEntry], vi: usize, events: &mut Vec<DelimEvent>) {
     for e in tape {
         // One fused-table read (from the tape) gates the pair lookups:
         // every UCD paired bracket is GC Ps/Pe ⊂ punctuation (pinned by
@@ -286,7 +296,6 @@ fn collect_events(sid: Sid, tape: &[crate::tape::TapeEntry], vi: usize, events: 
         };
         events.push(DelimEvent {
             vi,
-            sid,
             offset: e.off as usize,
             glyph: ch,
             family,
@@ -334,7 +343,6 @@ fn lifo_match(events: Vec<DelimEvent>) -> BookMatch {
 mod tests {
     use super::*;
     use crate::charclass::class_of;
-    use crate::sid::BookId;
 
     fn rule(window_verses: u16) -> BracketBalance {
         BracketBalance {
@@ -355,16 +363,11 @@ mod tests {
         }
     }
 
-    fn sid(book: &str, ch: u16, v: u16) -> Sid {
-        Sid::new(BookId::from_str(book).unwrap(), ch, v)
-    }
-
     /// Build a one-chapter book `book` from `(verse, text)` pairs.
-    fn book(book: &str, verses: &[(u16, &str)]) -> VerseMap {
-        verses
-            .iter()
-            .map(|&(v, t)| (sid(book, 1, v), t.to_string()))
-            .collect()
+    fn book(book: &str, verses: &[(u16, &str)]) -> Corpus {
+        let keys = verses.iter().map(|&(v, _)| format!("{book} 1:{v}")).collect();
+        let texts = verses.iter().map(|&(_, t)| t.to_string()).collect();
+        Corpus::try_from_parts(keys, texts).unwrap()
     }
 
     fn inventory(f: &Finding) -> &Vec<DelimObservation> {
@@ -376,14 +379,10 @@ mod tests {
 
     /// A corpus of `n` clean `(x)` verses establishing the pairing
     /// convention, plus the given verses appended after them.
-    fn with_convention(extra: &[(u16, &str)]) -> VerseMap {
-        let mut verses: Vec<(u16, String)> =
-            (1..=100u16).map(|v| (v, "clean (x) pair".to_string())).collect();
-        verses.extend(extra.iter().map(|&(v, t)| (v, t.to_string())));
-        verses
-            .iter()
-            .map(|(v, t)| (sid("GEN", 1, *v), t.clone()))
-            .collect()
+    fn with_convention(extra: &[(u16, &str)]) -> Corpus {
+        let mut verses: Vec<(u16, &str)> = (1..=100u16).map(|v| (v, "clean (x) pair")).collect();
+        verses.extend(extra.iter().copied());
+        book("GEN", &verses)
     }
 
     /// The punctuation gate in `match_book` is sound only while every glyph
@@ -405,8 +404,8 @@ mod tests {
 
     #[test]
     fn balanced_within_verse_is_clean() {
-        let vm = book("GEN", &[(1, "a (b [c] {d}) e")]);
-        assert!(rule(10).check(&crate::verse::by_book(&vm), None).is_empty());
+        let c = book("GEN", &[(1, "a (b [c] {d}) e")]);
+        assert!(rule(10).check(&crate::corpus::by_book(&c), None).is_empty());
     }
 
     #[test]
@@ -416,8 +415,8 @@ mod tests {
         let mut verses: Vec<(u16, &str)> = vec![(1, "before (the aside")];
         verses.extend((2..=30).map(|v| (v, "continues")));
         verses.push((31, "and ends) after"));
-        let vm = book("GEN", &verses);
-        let f = rule(10).check(&crate::verse::by_book(&vm), None);
+        let c = book("GEN", &verses);
+        let f = rule(10).check(&crate::corpus::by_book(&c), None);
         // The pair matches (no orphans); the long span itself is judged
         // corpus-relatively — with no short-pair convention here (it's the
         // family's only pair), it stays silent.
@@ -426,10 +425,10 @@ mod tests {
 
     #[test]
     fn stray_closer_is_flagged_where_the_corpus_pairs() {
-        let vm = with_convention(&[(200, "then a stray) closer")]);
-        let f = rule(10).check(&crate::verse::by_book(&vm), None);
+        let c = with_convention(&[(200, "then a stray) closer")]);
+        let f = rule(10).check(&crate::corpus::by_book(&c), None);
         assert_eq!(f.len(), 1);
-        assert_eq!(f[0].sid, sid("GEN", 1, 200));
+        assert_eq!(c.key(f[0].key_idx), "GEN 1:200");
         assert_eq!(f[0].severity, Severity::Info);
         assert!(f[0].score.unwrap() > 0.9, "100 clean pairs back the verdict");
         let stray = inventory(&f[0]).iter().find(|o| !o.matched).unwrap();
@@ -439,10 +438,10 @@ mod tests {
 
     #[test]
     fn opener_never_closed_is_flagged_at_book_end() {
-        let vm = with_convention(&[(200, "open (and never"), (201, "close it")]);
-        let f = rule(10).check(&crate::verse::by_book(&vm), None);
+        let c = with_convention(&[(200, "open (and never"), (201, "close it")]);
+        let f = rule(10).check(&crate::corpus::by_book(&c), None);
         assert_eq!(f.len(), 1);
-        assert_eq!(f[0].sid, sid("GEN", 1, 200));
+        assert_eq!(c.key(f[0].key_idx), "GEN 1:200");
         let orphan = inventory(&f[0]).iter().find(|o| !o.matched).unwrap();
         assert_eq!(orphan.glyph, "(");
         assert_eq!(orphan.role, DelimRole::Open);
@@ -452,15 +451,11 @@ mod tests {
     fn unpaired_glyph_convention_is_silent() {
         // The gux shape: `]` used as a letter, never paired. Hundreds of
         // orphans, pairing dominance ~0 — all silent at the shipped floor.
-        let verses: Vec<(u16, String)> =
-            (1..=100u16).map(|v| (v, "ku ]inbiagu han ]a".to_string())).collect();
-        let vm: VerseMap = verses
-            .iter()
-            .map(|(v, t)| (sid("GEN", 1, *v), t.clone()))
-            .collect();
-        assert!(rule(10).check(&crate::verse::by_book(&vm), None).is_empty());
+        let verses: Vec<(u16, &str)> = (1..=100u16).map(|v| (v, "ku ]inbiagu han ]a")).collect();
+        let c = book("GEN", &verses);
+        assert!(rule(10).check(&crate::corpus::by_book(&c), None).is_empty());
         // At floor 0 they'd surface — the score is low, not absent.
-        let f = no_floor(10).check(&crate::verse::by_book(&vm), None);
+        let f = no_floor(10).check(&crate::corpus::by_book(&c), None);
         assert!(!f.is_empty());
         assert!(f.iter().all(|x| x.score.unwrap() < 0.1));
     }
@@ -469,19 +464,13 @@ mod tests {
     fn long_pair_flags_only_against_a_short_pair_convention() {
         // 100 short pairs + one 25-verse pair, window 10: the long pair is
         // the minority form and surfaces, anchored at its opener.
-        let mut extra: Vec<(u16, String)> = vec![(200, "open (here".to_string())];
-        extra.extend((201..=224u16).map(|v| (v, "middle".to_string())));
-        extra.push((225, "close) here".to_string()));
-        let mut verses: Vec<(u16, String)> =
-            (1..=100u16).map(|v| (v, "clean (x) pair".to_string())).collect();
-        verses.extend(extra);
-        let vm: VerseMap = verses
-            .iter()
-            .map(|(v, t)| (sid("GEN", 1, *v), t.clone()))
-            .collect();
-        let f = rule(10).check(&crate::verse::by_book(&vm), None);
+        let mut extra: Vec<(u16, &str)> = vec![(200, "open (here")];
+        extra.extend((201..=224u16).map(|v| (v, "middle")));
+        extra.push((225, "close) here"));
+        let c = with_convention(&extra);
+        let f = rule(10).check(&crate::corpus::by_book(&c), None);
         assert_eq!(f.len(), 1);
-        assert_eq!(f[0].sid, sid("GEN", 1, 200));
+        assert_eq!(c.key(f[0].key_idx), "GEN 1:200");
         assert!(f[0].score.unwrap() > 0.9);
     }
 
@@ -502,8 +491,8 @@ mod tests {
         // is `matched_events / events` (measure = Pairing): 100 clean pairs are
         // matched, the stray adds one unmatched event, and the Wilson-bound
         // score never exceeds that raw majority share.
-        let vm = with_convention(&[(200, "then a stray) closer")]);
-        let f = rule(10).check(&crate::verse::by_book(&vm), None);
+        let c = with_convention(&[(200, "then a stray) closer")]);
+        let f = rule(10).check(&crate::corpus::by_book(&c), None);
         assert_eq!(f.len(), 1);
         let (measure, majority, total) = share(&f[0]);
         assert_eq!(measure, BracketMeasure::Pairing);
@@ -516,14 +505,11 @@ mod tests {
     fn long_pair_finding_carries_the_short_span_share() {
         // The 25-verse pair broke the short-span convention, so its share is
         // `short_pairs / pairs` (measure = ShortSpan): 100 short + 1 long.
-        let mut extra: Vec<(u16, String)> = vec![(200, "open (here".to_string())];
-        extra.extend((201..=224u16).map(|v| (v, "middle".to_string())));
-        extra.push((225, "close) here".to_string()));
-        let mut verses: Vec<(u16, String)> =
-            (1..=100u16).map(|v| (v, "clean (x) pair".to_string())).collect();
-        verses.extend(extra);
-        let vm: VerseMap = verses.iter().map(|(v, t)| (sid("GEN", 1, *v), t.clone())).collect();
-        let f = rule(10).check(&crate::verse::by_book(&vm), None);
+        let mut extra: Vec<(u16, &str)> = vec![(200, "open (here")];
+        extra.extend((201..=224u16).map(|v| (v, "middle")));
+        extra.push((225, "close) here"));
+        let c = with_convention(&extra);
+        let f = rule(10).check(&crate::corpus::by_book(&c), None);
         assert_eq!(f.len(), 1);
         let (measure, majority, total) = share(&f[0]);
         assert_eq!(measure, BracketMeasure::ShortSpan);
@@ -536,17 +522,13 @@ mod tests {
     fn non_ascii_pairs_are_in_the_inventory() {
         // Ornate Arabic parens pair like any bracket; a stray one flags
         // where the corpus pairs them.
-        let mut verses: Vec<(u16, String)> =
-            (1..=100u16).map(|v| (v, "قال ﴾كلمة﴿ ثم".to_string())).collect();
-        verses.push((200, "ثم ﴾بلا نهاية".to_string()));
-        let vm: VerseMap = verses
-            .iter()
-            .map(|(v, t)| (sid("GEN", 1, *v), t.clone()))
-            .collect();
-        let f = rule(10).check(&crate::verse::by_book(&vm), None);
+        let mut verses: Vec<(u16, &str)> = (1..=100u16).map(|v| (v, "قال ﴾كلمة﴿ ثم")).collect();
+        verses.push((200, "ثم ﴾بلا نهاية"));
+        let c = book("GEN", &verses);
+        let f = rule(10).check(&crate::corpus::by_book(&c), None);
         assert_eq!(f.len(), 1);
-        assert_eq!(f[0].sid, sid("GEN", 1, 200));
-        assert_eq!(f[0].range.slice(&vm[&f[0].sid]), "﴾");
+        assert_eq!(c.key(f[0].key_idx), "GEN 1:200");
+        assert_eq!(f[0].range.slice(c.text(f[0].key_idx)), "﴾");
     }
 
     /// The CJK corner-bracket family 「」『』｢｣ is out of the pairing
@@ -582,9 +564,9 @@ mod tests {
             (3, "「『當孝敬父母。"),
             (4, "他說：「這是真的。」"),
         ];
-        let vm = book("GEN", &verses);
-        assert!(rule(10).check(&crate::verse::by_book(&vm), None).is_empty());
-        assert!(no_floor(10).check(&crate::verse::by_book(&vm), None).is_empty());
+        let c = book("GEN", &verses);
+        assert!(rule(10).check(&crate::corpus::by_book(&c), None).is_empty());
+        assert!(no_floor(10).check(&crate::corpus::by_book(&c), None).is_empty());
     }
 
     /// The exclusion is scoped to the corner-bracket family, not a blanket CJK
@@ -592,45 +574,49 @@ mod tests {
     /// corner-bracket quoting.
     #[test]
     fn ascii_paren_still_flags_beside_corner_quotes() {
-        let mut verses: Vec<(u16, String)> =
-            (1..=100u16).map(|v| (v, "clean (x) 「引言」".to_string())).collect();
-        verses.push((200, "未關的括號 (開始".to_string()));
-        let vm: VerseMap = verses.iter().map(|(v, t)| (sid("GEN", 1, *v), t.clone())).collect();
-        let f = rule(10).check(&crate::verse::by_book(&vm), None);
+        let mut verses: Vec<(u16, &str)> = (1..=100u16).map(|v| (v, "clean (x) 「引言」")).collect();
+        verses.push((200, "未關的括號 (開始"));
+        let c = book("GEN", &verses);
+        let f = rule(10).check(&crate::corpus::by_book(&c), None);
         assert_eq!(f.len(), 1);
-        assert_eq!(f[0].range.slice(&vm[&f[0].sid]), "(");
+        assert_eq!(f[0].range.slice(c.text(f[0].key_idx)), "(");
     }
 
     /// Fullwidth parens （） (U+FF08/09) are genuine text brackets — kept in
     /// the inventory — so a stray one still flags where the corpus pairs them.
     #[test]
     fn fullwidth_paren_still_flags() {
-        let mut verses: Vec<(u16, String)> =
-            (1..=100u16).map(|v| (v, "clean （x） pair".to_string())).collect();
-        verses.push((200, "then a stray） closer".to_string()));
-        let vm: VerseMap = verses.iter().map(|(v, t)| (sid("GEN", 1, *v), t.clone())).collect();
-        let f = rule(10).check(&crate::verse::by_book(&vm), None);
+        let mut verses: Vec<(u16, &str)> = (1..=100u16).map(|v| (v, "clean （x） pair")).collect();
+        verses.push((200, "then a stray） closer"));
+        let c = book("GEN", &verses);
+        let f = rule(10).check(&crate::corpus::by_book(&c), None);
         assert_eq!(f.len(), 1);
-        assert_eq!(f[0].range.slice(&vm[&f[0].sid]), "）");
+        assert_eq!(f[0].range.slice(c.text(f[0].key_idx)), "）");
     }
 
     #[test]
     fn book_boundary_resets_the_stack() {
         // Opener at the end of GEN, closer at the start of EXO: two
         // different books, so they do NOT pair — both are orphans (scored
-        // by the corpus-wide convention the clean pairs establish).
-        let mut vm = with_convention(&[(200, "last verse (open")]);
-        vm.extend(book("EXO", &[(1, "first verse) close")]));
-        let f = rule(10).check(&crate::verse::by_book(&vm), None);
+        // by the corpus-wide convention the clean pairs establish). Book
+        // blocks must be contiguous, so GEN's keys (the convention plus the
+        // trailing opener) come before EXO's in the corpus.
+        let gen_corpus = with_convention(&[(200, "last verse (open")]);
+        let mut keys = gen_corpus.keys().to_vec();
+        let mut texts = gen_corpus.texts().to_vec();
+        keys.push("EXO 1:1".to_string());
+        texts.push("first verse) close".to_string());
+        let c = Corpus::try_from_parts(keys, texts).unwrap();
+        let f = rule(10).check(&crate::corpus::by_book(&c), None);
         assert_eq!(f.len(), 2);
-        assert!(f.iter().any(|x| x.sid == sid("GEN", 1, 200)));
-        assert!(f.iter().any(|x| x.sid == sid("EXO", 1, 1)));
+        assert!(f.iter().any(|x| c.key(x.key_idx) == "GEN 1:200"));
+        assert!(f.iter().any(|x| c.key(x.key_idx) == "EXO 1:1"));
     }
 
     #[test]
     fn crossed_nesting_is_flagged() {
-        let vm = with_convention(&[(200, "a ([b) c]")]);
-        let f = rule(10).check(&crate::verse::by_book(&vm), None);
+        let c = with_convention(&[(200, "a ([b) c]")]);
+        let f = rule(10).check(&crate::corpus::by_book(&c), None);
         // The `(` pairs with nothing (its closer was absorbed as a
         // mismatch): the mismatched `)` and the unmatched `[`/`]`... the
         // LIFO reports the crossing as orphans; at least the mismatched

@@ -17,15 +17,11 @@
 //!    rejected — accepting it would let a repeated slug collide in every
 //!    slug-keyed stats/cache map and silently reorder the caller's seams.
 //!
-//! Not yet wired into execution — Step 2A cuts the engine over to it, hence
-//! the interim `dead_code` allowance below.
-
-#![allow(dead_code)]
-
 use std::fmt;
 
 use rustc_hash::FxHashSet;
 
+use crate::diagnostics::{Finding, FindingArgs, RuleId, Severity};
 use crate::key::{self, parse_key};
 use crate::span::Span;
 
@@ -34,11 +30,16 @@ use crate::span::Span;
 /// that carries this) is the low-volume public output.
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct KeyIdx(u32);
 
 impl KeyIdx {
     pub(crate) fn new(v: u32) -> Self {
         KeyIdx(v)
+    }
+
+    pub(crate) fn get(self) -> u32 {
+        self.0
     }
 
     fn try_from_usize(v: usize) -> Result<Self, CorpusError> {
@@ -55,11 +56,16 @@ impl KeyIdx {
 /// any book block longer than `u16::MAX + 1`.
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub(crate) struct LocalKeyIdx(u16);
 
 impl LocalKeyIdx {
     pub(crate) fn new(v: u16) -> Self {
         LocalKeyIdx(v)
+    }
+
+    pub(crate) fn get(self) -> u16 {
+        self.0
     }
 
     fn try_from_usize(v: usize, slug: &str) -> Result<Self, CorpusError> {
@@ -80,6 +86,16 @@ pub(crate) fn rebase(base: KeyIdx, local: LocalKeyIdx) -> KeyIdx {
         base.0
             .checked_add(u32::from(local.0))
             .expect("validated corpus indices"),
+    )
+}
+
+/// The inverse of [`rebase`]: narrow a global index freshly computed this
+/// call back to book-local, for storage in a retained cache product. Only
+/// ever applied to a `KeyIdx` this same call derived from `base`, so the
+/// subtraction and narrowing cannot fail.
+pub(crate) fn unrebase(base: KeyIdx, global: KeyIdx) -> LocalKeyIdx {
+    LocalKeyIdx(
+        u16::try_from(global.0 - base.0).expect("global was rebased from this call's base"),
     )
 }
 
@@ -242,11 +258,26 @@ impl Corpus {
 
 /// One contiguous book block's borrowed slices, plus its global base
 /// index. `rebase(group.base, LocalKeyIdx(i))` addresses `group.keys[i]`.
+#[derive(Clone, Copy)]
 pub struct BookGroup<'a> {
     pub slug: &'a str,
     pub base: KeyIdx,
     pub keys: &'a [String],
     pub texts: &'a [String],
+}
+
+impl<'a> BookGroup<'a> {
+    pub(crate) fn key(&self, local: LocalKeyIdx) -> &'a str {
+        &self.keys[usize::from(local.0)]
+    }
+
+    pub(crate) fn text(&self, local: LocalKeyIdx) -> &'a str {
+        &self.texts[usize::from(local.0)]
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.keys.len()
+    }
 }
 
 pub type Books<'a> = Vec<BookGroup<'a>>;
@@ -279,6 +310,45 @@ pub fn by_book(corpus: &Corpus) -> Books<'_> {
         start = end;
     }
     groups
+}
+
+/// Resolve a finding's global address back to its key string. Checked
+/// (panics on an out-of-range `idx`, exactly like a slice index) — every
+/// `KeyIdx` on a `Finding` this call returned is valid against this same
+/// `Corpus`.
+pub fn resolve_key<'a>(corpus: &'a Corpus, idx: KeyIdx) -> &'a str {
+    corpus.key(idx)
+}
+
+pub fn resolve_text<'a>(corpus: &'a Corpus, idx: KeyIdx) -> &'a str {
+    corpus.text(idx)
+}
+
+/// A [`Finding`] with its `key_idx` resolved to the owned key string —
+/// native reporting facade for dev tools and non-wasm callers, so they
+/// don't each invent their own projection logic.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ResolvedFinding {
+    pub sid: String,
+    pub code: RuleId,
+    pub severity: Severity,
+    pub range: Span,
+    pub score: Option<f32>,
+    pub args: Option<FindingArgs>,
+}
+
+pub fn resolve_findings(corpus: &Corpus, findings: &[Finding]) -> Vec<ResolvedFinding> {
+    findings
+        .iter()
+        .map(|f| ResolvedFinding {
+            sid: corpus.key(f.key_idx).to_string(),
+            code: f.code,
+            severity: f.severity,
+            range: f.range,
+            score: f.score,
+            args: f.args.clone(),
+        })
+        .collect()
 }
 
 #[cfg(test)]

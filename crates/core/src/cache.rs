@@ -9,19 +9,31 @@ use rustc_hash::FxHashMap;
 use xxhash_rust::xxh3::{xxh3_64, Xxh3};
 
 use crate::config::Config;
-use crate::diagnostics::Finding;
-use crate::sid::{BookId, Sid};
-use crate::signals::{bracket_balance, casing, punctuation, script_mixing};
+use crate::corpus::{rebase, unrebase, BookGroup, KeyIdx, LocalKeyIdx, SiteAddr};
+use crate::diagnostics::{Finding, RuleId, Severity};
+use crate::signals::{bracket_balance, casing, lexical, punctuation, script_mixing};
 use crate::span::Span;
 use crate::stream::{BookOut, WalkPlan};
 use crate::token::Token;
 
 const CACHE_SCHEMA: u32 = 1;
 
+/// One per-verse deterministic finding, retained local to its book — rebased
+/// to a global `Finding` only on a cache hit, against the current call's
+/// `BookGroup::base`. Never stores `score`/`args`: per-verse findings never
+/// set either (see `verse_findings`).
+#[derive(Clone)]
+pub(crate) struct CachedPerVerseFinding {
+    local_idx: LocalKeyIdx,
+    code: RuleId,
+    severity: Severity,
+    range: Span,
+}
+
 /// Cross-call memoization for pure per-book analysis products.
 pub struct AnalysisCache {
     fingerprint: Option<u64>,
-    pub(crate) books: FxHashMap<BookId, BookEntry>,
+    pub(crate) books: FxHashMap<Box<str>, BookEntry>,
     #[cfg(test)]
     lane1_hits: usize,
     #[cfg(test)]
@@ -69,12 +81,22 @@ impl AnalysisCache {
         }
     }
 
-    pub(crate) fn per_verse_hit(&mut self, book: BookId, hash: u128) -> Option<Vec<Finding>> {
-        let hit = self
-            .books
-            .get(&book)
-            .filter(|entry| entry.hash == hash)
-            .and_then(|entry| entry.per_verse.clone());
+    pub(crate) fn per_verse_hit(&mut self, slug: &str, hash: u128, base: KeyIdx) -> Option<Vec<Finding>> {
+        let hit = self.books.get(slug).filter(|entry| entry.hash == hash).and_then(|entry| {
+            entry.per_verse.as_ref().map(|cached| {
+                cached
+                    .iter()
+                    .map(|c| Finding {
+                        key_idx: rebase(base, c.local_idx),
+                        code: c.code,
+                        severity: c.severity,
+                        range: c.range,
+                        score: None,
+                        args: None,
+                    })
+                    .collect()
+            })
+        });
         #[cfg(test)]
         if hit.is_some() {
             self.lane1_hits += 1;
@@ -84,19 +106,28 @@ impl AnalysisCache {
         hit
     }
 
-    pub(crate) fn store_per_verse(&mut self, book: BookId, hash: u128, findings: Vec<Finding>) {
-        self.entry_for_write(book, hash).per_verse = Some(findings);
+    pub(crate) fn store_per_verse(&mut self, slug: &str, hash: u128, base: KeyIdx, findings: &[Finding]) {
+        let cached = findings
+            .iter()
+            .map(|f| CachedPerVerseFinding {
+                local_idx: unrebase(base, f.key_idx),
+                code: f.code,
+                severity: f.severity,
+                range: f.range,
+            })
+            .collect();
+        self.entry_for_write(slug, hash).per_verse = Some(cached);
     }
 
     pub(crate) fn cloned_walk(
         &mut self,
-        book: BookId,
+        slug: &str,
         hash: u128,
         plan: &WalkPlan,
     ) -> Option<CachedWalk> {
         let hit = self
             .books
-            .get(&book)
+            .get(slug)
             .filter(|entry| entry.hash == hash)
             .filter(|entry| entry.has_walk_lanes(plan))
             .map(|entry| CachedWalk {
@@ -119,8 +150,8 @@ impl AnalysisCache {
         hit
     }
 
-    pub(crate) fn store_walk(&mut self, book: BookId, hash: u128, output: &BookOut) {
-        let entry = self.entry_for_write(book, hash);
+    pub(crate) fn store_walk(&mut self, slug: &str, hash: u128, output: &BookOut) {
+        let entry = self.entry_for_write(slug, hash);
         entry.casing = output.casing.as_ref().map(|(_, sites)| {
             if sites.sites.is_empty() {
                 casing::CasingSites::default()
@@ -138,13 +169,13 @@ impl AnalysisCache {
         entry.tokens = output.tokens.clone();
     }
 
-    fn entry_for_write(&mut self, book: BookId, hash: u128) -> &mut BookEntry {
-        let replace = self.books.get(&book).is_none_or(|entry| entry.hash != hash);
+    fn entry_for_write(&mut self, slug: &str, hash: u128) -> &mut BookEntry {
+        let replace = self.books.get(slug).is_none_or(|entry| entry.hash != hash);
         if replace {
-            self.books.insert(book, BookEntry::new(hash));
+            self.books.insert(Box::from(slug), BookEntry::new(hash));
         }
         self.books
-            .get_mut(&book)
+            .get_mut(slug)
             .expect("cache entry inserted or already present")
     }
 
@@ -154,8 +185,8 @@ impl AnalysisCache {
     }
 
     #[cfg(test)]
-    pub(crate) fn entry_hash(&self, book: BookId) -> Option<u128> {
-        self.books.get(&book).map(|entry| entry.hash)
+    pub(crate) fn entry_hash(&self, slug: &str) -> Option<u128> {
+        self.books.get(slug).map(|entry| entry.hash)
     }
 
     #[cfg(test)]
@@ -181,16 +212,16 @@ impl AnalysisCache {
 
 pub(crate) struct BookEntry {
     pub(crate) hash: u128,
-    pub(crate) per_verse: Option<Vec<Finding>>,
+    pub(crate) per_verse: Option<Vec<CachedPerVerseFinding>>,
     pub(crate) casing: Option<casing::CasingSites>,
-    pub(crate) adjacency: Option<Vec<(Sid, Span)>>,
+    pub(crate) adjacency: Option<Vec<SiteAddr>>,
     pub(crate) spacing: Option<Vec<punctuation::SpacingSite>>,
-    pub(crate) repeated_run: Option<Vec<(Sid, Span)>>,
-    pub(crate) punct_only: Option<Vec<(Sid, Span)>>,
+    pub(crate) repeated_run: Option<Vec<SiteAddr>>,
+    pub(crate) punct_only: Option<Vec<SiteAddr>>,
     pub(crate) mixed_script: Option<Vec<script_mixing::MixedScriptSite>>,
     pub(crate) bracket: Option<bracket_balance::BookMatch>,
-    pub(crate) duplicate: Option<Vec<Finding>>,
-    pub(crate) tokens: Option<Vec<(Sid, Vec<Token>)>>,
+    pub(crate) duplicate: Option<Vec<lexical::DuplicateHit>>,
+    pub(crate) tokens: Option<Vec<(LocalKeyIdx, Vec<Token>)>>,
 }
 
 impl BookEntry {
@@ -225,23 +256,23 @@ impl BookEntry {
 
 pub(crate) struct CachedWalk {
     pub(crate) casing: Option<casing::CasingSites>,
-    pub(crate) adjacency: Option<Vec<(Sid, Span)>>,
+    pub(crate) adjacency: Option<Vec<SiteAddr>>,
     pub(crate) spacing: Option<Vec<punctuation::SpacingSite>>,
-    pub(crate) repeated_run: Option<Vec<(Sid, Span)>>,
-    pub(crate) punct_only: Option<Vec<(Sid, Span)>>,
+    pub(crate) repeated_run: Option<Vec<SiteAddr>>,
+    pub(crate) punct_only: Option<Vec<SiteAddr>>,
     pub(crate) mixed_script: Option<Vec<script_mixing::MixedScriptSite>>,
     pub(crate) bracket: Option<bracket_balance::BookMatch>,
-    pub(crate) duplicate: Option<Vec<Finding>>,
-    pub(crate) tokens: Option<Vec<(Sid, Vec<Token>)>>,
+    pub(crate) duplicate: Option<Vec<lexical::DuplicateHit>>,
+    pub(crate) tokens: Option<Vec<(LocalKeyIdx, Vec<Token>)>>,
 }
 
-/// Hash a book's ordered addresses and text, including length prefixes so
+/// Hash a book's ordered keys and text, including length prefixes so
 /// distinct verse sequences cannot collapse through concatenation.
-pub(crate) fn book_hash(verses: &[(Sid, &str)]) -> u128 {
+pub(crate) fn book_hash(group: &BookGroup<'_>) -> u128 {
     let mut hasher = Xxh3::new();
-    for (sid, text) in verses {
-        hasher.update(&sid.chapter.to_le_bytes());
-        hasher.update(&sid.verse.to_le_bytes());
+    for (key, text) in group.keys.iter().zip(group.texts.iter()) {
+        hasher.update(&(key.len() as u32).to_le_bytes());
+        hasher.update(key.as_bytes());
         hasher.update(&(text.len() as u32).to_le_bytes());
         hasher.update(text.as_bytes());
     }
@@ -258,22 +289,30 @@ fn config_fingerprint(config: &Config) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sid::BookId;
 
-    fn sid(chapter: u16, verse: u16) -> Sid {
-        Sid::new(BookId::from_str("GEN").unwrap(), chapter, verse)
+    /// A one-book `BookGroup` built directly from key/text slices — `book_hash`
+    /// only reads `keys`/`texts`, so this skips a full `Corpus` for isolated
+    /// hashing tests.
+    fn group<'a>(keys: &'a [String], texts: &'a [String]) -> BookGroup<'a> {
+        BookGroup { slug: "GEN", base: KeyIdx::new(0), keys, texts }
     }
 
     #[test]
     fn book_hash_keeps_u16_address_components() {
-        assert_ne!(book_hash(&[]), 0);
+        let empty: Vec<String> = Vec::new();
+        assert_ne!(book_hash(&group(&empty, &empty)), 0);
+
+        let k1 = vec!["GEN 1:1".to_string()];
+        let k2 = vec!["GEN 257:1".to_string()];
+        let k3 = vec!["GEN 1:257".to_string()];
+        let same_text = vec!["same".to_string()];
         assert_ne!(
-            book_hash(&[(sid(1, 1), "same")]),
-            book_hash(&[(sid(257, 1), "same")])
+            book_hash(&group(&k1, &same_text)),
+            book_hash(&group(&k2, &same_text))
         );
         assert_ne!(
-            book_hash(&[(sid(1, 1), "same")]),
-            book_hash(&[(sid(1, 257), "same")])
+            book_hash(&group(&k1, &same_text)),
+            book_hash(&group(&k3, &same_text))
         );
     }
 
@@ -282,7 +321,7 @@ mod tests {
         let mut cache = AnalysisCache::new();
         let cfg = Config::v1_defaults();
         cache.ensure_fingerprint(&cfg);
-        cache.store_per_verse(BookId::from_str("GEN").unwrap(), 1, Vec::new());
+        cache.store_per_verse("GEN", 1, KeyIdx::new(0), &[]);
         assert_eq!(cache.book_count(), 1);
 
         let mut changed = cfg.clone();
@@ -293,7 +332,6 @@ mod tests {
 
     #[test]
     fn content_replacement_clears_both_lanes_atomically() {
-        let book = BookId::from_str("GEN").unwrap();
         let mut cache = AnalysisCache::new();
         let cfg = Config::v1_defaults();
         cache.ensure_fingerprint(&cfg);
@@ -308,11 +346,11 @@ mod tests {
             )),
             ..Default::default()
         };
-        cache.store_walk(book, 1, &output);
-        assert!(cache.books.get(&book).unwrap().casing.is_some());
+        cache.store_walk("GEN", 1, &output);
+        assert!(cache.books.get("GEN").unwrap().casing.is_some());
 
-        cache.store_per_verse(book, 2, Vec::new());
-        let entry = cache.books.get(&book).unwrap();
+        cache.store_per_verse("GEN", 2, KeyIdx::new(0), &[]);
+        let entry = cache.books.get("GEN").unwrap();
         assert_eq!(entry.hash, 2);
         assert!(entry.per_verse.is_some());
         assert!(

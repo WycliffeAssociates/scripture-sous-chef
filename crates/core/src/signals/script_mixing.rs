@@ -44,16 +44,15 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::config::MixedScriptConfig;
+use crate::corpus::{rebase, Books, Corpus, KeyIdx, LocalKeyIdx};
 use crate::diagnostics::{Finding, FindingArgs, RuleId, Severity};
 use crate::evidence::{clamp_rate, clamp_unit, clamp_z, from_strengths, strength};
 use crate::rule::{self, StatefulRule, TokenCache};
 use crate::script::{script_of, ScriptTag};
-use crate::sid::{BookId, Sid};
 use crate::span::Span;
 use crate::stats::RuleStats;
 use crate::stream;
 use crate::token::{tokenize, Token};
-use crate::verse::{Books, VerseMap};
 
 pub const MIXED_SCRIPT_IN_TOKEN: RuleId = RuleId::MixedScriptInToken;
 
@@ -96,7 +95,7 @@ fn signature(scripts: &[ScriptTag]) -> String {
 /// content-keyed analysis cache between calls.
 #[derive(Clone)]
 pub struct MixedScriptSite {
-    pub(crate) sid: Sid,
+    pub(crate) local_idx: LocalKeyIdx,
     pub(crate) sig: String,
     pub(crate) span: Span,
 }
@@ -119,7 +118,7 @@ pub(crate) struct BookMixedScript {
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct MixedScriptStats {
     #[cfg_attr(feature = "wasm", tsify(type = "Record<string, BookMixedScript>"))]
-    pub(crate) per_book: BTreeMap<BookId, BookMixedScript>,
+    pub(crate) per_book: BTreeMap<Box<str>, BookMixedScript>,
 }
 
 impl MixedScriptStats {
@@ -131,8 +130,8 @@ impl MixedScriptStats {
         self
     }
 
-    pub(crate) fn remove_book(&mut self, book: BookId) {
-        self.per_book.remove(&book);
+    pub(crate) fn remove_book(&mut self, slug: &str) {
+        self.per_book.remove(slug);
     }
 }
 
@@ -148,7 +147,7 @@ impl StatefulRule for MixedScriptInToken {
     fn reduce(
         &self,
         books: &Books<'_>,
-        _source: Option<&VerseMap>,
+        _source: Option<&Corpus>,
         tokens: Option<&TokenCache>,
     ) -> (RuleStats, rule::RuleSites) {
         // Thin driver over the shared listener (the fused walk feeds the same
@@ -158,20 +157,17 @@ impl StatefulRule for MixedScriptInToken {
         let _ = tokens;
         let mut per_book = BTreeMap::new();
         let mut sites = BTreeMap::new();
-        for (book, (counts, book_sites)) in rule::map_books(books, |book, verses| {
-            (
-                book,
-                stream::drive_book(
-                    verses,
-                    stream::Needs { tokens: true, ..Default::default() },
-                    MixedScriptAcc::new(true),
-                    |a, v, _| a.verse(v),
-                    MixedScriptAcc::finish,
-                ),
+        for (group, (counts, book_sites)) in books.iter().zip(rule::map_books(books, |group| {
+            stream::drive_book(
+                group,
+                stream::Needs { tokens: true, ..Default::default() },
+                MixedScriptAcc::new(true),
+                |a, v| a.verse(v),
+                MixedScriptAcc::finish,
             )
-        }) {
-            per_book.insert(book, counts);
-            sites.insert(book, book_sites);
+        })) {
+            per_book.insert(Box::from(group.slug), counts);
+            sites.insert(Box::from(group.slug), book_sites);
         }
         (
             RuleStats::MixedScript(MixedScriptStats { per_book }),
@@ -260,14 +256,14 @@ impl StatefulRule for MixedScriptInToken {
             Some(rule::RuleSites::MixedScript(m)) => Some(m),
             _ => None,
         };
-        let score = |sid: Sid, sig: &str, span: Span, found: &mut Vec<Finding>| {
+        let score = |key_idx: KeyIdx, sig: &str, span: Span, found: &mut Vec<Finding>| {
             let ev = evidence.get(sig).copied().unwrap_or(1.0);
             if ev < floor {
                 return;
             }
             let (k, n, books, corpus) = details.get(sig).copied().unwrap_or((0, 0, 0, 0));
             found.push(Finding {
-                sid,
+                key_idx,
                 code: MIXED_SCRIPT_IN_TOKEN,
                 severity: Severity::Info,
                 range: span,
@@ -275,16 +271,17 @@ impl StatefulRule for MixedScriptInToken {
                 args: Some(FindingArgs::ScriptMixEvidence { k, n, books, corpus }),
             });
         };
-        let mut out: Vec<Finding> = rule::map_books(books, |book, verses| {
+        let mut out: Vec<Finding> = rule::map_books(books, |group| {
             let mut found = Vec::new();
-            if let Some(book_sites) = forwarded.and_then(|m| m.get(&book)) {
+            if let Some(book_sites) = forwarded.and_then(|m| m.get(group.slug)) {
                 for s in book_sites {
-                    score(s.sid, &s.sig, s.span, &mut found);
+                    score(rebase(group.base, s.local_idx), &s.sig, s.span, &mut found);
                 }
             } else {
-                for &(sid, text) in verses {
-                    for (sig, span) in mixed_tokens(text, verse_tokens(sid, text, tokens).as_ref()) {
-                        score(sid, &sig, span, &mut found);
+                for (vi, text) in group.texts.iter().enumerate() {
+                    let key_idx = rebase(group.base, LocalKeyIdx::new(vi as u16));
+                    for (sig, span) in mixed_tokens(text, verse_tokens(key_idx, text, tokens).as_ref()) {
+                        score(key_idx, &sig, span, &mut found);
                     }
                 }
             }
@@ -293,7 +290,7 @@ impl StatefulRule for MixedScriptInToken {
         .into_iter()
         .flatten()
         .collect();
-        out.sort_by_key(|f| (f.sid, f.range.start, f.range.end));
+        out.sort_by_key(|f| (f.key_idx, f.range.start, f.range.end));
         out
     }
 }
@@ -301,11 +298,11 @@ impl StatefulRule for MixedScriptInToken {
 /// The verse's shared tokens when the runner built a cache, else a fresh
 /// tokenization owned by the caller — the single-consumer fallback.
 fn verse_tokens<'a>(
-    sid: Sid,
+    key_idx: KeyIdx,
     text: &str,
     cache: Option<&'a TokenCache>,
 ) -> std::borrow::Cow<'a, [Token]> {
-    match cache.and_then(|c| c.get(&sid)) {
+    match cache.and_then(|c| c.get(&key_idx)) {
         Some(t) => std::borrow::Cow::Borrowed(t),
         None => std::borrow::Cow::Owned(tokenize(text)),
     }
@@ -359,7 +356,7 @@ impl MixedScriptAcc {
                 if self.counting {
                     *self.signature_counts.entry(sig.clone()).or_default() += 1;
                 }
-                self.sites.push(MixedScriptSite { sid: v.sid, sig, span: tok.span });
+                self.sites.push(MixedScriptSite { local_idx: v.local_idx, sig, span: tok.span });
             }
         }
     }
@@ -378,10 +375,16 @@ impl MixedScriptAcc {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::verse::by_book;
+    use crate::corpus::by_book;
 
-    fn sid(book: &str, v: u16) -> Sid {
-        Sid::new(BookId::from_str(book).unwrap(), 1, v)
+    /// A corpus key: `"{book} {chapter}:{v}"`. Chapter is fixed at 1 —
+    /// these tests never exercise chapter-boundary behavior, only
+    /// book-relative and corpus-wide aggregation.
+    fn key(book: &str, v: u32) -> String {
+        format!("{book} 1:{v}")
+    }
+    fn corpus(keys: Vec<String>, texts: Vec<String>) -> Corpus {
+        Corpus::try_from_parts(keys, texts).unwrap()
     }
     fn rule(cfg: MixedScriptConfig) -> MixedScriptInToken {
         MixedScriptInToken { cfg }
@@ -389,9 +392,10 @@ mod tests {
     fn default_rule() -> MixedScriptInToken {
         rule(MixedScriptConfig::default())
     }
-    fn run(map: &VerseMap, r: &MixedScriptInToken) -> Vec<Finding> {
-        let books = by_book(map);
-        r.judge(&r.reduce(&books, None, None).0, &books, None, None)
+    fn run(c: &Corpus, r: &MixedScriptInToken) -> Vec<Finding> {
+        let books = by_book(c);
+        let (stats, sites) = r.reduce(&books, None, None);
+        r.judge(&stats, &books, None, Some(&sites))
     }
 
     // ── extraction ──────────────────────────────────────────────────────
@@ -423,16 +427,16 @@ mod tests {
     /// overwhelmingly Latin corpus. Rare + narrow ⇒ surfaces near-certain.
     #[test]
     fn rare_homoglyph_surfaces() {
-        let mut v: Vec<(u16, String)> = (1..=200)
-            .map(|i| (i, "the word is here".to_string()))
-            .collect();
-        v.push((900, "c\u{0430}t here".to_string())); // Latin+Cyrillic homoglyph
-        let map: VerseMap = v.into_iter().map(|(i, t)| (sid("GEN", i), t)).collect();
-        let f = run(&map, &default_rule());
+        let mut keys: Vec<String> = (1..=200).map(|i| key("GEN", i)).collect();
+        let mut texts: Vec<String> = (1..=200).map(|_| "the word is here".to_string()).collect();
+        keys.push(key("GEN", 900));
+        texts.push("c\u{0430}t here".to_string()); // Latin+Cyrillic homoglyph
+        let c = corpus(keys, texts);
+        let f = run(&c, &default_rule());
         assert_eq!(f.len(), 1, "the lone homoglyph surfaces");
         assert_eq!(f[0].severity, Severity::Info);
         assert!(f[0].score.unwrap() > 0.8, "score {:?}", f[0].score);
-        assert_eq!(f[0].range.slice(map.get(&f[0].sid).unwrap()), "c\u{0430}t");
+        assert_eq!(f[0].range.slice(c.text(f[0].key_idx)), "c\u{0430}t");
     }
 
     /// A borrowed-letter convention: a Latin `o` in most words of a Kannada
@@ -443,14 +447,17 @@ mod tests {
     fn pervasive_borrowed_letter_is_silent() {
         // Kannada base 'ಕ' with a Latin 'o' fused, in every verse of 10 books —
         // Latin is exclusive to the mix, Kannada dominates.
-        let mut map = VerseMap::new();
+        let mut keys = Vec::new();
+        let mut texts = Vec::new();
         for bk in ["GEN", "EXO", "LEV", "NUM", "DEU", "JOS", "JDG", "RUT", "1SA", "2SA"] {
-            for v in 1..=40u16 {
-                map.insert(sid(bk, v), "ಕoಕ ಕಕ ಕಕ".to_string());
+            for v in 1..=40u32 {
+                keys.push(key(bk, v));
+                texts.push("ಕoಕ ಕಕ ಕಕ".to_string());
             }
         }
+        let c = corpus(keys, texts);
         assert!(
-            run(&map, &default_rule()).is_empty(),
+            run(&c, &default_rule()).is_empty(),
             "a pervasive borrowed letter must be learned as convention"
         );
     }
@@ -459,16 +466,20 @@ mod tests {
     /// books (never frequent) is a house convention on dispersion grounds.
     #[test]
     fn widespread_low_frequency_pair_suppresses_on_breadth() {
-        let mut map = VerseMap::new();
+        let mut keys = Vec::new();
+        let mut texts = Vec::new();
         for bk in ["GEN", "EXO", "LEV", "NUM", "DEU", "JOS", "JDG", "RUT", "1SA", "2SA"] {
-            for v in 1..=40u16 {
-                map.insert(sid(bk, v), "the word here now".to_string());
+            for v in 1..=40u32 {
+                keys.push(key(bk, v));
+                texts.push("the word here now".to_string());
             }
             // one mixed token per book → 10/10 books, tiny frequency
-            map.insert(sid(bk, 100), "c\u{0430}t here".to_string());
+            keys.push(key(bk, 100));
+            texts.push("c\u{0430}t here".to_string());
         }
+        let c = corpus(keys, texts);
         assert!(
-            run(&map, &default_rule()).is_empty(),
+            run(&c, &default_rule()).is_empty(),
             "a pair spanning all books suppresses on breadth alone"
         );
     }
@@ -477,17 +488,24 @@ mod tests {
     /// surfaces — isolates breadth from frequency.
     #[test]
     fn concentrated_pair_still_surfaces() {
-        let mut map = VerseMap::new();
+        let mut keys = Vec::new();
+        let mut texts = Vec::new();
         for bk in ["GEN", "EXO", "LEV", "NUM", "DEU", "JOS", "JDG", "RUT", "1SA", "2SA"] {
-            for v in 1..=40u16 {
-                map.insert(sid(bk, v), "the word here now".to_string());
+            for v in 1..=40u32 {
+                keys.push(key(bk, v));
+                texts.push("the word here now".to_string());
+            }
+            if bk == "GEN" {
+                // 10 mixed tokens, all within GEN's contiguous block.
+                for v in 100..=109u32 {
+                    keys.push(key("GEN", v));
+                    texts.push("c\u{0430}t here".to_string());
+                }
             }
         }
-        for v in 100..=109u16 {
-            map.insert(sid("GEN", v), "c\u{0430}t here".to_string()); // 10 in one book
-        }
+        let c = corpus(keys, texts);
         assert!(
-            !run(&map, &default_rule()).is_empty(),
+            !run(&c, &default_rule()).is_empty(),
             "concentrated pair (1/10 books) must still surface"
         );
     }
@@ -499,49 +517,61 @@ mod tests {
         let r = default_rule();
         // GEN establishes a dominant-Latin corpus; EXO edited later carries one
         // homoglyph. Its score must reflect the corpus, not EXO alone.
-        let mut all: Vec<(Sid, String)> = (1..=200)
-            .map(|i| (sid("GEN", i), "the word is here".to_string()))
-            .collect();
-        all.push((sid("EXO", 1), "c\u{0430}t here".to_string()));
-        let full: VerseMap = all.iter().cloned().collect();
-        let gen_only: VerseMap = full.iter().filter(|(s, _)| s.book == BookId::from_str("GEN").unwrap()).map(|(s, t)| (*s, t.clone())).collect();
-        let exo_only: VerseMap = full.iter().filter(|(s, _)| s.book == BookId::from_str("EXO").unwrap()).map(|(s, t)| (*s, t.clone())).collect();
+        let mut keys: Vec<String> = (1..=200).map(|i| key("GEN", i)).collect();
+        let mut texts: Vec<String> = (1..=200).map(|_| "the word is here".to_string()).collect();
+        keys.push(key("EXO", 1));
+        texts.push("c\u{0430}t here".to_string());
+        let full = corpus(keys.clone(), texts.clone());
+        let gen_only = corpus(keys[..200].to_vec(), texts[..200].to_vec());
+        let exo_only = corpus(keys[200..].to_vec(), texts[200..].to_vec());
 
-        let full_score = run(&full, &r).into_iter().find(|f| f.sid == sid("EXO", 1)).unwrap().score;
+        let full_score = run(&full, &r)
+            .into_iter()
+            .find(|f| full.key(f.key_idx) == "EXO 1:1")
+            .unwrap()
+            .score;
 
-        let merged = r.reduce(&by_book(&gen_only), None, None).0.merge(r.reduce(&by_book(&exo_only), None, None).0);
-        let inc = r.judge(&merged, &by_book(&exo_only), None, None);
+        let gen_books = by_book(&gen_only);
+        let exo_books = by_book(&exo_only);
+        let merged = r
+            .reduce(&gen_books, None, None)
+            .0
+            .merge(r.reduce(&exo_books, None, None).0);
+        let inc = r.judge(&merged, &exo_books, None, None);
         assert_eq!(inc.len(), 1);
-        assert_eq!(inc[0].sid, sid("EXO", 1));
+        assert_eq!(exo_only.key(inc[0].key_idx), "EXO 1:1");
         assert_eq!(inc[0].score, full_score, "incremental score is corpus-wide");
     }
 
     #[test]
     fn removing_a_book_drops_its_contribution() {
         let r = default_rule();
-        let mut full: VerseMap = (1..=200)
-            .map(|i| (sid("GEN", i), "the word is here".to_string()))
-            .collect();
-        full.insert(sid("EXO", 1), "c\u{0430}t here".to_string());
-        let RuleStats::MixedScript(mut stats) = r.reduce(&by_book(&full), None, None).0 else {
+        let mut keys: Vec<String> = (1..=200).map(|i| key("GEN", i)).collect();
+        let mut texts: Vec<String> = (1..=200).map(|_| "the word is here".to_string()).collect();
+        keys.push(key("EXO", 1));
+        texts.push("c\u{0430}t here".to_string());
+        let full = corpus(keys, texts);
+        let full_books = by_book(&full);
+        let RuleStats::MixedScript(mut stats) = r.reduce(&full_books, None, None).0 else {
             unreachable!()
         };
         // With GEN present, EXO's homoglyph is rare corpus-wide → surfaces.
-        let before = r.judge(&RuleStats::MixedScript(stats.clone()), &by_book(&full), None, None);
-        assert!(before.iter().any(|f| f.sid == sid("EXO", 1)));
+        let before = r.judge(&RuleStats::MixedScript(stats.clone()), &full_books, None, None);
+        assert!(before.iter().any(|f| full.key(f.key_idx) == "EXO 1:1"));
         // Drop GEN: EXO alone is 1 Latin+Cyrillic of 1 Latin token → rate 1.0,
         // and a single-book corpus (breadth inactive) → still rare → surfaces.
         // Removing simply drops GEN's counts; assert the aggregate shrank.
-        stats.remove_book(BookId::from_str("GEN").unwrap());
-        let RuleStats::MixedScript(s) = RuleStats::MixedScript(stats) else { unreachable!() };
-        assert!(!s.per_book.contains_key(&BookId::from_str("GEN").unwrap()));
+        stats.remove_book("GEN");
+        assert!(!stats.per_book.contains_key("GEN"));
     }
 
     #[test]
     fn invalid_config_produces_finite_scores() {
-        let mut v: Vec<(u16, String)> = (1..=50).map(|i| (i, "the word here".to_string())).collect();
-        v.push((900, "c\u{0430}t".to_string()));
-        let map: VerseMap = v.into_iter().map(|(i, t)| (sid("GEN", i), t)).collect();
+        let mut keys: Vec<String> = (1..=50).map(|i| key("GEN", i)).collect();
+        let mut texts: Vec<String> = (1..=50).map(|_| "the word here".to_string()).collect();
+        keys.push(key("GEN", 900));
+        texts.push("c\u{0430}t".to_string());
+        let c = corpus(keys, texts);
         let bad = MixedScriptConfig {
             convention_rate: f32::NAN,
             confidence_z: -3.0,
@@ -550,7 +580,7 @@ mod tests {
             breadth_min_books: 0,
             emit_score_min: f32::NAN,
         };
-        for f in run(&map, &rule(bad)) {
+        for f in run(&c, &rule(bad)) {
             let s = f.score.unwrap();
             assert!(s.is_finite() && (0.0..=1.0).contains(&s), "score {s}");
         }
@@ -560,15 +590,18 @@ mod tests {
     #[test]
     fn aggregate_stats_round_trip_through_serde() {
         let r = default_rule();
-        let mut v: Vec<(u16, String)> = (1..=10).map(|i| (i, "the word here".to_string())).collect();
-        v.push((900, "c\u{0430}t here".to_string()));
-        let map: VerseMap = v.into_iter().map(|(i, t)| (sid("GEN", i), t)).collect();
-        let stats = r.reduce(&by_book(&map), None, None).0;
+        let mut keys: Vec<String> = (1..=10).map(|i| key("GEN", i)).collect();
+        let mut texts: Vec<String> = (1..=10).map(|_| "the word here".to_string()).collect();
+        keys.push(key("GEN", 900));
+        texts.push("c\u{0430}t here".to_string());
+        let c = corpus(keys, texts);
+        let books = by_book(&c);
+        let stats = r.reduce(&books, None, None).0;
         let back: RuleStats = serde_json::from_str(&serde_json::to_string(&stats).unwrap()).unwrap();
         assert_eq!(stats, back);
         assert_eq!(
-            r.judge(&stats, &by_book(&map), None, None),
-            r.judge(&back, &by_book(&map), None, None)
+            r.judge(&stats, &books, None, None),
+            r.judge(&back, &books, None, None)
         );
     }
 }

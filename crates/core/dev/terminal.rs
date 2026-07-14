@@ -50,9 +50,9 @@
 use std::collections::{BTreeMap, HashMap};
 
 use ssc_core::charclass::class_of;
+use ssc_core::corpus::by_book;
 use ssc_core::token::tokenize;
-use ssc_core::verse::{VerseMap, by_book};
-use ssc_core::{Sid, Span};
+use ssc_core::{Corpus, Span};
 
 use ssc_core::analysis::association::Table2;
 
@@ -137,8 +137,8 @@ impl ClassKey {
 }
 
 /// One lowercase word-start: a scoring candidate.
-struct Site {
-    sid: Sid,
+struct Site<'a> {
+    verse_key: &'a str,
     span: Span,
     key: String,
     slot: Slot,
@@ -163,9 +163,9 @@ impl WordObs {
 }
 
 /// Everything one corpus walk produces.
-struct Walk {
+struct Walk<'a> {
     words: HashMap<String, WordObs>,
-    sites: Vec<Site>,
+    sites: Vec<Site<'a>>,
     /// juror frequency and baseline word-start distribution.
     word_start_total: HashMap<String, u64>,
     n_word_starts: u64,
@@ -212,7 +212,7 @@ struct Pending {
     prev: Option<String>,
 }
 
-fn walk_corpus(map: &VerseMap) -> Walk {
+fn walk_corpus(corpus: &Corpus) -> Walk<'_> {
     let mut w = Walk {
         words: HashMap::new(),
         sites: Vec::new(),
@@ -223,13 +223,13 @@ fn walk_corpus(map: &VerseMap) -> Walk {
         cased_starts: 0,
         dropped_classes: 0,
     };
-    let books = by_book(map);
-    for verses in books.values() {
+    let books = by_book(corpus);
+    for group in &books {
         let mut pending: Option<Pending> = None;
         let mut book_initial = true;
         let mut last_word: Option<String> = None;
 
-        for (sid, text) in verses {
+        for (vkey, text) in group.keys.iter().zip(group.texts.iter()) {
             let words = compound_words(text);
             let mut prev_letter = false;
             let mut cursor = 0usize;
@@ -313,7 +313,7 @@ fn walk_corpus(map: &VerseMap) -> Walk {
 
                 if case == Case::Lower {
                     w.sites.push(Site {
-                        sid: *sid,
+                        verse_key: vkey.as_str(),
                         span: *span,
                         key: key.clone(),
                         slot,
@@ -490,7 +490,7 @@ pub struct TrustTable {
     pub dropped_classes: u64,
 }
 
-fn build_trust(w: &Walk, lex_lower: &HashMap<String, bool>) -> TrustTable {
+fn build_trust(w: &Walk<'_>, lex_lower: &HashMap<String, bool>) -> TrustTable {
     let jurors: Vec<String> = w
         .word_start_total
         .iter()
@@ -742,7 +742,7 @@ impl Model {
     /// positions cannot perturb the *bare*-terminal habit or the lexicon — trust
     /// only rescales and adds the quote channel (a fresh habit key), it never
     /// moves the '.' convention off the floor.
-    fn build(w: &Walk, sc: Scenario, lex_lower: Option<&HashMap<String, bool>>) -> Model {
+    fn build(w: &Walk<'_>, sc: Scenario, lex_lower: Option<&HashMap<String, bool>>) -> Model {
         let trust_fn = |cls: ClassKey| match sc {
             Scenario::Baseline => 1.0,
             Scenario::Trust { trust, .. } => trust.get(&cls).copied().unwrap_or(0.0),
@@ -815,7 +815,7 @@ pub enum Quad {
 }
 
 pub struct Scored {
-    pub sid: Sid,
+    pub sid: String,
     pub span: Span,
     pub quad: Quad,
     pub score: f64,
@@ -832,7 +832,7 @@ pub struct Scored {
 }
 
 /// Score every lowercase site under a scenario at the frozen knobs.
-fn score(w: &Walk, sc: Scenario, lex: Option<&HashMap<String, bool>>) -> Vec<Scored> {
+fn score(w: &Walk<'_>, sc: Scenario, lex: Option<&HashMap<String, bool>>) -> Vec<Scored> {
     let model = Model::build(w, sc, lex);
     score_with_model(w, &model, sc)
 }
@@ -840,7 +840,7 @@ fn score(w: &Walk, sc: Scenario, lex: Option<&HashMap<String, bool>>) -> Vec<Sco
 /// Score against a prebuilt model. The `Model` is wiring-independent (it depends
 /// only on the trust map and the promotion bar), so the trust-scenario model can
 /// be built once and reused across the multiplier and every gate threshold.
-fn score_with_model(w: &Walk, model: &Model, sc: Scenario) -> Vec<Scored> {
+fn score_with_model(w: &Walk<'_>, model: &Model, sc: Scenario) -> Vec<Scored> {
     let trust_class = |cls: ClassKey| match sc {
         Scenario::Baseline => 1.0,
         Scenario::Trust { trust, .. } => trust.get(&cls).copied().unwrap_or(0.0),
@@ -944,7 +944,7 @@ fn score_with_model(w: &Walk, model: &Model, sc: Scenario) -> Vec<Scored> {
             (1.0, 0.0, i_dom, i_min, rarity(i_min, K))
         };
         out.push(Scored {
-            sid: site.sid,
+            sid: site.verse_key.to_string(),
             span: site.span,
             quad,
             score: surf,
@@ -1088,6 +1088,13 @@ pub struct AnchorFate {
     pub gate_score: Vec<f64>,
 }
 
+/// Verdict-change identity key for a scored site. A plain fn (not a closure)
+/// so it's callable across the several differently-lived `Scored` slices in
+/// `analyze_corpus` (a closure here would monomorphize to one lifetime).
+fn key_of(s: &Scored) -> (&str, u32, u32) {
+    (s.sid.as_str(), s.span.start, s.span.end)
+}
+
 fn quad_str(q: Quad) -> &'static str {
     match q {
         Quad::Intrinsic => "intrinsic",
@@ -1113,8 +1120,18 @@ fn ctx(text: &str, span: Span) -> String {
     text[start..end].replace(['\t', '\n'], " ")
 }
 
-pub fn analyze_corpus(id: String, map: &VerseMap, variant_b: bool) -> TermCorpus {
-    let w = walk_corpus(map);
+pub fn analyze_corpus(id: String, corpus: &Corpus, variant_b: bool) -> TermCorpus {
+    // Verse-key → text lookup, built once per call (replaces `VerseMap`
+    // indexing). Duplicate keys collapse to the last one — acceptable for
+    // this dev-only spike; its own tests don't build duplicate-key corpora.
+    let text_by_key: HashMap<&str, &str> = corpus
+        .keys()
+        .iter()
+        .zip(corpus.texts())
+        .map(|(k, t)| (k.as_str(), t.as_str()))
+        .collect();
+
+    let w = walk_corpus(corpus);
     let bicameral = w.cased_starts > 0;
 
     // Lexicon classification for W1 (own derivation; same definition as ADR
@@ -1169,13 +1186,13 @@ pub fn analyze_corpus(id: String, map: &VerseMap, variant_b: bool) -> TermCorpus
     let (tr_i, tr_p, tr_b) = count(&wired);
 
     // Verdict changes keyed by (sid, span).
-    let base_set: HashMap<(Sid, u32, u32), &Scored> = base
+    let base_set: HashMap<(&str, u32, u32), &Scored> = base
         .iter()
-        .map(|s| ((s.sid, s.span.start, s.span.end), s))
+        .map(|s| ((s.sid.as_str(), s.span.start, s.span.end), s))
         .collect();
-    let wired_set: HashMap<(Sid, u32, u32), &Scored> = wired
+    let wired_set: HashMap<(&str, u32, u32), &Scored> = wired
         .iter()
-        .map(|s| ((s.sid, s.span.start, s.span.end), s))
+        .map(|s| ((s.sid.as_str(), s.span.start, s.span.end), s))
         .collect();
 
     let mut changes = Vec::new();
@@ -1185,7 +1202,7 @@ pub fn analyze_corpus(id: String, map: &VerseMap, variant_b: bool) -> TermCorpus
         if sw.promoted_quote {
             promoted_surfaced += 1;
             if samples_promoted.len() < 40 {
-                let text = &map[&sw.sid];
+                let text = text_by_key[sw.sid.as_str()];
                 samples_promoted.push(PromotedSample {
                     sid: sw.sid.to_string(),
                     word: text[sw.span.start as usize..sw.span.end as usize].to_string(),
@@ -1197,7 +1214,7 @@ pub fn analyze_corpus(id: String, map: &VerseMap, variant_b: bool) -> TermCorpus
             }
         }
         if !base_set.contains_key(k) {
-            let text = &map[&sw.sid];
+            let text = text_by_key[sw.sid.as_str()];
             changes.push(Change {
                 sid: sw.sid.to_string(),
                 word: text[sw.span.start as usize..sw.span.end as usize].to_string(),
@@ -1216,7 +1233,7 @@ pub fn analyze_corpus(id: String, map: &VerseMap, variant_b: bool) -> TermCorpus
     }
     for (k, sb) in &base_set {
         if !wired_set.contains_key(k) {
-            let text = &map[&sb.sid];
+            let text = text_by_key[sb.sid.as_str()];
             changes.push(Change {
                 sid: sb.sid.to_string(),
                 word: text[sb.span.start as usize..sb.span.end as usize].to_string(),
@@ -1280,7 +1297,6 @@ pub fn analyze_corpus(id: String, map: &VerseMap, variant_b: bool) -> TermCorpus
         })
         .collect();
 
-    let key_of = |s: &Scored| (s.sid, s.span.start, s.span.end);
     let mut g_counts = Vec::with_capacity(n_t);
     let mut g_promoted = Vec::with_capacity(n_t);
     let mut g_readmit = Vec::with_capacity(n_t);
@@ -1329,7 +1345,7 @@ pub fn analyze_corpus(id: String, map: &VerseMap, variant_b: bool) -> TermCorpus
             if readmit_samples.len() >= 40 {
                 break;
             }
-            let text = &map[&s.sid];
+            let text = text_by_key[s.sid.as_str()];
             let t = s
                 .class
                 .and_then(|c| trust_map.get(&c).copied())
@@ -1366,16 +1382,20 @@ pub fn analyze_corpus(id: String, map: &VerseMap, variant_b: bool) -> TermCorpus
         }
         fn find_site<'a>(
             v: &'a [Scored],
-            map: &VerseMap,
+            text_by_key: &HashMap<&str, &str>,
             asid: &str,
             aw: &str,
         ) -> Option<&'a Scored> {
             v.iter()
-                .filter(|s| s.sid.to_string() == asid)
-                .find(|s| map[&s.sid][s.span.start as usize..s.span.end as usize].to_lowercase() == aw)
+                .filter(|s| s.sid == asid)
+                .find(|s| {
+                    text_by_key[s.sid.as_str()][s.span.start as usize..s.span.end as usize]
+                        .to_lowercase()
+                        == aw
+                })
         }
         let find = |v: &[Scored]| -> Option<(f64, &'static str, f64, f64, String)> {
-            find_site(v, map, asid, aw).map(|s| {
+            find_site(v, &text_by_key, asid, aw).map(|s| {
                 (
                     s.score,
                     quad_str(s.quad),
@@ -1390,7 +1410,7 @@ pub fn analyze_corpus(id: String, map: &VerseMap, variant_b: bool) -> TermCorpus
         let mut gate_alive = Vec::with_capacity(n_t);
         let mut gate_score = Vec::with_capacity(n_t);
         for out in &gate_scored {
-            match find_site(out, map, asid, aw) {
+            match find_site(out, &text_by_key, asid, aw) {
                 Some(s) => {
                     gate_alive.push(true);
                     gate_score.push(s.score);
@@ -1424,7 +1444,7 @@ pub fn analyze_corpus(id: String, map: &VerseMap, variant_b: bool) -> TermCorpus
 
     TermCorpus {
         id,
-        verses: map.len(),
+        verses: corpus.len(),
         bicameral,
         trust: tt,
         base_i,

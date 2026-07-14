@@ -33,10 +33,11 @@ use std::hint::black_box;
 
 use criterion::{criterion_group, criterion_main, BatchSize, Criterion, Throughput};
 use ssc_core::config::ProportionalityConfig;
+use ssc_core::key::parse_key;
 use ssc_core::rule::StatefulRule;
 use ssc_core::script::is_nt_book;
 use ssc_core::signals::proportionality::ProjectLengthRatio;
-use ssc_core::{analyze, analyze_stateful, AnalysisCache, Config, VerseMap};
+use ssc_core::{analyze, analyze_stateful, AnalysisCache, Config, Corpus};
 
 #[path = "../dev/vref_io.rs"]
 mod vref_io;
@@ -44,7 +45,7 @@ use vref_io::{corpus_path, load_corpus};
 
 /// Resolve a corpus by id (e.g. `WA-en-ulb`) to its vref file under
 /// `corpora/vref/` (ADR 0040). Returns `None` (bench skips) if absent.
-fn corpus(id: &str) -> Option<VerseMap> {
+fn corpus(id: &str) -> Option<Corpus> {
     let path = corpus_path(id);
     if !path.exists() {
         eprintln!("corpus '{id}' not present under corpora/vref — skipping its benches");
@@ -53,17 +54,28 @@ fn corpus(id: &str) -> Option<VerseMap> {
     Some(load_corpus(&path))
 }
 
+/// Filter a corpus down to the verses whose book slug passes `keep`,
+/// preserving presented order.
+fn filter_books(corpus: &Corpus, mut keep: impl FnMut(&str) -> bool) -> Corpus {
+    let mut keys = Vec::new();
+    let mut texts = Vec::new();
+    for (key, text) in corpus.keys().iter().zip(corpus.texts()) {
+        let book = parse_key(key).expect("vref key").book;
+        if keep(book) {
+            keys.push(key.clone());
+            texts.push(text.clone());
+        }
+    }
+    Corpus::try_from_parts(keys, texts).unwrap()
+}
+
 fn bench_analyze(c: &mut Criterion) {
     let mut g = c.benchmark_group("analyze");
     // A full-Bible pass is ~1s; keep wall time sane without losing signal.
     g.sample_size(10);
 
     if let Some(bible) = corpus("WA-en-ulb") {
-        let nt: VerseMap = bible
-            .iter()
-            .filter(|(sid, _)| is_nt_book(sid.book.as_str()))
-            .map(|(s, t)| (*s, t.clone()))
-            .collect();
+        let nt = filter_books(&bible, is_nt_book);
 
         g.throughput(Throughput::Elements(bible.len() as u64));
         g.bench_function("full_bible", |b| {
@@ -84,16 +96,14 @@ fn bench_analyze(c: &mut Criterion) {
         let cfg = Config::v1_defaults();
         let (_, cached) = analyze_stateful(&bible, None, &cfg, None, None, None);
         for code in ["3JN", "MAT", "PSA"] {
-            let mut book: VerseMap = bible
-                .iter()
-                .filter(|(sid, _)| sid.book.as_str() == code)
-                .map(|(s, t)| (*s, t.clone()))
-                .collect();
-            let Some(&first) = book.keys().next() else {
+            let book = filter_books(&bible, |book| book == code);
+            if book.is_empty() {
                 eprintln!("{code} not present in en_ulb — skipping its bench");
                 continue;
-            };
-            book.get_mut(&first).unwrap().push_str(" edited");
+            }
+            let mut book_texts = book.texts().to_vec();
+            book_texts[0].push_str(" edited");
+            let book = Corpus::try_from_parts(book.keys().to_vec(), book_texts).unwrap();
             g.throughput(Throughput::Elements(book.len() as u64));
             g.bench_function(format!("incremental_edit_{code}"), |b| {
                 b.iter_batched(
@@ -117,9 +127,15 @@ fn bench_analyze(c: &mut Criterion) {
             // cover everything (a tipped convention re-emits in every book,
             // this same call). The payoff vs `full_bible` is the counting
             // saved; vs `incremental_edit_*` it buys global consistency.
-            let mut edited = bible.clone();
-            edited.get_mut(&first).unwrap().push_str(" edited");
-            let changed = [ssc_core::BookId::from_str(code).unwrap()];
+            let edit_pos = bible
+                .keys()
+                .iter()
+                .position(|k| parse_key(k).expect("vref key").book == code)
+                .expect("book present (checked above)");
+            let mut edited_texts = bible.texts().to_vec();
+            edited_texts[edit_pos].push_str(" edited");
+            let edited = Corpus::try_from_parts(bible.keys().to_vec(), edited_texts).unwrap();
+            let changed = [code];
             g.throughput(Throughput::Elements(edited.len() as u64));
             g.bench_function(format!("changed_edit_{code}"), |b| {
                 b.iter_batched(
@@ -194,7 +210,7 @@ fn bench_phases(c: &mut Criterion) {
         return;
     };
     let cfg = Config::v1_defaults();
-    let books = ssc_core::verse::by_book(&bible);
+    let books = ssc_core::corpus::by_book(&bible);
     let rules: Vec<_> = ssc_core::rule::stateful_rules(&cfg)
         .into_iter()
         .filter(|r| cfg.is_enabled(r.id()))
@@ -236,7 +252,7 @@ fn bench_proportionality(c: &mut Criterion) {
 
     let mut g = c.benchmark_group("proportionality");
     g.throughput(Throughput::Elements(target.len() as u64));
-    let books = ssc_core::verse::by_book(&target);
+    let books = ssc_core::corpus::by_book(&target);
     g.bench_function("nt_vs_bible", |b| {
         b.iter(|| {
             rule.judge(

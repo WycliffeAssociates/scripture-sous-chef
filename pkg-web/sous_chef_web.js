@@ -1,18 +1,21 @@
 /* @ts-self-types="./sous_chef_web.d.ts" */
 
 /**
- * Analyze a vref text map. `target` is `{ sid -> text }`; `source` is an
- * optional parallel map; `config` overrides the shipped defaults
- * (omitted ⇒ `Config::v1_defaults()`: language-agnostic rules on,
- * convention-dependent rules off). Returns findings with UTF-16 ranges.
- * @param {VrefMap} target
- * @param {VrefMap | null} [source]
+ * Analyze a vref corpus. `source` is an optional parallel corpus; `config`
+ * overrides the shipped defaults (omitted ⇒ `Config::v1_defaults()`:
+ * language-agnostic rules on, convention-dependent rules off). Returns
+ * findings with UTF-16 ranges.
+ * @param {VrefCorpus} target
+ * @param {VrefCorpus | null} [source]
  * @param {SousConfig | null} [config]
  * @returns {Findings}
  */
 export function analyze_vref(target, source, config) {
     const ret = wasm.analyze_vref(target, isLikeNone(source) ? 0 : addToExternrefTable0(source), isLikeNone(config) ? 0 : addToExternrefTable0(config));
-    return ret;
+    if (ret[2]) {
+        throw takeFromExternrefTable0(ret[1]);
+    }
+    return takeFromExternrefTable0(ret[0]);
 }
 
 /**
@@ -29,8 +32,8 @@ export function analyze_vref(target, source, config) {
  * roughly half full-pass cost). A promise, not a filter: name every edited
  * book or its counts go silently stale. Unknown codes are ignored; omit it
  * (or omit `prior`) for the original re-count-everything behavior.
- * @param {VrefMap} target
- * @param {VrefMap | null} [source]
+ * @param {VrefCorpus} target
+ * @param {VrefCorpus | null} [source]
  * @param {SousConfig | null} [config]
  * @param {Stats | null} [prior]
  * @param {string[] | null} [changed]
@@ -40,15 +43,18 @@ export function analyze_vref_stateful(target, source, config, prior, changed) {
     var ptr0 = isLikeNone(changed) ? 0 : passArrayJsValueToWasm0(changed, wasm.__wbindgen_malloc);
     var len0 = WASM_VECTOR_LEN;
     const ret = wasm.analyze_vref_stateful(target, isLikeNone(source) ? 0 : addToExternrefTable0(source), isLikeNone(config) ? 0 : addToExternrefTable0(config), isLikeNone(prior) ? 0 : addToExternrefTable0(prior), ptr0, len0);
-    return ret;
+    if (ret[2]) {
+        throw takeFromExternrefTable0(ret[1]);
+    }
+    return takeFromExternrefTable0(ret[0]);
 }
 
 /**
- * Census a vref text map (ADR 0058): the knob-free absolute-count report
+ * Census a vref corpus (ADR 0058): the knob-free absolute-count report
  * (`ssc_core::Inventory`, eight lanes) as opposed to `analyze`'s judged
- * findings. `target` is `{ sid -> text }`, same shape as [`analyze_vref`];
- * `example_cap` bounds the example sites retained per row (omitted ⇒
- * core's default of 8; a payload-size cap, not a statistical knob).
+ * findings. `target` is the same shape as [`analyze_vref`]'s; `example_cap`
+ * bounds the example sites retained per row (omitted ⇒ core's default of 8;
+ * a payload-size cap, not a statistical knob).
  *
  * Returns the `Inventory` serialized to a JSON **string**, deliberately not
  * a Tsify-typed object: the wire schema is ADR 0058's `Inventory` and
@@ -56,20 +62,26 @@ export function analyze_vref_stateful(target, source, config, prior, changed) {
  * checks before parsing. A JS/TS consumer owns its own types for this
  * shape — census is a cold, occasionally-invoked report, not the hot
  * `analyze` path that the rest of this boundary optimizes for.
- * @param {VrefMap} target
+ * @param {VrefCorpus} target
  * @param {number | null} [example_cap]
  * @returns {string}
  */
 export function census(target, example_cap) {
-    let deferred1_0;
-    let deferred1_1;
+    let deferred2_0;
+    let deferred2_1;
     try {
         const ret = wasm.census(target, isLikeNone(example_cap) ? Number.MAX_SAFE_INTEGER : (example_cap) >>> 0);
-        deferred1_0 = ret[0];
-        deferred1_1 = ret[1];
-        return getStringFromWasm0(ret[0], ret[1]);
+        var ptr1 = ret[0];
+        var len1 = ret[1];
+        if (ret[3]) {
+            ptr1 = 0; len1 = 0;
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        deferred2_0 = ptr1;
+        deferred2_1 = len1;
+        return getStringFromWasm0(ptr1, len1);
     } finally {
-        wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
     }
 }
 
@@ -102,6 +114,10 @@ export function stats_remove_book(stats, book) {
 function __wbg_get_imports() {
     const import0 = {
         __proto__: null,
+        __wbg_Error_3639a60ed15f87e7: function(arg0, arg1) {
+            const ret = Error(getStringFromWasm0(arg0, arg1));
+            return ret;
+        },
         __wbg___wbindgen_is_undefined_244a92c34d3b6ec0: function(arg0) {
             const ret = arg0 === undefined;
             return ret;
@@ -225,6 +241,12 @@ function passStringToWasm0(arg, malloc, realloc) {
 
     WASM_VECTOR_LEN = offset;
     return ptr;
+}
+
+function takeFromExternrefTable0(idx) {
+    const value = wasm.__wbindgen_externrefs.get(idx);
+    wasm.__externref_table_dealloc(idx);
+    return value;
 }
 
 let cachedTextDecoder = new TextDecoder('utf-8', { ignoreBOM: true, fatal: true });

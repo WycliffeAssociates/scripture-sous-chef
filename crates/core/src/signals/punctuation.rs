@@ -11,16 +11,15 @@ use std::collections::BTreeMap;
 
 use crate::charclass::class_of;
 use crate::config::{PunctuationAdjacencyConfig, PunctuationSpacingConfig};
+use crate::corpus::{rebase, BookGroup, Books, Corpus, KeyIdx, LocalKeyIdx, SiteAddr};
 use crate::diagnostics::{Finding, FindingArgs, RuleId, Severity, SpacingSide};
 use crate::grapheme::{self, GSpan};
 use crate::rule::{self, StatefulRule, TokenCache};
 use crate::evidence::{clamp_count, clamp_rate, clamp_unit, clamp_z, dominance, from_strengths, odds_amplify, strength};
-use crate::sid::{BookId, Sid};
 use crate::span::Span;
 use crate::stats::RuleStats;
 use crate::stream;
 use crate::tape::TapeEntry;
-use crate::verse::{Books, VerseMap};
 
 // ─────────────────────────────────────────────────────────────────────
 // Punctuation adjacency anomaly (corpus-relative, aggregate-only stateful)
@@ -63,7 +62,7 @@ pub struct PunctuationAdjacencyStats {
         feature = "wasm",
         tsify(type = "Record<string, BookPunctuationAdjacency>")
     )]
-    pub(crate) per_book: BTreeMap<BookId, BookPunctuationAdjacency>,
+    pub(crate) per_book: BTreeMap<Box<str>, BookPunctuationAdjacency>,
 }
 
 impl PunctuationAdjacencyStats {
@@ -75,8 +74,8 @@ impl PunctuationAdjacencyStats {
         self
     }
 
-    pub(crate) fn remove_book(&mut self, book: BookId) {
-        self.per_book.remove(&book);
+    pub(crate) fn remove_book(&mut self, slug: &str) {
+        self.per_book.remove(slug);
     }
 }
 
@@ -92,7 +91,7 @@ impl StatefulRule for PunctuationAdjacencyAnomaly {
     fn reduce(
         &self,
         books: &Books<'_>,
-        _source: Option<&VerseMap>,
+        _source: Option<&Corpus>,
         _tokens: Option<&TokenCache>,
     ) -> (RuleStats, rule::RuleSites) {
         // Thin driver over the shared listener (the fused walk feeds the same
@@ -100,20 +99,17 @@ impl StatefulRule for PunctuationAdjacencyAnomaly {
         // walks all rules fused.
         let mut per_book = BTreeMap::new();
         let mut sites = BTreeMap::new();
-        for (book, (bc, book_sites)) in rule::map_books(books, |book, verses| {
-            (
-                book,
-                stream::drive_book(
-                    verses,
-                    stream::Needs { tape: true, ..Default::default() },
-                    AdjacencyAcc::new(true),
-                    |a, v, _| a.verse(v),
-                    AdjacencyAcc::finish,
-                ),
+        for (group, (bc, book_sites)) in books.iter().zip(rule::map_books(books, |group| {
+            stream::drive_book(
+                group,
+                stream::Needs { tape: true, ..Default::default() },
+                AdjacencyAcc::new(true),
+                |a, v| a.verse(v),
+                AdjacencyAcc::finish,
             )
-        }) {
-            per_book.insert(book, bc);
-            sites.insert(book, book_sites);
+        })) {
+            per_book.insert(Box::from(group.slug), bc);
+            sites.insert(Box::from(group.slug), book_sites);
         }
         (
             RuleStats::PunctuationAdjacency(PunctuationAdjacencyStats { per_book }),
@@ -208,7 +204,7 @@ impl StatefulRule for PunctuationAdjacencyAnomaly {
             Some(rule::RuleSites::PunctuationAdjacency(m)) => Some(m),
             _ => None,
         };
-        let score = |sid: Sid, text: &str, span: Span, found: &mut Vec<Finding>| {
+        let score = |key_idx: KeyIdx, text: &str, span: Span, found: &mut Vec<Finding>| {
             let pattern = span.slice(text);
             let ev = evidence.get(pattern).copied().unwrap_or(1.0);
             if ev < floor {
@@ -216,7 +212,7 @@ impl StatefulRule for PunctuationAdjacencyAnomaly {
             }
             let (k, lead_n, books, corpus) = details.get(pattern).copied().unwrap_or((0, 0, 0, 0));
             found.push(Finding {
-                sid,
+                key_idx,
                 code: PUNCTUATION_ADJACENCY_ANOMALY,
                 severity: Severity::Info,
                 range: span,
@@ -230,18 +226,19 @@ impl StatefulRule for PunctuationAdjacencyAnomaly {
                 }),
             });
         };
-        let mut out: Vec<Finding> = rule::map_books(books, |book, verses| {
+        let mut out: Vec<Finding> = rule::map_books(books, |group| {
             let mut found = Vec::new();
-            if let Some(book_sites) = forwarded.and_then(|m| m.get(&book)) {
-                rule::for_each_site_text(verses, book_sites, |sid, text, &span| {
-                    score(sid, text, span, &mut found);
+            if let Some(book_sites) = forwarded.and_then(|m| m.get(group.slug)) {
+                rule::for_each_site_text(group, book_sites, |local, text, span| {
+                    score(rebase(group.base, local), text, span, &mut found);
                 });
             } else {
                 let mut tape = Vec::new();
-                for &(sid, text) in verses {
+                for (vi, text) in group.texts.iter().enumerate() {
+                    let key_idx = rebase(group.base, LocalKeyIdx::new(vi as u16));
                     crate::tape::build(text, &mut tape);
                     for span in adjacency_candidates(&tape) {
-                        score(sid, text, span, &mut found);
+                        score(key_idx, text, span, &mut found);
                     }
                 }
             }
@@ -252,7 +249,7 @@ impl StatefulRule for PunctuationAdjacencyAnomaly {
         .collect();
         // Total order (incl. `end`) so overlapping candidates that share a start
         // (`..` and `..,`) are ordered deterministically.
-        out.sort_by_key(|f| (f.sid, f.range.start, f.range.end));
+        out.sort_by_key(|f| (f.key_idx, f.range.start, f.range.end));
         out
     }
 }
@@ -263,7 +260,7 @@ impl StatefulRule for PunctuationAdjacencyAnomaly {
 pub(crate) struct AdjacencyAcc {
     lead_opportunities: BTreeMap<char, u64>,
     pattern_counts: BTreeMap<String, u64>,
-    sites: Vec<(Sid, Span)>,
+    sites: Vec<SiteAddr>,
     /// `false` on a prior-carried book (anchor mode): candidates still feed
     /// the sites; the opportunity/pattern tallies are skipped.
     counting: bool,
@@ -290,11 +287,11 @@ impl AdjacencyAcc {
                     .entry(span.slice(v.text).to_string())
                     .or_default() += 1;
             }
-            self.sites.push((v.sid, span));
+            self.sites.push(SiteAddr::pack(v.local_idx, span));
         }
     }
 
-    pub(crate) fn finish(self) -> (BookPunctuationAdjacency, Vec<(Sid, Span)>) {
+    pub(crate) fn finish(self) -> (BookPunctuationAdjacency, Vec<SiteAddr>) {
         (
             BookPunctuationAdjacency {
                 lead_opportunities: self.lead_opportunities,
@@ -614,7 +611,7 @@ pub struct PunctuationSpacingStats {
         feature = "wasm",
         tsify(type = "Record<string, BookPunctuationSpacing>")
     )]
-    pub(crate) per_book: BTreeMap<BookId, BookPunctuationSpacing>,
+    pub(crate) per_book: BTreeMap<Box<str>, BookPunctuationSpacing>,
 }
 
 impl PunctuationSpacingStats {
@@ -626,8 +623,8 @@ impl PunctuationSpacingStats {
         self
     }
 
-    pub(crate) fn remove_book(&mut self, book: BookId) {
-        self.per_book.remove(&book);
+    pub(crate) fn remove_book(&mut self, slug: &str) {
+        self.per_book.remove(slug);
     }
 }
 
@@ -643,27 +640,24 @@ impl StatefulRule for PunctuationSpacingAnomaly {
     fn reduce(
         &self,
         books: &Books<'_>,
-        _source: Option<&VerseMap>,
+        _source: Option<&Corpus>,
         _tokens: Option<&TokenCache>,
     ) -> (RuleStats, rule::RuleSites) {
         // Thin driver over the shared listener (the fused walk feeds the same
         // `SpacingAcc`); kept for calibration/tests.
         let mut per_book = BTreeMap::new();
         let mut sites = BTreeMap::new();
-        for (book, (counts, book_sites)) in rule::map_books(books, |book, verses| {
-            (
-                book,
-                stream::drive_book(
-                    verses,
-                    stream::Needs { graphemes: true, ..Default::default() },
-                    SpacingAcc::new(),
-                    |a, v, _| a.verse(v),
-                    SpacingAcc::finish,
-                ),
+        for (group, (counts, book_sites)) in books.iter().zip(rule::map_books(books, |group| {
+            stream::drive_book(
+                group,
+                stream::Needs { graphemes: true, ..Default::default() },
+                SpacingAcc::new(),
+                |a, v| a.verse(v),
+                SpacingAcc::finish,
             )
-        }) {
-            per_book.insert(book, counts);
-            sites.insert(book, book_sites);
+        })) {
+            per_book.insert(Box::from(group.slug), counts);
+            sites.insert(Box::from(group.slug), book_sites);
         }
         (
             RuleStats::PunctuationSpacing(PunctuationSpacingStats { per_book }),
@@ -717,7 +711,7 @@ impl StatefulRule for PunctuationSpacingAnomaly {
             Some(rule::RuleSites::PunctuationSpacing(m)) => Some(m),
             _ => None,
         };
-        let score = |sid: Sid,
+        let score = |key_idx: KeyIdx,
                      mark: char,
                      left: Option<SideRead>,
                      right: Option<SideRead>,
@@ -772,7 +766,7 @@ impl StatefulRule for PunctuationSpacingAnomaly {
             };
             let sc = lh.as_ref().map_or(0.0, |h| h.score).max(rh.as_ref().map_or(0.0, |h| h.score));
             found.push(Finding {
-                sid,
+                key_idx,
                 code: PUNCTUATION_SPACING_ANOMALY,
                 severity: Severity::Info,
                 range,
@@ -784,15 +778,31 @@ impl StatefulRule for PunctuationSpacingAnomaly {
                 }),
             });
         };
-        let mut out: Vec<Finding> = rule::map_books(books, |book, verses| {
+        let mut out: Vec<Finding> = rule::map_books(books, |group| {
             let mut found = Vec::new();
-            if let Some(book_sites) = forwarded.and_then(|m| m.get(&book)) {
+            if let Some(book_sites) = forwarded.and_then(|m| m.get(group.slug)) {
                 for s in book_sites {
-                    score(s.sid, s.mark, s.left, s.right, s.left_span, s.right_span, &mut found);
+                    score(
+                        rebase(group.base, s.local_idx),
+                        s.mark,
+                        s.left,
+                        s.right,
+                        s.left_span,
+                        s.right_span,
+                        &mut found,
+                    );
                 }
             } else {
-                for_each_spacing_opportunity(verses, |sid, opp| {
-                    score(sid, opp.mark, opp.left, opp.right, opp.left_span, opp.right_span, &mut found);
+                for_each_spacing_opportunity(group, |local, opp| {
+                    score(
+                        rebase(group.base, local),
+                        opp.mark,
+                        opp.left,
+                        opp.right,
+                        opp.left_span,
+                        opp.right_span,
+                        &mut found,
+                    );
                 });
             }
             found
@@ -800,7 +810,7 @@ impl StatefulRule for PunctuationSpacingAnomaly {
         .into_iter()
         .flatten()
         .collect();
-        out.sort_by_key(|f| (f.sid, f.range.start, f.range.end));
+        out.sort_by_key(|f| (f.key_idx, f.range.start, f.range.end));
         out
     }
 }
@@ -934,7 +944,7 @@ struct SpacingOpportunity {
 /// analysis cache between calls.
 #[derive(Clone)]
 pub struct SpacingSite {
-    pub(crate) sid: Sid,
+    pub(crate) local_idx: LocalKeyIdx,
     pub(crate) mark: char,
     pub(crate) left: Option<SideRead>,
     pub(crate) right: Option<SideRead>,
@@ -984,25 +994,29 @@ fn verse_edge_classes(text: &str, graphemes: &[GSpan]) -> (Option<PoolClass>, Op
 /// book-ordered verse neighbours (the seam reads as whitespace, its class read
 /// across; repo `CLAUDE.md`). Each verse is grapheme-segmented once; a book edge
 /// with no neighbour across the seam yields `None` on that side (abstain).
-fn for_each_spacing_opportunity(verses: &[(Sid, &str)], mut f: impl FnMut(Sid, &SpacingOpportunity)) {
-    let mut per_verse: Vec<Vec<GSpan>> = Vec::with_capacity(verses.len());
-    for (_, text) in verses {
+fn for_each_spacing_opportunity(
+    group: &BookGroup<'_>,
+    mut f: impl FnMut(LocalKeyIdx, &SpacingOpportunity),
+) {
+    let mut per_verse: Vec<Vec<GSpan>> = Vec::with_capacity(group.len());
+    for text in group.texts {
         let mut g = Vec::new();
         grapheme::segment(text, &mut g);
         per_verse.push(g);
     }
-    let edges: Vec<(Option<PoolClass>, Option<PoolClass>)> = verses
+    let edges: Vec<(Option<PoolClass>, Option<PoolClass>)> = group
+        .texts
         .iter()
         .zip(&per_verse)
-        .map(|((_, t), g)| verse_edge_classes(t, g))
+        .map(|(t, g)| verse_edge_classes(t, g))
         .collect();
-    for (vi, (sid, text)) in verses.iter().enumerate() {
+    for (vi, text) in group.texts.iter().enumerate() {
         // Nearest previous verse's LAST edge (left of a verse-leading mark), and
         // nearest next verse's FIRST edge (right of a verse-trailing mark).
         let left_cross = (0..vi).rev().find_map(|jj| edges[jj].1);
-        let right_cross = (vi + 1..verses.len()).find_map(|jj| edges[jj].0);
+        let right_cross = (vi + 1..group.len()).find_map(|jj| edges[jj].0);
         for opp in spacing_opportunities(text, &per_verse[vi], left_cross, right_cross) {
-            f(*sid, &opp);
+            f(LocalKeyIdx::new(vi as u16), &opp);
         }
     }
 }
@@ -1170,7 +1184,7 @@ pub(crate) struct SpacingAcc {
 
 /// A buffered right-seam opportunity: everything but the right read is known.
 struct PendingSeam {
-    sid: Sid,
+    local_idx: LocalKeyIdx,
     mark: char,
     left: Option<SideRead>,
     left_span: Span,
@@ -1189,7 +1203,7 @@ impl SpacingAcc {
 
     fn record(
         &mut self,
-        sid: Sid,
+        local_idx: LocalKeyIdx,
         mark: char,
         left: Option<SideRead>,
         right: Option<SideRead>,
@@ -1203,13 +1217,13 @@ impl SpacingAcc {
         if let Some(r) = right {
             cell[cell_index(Side::Right, r.class, r.form)] += 1;
         }
-        self.sites.push(SpacingSite { sid, mark, left, right, left_span, right_span });
+        self.sites.push(SpacingSite { local_idx, mark, left, right, left_span, right_span });
     }
 
     fn resolve_pending(&mut self, right_cross: Option<PoolClass>) {
         if let Some(p) = self.pending.take() {
             let right = right_cross.map(|class| SideRead { class, form: SideForm::Spaced });
-            self.record(p.sid, p.mark, p.left, right, p.left_span, p.right_span);
+            self.record(p.local_idx, p.mark, p.left, right, p.left_span, p.right_span);
         }
     }
 
@@ -1233,12 +1247,12 @@ impl SpacingAcc {
         for raw in walk_opportunities(v.text, v.graphemes, self.left_cross) {
             match raw.right {
                 RightState::Resolved(right) => {
-                    self.record(v.sid, raw.mark, raw.left, right, raw.left_span, raw.right_span);
+                    self.record(v.local_idx, raw.mark, raw.left, right, raw.left_span, raw.right_span);
                 }
                 RightState::Seam => {
                     debug_assert!(self.pending.is_none(), "≤1 seam-right mark per verse");
                     self.pending = Some(PendingSeam {
-                        sid: v.sid,
+                        local_idx: v.local_idx,
                         mark: raw.mark,
                         left: raw.left,
                         left_span: raw.left_span,
@@ -1267,7 +1281,7 @@ impl SpacingAcc {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sid::BookId;
+    use crate::corpus::by_book;
 
     /// The streaming listener's cross-seam state (carried left edge, the
     /// at-most-one buffered seam-right opportunity) must reproduce the batch
@@ -1287,19 +1301,20 @@ mod tests {
             &[".", ",", "!"],
         ];
         for (bi, verses) in books.iter().enumerate() {
-            let vs: Vec<(Sid, &str)> = verses
+            let entries: Vec<(u16, String)> = verses
                 .iter()
                 .enumerate()
-                .map(|(i, t)| {
-                    (Sid::new(BookId::from_str("GEN").unwrap(), 1, (i + 1) as u16), *t)
-                })
+                .map(|(i, t)| ((i + 1) as u16, t.to_string()))
                 .collect();
+            let corpus = book("GEN", &entries);
+            let groups = by_book(&corpus);
+            let group = &groups[0];
 
             // Batch reference.
             let mut ref_cells: BTreeMap<char, [u64; SIDE_CELLS]> = BTreeMap::new();
-            let mut ref_sites: Vec<(Sid, char, Option<SideRead>, Option<SideRead>, Span, Span)> =
+            let mut ref_sites: Vec<(LocalKeyIdx, char, Option<SideRead>, Option<SideRead>, Span, Span)> =
                 Vec::new();
-            for_each_spacing_opportunity(&vs, |sid, opp| {
+            for_each_spacing_opportunity(group, |local, opp| {
                 let cell = ref_cells.entry(opp.mark).or_insert([0u64; SIDE_CELLS]);
                 if let Some(r) = opp.left {
                     cell[cell_index(Side::Left, r.class, r.form)] += 1;
@@ -1307,22 +1322,22 @@ mod tests {
                 if let Some(r) = opp.right {
                     cell[cell_index(Side::Right, r.class, r.form)] += 1;
                 }
-                ref_sites.push((sid, opp.mark, opp.left, opp.right, opp.left_span, opp.right_span));
+                ref_sites.push((local, opp.mark, opp.left, opp.right, opp.left_span, opp.right_span));
             });
 
             // Streaming listener over the same verses.
-            let (book, sites) = crate::stream::drive_book(
-                &vs,
+            let (book_stats, sites) = crate::stream::drive_book(
+                group,
                 crate::stream::Needs { graphemes: true, ..Default::default() },
                 SpacingAcc::new(),
-                |a, v, _| a.verse(v),
+                |a, v| a.verse(v),
                 SpacingAcc::finish,
             );
             let got_sites: Vec<_> = sites
                 .iter()
-                .map(|s| (s.sid, s.mark, s.left, s.right, s.left_span, s.right_span))
+                .map(|s| (s.local_idx, s.mark, s.left, s.right, s.left_span, s.right_span))
                 .collect();
-            assert_eq!(book.per_mark, ref_cells, "cells for book #{bi}");
+            assert_eq!(book_stats.per_mark, ref_cells, "cells for book #{bi}");
             assert_eq!(got_sites, ref_sites, "sites for book #{bi}");
         }
     }
@@ -1387,11 +1402,36 @@ mod tests {
 
     // ── stateful score behaviour ────────────────────────────────────────
 
-    fn sid(book: &str, v: u16) -> Sid {
-        Sid::new(BookId::from_str(book).unwrap(), 1, v)
+    /// Build a single-book `Corpus`: verse `n` becomes the wire key
+    /// `"{book} 1:n"` — chapter fixed at 1, mirroring the old `Sid::new(book,
+    /// 1, n)` shape (`n` is just an opaque distinguishing label, not parsed).
+    fn book(bk: &str, verses: &[(u16, String)]) -> Corpus {
+        let keys = verses.iter().map(|(v, _)| format!("{bk} 1:{v}")).collect();
+        let texts = verses.iter().map(|(_, t)| t.clone()).collect();
+        Corpus::try_from_parts(keys, texts).unwrap()
     }
-    fn book(bk: &str, verses: &[(u16, String)]) -> VerseMap {
-        verses.iter().map(|(v, t)| (sid(bk, *v), t.clone())).collect()
+    /// The wire key for one `(book, verse)` pair under this file's
+    /// `chapter=1` convention — the identity-lookup counterpart to `book()`,
+    /// replacing the old `sid()` helper now that a `Finding` carries a
+    /// `KeyIdx` (resolved through its originating `Corpus`) instead of a `Sid`.
+    fn key_of(bk: &str, v: u16) -> String {
+        format!("{bk} 1:{v}")
+    }
+    /// Build a multi-book `Corpus` from `(book, verses)` blocks laid out in
+    /// the given order — the `Corpus` contiguous-book-block invariant, so a
+    /// test that wants to extend one book's verses (e.g. add more `,,`
+    /// occurrences to GEN) does so on the `Vec` *before* calling this, not by
+    /// mutating a built `Corpus`.
+    fn build_books(entries: &[(&str, Vec<(u16, String)>)]) -> Corpus {
+        let mut keys = Vec::new();
+        let mut texts = Vec::new();
+        for (bk, verses) in entries {
+            for (v, t) in verses {
+                keys.push(format!("{bk} 1:{v}"));
+                texts.push(t.clone());
+            }
+        }
+        Corpus::try_from_parts(keys, texts).unwrap()
     }
     fn rule(cfg: PunctuationAdjacencyConfig) -> PunctuationAdjacencyAnomaly {
         PunctuationAdjacencyAnomaly { cfg }
@@ -1402,8 +1442,9 @@ mod tests {
     fn no_floor() -> PunctuationAdjacencyConfig {
         PunctuationAdjacencyConfig { emit_score_min: 0.0, ..Default::default() }
     }
-    fn run(map: &VerseMap, r: &PunctuationAdjacencyAnomaly) -> Vec<Finding> {
-        r.judge(&r.reduce(&crate::verse::by_book(map), None, None).0, &crate::verse::by_book(map), None, None)
+    fn run(corpus: &Corpus, r: &PunctuationAdjacencyAnomaly) -> Vec<Finding> {
+        let books = by_book(corpus);
+        r.judge(&r.reduce(&books, None, None).0, &books, None, None)
     }
     /// The `N_start` count for one glyph over a verse (for structural asserts).
     fn n_start(text: &str, glyph: char) -> u64 {
@@ -1411,21 +1452,28 @@ mod tests {
         count_lead_opportunities(&tp(text), &mut lead);
         lead.get(&glyph).copied().unwrap_or(0)
     }
-    /// Score of the pattern occurrence at a given verse, if emitted.
-    fn score_at(f: &[Finding], sid: Sid) -> Option<f32> {
-        f.iter().find(|x| x.sid == sid).and_then(|x| x.score)
+    /// Score of the pattern occurrence at a given key, if emitted. `corpus`
+    /// resolves each finding's `key_idx` back to its wire key — it must be
+    /// the same `Corpus` `f` was judged against.
+    fn score_at(corpus: &Corpus, f: &[Finding], key: &str) -> Option<f32> {
+        f.iter().find(|x| corpus.key(x.key_idx) == key).and_then(|x| x.score)
     }
 
-    /// `clean` plain-period verses (2 period run-starts each, no candidates) to
-    /// establish a large `N_start('.')`, plus `commas` `.,` verses.
-    fn periods_and_commas(clean: usize, commas: usize) -> VerseMap {
+    /// Entries for `clean` plain-period verses (2 period run-starts each, no
+    /// candidates) to establish a large `N_start('.')`, plus `commas` `.,`
+    /// verses — as a plain `Vec` so a test can extend it (e.g. append more
+    /// patterns) before building the `Corpus`, which is immutable once built.
+    fn periods_and_commas_entries(clean: usize, commas: usize) -> Vec<(u16, String)> {
         let mut v: Vec<(u16, String)> = (1..=clean as u16)
             .map(|i| (i, "He said. She left.".to_string()))
             .collect();
         for j in 0..commas {
             v.push((1000 + j as u16, "word., word".to_string()));
         }
-        book("GEN", &v)
+        v
+    }
+    fn periods_and_commas(clean: usize, commas: usize) -> Corpus {
+        book("GEN", &periods_and_commas_entries(clean, commas))
     }
 
     #[test]
@@ -1445,10 +1493,12 @@ mod tests {
     fn adding_occurrences_of_a_pattern_lowers_its_evidence() {
         // Realizable move: more `.,` raises both k(`.,`) and N_start('.'). Since
         // N_start ≥ k always, the pattern's evidence weakly falls.
-        let few = run(&periods_and_commas(200, 5), &rule(no_floor()));
-        let many = run(&periods_and_commas(200, 50), &rule(no_floor()));
-        let e_few = score_at(&few, sid("GEN", 1000)).unwrap();
-        let e_many = score_at(&many, sid("GEN", 1000)).unwrap();
+        let few_vm = periods_and_commas(200, 5);
+        let many_vm = periods_and_commas(200, 50);
+        let few = run(&few_vm, &rule(no_floor()));
+        let many = run(&many_vm, &rule(no_floor()));
+        let e_few = score_at(&few_vm, &few, &key_of("GEN", 1000)).unwrap();
+        let e_many = score_at(&many_vm, &many, &key_of("GEN", 1000)).unwrap();
         assert!(e_many <= e_few, "50× evidence {e_many} must not exceed 5× {e_few}");
         assert!(e_many < e_few, "and here it strictly falls: {e_many} < {e_few}");
     }
@@ -1459,13 +1509,14 @@ mod tests {
         // `..` denominator grows, so the rare `.,` stays high while `..` itself
         // drops — patterns sharing a lead glyph compete for one opportunity
         // pool but are scored independently.
-        let mut vm = periods_and_commas(200, 5);
+        let mut entries = periods_and_commas_entries(200, 5);
         for j in 0..100u16 {
-            vm.insert(sid("GEN", 2000 + j), "end.. next".to_string());
+            entries.push((2000 + j, "end.. next".to_string()));
         }
+        let vm = book("GEN", &entries);
         let f = run(&vm, &rule(no_floor()));
-        let rare = score_at(&f, sid("GEN", 1000)).unwrap(); // a `.,`
-        let common = score_at(&f, sid("GEN", 2000)).unwrap(); // a `..`
+        let rare = score_at(&vm, &f, &key_of("GEN", 1000)).unwrap(); // a `.,`
+        let common = score_at(&vm, &f, &key_of("GEN", 2000)).unwrap(); // a `..`
         assert!(rare > 0.9, "rare `.,` stays high: {rare}");
         assert!(common < rare, "common `..` {common} scores below rare `.,` {rare}");
     }
@@ -1526,16 +1577,20 @@ mod tests {
 
         // Evidence FALLS as the exclusive pattern recurs (more confident it is a
         // convention) — the opposite of a common-glyph pattern.
-        let e2 = score_at(&run(&novelty(2), &rule(no_floor())), sid("GEN", 1)).unwrap();
-        let e3 = score_at(&run(&novelty(3), &rule(no_floor())), sid("GEN", 1)).unwrap();
-        let e20 = score_at(&run(&novelty(20), &rule(no_floor())), sid("GEN", 1)).unwrap();
+        let n2 = novelty(2);
+        let n3 = novelty(3);
+        let n20 = novelty(20);
+        let e2 = score_at(&n2, &run(&n2, &rule(no_floor())), &key_of("GEN", 1)).unwrap();
+        let e3 = score_at(&n3, &run(&n3, &rule(no_floor())), &key_of("GEN", 1)).unwrap();
+        let e20 = score_at(&n20, &run(&n20, &rule(no_floor())), &key_of("GEN", 1)).unwrap();
         assert!(e2 > e3 && e3 > e20, "exclusive-glyph evidence falls with count: {e2},{e3},{e20}");
 
         // z is the load-bearing knob: raising it (more shrinkage) raises the
         // novelty's evidence; z=0 (no shrinkage, observed rate 1.0) suppresses.
         let with_z = |z: f32| {
             let cfg = PunctuationAdjacencyConfig { confidence_z: z, emit_score_min: 0.0, ..Default::default() };
-            score_at(&run(&novelty(3), &rule(cfg)), sid("GEN", 1)).unwrap()
+            let n3 = novelty(3);
+            score_at(&n3, &run(&n3, &rule(cfg)), &key_of("GEN", 1)).unwrap()
         };
         assert_eq!(with_z(0.0), 0.0, "no shrinkage ⇒ rate 1.0 ⇒ fully conventional");
         assert!(with_z(3.0) > with_z(1.96), "more shrinkage raises the novelty's evidence");
@@ -1561,13 +1616,15 @@ mod tests {
 
     #[test]
     fn spans_multiple_books_corpus_wide() {
-        // The rule pools over the whole supplied map: a rare `.,` in EXO is
+        // The rule pools over the whole supplied corpus: a rare `.,` in EXO is
         // scored against period opportunities established across GEN too.
-        let mut full = periods_and_commas(200, 0);
-        full.insert(sid("EXO", 1), "word., word".to_string());
+        let full = build_books(&[
+            ("GEN", periods_and_commas_entries(200, 0)),
+            ("EXO", vec![(1u16, "word., word".to_string())]),
+        ]);
         let f = run(&full, &default_rule());
         assert_eq!(f.len(), 1);
-        assert_eq!(f[0].sid.book, BookId::from_str("EXO").unwrap());
+        assert_eq!(full.key(f[0].key_idx), key_of("EXO", 1));
         assert!(f[0].score.unwrap() > 0.9);
     }
 
@@ -1588,25 +1645,27 @@ mod tests {
         // against the *corpus-wide* period opportunities — identical to the full
         // analysis, NOT the book-local rate a stateless project rule would give.
         let r = default_rule();
-        let gen_id = BookId::from_str("GEN").unwrap();
-        let exo = BookId::from_str("EXO").unwrap();
-        let mut full = periods_and_commas(200, 0); // GEN: ~400 period starts
-        full.insert(sid("EXO", 1), "word., word".to_string()); // one rare `.,`
-        let gen_only: VerseMap = full.iter().filter(|(s, _)| s.book == gen_id).map(|(s, t)| (*s, t.clone())).collect();
-        let exo_only: VerseMap = full.iter().filter(|(s, _)| s.book == exo).map(|(s, t)| (*s, t.clone())).collect();
+        let gen_entries = periods_and_commas_entries(200, 0); // GEN: ~400 period starts
+        let exo_entries = vec![(1u16, "word., word".to_string())]; // one rare `.,`
+        let full = build_books(&[("GEN", gen_entries.clone()), ("EXO", exo_entries.clone())]);
+        let gen_only = book("GEN", &gen_entries);
+        let exo_only = book("EXO", &exo_entries);
 
+        let full_books = by_book(&full);
         let full_score = r
-            .judge(&r.reduce(&crate::verse::by_book(&full), None, None).0, &crate::verse::by_book(&full), None, None)
+            .judge(&r.reduce(&full_books, None, None).0, &full_books, None, None)
             .into_iter()
-            .find(|f| f.sid == sid("EXO", 1))
+            .find(|f| full.key(f.key_idx) == key_of("EXO", 1))
             .unwrap()
             .score;
 
         // Incremental: GEN reduced earlier, EXO edited now.
-        let merged = r.reduce(&crate::verse::by_book(&gen_only), None, None).0.merge(r.reduce(&crate::verse::by_book(&exo_only), None, None).0);
-        let inc = r.judge(&merged, &crate::verse::by_book(&exo_only), None, None);
+        let gen_books = by_book(&gen_only);
+        let exo_books = by_book(&exo_only);
+        let merged = r.reduce(&gen_books, None, None).0.merge(r.reduce(&exo_books, None, None).0);
+        let inc = r.judge(&merged, &exo_books, None, None);
         assert_eq!(inc.len(), 1, "emits only for the target (EXO)");
-        assert_eq!(inc[0].sid, sid("EXO", 1));
+        assert_eq!(exo_only.key(inc[0].key_idx), key_of("EXO", 1));
         assert_eq!(inc[0].score, full_score, "incremental score is corpus-wide, not book-local");
     }
 
@@ -1616,12 +1675,15 @@ mod tests {
         // The cached aggregates (char/String counts, no sites) survive the
         // wasm-boundary serde round-trip and re-judge identically.
         let r = default_rule();
-        let mut vm = periods_and_commas(10, 3);
-        vm.insert(sid("EXO", 1), "a?!? b".to_string());
-        let stats = r.reduce(&crate::verse::by_book(&vm), None, None).0;
+        let vm = build_books(&[
+            ("GEN", periods_and_commas_entries(10, 3)),
+            ("EXO", vec![(1u16, "a?!? b".to_string())]),
+        ]);
+        let books = by_book(&vm);
+        let stats = r.reduce(&books, None, None).0;
         let back: RuleStats = serde_json::from_str(&serde_json::to_string(&stats).unwrap()).unwrap();
         assert_eq!(stats, back);
-        assert_eq!(r.judge(&stats, &crate::verse::by_book(&vm), None, None), r.judge(&back, &crate::verse::by_book(&vm), None, None));
+        assert_eq!(r.judge(&stats, &books, None, None), r.judge(&back, &books, None, None));
     }
 
     #[test]
@@ -1649,23 +1711,28 @@ mod tests {
     const TEN_BOOKS: [&str; 10] =
         ["GEN", "EXO", "LEV", "NUM", "DEU", "JOS", "JDG", "RUT", "1SA", "2SA"];
 
-    /// Corpus of `TEN_BOOKS`, each with 40 `a, b, c, d` filler verses (a big
-    /// `N_start(',')`); the first `carriers` books additionally carry three
-    /// `x,, y` verses. So `,,` is a tiny share of comma opportunities (frequency
-    /// stays ≈0) but its book-breadth is `carriers/10`.
-    fn commas_in_n_books(carriers: usize) -> VerseMap {
-        let mut vm = VerseMap::new();
-        for (bi, bk) in TEN_BOOKS.iter().enumerate() {
-            for v in 1..=40u16 {
-                vm.insert(sid(bk, v), "a, b, c, d".to_string());
-            }
-            if bi < carriers {
-                for v in 100..=102u16 {
-                    vm.insert(sid(bk, v), "x,, y".to_string());
+    /// Per-book entries for `TEN_BOOKS`, each with 40 `a, b, c, d` filler verses
+    /// (a big `N_start(',')`); the first `carriers` books additionally carry
+    /// three `x,, y` verses. So `,,` is a tiny share of comma opportunities
+    /// (frequency stays ≈0) but its book-breadth is `carriers/10`. Returned as
+    /// per-book entry lists (rather than a built `Corpus`) so a test can
+    /// extend one book's entries — the `Corpus` itself, once built, is
+    /// immutable and requires contiguous per-book blocks.
+    fn commas_in_n_books_entries(carriers: usize) -> Vec<(&'static str, Vec<(u16, String)>)> {
+        TEN_BOOKS
+            .iter()
+            .enumerate()
+            .map(|(bi, bk)| {
+                let mut v: Vec<(u16, String)> = (1..=40u16).map(|v| (v, "a, b, c, d".to_string())).collect();
+                if bi < carriers {
+                    v.extend((100..=102u16).map(|v| (v, "x,, y".to_string())));
                 }
-            }
-        }
-        vm
+                (*bk, v)
+            })
+            .collect()
+    }
+    fn commas_in_n_books(carriers: usize) -> Corpus {
+        build_books(&commas_in_n_books_entries(carriers))
     }
 
     #[test]
@@ -1684,10 +1751,9 @@ mod tests {
         // Same total `,,` count as the spread case, but all in one book: low
         // breadth (1/10) cannot establish it, so it stays anomalous. Isolates
         // breadth from frequency (k and N_start are ~equal to the spread case).
-        let mut vm = commas_in_n_books(0); // filler only, no carriers
-        for v in 100..=123u16 {
-            vm.insert(sid("GEN", v), "x,, y".to_string()); // 24 `,,` in one book
-        }
+        let mut entries = commas_in_n_books_entries(0); // filler only, no carriers
+        entries[0].1.extend((100..=123u16).map(|v| (v, "x,, y".to_string()))); // 24 `,,` in GEN (book 0)
+        let vm = build_books(&entries);
         assert!(
             !run(&vm, &default_rule()).is_empty(),
             "concentrated `,,` (1/10 books) must still surface"
@@ -1699,15 +1765,15 @@ mod tests {
         // The identical widespread-low-frequency `,,`, but in a 5-book corpus
         // (< the 8-book gate): dispersion is not consulted, so frequency alone
         // governs and the rare pattern surfaces.
-        let mut vm = VerseMap::new();
-        for bk in &TEN_BOOKS[..5] {
-            for v in 1..=40u16 {
-                vm.insert(sid(bk, v), "a, b, c, d".to_string());
-            }
-            for v in 100..=102u16 {
-                vm.insert(sid(bk, v), "x,, y".to_string());
-            }
-        }
+        let entries: Vec<(&str, Vec<(u16, String)>)> = TEN_BOOKS[..5]
+            .iter()
+            .map(|bk| {
+                let mut v: Vec<(u16, String)> = (1..=40u16).map(|v| (v, "a, b, c, d".to_string())).collect();
+                v.extend((100..=102u16).map(|v| (v, "x,, y".to_string())));
+                (*bk, v)
+            })
+            .collect();
+        let vm = build_books(&entries);
         assert!(
             !run(&vm, &default_rule()).is_empty(),
             "below the book gate, breadth must not suppress — frequency governs"
@@ -1719,13 +1785,12 @@ mod tests {
         // Ten books, but `::` occurs in only ONE — where `:` appears *only* as
         // `::` (observed rate 1.0). Frequency establishes it despite breadth
         // 1/10. This is the `bji ::` shape the multiplicative model got wrong.
-        let mut vm = commas_in_n_books(0);
-        for v in 200..=239u16 {
-            vm.insert(sid("GEN", v), "word:: next".to_string());
-        }
+        let mut entries = commas_in_n_books_entries(0);
+        entries[0].1.extend((200..=239u16).map(|v| (v, "word:: next".to_string())));
+        let vm = build_books(&entries);
         let colon_findings: Vec<_> = run(&vm, &default_rule())
             .into_iter()
-            .filter(|f| f.range.slice(vm.get(&f.sid).unwrap()).contains(':'))
+            .filter(|f| f.range.slice(vm.text(f.key_idx)).contains(':'))
             .collect();
         assert!(
             colon_findings.is_empty(),
@@ -1742,9 +1807,10 @@ mod tests {
             (1..=200).map(|i| (i, "why! really!".to_string())).collect(); // N_start('!')
         v.push((900, "a!! b".to_string()));
         v.push((901, "c!!!! d".to_string()));
-        let f = run(&book("GEN", &v), &rule(no_floor()));
-        let two = score_at(&f, sid("GEN", 900)).unwrap();
-        let four = score_at(&f, sid("GEN", 901)).unwrap();
+        let vm = book("GEN", &v);
+        let f = run(&vm, &rule(no_floor()));
+        let two = score_at(&vm, &f, &key_of("GEN", 900)).unwrap();
+        let four = score_at(&vm, &f, &key_of("GEN", 901)).unwrap();
         assert!(four > two, "longer run scores higher: !!!!={four} > !!={two}");
     }
 
@@ -1759,8 +1825,9 @@ mod tests {
     fn sp_no_floor() -> PunctuationSpacingConfig {
         PunctuationSpacingConfig { emit_score_min: 0.0, ..Default::default() }
     }
-    fn sp_run(map: &VerseMap, r: &PunctuationSpacingAnomaly) -> Vec<Finding> {
-        r.judge(&r.reduce(&crate::verse::by_book(map), None, None).0, &crate::verse::by_book(map), None, None)
+    fn sp_run(corpus: &Corpus, r: &PunctuationSpacingAnomaly) -> Vec<Finding> {
+        let books = by_book(corpus);
+        r.judge(&r.reduce(&books, None, None).0, &books, None, None)
     }
     /// An isolated verse: both seams are book edges (no cross neighbour), so a
     /// verse-edge mark abstains on the seam side.
@@ -1777,12 +1844,14 @@ mod tests {
     fn read(class: PoolClass, form: SideForm) -> Option<SideRead> {
         Some(SideRead { class, form })
     }
-    /// Walk a single-book map's opportunities in book order (resolving cross-seam
-    /// classes), returning `(sid, mark, left, right)` per occurrence.
-    fn book_opps(map: &VerseMap) -> Vec<(Sid, char, Option<SideRead>, Option<SideRead>)> {
-        let verses: Vec<(Sid, &str)> = map.iter().map(|(s, t)| (*s, t.as_str())).collect();
+    /// Walk a single-book corpus's opportunities in book order (resolving
+    /// cross-seam classes), returning `(local_idx, mark, left, right)` per
+    /// occurrence.
+    fn book_opps(corpus: &Corpus) -> Vec<(LocalKeyIdx, char, Option<SideRead>, Option<SideRead>)> {
+        let groups = by_book(corpus);
+        let group = &groups[0];
         let mut out = Vec::new();
-        for_each_spacing_opportunity(&verses, |sid, opp| out.push((sid, opp.mark, opp.left, opp.right)));
+        for_each_spacing_opportunity(group, |local, opp| out.push((local, opp.mark, opp.left, opp.right)));
         out
     }
     /// Build the twelve packed per-mark counters from per-side `[att, sp]` pools
@@ -1797,10 +1866,12 @@ mod tests {
         }
         c
     }
-    /// English attach-comma corpus: `attached` verses `"word, word"` (comma reads
-    /// attached-left / spaced-right, both in the Letter pool) and `spaced` verses
-    /// `"word , word"` (a space-before slip — spaced-left in the Letter pool).
-    fn commas(attached: usize, spaced: usize) -> VerseMap {
+    /// Entries for the English attach-comma corpus: `attached` verses `"word,
+    /// word"` (comma reads attached-left / spaced-right, both in the Letter
+    /// pool) and `spaced` verses `"word , word"` (a space-before slip —
+    /// spaced-left in the Letter pool). A plain `Vec` so a test can combine it
+    /// with another book's entries before building the `Corpus`.
+    fn commas_entries(attached: usize, spaced: usize) -> Vec<(u16, String)> {
         let mut v: Vec<(u16, String)> = Vec::new();
         let mut n = 1u16;
         for _ in 0..attached {
@@ -1811,7 +1882,10 @@ mod tests {
             v.push((n, "word , word".to_string()));
             n += 1;
         }
-        book("GEN", &v)
+        v
+    }
+    fn commas(attached: usize, spaced: usize) -> Corpus {
+        book("GEN", &commas_entries(attached, spaced))
     }
 
     // ── side read extraction: class + form ────────────────────────────────
@@ -1865,11 +1939,11 @@ mod tests {
     fn cross_seam_class_is_resolved_from_book_neighbours() {
         let vm = book("GEN", &[(1, "see verse.".to_string()), (2, "3 fish".to_string())]);
         let o = book_opps(&vm);
-        let v1_period = o.iter().find(|(s, m, ..)| *s == sid("GEN", 1) && *m == '.').unwrap();
+        let v1_period = o.iter().find(|(s, m, ..)| *s == LocalKeyIdx::new(0) && *m == '.').unwrap();
         assert_eq!(v1_period.3, read(PoolClass::Number, SideForm::Spaced));
         let vm2 = book("GEN", &[(1, "amen".to_string()), (2, ".word".to_string())]);
         let o2 = book_opps(&vm2);
-        let lead = o2.iter().find(|(s, m, ..)| *s == sid("GEN", 2) && *m == '.').unwrap();
+        let lead = o2.iter().find(|(s, m, ..)| *s == LocalKeyIdx::new(1) && *m == '.').unwrap();
         assert_eq!(lead.2, read(PoolClass::Letter, SideForm::Spaced));
     }
 
@@ -1877,9 +1951,9 @@ mod tests {
     fn first_and_last_verse_book_edges_abstain() {
         let vm = book("GEN", &[(1, ".open".to_string()), (2, "close.".to_string())]);
         let o = book_opps(&vm);
-        let lead = o.iter().find(|(s, m, ..)| *s == sid("GEN", 1) && *m == '.').unwrap();
+        let lead = o.iter().find(|(s, m, ..)| *s == LocalKeyIdx::new(0) && *m == '.').unwrap();
         assert_eq!(lead.2, None, "book-initial leading mark abstains on the left");
-        let trail = o.iter().find(|(s, m, ..)| *s == sid("GEN", 2) && *m == '.').unwrap();
+        let trail = o.iter().find(|(s, m, ..)| *s == LocalKeyIdx::new(1) && *m == '.').unwrap();
         assert_eq!(trail.3, None, "book-final trailing mark abstains on the right");
     }
 
@@ -1994,9 +2068,10 @@ mod tests {
     fn word_comma_word_missing_space_after_surfaces() {
         let mut v: Vec<(u16, String)> = (1..=100).map(|i| (i, "word, word".to_string())).collect();
         v.push((200, "word,word".to_string()));
-        let f = sp_run(&book("GEN", &v), &sp_default());
+        let vm = book("GEN", &v);
+        let f = sp_run(&vm, &sp_default());
         assert_eq!(f.len(), 1);
-        assert_eq!(f[0].sid, sid("GEN", 200));
+        assert_eq!(vm.key(f[0].key_idx), key_of("GEN", 200));
         let slip = v.iter().find(|(n, _)| *n == 200).map(|(_, t)| t.clone()).unwrap();
         assert_eq!(f[0].range.slice(&slip), ",w");
         match &f[0].args {
@@ -2012,8 +2087,9 @@ mod tests {
     fn away_bang_why_after_side_anomaly_surfaces() {
         let mut v: Vec<(u16, String)> = (1..=60).map(|i| (i, "Stop! Go".to_string())).collect();
         v.push((200, "away!Why".to_string()));
-        let f = sp_run(&book("GEN", &v), &sp_default());
-        let bang: Vec<_> = f.iter().filter(|x| x.sid == sid("GEN", 200)).collect();
+        let vm = book("GEN", &v);
+        let f = sp_run(&vm, &sp_default());
+        let bang: Vec<_> = f.iter().filter(|x| vm.key(x.key_idx) == key_of("GEN", 200)).collect();
         assert_eq!(bang.len(), 1);
     }
 
@@ -2021,8 +2097,9 @@ mod tests {
     fn spanish_reversed_open_question_mark_surfaces_both_sides() {
         let mut v: Vec<(u16, String)> = (1..=50).map(|i| (i, "espacio \u{00BF}Qué?".to_string())).collect();
         v.push((100, "así\u{00BF} no".to_string()));
-        let f = sp_run(&book("GEN", &v), &sp_default());
-        let hits: Vec<_> = f.iter().filter(|x| x.sid == sid("GEN", 100)).collect();
+        let vm = book("GEN", &v);
+        let f = sp_run(&vm, &sp_default());
+        let hits: Vec<_> = f.iter().filter(|x| vm.key(x.key_idx) == key_of("GEN", 100)).collect();
         assert_eq!(hits.len(), 1);
         match &hits[0].args {
             Some(FindingArgs::SpacingConvention { mark, left: Some(l), right: Some(r) }) => {
@@ -2043,9 +2120,10 @@ mod tests {
 
         let mut v2: Vec<(u16, String)> = (1..=200).map(|i| (i, "at 1:1 here".to_string())).collect();
         v2.push((300, "at 1: 1 here".to_string()));
-        let f = sp_run(&book("GEN", &v2), &sp_default());
-        assert_eq!(f.iter().filter(|x| x.sid == sid("GEN", 300)).count(), 1);
-        assert!(f.iter().all(|x| x.sid == sid("GEN", 300)));
+        let vm2 = book("GEN", &v2);
+        let f = sp_run(&vm2, &sp_default());
+        assert_eq!(f.iter().filter(|x| vm2.key(x.key_idx) == key_of("GEN", 300)).count(), 1);
+        assert!(f.iter().all(|x| vm2.key(x.key_idx) == key_of("GEN", 300)));
     }
 
     #[test]
@@ -2058,15 +2136,17 @@ mod tests {
     fn medial_period_flags_but_medial_hyphen_is_conventional() {
         let mut v: Vec<(u16, String)> = (1..=120).map(|i| (i, "a end. Next one.".to_string())).collect();
         v.push((300, "a run.together word.".to_string()));
-        let f = sp_run(&book("GEN", &v), &sp_default());
-        assert!(f.iter().any(|x| x.sid == sid("GEN", 300)), "medial period surfaces");
+        let vm = book("GEN", &v);
+        let f = sp_run(&vm, &sp_default());
+        assert!(f.iter().any(|x| vm.key(x.key_idx) == key_of("GEN", 300)), "medial period surfaces");
 
         let hy: Vec<(u16, String)> = (1..=100).map(|i| (i, "co-operate and re-enter".to_string())).collect();
         assert!(sp_run(&book("GEN", &hy), &sp_default()).is_empty(), "conventional medial hyphen is silent");
         let mut hy2 = hy.clone();
         hy2.push((300, "a - b co-operate".to_string()));
-        let fh = sp_run(&book("GEN", &hy2), &sp_default());
-        assert!(fh.iter().any(|x| x.sid == sid("GEN", 300)), "lone spaced hyphen surfaces");
+        let vm2 = book("GEN", &hy2);
+        let fh = sp_run(&vm2, &sp_default());
+        assert!(fh.iter().any(|x| vm2.key(x.key_idx) == key_of("GEN", 300)), "lone spaced hyphen surfaces");
     }
 
     #[test]
@@ -2096,12 +2176,12 @@ mod tests {
         let vm = commas(100, 1);
         let f = sp_run(&vm, &sp_default());
         assert_eq!(f.len(), 1);
-        assert_eq!(f[0].range.slice(&vm[&f[0].sid]), " ,");
+        assert_eq!(f[0].range.slice(vm.text(f[0].key_idx)), " ,");
         let mut v: Vec<(u16, String)> = (1..=100).map(|i| (i, "word, word".to_string())).collect();
         v.push((200, "word,word".to_string()));
         let vm2 = book("GEN", &v);
         let f2 = sp_run(&vm2, &sp_default());
-        assert_eq!(f2[0].range.slice(&vm2[&sid("GEN", 200)]), ",w");
+        assert_eq!(f2[0].range.slice(vm2.text(f2[0].key_idx)), ",w");
     }
 
     #[test]
@@ -2110,8 +2190,8 @@ mod tests {
         v.push((100, "así\u{00BF} no".to_string()));
         let vm = book("GEN", &v);
         let f = sp_run(&vm, &sp_default());
-        let hit = f.iter().find(|x| x.sid == sid("GEN", 100)).unwrap();
-        assert_eq!(hit.range.slice(&vm[&sid("GEN", 100)]), "í\u{00BF} ");
+        let hit = f.iter().find(|x| vm.key(x.key_idx) == key_of("GEN", 100)).unwrap();
+        assert_eq!(hit.range.slice(vm.text(hit.key_idx)), "í\u{00BF} ");
     }
 
     #[test]
@@ -2136,43 +2216,46 @@ mod tests {
     #[test]
     fn incremental_score_is_corpus_wide_not_book_local() {
         let r = sp_default();
-        let gen_map = commas(100, 0);
-        let mut exo = VerseMap::new();
-        exo.insert(sid("EXO", 1), "word,word".to_string());
-        let mut full = gen_map.clone();
-        full.extend(exo.clone());
+        let gen_entries = commas_entries(100, 0);
+        let exo_entries = vec![(1u16, "word,word".to_string())];
+        let gen_map = book("GEN", &gen_entries);
+        let exo = book("EXO", &exo_entries);
+        let full = build_books(&[("GEN", gen_entries), ("EXO", exo_entries)]);
 
+        let full_books = by_book(&full);
         let full_score = r
-            .judge(&r.reduce(&crate::verse::by_book(&full), None, None).0, &crate::verse::by_book(&full), None, None)
+            .judge(&r.reduce(&full_books, None, None).0, &full_books, None, None)
             .into_iter()
-            .find(|f| f.sid == sid("EXO", 1))
+            .find(|f| full.key(f.key_idx) == key_of("EXO", 1))
             .unwrap()
             .score;
 
-        let merged = r.reduce(&crate::verse::by_book(&gen_map), None, None).0.merge(r.reduce(&crate::verse::by_book(&exo), None, None).0);
-        let inc = r.judge(&merged, &crate::verse::by_book(&exo), None, None);
+        let gen_books = by_book(&gen_map);
+        let exo_books = by_book(&exo);
+        let merged = r.reduce(&gen_books, None, None).0.merge(r.reduce(&exo_books, None, None).0);
+        let inc = r.judge(&merged, &exo_books, None, None);
         assert_eq!(inc.len(), 1);
-        assert_eq!(inc[0].sid, sid("EXO", 1));
+        assert_eq!(exo.key(inc[0].key_idx), key_of("EXO", 1));
         assert_eq!(inc[0].score, full_score, "incremental score is corpus-wide");
     }
 
     #[test]
     fn removing_a_book_drops_its_contribution() {
         let r = sp_default();
-        let gen_map = commas(100, 0);
-        let mut exo = VerseMap::new();
-        exo.insert(sid("EXO", 1), "word,word".to_string());
-        exo.insert(sid("EXO", 2), "word, word".to_string());
-        let mut full = gen_map;
-        full.extend(exo.clone());
+        let gen_entries = commas_entries(100, 0);
+        let exo_entries = vec![(1u16, "word,word".to_string()), (2u16, "word, word".to_string())];
+        let exo = book("EXO", &exo_entries);
+        let full = build_books(&[("GEN", gen_entries), ("EXO", exo_entries)]);
 
-        let RuleStats::PunctuationSpacing(mut stats) = r.reduce(&crate::verse::by_book(&full), None, None).0 else {
+        let full_books = by_book(&full);
+        let RuleStats::PunctuationSpacing(mut stats) = r.reduce(&full_books, None, None).0 else {
             unreachable!()
         };
-        let before = r.judge(&RuleStats::PunctuationSpacing(stats.clone()), &crate::verse::by_book(&exo), None, None);
-        assert!(before.iter().any(|f| f.sid == sid("EXO", 1)));
-        stats.remove_book(BookId::from_str("GEN").unwrap());
-        assert!(r.judge(&RuleStats::PunctuationSpacing(stats), &crate::verse::by_book(&exo), None, None).is_empty());
+        let exo_books = by_book(&exo);
+        let before = r.judge(&RuleStats::PunctuationSpacing(stats.clone()), &exo_books, None, None);
+        assert!(before.iter().any(|f| exo.key(f.key_idx) == key_of("EXO", 1)));
+        stats.remove_book("GEN");
+        assert!(r.judge(&RuleStats::PunctuationSpacing(stats), &exo_books, None, None).is_empty());
     }
 
     #[test]
@@ -2194,9 +2277,10 @@ mod tests {
     fn spacing_stats_round_trip_through_serde() {
         let r = sp_default();
         let vm = commas(100, 3);
-        let stats = r.reduce(&crate::verse::by_book(&vm), None, None).0;
+        let books = by_book(&vm);
+        let stats = r.reduce(&books, None, None).0;
         let back: RuleStats = serde_json::from_str(&serde_json::to_string(&stats).unwrap()).unwrap();
         assert_eq!(stats, back);
-        assert_eq!(r.judge(&stats, &crate::verse::by_book(&vm), None, None), r.judge(&back, &crate::verse::by_book(&vm), None, None));
+        assert_eq!(r.judge(&stats, &books, None, None), r.judge(&back, &books, None, None));
     }
 }

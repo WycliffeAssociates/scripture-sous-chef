@@ -24,6 +24,18 @@ export interface Finding {
 }
 
 /**
+ * An ordered, duplicate-preserving vref corpus as it arrives from JS:
+ * parallel `keys`/`texts` arrays in caller-presented order (a `Corpus` is a
+ * duplicate-preserving structure, not a map — unlike the retired
+ * `VrefMap(Record<string, string>)`, this shape cannot silently collapse a
+ * duplicate ref). TS: `{ keys: string[], texts: string[] }`.
+ */
+export interface VrefCorpus {
+    keys: string[];
+    texts: string[];
+}
+
+/**
  * Cached casing statistics, keyed by book so an edit supersedes only its book.
  */
 export interface CasingStats {
@@ -276,12 +288,13 @@ export interface RuleCard {
 
 /**
  * One verse\'s target/reference ratio, retained so `judge` can derive the
- * distribution and emit findings without the text. `sid` is a `Copy` value
- * in memory and the canonical `\"GEN 1:1\"` string on the wire (its serde
- * impl); `f32` ratio, `u32` byte length for the finding range.
+ * distribution and emit findings without the text. `local_idx` is
+ * book-local (the per-book map already carries the slug); rebased to a
+ * global `KeyIdx` only at `judge` time, against the current call\'s
+ * `BookGroup::base`. `f32` ratio, `u32` byte length for the finding range.
  */
 export interface RatioObs {
-    sid: string;
+    local_idx: number;
     ratio: number;
     len: number;
 }
@@ -532,11 +545,6 @@ export interface SousConfig {
     mixed_case?: MixedCaseOverrides;
 }
 
-/**
- * `{ sid -> text }` as it arrives from JS. TS: `Record<string, string>`.
- */
-export type VrefMap = Record<string, string>;
-
 export interface SensitivityStop {
     emit_score_min: number;
     label: string;
@@ -544,12 +552,12 @@ export interface SensitivityStop {
 
 
 /**
- * Analyze a vref text map. `target` is `{ sid -> text }`; `source` is an
- * optional parallel map; `config` overrides the shipped defaults
- * (omitted ⇒ `Config::v1_defaults()`: language-agnostic rules on,
- * convention-dependent rules off). Returns findings with UTF-16 ranges.
+ * Analyze a vref corpus. `source` is an optional parallel corpus; `config`
+ * overrides the shipped defaults (omitted ⇒ `Config::v1_defaults()`:
+ * language-agnostic rules on, convention-dependent rules off). Returns
+ * findings with UTF-16 ranges.
  */
-export function analyze_vref(target: VrefMap, source?: VrefMap | null, config?: SousConfig | null): Findings;
+export function analyze_vref(target: VrefCorpus, source?: VrefCorpus | null, config?: SousConfig | null): Findings;
 
 /**
  * Stateful analyze (ADR 0017). Same as [`analyze_vref`] but returns the
@@ -566,14 +574,14 @@ export function analyze_vref(target: VrefMap, source?: VrefMap | null, config?: 
  * book or its counts go silently stale. Unknown codes are ignored; omit it
  * (or omit `prior`) for the original re-count-everything behavior.
  */
-export function analyze_vref_stateful(target: VrefMap, source?: VrefMap | null, config?: SousConfig | null, prior?: Stats | null, changed?: string[] | null): Analysis;
+export function analyze_vref_stateful(target: VrefCorpus, source?: VrefCorpus | null, config?: SousConfig | null, prior?: Stats | null, changed?: string[] | null): Analysis;
 
 /**
- * Census a vref text map (ADR 0058): the knob-free absolute-count report
+ * Census a vref corpus (ADR 0058): the knob-free absolute-count report
  * (`ssc_core::Inventory`, eight lanes) as opposed to `analyze`'s judged
- * findings. `target` is `{ sid -> text }`, same shape as [`analyze_vref`];
- * `example_cap` bounds the example sites retained per row (omitted ⇒
- * core's default of 8; a payload-size cap, not a statistical knob).
+ * findings. `target` is the same shape as [`analyze_vref`]'s; `example_cap`
+ * bounds the example sites retained per row (omitted ⇒ core's default of 8;
+ * a payload-size cap, not a statistical knob).
  *
  * Returns the `Inventory` serialized to a JSON **string**, deliberately not
  * a Tsify-typed object: the wire schema is ADR 0058's `Inventory` and
@@ -582,7 +590,7 @@ export function analyze_vref_stateful(target: VrefMap, source?: VrefMap | null, 
  * shape — census is a cold, occasionally-invoked report, not the hot
  * `analyze` path that the rest of this boundary optimizes for.
  */
-export function census(target: VrefMap, example_cap?: number | null): string;
+export function census(target: VrefCorpus, example_cap?: number | null): string;
 
 /**
  * The shipped English rule catalog — the reference text a consumer renders

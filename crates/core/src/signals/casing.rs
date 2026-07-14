@@ -83,14 +83,13 @@ use crate::analysis::association::Table2;
 use crate::charclass::class_of;
 use crate::signals::case_shape::{case_shape, CaseShape};
 use crate::config::CasingConfig;
+use crate::corpus::{rebase, BookGroup, Books, Corpus, LocalKeyIdx};
 use crate::diagnostics::{Finding, FindingArgs, RuleId, Severity};
 use crate::evidence::{clamp_count, clamp_unit, clamp_z, wilson_lower_bound};
 use crate::rule::{self, StatefulRule, TokenCache};
-use crate::sid::{BookId, Sid};
 use crate::span::Span;
 use crate::stats::RuleStats;
 use crate::stream;
-use crate::verse::{Books, VerseMap};
 
 pub const SENTENCE_INITIAL_LOWERCASE: RuleId = RuleId::SentenceInitialLowercase;
 pub const INCONSISTENT_WORD_CASING: RuleId = RuleId::InconsistentWordCasing;
@@ -327,7 +326,7 @@ impl WordStats {
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct CasingStats {
     #[cfg_attr(feature = "wasm", tsify(type = "Record<string, BookCasing>"))]
-    pub(crate) per_book: BTreeMap<BookId, BookCasing>,
+    pub(crate) per_book: BTreeMap<Box<str>, BookCasing>,
 }
 
 /// One book's contribution: the pruned word table plus the cased-word-start
@@ -353,8 +352,8 @@ impl CasingStats {
     }
 
     /// Drop a book's contribution.
-    pub(crate) fn remove_book(&mut self, book: BookId) {
-        self.per_book.remove(&book);
+    pub(crate) fn remove_book(&mut self, slug: &str) {
+        self.per_book.remove(slug);
     }
 }
 
@@ -863,7 +862,7 @@ impl Model {
 /// in the content-keyed analysis cache when its owning book is clean.
 #[derive(Clone)]
 pub struct LowerSite {
-    pub(crate) sid: Sid,
+    pub(crate) local_idx: LocalKeyIdx,
     pub(crate) start: u32,
     pub(crate) end: u32,
     /// Interned word-type id — an index into the owning [`CasingSites`]'
@@ -1013,7 +1012,7 @@ impl CasingAcc {
     }
 
     pub(crate) fn verse(&mut self, v: &stream::VerseInputs<'_, '_>) {
-        let (sid, text) = (v.sid, v.text);
+        let text = v.text;
         compound_words(text, v.tokens, &mut self.words_buf);
         let mut prev_letter = false;
         let mut cursor = 0usize;
@@ -1068,7 +1067,7 @@ impl CasingAcc {
                 && case_shape(&text[w.start as usize..w.end as usize]) != Some(CaseShape::OtherMixed)
             {
                 self.sites.push(LowerSite {
-                    sid,
+                    local_idx: v.local_idx,
                     start: w.start,
                     end: w.end,
                     key: id,
@@ -1106,24 +1105,23 @@ impl CasingAcc {
 /// Scan one book's verses — the standalone driver over [`CasingAcc`], used by
 /// the judge's re-scan path (a prior-carried book has no forwarded sites) and
 /// the calibration API.
-fn walk_book(verses: &[(Sid, &str)]) -> (BookCasing, CasingSites) {
+fn walk_book(group: &BookGroup<'_>) -> (BookCasing, CasingSites) {
     stream::drive_book(
-        verses,
+        group,
         stream::Needs { tokens: true, ..Default::default() },
         CasingAcc::new(),
-        |a, v, _| a.verse(v),
+        |a, v| a.verse(v),
         CasingAcc::finish,
     )
 }
 
 /// Shared reduce for both casing rules: walk each book once.
-fn reduce_casing(books: &Books<'_>) -> (CasingStats, BTreeMap<BookId, CasingSites>) {
+fn reduce_casing(books: &Books<'_>) -> (CasingStats, BTreeMap<Box<str>, CasingSites>) {
     let mut per_book = BTreeMap::new();
     let mut sites = BTreeMap::new();
-    for (book, (bc, book_sites)) in rule::map_books(books, |book, verses| (book, walk_book(verses)))
-    {
-        per_book.insert(book, bc);
-        sites.insert(book, book_sites);
+    for (group, (bc, book_sites)) in books.iter().zip(rule::map_books(books, walk_book)) {
+        per_book.insert(Box::from(group.slug), bc);
+        sites.insert(Box::from(group.slug), book_sites);
     }
     (CasingStats { per_book }, sites)
 }
@@ -1146,7 +1144,7 @@ fn judge_casing<V: Clone + Sync + Send>(
     sites: Option<&rule::RuleSites>,
     cfg: &CasingConfig,
     verdict: impl Fn(&str, PosClass, &Model) -> Option<V> + Sync,
-    materialize: impl Fn(&LowerSite, &str, &V) -> Finding + Sync,
+    materialize: impl Fn(&LowerSite, &str, &V, crate::corpus::KeyIdx) -> Finding + Sync,
 ) -> Vec<Finding> {
     let RuleStats::Casing(stats) = stats else {
         return Vec::new();
@@ -1164,7 +1162,7 @@ fn judge_casing<V: Clone + Sync + Send>(
     // Per-site loop over one book's sites: the memo hashes the Copy
     // `(id, PosClass)` pair — the folded string is resolved through the
     // book's interner only on a memo miss (once per distinct pair).
-    let emit = |book_sites: &CasingSites, found: &mut Vec<Finding>| {
+    let emit = |base: crate::corpus::KeyIdx, book_sites: &CasingSites, found: &mut Vec<Finding>| {
         let keys = &book_sites.keys;
         let mut memo: FxHashMap<(u32, PosClass), Option<V>> = FxHashMap::default();
         for site in &book_sites.sites {
@@ -1172,24 +1170,24 @@ fn judge_casing<V: Clone + Sync + Send>(
                 .entry((site.key, site.pos))
                 .or_insert_with(|| verdict(&keys[site.key as usize], site.pos, &model));
             if let Some(v) = v {
-                found.push(materialize(site, &keys[site.key as usize], v));
+                found.push(materialize(site, &keys[site.key as usize], v, rebase(base, site.local_idx)));
             }
         }
     };
-    let mut out: Vec<Finding> = rule::map_books(books, |book, verses| {
+    let mut out: Vec<Finding> = rule::map_books(books, |group| {
         let mut found = Vec::new();
-        if let Some(book_sites) = forwarded.and_then(|m| m.get(&book)) {
-            emit(book_sites, &mut found);
+        if let Some(book_sites) = forwarded.and_then(|m| m.get(group.slug)) {
+            emit(group.base, book_sites, &mut found);
         } else {
-            let (_, walked) = walk_book(verses);
-            emit(&walked, &mut found);
+            let (_, walked) = walk_book(group);
+            emit(group.base, &walked, &mut found);
         }
         found
     })
     .into_iter()
     .flatten()
     .collect();
-    out.sort_by_key(|f| (f.sid, f.range.start, f.range.end));
+    out.sort_by_key(|f| (f.key_idx, f.range.start, f.range.end));
     out
 }
 
@@ -1213,7 +1211,7 @@ impl StatefulRule for SentenceInitialLowercase {
     fn reduce(
         &self,
         books: &Books<'_>,
-        _source: Option<&VerseMap>,
+        _source: Option<&Corpus>,
         _tokens: Option<&TokenCache>,
     ) -> (RuleStats, rule::RuleSites) {
         let (stats, sites) = reduce_casing(books);
@@ -1249,8 +1247,8 @@ impl StatefulRule for SentenceInitialLowercase {
                     f.raw_total.min(u64::from(u32::MAX)) as u32,
                 ))
             },
-            |site, _key, &(score, glyph, quoted, upper, total)| Finding {
-                sid: site.sid,
+            |site, _key, &(score, glyph, quoted, upper, total), key_idx| Finding {
+                key_idx,
                 code: SENTENCE_INITIAL_LOWERCASE,
                 severity: Severity::Info,
                 range: site_span(site),
@@ -1277,7 +1275,7 @@ impl StatefulRule for InconsistentWordCasing {
     fn reduce(
         &self,
         books: &Books<'_>,
-        _source: Option<&VerseMap>,
+        _source: Option<&Corpus>,
         _tokens: Option<&TokenCache>,
     ) -> (RuleStats, rule::RuleSites) {
         let (stats, sites) = reduce_casing(books);
@@ -1310,8 +1308,8 @@ impl StatefulRule for InconsistentWordCasing {
                     f.raw_total.min(u64::from(u32::MAX)) as u32,
                 ))
             },
-            |site, key, &(score, upper, total)| Finding {
-                sid: site.sid,
+            |site, key, &(score, upper, total), key_idx| Finding {
+                key_idx,
                 code: INCONSISTENT_WORD_CASING,
                 severity: Severity::Info,
                 range: site_span(site),
@@ -1333,7 +1331,7 @@ impl StatefulRule for InconsistentWordCasing {
 /// reflects the trust gate (`None` when gated or folded to mid-flow); the
 /// intrinsic channel already reflects the trust-weighted censoring discount.
 pub struct SiteEval {
-    pub sid: Sid,
+    pub key_idx: crate::corpus::KeyIdx,
     pub start: u32,
     pub end: u32,
     pub pos: PosClass,
@@ -1347,11 +1345,15 @@ pub fn evaluate(books: &Books<'_>, cfg: &CasingConfig) -> Vec<SiteEval> {
     let (stats, sites_map) = reduce_casing(books);
     let model = Model::build(&stats, cfg);
     let mut out = Vec::new();
-    for book_sites in sites_map.values() {
+    for (slug, book_sites) in &sites_map {
+        let group = books
+            .iter()
+            .find(|g| g.slug == slug.as_ref())
+            .expect("sites keyed by a book in this corpus");
         let keys = &book_sites.keys;
         for site in &book_sites.sites {
             out.push(SiteEval {
-                sid: site.sid,
+                key_idx: rebase(group.base, site.local_idx),
                 start: site.start,
                 end: site.end,
                 pos: site.pos,
@@ -1366,8 +1368,7 @@ pub fn evaluate(books: &Books<'_>, cfg: &CasingConfig) -> Vec<SiteEval> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sid::BookId;
-    use crate::verse::by_book;
+    use crate::corpus;
 
     /// Full config with an explicit trust gate (ADR 0052).
     fn cfg_g(emit_score_min: f32, recurrence_k: f32, confidence_z: f32, trust_gate: f32) -> CasingConfig {
@@ -1379,16 +1380,20 @@ mod tests {
         cfg_g(emit_score_min, recurrence_k, confidence_z, 0.90)
     }
 
-    fn sid(book: &str, v: u16) -> Sid {
-        Sid::new(BookId::from_str(book).unwrap(), 1, v)
+    /// The wire-format key for one book/verse (chapter is always 1 — these
+    /// tests never need a second chapter).
+    fn key_at(book: &str, v: u16) -> String {
+        format!("{book} 1:{v}")
     }
 
-    fn book(book: &str, verses: &[(u16, &str)]) -> VerseMap {
-        verses.iter().map(|&(v, t)| (sid(book, v), t.to_string())).collect()
+    fn book(book: &str, verses: &[(u16, &str)]) -> Corpus {
+        let keys = verses.iter().map(|&(v, _)| key_at(book, v)).collect();
+        let texts = verses.iter().map(|&(_, t)| t.to_string()).collect();
+        Corpus::try_from_parts(keys, texts).unwrap()
     }
 
-    fn run(map: &VerseMap, r: &dyn StatefulRule) -> Vec<Finding> {
-        let books = by_book(map);
+    fn run(corpus: &Corpus, r: &dyn StatefulRule) -> Vec<Finding> {
+        let books = corpus::by_book(corpus);
         let (stats, sites) = r.reduce(&books, None, None);
         r.judge(&stats, &books, None, Some(&sites))
     }
@@ -1400,29 +1405,61 @@ mod tests {
         SentenceInitialLowercase { cfg }
     }
 
-    fn slice<'a>(map: &'a VerseMap, f: &Finding) -> &'a str {
-        &map[&f.sid][f.range.start as usize..f.range.end as usize]
+    fn slice<'a>(corpus: &'a Corpus, f: &Finding) -> &'a str {
+        &corpus.text(f.key_idx)[f.range.start as usize..f.range.end as usize]
+    }
+
+    /// True iff `f` addresses `book 1:v` — the resolved-key analogue of the
+    /// old direct `f.sid == sid(book, v)` comparison.
+    fn at(corpus: &Corpus, f: &Finding, book: &str, v: u16) -> bool {
+        corpus.key(f.key_idx) == key_at(book, v)
     }
 
     /// Build a corpus by cycling `templates`, one verse each, `reps` cycles.
-    fn cycle(book_code: &str, templates: &[&str], reps: u16) -> VerseMap {
-        let mut out = VerseMap::new();
+    fn cycle(book_code: &str, templates: &[&str], reps: u16) -> Corpus {
+        let mut keys = Vec::new();
+        let mut texts = Vec::new();
         let mut v = 1u16;
         for _ in 0..reps {
             for t in templates {
-                out.insert(sid(book_code, v), (*t).to_string());
+                keys.push(key_at(book_code, v));
+                texts.push((*t).to_string());
                 v += 1;
             }
         }
-        out
+        Corpus::try_from_parts(keys, texts).unwrap()
+    }
+
+    /// Append one more verse to an existing corpus. `Corpus` is an immutable,
+    /// validated structure-of-arrays (no in-place insert), so "inserting" is
+    /// rebuilding with the extra entry appended — the functional analogue of
+    /// the old `VerseMap::insert`. Appending (rather than splicing to a
+    /// numeric position) is what the tests need: book-local walk order is the
+    /// corpus's *presented* order, so an appended verse always lands after
+    /// every verse already in its book's block.
+    fn push_verse(corpus: Corpus, book: &str, v: u16, text: &str) -> Corpus {
+        let mut keys = corpus.keys().to_vec();
+        let mut texts = corpus.texts().to_vec();
+        keys.push(key_at(book, v));
+        texts.push(text.to_string());
+        Corpus::try_from_parts(keys, texts).unwrap()
+    }
+
+    /// Append another corpus's entries — the functional analogue of the old
+    /// `VerseMap::extend`.
+    fn extend_corpus(corpus: Corpus, other: Corpus) -> Corpus {
+        let mut keys = corpus.keys().to_vec();
+        let mut texts = corpus.texts().to_vec();
+        keys.extend(other.keys().iter().cloned());
+        texts.extend(other.texts().iter().cloned());
+        Corpus::try_from_parts(keys, texts).unwrap()
     }
 
     /// The corpus-wide trust for one class (test introspection over the model).
-    fn class_trust(map: &VerseMap, mark: char, quoted: bool) -> f64 {
-        let books = by_book(map);
+    fn class_trust(corpus: &Corpus, mark: char, quoted: bool) -> f64 {
+        let books = corpus::by_book(corpus);
         let (stats, _) = reduce_casing(&books);
-        let RuleStats::Casing(ref cs) = RuleStats::Casing(stats) else { unreachable!() };
-        let model = Model::build(cs, &CasingConfig::default());
+        let model = Model::build(&stats, &CasingConfig::default());
         model.trust_class(ClassKey { mark, quoted })
     }
 
@@ -1431,8 +1468,8 @@ mod tests {
     /// INTRINSIC fires on a lowercased capital word; positional stays silent.
     #[test]
     fn intrinsic_flags_a_lowercased_capital_word() {
-        let mut vm = cycle("GEN", &["we saw Jesus"], 20);
-        vm.insert(sid("GEN", 100), "we saw jesus".to_string());
+        let vm = cycle("GEN", &["we saw Jesus"], 20);
+        let vm = push_verse(vm, "GEN", 100, "we saw jesus");
         let f = run(&vm, &intrinsic(cfg(0.5, 32.0, 0.0)));
         assert_eq!(f.len(), 1, "{f:?}");
         assert_eq!(slice(&vm, &f[0]), "jesus");
@@ -1449,8 +1486,8 @@ mod tests {
     /// POSITIONAL fires after a strong terminal, and the args carry the class.
     #[test]
     fn positional_flags_lowercase_after_a_strong_terminal() {
-        let mut vm = cycle("GEN", &["The men saw the gate."], 40);
-        vm.insert(sid("GEN", 100), "He fell. the men ran.".to_string());
+        let vm = cycle("GEN", &["The men saw the gate."], 40);
+        let vm = push_verse(vm, "GEN", 100, "He fell. the men ran.");
         let f = run(&vm, &positional(cfg(0.5, 32.0, 0.0)));
         let hit: Vec<_> = f.iter().filter(|f| slice(&vm, f) == "the").collect();
         assert_eq!(hit.len(), 1, "{f:?}");
@@ -1467,14 +1504,13 @@ mod tests {
     #[test]
     fn recurrence_silences_a_recurring_minority() {
         let one = {
-            let mut vm = cycle("GEN", &["we saw Jesus"], 100);
-            vm.insert(sid("GEN", 200), "we saw jesus".to_string());
-            vm
+            let vm = cycle("GEN", &["we saw Jesus"], 100);
+            push_verse(vm, "GEN", 200, "we saw jesus")
         };
         let many = {
             let mut vm = cycle("GEN", &["we saw Jesus"], 100);
             for i in 0..40 {
-                vm.insert(sid("GEN", 200 + i), "we saw jesus".to_string());
+                vm = push_verse(vm, "GEN", 200 + i, "we saw jesus");
             }
             vm
         };
@@ -1483,14 +1519,13 @@ mod tests {
         assert!(run(&many, &r).is_empty());
 
         let p_one = {
-            let mut vm = cycle("GEN", &["The men saw the gate."], 100);
-            vm.insert(sid("GEN", 300), "He fell. the men ran.".to_string());
-            vm
+            let vm = cycle("GEN", &["The men saw the gate."], 100);
+            push_verse(vm, "GEN", 300, "He fell. the men ran.")
         };
         let p_many = {
             let mut vm = cycle("GEN", &["The men saw the gate."], 100);
             for i in 0..40 {
-                vm.insert(sid("GEN", 300 + i), "He fell. the men ran.".to_string());
+                vm = push_verse(vm, "GEN", 300 + i, "He fell. the men ran.");
             }
             vm
         };
@@ -1508,79 +1543,79 @@ mod tests {
 
     #[test]
     fn positional_carries_across_a_verse_seam() {
-        let mut vm = cycle("GEN", &["There we go there.", "There it is there."], 30);
-        vm.insert(sid("GEN", 200), "he stops.".to_string());
-        vm.insert(sid("GEN", 201), "there he goes".to_string());
+        let vm = cycle("GEN", &["There we go there.", "There it is there."], 30);
+        let vm = push_verse(vm, "GEN", 200, "he stops.");
+        let vm = push_verse(vm, "GEN", 201, "there he goes");
         let f = run(&vm, &positional(cfg(0.5, 32.0, 0.0)));
-        assert!(f.iter().any(|f| f.sid == sid("GEN", 201) && slice(&vm, f) == "there"));
+        assert!(f.iter().any(|f| at(&vm, f, "GEN", 201) && slice(&vm, f) == "there"));
     }
 
     #[test]
     fn verse_initial_without_a_terminal_is_not_forced() {
-        let mut vm = cycle("GEN", &["There we go there.", "There it is there."], 30);
-        vm.insert(sid("GEN", 200), "he walks".to_string());
-        vm.insert(sid("GEN", 201), "there he goes".to_string());
+        let vm = cycle("GEN", &["There we go there.", "There it is there."], 30);
+        let vm = push_verse(vm, "GEN", 200, "he walks");
+        let vm = push_verse(vm, "GEN", 201, "there he goes");
         let f = run(&vm, &positional(cfg(0.5, 32.0, 0.0)));
-        assert!(!f.iter().any(|f| f.sid == sid("GEN", 201)));
+        assert!(!f.iter().any(|f| at(&vm, f, "GEN", 201)));
     }
 
     #[test]
     fn hyphen_compound_is_one_word() {
-        let mut compound = cycle("GEN", &["we saw Jesus"], 20);
-        compound.insert(sid("GEN", 100), "he met Bar-jesus".to_string());
+        let compound = cycle("GEN", &["we saw Jesus"], 20);
+        let compound = push_verse(compound, "GEN", 100, "he met Bar-jesus");
         assert!(run(&compound, &intrinsic(cfg(0.5, 32.0, 0.0))).is_empty());
 
-        let mut bare = cycle("GEN", &["we saw Jesus"], 20);
-        bare.insert(sid("GEN", 100), "he met jesus".to_string());
+        let bare = cycle("GEN", &["we saw Jesus"], 20);
+        let bare = push_verse(bare, "GEN", 100, "he met jesus");
         assert_eq!(run(&bare, &intrinsic(cfg(0.5, 32.0, 0.0))).len(), 1);
     }
 
     #[test]
     fn both_quadrant_fires_both_rules() {
-        let mut vm = cycle("GEN", &["The men praise God near the gate."], 40);
-        vm.insert(sid("GEN", 100), "He wept. god is near.".to_string());
+        let vm = cycle("GEN", &["The men praise God near the gate."], 40);
+        let vm = push_verse(vm, "GEN", 100, "He wept. god is near.");
         let fi = run(&vm, &intrinsic(cfg(0.5, 32.0, 0.0)));
         let fp = run(&vm, &positional(cfg(0.5, 32.0, 0.0)));
-        assert!(fi.iter().any(|f| f.sid == sid("GEN", 100) && slice(&vm, f) == "god"));
-        assert!(fp.iter().any(|f| f.sid == sid("GEN", 100) && slice(&vm, f) == "god"));
+        assert!(fi.iter().any(|f| at(&vm, f, "GEN", 100) && slice(&vm, f) == "god"));
+        assert!(fp.iter().any(|f| at(&vm, f, "GEN", 100) && slice(&vm, f) == "god"));
     }
 
     #[test]
     fn book_supersede_via_merge_and_remove() {
         let r = intrinsic(cfg(0.5, 32.0, 0.0));
-        let mut dirty = cycle("GEN", &["we saw Jesus"], 20);
-        dirty.insert(sid("GEN", 100), "we saw jesus".to_string());
-        let dirty_books = by_book(&dirty);
+        let dirty = cycle("GEN", &["we saw Jesus"], 20);
+        let dirty = push_verse(dirty, "GEN", 100, "we saw jesus");
+        let dirty_books = corpus::by_book(&dirty);
         let (prior, _) = r.reduce(&dirty_books, None, None);
         assert_eq!(r.judge(&prior, &dirty_books, None, None).len(), 1);
 
-        let mut fixed = cycle("GEN", &["we saw Jesus"], 20);
-        fixed.insert(sid("GEN", 100), "we saw Jesus".to_string());
-        let fixed_books = by_book(&fixed);
+        let fixed = cycle("GEN", &["we saw Jesus"], 20);
+        let fixed = push_verse(fixed, "GEN", 100, "we saw Jesus");
+        let fixed_books = corpus::by_book(&fixed);
         let (fresh, _) = r.reduce(&fixed_books, None, None);
         let merged = prior.merge(fresh);
         assert!(r.judge(&merged, &fixed_books, None, None).is_empty());
 
-        let mut two = cycle("GEN", &["we saw Jesus"], 20);
-        two.extend(book("EXO", &[(1, "we saw jesus")]));
-        let (mut stats2, _) = r.reduce(&by_book(&two), None, None);
-        assert_eq!(r.judge(&stats2, &by_book(&two), None, None).len(), 1);
+        let two = cycle("GEN", &["we saw Jesus"], 20);
+        let two = extend_corpus(two, book("EXO", &[(1, "we saw jesus")]));
+        let (mut stats2, _) = r.reduce(&corpus::by_book(&two), None, None);
+        assert_eq!(r.judge(&stats2, &corpus::by_book(&two), None, None).len(), 1);
         let RuleStats::Casing(ref mut c) = stats2 else { unreachable!() };
-        c.remove_book(BookId::from_str("GEN").unwrap());
+        c.remove_book("GEN");
         let exo = book("EXO", &[(1, "we saw jesus")]);
-        assert!(r.judge(&stats2, &by_book(&exo), None, None).is_empty());
+        assert!(r.judge(&stats2, &corpus::by_book(&exo), None, None).is_empty());
     }
 
     #[test]
     fn floor_and_knee_config_are_respected() {
-        let mut vm = cycle("GEN", &["we saw Jesus"], 100);
-        vm.insert(sid("GEN", 200), "we saw jesus".to_string());
+        let vm = cycle("GEN", &["we saw Jesus"], 100);
+        let vm = push_verse(vm, "GEN", 200, "we saw jesus");
         assert_eq!(run(&vm, &intrinsic(cfg(0.95, 32.0, 0.0))).len(), 1);
         assert!(run(&vm, &intrinsic(cfg(0.999, 32.0, 0.0))).is_empty());
 
-        let mut two = cycle("GEN", &["we saw Jesus"], 100);
-        two.insert(sid("GEN", 200), "we saw jesus".to_string());
-        two.insert(sid("GEN", 201), "we saw jesus".to_string());
+        let two = cycle("GEN", &["we saw Jesus"], 100);
+        let two = push_verse(two, "GEN", 200, "we saw jesus");
+        let two = push_verse(two, "GEN", 201, "we saw jesus");
         assert_eq!(run(&two, &intrinsic(cfg(0.5, 32.0, 0.0))).len(), 2);
         assert!(run(&two, &intrinsic(cfg(0.5, 1.0, 0.0))).is_empty());
     }
@@ -1596,10 +1631,10 @@ mod tests {
         // `the` recurs mid-flow several times a verse so it stays lexicon-lower
         // even with the quote-opening `The` folded into its baseline profile.
         // `.` and `."` share the `The` aftermath ⇒ high agreement, high trust.
-        let mut vm =
+        let vm =
             cycle("GEN", &["The voice spoke to the man.\" The people saw the gate by the sea."], 60);
         // One slip: lowercase `the` right after a `."` boundary.
-        vm.insert(sid("GEN", 500), "He wept.\" the men saw the gate by the sea.".to_string());
+        let vm = push_verse(vm, "GEN", 500, "He wept.\" the men saw the gate by the sea.");
 
         assert!(
             class_trust(&vm, '.', true) >= 0.90,
@@ -1609,7 +1644,7 @@ mod tests {
         let f = run(&vm, &positional(cfg(0.5, 32.0, 1.96)));
         let hit: Vec<_> = f
             .iter()
-            .filter(|f| f.sid == sid("GEN", 500) && slice(&vm, f) == "the")
+            .filter(|f| at(&vm, f, "GEN", 500) && slice(&vm, f) == "the")
             .collect();
         assert_eq!(hit.len(), 1, "the post-quote slip flags: {f:?}");
         match &hit[0].args {
@@ -1632,18 +1667,22 @@ mod tests {
         // `.` is the reference terminal (opens `The`, `the` recurs mid). The
         // comma is followed by list names (`Enosh`, `Kenan`) never seen after a
         // period, plus `The`/`the` in a ~2:1 mix (moderate case-witness).
-        let mut vm = VerseMap::new();
+        let mut keys = Vec::new();
+        let mut texts = Vec::new();
         let mut v = 1u16;
         for _ in 0..40 {
             // two verses give the comma an upper `The` after it …
-            vm.insert(sid("GEN", v), "Enosh, Kenan, The men saw the gate.".to_string());
+            keys.push(key_at("GEN", v));
+            texts.push("Enosh, Kenan, The men saw the gate.".to_string());
             v += 1;
             // … and one gives it a lowercase `the`, holding the habit under 1.0.
-            vm.insert(sid("GEN", v), "Enosh, Kenan, the men saw the gate.".to_string());
+            keys.push(key_at("GEN", v));
+            texts.push("Enosh, Kenan, the men saw the gate.".to_string());
             v += 1;
         }
+        let vm = Corpus::try_from_parts(keys, texts).unwrap();
         // A lowercase slip of the name `enosh` mid-flow (its only lowercase).
-        vm.insert(sid("GEN", 900), "we saw enosh today.".to_string());
+        let vm = push_verse(vm, "GEN", 900, "we saw enosh today.");
 
         // The comma is distrusted (agreement guard) — below the gate.
         assert!(
@@ -1666,7 +1705,7 @@ mod tests {
         // would be censored and this would stay silent.)
         let fi = run(&vm, &intrinsic(cfg(0.5, 32.0, 1.96)));
         assert!(
-            fi.iter().any(|f| f.sid == sid("GEN", 900) && slice(&vm, f) == "enosh"),
+            fi.iter().any(|f| at(&vm, f, "GEN", 900) && slice(&vm, f) == "enosh"),
             "the name's post-comma capitals remain lexicon evidence: {fi:?}"
         );
     }
@@ -1683,10 +1722,10 @@ mod tests {
         // Six comma→`The` (upper) events: a small lexicon-lower sample ⇒ a
         // Wilson-shrunk, moderate comma habit/trust.
         for i in 0..6u16 {
-            vm.insert(sid("GEN", 800 + i), "We met, The men there.".to_string());
+            vm = push_verse(vm, "GEN", 800 + i, "We met, The men there.");
         }
         // One comma→`the` slip: the flag candidate (forced-lowercase count 1).
-        vm.insert(sid("GEN", 900), "We met, the men there.".to_string());
+        let vm = push_verse(vm, "GEN", 900, "We met, the men there.");
         let t = class_trust(&vm, ',', false);
         assert!(
             (0.10..0.90).contains(&t),
@@ -1696,7 +1735,7 @@ mod tests {
         let hits = |gate: f32| {
             run(&vm, &positional(cfg_g(0.4, 32.0, 1.96, gate)))
                 .iter()
-                .filter(|f| f.sid == sid("GEN", 900) && slice(&vm, f) == "the")
+                .filter(|f| at(&vm, f, "GEN", 900) && slice(&vm, f) == "the")
                 .count()
         };
         assert_eq!(hits(0.10), 1, "below the comma's trust the site surfaces");
@@ -1707,10 +1746,9 @@ mod tests {
     /// casing verdict even when it cannot identify the terminal.
     #[test]
     fn caseless_corpus_stays_silent_regardless_of_trust() {
-        let mut vm = VerseMap::new();
-        for v in 1..=60u16 {
-            vm.insert(sid("GEN", v), "उसने कहा। वे चले गए। फिर वह चला गया।".to_string());
-        }
+        let keys: Vec<String> = (1..=60u16).map(|v| key_at("GEN", v)).collect();
+        let texts = vec!["उसने कहा। वे चले गए। फिर वह चला गया।".to_string(); keys.len()];
+        let vm = Corpus::try_from_parts(keys, texts).unwrap();
         assert!(run(&vm, &positional(cfg(0.0, 32.0, 1.96))).is_empty());
         assert!(run(&vm, &intrinsic(cfg(0.0, 32.0, 1.96))).is_empty());
     }

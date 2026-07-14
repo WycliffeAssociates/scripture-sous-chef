@@ -24,14 +24,15 @@
 
 use std::collections::BTreeMap;
 
+use rustc_hash::FxHashMap;
+
 use crate::config::ProportionalityConfig;
+use crate::corpus::{rebase, Books, Corpus, LocalKeyIdx};
 use crate::diagnostics::{Finding, FindingArgs, LengthRatioScope, RuleId, Severity};
 use crate::rule::{self, StatefulRule, TokenCache};
-use crate::sid::{BookId, Sid};
 use crate::span::Span;
 use crate::stats::RuleStats;
 use crate::stream;
-use crate::verse::{Books, VerseMap};
 
 pub const PROJECT_LENGTH_RATIO: RuleId = RuleId::ProjectLengthRatio;
 
@@ -40,15 +41,16 @@ pub const PROJECT_LENGTH_RATIO: RuleId = RuleId::ProjectLengthRatio;
 const MAD_TO_SIGMA: f64 = 0.6745;
 
 /// One verse's target/reference ratio, retained so `judge` can derive the
-/// distribution and emit findings without the text. `sid` is a `Copy` value
-/// in memory and the canonical `"GEN 1:1"` string on the wire (its serde
-/// impl); `f32` ratio, `u32` byte length for the finding range.
+/// distribution and emit findings without the text. `local_idx` is
+/// book-local (the per-book map already carries the slug); rebased to a
+/// global `KeyIdx` only at `judge` time, against the current call's
+/// `BookGroup::base`. `f32` ratio, `u32` byte length for the finding range.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub(crate) struct RatioObs {
-    #[cfg_attr(feature = "wasm", tsify(type = "string"))]
-    sid: Sid,
+    #[cfg_attr(feature = "wasm", tsify(type = "number"))]
+    local_idx: LocalKeyIdx,
     ratio: f32,
     len: u32,
 }
@@ -60,7 +62,7 @@ pub(crate) struct RatioObs {
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct ProportionalityStats {
     #[cfg_attr(feature = "wasm", tsify(type = "Record<string, RatioObs[]>"))]
-    pub(crate) per_book: BTreeMap<BookId, Vec<RatioObs>>,
+    pub(crate) per_book: BTreeMap<Box<str>, Vec<RatioObs>>,
 }
 
 impl ProportionalityStats {
@@ -72,9 +74,23 @@ impl ProportionalityStats {
         self
     }
 
-    pub(crate) fn remove_book(&mut self, book: BookId) {
-        self.per_book.remove(&book);
+    pub(crate) fn remove_book(&mut self, slug: &str) {
+        self.per_book.remove(slug);
     }
+}
+
+/// Index the reference corpus by key string, in presented order — pairing
+/// is by (exact key string, occurrence ordinal), never by array position,
+/// since `source`/`target` are independent corpora with possibly different
+/// lengths and orderings.
+pub(crate) type SourceIndex<'a> = FxHashMap<&'a str, Vec<&'a str>>;
+
+pub(crate) fn index_source(source: &Corpus) -> SourceIndex<'_> {
+    let mut idx: SourceIndex<'_> = FxHashMap::default();
+    for (key, text) in source.keys().iter().zip(source.texts()) {
+        idx.entry(key.as_str()).or_default().push(text.as_str());
+    }
+    idx
 }
 
 pub struct ProjectLengthRatio {
@@ -84,18 +100,28 @@ pub struct ProjectLengthRatio {
 /// The proportionality counting listener: one book's target/reference ratio
 /// bucket. Needs no shared products — "length" is the grapheme count of both
 /// sides (the source has no tape), so it counts via the shared char walk.
-pub(crate) struct ProportionalityAcc<'s> {
-    source: Option<&'s VerseMap>,
+/// Pairs target and source by (exact key string, occurrence ordinal) via
+/// `seen`, never by array position — `source` and `target` are independent
+/// corpora with possibly different lengths and orderings.
+pub(crate) struct ProportionalityAcc<'v, 's> {
+    source_index: Option<&'s SourceIndex<'s>>,
+    seen: FxHashMap<&'v str, usize>,
     bucket: Vec<RatioObs>,
 }
 
-impl<'s> ProportionalityAcc<'s> {
-    pub(crate) fn new(source: Option<&'s VerseMap>) -> Self {
-        ProportionalityAcc { source, bucket: Vec::new() }
+impl<'v, 's> ProportionalityAcc<'v, 's> {
+    pub(crate) fn new(source_index: Option<&'s SourceIndex<'s>>) -> Self {
+        ProportionalityAcc { source_index, seen: FxHashMap::default(), bucket: Vec::new() }
     }
 
-    pub(crate) fn verse(&mut self, v: &stream::VerseInputs<'_, '_>) {
-        let Some(src_text) = self.source.and_then(|s| s.get(&v.sid)) else {
+    pub(crate) fn verse(&mut self, v: &stream::VerseInputs<'v, '_>) {
+        let Some(index) = self.source_index else {
+            return;
+        };
+        let ordinal = self.seen.entry(v.key).or_insert(0);
+        let src_text = index.get(v.key).and_then(|texts| texts.get(*ordinal)).copied();
+        *ordinal += 1;
+        let Some(src_text) = src_text else {
             return;
         };
         let t = crate::grapheme::count(v.text);
@@ -104,7 +130,7 @@ impl<'s> ProportionalityAcc<'s> {
             return;
         }
         self.bucket.push(RatioObs {
-            sid: v.sid,
+            local_idx: v.local_idx,
             ratio: (t as f64 / s as f64) as f32,
             len: v.text.len() as u32,
         });
@@ -123,7 +149,7 @@ impl StatefulRule for ProjectLengthRatio {
     fn reduce(
         &self,
         books: &Books<'_>,
-        source: Option<&VerseMap>,
+        source: Option<&Corpus>,
         _tokens: Option<&TokenCache>,
     ) -> (RuleStats, rule::RuleSites) {
         // Ratios for target ∩ source, grouped by book ("length" is grapheme
@@ -133,20 +159,19 @@ impl StatefulRule for ProjectLengthRatio {
         // usable ratios (source gone, or empty sides). Without this, an
         // edited book that lost its ratios would keep re-emitting the prior
         // reduction's stale findings.
-        let per_book = rule::map_books(books, |book, verses| {
-            (
-                book,
-                stream::drive_book(
-                    verses,
-                    stream::Needs::default(),
-                    ProportionalityAcc::new(source),
-                    |a, v, _| a.verse(v),
-                    ProportionalityAcc::finish,
-                ),
+        let index = source.map(index_source);
+        let mut per_book = BTreeMap::new();
+        for (group, obs) in books.iter().zip(rule::map_books(books, |group| {
+            stream::drive_book(
+                group,
+                stream::Needs::default(),
+                ProportionalityAcc::new(index.as_ref()),
+                |a, v| a.verse(v),
+                ProportionalityAcc::finish,
             )
-        })
-        .into_iter()
-        .collect();
+        })) {
+            per_book.insert(Box::from(group.slug), obs);
+        }
         // No sites to forward (ADR 0044): judge emits from the cached ratios
         // and never scans text.
         (
@@ -158,7 +183,7 @@ impl StatefulRule for ProjectLengthRatio {
     fn judge(
         &self,
         stats: &RuleStats,
-        _books: &Books<'_>,
+        books: &Books<'_>,
         _tokens: Option<&TokenCache>,
         _sites: Option<&rule::RuleSites>,
     ) -> Vec<Finding> {
@@ -180,8 +205,14 @@ impl StatefulRule for ProjectLengthRatio {
             .collect();
         let project = dist(&all, self.cfg.min_verses);
 
-        let mut out = Vec::new();
-        for obs in stats.per_book.values() {
+        // Iterate the current call's book groups (never the retained
+        // observations directly): each `RatioObs.local_idx` is only
+        // meaningful rebased against *this* call's `BookGroup::base`.
+        let mut out: Vec<Finding> = rule::map_books(books, |group| {
+            let mut found = Vec::new();
+            let Some(obs) = stats.per_book.get(group.slug) else {
+                return found;
+            };
             let book = dist(
                 &obs.iter().map(|o| f64::from(o.ratio)).collect::<Vec<_>>(),
                 self.cfg.min_verses,
@@ -212,11 +243,11 @@ impl StatefulRule for ProjectLengthRatio {
                     .into_iter()
                     .chain(project_fires.then(|| project_z.unwrap().abs()))
                     .fold(0.0_f64, f64::max);
-                out.push(Finding {
-                    sid: o.sid,
+                found.push(Finding {
+                    key_idx: rebase(group.base, o.local_idx),
                     code: PROJECT_LENGTH_RATIO,
                     severity: Severity::Warning,
-                    // The finding anchors the whole verse; `sid` carries identity.
+                    // The finding anchors the whole verse; `key_idx` carries identity.
                     range: Span {
                         start: 0,
                         end: o.len,
@@ -228,8 +259,12 @@ impl StatefulRule for ProjectLengthRatio {
                     }),
                 });
             }
-        }
-        out.sort_by_key(|f| (f.sid, f.range.start));
+            found
+        })
+        .into_iter()
+        .flatten()
+        .collect();
+        out.sort_by_key(|f| (f.key_idx, f.range.start));
         out
     }
 }
@@ -277,28 +312,53 @@ fn median(values: impl Iterator<Item = f64>) -> f64 {
 mod tests {
     use super::*;
     use crate::config::ProportionalityConfig;
-    use crate::sid::BookId;
+    use crate::corpus::by_book;
 
-    fn sid(book: &str, verse: u16) -> Sid {
-        Sid::new(BookId::from_str(book).unwrap(), 1, verse)
+    /// A key string for chapter 1, verse `verse` of `book` — the wire format
+    /// (`"GEN 1:3"`) both target and source corpora key on. Pairing is by
+    /// exact key string (occurrence ordinal for duplicates), so target/source
+    /// verses that should pair just need to share this string.
+    fn key(book: &str, verse: u16) -> String {
+        format!("{book} 1:{verse}")
     }
 
     /// `n` parallel verses of equal length, with target verse `outlier_at`
-    /// (if any) inflated by `factor`.
-    fn corpus(n: u16, outlier_at: Option<u16>, factor: usize) -> (VerseMap, VerseMap) {
-        let mut target = VerseMap::new();
-        let mut source = VerseMap::new();
+    /// (if any) inflated by `factor`. Target and source share key strings
+    /// 1:1 (the common, non-duplicate-key pairing case).
+    fn corpus(n: u16, outlier_at: Option<u16>, factor: usize) -> (Corpus, Corpus) {
+        let mut target_keys = Vec::new();
+        let mut target_texts = Vec::new();
+        let mut source_keys = Vec::new();
+        let mut source_texts = Vec::new();
         for v in 1..=n {
             let base = "abcdefghij ".repeat(4); // 44 graphemes
-            source.insert(sid("GEN", v), base.clone());
+            let k = key("GEN", v);
+            source_keys.push(k.clone());
+            source_texts.push(base.clone());
             let t = if outlier_at == Some(v) {
                 base.repeat(factor)
             } else {
                 base.clone()
             };
-            target.insert(sid("GEN", v), t);
+            target_keys.push(k);
+            target_texts.push(t);
         }
-        (target, source)
+        (
+            Corpus::try_from_parts(target_keys, target_texts).unwrap(),
+            Corpus::try_from_parts(source_keys, source_texts).unwrap(),
+        )
+    }
+
+    /// Rebuild `c` with each text passed through `f(index, text)` —
+    /// `Corpus` has no `iter_mut`, so a length jitter goes through the owned
+    /// `texts()` vec and a fresh validated `Corpus`, standing in for the old
+    /// `VerseMap::iter_mut` mutation-in-place.
+    fn jitter(c: &Corpus, f: impl Fn(usize, &mut String)) -> Corpus {
+        let mut texts = c.texts().to_vec();
+        for (i, t) in texts.iter_mut().enumerate() {
+            f(i, t);
+        }
+        Corpus::try_from_parts(c.keys().to_vec(), texts).unwrap()
     }
 
     fn rule() -> ProjectLengthRatio {
@@ -317,8 +377,9 @@ mod tests {
     }
 
     /// Proportionality ignores the char table, so an empty one is fine here.
-    fn run(rule: &ProjectLengthRatio, target: &VerseMap, source: Option<&VerseMap>) -> Vec<Finding> {
-        rule.judge(&rule.reduce(&crate::verse::by_book(target), source, None).0, &crate::verse::by_book(target), None, None)
+    fn run(rule: &ProjectLengthRatio, target: &Corpus, source: Option<&Corpus>) -> Vec<Finding> {
+        let books = by_book(target);
+        rule.judge(&rule.reduce(&books, source, None).0, &books, None, None)
     }
 
     #[test]
@@ -337,34 +398,33 @@ mod tests {
     #[test]
     fn book_under_min_verses_is_skipped() {
         // A gross outlier, but only 10 shared verses < default 50.
-        let (mut target, mut source) = corpus(10, Some(3), 5);
+        let (target, source) = corpus(10, Some(3), 5);
         // Perturb lengths so MAD wouldn't be the reason for silence.
-        for (i, (_, t)) in target.iter_mut().enumerate() {
-            t.push_str(&"x".repeat(i));
-        }
-        for (i, (_, s)) in source.iter_mut().enumerate() {
-            s.push_str(&"y".repeat(i / 2));
-        }
+        let target = jitter(&target, |i, t| t.push_str(&"x".repeat(i)));
+        let source = jitter(&source, |i, s| s.push_str(&"y".repeat(i / 2)));
         assert!(run(&rule(), &target, Some(&source)).is_empty());
     }
 
     #[test]
-    fn outlier_fires_with_sid_score_and_args() {
+    fn outlier_fires_with_key_score_and_args() {
         // Mild length jitter so MAD > 0, plus one 5× verse.
-        let (mut target, source) = corpus(60, Some(3), 5);
-        for (i, (_, t)) in target.iter_mut().enumerate() {
+        let (target, source) = corpus(60, Some(3), 5);
+        let target = jitter(&target, |i, t| {
             if i % 2 == 0 {
                 t.push('x');
             }
-        }
+        });
         let findings = run(&rule(), &target, Some(&source));
         assert_eq!(findings.len(), 1);
         let f = &findings[0];
-        assert_eq!(f.sid, sid("GEN", 3));
+        assert_eq!(target.key(f.key_idx), key("GEN", 3));
         assert_eq!(f.code, PROJECT_LENGTH_RATIO);
         assert_eq!(f.severity, Severity::Warning);
         // Whole-verse anchor.
-        assert_eq!(f.range, Span { start: 0, end: target[&f.sid].len() as u32 });
+        assert_eq!(
+            f.range,
+            Span { start: 0, end: target.text(f.key_idx).len() as u32 }
+        );
         // A 5× outlier saturates the confidence scale.
         assert_eq!(f.score, Some(1.0));
         let Some(FindingArgs::LengthRatio { ratio_pct, scope }) = f.args else {
@@ -385,26 +445,38 @@ mod tests {
         // GEN: 60 ~equal verses (a valid book distribution, no outlier).
         // EXO: 3 verses 5× longer — too few for a book distribution of their
         // own, but gross outliers against the pooled project. They fire on
-        // Project scope only.
+        // Project scope only. GEN and EXO must each be a contiguous block
+        // (`Corpus::try_from_parts`'s invariant), so EXO's keys are appended
+        // after all of GEN's.
         let base = "abcdefghij ".repeat(4); // 44 graphemes
-        let mut target = VerseMap::new();
-        let mut source = VerseMap::new();
+        let mut target_keys = Vec::new();
+        let mut target_texts = Vec::new();
+        let mut source_keys = Vec::new();
+        let mut source_texts = Vec::new();
         for v in 1..=60 {
-            source.insert(sid("GEN", v), base.clone());
+            let k = key("GEN", v);
+            source_keys.push(k.clone());
+            source_texts.push(base.clone());
             let mut t = base.clone();
             if v % 2 == 0 {
                 t.push('x'); // jitter so GEN's MAD > 0
             }
-            target.insert(sid("GEN", v), t);
+            target_keys.push(k);
+            target_texts.push(t);
         }
         for v in 1..=3 {
-            source.insert(sid("EXO", v), base.clone());
-            target.insert(sid("EXO", v), base.repeat(5));
+            let k = key("EXO", v);
+            source_keys.push(k.clone());
+            source_texts.push(base.clone());
+            target_keys.push(k);
+            target_texts.push(base.repeat(5));
         }
+        let target = Corpus::try_from_parts(target_keys, target_texts).unwrap();
+        let source = Corpus::try_from_parts(source_keys, source_texts).unwrap();
         let findings = run(&rule(), &target, Some(&source));
         assert_eq!(findings.len(), 3);
         for f in &findings {
-            assert_eq!(f.sid.book, BookId::from_str("EXO").unwrap());
+            assert!(target.key(f.key_idx).starts_with("EXO "));
             let Some(FindingArgs::LengthRatio { scope, .. }) = f.args else {
                 panic!("expected LengthRatio args");
             };
@@ -417,43 +489,61 @@ mod tests {
 
     #[test]
     fn verses_missing_from_source_are_ignored() {
-        let (mut target, source) = corpus(60, None, 1);
-        for (i, (_, t)) in target.iter_mut().enumerate() {
+        let (target, source) = corpus(60, None, 1);
+        let target = jitter(&target, |i, t| {
             if i % 2 == 0 {
                 t.push('x');
             }
-        }
+        });
         // A target-only verse with absurd length: no ratio, no finding.
-        target.insert(sid("GEN", 200), "z".repeat(10_000));
+        let mut target_keys = target.keys().to_vec();
+        let mut target_texts = target.texts().to_vec();
+        target_keys.push(key("GEN", 200));
+        target_texts.push("z".repeat(10_000));
+        let target = Corpus::try_from_parts(target_keys, target_texts).unwrap();
         assert!(run(&rule(), &target, Some(&source)).is_empty());
     }
 
     #[test]
     fn empty_sides_are_skipped() {
-        let (mut target, mut source) = corpus(60, None, 1);
-        for (i, (_, t)) in target.iter_mut().enumerate() {
+        let (target, source) = corpus(60, None, 1);
+        let target = jitter(&target, |i, t| {
             if i % 2 == 0 {
                 t.push('x');
             }
-        }
-        target.insert(sid("GEN", 61), String::new());
-        source.insert(sid("GEN", 61), "abc".into());
-        target.insert(sid("GEN", 62), "abc".into());
-        source.insert(sid("GEN", 62), String::new());
+        });
+
+        let mut target_keys = target.keys().to_vec();
+        let mut target_texts = target.texts().to_vec();
+        let mut source_keys = source.keys().to_vec();
+        let mut source_texts = source.texts().to_vec();
+
+        target_keys.push(key("GEN", 61));
+        target_texts.push(String::new());
+        source_keys.push(key("GEN", 61));
+        source_texts.push("abc".to_string());
+
+        target_keys.push(key("GEN", 62));
+        target_texts.push("abc".to_string());
+        source_keys.push(key("GEN", 62));
+        source_texts.push(String::new());
+
+        let target = Corpus::try_from_parts(target_keys, target_texts).unwrap();
+        let source = Corpus::try_from_parts(source_keys, source_texts).unwrap();
         assert!(run(&rule(), &target, Some(&source)).is_empty());
     }
 
     #[test]
     fn min_verses_knob_activates_small_books() {
-        let (mut target, source) = corpus(10, Some(3), 8);
-        for (i, (_, t)) in target.iter_mut().enumerate() {
+        let (target, source) = corpus(10, Some(3), 8);
+        let target = jitter(&target, |i, t| {
             if i % 2 == 0 {
                 t.push('x');
             }
-        }
+        });
         let findings = run(&small_book_rule(), &target, Some(&source));
         assert_eq!(findings.len(), 1);
-        assert_eq!(findings[0].sid, sid("GEN", 3));
+        assert_eq!(target.key(findings[0].key_idx), key("GEN", 3));
     }
 
     #[test]
@@ -461,19 +551,23 @@ mod tests {
         // Reduce a corpus with an outlier, then a corrected edit; merging
         // supersedes the book so the outlier disappears.
         let r = rule();
-        let (mut target, source) = corpus(60, Some(3), 5);
-        for (i, (_, t)) in target.iter_mut().enumerate() {
+        let (target, source) = corpus(60, Some(3), 5);
+        let target = jitter(&target, |i, t| {
             if i % 2 == 0 {
                 t.push('x');
             }
-        }
-        let prior = r.reduce(&crate::verse::by_book(&target), Some(&source), None).0;
-        assert_eq!(r.judge(&prior, &crate::verse::by_book(&target), None, None).len(), 1);
+        });
+        let books = by_book(&target);
+        let prior = r.reduce(&books, Some(&source), None).0;
+        assert_eq!(r.judge(&prior, &books, None, None).len(), 1);
 
         // Fix verse 3 to a normal length, re-reduce, merge (supersede GEN).
-        target.insert(sid("GEN", 3), "abcdefghij ".repeat(4));
-        let merged = prior.merge(r.reduce(&crate::verse::by_book(&target), Some(&source), None).0);
-        assert!(r.judge(&merged, &crate::verse::by_book(&target), None, None).is_empty());
+        let mut texts = target.texts().to_vec();
+        texts[2] = "abcdefghij ".repeat(4); // index 2 == "GEN 1:3"
+        let fixed = Corpus::try_from_parts(target.keys().to_vec(), texts).unwrap();
+        let fixed_books = by_book(&fixed);
+        let merged = prior.merge(r.reduce(&fixed_books, Some(&source), None).0);
+        assert!(r.judge(&merged, &fixed_books, None, None).is_empty());
     }
 
     #[test]
@@ -481,19 +575,20 @@ mod tests {
         // A book that loses its source must supersede its prior ratios to
         // *empty* — not leave the prior reduction's stale findings standing.
         let r = rule();
-        let (mut target, source) = corpus(60, Some(3), 5);
-        for (i, (_, t)) in target.iter_mut().enumerate() {
+        let (target, source) = corpus(60, Some(3), 5);
+        let target = jitter(&target, |i, t| {
             if i % 2 == 0 {
                 t.push('x');
             }
-        }
-        let prior = r.reduce(&crate::verse::by_book(&target), Some(&source), None).0;
-        assert_eq!(r.judge(&prior, &crate::verse::by_book(&target), None, None).len(), 1);
+        });
+        let books = by_book(&target);
+        let prior = r.reduce(&books, Some(&source), None).0;
+        assert_eq!(r.judge(&prior, &books, None, None).len(), 1);
 
         // Re-supply the same book with the reference gone: the fresh reduction
         // carries an empty GEN bucket, which supersedes the prior's ratios.
-        let merged = prior.merge(r.reduce(&crate::verse::by_book(&target), None, None).0);
-        assert!(r.judge(&merged, &crate::verse::by_book(&target), None, None).is_empty());
+        let merged = prior.merge(r.reduce(&books, None, None).0);
+        assert!(r.judge(&merged, &books, None, None).is_empty());
     }
 
     #[test]
@@ -508,7 +603,8 @@ mod tests {
         };
         let (target, _) = corpus(3, None, 1);
         // No source ⇒ every book bucket is empty; judging must not trap.
-        assert!(r.judge(&r.reduce(&crate::verse::by_book(&target), None, None).0, &crate::verse::by_book(&target), None, None).is_empty());
+        let books = by_book(&target);
+        assert!(r.judge(&r.reduce(&books, None, None).0, &books, None, None).is_empty());
     }
 
     #[test]
