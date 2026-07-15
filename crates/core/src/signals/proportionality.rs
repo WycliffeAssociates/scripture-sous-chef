@@ -730,6 +730,26 @@ mod tests {
         assert!(run(&rule(), &target, Some(&source)).is_empty());
     }
 
+    /// The symmetric case: a key present only in the source (the target
+    /// never presents it) is never looked up — `index_source` is consulted
+    /// per *target* verse, so a source-only key has no target verse to
+    /// anchor a finding to, regardless of how extreme its text is.
+    #[test]
+    fn keys_present_only_in_source_are_ignored() {
+        let (target, source) = corpus(60, None, 1);
+        let target = jitter(&target, |i, t| {
+            if i % 2 == 0 {
+                t.push('x');
+            }
+        });
+        let mut source_keys = source.keys().to_vec();
+        let mut source_texts = source.texts().to_vec();
+        source_keys.push(key("GEN", 200));
+        source_texts.push("z".repeat(10_000));
+        let source = Corpus::try_from_parts(source_keys, source_texts).unwrap();
+        assert!(run(&rule(), &target, Some(&source)).is_empty());
+    }
+
     #[test]
     fn empty_sides_are_skipped() {
         let (target, source) = corpus(60, None, 1);

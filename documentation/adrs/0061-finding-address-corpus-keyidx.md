@@ -244,20 +244,27 @@ innocence just because this one was granted.
   earlier-book-shift rebasing) — added; (4) a wasm test doc comment claimed
   a nonexistent wasm-bindgen-test integration suite covered the `JsError`
   rejection path — reworded to accurately describe the gap instead of
-  claiming coverage that does not exist. All four are representational
+  claiming coverage that does not exist. A follow-up review pass found the
+  duplicate-count tests in (3) still didn't cover a key present *only* on
+  the source side (as opposed to a surplus duplicate of a *shared* key) —
+  added `keys_present_only_in_source_are_ignored`, symmetric to the
+  existing target-only-key test. All of the above are representational
   hardening with no intended behavior change, so rather than re-running the
-  full 1,504-corpus fleet oracle, this was spot-checked on a deterministic
-  39-corpus stride sample (every 38th file in `corpora/vref/`, both
-  `default` and `all` configs): `diff` before vs. after this remediation is
-  byte-identical (0 lines) on both dumps, confirming (1) and (2) above
-  changed representation only, not results.
+  full 1,504-corpus fleet oracle for each pass, this was spot-checked on a
+  deterministic 39-corpus stride sample (every 38th file in
+  `corpora/vref/`, both `default` and `all` configs): `diff` before vs.
+  after the as-cast/`DelimEvent` remediation in (1)/(2) is byte-identical
+  (0 lines) on both dumps.
 - **`cargo fmt --all --check` remains not clean** — confirmed pre-existing
   and unrelated to this migration (the pre-migration commit fails the same
-  check with a comparable diff count across the same unrelated files); left
-  alone rather than risk a blanket reformat mixing unrelated style changes
-  into this diff (see repo lesson: never run rustfmt across a file/crate that
-  mixes new and pre-existing unformatted content). `corpus.rs`, written from
-  scratch in this migration, is fully rustfmt-clean on its own.
+  check with a comparable diff count across the same unrelated files);
+  `corpus.rs` and every line touched in the review-remediation passes above
+  are individually rustfmt-clean (verified per-file, not blanket-reformatted,
+  per the repo lesson against reformatting a file that mixes new and
+  pre-existing unformatted content). Fixing the underlying repo-wide drift
+  and then re-running the full fleet oracle are explicitly out of scope for
+  this ADR — tracked as separate follow-up work, not a waiver of the plan's
+  acceptance item.
 - **Deferred, not implemented** (tracked in the plan, unchanged by this ADR):
   a wide-offset `SiteAddr` fallback for a theoretical >64 KiB verse; the
   census store-all/cap policy; exposing `key_idx` on the wasm wire; a
