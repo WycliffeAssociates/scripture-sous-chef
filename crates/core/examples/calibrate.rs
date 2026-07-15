@@ -29,6 +29,11 @@
 //!   # incremental oracle with the cross-call analysis cache enabled:
 //!   cargo run --release -p ssc-core --example calibrate -- \
 //!       --dump-incremental-cached corpora/vref /tmp/incremental.tsv default
+//!   # fast inner-loop oracle: WA subset only (~251 corpora, ~6x quicker) —
+//!   # trailing `wa` scopes any dump command; omit (or `full`) for the whole
+//!   # fleet. A `wa` dump only diffs against another `wa` dump.
+//!   cargo run --release -p ssc-core --example calibrate -- \
+//!       --dump-findings corpora/vref /tmp/findings.wa.tsv default wa
 
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -245,23 +250,27 @@ fn main() {
         // a whole vref directory, under either the v1 defaults or the
         // everything-on config. Byte-identical dumps across the port are the
         // acceptance gate. Source (proportionality reference) is WA-en-ulb
-        // when present in the directory, else none.
-        [flag, path, out, cfg_name] if flag == "--dump-findings" => {
-            dump_findings(Path::new(path), Path::new(out), cfg_name);
+        // when present in the directory, else none. An optional trailing
+        // `wa`|`full` token scopes the fleet: `wa` runs the ~251-corpus WA
+        // subset (the fast inner-loop oracle), omitted/`full` the whole fleet
+        // (the before/after gate). A `wa` dump only ever diffs against a `wa`
+        // dump — never a `full` one.
+        [flag, path, out, cfg_name, rest @ ..] if flag == "--dump-findings" => {
+            dump_findings(Path::new(path), Path::new(out), cfg_name, OracleScope::parse(rest));
             return;
         }
         // Incremental oracle: for each corpus, mutate one verse, then run the
         // complete-snapshot call (whole corpus + prior + changed=[book]) and
         // dump its findings + a stats digest. Pins the prior/merge/changed
-        // path across the port.
-        [flag, path, out, cfg_name] if flag == "--dump-incremental" => {
-            dump_incremental(Path::new(path), Path::new(out), cfg_name, false);
+        // path across the port. Trailing `wa`|`full` scopes the fleet as above.
+        [flag, path, out, cfg_name, rest @ ..] if flag == "--dump-incremental" => {
+            dump_incremental(Path::new(path), Path::new(out), cfg_name, false, OracleScope::parse(rest));
             return;
         }
         // Same incremental oracle with the cross-call cache enabled. The
-        // output must remain byte-identical to --dump-incremental.
-        [flag, path, out, cfg_name] if flag == "--dump-incremental-cached" => {
-            dump_incremental(Path::new(path), Path::new(out), cfg_name, true);
+        // output must remain byte-identical to --dump-incremental (same scope).
+        [flag, path, out, cfg_name, rest @ ..] if flag == "--dump-incremental-cached" => {
+            dump_incremental(Path::new(path), Path::new(out), cfg_name, true, OracleScope::parse(rest));
             return;
         }
         // Wall-clock probe: min-of-5 analyze_with_config on one corpus under
@@ -6578,17 +6587,58 @@ fn oracle_config(name: &str) -> Config {
     }
 }
 
-fn oracle_files(path: &Path) -> Vec<std::path::PathBuf> {
+/// Which slice of the vref fleet an oracle pass covers.
+///
+/// `Full` is the whole directory (~1,504 corpora) — the real behavior
+/// contract for a before/after gate. `Wa` is the `WA-*` subset (~251, the
+/// Wycliffe Associates translations) — a ~6× faster inner-loop oracle for
+/// intermediate steps. A `Wa` dump is only ever diffed against another `Wa`
+/// dump; the two scopes are different contracts, never compared to each other.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum OracleScope {
+    Full,
+    Wa,
+}
+
+impl OracleScope {
+    /// Parses the optional trailing scope token on a dump command; absent or
+    /// `full` → `Full`, `wa` → `Wa`. Anything else is a hard error so a typo
+    /// can't silently widen the pass back to the full fleet.
+    fn parse(rest: &[String]) -> Self {
+        match rest.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
+            [] | ["full"] => Self::Full,
+            ["wa"] => Self::Wa,
+            other => panic!("unknown oracle scope {other:?} (want wa|full)"),
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Full => "full",
+            Self::Wa => "wa",
+        }
+    }
+}
+
+fn oracle_files(path: &Path, scope: OracleScope) -> Vec<std::path::PathBuf> {
     if path.is_dir() {
         let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(path)
             .unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
             .flatten()
             .map(|e| e.path())
             .filter(|p| p.extension().is_some_and(|x| x == "txt"))
+            .filter(|p| match scope {
+                OracleScope::Full => true,
+                OracleScope::Wa => p
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.starts_with("WA-")),
+            })
             .collect();
         files.sort();
         files
     } else {
+        // A single-file target ignores scope — there's nothing to subset.
         vec![path.to_path_buf()]
     }
 }
@@ -6625,10 +6675,10 @@ fn write_findings(
     }
 }
 
-fn dump_findings(path: &Path, out_path: &Path, cfg_name: &str) {
+fn dump_findings(path: &Path, out_path: &Path, cfg_name: &str, scope: OracleScope) {
     let cfg = oracle_config(cfg_name);
     let source = oracle_source(path);
-    let files = oracle_files(path);
+    let files = oracle_files(path, scope);
     let total = files.len();
     let mut out = std::io::BufWriter::new(std::fs::File::create(out_path).unwrap());
     for (i, file) in files.iter().enumerate() {
@@ -6640,7 +6690,11 @@ fn dump_findings(path: &Path, out_path: &Path, cfg_name: &str) {
             eprintln!("{}/{total}", i + 1);
         }
     }
-    eprintln!("dumped {total} corpora ({cfg_name}) -> {}", out_path.display());
+    eprintln!(
+        "dumped {total} corpora ({cfg_name}, scope={}) -> {}",
+        scope.label(),
+        out_path.display()
+    );
 }
 
 /// FNV-1a 64 over a string — a dependency-free stats digest.
@@ -6658,12 +6712,13 @@ fn fnv64(s: &str) -> u64 {
 /// word, a spaced comma, an unbalanced paren.
 const EDIT_TEXT: &str = "He fell ,, the  gate stood.. qQx deJésus (broken";
 
-fn dump_incremental(path: &Path, out_path: &Path, cfg_name: &str, cached: bool) {
+fn dump_incremental(path: &Path, out_path: &Path, cfg_name: &str, cached: bool, scope: OracleScope) {
     let cfg = oracle_config(cfg_name);
     let source = oracle_source(path);
-    let files = oracle_files(path);
+    let files = oracle_files(path, scope);
     // Every 8th corpus (plus the first): the incremental gate needs breadth,
-    // not the whole fleet, and this dump runs three analyses per corpus.
+    // not the whole fleet, and this dump runs three analyses per corpus. The
+    // WA subset is subsampled the same way (~32 corpora) after scope filtering.
     let files: Vec<_> = files.into_iter().step_by(8).collect();
     let total = files.len();
     let mut out = std::io::BufWriter::new(std::fs::File::create(out_path).unwrap());
@@ -6726,7 +6781,8 @@ fn dump_incremental(path: &Path, out_path: &Path, cfg_name: &str, cached: bool) 
         }
     }
     eprintln!(
-        "dumped {total} corpora incremental ({cfg_name}) -> {}",
+        "dumped {total} corpora incremental ({cfg_name}, scope={}) -> {}",
+        scope.label(),
         out_path.display()
     );
 }
@@ -6778,7 +6834,7 @@ fn census_single(path: &Path) {
 }
 
 fn census_fleet(dir: &Path) {
-    let files = oracle_files(dir);
+    let files = oracle_files(dir, OracleScope::Full);
     let total = files.len();
     let mut rows_per_section: BTreeMap<String, u64> = BTreeMap::new();
     let mut wire_sizes: Vec<usize> = Vec::new();
