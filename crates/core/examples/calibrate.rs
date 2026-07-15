@@ -7508,6 +7508,26 @@ fn fnv64(s: &str) -> u64 {
     h
 }
 
+/// One stats-digest line for the incremental oracle:
+/// `stats<TAB>id<TAB>mode<TAB>rules_len<TAB>rules_fnv<TAB>prov_fnv`. The `stats`
+/// sentinel is column 1 so every digest line is mechanically separable from
+/// finding lines (which start with the corpus id). `rules_len`/`rules_fnv`
+/// digest the per-rule sections; `prov_fnv` digests the provenance sections
+/// alone — split so the gate can prove a wire change touched only provenance.
+///
+/// The whole serialized `Stats` is currently the rules-only view: there are no
+/// provenance sections yet, so `prov_fnv` is the literal `none`.
+fn write_stats_digest(out: &mut impl Write, id: &str, mode: &str, stats: &ssc_core::Stats) {
+    let rules = serde_json::to_string(stats).unwrap();
+    writeln!(
+        out,
+        "stats\t{id}\t{mode}\t{}\t{:016x}\tnone",
+        rules.len(),
+        fnv64(&rules),
+    )
+    .unwrap();
+}
+
 /// A fixed, multi-rule-provoking edit applied to the last verse of the first
 /// book: doubles punctuation, excess whitespace, a rare glyph, a mixed-case
 /// word, a spaced comma, an unbalanced paren.
@@ -7559,7 +7579,7 @@ fn dump_incremental(
             edited.texts()[..first_len].to_vec(),
         )
         .unwrap();
-        let (echo_findings, _) = ssc_core::analyze_stateful(
+        let (echo_findings, echo_stats) = ssc_core::analyze_stateful(
             &echo,
             source.as_ref(),
             &cfg,
@@ -7568,6 +7588,7 @@ fn dump_incremental(
             cache.as_mut(),
         );
         write_findings(&mut out, &id, "echo", &echo, &echo_findings);
+        write_stats_digest(&mut out, &id, "echo", &echo_stats);
 
         // Complete snapshot: whole corpus + prior + changed=[book].
         let (snap, stats) = ssc_core::analyze_stateful(
@@ -7579,8 +7600,7 @@ fn dump_incremental(
             cache.as_mut(),
         );
         write_findings(&mut out, &id, "snap", &edited, &snap);
-        let js = serde_json::to_string(&stats).unwrap();
-        writeln!(out, "{id}\tstats\t{}\t{:016x}", js.len(), fnv64(&js)).unwrap();
+        write_stats_digest(&mut out, &id, "snap", &stats);
         if (i + 1) % 20 == 0 {
             eprintln!("{}/{total}", i + 1);
         }
