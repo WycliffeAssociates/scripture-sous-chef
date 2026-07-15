@@ -11,11 +11,13 @@ use std::collections::BTreeMap;
 
 use crate::charclass::class_of;
 use crate::config::{PunctuationAdjacencyConfig, PunctuationSpacingConfig};
-use crate::corpus::{rebase, BookGroup, Books, Corpus, KeyIdx, LocalKeyIdx, SiteAddr};
+use crate::corpus::{BookGroup, Books, Corpus, KeyIdx, LocalKeyIdx, SiteAddr, rebase};
 use crate::diagnostics::{Finding, FindingArgs, RuleId, Severity, SpacingSide};
+use crate::evidence::{
+    clamp_count, clamp_rate, clamp_unit, clamp_z, dominance, from_strengths, odds_amplify, strength,
+};
 use crate::grapheme::{self, GSpan};
 use crate::rule::{self, StatefulRule, TokenCache};
-use crate::evidence::{clamp_count, clamp_rate, clamp_unit, clamp_z, dominance, from_strengths, odds_amplify, strength};
 use crate::span::Span;
 use crate::stats::RuleStats;
 use crate::stream;
@@ -102,7 +104,10 @@ impl StatefulRule for PunctuationAdjacencyAnomaly {
         for (group, (bc, book_sites)) in books.iter().zip(rule::map_books(books, |group| {
             stream::drive_book(
                 group,
-                stream::Needs { tape: true, ..Default::default() },
+                stream::Needs {
+                    tape: true,
+                    ..Default::default()
+                },
                 AdjacencyAcc::new(true),
                 |a, v| a.verse(v),
                 AdjacencyAcc::finish,
@@ -400,9 +405,7 @@ fn adjacency_runs(tape: &[TapeEntry], include_safe: bool) -> Vec<Span> {
         // a run of 3+ `?` is `hyg.replacement-run`'s finding (encoding-
         // conversion damage), skipped here to avoid double-reporting.
         let allowed = !include_safe
-            && ((c == '.' && count == 3)
-                || (c == '-' && count == 2)
-                || (c == '?' && count >= 3));
+            && ((c == '.' && count == 3) || (c == '-' && count == 2) || (c == '?' && count >= 3));
         if count >= 2 && !allowed {
             spans.push(Span { start, end });
         }
@@ -650,7 +653,10 @@ impl StatefulRule for PunctuationSpacingAnomaly {
         for (group, (counts, book_sites)) in books.iter().zip(rule::map_books(books, |group| {
             stream::drive_book(
                 group,
-                stream::Needs { graphemes: true, ..Default::default() },
+                stream::Needs {
+                    graphemes: true,
+                    ..Default::default()
+                },
                 SpacingAcc::new(),
                 |a, v| a.verse(v),
                 SpacingAcc::finish,
@@ -698,7 +704,10 @@ impl StatefulRule for PunctuationSpacingAnomaly {
         let verdicts: BTreeMap<char, MarkVerdict> = totals
             .iter()
             .map(|(&mark, counts)| {
-                (mark, mark_verdict(counts, z, minority_k, minority_rate, floor))
+                (
+                    mark,
+                    mark_verdict(counts, z, minority_k, minority_rate, floor),
+                )
             })
             .collect();
 
@@ -759,12 +768,18 @@ impl StatefulRule for PunctuationSpacingAnomaly {
             // whitespace / attached neighbour where the anomaly sits — union
             // when both sides fire.
             let range = match (lh.is_some(), rh.is_some()) {
-                (true, true) => Span { start: left_span.start, end: right_span.end },
+                (true, true) => Span {
+                    start: left_span.start,
+                    end: right_span.end,
+                },
                 (true, false) => left_span,
                 (false, true) => right_span,
                 (false, false) => unreachable!("guarded above"),
             };
-            let sc = lh.as_ref().map_or(0.0, |h| h.score).max(rh.as_ref().map_or(0.0, |h| h.score));
+            let sc = lh
+                .as_ref()
+                .map_or(0.0, |h| h.score)
+                .max(rh.as_ref().map_or(0.0, |h| h.score));
             found.push(Finding {
                 key_idx,
                 code: PUNCTUATION_SPACING_ANOMALY,
@@ -874,7 +889,13 @@ struct PoolHit {
 /// `holds` gates the whole pool: `wilson_lower_bound(majority, N_pool, z) ≥
 /// floor`. A near-even split, or a thin pool, fails it (Wilson self-gates, no
 /// min-samples) and the pool is silent — no all-class fallback.
-fn pool_verdict(counts: [u64; 2], z: f64, minority_k: f64, rate_per_10k: f64, floor: f64) -> PoolVerdict {
+fn pool_verdict(
+    counts: [u64; 2],
+    z: f64,
+    minority_k: f64,
+    rate_per_10k: f64,
+    floor: f64,
+) -> PoolVerdict {
     let n = counts[0] + counts[1];
     let mut scores = [0.0f64; 2];
     let holds = n > 0 && dominance(counts[0].max(counts[1]), n, z) >= floor;
@@ -889,16 +910,35 @@ fn pool_verdict(counts: [u64; 2], z: f64, minority_k: f64, rate_per_10k: f64, fl
             scores[i] = dominance * (1.0 - recurrence);
         }
     }
-    PoolVerdict { holds, n, counts, scores }
+    PoolVerdict {
+        holds,
+        n,
+        counts,
+        scores,
+    }
 }
 
 /// One side's three pools from its contiguous six-counter block
 /// `[l0_att, l0_sp, l1_att, l1_sp, l2_att, l2_sp]`.
-fn side_verdict(block: &[u64], z: f64, minority_k: f64, rate_per_10k: f64, floor: f64) -> SideVerdict {
+fn side_verdict(
+    block: &[u64],
+    z: f64,
+    minority_k: f64,
+    rate_per_10k: f64,
+    floor: f64,
+) -> SideVerdict {
     let pool = |ci: usize| {
-        pool_verdict([block[ci * 2], block[ci * 2 + 1]], z, minority_k, rate_per_10k, floor)
+        pool_verdict(
+            [block[ci * 2], block[ci * 2 + 1]],
+            z,
+            minority_k,
+            rate_per_10k,
+            floor,
+        )
     };
-    SideVerdict { pools: [pool(0), pool(1), pool(2)] }
+    SideVerdict {
+        pools: [pool(0), pool(1), pool(2)],
+    }
 }
 
 /// A mark's verdict from its twelve packed counters (ADR 0054 2nd amendment).
@@ -986,7 +1026,10 @@ fn verse_edge_classes(text: &str, graphemes: &[GSpan]) -> (Option<PoolClass>, Op
         let s = gs.slice(text);
         (!s.is_empty() && !s.chars().all(is_spacing_ws)).then(|| neighbour_class(s))
     };
-    (graphemes.iter().find_map(nonws), graphemes.iter().rev().find_map(nonws))
+    (
+        graphemes.iter().find_map(nonws),
+        graphemes.iter().rev().find_map(nonws),
+    )
 }
 
 /// Walk every spacing opportunity in a **book** (the parallel-walk unit,
@@ -1122,15 +1165,26 @@ fn walk_opportunities(
         let (left, span_start) = if j == 0 {
             // Seam: form spaced, class read across the seam (book order).
             (
-                left_cross.map(|class| SideRead { class, form: SideForm::Spaced }),
+                left_cross.map(|class| SideRead {
+                    class,
+                    form: SideForm::Spaced,
+                }),
                 mark_start,
             )
         } else {
             let nb = graphemes[j - 1];
             let class = neighbour_class(nb.slice(text));
-            let form = if left_ws { SideForm::Spaced } else { SideForm::Attached };
+            let form = if left_ws {
+                SideForm::Spaced
+            } else {
+                SideForm::Attached
+            };
             // Highlight the crossed ws run (spaced) or the attached neighbour.
-            let span_start = if left_ws { graphemes[j].start } else { nb.start };
+            let span_start = if left_ws {
+                graphemes[j].start
+            } else {
+                nb.start
+            };
             (Some(SideRead { class, form }), span_start)
         };
 
@@ -1151,17 +1205,34 @@ fn walk_opportunities(
         } else {
             let nb = graphemes[k + 1];
             let class = neighbour_class(nb.slice(text));
-            let form = if right_ws { SideForm::Spaced } else { SideForm::Attached };
-            let span_end = if right_ws { graphemes[k].range().end } else { nb.range().end };
-            (RightState::Resolved(Some(SideRead { class, form })), span_end)
+            let form = if right_ws {
+                SideForm::Spaced
+            } else {
+                SideForm::Attached
+            };
+            let span_end = if right_ws {
+                graphemes[k].range().end
+            } else {
+                nb.range().end
+            };
+            (
+                RightState::Resolved(Some(SideRead { class, form })),
+                span_end,
+            )
         };
 
         out.push(RawOpportunity {
             mark,
             left,
             right,
-            left_span: Span { start: span_start, end: mark_end },
-            right_span: Span { start: mark_start, end: span_end },
+            left_span: Span {
+                start: span_start,
+                end: mark_end,
+            },
+            right_span: Span {
+                start: mark_start,
+                end: span_end,
+            },
         });
     }
     out
@@ -1217,13 +1288,30 @@ impl SpacingAcc {
         if let Some(r) = right {
             cell[cell_index(Side::Right, r.class, r.form)] += 1;
         }
-        self.sites.push(SpacingSite { local_idx, mark, left, right, left_span, right_span });
+        self.sites.push(SpacingSite {
+            local_idx,
+            mark,
+            left,
+            right,
+            left_span,
+            right_span,
+        });
     }
 
     fn resolve_pending(&mut self, right_cross: Option<PoolClass>) {
         if let Some(p) = self.pending.take() {
-            let right = right_cross.map(|class| SideRead { class, form: SideForm::Spaced });
-            self.record(p.local_idx, p.mark, p.left, right, p.left_span, p.right_span);
+            let right = right_cross.map(|class| SideRead {
+                class,
+                form: SideForm::Spaced,
+            });
+            self.record(
+                p.local_idx,
+                p.mark,
+                p.left,
+                right,
+                p.left_span,
+                p.right_span,
+            );
         }
     }
 
@@ -1247,7 +1335,14 @@ impl SpacingAcc {
         for raw in walk_opportunities(v.text, v.graphemes, self.left_cross) {
             match raw.right {
                 RightState::Resolved(right) => {
-                    self.record(v.local_idx, raw.mark, raw.left, right, raw.left_span, raw.right_span);
+                    self.record(
+                        v.local_idx,
+                        raw.mark,
+                        raw.left,
+                        right,
+                        raw.left_span,
+                        raw.right_span,
+                    );
                 }
                 RightState::Seam => {
                     debug_assert!(self.pending.is_none(), "≤1 seam-right mark per verse");
@@ -1270,7 +1365,12 @@ impl SpacingAcc {
     pub(crate) fn finish(mut self) -> (BookPunctuationSpacing, Vec<SpacingSite>) {
         // Book edge: no neighbour across the seam — the side abstains.
         self.resolve_pending(None);
-        (BookPunctuationSpacing { per_mark: self.per_mark }, self.sites)
+        (
+            BookPunctuationSpacing {
+                per_mark: self.per_mark,
+            },
+            self.sites,
+        )
     }
 }
 
@@ -1311,7 +1411,14 @@ mod tests {
             let group = &groups[0];
 
             // Batch reference.
-            type RefSite = (LocalKeyIdx, char, Option<SideRead>, Option<SideRead>, Span, Span);
+            type RefSite = (
+                LocalKeyIdx,
+                char,
+                Option<SideRead>,
+                Option<SideRead>,
+                Span,
+                Span,
+            );
             let mut ref_cells: BTreeMap<char, [u64; SIDE_CELLS]> = BTreeMap::new();
             let mut ref_sites: Vec<RefSite> = Vec::new();
             for_each_spacing_opportunity(group, |local, opp| {
@@ -1322,20 +1429,39 @@ mod tests {
                 if let Some(r) = opp.right {
                     cell[cell_index(Side::Right, r.class, r.form)] += 1;
                 }
-                ref_sites.push((local, opp.mark, opp.left, opp.right, opp.left_span, opp.right_span));
+                ref_sites.push((
+                    local,
+                    opp.mark,
+                    opp.left,
+                    opp.right,
+                    opp.left_span,
+                    opp.right_span,
+                ));
             });
 
             // Streaming listener over the same verses.
             let (book_stats, sites) = crate::stream::drive_book(
                 group,
-                crate::stream::Needs { graphemes: true, ..Default::default() },
+                crate::stream::Needs {
+                    graphemes: true,
+                    ..Default::default()
+                },
                 SpacingAcc::new(),
                 |a, v| a.verse(v),
                 SpacingAcc::finish,
             );
             let got_sites: Vec<_> = sites
                 .iter()
-                .map(|s| (s.local_idx, s.mark, s.left, s.right, s.left_span, s.right_span))
+                .map(|s| {
+                    (
+                        s.local_idx,
+                        s.mark,
+                        s.left,
+                        s.right,
+                        s.left_span,
+                        s.right_span,
+                    )
+                })
                 .collect();
             assert_eq!(book_stats.per_mark, ref_cells, "cells for book #{bi}");
             assert_eq!(got_sites, ref_sites, "sites for book #{bi}");
@@ -1353,7 +1479,10 @@ mod tests {
         v
     }
     fn rp(text: &str) -> Vec<&str> {
-        adjacency_candidates(&tp(text)).iter().map(|s| s.slice(text)).collect()
+        adjacency_candidates(&tp(text))
+            .iter()
+            .map(|s| s.slice(text))
+            .collect()
     }
 
     #[test]
@@ -1440,7 +1569,10 @@ mod tests {
         rule(PunctuationAdjacencyConfig::default())
     }
     fn no_floor() -> PunctuationAdjacencyConfig {
-        PunctuationAdjacencyConfig { emit_score_min: 0.0, ..Default::default() }
+        PunctuationAdjacencyConfig {
+            emit_score_min: 0.0,
+            ..Default::default()
+        }
     }
     fn run(corpus: &Corpus, r: &PunctuationAdjacencyAnomaly) -> Vec<Finding> {
         let books = by_book(corpus);
@@ -1456,7 +1588,9 @@ mod tests {
     /// resolves each finding's `key_idx` back to its wire key — it must be
     /// the same `Corpus` `f` was judged against.
     fn score_at(corpus: &Corpus, f: &[Finding], key: &str) -> Option<f32> {
-        f.iter().find(|x| corpus.key(x.key_idx) == key).and_then(|x| x.score)
+        f.iter()
+            .find(|x| corpus.key(x.key_idx) == key)
+            .and_then(|x| x.score)
     }
 
     /// Entries for `clean` plain-period verses (2 period run-starts each, no
@@ -1499,8 +1633,14 @@ mod tests {
         let many = run(&many_vm, &rule(no_floor()));
         let e_few = score_at(&few_vm, &few, &key_of("GEN", 1000)).unwrap();
         let e_many = score_at(&many_vm, &many, &key_of("GEN", 1000)).unwrap();
-        assert!(e_many <= e_few, "50× evidence {e_many} must not exceed 5× {e_few}");
-        assert!(e_many < e_few, "and here it strictly falls: {e_many} < {e_few}");
+        assert!(
+            e_many <= e_few,
+            "50× evidence {e_many} must not exceed 5× {e_few}"
+        );
+        assert!(
+            e_many < e_few,
+            "and here it strictly falls: {e_many} < {e_few}"
+        );
     }
 
     #[test]
@@ -1518,7 +1658,10 @@ mod tests {
         let rare = score_at(&vm, &f, &key_of("GEN", 1000)).unwrap(); // a `.,`
         let common = score_at(&vm, &f, &key_of("GEN", 2000)).unwrap(); // a `..`
         assert!(rare > 0.9, "rare `.,` stays high: {rare}");
-        assert!(common < rare, "common `..` {common} scores below rare `.,` {rare}");
+        assert!(
+            common < rare,
+            "common `..` {common} scores below rare `.,` {rare}"
+        );
     }
 
     #[test]
@@ -1526,14 +1669,20 @@ mod tests {
         // An Ethiopic corpus that doubles ፤ as its sentence separator corpus-
         // wide: `፤፤` is ~all of ፤'s run-starts, so it is learned as convention
         // and emits nothing at the default floor.
-        let verses: Vec<(u16, String)> =
-            (1..=100).map(|v| (v, "ግፅ፤፤ ግፅ፤፤".to_string())).collect();
+        let verses: Vec<(u16, String)> = (1..=100).map(|v| (v, "ግፅ፤፤ ግፅ፤፤".to_string())).collect();
         let vm = book("GEN", &verses);
-        assert!(run(&vm, &default_rule()).is_empty(), "dominant ፤፤ must be silent");
+        assert!(
+            run(&vm, &default_rule()).is_empty(),
+            "dominant ፤፤ must be silent"
+        );
         // And the same for a doubled Arabic full stop `۔۔`.
-        let ar: Vec<(u16, String)> =
-            (1..=100).map(|v| (v, "كلمة۔۔ كلمة۔۔".to_string())).collect();
-        assert!(run(&book("GEN", &ar), &default_rule()).is_empty(), "dominant ۔۔ must be silent");
+        let ar: Vec<(u16, String)> = (1..=100)
+            .map(|v| (v, "كلمة۔۔ كلمة۔۔".to_string()))
+            .collect();
+        assert!(
+            run(&book("GEN", &ar), &default_rule()).is_empty(),
+            "dominant ۔۔ must be silent"
+        );
     }
 
     #[test]
@@ -1583,26 +1732,52 @@ mod tests {
         let e2 = score_at(&n2, &run(&n2, &rule(no_floor())), &key_of("GEN", 1)).unwrap();
         let e3 = score_at(&n3, &run(&n3, &rule(no_floor())), &key_of("GEN", 1)).unwrap();
         let e20 = score_at(&n20, &run(&n20, &rule(no_floor())), &key_of("GEN", 1)).unwrap();
-        assert!(e2 > e3 && e3 > e20, "exclusive-glyph evidence falls with count: {e2},{e3},{e20}");
+        assert!(
+            e2 > e3 && e3 > e20,
+            "exclusive-glyph evidence falls with count: {e2},{e3},{e20}"
+        );
 
         // z is the load-bearing knob: raising it (more shrinkage) raises the
         // novelty's evidence; z=0 (no shrinkage, observed rate 1.0) suppresses.
         let with_z = |z: f32| {
-            let cfg = PunctuationAdjacencyConfig { confidence_z: z, emit_score_min: 0.0, ..Default::default() };
+            let cfg = PunctuationAdjacencyConfig {
+                confidence_z: z,
+                emit_score_min: 0.0,
+                ..Default::default()
+            };
             let n3 = novelty(3);
             score_at(&n3, &run(&n3, &rule(cfg)), &key_of("GEN", 1)).unwrap()
         };
-        assert_eq!(with_z(0.0), 0.0, "no shrinkage ⇒ rate 1.0 ⇒ fully conventional");
-        assert!(with_z(3.0) > with_z(1.96), "more shrinkage raises the novelty's evidence");
+        assert_eq!(
+            with_z(0.0),
+            0.0,
+            "no shrinkage ⇒ rate 1.0 ⇒ fully conventional"
+        );
+        assert!(
+            with_z(3.0) > with_z(1.96),
+            "more shrinkage raises the novelty's evidence"
+        );
 
         // At the default floor (0.5) the exclusive-glyph novelty is silent
         // (0.32 < 0.5) — the documented, tunable tradeoff — while a
         // well-evidenced common-glyph rarity always surfaces.
-        assert!(run(&novelty(2), &default_rule()).is_empty(), "2× exclusive novelty silent at default 0.5");
-        assert!(!run(&periods_and_commas(200, 5), &default_rule()).is_empty(), "common-glyph rarity is not silenced");
+        assert!(
+            run(&novelty(2), &default_rule()).is_empty(),
+            "2× exclusive novelty silent at default 0.5"
+        );
+        assert!(
+            !run(&periods_and_commas(200, 5), &default_rule()).is_empty(),
+            "common-glyph rarity is not silenced"
+        );
         // Exposed as a knob: lowering the floor opts into seeing it.
-        let low = PunctuationAdjacencyConfig { emit_score_min: 0.25, ..Default::default() };
-        assert!(!run(&novelty(2), &rule(low)).is_empty(), "lowering emit_score_min surfaces the novelty");
+        let low = PunctuationAdjacencyConfig {
+            emit_score_min: 0.25,
+            ..Default::default()
+        };
+        assert!(
+            !run(&novelty(2), &rule(low)).is_empty(),
+            "lowering emit_score_min surfaces the novelty"
+        );
     }
 
     #[test]
@@ -1635,7 +1810,11 @@ mod tests {
         // 600 `.,` among ~2400 period run-starts stays anomalous (≈0.53).
         let vm = periods_and_commas(900, 600);
         let f = run(&vm, &default_rule());
-        assert_eq!(f.len(), 600, "all 600 `.,` occurrences surface — no 512 cap");
+        assert_eq!(
+            f.len(),
+            600,
+            "all 600 `.,` occurrences surface — no 512 cap"
+        );
     }
 
     #[test]
@@ -1653,7 +1832,12 @@ mod tests {
 
         let full_books = by_book(&full);
         let full_score = r
-            .judge(&r.reduce(&full_books, None, None).0, &full_books, None, None)
+            .judge(
+                &r.reduce(&full_books, None, None).0,
+                &full_books,
+                None,
+                None,
+            )
             .into_iter()
             .find(|f| full.key(f.key_idx) == key_of("EXO", 1))
             .unwrap()
@@ -1662,11 +1846,17 @@ mod tests {
         // Incremental: GEN reduced earlier, EXO edited now.
         let gen_books = by_book(&gen_only);
         let exo_books = by_book(&exo_only);
-        let merged = r.reduce(&gen_books, None, None).0.merge(r.reduce(&exo_books, None, None).0);
+        let merged = r
+            .reduce(&gen_books, None, None)
+            .0
+            .merge(r.reduce(&exo_books, None, None).0);
         let inc = r.judge(&merged, &exo_books, None, None);
         assert_eq!(inc.len(), 1, "emits only for the target (EXO)");
         assert_eq!(exo_only.key(inc[0].key_idx), key_of("EXO", 1));
-        assert_eq!(inc[0].score, full_score, "incremental score is corpus-wide, not book-local");
+        assert_eq!(
+            inc[0].score, full_score,
+            "incremental score is corpus-wide, not book-local"
+        );
     }
 
     #[cfg(feature = "serde")]
@@ -1681,9 +1871,13 @@ mod tests {
         ]);
         let books = by_book(&vm);
         let stats = r.reduce(&books, None, None).0;
-        let back: RuleStats = serde_json::from_str(&serde_json::to_string(&stats).unwrap()).unwrap();
+        let back: RuleStats =
+            serde_json::from_str(&serde_json::to_string(&stats).unwrap()).unwrap();
         assert_eq!(stats, back);
-        assert_eq!(r.judge(&stats, &books, None, None), r.judge(&back, &books, None, None));
+        assert_eq!(
+            r.judge(&stats, &books, None, None),
+            r.judge(&back, &books, None, None)
+        );
     }
 
     #[test]
@@ -1708,8 +1902,9 @@ mod tests {
 
     /// Ten real book codes so a synthetic corpus can clear the 8-book breadth
     /// gate and exercise dispersion.
-    const TEN_BOOKS: [&str; 10] =
-        ["GEN", "EXO", "LEV", "NUM", "DEU", "JOS", "JDG", "RUT", "1SA", "2SA"];
+    const TEN_BOOKS: [&str; 10] = [
+        "GEN", "EXO", "LEV", "NUM", "DEU", "JOS", "JDG", "RUT", "1SA", "2SA",
+    ];
 
     /// Per-book entries for `TEN_BOOKS`, each with 40 `a, b, c, d` filler verses
     /// (a big `N_start(',')`); the first `carriers` books additionally carry
@@ -1723,7 +1918,8 @@ mod tests {
             .iter()
             .enumerate()
             .map(|(bi, bk)| {
-                let mut v: Vec<(u16, String)> = (1..=40u16).map(|v| (v, "a, b, c, d".to_string())).collect();
+                let mut v: Vec<(u16, String)> =
+                    (1..=40u16).map(|v| (v, "a, b, c, d".to_string())).collect();
                 if bi < carriers {
                     v.extend((100..=102u16).map(|v| (v, "x,, y".to_string())));
                 }
@@ -1752,7 +1948,9 @@ mod tests {
         // breadth (1/10) cannot establish it, so it stays anomalous. Isolates
         // breadth from frequency (k and N_start are ~equal to the spread case).
         let mut entries = commas_in_n_books_entries(0); // filler only, no carriers
-        entries[0].1.extend((100..=123u16).map(|v| (v, "x,, y".to_string()))); // 24 `,,` in GEN (book 0)
+        entries[0]
+            .1
+            .extend((100..=123u16).map(|v| (v, "x,, y".to_string()))); // 24 `,,` in GEN (book 0)
         let vm = build_books(&entries);
         assert!(
             !run(&vm, &default_rule()).is_empty(),
@@ -1768,7 +1966,8 @@ mod tests {
         let entries: Vec<(&str, Vec<(u16, String)>)> = TEN_BOOKS[..5]
             .iter()
             .map(|bk| {
-                let mut v: Vec<(u16, String)> = (1..=40u16).map(|v| (v, "a, b, c, d".to_string())).collect();
+                let mut v: Vec<(u16, String)> =
+                    (1..=40u16).map(|v| (v, "a, b, c, d".to_string())).collect();
                 v.extend((100..=102u16).map(|v| (v, "x,, y".to_string())));
                 (*bk, v)
             })
@@ -1786,7 +1985,9 @@ mod tests {
         // `::` (observed rate 1.0). Frequency establishes it despite breadth
         // 1/10. This is the `bji ::` shape the multiplicative model got wrong.
         let mut entries = commas_in_n_books_entries(0);
-        entries[0].1.extend((200..=239u16).map(|v| (v, "word:: next".to_string())));
+        entries[0]
+            .1
+            .extend((200..=239u16).map(|v| (v, "word:: next".to_string())));
         let vm = build_books(&entries);
         let colon_findings: Vec<_> = run(&vm, &default_rule())
             .into_iter()
@@ -1811,7 +2012,10 @@ mod tests {
         let f = run(&vm, &rule(no_floor()));
         let two = score_at(&vm, &f, &key_of("GEN", 900)).unwrap();
         let four = score_at(&vm, &f, &key_of("GEN", 901)).unwrap();
-        assert!(four > two, "longer run scores higher: !!!!={four} > !!={two}");
+        assert!(
+            four > two,
+            "longer run scores higher: !!!!={four} > !!={two}"
+        );
     }
 
     // ── punct spacing anomaly — pooled class-conditioned model (ADR 0054 2nd) ─
@@ -1823,7 +2027,10 @@ mod tests {
         sp_rule(PunctuationSpacingConfig::default())
     }
     fn sp_no_floor() -> PunctuationSpacingConfig {
-        PunctuationSpacingConfig { emit_score_min: 0.0, ..Default::default() }
+        PunctuationSpacingConfig {
+            emit_score_min: 0.0,
+            ..Default::default()
+        }
     }
     fn sp_run(corpus: &Corpus, r: &PunctuationSpacingAnomaly) -> Vec<Finding> {
         let books = by_book(corpus);
@@ -1836,7 +2043,11 @@ mod tests {
     }
     /// A verse with explicit cross-seam neighbour classes (as `for_each_*`
     /// resolves them from book neighbours), to unit-test seam behaviour.
-    fn opps_cross(text: &str, l: Option<PoolClass>, r: Option<PoolClass>) -> Vec<SpacingOpportunity> {
+    fn opps_cross(
+        text: &str,
+        l: Option<PoolClass>,
+        r: Option<PoolClass>,
+    ) -> Vec<SpacingOpportunity> {
         let mut g = Vec::new();
         grapheme::segment(text, &mut g);
         spacing_opportunities(text, &g, l, r)
@@ -1851,14 +2062,19 @@ mod tests {
         let groups = by_book(corpus);
         let group = &groups[0];
         let mut out = Vec::new();
-        for_each_spacing_opportunity(group, |local, opp| out.push((local, opp.mark, opp.left, opp.right)));
+        for_each_spacing_opportunity(group, |local, opp| {
+            out.push((local, opp.mark, opp.left, opp.right))
+        });
         out
     }
     /// Build the twelve packed per-mark counters from per-side `[att, sp]` pools
     /// keyed by class (letter, number, punct).
     fn tbl(l: [[u64; 2]; CLASS_COUNT], r: [[u64; 2]; CLASS_COUNT]) -> [u64; SIDE_CELLS] {
         let mut c = [0u64; SIDE_CELLS];
-        for (ci, cls) in [PoolClass::Letter, PoolClass::Number, PoolClass::Punct].iter().enumerate() {
+        for (ci, cls) in [PoolClass::Letter, PoolClass::Number, PoolClass::Punct]
+            .iter()
+            .enumerate()
+        {
             c[cell_index(Side::Left, *cls, SideForm::Attached)] = l[ci][0];
             c[cell_index(Side::Left, *cls, SideForm::Spaced)] = l[ci][1];
             c[cell_index(Side::Right, *cls, SideForm::Attached)] = r[ci][0];
@@ -1932,29 +2148,56 @@ mod tests {
         let crossed = opps_cross("word.", None, Some(PoolClass::Letter));
         assert_eq!(crossed[0].right, read(PoolClass::Letter, SideForm::Spaced));
         let mid = opps_of("word. word");
-        assert_eq!((crossed[0].left, crossed[0].right), (mid[0].left, mid[0].right));
+        assert_eq!(
+            (crossed[0].left, crossed[0].right),
+            (mid[0].left, mid[0].right)
+        );
     }
 
     #[test]
     fn cross_seam_class_is_resolved_from_book_neighbours() {
-        let vm = book("GEN", &[(1, "see verse.".to_string()), (2, "3 fish".to_string())]);
+        let vm = book(
+            "GEN",
+            &[(1, "see verse.".to_string()), (2, "3 fish".to_string())],
+        );
         let o = book_opps(&vm);
-        let v1_period = o.iter().find(|(s, m, ..)| *s == LocalKeyIdx::from_usize(0) && *m == '.').unwrap();
+        let v1_period = o
+            .iter()
+            .find(|(s, m, ..)| *s == LocalKeyIdx::from_usize(0) && *m == '.')
+            .unwrap();
         assert_eq!(v1_period.3, read(PoolClass::Number, SideForm::Spaced));
         let vm2 = book("GEN", &[(1, "amen".to_string()), (2, ".word".to_string())]);
         let o2 = book_opps(&vm2);
-        let lead = o2.iter().find(|(s, m, ..)| *s == LocalKeyIdx::from_usize(1) && *m == '.').unwrap();
+        let lead = o2
+            .iter()
+            .find(|(s, m, ..)| *s == LocalKeyIdx::from_usize(1) && *m == '.')
+            .unwrap();
         assert_eq!(lead.2, read(PoolClass::Letter, SideForm::Spaced));
     }
 
     #[test]
     fn first_and_last_verse_book_edges_abstain() {
-        let vm = book("GEN", &[(1, ".open".to_string()), (2, "close.".to_string())]);
+        let vm = book(
+            "GEN",
+            &[(1, ".open".to_string()), (2, "close.".to_string())],
+        );
         let o = book_opps(&vm);
-        let lead = o.iter().find(|(s, m, ..)| *s == LocalKeyIdx::from_usize(0) && *m == '.').unwrap();
-        assert_eq!(lead.2, None, "book-initial leading mark abstains on the left");
-        let trail = o.iter().find(|(s, m, ..)| *s == LocalKeyIdx::from_usize(1) && *m == '.').unwrap();
-        assert_eq!(trail.3, None, "book-final trailing mark abstains on the right");
+        let lead = o
+            .iter()
+            .find(|(s, m, ..)| *s == LocalKeyIdx::from_usize(0) && *m == '.')
+            .unwrap();
+        assert_eq!(
+            lead.2, None,
+            "book-initial leading mark abstains on the left"
+        );
+        let trail = o
+            .iter()
+            .find(|(s, m, ..)| *s == LocalKeyIdx::from_usize(1) && *m == '.')
+            .unwrap();
+        assert_eq!(
+            trail.3, None,
+            "book-final trailing mark abstains on the right"
+        );
     }
 
     #[test]
@@ -1986,8 +2229,16 @@ mod tests {
     fn dominance_reads_as_the_pool_majority_share_at_z_zero() {
         let v = pool_verdict([25, 75], 0.0, WIDE_K, 0.0, 0.5);
         assert!(v.holds);
-        assert!((v.scores[0] - 0.75).abs() < 1e-6, "attached score {}", v.scores[0]);
-        assert!((v.scores[1] - 0.25).abs() < 1e-6, "spaced score {}", v.scores[1]);
+        assert!(
+            (v.scores[0] - 0.75).abs() < 1e-6,
+            "attached score {}",
+            v.scores[0]
+        );
+        assert!(
+            (v.scores[1] - 0.25).abs() < 1e-6,
+            "spaced score {}",
+            v.scores[1]
+        );
     }
 
     #[test]
@@ -2055,7 +2306,11 @@ mod tests {
             assert_eq!(x.severity, Severity::Info);
             assert!(x.score.unwrap() > 0.5);
             match &x.args {
-                Some(FindingArgs::SpacingConvention { left: Some(s), right: None, .. }) => {
+                Some(FindingArgs::SpacingConvention {
+                    left: Some(s),
+                    right: None,
+                    ..
+                }) => {
                     assert_eq!(s.form, "spaced");
                     assert_eq!(s.class, "letter");
                 }
@@ -2072,10 +2327,18 @@ mod tests {
         let f = sp_run(&vm, &sp_default());
         assert_eq!(f.len(), 1);
         assert_eq!(vm.key(f[0].key_idx), key_of("GEN", 200));
-        let slip = v.iter().find(|(n, _)| *n == 200).map(|(_, t)| t.clone()).unwrap();
+        let slip = v
+            .iter()
+            .find(|(n, _)| *n == 200)
+            .map(|(_, t)| t.clone())
+            .unwrap();
         assert_eq!(f[0].range.slice(&slip), ",w");
         match &f[0].args {
-            Some(FindingArgs::SpacingConvention { left: None, right: Some(s), .. }) => {
+            Some(FindingArgs::SpacingConvention {
+                left: None,
+                right: Some(s),
+                ..
+            }) => {
                 assert_eq!(s.form, "attached");
                 assert_eq!(s.class, "letter");
             }
@@ -2089,20 +2352,32 @@ mod tests {
         v.push((200, "away!Why".to_string()));
         let vm = book("GEN", &v);
         let f = sp_run(&vm, &sp_default());
-        let bang: Vec<_> = f.iter().filter(|x| vm.key(x.key_idx) == key_of("GEN", 200)).collect();
+        let bang: Vec<_> = f
+            .iter()
+            .filter(|x| vm.key(x.key_idx) == key_of("GEN", 200))
+            .collect();
         assert_eq!(bang.len(), 1);
     }
 
     #[test]
     fn spanish_reversed_open_question_mark_surfaces_both_sides() {
-        let mut v: Vec<(u16, String)> = (1..=50).map(|i| (i, "espacio \u{00BF}Qué?".to_string())).collect();
+        let mut v: Vec<(u16, String)> = (1..=50)
+            .map(|i| (i, "espacio \u{00BF}Qué?".to_string()))
+            .collect();
         v.push((100, "así\u{00BF} no".to_string()));
         let vm = book("GEN", &v);
         let f = sp_run(&vm, &sp_default());
-        let hits: Vec<_> = f.iter().filter(|x| vm.key(x.key_idx) == key_of("GEN", 100)).collect();
+        let hits: Vec<_> = f
+            .iter()
+            .filter(|x| vm.key(x.key_idx) == key_of("GEN", 100))
+            .collect();
         assert_eq!(hits.len(), 1);
         match &hits[0].args {
-            Some(FindingArgs::SpacingConvention { mark, left: Some(l), right: Some(r) }) => {
+            Some(FindingArgs::SpacingConvention {
+                mark,
+                left: Some(l),
+                right: Some(r),
+            }) => {
                 assert_eq!(*mark, '\u{00BF}');
                 assert_eq!((l.form.as_str(), l.class.as_str()), ("attached", "letter"));
                 assert_eq!((r.form.as_str(), r.class.as_str()), ("spaced", "letter"));
@@ -2115,38 +2390,67 @@ mod tests {
 
     #[test]
     fn numeric_colon_learns_silent_in_the_number_pool() {
-        let v: Vec<(u16, String)> = (1..=100).map(|i| (i, "see 1:1 and 2:2".to_string())).collect();
-        assert!(sp_run(&book("GEN", &v), &sp_default()).is_empty(), "digit-flanked attached colon is silent");
+        let v: Vec<(u16, String)> = (1..=100)
+            .map(|i| (i, "see 1:1 and 2:2".to_string()))
+            .collect();
+        assert!(
+            sp_run(&book("GEN", &v), &sp_default()).is_empty(),
+            "digit-flanked attached colon is silent"
+        );
 
-        let mut v2: Vec<(u16, String)> = (1..=200).map(|i| (i, "at 1:1 here".to_string())).collect();
+        let mut v2: Vec<(u16, String)> =
+            (1..=200).map(|i| (i, "at 1:1 here".to_string())).collect();
         v2.push((300, "at 1: 1 here".to_string()));
         let vm2 = book("GEN", &v2);
         let f = sp_run(&vm2, &sp_default());
-        assert_eq!(f.iter().filter(|x| vm2.key(x.key_idx) == key_of("GEN", 300)).count(), 1);
+        assert_eq!(
+            f.iter()
+                .filter(|x| vm2.key(x.key_idx) == key_of("GEN", 300))
+                .count(),
+            1
+        );
         assert!(f.iter().all(|x| vm2.key(x.key_idx) == key_of("GEN", 300)));
     }
 
     #[test]
     fn cluster_tail_learns_silent_in_the_punct_pool() {
-        let v: Vec<(u16, String)> = (1..=100).map(|i| (i, "what?! really?!".to_string())).collect();
-        assert!(sp_run(&book("GEN", &v), &sp_default()).is_empty(), "cluster tail is silent by its Punct pool");
+        let v: Vec<(u16, String)> = (1..=100)
+            .map(|i| (i, "what?! really?!".to_string()))
+            .collect();
+        assert!(
+            sp_run(&book("GEN", &v), &sp_default()).is_empty(),
+            "cluster tail is silent by its Punct pool"
+        );
     }
 
     #[test]
     fn medial_period_flags_but_medial_hyphen_is_conventional() {
-        let mut v: Vec<(u16, String)> = (1..=120).map(|i| (i, "a end. Next one.".to_string())).collect();
+        let mut v: Vec<(u16, String)> = (1..=120)
+            .map(|i| (i, "a end. Next one.".to_string()))
+            .collect();
         v.push((300, "a run.together word.".to_string()));
         let vm = book("GEN", &v);
         let f = sp_run(&vm, &sp_default());
-        assert!(f.iter().any(|x| vm.key(x.key_idx) == key_of("GEN", 300)), "medial period surfaces");
+        assert!(
+            f.iter().any(|x| vm.key(x.key_idx) == key_of("GEN", 300)),
+            "medial period surfaces"
+        );
 
-        let hy: Vec<(u16, String)> = (1..=100).map(|i| (i, "co-operate and re-enter".to_string())).collect();
-        assert!(sp_run(&book("GEN", &hy), &sp_default()).is_empty(), "conventional medial hyphen is silent");
+        let hy: Vec<(u16, String)> = (1..=100)
+            .map(|i| (i, "co-operate and re-enter".to_string()))
+            .collect();
+        assert!(
+            sp_run(&book("GEN", &hy), &sp_default()).is_empty(),
+            "conventional medial hyphen is silent"
+        );
         let mut hy2 = hy.clone();
         hy2.push((300, "a - b co-operate".to_string()));
         let vm2 = book("GEN", &hy2);
         let fh = sp_run(&vm2, &sp_default());
-        assert!(fh.iter().any(|x| vm2.key(x.key_idx) == key_of("GEN", 300)), "lone spaced hyphen surfaces");
+        assert!(
+            fh.iter().any(|x| vm2.key(x.key_idx) == key_of("GEN", 300)),
+            "lone spaced hyphen surfaces"
+        );
     }
 
     #[test]
@@ -2162,7 +2466,11 @@ mod tests {
             sp_run(&commas(1000, sp), &sp_rule(sp_no_floor()))
                 .iter()
                 .find_map(|x| match &x.args {
-                    Some(FindingArgs::SpacingConvention { left: Some(s), .. }) if s.form == "spaced" => x.score,
+                    Some(FindingArgs::SpacingConvention { left: Some(s), .. })
+                        if s.form == "spaced" =>
+                    {
+                        x.score
+                    }
                     _ => None,
                 })
                 .unwrap_or(0.0)
@@ -2186,11 +2494,16 @@ mod tests {
 
     #[test]
     fn both_sides_span_is_the_union() {
-        let mut v: Vec<(u16, String)> = (1..=50).map(|i| (i, "espacio \u{00BF}Qué?".to_string())).collect();
+        let mut v: Vec<(u16, String)> = (1..=50)
+            .map(|i| (i, "espacio \u{00BF}Qué?".to_string()))
+            .collect();
         v.push((100, "así\u{00BF} no".to_string()));
         let vm = book("GEN", &v);
         let f = sp_run(&vm, &sp_default());
-        let hit = f.iter().find(|x| vm.key(x.key_idx) == key_of("GEN", 100)).unwrap();
+        let hit = f
+            .iter()
+            .find(|x| vm.key(x.key_idx) == key_of("GEN", 100))
+            .unwrap();
         assert_eq!(hit.range.slice(vm.text(hit.key_idx)), "í\u{00BF} ");
     }
 
@@ -2200,7 +2513,11 @@ mod tests {
         assert_eq!(f.len(), 3);
         for x in &f {
             match &x.args {
-                Some(FindingArgs::SpacingConvention { mark, left: Some(s), right: None }) => {
+                Some(FindingArgs::SpacingConvention {
+                    mark,
+                    left: Some(s),
+                    right: None,
+                }) => {
                     assert_eq!(*mark, ',');
                     assert_eq!(s.form, "spaced");
                     assert_eq!(s.class, "letter");
@@ -2224,7 +2541,12 @@ mod tests {
 
         let full_books = by_book(&full);
         let full_score = r
-            .judge(&r.reduce(&full_books, None, None).0, &full_books, None, None)
+            .judge(
+                &r.reduce(&full_books, None, None).0,
+                &full_books,
+                None,
+                None,
+            )
             .into_iter()
             .find(|f| full.key(f.key_idx) == key_of("EXO", 1))
             .unwrap()
@@ -2232,7 +2554,10 @@ mod tests {
 
         let gen_books = by_book(&gen_map);
         let exo_books = by_book(&exo);
-        let merged = r.reduce(&gen_books, None, None).0.merge(r.reduce(&exo_books, None, None).0);
+        let merged = r
+            .reduce(&gen_books, None, None)
+            .0
+            .merge(r.reduce(&exo_books, None, None).0);
         let inc = r.judge(&merged, &exo_books, None, None);
         assert_eq!(inc.len(), 1);
         assert_eq!(exo.key(inc[0].key_idx), key_of("EXO", 1));
@@ -2243,7 +2568,10 @@ mod tests {
     fn removing_a_book_drops_its_contribution() {
         let r = sp_default();
         let gen_entries = commas_entries(100, 0);
-        let exo_entries = vec![(1u16, "word,word".to_string()), (2u16, "word, word".to_string())];
+        let exo_entries = vec![
+            (1u16, "word,word".to_string()),
+            (2u16, "word, word".to_string()),
+        ];
         let exo = book("EXO", &exo_entries);
         let full = build_books(&[("GEN", gen_entries), ("EXO", exo_entries)]);
 
@@ -2252,10 +2580,27 @@ mod tests {
             unreachable!()
         };
         let exo_books = by_book(&exo);
-        let before = r.judge(&RuleStats::PunctuationSpacing(stats.clone()), &exo_books, None, None);
-        assert!(before.iter().any(|f| exo.key(f.key_idx) == key_of("EXO", 1)));
+        let before = r.judge(
+            &RuleStats::PunctuationSpacing(stats.clone()),
+            &exo_books,
+            None,
+            None,
+        );
+        assert!(
+            before
+                .iter()
+                .any(|f| exo.key(f.key_idx) == key_of("EXO", 1))
+        );
         stats.remove_book("GEN");
-        assert!(r.judge(&RuleStats::PunctuationSpacing(stats), &exo_books, None, None).is_empty());
+        assert!(
+            r.judge(
+                &RuleStats::PunctuationSpacing(stats),
+                &exo_books,
+                None,
+                None
+            )
+            .is_empty()
+        );
     }
 
     #[test]
@@ -2279,8 +2624,12 @@ mod tests {
         let vm = commas(100, 3);
         let books = by_book(&vm);
         let stats = r.reduce(&books, None, None).0;
-        let back: RuleStats = serde_json::from_str(&serde_json::to_string(&stats).unwrap()).unwrap();
+        let back: RuleStats =
+            serde_json::from_str(&serde_json::to_string(&stats).unwrap()).unwrap();
         assert_eq!(stats, back);
-        assert_eq!(r.judge(&stats, &books, None, None), r.judge(&back, &books, None, None));
+        assert_eq!(
+            r.judge(&stats, &books, None, None),
+            r.judge(&back, &books, None, None)
+        );
     }
 }

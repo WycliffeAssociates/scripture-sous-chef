@@ -116,7 +116,10 @@ mod tests {
         let t3 = format!("a{ZW}{ZW}{ZW}b");
         let f3 = scan(&t3);
         assert_eq!(f3.len(), 1);
-        assert_eq!(&t3[f3[0].start as usize..f3[0].end as usize], [ZW, ZW, ZW].concat());
+        assert_eq!(
+            &t3[f3[0].start as usize..f3[0].end as usize],
+            [ZW, ZW, ZW].concat()
+        );
     }
 
     #[test]
@@ -145,8 +148,14 @@ mod tests {
         let f = scan(&text);
         assert_eq!(f.len(), 2);
         assert!(f[0].start < f[1].start, "spans stay in text order");
-        assert_eq!(&text[f[0].start as usize..f[0].end as usize], [ZW, ZW].concat());
-        assert_eq!(&text[f[1].start as usize..f[1].end as usize], [ZW, ZW].concat());
+        assert_eq!(
+            &text[f[0].start as usize..f[0].end as usize],
+            [ZW, ZW].concat()
+        );
+        assert_eq!(
+            &text[f[1].start as usize..f[1].end as usize],
+            [ZW, ZW].concat()
+        );
     }
 
     #[test]

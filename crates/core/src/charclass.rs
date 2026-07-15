@@ -301,9 +301,7 @@ mod tests {
     /// scripts — letters, digits, combining marks, and astral.
     #[test]
     fn matches_std_predicates() {
-        use unicode_properties::{
-            GeneralCategory, GeneralCategoryGroup, UnicodeGeneralCategory,
-        };
+        use unicode_properties::{GeneralCategory, GeneralCategoryGroup, UnicodeGeneralCategory};
         // Includes numeric-but-not-decimal chars (½ U+00BD No, Ⅷ U+2167 Nl,
         // ² U+00B2 No) so NUMERIC and DECIMAL are exercised independently, and
         // a spread of category/script cases.
@@ -332,8 +330,16 @@ mod tests {
                 c.general_category() == GeneralCategory::OtherPunctuation,
                 "other-punct {c:?}"
             );
-            assert_eq!(cl.is_symbol(), g == GeneralCategoryGroup::Symbol, "symbol {c:?}");
-            assert_eq!(cl.script(), crate::script::script_from_unicode(c), "script {c:?}");
+            assert_eq!(
+                cl.is_symbol(),
+                g == GeneralCategoryGroup::Symbol,
+                "symbol {c:?}"
+            );
+            assert_eq!(
+                cl.script(),
+                crate::script::script_from_unicode(c),
+                "script {c:?}"
+            );
         }
     }
 
@@ -371,7 +377,11 @@ mod tests {
             let cp = c as u32;
             let cc = c.general_category() == GeneralCategory::Control;
             // The bit is GC Cc, equivalently the C0 + C1 blocks.
-            assert_eq!(cc, cp <= 0x1F || (0x7F..=0x9F).contains(&cp), "Cc≡C0+C1 {c:?}");
+            assert_eq!(
+                cc,
+                cp <= 0x1F || (0x7F..=0x9F).contains(&cp),
+                "Cc≡C0+C1 {c:?}"
+            );
             assert_eq!(class_of(c).is_control(), cc, "control {c:?}");
         }
     }

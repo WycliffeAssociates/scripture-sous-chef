@@ -109,11 +109,7 @@ impl Needs {
 /// not always the same string as a single token's fold — unifying it risked
 /// silent drift (e.g. Greek final-sigma at a merge boundary) for a listener
 /// that isn't the measured hotspot. See the ADR for the full reasoning.
-fn fold_letter_tokens<'t>(
-    text: &'t str,
-    tokens: &[Token],
-    buf: &mut Vec<Option<Cow<'t, str>>>,
-) {
+fn fold_letter_tokens<'t>(text: &'t str, tokens: &[Token], buf: &mut Vec<Option<Cow<'t, str>>>) {
     buf.clear();
     buf.reserve(tokens.len());
     for tok in tokens {
@@ -225,12 +221,23 @@ pub(crate) struct BookOut {
     /// merge (the book was in the reduce scope).
     pub counted: bool,
     pub casing: Option<(casing::BookCasing, casing::CasingSites)>,
-    pub adjacency: Option<(punctuation::BookPunctuationAdjacency, Vec<crate::corpus::SiteAddr>)>,
-    pub spacing: Option<(punctuation::BookPunctuationSpacing, Vec<punctuation::SpacingSite>)>,
-    pub repeated_run: Option<(lexical::BookRepeatedCharacterRun, Vec<crate::corpus::SiteAddr>)>,
+    pub adjacency: Option<(
+        punctuation::BookPunctuationAdjacency,
+        Vec<crate::corpus::SiteAddr>,
+    )>,
+    pub spacing: Option<(
+        punctuation::BookPunctuationSpacing,
+        Vec<punctuation::SpacingSite>,
+    )>,
+    pub repeated_run: Option<(
+        lexical::BookRepeatedCharacterRun,
+        Vec<crate::corpus::SiteAddr>,
+    )>,
     pub punct_only: Option<(lexical::BookPunctOnlyToken, Vec<crate::corpus::SiteAddr>)>,
-    pub mixed_script:
-        Option<(script_mixing::BookMixedScript, Vec<script_mixing::MixedScriptSite>)>,
+    pub mixed_script: Option<(
+        script_mixing::BookMixedScript,
+        Vec<script_mixing::MixedScriptSite>,
+    )>,
     pub rare_glyph: Option<rare_glyph::BookGlyphs>,
     pub mixed_case: Option<mixed_case::BookMixedCase>,
     pub proportionality: Option<Vec<proportionality::RatioObs>>,
@@ -279,11 +286,17 @@ fn walk_book(
     };
 
     let mut casing_acc = plan.casing.then(casing::CasingAcc::new);
-    let mut adjacency_acc = plan.adjacency.then(|| punctuation::AdjacencyAcc::new(count));
+    let mut adjacency_acc = plan
+        .adjacency
+        .then(|| punctuation::AdjacencyAcc::new(count));
     let mut spacing_acc = plan.spacing.then(punctuation::SpacingAcc::new);
-    let mut repeated_acc = plan.repeated_run.then(|| lexical::RepeatedRunAcc::new(count));
+    let mut repeated_acc = plan
+        .repeated_run
+        .then(|| lexical::RepeatedRunAcc::new(count));
     let mut punct_only_acc = plan.punct_only.then(|| lexical::PunctOnlyAcc::new(count));
-    let mut mixed_script_acc = plan.mixed_script.then(|| script_mixing::MixedScriptAcc::new(count));
+    let mut mixed_script_acc = plan
+        .mixed_script
+        .then(|| script_mixing::MixedScriptAcc::new(count));
     let mut rare_glyph_acc = (count && plan.rare_glyph).then(rare_glyph::RareGlyphAcc::new);
     let mut mixed_case_acc = (count && plan.mixed_case).then(mixed_case::MixedCaseAcc::new);
     let mut prop_acc = (count && plan.proportionality)

@@ -27,7 +27,7 @@ use std::collections::BTreeMap;
 use rustc_hash::FxHashMap;
 
 use crate::config::ProportionalityConfig;
-use crate::corpus::{rebase, Books, Corpus, LocalKeyIdx};
+use crate::corpus::{Books, Corpus, LocalKeyIdx, rebase};
 use crate::diagnostics::{Finding, FindingArgs, LengthRatioScope, RuleId, Severity};
 use crate::rule::{self, StatefulRule, TokenCache};
 use crate::span::Span;
@@ -111,7 +111,11 @@ pub(crate) struct ProportionalityAcc<'v, 's> {
 
 impl<'v, 's> ProportionalityAcc<'v, 's> {
     pub(crate) fn new(source_index: Option<&'s SourceIndex<'s>>) -> Self {
-        ProportionalityAcc { source_index, seen: FxHashMap::default(), bucket: Vec::new() }
+        ProportionalityAcc {
+            source_index,
+            seen: FxHashMap::default(),
+            bucket: Vec::new(),
+        }
     }
 
     pub(crate) fn verse(&mut self, v: &stream::VerseInputs<'v, '_>) {
@@ -119,7 +123,10 @@ impl<'v, 's> ProportionalityAcc<'v, 's> {
             return;
         };
         let ordinal = self.seen.entry(v.key).or_insert(0);
-        let src_text = index.get(v.key).and_then(|texts| texts.get(*ordinal)).copied();
+        let src_text = index
+            .get(v.key)
+            .and_then(|texts| texts.get(*ordinal))
+            .copied();
         *ordinal += 1;
         let Some(src_text) = src_text else {
             return;
@@ -400,7 +407,11 @@ mod tests {
             source_keys.push(k.clone());
             source_texts.push(base.clone());
             target_keys.push(k);
-            target_texts.push(if v % 2 == 0 { format!("{base}x") } else { base.clone() });
+            target_texts.push(if v % 2 == 0 {
+                format!("{base}x")
+            } else {
+                base.clone()
+            });
         }
         // Two duplicate "GEN 1:59" keys on both sides. Ordinal 0 is 5x
         // longer; ordinal 1 matches the baseline. Correct pairing gives both
@@ -649,7 +660,10 @@ mod tests {
         // Whole-verse anchor.
         assert_eq!(
             f.range,
-            Span { start: 0, end: target.text(f.key_idx).len() as u32 }
+            Span {
+                start: 0,
+                end: target.text(f.key_idx).len() as u32
+            }
         );
         // A 5× outlier saturates the confidence scale.
         assert_eq!(f.score, Some(1.0));
@@ -663,7 +677,10 @@ mod tests {
             panic!("expected Both scope, got {scope:?}");
         };
         assert!(book_z > 2.5, "book_z = {book_z}");
-        assert!((book_z - project_z).abs() < 0.01, "single book ⇒ z should match");
+        assert!(
+            (book_z - project_z).abs() < 0.01,
+            "single book ⇒ z should match"
+        );
     }
 
     #[test]
@@ -850,7 +867,10 @@ mod tests {
         let (target, _) = corpus(3, None, 1);
         // No source ⇒ every book bucket is empty; judging must not trap.
         let books = by_book(&target);
-        assert!(r.judge(&r.reduce(&books, None, None).0, &books, None, None).is_empty());
+        assert!(
+            r.judge(&r.reduce(&books, None, None).0, &books, None, None)
+                .is_empty()
+        );
     }
 
     #[test]

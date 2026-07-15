@@ -90,8 +90,15 @@ pub fn case_shape(word: &str) -> Option<CaseShape> {
 /// correctly excludes lone capitals (`Q`) and all-caps forms (`YÖ`), which are
 /// capital-initial but carry no lowercase.
 pub fn is_titlecase_name(word: &str) -> bool {
-    let starts_upper = word.chars().next().is_some_and(|c| class_of(c).is_uppercase());
-    starts_upper && matches!(case_shape(word), Some(CaseShape::Title | CaseShape::OtherMixed))
+    let starts_upper = word
+        .chars()
+        .next()
+        .is_some_and(|c| class_of(c).is_uppercase());
+    starts_upper
+        && matches!(
+            case_shape(word),
+            Some(CaseShape::Title | CaseShape::OtherMixed)
+        )
 }
 
 #[cfg(test)]

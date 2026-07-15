@@ -11,8 +11,8 @@
 use std::fs;
 use std::path::Path;
 
-use ssc_core::key::parse_key;
 use ssc_core::Corpus;
+use ssc_core::key::parse_key;
 
 /// Load one corpus vref file (`REF\ttext` per line) into a `Corpus`, in file
 /// order — a `Corpus` is duplicate-preserving and order-preserving, so

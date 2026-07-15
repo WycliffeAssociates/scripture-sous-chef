@@ -193,4 +193,3 @@ pub fn is_zero_width_or_format(c: char) -> bool {
 pub fn is_invalid_text_codepoint(c: char) -> bool {
     crate::charclass::class_of(c).is_invalid_codepoint()
 }
-

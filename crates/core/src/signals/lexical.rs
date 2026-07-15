@@ -8,7 +8,7 @@ use unicode_segmentation::UnicodeSegmentation;
 
 use crate::charclass::class_of;
 use crate::config::RepeatedCharacterRunConfig;
-use crate::corpus::{rebase, BookGroup, Books, Corpus, LocalKeyIdx, SiteAddr};
+use crate::corpus::{BookGroup, Books, Corpus, LocalKeyIdx, SiteAddr, rebase};
 use crate::diagnostics::{Finding, FindingArgs, RuleId, Severity};
 use crate::evidence;
 use crate::grapheme::{GSpan, segment, segment_tape};
@@ -85,9 +85,9 @@ pub(crate) fn emit(group: &BookGroup<'_>, hits: Vec<DuplicateHit>) -> Vec<Findin
             severity: Severity::Warning,
             range: h.range,
             score: None,
-            args: h
-                .first_local_idx
-                .map(|local| FindingArgs::DuplicateWord { first_sid: group.key(local).to_string() }),
+            args: h.first_local_idx.map(|local| FindingArgs::DuplicateWord {
+                first_sid: group.key(local).to_string(),
+            }),
         })
         .collect()
 }
@@ -152,11 +152,21 @@ pub(crate) struct DuplicateWordAcc<'t> {
 
 impl<'t> DuplicateWordAcc<'t> {
     pub(crate) fn new() -> Self {
-        DuplicateWordAcc { tail: None, found: Vec::new() }
+        DuplicateWordAcc {
+            tail: None,
+            found: Vec::new(),
+        }
     }
 
     pub(crate) fn verse(&mut self, v: &stream::VerseInputs<'t, '_>) {
-        duplicate_word_verse(v.key, v.local_idx, v.text, v.tokens, &mut self.tail, &mut self.found);
+        duplicate_word_verse(
+            v.key,
+            v.local_idx,
+            v.text,
+            v.tokens,
+            &mut self.tail,
+            &mut self.found,
+        );
     }
 
     pub(crate) fn finish(self) -> Vec<DuplicateHit> {
@@ -206,8 +216,8 @@ fn duplicate_word_verse<'t>(
         {
             let prev_tail = &t.text[t.last_end..];
             let head = &text[..first.span.start as usize];
-            let gap_ws = prev_tail.chars().all(char::is_whitespace)
-                && head.chars().all(char::is_whitespace);
+            let gap_ws =
+                prev_tail.chars().all(char::is_whitespace) && head.chars().all(char::is_whitespace);
             if gap_ws && eq_ignore_case(t.last_word, first.span.slice(text)) {
                 // Anchor the deletable second occurrence; the first lives in
                 // another verse, so it rides in args (ADR 0016 amendment).
@@ -338,17 +348,18 @@ impl StatefulRule for PunctOnlyToken {
         // `PunctOnlyAcc`); kept for calibration/tests.
         let mut per_book = BTreeMap::new();
         let mut sites = BTreeMap::new();
-        for (group, (counts, book_sites)) in
-            books.iter().zip(rule::map_books(books, |group| {
-                stream::drive_book(
-                    group,
-                    stream::Needs { tape: true, ..Default::default() },
-                    PunctOnlyAcc::new(true),
-                    |a, v| a.verse(v),
-                    PunctOnlyAcc::finish,
-                )
-            }))
-        {
+        for (group, (counts, book_sites)) in books.iter().zip(rule::map_books(books, |group| {
+            stream::drive_book(
+                group,
+                stream::Needs {
+                    tape: true,
+                    ..Default::default()
+                },
+                PunctOnlyAcc::new(true),
+                |a, v| a.verse(v),
+                PunctOnlyAcc::finish,
+            )
+        })) {
             per_book.insert(Box::from(group.slug), counts);
             sites.insert(Box::from(group.slug), book_sites);
         }
@@ -391,36 +402,34 @@ impl StatefulRule for PunctOnlyToken {
             Some(rule::RuleSites::PunctOnlyToken(m)) => Some(m),
             _ => None,
         };
-        let score = |key_idx: crate::corpus::KeyIdx,
-                     text: &str,
-                     span: Span,
-                     found: &mut Vec<Finding>| {
-            let chunk = span.slice(text);
-            let count = chunks
-                .get(punct_only_pattern_key(chunk).as_str())
-                .copied()
-                .unwrap_or(0);
-            let evidence = evidence::from_strengths(&[evidence::strength(
-                count,
-                lexical_units,
-                convention_rate,
-                z,
-            )]);
-            if evidence < floor {
-                return;
-            }
-            found.push(Finding {
-                key_idx,
-                code: PUNCT_ONLY_TOKEN,
-                severity: Severity::Warning,
-                range: span,
-                score: Some(evidence as f32),
-                args: Some(FindingArgs::PunctOnlyRate {
-                    count: count.min(u64::from(u32::MAX)) as u32,
-                    units: lexical_units.min(u64::from(u32::MAX)) as u32,
-                }),
-            });
-        };
+        let score =
+            |key_idx: crate::corpus::KeyIdx, text: &str, span: Span, found: &mut Vec<Finding>| {
+                let chunk = span.slice(text);
+                let count = chunks
+                    .get(punct_only_pattern_key(chunk).as_str())
+                    .copied()
+                    .unwrap_or(0);
+                let evidence = evidence::from_strengths(&[evidence::strength(
+                    count,
+                    lexical_units,
+                    convention_rate,
+                    z,
+                )]);
+                if evidence < floor {
+                    return;
+                }
+                found.push(Finding {
+                    key_idx,
+                    code: PUNCT_ONLY_TOKEN,
+                    severity: Severity::Warning,
+                    range: span,
+                    score: Some(evidence as f32),
+                    args: Some(FindingArgs::PunctOnlyRate {
+                        count: count.min(u64::from(u32::MAX)) as u32,
+                        units: lexical_units.min(u64::from(u32::MAX)) as u32,
+                    }),
+                });
+            };
         let mut out: Vec<Finding> = rule::map_books(books, |group| {
             let mut found = Vec::new();
             if let Some(book_sites) = forwarded.and_then(|m| m.get(group.slug)) {
@@ -461,7 +470,11 @@ pub(crate) struct PunctOnlyAcc {
 
 impl PunctOnlyAcc {
     pub(crate) fn new(counting: bool) -> Self {
-        PunctOnlyAcc { out: BookPunctOnlyToken::default(), sites: Vec::new(), counting }
+        PunctOnlyAcc {
+            out: BookPunctOnlyToken::default(),
+            sites: Vec::new(),
+            counting,
+        }
     }
 
     pub(crate) fn verse(&mut self, v: &stream::VerseInputs<'_, '_>) {
@@ -672,17 +685,19 @@ impl StatefulRule for RepeatedCharacterRun {
         let _ = tokens;
         let mut per_book = BTreeMap::new();
         let mut sites = BTreeMap::new();
-        for (group, (counts, book_sites)) in
-            books.iter().zip(rule::map_books(books, |group| {
-                stream::drive_book(
-                    group,
-                    stream::Needs { graphemes: true, tokens: true, ..Default::default() },
-                    RepeatedRunAcc::new(true),
-                    |a, v| a.verse(v),
-                    RepeatedRunAcc::finish,
-                )
-            }))
-        {
+        for (group, (counts, book_sites)) in books.iter().zip(rule::map_books(books, |group| {
+            stream::drive_book(
+                group,
+                stream::Needs {
+                    graphemes: true,
+                    tokens: true,
+                    ..Default::default()
+                },
+                RepeatedRunAcc::new(true),
+                |a, v| a.verse(v),
+                RepeatedRunAcc::finish,
+            )
+        })) {
             per_book.insert(Box::from(group.slug), counts);
             sites.insert(Box::from(group.slug), book_sites);
         }
@@ -951,7 +966,6 @@ pub fn scan_repeated_character_run(text: &str, graphemes: &[GSpan]) -> Vec<Span>
 // Tests
 // ─────────────────────────────────────────────────────────────────────
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1042,7 +1056,10 @@ mod tests {
     #[test]
     fn anadiplosis_across_verse_boundary_is_clean() {
         // Sentence punctuation in the gap (trailing ".") — not a doubling.
-        let c = book_corpus("PSA", &[(1, 1, "I trust the Lord."), (1, 2, "Lord, hear me")]);
+        let c = book_corpus(
+            "PSA",
+            &[(1, 1, "I trust the Lord."), (1, 2, "Lord, hear me")],
+        );
         assert!(check(&c).is_empty());
     }
 
@@ -1071,7 +1088,10 @@ mod tests {
         v
     }
     fn po(text: &str) -> Vec<&str> {
-        scan_punct_only_token(text).iter().map(|s| s.slice(text)).collect()
+        scan_punct_only_token(text)
+            .iter()
+            .map(|s| s.slice(text))
+            .collect()
     }
 
     /// `ws_chunks` must produce exactly `split_whitespace`'s chunks, each at
@@ -1154,7 +1174,9 @@ mod tests {
     /// Build a single-book `Corpus`, one verse per string (chapter 1, verses
     /// numbered from 1).
     fn repeat_corpus(book: &str, verses: &[String]) -> Corpus {
-        let keys = (1..=verses.len()).map(|v| format!("{book} 1:{v}")).collect();
+        let keys = (1..=verses.len())
+            .map(|v| format!("{book} 1:{v}"))
+            .collect();
         Corpus::try_from_parts(keys, verses.to_vec()).unwrap()
     }
 
@@ -1246,14 +1268,21 @@ mod tests {
 
     #[test]
     fn punct_only_incremental_score_uses_the_retained_corpus() {
-        let rule = PunctOnlyToken { cfg: Default::default() };
+        let rule = PunctOnlyToken {
+            cfg: Default::default(),
+        };
         let gen_corpus = repeat_corpus("GEN", &["word ".repeat(50_000)]);
         let exo = repeat_corpus("EXO", &["word ,; word".to_string()]);
         let full = concat_corpus(&gen_corpus, &exo);
 
         let full_books = crate::corpus::by_book(&full);
-        let full_score = rule.judge(&rule.reduce(&full_books, None, None).0, &full_books, None, None)[0]
-            .score;
+        let full_score = rule.judge(
+            &rule.reduce(&full_books, None, None).0,
+            &full_books,
+            None,
+            None,
+        )[0]
+        .score;
         let gen_books = crate::corpus::by_book(&gen_corpus);
         let exo_books = crate::corpus::by_book(&exo);
         let merged = rule
@@ -1269,7 +1298,10 @@ mod tests {
     fn rc(text: &str) -> Vec<&str> {
         let mut g = Vec::new();
         crate::grapheme::segment(text, &mut g);
-        scan_repeated_character_run(text, &g).iter().map(|s| s.slice(text)).collect()
+        scan_repeated_character_run(text, &g)
+            .iter()
+            .map(|s| s.slice(text))
+            .collect()
     }
 
     #[test]
@@ -1424,8 +1456,13 @@ mod tests {
         let full = concat_corpus(&gen_corpus, &exo);
 
         let full_books = crate::corpus::by_book(&full);
-        let full_score = rule.judge(&rule.reduce(&full_books, None, None).0, &full_books, None, None)[0]
-            .score;
+        let full_score = rule.judge(
+            &rule.reduce(&full_books, None, None).0,
+            &full_books,
+            None,
+            None,
+        )[0]
+        .score;
         let gen_books = crate::corpus::by_book(&gen_corpus);
         let exo_books = crate::corpus::by_book(&exo);
         let merged = rule
@@ -1447,18 +1484,28 @@ mod tests {
         let exo = repeat_corpus("EXO", &["joyfullly".to_string()]);
         let full = concat_corpus(&gen_corpus, &exo);
         let full_books = crate::corpus::by_book(&full);
-        let RuleStats::RepeatedCharacterRun(mut stats) = rule.reduce(&full_books, None, None).0 else {
+        let RuleStats::RepeatedCharacterRun(mut stats) = rule.reduce(&full_books, None, None).0
+        else {
             unreachable!()
         };
         let exo_books = crate::corpus::by_book(&exo);
-        let before = rule.judge(&RuleStats::RepeatedCharacterRun(stats.clone()), &exo_books, None, None)
-            [0]
+        let before = rule.judge(
+            &RuleStats::RepeatedCharacterRun(stats.clone()),
+            &exo_books,
+            None,
+            None,
+        )[0]
         .score
         .unwrap();
         stats.remove_book("GEN");
-        let after = rule.judge(&RuleStats::RepeatedCharacterRun(stats), &exo_books, None, None)[0]
-            .score
-            .unwrap();
+        let after = rule.judge(
+            &RuleStats::RepeatedCharacterRun(stats),
+            &exo_books,
+            None,
+            None,
+        )[0]
+        .score
+        .unwrap();
         assert!(after < before);
     }
 

@@ -47,7 +47,7 @@
 use std::fs;
 use std::path::Path;
 
-use ssc_core::script::{script_byte_and_name, MATH_BYTE};
+use ssc_core::script::{MATH_BYTE, script_byte_and_name};
 use unicode_properties::{GeneralCategory, GeneralCategoryGroup, UnicodeGeneralCategory};
 
 // ── Class(u32) layout — MUST match crates/core/src/charclass.rs ──
@@ -99,7 +99,10 @@ fn is_zero_width_or_format(cp: u32) -> bool {
 /// (`…FFFE`/`…FFFF`) are emitted as isolated 2-codepoint ranges by the
 /// coalescer below — verified by the exhaustive sweep test.
 fn is_invalid_text_codepoint(cp: u32) -> bool {
-    cp == 0xFFFD || (0xFDD0..=0xFDEF).contains(&cp) || (cp & 0xFFFE) == 0xFFFE || (0xFFF9..=0xFFFC).contains(&cp)
+    cp == 0xFFFD
+        || (0xFDD0..=0xFDEF).contains(&cp)
+        || (cp & 0xFFFE) == 0xFFFE
+        || (0xFFF9..=0xFFFC).contains(&cp)
 }
 
 /// Parse a UCD data file into `(lo, hi, [semicolon fields after the codepoint])`.
@@ -140,7 +143,11 @@ pub fn run(ssc_core: &Path) {
     //   unicode-segmentation   -> the runtime fallback/oracle (grapheme bits
     //                             come from the committed src/testdata/ucd/ files)
     // Fail loudly and refresh all of them (and src/testdata/ucd/) together.
-    assert_eq!(char::UNICODE_VERSION, (17, 0, 0), "toolchain std Unicode version drifted from UCD 17.0");
+    assert_eq!(
+        char::UNICODE_VERSION,
+        (17, 0, 0),
+        "toolchain std Unicode version drifted from UCD 17.0"
+    );
     assert_eq!(
         unicode_properties::UNICODE_VERSION,
         (17, 0, 0),
@@ -308,7 +315,9 @@ pub fn run(ssc_core: &Path) {
     src.push_str("//!   cargo xtask gen-charclass-table\n");
     src.push_str("//!\n");
     src.push_str("//! Fused casing + General_Category + script + grapheme-break bits for every\n");
-    src.push_str("//! scalar, from the UCD 17.0 files in `src/testdata/ucd/`, std casing, and the\n");
+    src.push_str(
+        "//! scalar, from the UCD 17.0 files in `src/testdata/ucd/`, std casing, and the\n",
+    );
     src.push_str("//! unicode-properties / unicode-script crates. See ADR 0021 / 0022 and the\n");
     src.push_str("//! `xtask gen-charclass-table` task.\n");
     src.push_str(&format!("//!\n//! {} nonzero ranges.\n\n", ranges.len()));

@@ -89,9 +89,7 @@ pub(crate) fn scan_control_chars(tape: &[TapeEntry]) -> Vec<Span> {
         let flagged = (is_c0_control(c) && c != '\t' && c != '\n') || is_c1_control(c);
         if flagged {
             match &mut run {
-                Some((rc, span)) if *rc == c && span.end == i => {
-                    span.end = i + c.len_utf8() as u32
-                }
+                Some((rc, span)) if *rc == c && span.end == i => span.end = i + c.len_utf8() as u32,
                 _ => {
                     if let Some((_, span)) = run.take() {
                         spans.push(span);
@@ -421,19 +419,25 @@ pub(crate) fn scan_mixed_numeral_systems(tape: &[TapeEntry]) -> Vec<Span> {
     let mut run_start: Option<u32> = None;
     let mut run_end = 0u32;
     for e in tape {
-        let minority = e.cl.is_decimal_digit()
-            && numeral_system(e.ch).is_some_and(|sys| sys != majority);
+        let minority =
+            e.cl.is_decimal_digit() && numeral_system(e.ch).is_some_and(|sys| sys != majority);
         if minority {
             if run_start.is_none() {
                 run_start = Some(e.off);
             }
             run_end = e.off + e.ch.len_utf8() as u32;
         } else if let Some(start) = run_start.take() {
-            spans.push(Span { start, end: run_end });
+            spans.push(Span {
+                start,
+                end: run_end,
+            });
         }
     }
     if let Some(start) = run_start {
-        spans.push(Span { start, end: run_end });
+        spans.push(Span {
+            start,
+            end: run_end,
+        });
     }
     spans
 }
@@ -456,7 +460,10 @@ mod tests {
     #[test]
     fn tab_flags_each_tab() {
         let f = scan_tab_in_body("foo\tbar\tbaz");
-        assert_eq!(f, vec![Span { start: 3, end: 4 }, Span { start: 7, end: 8 }]);
+        assert_eq!(
+            f,
+            vec![Span { start: 3, end: 4 }, Span { start: 7, end: 8 }]
+        );
     }
 
     #[test]
@@ -469,7 +476,12 @@ mod tests {
         // U+0007 (BEL, C0), U+0085 (NEL, C1)
         let f = scan_control_chars(&tp("foo\u{0007}bar\u{0085}baz"));
         assert_eq!(f.len(), 2);
-        assert_eq!("foo\u{0007}bar\u{0085}baz"[f[0].start as usize..f[0].end as usize].chars().next(), Some('\u{0007}'));
+        assert_eq!(
+            "foo\u{0007}bar\u{0085}baz"[f[0].start as usize..f[0].end as usize]
+                .chars()
+                .next(),
+            Some('\u{0007}')
+        );
     }
 
     #[test]
@@ -512,7 +524,12 @@ mod tests {
     fn zero_width_flags_bom_in_latin() {
         let f = scan_zero_width_misuse(&tp("foo\u{FEFF}bar"));
         assert_eq!(f.len(), 1);
-        assert_eq!("foo\u{FEFF}bar"[f[0].start as usize..f[0].end as usize].chars().next(), Some('\u{FEFF}'));
+        assert_eq!(
+            "foo\u{FEFF}bar"[f[0].start as usize..f[0].end as usize]
+                .chars()
+                .next(),
+            Some('\u{FEFF}')
+        );
     }
 
     #[test]
@@ -543,13 +560,24 @@ mod tests {
         let f = scan_zero_width_misuse(&tp("a\u{200B}b\u{FEFF}c\u{2060}d\u{202E}e"));
         assert_eq!(f.len(), 3);
         let text = "a\u{200B}b\u{FEFF}c\u{2060}d\u{202E}e";
-        let flagged: Vec<char> = f.iter().map(|s| text[s.start as usize..s.end as usize].chars().next().unwrap()).collect();
+        let flagged: Vec<char> = f
+            .iter()
+            .map(|s| {
+                text[s.start as usize..s.end as usize]
+                    .chars()
+                    .next()
+                    .unwrap()
+            })
+            .collect();
         assert_eq!(flagged, vec!['\u{FEFF}', '\u{2060}', '\u{202E}']);
     }
 
     #[test]
     fn empty_verse_fires_on_empty() {
-        assert_eq!(scan_empty_verse("", &tp("")), vec![Span { start: 0, end: 0 }]);
+        assert_eq!(
+            scan_empty_verse("", &tp("")),
+            vec![Span { start: 0, end: 0 }]
+        );
     }
 
     #[test]
@@ -566,7 +594,12 @@ mod tests {
     fn invalid_codepoint_flags_replacement_char() {
         let f = scan_invalid_codepoint(&tp("god\u{FFFD}created"));
         assert_eq!(f.len(), 1);
-        assert_eq!("god\u{FFFD}created"[f[0].start as usize..f[0].end as usize].chars().next(), Some('\u{FFFD}'));
+        assert_eq!(
+            "god\u{FFFD}created"[f[0].start as usize..f[0].end as usize]
+                .chars()
+                .next(),
+            Some('\u{FFFD}')
+        );
     }
 
     #[test]
@@ -611,8 +644,14 @@ mod tests {
 
     #[test]
     fn combining_mark_at_start_and_after_punct_flagged() {
-        assert_eq!(scan_combining_mark_without_base(&tp("\u{0301}abc")).len(), 1);
-        assert_eq!(scan_combining_mark_without_base(&tp("word.\u{0301} x")).len(), 1);
+        assert_eq!(
+            scan_combining_mark_without_base(&tp("\u{0301}abc")).len(),
+            1
+        );
+        assert_eq!(
+            scan_combining_mark_without_base(&tp("word.\u{0301} x")).len(),
+            1
+        );
     }
 
     #[test]

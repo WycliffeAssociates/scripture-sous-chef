@@ -198,7 +198,11 @@ pub(crate) fn build_masked(text: &str, out: &mut Vec<TapeEntry>) -> Mask {
                 _ => {}
             }
         }
-        out.push(TapeEntry { off: i as u32, ch: c, cl });
+        out.push(TapeEntry {
+            off: i as u32,
+            ch: c,
+            cl,
+        });
         prev = Some(cl);
     }
     // The three rare-family bits: one test each on the accumulated OR.
@@ -290,7 +294,7 @@ mod tests {
         "5 < 7 and 7 > 5",        // lone '<' '>'     -> BACKSLASH_OR_LT, not CONFLICT3
         "ours=======theirs",      // =×7              -> CONFLICT3
         "a << b == c",            // pairs only       -> not CONFLICT3
-        "मन ने कहा। हाँ",         // Devanagari clean -> ALWAYS only
+        "मन ने कहा। हाँ",           // Devanagari clean -> ALWAYS only
     ];
 
     /// An independent, single-purpose recompute of every mask bit — the naive
@@ -401,7 +405,10 @@ mod tests {
             build_masked(text, &mut c);
             assert_eq!(a.len(), c.len(), "len for {text:?}");
             for (x, y) in a.iter().zip(&c) {
-                assert!(x.off == y.off && x.ch == y.ch && x.cl == y.cl, "entry for {text:?}");
+                assert!(
+                    x.off == y.off && x.ch == y.ch && x.cl == y.cl,
+                    "entry for {text:?}"
+                );
             }
         }
     }
@@ -425,9 +432,18 @@ mod tests {
             union |= build_masked(text, &mut tape).0;
         }
         for gate in [
-            Mask::EXCESS_WS, Mask::TAB, Mask::CONTROL, Mask::ZW_FORMAT, Mask::NO_CONTENT,
-            Mask::INVALID, Mask::QRUN, Mask::MARK_BASELESS, Mask::MULTI_NUMSYS, Mask::ZWSP2,
-            Mask::BACKSLASH_OR_LT, Mask::CONFLICT3,
+            Mask::EXCESS_WS,
+            Mask::TAB,
+            Mask::CONTROL,
+            Mask::ZW_FORMAT,
+            Mask::NO_CONTENT,
+            Mask::INVALID,
+            Mask::QRUN,
+            Mask::MARK_BASELESS,
+            Mask::MULTI_NUMSYS,
+            Mask::ZWSP2,
+            Mask::BACKSLASH_OR_LT,
+            Mask::CONFLICT3,
         ] {
             assert!(union & gate.0 != 0, "no sample set {gate:?}");
         }

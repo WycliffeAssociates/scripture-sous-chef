@@ -81,12 +81,12 @@ use rustc_hash::FxHashMap;
 
 use crate::analysis::association::Table2;
 use crate::charclass::class_of;
-use crate::signals::case_shape::{case_shape, CaseShape};
 use crate::config::CasingConfig;
-use crate::corpus::{rebase, BookGroup, Books, Corpus, LocalKeyIdx};
+use crate::corpus::{BookGroup, Books, Corpus, LocalKeyIdx, rebase};
 use crate::diagnostics::{Finding, FindingArgs, RuleId, Severity};
 use crate::evidence::{clamp_count, clamp_unit, clamp_z, wilson_lower_bound};
 use crate::rule::{self, StatefulRule, TokenCache};
+use crate::signals::case_shape::{CaseShape, case_shape};
 use crate::span::Span;
 use crate::stats::RuleStats;
 use crate::stream;
@@ -231,10 +231,16 @@ struct WordStats {
     #[cfg_attr(feature = "wasm", tsify(optional))]
     book_initial: ForcedTally,
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "is_empty_map"))]
-    #[cfg_attr(feature = "wasm", tsify(optional, type = "Record<string, ForcedTally>"))]
+    #[cfg_attr(
+        feature = "wasm",
+        tsify(optional, type = "Record<string, ForcedTally>")
+    )]
     after_glyph: BTreeMap<char, ForcedTally>,
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "is_empty_map"))]
-    #[cfg_attr(feature = "wasm", tsify(optional, type = "Record<string, ForcedTally>"))]
+    #[cfg_attr(
+        feature = "wasm",
+        tsify(optional, type = "Record<string, ForcedTally>")
+    )]
     after_quote: BTreeMap<char, ForcedTally>,
 }
 
@@ -261,7 +267,11 @@ impl WordStats {
             (PosClass::BookInitial, Case::Upper) => self.book_initial.upper += 1,
             (PosClass::BookInitial, Case::Lower) => self.book_initial.lower += 1,
             (PosClass::ForcedAfterTerminal(ck), c) => {
-                let map = if ck.quoted { &mut self.after_quote } else { &mut self.after_glyph };
+                let map = if ck.quoted {
+                    &mut self.after_quote
+                } else {
+                    &mut self.after_glyph
+                };
                 let t = map.entry(ck.mark).or_default();
                 match c {
                     Case::Upper => t.upper += 1,
@@ -285,14 +295,30 @@ impl WordStats {
     fn all_upper(&self) -> u64 {
         u64::from(self.mid_upper)
             + self.book_initial.upper()
-            + self.after_glyph.values().map(ForcedTally::upper).sum::<u64>()
-            + self.after_quote.values().map(ForcedTally::upper).sum::<u64>()
+            + self
+                .after_glyph
+                .values()
+                .map(ForcedTally::upper)
+                .sum::<u64>()
+            + self
+                .after_quote
+                .values()
+                .map(ForcedTally::upper)
+                .sum::<u64>()
     }
     fn all_lower(&self) -> u64 {
         u64::from(self.mid_lower)
             + self.book_initial.lower()
-            + self.after_glyph.values().map(ForcedTally::lower).sum::<u64>()
-            + self.after_quote.values().map(ForcedTally::lower).sum::<u64>()
+            + self
+                .after_glyph
+                .values()
+                .map(ForcedTally::lower)
+                .sum::<u64>()
+            + self
+                .after_quote
+                .values()
+                .map(ForcedTally::lower)
+                .sum::<u64>()
     }
     fn all_total(&self) -> u64 {
         self.all_upper() + self.all_lower()
@@ -395,8 +421,14 @@ fn reshuffle_deviate(
     base: &HashMap<&str, u64>,
     jurors: &[&str],
 ) -> f64 {
-    let n_after: u64 = jurors.iter().map(|w| after.get(w).copied().unwrap_or(0)).sum();
-    let n_base: u64 = jurors.iter().map(|w| base.get(w).copied().unwrap_or(0)).sum();
+    let n_after: u64 = jurors
+        .iter()
+        .map(|w| after.get(w).copied().unwrap_or(0))
+        .sum();
+    let n_base: u64 = jurors
+        .iter()
+        .map(|w| base.get(w).copied().unwrap_or(0))
+        .sum();
     if n_after == 0 || n_base <= n_after {
         return 0.0;
     }
@@ -458,7 +490,10 @@ fn build_trust(words: &HashMap<String, WordStats>, z: f64) -> HashMap<ClassKey, 
         for (m, t) in &w.after_glyph {
             if t.total() > 0 {
                 *after
-                    .entry(ClassKey { mark: *m, quoted: false })
+                    .entry(ClassKey {
+                        mark: *m,
+                        quoted: false,
+                    })
                     .or_default()
                     .entry(key)
                     .or_default() += t.total();
@@ -467,7 +502,10 @@ fn build_trust(words: &HashMap<String, WordStats>, z: f64) -> HashMap<ClassKey, 
         for (m, t) in &w.after_quote {
             if t.total() > 0 {
                 *after
-                    .entry(ClassKey { mark: *m, quoted: true })
+                    .entry(ClassKey {
+                        mark: *m,
+                        quoted: true,
+                    })
                     .or_default()
                     .entry(key)
                     .or_default() += t.total();
@@ -498,12 +536,22 @@ fn build_trust(words: &HashMap<String, WordStats>, z: f64) -> HashMap<ClassKey, 
             continue;
         }
         for (m, t) in &w.after_glyph {
-            let e = w1.entry(ClassKey { mark: *m, quoted: false }).or_default();
+            let e = w1
+                .entry(ClassKey {
+                    mark: *m,
+                    quoted: false,
+                })
+                .or_default();
             e.0 += t.upper();
             e.1 += t.total();
         }
         for (m, t) in &w.after_quote {
-            let e = w1.entry(ClassKey { mark: *m, quoted: true }).or_default();
+            let e = w1
+                .entry(ClassKey {
+                    mark: *m,
+                    quoted: true,
+                })
+                .or_default();
             e.0 += t.upper();
             e.1 += t.total();
         }
@@ -524,7 +572,15 @@ fn build_trust(words: &HashMap<String, WordStats>, z: f64) -> HashMap<ClassKey, 
             Some(&(up, total)) if total > 0 => (wilson_lower_bound(up, total, z), true),
             _ => (0.0, false),
         };
-        prelim.insert(ck, Prelim { s_case, case_seen, diff, events: a.values().sum() });
+        prelim.insert(
+            ck,
+            Prelim {
+                s_case,
+                case_seen,
+                diff,
+                events: a.values().sum(),
+            },
+        );
     }
 
     // Reference terminal for the agreement guard: the highest-VOLUME strongly-
@@ -547,9 +603,7 @@ fn build_trust(words: &HashMap<String, WordStats>, z: f64) -> HashMap<ClassKey, 
     let reference = prelim
         .iter()
         .filter(|(ck, p)| p.case_seen && !ck.quoted && p.s_case >= 0.5)
-        .max_by(|(a, pa), (b, pb)| {
-            pa.events.cmp(&pb.events).then_with(|| a.mark.cmp(&b.mark))
-        })
+        .max_by(|(a, pa), (b, pb)| pa.events.cmp(&pb.events).then_with(|| a.mark.cmp(&b.mark)))
         .map(|(&ck, _)| ck)
         .or_else(|| by_diff(&|ck| !ck.quoted))
         .or_else(|| by_diff(&|_| true));
@@ -560,8 +614,7 @@ fn build_trust(words: &HashMap<String, WordStats>, z: f64) -> HashMap<ClassKey, 
     // separator's aftermath is its own, so agreement collapses (the genealogy
     // guard plain differentness cannot supply).
     let ref_after = reference.map(|r| &after[&r]);
-    let ref_base_tv =
-        ref_after.map(|ra| tv_distance(&word_start_total, ra, &jurors).max(1e-6));
+    let ref_base_tv = ref_after.map(|ra| tv_distance(&word_start_total, ra, &jurors).max(1e-6));
 
     let mut trust = HashMap::with_capacity(prelim.len());
     for (&ck, p) in &prelim {
@@ -679,12 +732,20 @@ impl Model {
                 e.1 += w.book_initial.total();
             }
             for (m, t) in &w.after_glyph {
-                let e = habit.entry(Some(ClassKey { mark: *m, quoted: false })).or_default();
+                let e = habit
+                    .entry(Some(ClassKey {
+                        mark: *m,
+                        quoted: false,
+                    }))
+                    .or_default();
                 e.0 += t.upper();
                 e.1 += t.total();
             }
             for (m, t) in &w.after_quote {
-                let ck = ClassKey { mark: *m, quoted: true };
+                let ck = ClassKey {
+                    mark: *m,
+                    quoted: true,
+                };
                 if trust.get(&ck).copied().unwrap_or(0.0) > PROMOTE_BAR {
                     let e = habit.entry(Some(ck)).or_default();
                     e.0 += t.upper();
@@ -693,7 +754,13 @@ impl Model {
             }
         }
 
-        Model { words, trust, habit, z, gate }
+        Model {
+            words,
+            trust,
+            habit,
+            z,
+            gate,
+        }
     }
 
     fn trust_class(&self, ck: ClassKey) -> f64 {
@@ -740,14 +807,20 @@ impl Model {
         }
         for (m, t) in &w.after_glyph {
             if t.upper > 0 {
-                let ck = ClassKey { mark: *m, quoted: false };
+                let ck = ClassKey {
+                    mark: *m,
+                    quoted: false,
+                };
                 let discount = 1.0 - self.trust_class(ck) * self.habit_dominance(Some(ck));
                 up += discount * f64::from(t.upper);
             }
         }
         for (m, t) in &w.after_quote {
             if t.upper > 0 && self.quote_promoted(*m) {
-                let ck = ClassKey { mark: *m, quoted: true };
+                let ck = ClassKey {
+                    mark: *m,
+                    quoted: true,
+                };
                 let discount = 1.0 - self.trust_class(ck) * self.habit_dominance(Some(ck));
                 up += discount * f64::from(t.upper);
             }
@@ -905,8 +978,14 @@ fn compound_words(text: &str, tokens: &[crate::token::Token], out: &mut Vec<Span
             let mut g = gap.chars();
             let hyphen = matches!(g.next(), Some('\u{002D}' | '\u{2010}')) && g.next().is_none();
             if hyphen
-                && text[..prev.end as usize].chars().next_back().is_some_and(is_letter)
-                && text[t.span.start as usize..].chars().next().is_some_and(is_letter)
+                && text[..prev.end as usize]
+                    .chars()
+                    .next_back()
+                    .is_some_and(is_letter)
+                && text[t.span.start as usize..]
+                    .chars()
+                    .next()
+                    .is_some_and(is_letter)
             {
                 prev.end = t.span.end;
                 continue;
@@ -914,7 +993,11 @@ fn compound_words(text: &str, tokens: &[crate::token::Token], out: &mut Vec<Span
         }
         out.push(t.span);
     }
-    out.retain(|s| text[s.start as usize..s.end as usize].chars().any(is_letter));
+    out.retain(|s| {
+        text[s.start as usize..s.end as usize]
+            .chars()
+            .any(is_letter)
+    });
 }
 
 /// The pending-terminal state across a gap between words. `mark` is the
@@ -949,7 +1032,11 @@ pub(crate) fn advance_gap(gap: &str, pending: &mut Option<Pending>, prev_letter:
                     }
                 }
                 None if *prev_letter => {
-                    *pending = Some(Pending { mark: c, quote: false, other: false });
+                    *pending = Some(Pending {
+                        mark: c,
+                        quote: false,
+                        other: false,
+                    });
                 }
                 None => {}
             }
@@ -967,10 +1054,14 @@ pub(crate) fn pos_of(book_initial: bool, taken: Option<Pending>) -> PosClass {
     }
     match taken {
         Some(p) if p.other => PosClass::Midflow,
-        Some(p) if p.quote => {
-            PosClass::ForcedAfterTerminal(ClassKey { mark: p.mark, quoted: true })
-        }
-        Some(p) => PosClass::ForcedAfterTerminal(ClassKey { mark: p.mark, quoted: false }),
+        Some(p) if p.quote => PosClass::ForcedAfterTerminal(ClassKey {
+            mark: p.mark,
+            quoted: true,
+        }),
+        Some(p) => PosClass::ForcedAfterTerminal(ClassKey {
+            mark: p.mark,
+            quoted: false,
+        }),
         None => PosClass::Midflow,
     }
 }
@@ -1022,9 +1113,16 @@ impl CasingAcc {
         // `self` fields without holding a borrow of `words_buf` open.
         for i in 0..self.words_buf.len() {
             let w = self.words_buf[i];
-            advance_gap(&text[cursor..w.start as usize], &mut self.pending, &mut prev_letter);
+            advance_gap(
+                &text[cursor..w.start as usize],
+                &mut self.pending,
+                &mut prev_letter,
+            );
 
-            let first = text[w.start as usize..w.end as usize].chars().next().unwrap();
+            let first = text[w.start as usize..w.end as usize]
+                .chars()
+                .next()
+                .unwrap();
             let fcl = class_of(first);
             let case = if fcl.is_uppercase() {
                 Case::Upper
@@ -1064,7 +1162,8 @@ impl CasingAcc {
             // — `case` would be `Upper` — so this only touches the first-lower
             // overlap class.)
             if case == Case::Lower
-                && case_shape(&text[w.start as usize..w.end as usize]) != Some(CaseShape::OtherMixed)
+                && case_shape(&text[w.start as usize..w.end as usize])
+                    != Some(CaseShape::OtherMixed)
             {
                 self.sites.push(LowerSite {
                     local_idx: v.local_idx,
@@ -1096,8 +1195,14 @@ impl CasingAcc {
             .map(|(k, w)| (k.clone(), w.clone()))
             .collect();
         (
-            BookCasing { words, cased_starts: self.cased_starts },
-            CasingSites { keys: self.keys, sites: self.sites },
+            BookCasing {
+                words,
+                cased_starts: self.cased_starts,
+            },
+            CasingSites {
+                keys: self.keys,
+                sites: self.sites,
+            },
         )
     }
 }
@@ -1108,7 +1213,10 @@ impl CasingAcc {
 fn walk_book(group: &BookGroup<'_>) -> (BookCasing, CasingSites) {
     stream::drive_book(
         group,
-        stream::Needs { tokens: true, ..Default::default() },
+        stream::Needs {
+            tokens: true,
+            ..Default::default()
+        },
         CasingAcc::new(),
         |a, v| a.verse(v),
         CasingAcc::finish,
@@ -1170,7 +1278,12 @@ fn judge_casing<V: Clone + Sync + Send>(
                 .entry((site.key, site.pos))
                 .or_insert_with(|| verdict(&keys[site.key as usize], site.pos, &model));
             if let Some(v) = v {
-                found.push(materialize(site, &keys[site.key as usize], v, rebase(base, site.local_idx)));
+                found.push(materialize(
+                    site,
+                    &keys[site.key as usize],
+                    v,
+                    rebase(base, site.local_idx),
+                ));
             }
         }
     };
@@ -1192,7 +1305,10 @@ fn judge_casing<V: Clone + Sync + Send>(
 }
 
 fn site_span(site: &LowerSite) -> Span {
-    Span { start: site.start, end: site.end }
+    Span {
+        start: site.start,
+        end: site.end,
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -1253,7 +1369,12 @@ impl StatefulRule for SentenceInitialLowercase {
                 severity: Severity::Info,
                 range: site_span(site),
                 score: Some(score as f32),
-                args: Some(FindingArgs::CasingConvention { glyph, quoted, upper, total }),
+                args: Some(FindingArgs::CasingConvention {
+                    glyph,
+                    quoted,
+                    upper,
+                    total,
+                }),
             },
         )
     }
@@ -1314,7 +1435,11 @@ impl StatefulRule for InconsistentWordCasing {
                 severity: Severity::Info,
                 range: site_span(site),
                 score: Some(score as f32),
-                args: Some(FindingArgs::WordCasing { word: key.to_owned(), upper, total }),
+                args: Some(FindingArgs::WordCasing {
+                    word: key.to_owned(),
+                    upper,
+                    total,
+                }),
             },
         )
     }
@@ -1371,8 +1496,18 @@ mod tests {
     use crate::corpus;
 
     /// Full config with an explicit trust gate (ADR 0052).
-    fn cfg_g(emit_score_min: f32, recurrence_k: f32, confidence_z: f32, trust_gate: f32) -> CasingConfig {
-        CasingConfig { emit_score_min, recurrence_k, confidence_z, trust_gate }
+    fn cfg_g(
+        emit_score_min: f32,
+        recurrence_k: f32,
+        confidence_z: f32,
+        trust_gate: f32,
+    ) -> CasingConfig {
+        CasingConfig {
+            emit_score_min,
+            recurrence_k,
+            confidence_z,
+            trust_gate,
+        }
     }
 
     /// Config at the default trust gate (0.90) — most ADR 0051 tests.
@@ -1492,7 +1627,12 @@ mod tests {
         let hit: Vec<_> = f.iter().filter(|f| slice(&vm, f) == "the").collect();
         assert_eq!(hit.len(), 1, "{f:?}");
         match &hit[0].args {
-            Some(FindingArgs::CasingConvention { glyph, quoted, upper, total }) => {
+            Some(FindingArgs::CasingConvention {
+                glyph,
+                quoted,
+                upper,
+                total,
+            }) => {
                 assert_eq!(*glyph, Some('.'));
                 assert!(!*quoted, "a bare terminal is not a quote-context class");
                 assert!(*upper > 0 && *upper <= *total);
@@ -1547,7 +1687,10 @@ mod tests {
         let vm = push_verse(vm, "GEN", 200, "he stops.");
         let vm = push_verse(vm, "GEN", 201, "there he goes");
         let f = run(&vm, &positional(cfg(0.5, 32.0, 0.0)));
-        assert!(f.iter().any(|f| at(&vm, f, "GEN", 201) && slice(&vm, f) == "there"));
+        assert!(
+            f.iter()
+                .any(|f| at(&vm, f, "GEN", 201) && slice(&vm, f) == "there")
+        );
     }
 
     #[test]
@@ -1576,8 +1719,14 @@ mod tests {
         let vm = push_verse(vm, "GEN", 100, "He wept. god is near.");
         let fi = run(&vm, &intrinsic(cfg(0.5, 32.0, 0.0)));
         let fp = run(&vm, &positional(cfg(0.5, 32.0, 0.0)));
-        assert!(fi.iter().any(|f| at(&vm, f, "GEN", 100) && slice(&vm, f) == "god"));
-        assert!(fp.iter().any(|f| at(&vm, f, "GEN", 100) && slice(&vm, f) == "god"));
+        assert!(
+            fi.iter()
+                .any(|f| at(&vm, f, "GEN", 100) && slice(&vm, f) == "god")
+        );
+        assert!(
+            fp.iter()
+                .any(|f| at(&vm, f, "GEN", 100) && slice(&vm, f) == "god")
+        );
     }
 
     #[test]
@@ -1599,11 +1748,19 @@ mod tests {
         let two = cycle("GEN", &["we saw Jesus"], 20);
         let two = extend_corpus(two, book("EXO", &[(1, "we saw jesus")]));
         let (mut stats2, _) = r.reduce(&corpus::by_book(&two), None, None);
-        assert_eq!(r.judge(&stats2, &corpus::by_book(&two), None, None).len(), 1);
-        let RuleStats::Casing(ref mut c) = stats2 else { unreachable!() };
+        assert_eq!(
+            r.judge(&stats2, &corpus::by_book(&two), None, None).len(),
+            1
+        );
+        let RuleStats::Casing(ref mut c) = stats2 else {
+            unreachable!()
+        };
         c.remove_book("GEN");
         let exo = book("EXO", &[(1, "we saw jesus")]);
-        assert!(r.judge(&stats2, &corpus::by_book(&exo), None, None).is_empty());
+        assert!(
+            r.judge(&stats2, &corpus::by_book(&exo), None, None)
+                .is_empty()
+        );
     }
 
     #[test]
@@ -1631,10 +1788,18 @@ mod tests {
         // `the` recurs mid-flow several times a verse so it stays lexicon-lower
         // even with the quote-opening `The` folded into its baseline profile.
         // `.` and `."` share the `The` aftermath ⇒ high agreement, high trust.
-        let vm =
-            cycle("GEN", &["The voice spoke to the man.\" The people saw the gate by the sea."], 60);
+        let vm = cycle(
+            "GEN",
+            &["The voice spoke to the man.\" The people saw the gate by the sea."],
+            60,
+        );
         // One slip: lowercase `the` right after a `."` boundary.
-        let vm = push_verse(vm, "GEN", 500, "He wept.\" the men saw the gate by the sea.");
+        let vm = push_verse(
+            vm,
+            "GEN",
+            500,
+            "He wept.\" the men saw the gate by the sea.",
+        );
 
         assert!(
             class_trust(&vm, '.', true) >= 0.90,
@@ -1695,7 +1860,13 @@ mod tests {
         let fp = run(&vm, &positional(cfg(0.5, 32.0, 1.96)));
         assert!(
             !fp.iter().any(|f| {
-                matches!(&f.args, Some(FindingArgs::CasingConvention { glyph: Some(','), .. }))
+                matches!(
+                    &f.args,
+                    Some(FindingArgs::CasingConvention {
+                        glyph: Some(','),
+                        ..
+                    })
+                )
             }),
             "the distrusted comma flags nothing positionally: {fp:?}"
         );
@@ -1705,7 +1876,8 @@ mod tests {
         // would be censored and this would stay silent.)
         let fi = run(&vm, &intrinsic(cfg(0.5, 32.0, 1.96)));
         assert!(
-            fi.iter().any(|f| at(&vm, f, "GEN", 900) && slice(&vm, f) == "enosh"),
+            fi.iter()
+                .any(|f| at(&vm, f, "GEN", 900) && slice(&vm, f) == "enosh"),
             "the name's post-comma capitals remain lexicon evidence: {fi:?}"
         );
     }
@@ -1739,7 +1911,11 @@ mod tests {
                 .count()
         };
         assert_eq!(hits(0.10), 1, "below the comma's trust the site surfaces");
-        assert_eq!(hits(0.95), 0, "raising the gate above its trust silences it");
+        assert_eq!(
+            hits(0.95),
+            0,
+            "raising the gate above its trust silences it"
+        );
     }
 
     /// Caseless corpora self-silence, so the reshuffle witness cannot corrupt a
@@ -1747,7 +1923,10 @@ mod tests {
     #[test]
     fn caseless_corpus_stays_silent_regardless_of_trust() {
         let keys: Vec<String> = (1..=60u16).map(|v| key_at("GEN", v)).collect();
-        let texts = vec!["उसने कहा। वे चले गए। फिर वह चला गया।".to_string(); keys.len()];
+        let texts = vec![
+            "उसने कहा। वे चले गए। फिर वह चला गया।".to_string();
+            keys.len()
+        ];
         let vm = Corpus::try_from_parts(keys, texts).unwrap();
         assert!(run(&vm, &positional(cfg(0.0, 32.0, 1.96))).is_empty());
         assert!(run(&vm, &intrinsic(cfg(0.0, 32.0, 1.96))).is_empty());

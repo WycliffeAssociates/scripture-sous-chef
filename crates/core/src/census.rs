@@ -25,14 +25,14 @@ use std::collections::BTreeMap;
 
 use crate::corpus::{self, BookGroup, Corpus};
 use crate::rule;
-use crate::signals::mixed_case::is_letter_token;
+use crate::signals::bracket_balance::{BookMatch, BracketAcc};
 use crate::signals::case_shape::{CaseShape, case_shape};
+use crate::signals::mixed_case::is_letter_token;
 use crate::signals::punctuation::{
     SIDE_CELLS, SideForm, SpacingAcc, adjacency_runs_all, count_lead_opportunities,
     mark_attached_spaced,
 };
 use crate::signals::rare_glyph::{CensusPages, is_letter_scalar};
-use crate::signals::bracket_balance::{BookMatch, BracketAcc};
 use crate::span::Span;
 use crate::stream::{self, Needs, VerseInputs};
 
@@ -94,9 +94,17 @@ pub enum RowKey {
     #[cfg_attr(feature = "serde", serde(rename = "punct-run"))]
     PunctRun { run: String },
     #[cfg_attr(feature = "serde", serde(rename = "mark-spacing"))]
-    MarkSpacing { mark: char, attached: u64, spaced: u64 },
+    MarkSpacing {
+        mark: char,
+        attached: u64,
+        spaced: u64,
+    },
     #[cfg_attr(feature = "serde", serde(rename = "bracket-family"))]
-    BracketFamily { open: char, close: char, unmatched: u64 },
+    BracketFamily {
+        open: char,
+        close: char,
+        unmatched: u64,
+    },
     #[cfg_attr(feature = "serde", serde(rename = "format-class"))]
     FormatClass { class: &'static str },
     #[cfg_attr(feature = "serde", serde(rename = "number-shape"))]
@@ -104,7 +112,10 @@ pub enum RowKey {
     #[cfg_attr(feature = "serde", serde(rename = "case-shape"))]
     CaseShape { shape: &'static str },
     #[cfg_attr(feature = "serde", serde(rename = "word-case-variants"))]
-    WordCaseVariants { folded: String, forms: Vec<(String, u64)> },
+    WordCaseVariants {
+        folded: String,
+        forms: Vec<(String, u64)>,
+    },
 }
 
 /// One census row: a typed key, its raw count, and capped example sites.
@@ -154,7 +165,12 @@ pub fn census(target: &Corpus, opts: &CensusOptions) -> Inventory {
     let per_book: Vec<BookCensus> = rule::map_books(&books, |group| {
         stream::drive_book(
             group,
-            Needs { tape: true, graphemes: true, tokens: true, folds: false },
+            Needs {
+                tape: true,
+                graphemes: true,
+                tokens: true,
+                folds: false,
+            },
             BookCensusAcc::new(),
             |a, v| a.verse(v),
             |acc| acc.finish(group),
@@ -263,8 +279,13 @@ impl BookCensusAcc {
             self.scalars_seen += 1;
             let first = self.pages.bump(e.ch);
             if first && is_letter_scalar(e.ch) {
-                let span = Span { start: e.off, end: e.off + e.ch.len_utf8() as u32 };
-                self.glyph_first.entry(e.ch).or_insert_with(|| (v.key.to_string(), span));
+                let span = Span {
+                    start: e.off,
+                    end: e.off + e.ch.len_utf8() as u32,
+                };
+                self.glyph_first
+                    .entry(e.ch)
+                    .or_insert_with(|| (v.key.to_string(), span));
             }
             let class: Option<&'static str> = if e.ch == '\t' {
                 Some("tab")
@@ -281,8 +302,13 @@ impl BookCensusAcc {
             };
             if let Some(class) = class {
                 *self.format_counts.entry(class).or_default() += 1;
-                let span = Span { start: e.off, end: e.off + e.ch.len_utf8() as u32 };
-                self.format_first.entry(class).or_insert_with(|| (v.key.to_string(), span));
+                let span = Span {
+                    start: e.off,
+                    end: e.off + e.ch.len_utf8() as u32,
+                };
+                self.format_first
+                    .entry(class)
+                    .or_insert_with(|| (v.key.to_string(), span));
             }
         }
 
@@ -294,7 +320,8 @@ impl BookCensusAcc {
                 *n += 1;
             } else {
                 self.run_counts.insert(run.to_string(), 1);
-                self.run_first.insert(run.to_string(), (v.key.to_string(), span));
+                self.run_first
+                    .insert(run.to_string(), (v.key.to_string(), span));
             }
         }
 
@@ -308,7 +335,11 @@ impl BookCensusAcc {
         let mut i = 0usize;
         while i < v.tokens.len() {
             let tok = v.tokens[i];
-            let bearing = tok.span.slice(v.text).chars().any(|c| crate::charclass::class_of(c).is_decimal_digit());
+            let bearing = tok
+                .span
+                .slice(v.text)
+                .chars()
+                .any(|c| crate::charclass::class_of(c).is_decimal_digit());
             if !bearing {
                 i += 1;
                 continue;
@@ -364,7 +395,9 @@ impl BookCensusAcc {
             } else {
                 forms.insert(word.to_string(), 1);
             }
-            self.word_first.entry(folded).or_insert_with(|| (v.key.to_string(), tok.span));
+            self.word_first
+                .entry(folded)
+                .or_insert_with(|| (v.key.to_string(), tok.span));
         }
     }
 
@@ -481,7 +514,11 @@ struct LaneMerge<K: Ord + Clone> {
 
 impl<K: Ord + Clone> LaneMerge<K> {
     fn new(cap: usize) -> Self {
-        LaneMerge { counts: BTreeMap::new(), examples: BTreeMap::new(), cap }
+        LaneMerge {
+            counts: BTreeMap::new(),
+            examples: BTreeMap::new(),
+            cap,
+        }
     }
 
     fn add(&mut self, key: K, count: u64, first: Option<(String, Span)>) {
@@ -500,7 +537,11 @@ impl<K: Ord + Clone> LaneMerge<K> {
             .into_iter()
             .map(|(k, count)| {
                 let examples = self.examples.remove(&k).unwrap_or_default();
-                Row { key: key_of(k, count), count, examples }
+                Row {
+                    key: key_of(k, count),
+                    count,
+                    examples,
+                }
             })
             .collect();
         rows.sort_by(|a, b| a.count.cmp(&b.count).then_with(|| a.key.cmp(&b.key)));
@@ -508,7 +549,11 @@ impl<K: Ord + Clone> LaneMerge<K> {
     }
 }
 
-fn assemble(books: &corpus::Books<'_>, per_book: Vec<BookCensus>, opts: &CensusOptions) -> Inventory {
+fn assemble(
+    books: &corpus::Books<'_>,
+    per_book: Vec<BookCensus>,
+    opts: &CensusOptions,
+) -> Inventory {
     let cap = opts.example_cap;
 
     // Letters.
@@ -575,10 +620,15 @@ fn assemble(books: &corpus::Books<'_>, per_book: Vec<BookCensus>, opts: &CensusO
             if !book.brackets.matched[i] {
                 t.1 += 1;
             }
-            first_in_book.entry(e.family).or_insert_with(|| (
-                group.key(e.local_idx()).to_string(),
-                Span { start: e.offset as u32, end: (e.offset + e.glyph.len_utf8()) as u32 },
-            ));
+            first_in_book.entry(e.family).or_insert_with(|| {
+                (
+                    group.key(e.local_idx()).to_string(),
+                    Span {
+                        start: e.offset as u32,
+                        end: (e.offset + e.glyph.len_utf8()) as u32,
+                    },
+                )
+            });
         }
         bracket_first.push(first_in_book);
         digit_total += book.digit_tokens;
@@ -629,7 +679,11 @@ fn assemble(books: &corpus::Books<'_>, per_book: Vec<BookCensus>, opts: &CensusO
                     }
                 }
                 Row {
-                    key: RowKey::MarkSpacing { mark, attached, spaced },
+                    key: RowKey::MarkSpacing {
+                        mark,
+                        attached,
+                        spaced,
+                    },
                     count: attached + spaced,
                     examples,
                 }
@@ -654,7 +708,11 @@ fn assemble(books: &corpus::Books<'_>, per_book: Vec<BookCensus>, opts: &CensusO
                     }
                 }
                 Row {
-                    key: RowKey::BracketFamily { open: family, close, unmatched },
+                    key: RowKey::BracketFamily {
+                        open: family,
+                        close,
+                        unmatched,
+                    },
                     count: events,
                     examples,
                 }
@@ -675,7 +733,10 @@ fn assemble(books: &corpus::Books<'_>, per_book: Vec<BookCensus>, opts: &CensusO
             .filter(|(_, forms)| forms.len() > 1)
             .filter(|(_, forms)| {
                 forms.keys().any(|form| {
-                    matches!(case_shape(form), Some(CaseShape::AllCaps | CaseShape::OtherMixed))
+                    matches!(
+                        case_shape(form),
+                        Some(CaseShape::AllCaps | CaseShape::OtherMixed)
+                    )
                 })
             })
             .map(|(folded, forms)| {
@@ -684,7 +745,11 @@ fn assemble(books: &corpus::Books<'_>, per_book: Vec<BookCensus>, opts: &CensusO
                 // Most common form first; ties lexical.
                 forms.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
                 let examples = word_examples.remove(&folded).unwrap_or_default();
-                Row { key: RowKey::WordCaseVariants { folded, forms }, count, examples }
+                Row {
+                    key: RowKey::WordCaseVariants { folded, forms },
+                    count,
+                    examples,
+                }
             })
             .collect();
         rows.sort_by(|a, b| a.count.cmp(&b.count).then_with(|| a.key.cmp(&b.key)));
@@ -705,8 +770,16 @@ fn assemble(books: &corpus::Books<'_>, per_book: Vec<BookCensus>, opts: &CensusO
                 lane_total: run_total,
                 rows: runs.rows(|run, _| RowKey::PunctRun { run }),
             },
-            Section { id: SectionId::MarkSpacing, lane_total: mark_total, rows: mark_rows },
-            Section { id: SectionId::Brackets, lane_total: bracket_total, rows: bracket_rows },
+            Section {
+                id: SectionId::MarkSpacing,
+                lane_total: mark_total,
+                rows: mark_rows,
+            },
+            Section {
+                id: SectionId::Brackets,
+                lane_total: bracket_total,
+                rows: bracket_rows,
+            },
             Section {
                 id: SectionId::FormatClasses,
                 lane_total: scalars_total,
@@ -740,7 +813,9 @@ mod tests {
 
     /// Build a single-book `Corpus`: verses numbered 1..=len in chapter 1.
     fn book(book: &str, verses: &[&str]) -> Corpus {
-        let keys = (1..=verses.len()).map(|v| format!("{book} 1:{v}")).collect();
+        let keys = (1..=verses.len())
+            .map(|v| format!("{book} 1:{v}"))
+            .collect();
         let texts = verses.iter().map(|t| t.to_string()).collect();
         Corpus::try_from_parts(keys, texts).unwrap()
     }
@@ -786,7 +861,9 @@ mod tests {
         };
         let books = corpus::by_book(&corpus);
         let (stats, _) = rule.reduce(&books, None, None);
-        let RuleStats::GlyphInventory(gs) = stats else { panic!() };
+        let RuleStats::GlyphInventory(gs) = stats else {
+            panic!()
+        };
         let mut expected: BTreeMap<char, u64> = BTreeMap::new();
         for bg in gs.per_book.values() {
             for (&c, &n) in &bg.inventory {
@@ -806,9 +883,16 @@ mod tests {
         assert_eq!(got, expected);
         // The hapax `q` is present with its raw count (never filtered), in
         // the ascending head of the lane (ties break by key).
-        let q = glyphs.rows.iter().find(|r| r.key == RowKey::Glyph { glyph: 'q' }).unwrap();
+        let q = glyphs
+            .rows
+            .iter()
+            .find(|r| r.key == RowKey::Glyph { glyph: 'q' })
+            .unwrap();
         assert_eq!(q.count, 1);
-        assert_eq!(glyphs.rows[0].count, 1, "ascending sort floats the rare tail up");
+        assert_eq!(
+            glyphs.rows[0].count, 1,
+            "ascending sort floats the rare tail up"
+        );
         assert_eq!(glyphs.lane_total, expected.values().sum::<u64>());
     }
 
@@ -854,7 +938,9 @@ mod tests {
         };
         let books = corpus::by_book(&corpus);
         let (stats, _) = rule.reduce(&books, None, None);
-        let RuleStats::PunctuationSpacing(ps) = stats else { panic!() };
+        let RuleStats::PunctuationSpacing(ps) = stats else {
+            panic!()
+        };
         let mut expected: BTreeMap<char, (u64, u64)> = BTreeMap::new();
         for bp in ps.per_book.values() {
             for (&mark, cells) in &bp.per_mark {
@@ -868,7 +954,11 @@ mod tests {
             .rows
             .iter()
             .map(|r| match r.key {
-                RowKey::MarkSpacing { mark, attached, spaced } => (mark, (attached, spaced)),
+                RowKey::MarkSpacing {
+                    mark,
+                    attached,
+                    spaced,
+                } => (mark, (attached, spaced)),
                 _ => panic!(),
             })
             .collect();
@@ -887,7 +977,9 @@ mod tests {
         };
         let books = corpus::by_book(&corpus);
         let (stats, _) = rule.reduce(&books, None, None);
-        let RuleStats::MixedCase(mc) = stats else { panic!() };
+        let RuleStats::MixedCase(mc) = stats else {
+            panic!()
+        };
         let mut expected: BTreeMap<&str, u64> = BTreeMap::new();
         for bm in mc.per_book.values() {
             for p in bm.words.values() {
@@ -922,9 +1014,11 @@ mod tests {
             .rows
             .iter()
             .map(|r| match r.key {
-                RowKey::BracketFamily { open, close, unmatched } => {
-                    (open, close, r.count, unmatched)
-                }
+                RowKey::BracketFamily {
+                    open,
+                    close,
+                    unmatched,
+                } => (open, close, r.count, unmatched),
                 _ => panic!(),
             })
             .collect();

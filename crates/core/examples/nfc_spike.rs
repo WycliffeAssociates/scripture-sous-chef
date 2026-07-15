@@ -19,10 +19,17 @@ fn main() {
         if args.is_empty() {
             // Spread of scripts: ASCII / Devanagari / Ge'ez / Bengali /
             // Assamese / an African "reg" corpus.
-            ["WA-en-ulb", "WA-hi-ulb", "WA-am-ulb", "WA-bn-ulb", "WA-as-ulb", "WA-bem-reg"]
-                .iter()
-                .map(|s| s.to_string())
-                .collect()
+            [
+                "WA-en-ulb",
+                "WA-hi-ulb",
+                "WA-am-ulb",
+                "WA-bn-ulb",
+                "WA-as-ulb",
+                "WA-bem-reg",
+            ]
+            .iter()
+            .map(|s| s.to_string())
+            .collect()
         } else {
             args
         }

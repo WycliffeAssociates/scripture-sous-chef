@@ -6,10 +6,10 @@
 //! analysis call.
 
 use rustc_hash::FxHashMap;
-use xxhash_rust::xxh3::{xxh3_64, Xxh3};
+use xxhash_rust::xxh3::{Xxh3, xxh3_64};
 
 use crate::config::Config;
-use crate::corpus::{rebase, unrebase, BookGroup, KeyIdx, LocalKeyIdx, SiteAddr};
+use crate::corpus::{BookGroup, KeyIdx, LocalKeyIdx, SiteAddr, rebase, unrebase};
 use crate::diagnostics::{Finding, RuleId, Severity};
 use crate::signals::{bracket_balance, casing, lexical, punctuation, script_mixing};
 use crate::span::Span;
@@ -81,22 +81,31 @@ impl AnalysisCache {
         }
     }
 
-    pub(crate) fn per_verse_hit(&mut self, slug: &str, hash: u128, base: KeyIdx) -> Option<Vec<Finding>> {
-        let hit = self.books.get(slug).filter(|entry| entry.hash == hash).and_then(|entry| {
-            entry.per_verse.as_ref().map(|cached| {
-                cached
-                    .iter()
-                    .map(|c| Finding {
-                        key_idx: rebase(base, c.local_idx),
-                        code: c.code,
-                        severity: c.severity,
-                        range: c.range,
-                        score: None,
-                        args: None,
-                    })
-                    .collect()
-            })
-        });
+    pub(crate) fn per_verse_hit(
+        &mut self,
+        slug: &str,
+        hash: u128,
+        base: KeyIdx,
+    ) -> Option<Vec<Finding>> {
+        let hit = self
+            .books
+            .get(slug)
+            .filter(|entry| entry.hash == hash)
+            .and_then(|entry| {
+                entry.per_verse.as_ref().map(|cached| {
+                    cached
+                        .iter()
+                        .map(|c| Finding {
+                            key_idx: rebase(base, c.local_idx),
+                            code: c.code,
+                            severity: c.severity,
+                            range: c.range,
+                            score: None,
+                            args: None,
+                        })
+                        .collect()
+                })
+            });
         #[cfg(test)]
         if hit.is_some() {
             self.lane1_hits += 1;
@@ -106,7 +115,13 @@ impl AnalysisCache {
         hit
     }
 
-    pub(crate) fn store_per_verse(&mut self, slug: &str, hash: u128, base: KeyIdx, findings: &[Finding]) {
+    pub(crate) fn store_per_verse(
+        &mut self,
+        slug: &str,
+        hash: u128,
+        base: KeyIdx,
+        findings: &[Finding],
+    ) {
         let cached = findings
             .iter()
             .map(|f| CachedPerVerseFinding {
@@ -294,7 +309,12 @@ mod tests {
     /// only reads `keys`/`texts`, so this skips a full `Corpus` for isolated
     /// hashing tests.
     fn group<'a>(keys: &'a [String], texts: &'a [String]) -> BookGroup<'a> {
-        BookGroup { slug: "GEN", base: KeyIdx::from_usize(0), keys, texts }
+        BookGroup {
+            slug: "GEN",
+            base: KeyIdx::from_usize(0),
+            keys,
+            texts,
+        }
     }
 
     #[test]

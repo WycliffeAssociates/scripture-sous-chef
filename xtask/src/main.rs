@@ -28,12 +28,9 @@ fn main() -> ExitCode {
                 eprintln!("usage: cargo xtask survey-diff <baseline-dir> [current-dir]");
                 return ExitCode::FAILURE;
             };
-            let default_current = Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../../sousChefPlayground/cache/survey");
-            let current = args
-                .get(1)
-                .map(PathBuf::from)
-                .unwrap_or(default_current);
+            let default_current =
+                Path::new(env!("CARGO_MANIFEST_DIR")).join("../../sousChefPlayground/cache/survey");
+            let current = args.get(1).map(PathBuf::from).unwrap_or(default_current);
             survey_diff::run(Path::new(baseline), &current);
             ExitCode::SUCCESS
         }
@@ -41,7 +38,9 @@ fn main() -> ExitCode {
             if let Some(t) = other {
                 eprintln!("unknown task: {t}\n");
             }
-            eprintln!("usage: cargo xtask <task>\n\ntasks:\n  gen-charclass-table                        regenerate crates/core/src/charclass_table.rs\n  survey-diff <baseline> [current]           diff two playground survey caches");
+            eprintln!(
+                "usage: cargo xtask <task>\n\ntasks:\n  gen-charclass-table                        regenerate crates/core/src/charclass_table.rs\n  survey-diff <baseline> [current]           diff two playground survey caches"
+            );
             ExitCode::FAILURE
         }
     }

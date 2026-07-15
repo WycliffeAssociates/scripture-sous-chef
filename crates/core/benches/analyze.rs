@@ -31,13 +31,13 @@
 
 use std::hint::black_box;
 
-use criterion::{criterion_group, criterion_main, BatchSize, Criterion, Throughput};
+use criterion::{BatchSize, Criterion, Throughput, criterion_group, criterion_main};
 use ssc_core::config::ProportionalityConfig;
 use ssc_core::key::parse_key;
 use ssc_core::rule::StatefulRule;
 use ssc_core::script::is_nt_book;
 use ssc_core::signals::proportionality::ProjectLengthRatio;
-use ssc_core::{analyze, analyze_stateful, AnalysisCache, Config, Corpus};
+use ssc_core::{AnalysisCache, Config, Corpus, analyze, analyze_stateful};
 
 #[path = "../dev/vref_io.rs"]
 mod vref_io;

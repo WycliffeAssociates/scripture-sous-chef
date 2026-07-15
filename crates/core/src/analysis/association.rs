@@ -89,7 +89,11 @@ impl Table2 {
             (_, AssociationTest::DunningG2) | (ExactTest::G2Only, _) => self.g2(),
             (ExactTest::Fisher, AssociationTest::FisherExact) => {
                 let p = self.fisher_two_sided_p();
-                if p <= 0.0 { f64::INFINITY } else { -2.0 * p.ln() }
+                if p <= 0.0 {
+                    f64::INFINITY
+                } else {
+                    -2.0 * p.ln()
+                }
             }
         }
     }
@@ -109,7 +113,10 @@ impl Table2 {
         if n == 0.0 || r1 == 0.0 || r2 == 0.0 || c1 == 0.0 || c2 == 0.0 {
             return 0.0;
         }
-        ((r1 * c1) / n).min((r1 * c2) / n).min((r2 * c1) / n).min((r2 * c2) / n)
+        ((r1 * c1) / n)
+            .min((r1 * c2) / n)
+            .min((r2 * c1) / n)
+            .min((r2 * c2) / n)
     }
 
     /// Two-sided Fisher exact p with fixed margins: sum of all same-margin
@@ -273,9 +280,16 @@ mod tests {
     #[test]
     fn ln_choose_matches_direct_small_values() {
         // C(10,3) = 120, C(20,10) = 184756, C(52,5) = 2598960.
-        for &(n, k, want) in &[(10u64, 3u64, 120.0f64), (20, 10, 184_756.0), (52, 5, 2_598_960.0)] {
+        for &(n, k, want) in &[
+            (10u64, 3u64, 120.0f64),
+            (20, 10, 184_756.0),
+            (52, 5, 2_598_960.0),
+        ] {
             let got = super::ln_choose(n, k).exp();
-            assert!((got - want).abs() / want < 1e-9, "C({n},{k}) got {got} want {want}");
+            assert!(
+                (got - want).abs() / want < 1e-9,
+                "C({n},{k}) got {got} want {want}"
+            );
         }
     }
 }

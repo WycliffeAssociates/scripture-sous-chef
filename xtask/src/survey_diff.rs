@@ -16,10 +16,10 @@ use std::path::Path;
 /// `rule code -> (total, corpora)` from a survey `index.json`.
 fn load_index(dir: &Path) -> BTreeMap<String, (u64, u64)> {
     let path = dir.join("index.json");
-    let text = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
-    let v: serde_json::Value = serde_json::from_str(&text)
-        .unwrap_or_else(|e| panic!("parse {}: {e}", path.display()));
+    let text =
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    let v: serde_json::Value =
+        serde_json::from_str(&text).unwrap_or_else(|e| panic!("parse {}: {e}", path.display()));
     v["rules"]
         .as_array()
         .expect("index.json has a `rules` array")
@@ -95,7 +95,11 @@ pub fn run(baseline: &Path, current: &Path) {
             changed.push(code);
         }
     }
-    println!("{:<36} {tb:>9}         {tc:>9}         {:>+8}", "TOTAL", tc as i64 - tb as i64);
+    println!(
+        "{:<36} {tb:>9}         {tc:>9}         {:>+8}",
+        "TOTAL",
+        tc as i64 - tb as i64
+    );
 
     // Per-corpus breakdown for what moved: the biggest shifts first, so a
     // one-corpus storm is distinguishable from a broad drift at a glance.
@@ -105,7 +109,12 @@ pub fn run(baseline: &Path, current: &Path) {
         let mut deltas: Vec<(i64, &String)> = b
             .keys()
             .chain(c.keys())
-            .map(|k| (c.get(k).copied().unwrap_or(0) as i64 - b.get(k).copied().unwrap_or(0) as i64, k))
+            .map(|k| {
+                (
+                    c.get(k).copied().unwrap_or(0) as i64 - b.get(k).copied().unwrap_or(0) as i64,
+                    k,
+                )
+            })
             .filter(|(d, _)| *d != 0)
             .collect();
         deltas.sort_by_key(|(d, k)| (-d.abs(), (*k).clone()));

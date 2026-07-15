@@ -237,7 +237,12 @@ pub enum FindingArgs {
     /// class from the bare terminal — so the consumer can render "after `.\"`"
     /// vs "after `.`".
     #[cfg_attr(feature = "serde", serde(rename = "casing-convention"))]
-    CasingConvention { glyph: Option<char>, quoted: bool, upper: u32, total: u32 },
+    CasingConvention {
+        glyph: Option<char>,
+        quoted: bool,
+        upper: u32,
+        total: u32,
+    },
     /// `case.inconsistent-word-casing`: the flagged word's corpus-wide
     /// capitalized-vs-total counts, so the consumer can render "this
     /// translation writes ‘jesus’ capitalized in 1315 of 1316 places; here it
@@ -246,7 +251,11 @@ pub enum FindingArgs {
     /// `upper / total` is the majority capitalized share. `word` is the
     /// case-folded form (the lexicon key).
     #[cfg_attr(feature = "serde", serde(rename = "word-casing"))]
-    WordCasing { word: String, upper: u32, total: u32 },
+    WordCasing {
+        word: String,
+        upper: u32,
+        total: u32,
+    },
     /// `lex.punct-only-token`: how rare this stranded-punctuation pattern is —
     /// `count` occurrences across `units` lexical units (ADR 0048). The plain
     /// rarity behind the score; the flagged mark is in the finding's `range`.
@@ -257,12 +266,23 @@ pub enum FindingArgs {
     /// `k / lead_n` is how often it occurs among that lead glyph's runs;
     /// `books / corpus` is how many books use it. No single %, so both ship.
     #[cfg_attr(feature = "serde", serde(rename = "adjacency-evidence"))]
-    AdjacencyEvidence { pattern: String, k: u32, lead_n: u32, books: u32, corpus: u32 },
+    AdjacencyEvidence {
+        pattern: String,
+        k: u32,
+        lead_n: u32,
+        books: u32,
+        corpus: u32,
+    },
     /// `uni.mixed-script-in-token`: the convention axes behind the score, as
     /// raw counts (ADR 0048). `k / n` is this script mix's share of its
     /// dominant script's tokens; `books / corpus` is how many books use it.
     #[cfg_attr(feature = "serde", serde(rename = "script-mix-evidence"))]
-    ScriptMixEvidence { k: u32, n: u32, books: u32, corpus: u32 },
+    ScriptMixEvidence {
+        k: u32,
+        n: u32,
+        books: u32,
+        corpus: u32,
+    },
     /// `lex.repeated-character-run`: the repeated character and how many times
     /// it repeats in the flagged run (ADR 0048) — the plain fact behind the
     /// score, in words a reviewer reads rather than convention strengths.
@@ -290,7 +310,11 @@ pub enum FindingArgs {
     /// form) is in the finding's `range`; `word` is the case-folded key, `other`
     /// the mixed-shape count, `total` all cased occurrences of the word.
     #[cfg_attr(feature = "serde", serde(rename = "mixed-case-word"))]
-    MixedCaseWord { word: String, other: u32, total: u32 },
+    MixedCaseWord {
+        word: String,
+        other: u32,
+        total: u32,
+    },
 }
 
 /// One addressable content finding in one verse.

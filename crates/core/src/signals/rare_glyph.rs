@@ -77,17 +77,17 @@ use rustc_hash::FxHashMap;
 
 use crate::charclass::class_of;
 use crate::config::RareGlyphConfig;
-use crate::signals::case_shape;
-use crate::corpus::{rebase, Books, Corpus, KeyIdx, LocalKeyIdx};
+use crate::corpus::{Books, Corpus, KeyIdx, LocalKeyIdx, rebase};
 use crate::diagnostics::{Finding, FindingArgs, RuleId, Severity};
 use crate::evidence::{clamp_count, clamp_unit};
 use crate::rule::{self, StatefulRule, TokenCache};
+use crate::signals::case_shape;
 use crate::signals::casing::{self, PosClass};
 use crate::signals::script_mixing::token_scripts;
 use crate::span::Span;
 use crate::stats::RuleStats;
 use crate::stream;
-use crate::token::{tokenize, Token};
+use crate::token::{Token, tokenize};
 
 pub const RARE_GLYPH: RuleId = RuleId::RareGlyph;
 
@@ -163,7 +163,10 @@ pub(crate) struct BookGlyphs {
     /// letter glyphs whose per-book eligible count is ≤ [`RARE_CAP`]. "Eligible"
     /// = inside a single-script letter token (mixed-script tokens are owned by
     /// `uni.mixed-script-in-token`).
-    #[cfg_attr(feature = "wasm", tsify(type = "Record<string, Record<string, number>>"))]
+    #[cfg_attr(
+        feature = "wasm",
+        tsify(type = "Record<string, Record<string, number>>")
+    )]
     rare: BTreeMap<char, BTreeMap<String, u32>>,
     /// The container words referenced by `rare`: book-local token count + shape.
     #[cfg_attr(feature = "wasm", tsify(type = "Record<string, WordInfo>"))]
@@ -220,7 +223,11 @@ impl StatefulRule for RareGlyph {
         for (group, bg) in books.iter().zip(rule::map_books(books, |group| {
             stream::drive_book(
                 group,
-                stream::Needs { tokens: true, folds: true, ..Default::default() },
+                stream::Needs {
+                    tokens: true,
+                    folds: true,
+                    ..Default::default()
+                },
                 RareGlyphAcc::new(),
                 |a, v| a.verse(v),
                 RareGlyphAcc::finish,
@@ -388,7 +395,10 @@ fn emit_verse(
                     key_idx,
                     code: RARE_GLYPH,
                     severity: Severity::Info,
-                    range: Span { start, end: start + c.len_utf8() as u32 },
+                    range: Span {
+                        start,
+                        end: start + c.len_utf8() as u32,
+                    },
                     score: Some(score),
                     args: Some(FindingArgs::RareGlyph { glyph: c, count }),
                 });
@@ -519,9 +529,15 @@ impl RareGlyphAcc {
         for (tok, folded) in v.tokens.iter().zip(v.folds) {
             let Some(key) = folded else { continue };
             let word = tok.span.slice(text);
-            casing::advance_gap(&text[cursor..tok.span.start as usize], &mut self.pending, &mut prev_letter);
-            let forced =
-                !matches!(casing::pos_of(self.book_initial, self.pending.take()), PosClass::Midflow);
+            casing::advance_gap(
+                &text[cursor..tok.span.start as usize],
+                &mut self.pending,
+                &mut prev_letter,
+            );
+            let forced = !matches!(
+                casing::pos_of(self.book_initial, self.pending.take()),
+                PosClass::Midflow
+            );
             self.book_initial = false;
 
             // Titlecase name shape via the shared helper (ADR 0055): upper first
@@ -556,7 +572,10 @@ impl RareGlyphAcc {
                 self.surfaces.insert(word.to_string(), 1);
             }
 
-            prev_letter = word.chars().next_back().is_some_and(|c| class_of(c).is_alphabetic());
+            prev_letter = word
+                .chars()
+                .next_back()
+                .is_some_and(|c| class_of(c).is_alphabetic());
             cursor = tok.span.end as usize;
         }
         casing::advance_gap(&text[cursor..], &mut self.pending, &mut prev_letter);
@@ -585,8 +604,10 @@ impl RareGlyphAcc {
         // Prune to locally-rare letter glyphs, then to the words they reference
         // (sorting the survivors into the stats' BTreeMap shape).
         glyph_words.retain(|_, ws| ws.values().copied().sum::<u32>() <= RARE_CAP);
-        let keep: BTreeSet<String> =
-            glyph_words.values().flat_map(|ws| ws.keys().cloned()).collect();
+        let keep: BTreeSet<String> = glyph_words
+            .values()
+            .flat_map(|ws| ws.keys().cloned())
+            .collect();
         let words: BTreeMap<String, WordInfo> = self
             .word_keys
             .into_iter()
@@ -594,10 +615,13 @@ impl RareGlyphAcc {
             .filter(|(k, _)| keep.contains(k.as_str()))
             .collect();
 
-        BookGlyphs { inventory: self.census.into_map(), rare: glyph_words, words }
+        BookGlyphs {
+            inventory: self.census.into_map(),
+            rare: glyph_words,
+            words,
+        }
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -616,7 +640,10 @@ mod tests {
     /// exercise the *mechanism* (the frozen 0.01% default is a fleet fact, not a
     /// per-test one). Still closes an open inventory (share → 1.0).
     fn cfg() -> RareGlyphConfig {
-        RareGlyphConfig { closure_threshold: 0.05, ..RareGlyphConfig::default() }
+        RareGlyphConfig {
+            closure_threshold: 0.05,
+            ..RareGlyphConfig::default()
+        }
     }
     fn rule(cfg: RareGlyphConfig) -> RareGlyph {
         RareGlyph { cfg }
@@ -691,8 +718,14 @@ mod tests {
             texts.push(format!("{a}{b}"));
         }
         let map = Corpus::try_from_parts(keys, texts).unwrap();
-        assert!(run(&map, &rule(RareGlyphConfig::default())).is_empty(), "open inventory silent");
-        assert!(run(&map, &default_rule()).is_empty(), "silent even at the relaxed gate");
+        assert!(
+            run(&map, &rule(RareGlyphConfig::default())).is_empty(),
+            "open inventory silent"
+        );
+        assert!(
+            run(&map, &default_rule()).is_empty(),
+            "silent even at the relaxed gate"
+        );
     }
 
     // ── recurrence knee ─────────────────────────────────────────────────
@@ -701,7 +734,10 @@ mod tests {
     #[test]
     fn knee_excludes_thrice_seen_letter() {
         let map = corpus("GEN", &[(500, "qami"), (501, "qapo"), (502, "qelu")]);
-        assert!(run(&map, &default_rule()).is_empty(), "count 3 exceeds knee 2");
+        assert!(
+            run(&map, &default_rule()).is_empty(),
+            "count 3 exceeds knee 2"
+        );
     }
 
     /// A letter seen exactly twice (knee ≤2) surfaces at both occurrences.
@@ -711,7 +747,10 @@ mod tests {
         let f = run(&map, &default_rule());
         assert_eq!(f.len(), 2, "both q occurrences surface at count 2");
         assert!(f.iter().all(|x| slice(&map, x) == "q"));
-        assert!(f.iter().all(|x| (x.score.unwrap() - 0.5).abs() < 1e-6), "rarity(2,2)=0.5");
+        assert!(
+            f.iter().all(|x| (x.score.unwrap() - 0.5).abs() < 1e-6),
+            "rarity(2,2)=0.5"
+        );
     }
 
     // ── lexical concentration discount ──────────────────────────────────
@@ -721,7 +760,10 @@ mod tests {
     #[test]
     fn lexical_concentration_discounts_recurring_word() {
         let map = corpus("GEN", &[(500, "qami mele"), (501, "qami huli")]);
-        assert!(run(&map, &default_rule()).is_empty(), "recurring container is lexical");
+        assert!(
+            run(&map, &default_rule()).is_empty(),
+            "recurring container is lexical"
+        );
     }
 
     /// The same rare letter scattered across *different* (hapax) words is
@@ -729,7 +771,11 @@ mod tests {
     #[test]
     fn lexical_spares_scattered_occurrences() {
         let map = corpus("GEN", &[(500, "qami mele"), (501, "qapo huli")]);
-        assert_eq!(run(&map, &default_rule()).len(), 2, "scattered rare letter is kept");
+        assert_eq!(
+            run(&map, &default_rule()).len(),
+            2,
+            "scattered rare letter is kept"
+        );
     }
 
     // ── titlecase proper-noun-shape discount ────────────────────────────
@@ -740,7 +786,10 @@ mod tests {
     fn proper_noun_shape_discounts_titlecase_hapax() {
         // "Qami" mid-flow (after lowercase "aloha"-style words, no terminal).
         let map = corpus("GEN", &[(500, "ana mele Qami po")]);
-        assert!(run(&map, &default_rule()).is_empty(), "titlecase hapax name discounted");
+        assert!(
+            run(&map, &default_rule()).is_empty(),
+            "titlecase hapax name discounted"
+        );
     }
 
     /// A lone single capital is NOT titlecase (no following lowercase) → stays
@@ -789,7 +838,10 @@ mod tests {
     fn mixed_script_token_is_skipped() {
         // Cyrillic 'я' fused into a Latin word (a Latn+Cyrl mixed token).
         let map = corpus("GEN", &[(500, "me\u{044F} loa")]);
-        assert!(run(&map, &default_rule()).is_empty(), "mixed-script token owned elsewhere");
+        assert!(
+            run(&map, &default_rule()).is_empty(),
+            "mixed-script token owned elsewhere"
+        );
     }
 
     // ── caseless script ─────────────────────────────────────────────────
@@ -802,7 +854,10 @@ mod tests {
         let mut texts = Vec::new();
         let mut v = 1u16;
         for _ in 0..60 {
-            for t in ["\u{0915}\u{0916} \u{0917}\u{0918}", "\u{0919}\u{091A} \u{091B}\u{091C}"] {
+            for t in [
+                "\u{0915}\u{0916} \u{0917}\u{0918}",
+                "\u{0919}\u{091A} \u{091B}\u{091C}",
+            ] {
                 keys.push(format!("GEN 1:{v}"));
                 texts.push(t.to_string());
                 v += 1;
@@ -835,8 +890,10 @@ mod tests {
         full_texts.extend(exo_texts);
         let full = Corpus::try_from_parts(full_keys, full_texts).unwrap();
 
-        let full_hit =
-            run(&full, &r).into_iter().find(|f| full.key(f.key_idx) == "EXO 1:1").unwrap();
+        let full_hit = run(&full, &r)
+            .into_iter()
+            .find(|f| full.key(f.key_idx) == "EXO 1:1")
+            .unwrap();
 
         let merged = r
             .reduce(&by_book(&gen_map), None, None)
@@ -845,7 +902,10 @@ mod tests {
         let inc = r.judge(&merged, &by_book(&exo), None, None);
         assert_eq!(inc.len(), 1);
         assert_eq!(exo.key(inc[0].key_idx), "EXO 1:1");
-        assert_eq!(inc[0].score, full_hit.score, "incremental score is corpus-wide");
+        assert_eq!(
+            inc[0].score, full_hit.score,
+            "incremental score is corpus-wide"
+        );
     }
 
     /// Removing a book drops its contribution to the corpus inventory.
@@ -868,13 +928,24 @@ mod tests {
     /// ask for candidates the per-book pruning did not retain.
     #[test]
     fn knee_is_clamped_to_rare_cap() {
-        let cfg = RareGlyphConfig { recurrence_k: 1000.0, ..cfg() };
+        let cfg = RareGlyphConfig {
+            recurrence_k: 1000.0,
+            ..cfg()
+        };
         // 'q' across nine distinct letter-only words (9 > RARE_CAP 8) → pruned.
-        let words = ["qam", "qem", "qim", "qom", "qum", "qal", "qel", "qil", "qol"];
-        let extra: Vec<(u16, &str)> =
-            words.iter().enumerate().map(|(i, &w)| (500 + i as u16, w)).collect();
+        let words = [
+            "qam", "qem", "qim", "qom", "qum", "qal", "qel", "qil", "qol",
+        ];
+        let extra: Vec<(u16, &str)> = words
+            .iter()
+            .enumerate()
+            .map(|(i, &w)| (500 + i as u16, w))
+            .collect();
         let map = corpus("GEN", &extra);
-        assert!(run(&map, &rule(cfg)).is_empty(), "9 > RARE_CAP, pruned, not a candidate");
+        assert!(
+            run(&map, &rule(cfg)).is_empty(),
+            "9 > RARE_CAP, pruned, not a candidate"
+        );
     }
 
     #[cfg(feature = "serde")]

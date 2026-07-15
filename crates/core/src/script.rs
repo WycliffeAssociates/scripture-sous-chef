@@ -180,7 +180,9 @@ mod tests {
     fn math_byte_does_not_collide_with_any_real_script() {
         // Every real script packs to `crate_disc + 1 < MATH_BYTE`.
         for cp in 0u32..=0x10FFFF {
-            let Some(c) = char::from_u32(cp) else { continue };
+            let Some(c) = char::from_u32(cp) else {
+                continue;
+            };
             if script_byte_and_name(c).0 == MATH_BYTE {
                 assert!(
                     (0x1D400..=0x1D7FF).contains(&cp),
@@ -194,7 +196,8 @@ mod tests {
     /// across a script spread (the fused byte was generated from it).
     #[test]
     fn table_script_matches_oracle() {
-        let sample = "Aa Ελ де देव தமிழ் ไทย 한국 汉字 \u{3042}\u{30A2} \u{2C80} \u{1D400} 2.,\u{0301}";
+        let sample =
+            "Aa Ελ де देव தமிழ் ไทย 한국 汉字 \u{3042}\u{30A2} \u{2C80} \u{1D400} 2.,\u{0301}";
         for c in sample.chars() {
             assert_eq!(script_of(c), script_from_unicode(c), "script {c:?}");
         }

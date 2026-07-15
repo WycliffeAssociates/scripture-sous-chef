@@ -191,8 +191,14 @@ fn compound_words(text: &str) -> Vec<Span> {
             let mut g = gap.chars();
             let hyphen = matches!(g.next(), Some('\u{002D}' | '\u{2010}')) && g.next().is_none();
             if hyphen
-                && text[..prev.end as usize].chars().next_back().is_some_and(is_letter)
-                && text[t.span.start as usize..].chars().next().is_some_and(is_letter)
+                && text[..prev.end as usize]
+                    .chars()
+                    .next_back()
+                    .is_some_and(is_letter)
+                && text[t.span.start as usize..]
+                    .chars()
+                    .next()
+                    .is_some_and(is_letter)
             {
                 prev.end = t.span.end;
                 continue;
@@ -200,7 +206,11 @@ fn compound_words(text: &str) -> Vec<Span> {
         }
         out.push(t.span);
     }
-    out.retain(|s| text[s.start as usize..s.end as usize].chars().any(is_letter));
+    out.retain(|s| {
+        text[s.start as usize..s.end as usize]
+            .chars()
+            .any(is_letter)
+    });
     out
 }
 
@@ -265,7 +275,10 @@ fn walk_corpus(corpus: &Corpus) -> Walk<'_> {
                     }
                 }
 
-                let first = text[span.start as usize..span.end as usize].chars().next().unwrap();
+                let first = text[span.start as usize..span.end as usize]
+                    .chars()
+                    .next()
+                    .unwrap();
                 let fcl = class_of(first);
                 let case = if fcl.is_uppercase() {
                     Case::Upper
@@ -1386,13 +1399,11 @@ pub fn analyze_corpus(id: String, corpus: &Corpus, variant_b: bool) -> TermCorpu
             asid: &str,
             aw: &str,
         ) -> Option<&'a Scored> {
-            v.iter()
-                .filter(|s| s.sid == asid)
-                .find(|s| {
-                    text_by_key[s.sid.as_str()][s.span.start as usize..s.span.end as usize]
-                        .to_lowercase()
-                        == aw
-                })
+            v.iter().filter(|s| s.sid == asid).find(|s| {
+                text_by_key[s.sid.as_str()][s.span.start as usize..s.span.end as usize]
+                    .to_lowercase()
+                    == aw
+            })
         }
         let find = |v: &[Scored]| -> Option<(f64, &'static str, f64, f64, String)> {
             find_site(v, &text_by_key, asid, aw).map(|s| {

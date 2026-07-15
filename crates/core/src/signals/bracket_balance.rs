@@ -32,14 +32,14 @@ use std::collections::BTreeMap;
 
 use crate::charclass::{bracket_close_of, bracket_open_of};
 use crate::config::BracketBalanceConfig;
-use crate::corpus::{rebase, BookGroup, Books, Corpus, LocalKeyIdx};
+use crate::corpus::{BookGroup, Books, Corpus, LocalKeyIdx, rebase};
 use crate::diagnostics::{
     BracketMeasure, DelimObservation, DelimRole, Finding, FindingArgs, RuleId, Severity,
 };
 use crate::evidence;
 use crate::rule::{self, ProjectRule};
-use crate::stream;
 use crate::span::Span;
+use crate::stream;
 
 pub const BRACKET_BALANCE: RuleId = RuleId::BracketBalance;
 
@@ -110,7 +110,11 @@ impl ProjectRule for BracketBalance {
 /// matched pairs by short-span dominance. Shared by [`ProjectRule::check`] and
 /// the fused walk. `groups` and `books` must be index-aligned (both callers'
 /// contract, matching `walk_fused`'s output).
-pub(crate) fn emit(groups: &Books<'_>, books: &[BookMatch], cfg: &BracketBalanceConfig) -> Vec<Finding> {
+pub(crate) fn emit(
+    groups: &Books<'_>,
+    books: &[BookMatch],
+    cfg: &BracketBalanceConfig,
+) -> Vec<Finding> {
     {
         let window = cfg.window_verses as usize;
         let z = evidence::clamp_z(cfg.confidence_z);
@@ -288,7 +292,10 @@ fn inventory(
 fn match_book(group: &BookGroup<'_>) -> BookMatch {
     stream::drive_book(
         group,
-        stream::Needs { tape: true, ..Default::default() },
+        stream::Needs {
+            tape: true,
+            ..Default::default()
+        },
         BracketAcc::new(),
         |a, v| a.verse(v),
         BracketAcc::finish,
@@ -388,7 +395,10 @@ mod tests {
 
     /// Build a one-chapter book `book` from `(verse, text)` pairs.
     fn book(book: &str, verses: &[(u16, &str)]) -> Corpus {
-        let keys = verses.iter().map(|&(v, _)| format!("{book} 1:{v}")).collect();
+        let keys = verses
+            .iter()
+            .map(|&(v, _)| format!("{book} 1:{v}"))
+            .collect();
         let texts = verses.iter().map(|&(_, t)| t.to_string()).collect();
         Corpus::try_from_parts(keys, texts).unwrap()
     }
@@ -453,7 +463,10 @@ mod tests {
         assert_eq!(f.len(), 1);
         assert_eq!(c.key(f[0].key_idx), "GEN 1:200");
         assert_eq!(f[0].severity, Severity::Info);
-        assert!(f[0].score.unwrap() > 0.9, "100 clean pairs back the verdict");
+        assert!(
+            f[0].score.unwrap() > 0.9,
+            "100 clean pairs back the verdict"
+        );
         let stray = inventory(&f[0]).iter().find(|o| !o.matched).unwrap();
         assert_eq!(stray.glyph, ")");
         assert_eq!(stray.role, DelimRole::Close);
@@ -501,9 +514,12 @@ mod tests {
     /// bracket finding carries.
     fn share(f: &Finding) -> (BracketMeasure, u32, u32) {
         match &f.args {
-            Some(FindingArgs::BracketWindow { measure, majority, total, .. }) => {
-                (*measure, *majority, *total)
-            }
+            Some(FindingArgs::BracketWindow {
+                measure,
+                majority,
+                total,
+                ..
+            }) => (*measure, *majority, *total),
             _ => panic!("expected BracketWindow args"),
         }
     }
@@ -519,9 +535,15 @@ mod tests {
         assert_eq!(f.len(), 1);
         let (measure, majority, total) = share(&f[0]);
         assert_eq!(measure, BracketMeasure::Pairing);
-        assert!(majority > 0 && majority < total, "one unmatched: {majority} < {total}");
+        assert!(
+            majority > 0 && majority < total,
+            "one unmatched: {majority} < {total}"
+        );
         let observed = f64::from(majority) / f64::from(total);
-        assert!(f[0].score.unwrap() as f64 <= observed + 1e-6, "score ≤ share {observed}");
+        assert!(
+            f[0].score.unwrap() as f64 <= observed + 1e-6,
+            "score ≤ share {observed}"
+        );
     }
 
     #[test]
@@ -536,9 +558,16 @@ mod tests {
         assert_eq!(f.len(), 1);
         let (measure, majority, total) = share(&f[0]);
         assert_eq!(measure, BracketMeasure::ShortSpan);
-        assert_eq!((majority, total), (100, 101), "100 short pairs of 101 total");
+        assert_eq!(
+            (majority, total),
+            (100, 101),
+            "100 short pairs of 101 total"
+        );
         let observed = f64::from(majority) / f64::from(total);
-        assert!(f[0].score.unwrap() as f64 <= observed + 1e-6, "score ≤ share {observed}");
+        assert!(
+            f[0].score.unwrap() as f64 <= observed + 1e-6,
+            "score ≤ share {observed}"
+        );
     }
 
     #[test]
@@ -561,10 +590,16 @@ mod tests {
     fn corner_brackets_excluded_text_brackets_retained() {
         use crate::charclass::{bracket_close_of, bracket_open_of};
         for q in ['「', '『', '｢'] {
-            assert!(bracket_close_of(q).is_none(), "{q:?} must not be a bracket opener");
+            assert!(
+                bracket_close_of(q).is_none(),
+                "{q:?} must not be a bracket opener"
+            );
         }
         for q in ['」', '』', '｣'] {
-            assert!(bracket_open_of(q).is_none(), "{q:?} must not be a bracket closer");
+            assert!(
+                bracket_open_of(q).is_none(),
+                "{q:?} must not be a bracket closer"
+            );
         }
         // Genuine CJK text brackets stay: fullwidth parens, title marks,
         // lenticular, angle.
@@ -589,7 +624,11 @@ mod tests {
         ];
         let c = book("GEN", &verses);
         assert!(rule(10).check(&crate::corpus::by_book(&c), None).is_empty());
-        assert!(no_floor(10).check(&crate::corpus::by_book(&c), None).is_empty());
+        assert!(
+            no_floor(10)
+                .check(&crate::corpus::by_book(&c), None)
+                .is_empty()
+        );
     }
 
     /// The exclusion is scoped to the corner-bracket family, not a blanket CJK
@@ -597,7 +636,8 @@ mod tests {
     /// corner-bracket quoting.
     #[test]
     fn ascii_paren_still_flags_beside_corner_quotes() {
-        let mut verses: Vec<(u16, &str)> = (1..=100u16).map(|v| (v, "clean (x) 「引言」")).collect();
+        let mut verses: Vec<(u16, &str)> =
+            (1..=100u16).map(|v| (v, "clean (x) 「引言」")).collect();
         verses.push((200, "未關的括號 (開始"));
         let c = book("GEN", &verses);
         let f = rule(10).check(&crate::corpus::by_book(&c), None);

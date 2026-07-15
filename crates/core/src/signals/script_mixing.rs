@@ -44,15 +44,15 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::config::MixedScriptConfig;
-use crate::corpus::{rebase, Books, Corpus, KeyIdx, LocalKeyIdx};
+use crate::corpus::{Books, Corpus, KeyIdx, LocalKeyIdx, rebase};
 use crate::diagnostics::{Finding, FindingArgs, RuleId, Severity};
 use crate::evidence::{clamp_rate, clamp_unit, clamp_z, from_strengths, strength};
 use crate::rule::{self, StatefulRule, TokenCache};
-use crate::script::{script_of, ScriptTag};
+use crate::script::{ScriptTag, script_of};
 use crate::span::Span;
 use crate::stats::RuleStats;
 use crate::stream;
-use crate::token::{tokenize, Token};
+use crate::token::{Token, tokenize};
 
 pub const MIXED_SCRIPT_IN_TOKEN: RuleId = RuleId::MixedScriptInToken;
 
@@ -86,7 +86,11 @@ fn tag_key(t: ScriptTag) -> String {
 /// three-script tokens (a stray Latin letter in an Arabic transliteration of
 /// Devanagari) key the same way.
 fn signature(scripts: &[ScriptTag]) -> String {
-    scripts.iter().map(|&t| tag_key(t)).collect::<Vec<_>>().join("+")
+    scripts
+        .iter()
+        .map(|&t| tag_key(t))
+        .collect::<Vec<_>>()
+        .join("+")
 }
 
 /// One mixed token, forwarded reduce→judge within a call (ADR 0044). Carries
@@ -160,7 +164,10 @@ impl StatefulRule for MixedScriptInToken {
         for (group, (counts, book_sites)) in books.iter().zip(rule::map_books(books, |group| {
             stream::drive_book(
                 group,
-                stream::Needs { tokens: true, ..Default::default() },
+                stream::Needs {
+                    tokens: true,
+                    ..Default::default()
+                },
                 MixedScriptAcc::new(true),
                 |a, v| a.verse(v),
                 MixedScriptAcc::finish,
@@ -268,7 +275,12 @@ impl StatefulRule for MixedScriptInToken {
                 severity: Severity::Info,
                 range: span,
                 score: Some(ev as f32),
-                args: Some(FindingArgs::ScriptMixEvidence { k, n, books, corpus }),
+                args: Some(FindingArgs::ScriptMixEvidence {
+                    k,
+                    n,
+                    books,
+                    corpus,
+                }),
             });
         };
         let mut out: Vec<Finding> = rule::map_books(books, |group| {
@@ -280,7 +292,9 @@ impl StatefulRule for MixedScriptInToken {
             } else {
                 for (vi, text) in group.texts.iter().enumerate() {
                     let key_idx = rebase(group.base, LocalKeyIdx::from_usize(vi));
-                    for (sig, span) in mixed_tokens(text, verse_tokens(key_idx, text, tokens).as_ref()) {
+                    for (sig, span) in
+                        mixed_tokens(text, verse_tokens(key_idx, text, tokens).as_ref())
+                    {
                         score(key_idx, &sig, span, &mut found);
                     }
                 }
@@ -356,7 +370,11 @@ impl MixedScriptAcc {
                 if self.counting {
                     *self.signature_counts.entry(sig.clone()).or_default() += 1;
                 }
-                self.sites.push(MixedScriptSite { local_idx: v.local_idx, sig, span: tok.span });
+                self.sites.push(MixedScriptSite {
+                    local_idx: v.local_idx,
+                    sig,
+                    span: tok.span,
+                });
             }
         }
     }
@@ -449,7 +467,9 @@ mod tests {
         // Latin is exclusive to the mix, Kannada dominates.
         let mut keys = Vec::new();
         let mut texts = Vec::new();
-        for bk in ["GEN", "EXO", "LEV", "NUM", "DEU", "JOS", "JDG", "RUT", "1SA", "2SA"] {
+        for bk in [
+            "GEN", "EXO", "LEV", "NUM", "DEU", "JOS", "JDG", "RUT", "1SA", "2SA",
+        ] {
             for v in 1..=40u32 {
                 keys.push(key(bk, v));
                 texts.push("ಕoಕ ಕಕ ಕಕ".to_string());
@@ -468,7 +488,9 @@ mod tests {
     fn widespread_low_frequency_pair_suppresses_on_breadth() {
         let mut keys = Vec::new();
         let mut texts = Vec::new();
-        for bk in ["GEN", "EXO", "LEV", "NUM", "DEU", "JOS", "JDG", "RUT", "1SA", "2SA"] {
+        for bk in [
+            "GEN", "EXO", "LEV", "NUM", "DEU", "JOS", "JDG", "RUT", "1SA", "2SA",
+        ] {
             for v in 1..=40u32 {
                 keys.push(key(bk, v));
                 texts.push("the word here now".to_string());
@@ -490,7 +512,9 @@ mod tests {
     fn concentrated_pair_still_surfaces() {
         let mut keys = Vec::new();
         let mut texts = Vec::new();
-        for bk in ["GEN", "EXO", "LEV", "NUM", "DEU", "JOS", "JDG", "RUT", "1SA", "2SA"] {
+        for bk in [
+            "GEN", "EXO", "LEV", "NUM", "DEU", "JOS", "JDG", "RUT", "1SA", "2SA",
+        ] {
             for v in 1..=40u32 {
                 keys.push(key(bk, v));
                 texts.push("the word here now".to_string());
@@ -556,7 +580,12 @@ mod tests {
             unreachable!()
         };
         // With GEN present, EXO's homoglyph is rare corpus-wide → surfaces.
-        let before = r.judge(&RuleStats::MixedScript(stats.clone()), &full_books, None, None);
+        let before = r.judge(
+            &RuleStats::MixedScript(stats.clone()),
+            &full_books,
+            None,
+            None,
+        );
         assert!(before.iter().any(|f| full.key(f.key_idx) == "EXO 1:1"));
         // Drop GEN: EXO alone is 1 Latin+Cyrillic of 1 Latin token → rate 1.0,
         // and a single-book corpus (breadth inactive) → still rare → surfaces.
@@ -597,7 +626,8 @@ mod tests {
         let c = corpus(keys, texts);
         let books = by_book(&c);
         let stats = r.reduce(&books, None, None).0;
-        let back: RuleStats = serde_json::from_str(&serde_json::to_string(&stats).unwrap()).unwrap();
+        let back: RuleStats =
+            serde_json::from_str(&serde_json::to_string(&stats).unwrap()).unwrap();
         assert_eq!(stats, back);
         assert_eq!(
             r.judge(&stats, &books, None, None),

@@ -73,17 +73,17 @@ use std::collections::BTreeMap;
 
 use rustc_hash::FxHashMap;
 
+use crate::charclass::class_of;
 use crate::config::MixedCaseConfig;
-use crate::corpus::{rebase, Books, Corpus, KeyIdx, LocalKeyIdx};
+use crate::corpus::{Books, Corpus, KeyIdx, LocalKeyIdx, rebase};
 use crate::diagnostics::{Finding, FindingArgs, RuleId, Severity};
 use crate::evidence::{clamp_count, clamp_unit, clamp_z, wilson_lower_bound};
 use crate::rule::{self, StatefulRule, TokenCache};
-use crate::signals::case_shape::{case_shape, CaseShape};
-use crate::charclass::class_of;
+use crate::signals::case_shape::{CaseShape, case_shape};
 use crate::span::Span;
 use crate::stats::RuleStats;
 use crate::stream;
-use crate::token::{tokenize, Token};
+use crate::token::{Token, tokenize};
 
 pub const MIXED_CASE_WORD: RuleId = RuleId::MixedCaseWord;
 
@@ -155,7 +155,10 @@ impl ShapeProfile {
     }
 
     fn total(&self) -> u64 {
-        u64::from(self.lower) + u64::from(self.title) + u64::from(self.allcaps) + u64::from(self.other)
+        u64::from(self.lower)
+            + u64::from(self.title)
+            + u64::from(self.allcaps)
+            + u64::from(self.other)
     }
 
     /// The clean-shape mass — the dominance numerator (`lower+title+allcaps`).
@@ -223,7 +226,11 @@ impl StatefulRule for MixedCaseWord {
         for (group, bmc) in books.iter().zip(rule::map_books(books, |group| {
             stream::drive_book(
                 group,
-                stream::Needs { tokens: true, folds: true, ..Default::default() },
+                stream::Needs {
+                    tokens: true,
+                    folds: true,
+                    ..Default::default()
+                },
                 MixedCaseAcc::new(),
                 |a, v| a.verse(v),
                 MixedCaseAcc::finish,
@@ -278,11 +285,7 @@ impl StatefulRule for MixedCaseWord {
             }
             surviving.insert(
                 key,
-                (
-                    score as f32,
-                    p.other,
-                    total.min(u64::from(u32::MAX)) as u32,
-                ),
+                (score as f32, p.other, total.min(u64::from(u32::MAX)) as u32),
             );
         }
         if surviving.is_empty() {
@@ -327,9 +330,16 @@ fn emit_verse(
                 key_idx,
                 code: MIXED_CASE_WORD,
                 severity: Severity::Info,
-                range: Span { start: tok.span.start, end: tok.span.end },
+                range: Span {
+                    start: tok.span.start,
+                    end: tok.span.end,
+                },
                 score: Some(score),
-                args: Some(FindingArgs::MixedCaseWord { word: key, other, total }),
+                args: Some(FindingArgs::MixedCaseWord {
+                    word: key,
+                    other,
+                    total,
+                }),
             });
         }
     }
@@ -378,7 +388,9 @@ impl MixedCaseAcc {
         for (tok, folded) in v.tokens.iter().zip(v.folds) {
             let Some(folded) = folded else { continue };
             let word = tok.span.slice(v.text);
-            let Some(shape) = case_shape(word) else { continue };
+            let Some(shape) = case_shape(word) else {
+                continue;
+            };
             let id = match self.intern.get(folded.as_ref()) {
                 Some(&id) => id,
                 None => {
@@ -408,7 +420,11 @@ mod tests {
     use crate::corpus::by_book;
 
     fn cfg(emit_score_min: f32, recurrence_k: f32, confidence_z: f32) -> MixedCaseConfig {
-        MixedCaseConfig { emit_score_min, recurrence_k, confidence_z }
+        MixedCaseConfig {
+            emit_score_min,
+            recurrence_k,
+            confidence_z,
+        }
     }
 
     fn rule(cfg: MixedCaseConfig) -> MixedCaseWord {
@@ -494,7 +510,11 @@ mod tests {
         let f = run(&corpus, &rule(cfg(0.5, 32.0, 0.0)));
         assert_eq!(f.len(), 1);
         let expected = (40.0 / 41.0) * 1.0;
-        assert!((f[0].score.unwrap() as f64 - expected).abs() < 1e-4, "{:?}", f[0].score);
+        assert!(
+            (f[0].score.unwrap() as f64 - expected).abs() < 1e-4,
+            "{:?}",
+            f[0].score
+        );
     }
 
     /// The floor is respected: a low-dominance word (mixed is a big share of its
@@ -533,7 +553,10 @@ mod tests {
             }
             cb.build()
         };
-        assert!(run(&many, &rule(cfg(0.5, 4.0, 0.0))).is_empty(), "recurring convention silenced");
+        assert!(
+            run(&many, &rule(cfg(0.5, 4.0, 0.0))).is_empty(),
+            "recurring convention silenced"
+        );
     }
 
     /// A word dominantly written OtherMixed (a live convention like `HaElohim`)
@@ -553,7 +576,10 @@ mod tests {
         let mut cb = cycle("GEN", &["nothing to see here"], 40);
         cb.push("GEN", 500, "a stray deJésus word");
         let corpus = cb.build();
-        assert!(run(&corpus, &rule(cfg(0.5, 32.0, 0.0))).is_empty(), "hapax mixed word stays silent");
+        assert!(
+            run(&corpus, &rule(cfg(0.5, 32.0, 0.0))).is_empty(),
+            "hapax mixed word stays silent"
+        );
     }
 
     /// Single cased letters (`I`, `A`) are never OtherMixed, so a text full of
@@ -576,7 +602,10 @@ mod tests {
     #[test]
     fn hyphen_compound_is_two_tokens() {
         let corpus = cycle("GEN", &["from Obed-Edom the gittite"], 60).build();
-        assert!(run(&corpus, &rule(cfg(0.5, 32.0, 0.0))).is_empty(), "Obed-Edom is two Title tokens");
+        assert!(
+            run(&corpus, &rule(cfg(0.5, 32.0, 0.0))).is_empty(),
+            "Obed-Edom is two Title tokens"
+        );
     }
 
     // ── boundary vs casing v2: reported once, not twice ──────────────────────
@@ -612,7 +641,9 @@ mod tests {
             cb.build()
         };
         assert!(
-            run_casing(&control).iter().any(|f| slice(&control, f) == "dios"),
+            run_casing(&control)
+                .iter()
+                .any(|f| slice(&control, f) == "dios"),
             "control: casing flags a plain lowercase slip of a cap-dominant word"
         );
 
@@ -659,7 +690,9 @@ mod tests {
 
         // Removing GEN drops the dominance mass, so the EXO slip goes silent
         // (its own book has dominance 0 — the mixed form is all it has seen).
-        let RuleStats::MixedCase(mut stats) = merged else { unreachable!() };
+        let RuleStats::MixedCase(mut stats) = merged else {
+            unreachable!()
+        };
         stats.remove_book("GEN");
         let after = RuleStats::MixedCase(stats);
         assert!(r.judge(&after, &exo_books, None, None).is_empty());

@@ -82,7 +82,10 @@ pub(crate) fn scan_excess_h_whitespace(tape: &[TapeEntry]) -> Vec<Span> {
             // not content whitespace) and are not the legitimate spacing
             // that follows a sentence terminal.
             if count >= 2 && saw_text && !last_was_terminal {
-                runs.push(Span { start: run_start, end });
+                runs.push(Span {
+                    start: run_start,
+                    end,
+                });
             }
             i = j;
         } else if matches!(e.ch, '\n' | '\r') {
@@ -128,10 +131,7 @@ mod tests {
         // Double space after a period is a spacing convention, not error.
         assert!(scan("End.  Next").is_empty());
         // ... but a double space mid-clause is flagged.
-        assert_eq!(
-            scan("mid  clause"),
-            vec![Span { start: 3, end: 5 }]
-        );
+        assert_eq!(scan("mid  clause"), vec![Span { start: 3, end: 5 }]);
     }
 
     #[test]

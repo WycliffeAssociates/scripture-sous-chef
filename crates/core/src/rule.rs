@@ -234,12 +234,8 @@ pub fn project_token_rules() -> Vec<Box<dyn ProjectTokenRule>> {
 /// is complete — including rules `v1_defaults` disables.
 pub fn stateful_rules(config: &Config) -> Vec<Box<dyn StatefulRule>> {
     vec![
-        Box::new(signals::casing::SentenceInitialLowercase {
-            cfg: config.casing,
-        }),
-        Box::new(signals::casing::InconsistentWordCasing {
-            cfg: config.casing,
-        }),
+        Box::new(signals::casing::SentenceInitialLowercase { cfg: config.casing }),
+        Box::new(signals::casing::InconsistentWordCasing { cfg: config.casing }),
         Box::new(signals::proportionality::ProjectLengthRatio {
             cfg: config.proportionality,
         }),
@@ -286,24 +282,24 @@ mod tests {
             "   ",
             "In the beginning God created the heavens.",
             "मन ने कहा। हाँ भई हाँ।",
-            "a  b",                      // excess whitespace
-            "End.  Next",                // protected (no fire) but EXCESS_WS set
-            "a\u{00A0}\u{00A0}b",         // NBSP run
-            "foo\tbar",                  // tab
-            "foo\u{0007}bar\u{0085}baz", // C0 + C1 controls
-            "a\u{FEFF}b\u{2060}c\u{202E}d", // zero-width / format
-            "god\u{FFFD}\u{FDD0}\u{FFFE}x", // invalid codepoints
-            "a\u{1FFFE}b",               // astral noncharacter
-            "word ????? end",            // ?×5
-            "\u{0301}abc word.\u{0301} x", // baseless marks
-            "12 men and ४५ women",       // mixed numerals
+            "a  b",                                  // excess whitespace
+            "End.  Next",                            // protected (no fire) but EXCESS_WS set
+            "a\u{00A0}\u{00A0}b",                    // NBSP run
+            "foo\tbar",                              // tab
+            "foo\u{0007}bar\u{0085}baz",             // C0 + C1 controls
+            "a\u{FEFF}b\u{2060}c\u{202E}d",          // zero-width / format
+            "god\u{FFFD}\u{FDD0}\u{FFFE}x",          // invalid codepoints
+            "a\u{1FFFE}b",                           // astral noncharacter
+            "word ????? end",                        // ?×5
+            "\u{0301}abc word.\u{0301} x",           // baseless marks
+            "12 men and ४५ women",                   // mixed numerals
             "a\u{200B}\u{200B}b c\u{200B}\u{200B}d", // doubled ZWSP runs
             r"In the \v 2 \add beginning\add*",
             "a <b>bold</b> <br/> word",
             "<<<<<<< HEAD\nx\n=======\ny\n>>>>>>> z",
             "||||||| base",
-            "5 < 7 and 7 > 5",           // lone comparisons (no conflict fire)
-            "what?? really",             // ?×2 (no replacement fire)
+            "5 < 7 and 7 > 5", // lone comparisons (no conflict fire)
+            "what?? really",   // ?×2 (no replacement fire)
         ];
         let rules = per_verse_rules();
         let mut tape = Vec::new();
@@ -324,7 +320,11 @@ mod tests {
             }
         }
         for (i, r) in rules.iter().enumerate() {
-            assert!(fired_any[i], "battery never fired {:?} — test is vacuous for it", r.id());
+            assert!(
+                fired_any[i],
+                "battery never fired {:?} — test is vacuous for it",
+                r.id()
+            );
         }
     }
 }

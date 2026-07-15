@@ -51,10 +51,7 @@ mod tests {
     use super::*;
 
     fn words(text: &str) -> Vec<&str> {
-        tokenize(text)
-            .iter()
-            .map(|t| t.span.slice(text))
-            .collect()
+        tokenize(text).iter().map(|t| t.span.slice(text)).collect()
     }
 
     #[test]
@@ -64,7 +61,10 @@ mod tests {
 
     #[test]
     fn skips_punctuation_and_whitespace_segments() {
-        assert_eq!(words("Yes, he said: \"go!\""), vec!["Yes", "he", "said", "go"]);
+        assert_eq!(
+            words("Yes, he said: \"go!\""),
+            vec!["Yes", "he", "said", "go"]
+        );
     }
 
     #[test]

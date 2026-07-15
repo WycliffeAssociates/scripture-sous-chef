@@ -60,7 +60,10 @@ pub fn scan_source_marker_leftover(text: &str) -> Vec<Span> {
                 if i < bytes.len() && bytes[i] == b'*' {
                     i += 1;
                 }
-                spans.push(Span { start: start as u32, end: i as u32 });
+                spans.push(Span {
+                    start: start as u32,
+                    end: i as u32,
+                });
             }
             // Raw HTML/XML tag: `<` + tag-ish start + no spaces-only,
             // closed by `>` on the same verse. Requires the first char
@@ -77,7 +80,10 @@ pub fn scan_source_marker_leftover(text: &str) -> Vec<Span> {
                         j += 1;
                     }
                     if j < bytes.len() {
-                        spans.push(Span { start: start as u32, end: (j + 1) as u32 });
+                        spans.push(Span {
+                            start: start as u32,
+                            end: (j + 1) as u32,
+                        });
                         i = j + 1;
                         continue;
                     }
@@ -140,7 +146,10 @@ pub fn scan_merge_conflict_marker(text: &str) -> Vec<Span> {
                 i += 1;
             }
             if i - start >= MIN_RUN {
-                spans.push(Span { start: start as u32, end: i as u32 });
+                spans.push(Span {
+                    start: start as u32,
+                    end: i as u32,
+                });
             }
         } else {
             i += 1;
@@ -170,7 +179,10 @@ mod tests {
     #[test]
     fn flags_usfm_markers() {
         assert_eq!(slices(r"In the \v 2 beginning"), vec![r"\v"]);
-        assert_eq!(slices(r"word \f + \ft note \f* more"), vec![r"\f", r"\ft", r"\f*"]);
+        assert_eq!(
+            slices(r"word \f + \ft note \f* more"),
+            vec![r"\f", r"\ft", r"\f*"]
+        );
         assert_eq!(slices(r"a \+nd Lord\+nd* b"), vec![r"\+nd", r"\+nd*"]);
     }
 
@@ -226,7 +238,10 @@ mod tests {
     fn flags_diff3_base_pipes() {
         // The diff3 base marker: a run of pipes is conflict evidence. A bare
         // `|` is legitimate USFM text and stays clean (see below).
-        assert_eq!(conflict_slices("||||||| merged common ancestors"), vec!["|||||||"]);
+        assert_eq!(
+            conflict_slices("||||||| merged common ancestors"),
+            vec!["|||||||"]
+        );
     }
 
     #[test]

@@ -82,9 +82,7 @@ impl RuleStats {
             (RuleStats::GlyphInventory(a), RuleStats::GlyphInventory(b)) => {
                 RuleStats::GlyphInventory(a.merge(b))
             }
-            (RuleStats::MixedCase(a), RuleStats::MixedCase(b)) => {
-                RuleStats::MixedCase(a.merge(b))
-            }
+            (RuleStats::MixedCase(a), RuleStats::MixedCase(b)) => RuleStats::MixedCase(a.merge(b)),
             // Mismatched variants can't occur via `analyze_stateful` (it keys
             // prior and fresh by the same `RuleId`). For malformed cached input
             // the **fresh** reduction wins — never the stale prior. The left
@@ -135,10 +133,7 @@ impl RuleStats {
 pub struct Stats {
     // Only enabled stateful rules appear, so the wire type is a *partial*
     // record, not every `RuleId`.
-    #[cfg_attr(
-        feature = "wasm",
-        tsify(type = "Partial<Record<RuleId, RuleStats>>")
-    )]
+    #[cfg_attr(feature = "wasm", tsify(type = "Partial<Record<RuleId, RuleStats>>"))]
     rules: BTreeMap<RuleId, RuleStats>,
 }
 

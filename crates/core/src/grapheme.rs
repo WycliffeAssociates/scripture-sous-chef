@@ -273,10 +273,18 @@ mod tests {
             }
             // `count` shares the walk with `segment`, so it inherits this
             // conformance gate: clusters = boundaries − the final-length entry.
-            assert_eq!(count(&s), expected.len().saturating_sub(1), "count on {line}");
+            assert_eq!(
+                count(&s),
+                expected.len().saturating_sub(1),
+                "count on {line}"
+            );
             // The tape-driven walk (ADR 0045) must match the char walk on
             // every case — same conformance, byte-for-byte.
-            assert_eq!(tape_boundaries(&s), our_boundaries(&s), "tape vs char walk on {line}");
+            assert_eq!(
+                tape_boundaries(&s),
+                our_boundaries(&s),
+                "tape vs char walk on {line}"
+            );
             if our_boundaries(&s) == expected {
                 pass += 1;
             } else {
@@ -290,7 +298,12 @@ mod tests {
                 }
             }
         }
-        assert_eq!(fail, 0, "{fail}/{} cases failed; first:\n{first_fail}", pass + fail);
+        assert_eq!(
+            fail,
+            0,
+            "{fail}/{} cases failed; first:\n{first_fail}",
+            pass + fail
+        );
         // Exact count for the committed Unicode 17.0 suite — a truncated file
         // (fewer cases, all passing) must not slip through. Bump alongside the
         // UCD refresh (see src/testdata/ucd/README.md).
@@ -307,9 +320,21 @@ mod tests {
     #[test]
     fn unicode_version_pinned() {
         assert_eq!(char::UNICODE_VERSION, (17, 0, 0), "std");
-        assert_eq!(unicode_properties::UNICODE_VERSION, (17, 0, 0), "unicode-properties");
-        assert_eq!(unicode_script::UNICODE_VERSION, (17, 0, 0), "unicode-script");
-        assert_eq!(unicode_segmentation::UNICODE_VERSION, (17, 0, 0), "unicode-segmentation");
+        assert_eq!(
+            unicode_properties::UNICODE_VERSION,
+            (17, 0, 0),
+            "unicode-properties"
+        );
+        assert_eq!(
+            unicode_script::UNICODE_VERSION,
+            (17, 0, 0),
+            "unicode-script"
+        );
+        assert_eq!(
+            unicode_segmentation::UNICODE_VERSION,
+            (17, 0, 0),
+            "unicode-segmentation"
+        );
     }
 
     /// Synthetic clusters (per our synthetic-tests rule) covering the branches:
@@ -319,16 +344,20 @@ mod tests {
     fn synthetic_clusters_match_oracle() {
         for t in [
             "abc",
-            "e\u{0301}",              // e + combining acute -> one cluster
-            "a\u{0301}\u{0302}b",     // stacked marks glue to the base
-            "\u{0915}\u{093F}",       // KA + vowel sign I (SpacingMark) -> fast path
+            "e\u{0301}",                // e + combining acute -> one cluster
+            "a\u{0301}\u{0302}b",       // stacked marks glue to the base
+            "\u{0915}\u{093F}",         // KA + vowel sign I (SpacingMark) -> fast path
             "\u{0915}\u{094D}\u{0937}", // KA + virama + SSA -> conjunct क्ष (GB9c)
             "\u{0915}\u{094D}\u{0937}\u{094D}\u{0923}", // three-consonant conjunct chain
             "\u{0E01}\u{0E48}\u{0E32}", // Thai: consonant + tone + vowel
-            "Aa1 .;\n",               // mixed + control
+            "Aa1 .;\n",                 // mixed + control
         ] {
             assert_eq!(our_boundaries(t), oracle_boundaries(t), "mismatch on {t:?}");
-            assert_eq!(tape_boundaries(t), oracle_boundaries(t), "tape mismatch on {t:?}");
+            assert_eq!(
+                tape_boundaries(t),
+                oracle_boundaries(t),
+                "tape mismatch on {t:?}"
+            );
             assert_eq!(
                 count(t),
                 t.graphemes(true).count(),
@@ -336,5 +365,4 @@ mod tests {
             );
         }
     }
-
 }

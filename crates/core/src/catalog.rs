@@ -332,19 +332,34 @@ pub fn message(id: RuleId, args: Option<&FindingArgs>) -> String {
 
         // ── Corpus-relative: plain counts behind the score (ADR 0048). ──
         RuleId::SentenceInitialLowercase => match args {
-            Some(FindingArgs::CasingConvention { glyph: Some(glyph), quoted: true, upper, total }) => {
+            Some(FindingArgs::CasingConvention {
+                glyph: Some(glyph),
+                quoted: true,
+                upper,
+                total,
+            }) => {
                 format!(
                     "This translation capitalizes after ‘{glyph}’ closing a quote in {upper} of \
                      {total} places; this word starts lowercase."
                 )
             }
-            Some(FindingArgs::CasingConvention { glyph: Some(glyph), quoted: false, upper, total }) => {
+            Some(FindingArgs::CasingConvention {
+                glyph: Some(glyph),
+                quoted: false,
+                upper,
+                total,
+            }) => {
                 format!(
                     "This translation capitalizes after ‘{glyph}’ in {upper} of {total} places; \
                      this word starts lowercase."
                 )
             }
-            Some(FindingArgs::CasingConvention { glyph: None, upper, total, .. }) => format!(
+            Some(FindingArgs::CasingConvention {
+                glyph: None,
+                upper,
+                total,
+                ..
+            }) => format!(
                 "This translation capitalizes the first word after a sentence break in \
                  {upper} of {total} places; this word starts lowercase."
             ),
@@ -360,7 +375,11 @@ pub fn message(id: RuleId, args: Option<&FindingArgs>) -> String {
         RuleId::PunctuationSpacingAnomaly => match args {
             Some(FindingArgs::SpacingConvention { mark, left, right }) => {
                 let clause = |s: &crate::diagnostics::SpacingSide, side: &str| {
-                    let verb = if s.form == "attached" { "attached" } else { "spaced" };
+                    let verb = if s.form == "attached" {
+                        "attached"
+                    } else {
+                        "spaced"
+                    };
                     let nbr = match s.class.as_str() {
                         "number" => "a number",
                         "punct" => "a mark",
@@ -389,16 +408,36 @@ pub fn message(id: RuleId, args: Option<&FindingArgs>) -> String {
             _ => "This mark is spaced differently from this translation’s usual style.".into(),
         },
         RuleId::BracketBalance => match args {
-            Some(FindingArgs::BracketWindow { measure: BracketMeasure::Pairing, majority, total, .. }) => {
-                format!("This bracket has no partner — the translation pairs it in {majority} of {total} places.")
+            Some(FindingArgs::BracketWindow {
+                measure: BracketMeasure::Pairing,
+                majority,
+                total,
+                ..
+            }) => {
+                format!(
+                    "This bracket has no partner — the translation pairs it in {majority} of {total} places."
+                )
             }
-            Some(FindingArgs::BracketWindow { measure: BracketMeasure::ShortSpan, majority, total, .. }) => {
-                format!("This bracket pair stays open unusually long — {majority} of {total} pairs close within a few verses.")
+            Some(FindingArgs::BracketWindow {
+                measure: BracketMeasure::ShortSpan,
+                majority,
+                total,
+                ..
+            }) => {
+                format!(
+                    "This bracket pair stays open unusually long — {majority} of {total} pairs close within a few verses."
+                )
             }
             _ => "An opening or closing bracket with no partner.".into(),
         },
         RuleId::PunctuationAdjacencyAnomaly => match args {
-            Some(FindingArgs::AdjacencyEvidence { pattern, k, lead_n, books, corpus }) => format!(
+            Some(FindingArgs::AdjacencyEvidence {
+                pattern,
+                k,
+                lead_n,
+                books,
+                corpus,
+            }) => format!(
                 "The punctuation ‘{pattern}’ is unusual here — it appears {k} of {lead_n} times, \
                  in {books} of {corpus} books."
             ),
@@ -449,7 +488,11 @@ mod tests {
         for c in &cards {
             assert!(!c.title.is_empty() && !c.what.is_empty() && !c.why.is_empty());
             // The one-liners stay one-liners: list-renderable, no headings.
-            assert!(!c.what.contains('\n') && !c.why.contains('\n'), "{}", c.code);
+            assert!(
+                !c.what.contains('\n') && !c.why.contains('\n'),
+                "{}",
+                c.code
+            );
         }
     }
 

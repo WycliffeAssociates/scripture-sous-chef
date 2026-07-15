@@ -474,8 +474,9 @@ pub fn analyze_vref_stateful(
     let target = to_corpus_or_reject(target)?;
     let source = source.map(to_corpus_or_reject).transpose()?;
     let cfg = build_config(config);
-    let changed_slugs: Option<Vec<&str>> =
-        changed.as_ref().map(|list| list.iter().map(String::as_str).collect());
+    let changed_slugs: Option<Vec<&str>> = changed
+        .as_ref()
+        .map(|list| list.iter().map(String::as_str).collect());
     let (findings, stats) = analyze_stateful(
         &target,
         source.as_ref(),
@@ -583,7 +584,9 @@ pub fn stats_remove_book(mut stats: Stats, book: String) -> Stats {
 pub fn census(target: VrefCorpus, example_cap: Option<u32>) -> Result<String, JsError> {
     let target = to_corpus_or_reject(target)?;
     let opts = match example_cap {
-        Some(cap) => ssc_core::CensusOptions { example_cap: cap as usize },
+        Some(cap) => ssc_core::CensusOptions {
+            example_cap: cap as usize,
+        },
         None => ssc_core::CensusOptions::default(),
     };
     let inventory = ssc_core::census(&target, &opts);
@@ -602,7 +605,10 @@ mod tests {
         let cfg = build_config(Some(SousConfig {
             // DuplicateWord ships default-off; enabling it exercises the rules map.
             rules: Some([(RuleId::DuplicateWord, true)].into_iter().collect()),
-            proportionality: Some(ProportionalityOverrides { z_threshold: Some(2.5), min_verses: Some(10) }),
+            proportionality: Some(ProportionalityOverrides {
+                z_threshold: Some(2.5),
+                min_verses: Some(10),
+            }),
             casing: Some(CasingOverrides {
                 emit_score_min: Some(0.8),
                 recurrence_k: Some(24.0),
@@ -694,7 +700,11 @@ mod tests {
     fn spacing_anomaly_incremental_round_trips_through_the_boundary() {
         let enable = || {
             Some(SousConfig {
-                rules: Some([(RuleId::PunctuationSpacingAnomaly, true)].into_iter().collect()),
+                rules: Some(
+                    [(RuleId::PunctuationSpacingAnomaly, true)]
+                        .into_iter()
+                        .collect(),
+                ),
                 ..Default::default()
             })
         };
@@ -734,7 +744,10 @@ mod tests {
             .collect();
         assert_eq!(hits.len(), 1, "emits only for the edited book");
         assert_eq!(hits[0].sid, "EXO 1:1");
-        assert_eq!(hits[0].score, full_score, "incremental score is corpus-wide");
+        assert_eq!(
+            hits[0].score, full_score,
+            "incremental score is corpus-wide"
+        );
     }
 
     /// A duplicate key entry is preserved (not collapsed into one row the
@@ -761,7 +774,11 @@ mod tests {
             .iter()
             .filter(|f| f.code == RuleId::ExcessHWhitespace)
             .collect();
-        assert_eq!(hits.len(), 2, "both duplicate entries are analyzed independently");
+        assert_eq!(
+            hits.len(),
+            2,
+            "both duplicate entries are analyzed independently"
+        );
     }
 
     /// A mismatched-length `VrefCorpus` (the wasm wire shape's equivalent of
@@ -787,7 +804,10 @@ mod tests {
     fn build_config_omitted_keeps_defaults() {
         let cfg = build_config(None);
         let d = Config::v1_defaults();
-        assert_eq!(cfg.punctuation_adjacency.emit_score_min, d.punctuation_adjacency.emit_score_min);
+        assert_eq!(
+            cfg.punctuation_adjacency.emit_score_min,
+            d.punctuation_adjacency.emit_score_min
+        );
         assert_eq!(cfg.repeated_character_run, d.repeated_character_run);
         assert!(cfg.is_enabled(RuleId::RedundantZeroWidthSpace));
         assert!(!cfg.is_enabled(RuleId::DuplicateWord));

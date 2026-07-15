@@ -39,15 +39,15 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::Path;
 
+use ssc_core::charclass::class_of;
 use ssc_core::config::{
     BracketBalanceConfig, CasingConfig, MixedScriptConfig, ProportionalityConfig,
     PunctOnlyTokenConfig, PunctuationAdjacencyConfig, PunctuationSpacingConfig,
     RepeatedCharacterRunConfig,
 };
-use ssc_core::charclass::class_of;
 use ssc_core::rule::{ProjectRule, StatefulRule};
-use ssc_core::signals::casing::{PosClass, SiteEval, evaluate};
 use ssc_core::signals::bracket_balance::BracketBalance;
+use ssc_core::signals::casing::{PosClass, SiteEval, evaluate};
 use ssc_core::signals::lexical::{PunctOnlyToken, RepeatedCharacterRun};
 use ssc_core::signals::proportionality::ProjectLengthRatio;
 use ssc_core::signals::punctuation::{PunctuationAdjacencyAnomaly, PunctuationSpacingAnomaly};
@@ -259,7 +259,12 @@ fn main() {
         // (the before/after gate). A `wa` dump only ever diffs against a `wa`
         // dump — never a `full` one.
         [flag, path, out, cfg_name, rest @ ..] if flag == "--dump-findings" => {
-            dump_findings(Path::new(path), Path::new(out), cfg_name, OracleScope::parse(rest));
+            dump_findings(
+                Path::new(path),
+                Path::new(out),
+                cfg_name,
+                OracleScope::parse(rest),
+            );
             return;
         }
         // Incremental oracle: for each corpus, mutate one verse, then run the
@@ -267,13 +272,25 @@ fn main() {
         // dump its findings + a stats digest. Pins the prior/merge/changed
         // path across the port. Trailing `wa`|`full` scopes the fleet as above.
         [flag, path, out, cfg_name, rest @ ..] if flag == "--dump-incremental" => {
-            dump_incremental(Path::new(path), Path::new(out), cfg_name, false, OracleScope::parse(rest));
+            dump_incremental(
+                Path::new(path),
+                Path::new(out),
+                cfg_name,
+                false,
+                OracleScope::parse(rest),
+            );
             return;
         }
         // Same incremental oracle with the cross-call cache enabled. The
         // output must remain byte-identical to --dump-incremental (same scope).
         [flag, path, out, cfg_name, rest @ ..] if flag == "--dump-incremental-cached" => {
-            dump_incremental(Path::new(path), Path::new(out), cfg_name, true, OracleScope::parse(rest));
+            dump_incremental(
+                Path::new(path),
+                Path::new(out),
+                cfg_name,
+                true,
+                OracleScope::parse(rest),
+            );
             return;
         }
         // Wall-clock probe: min-of-5 analyze_with_config on one corpus under
@@ -334,12 +351,20 @@ fn main() {
     };
     let t0 = std::time::Instant::now();
     let books = ssc_core::corpus::by_book(&target);
-    let findings = rule.judge(&rule.reduce(&books, Some(&source), None).0, &books, None, None);
+    let findings = rule.judge(
+        &rule.reduce(&books, Some(&source), None).0,
+        &books,
+        None,
+        None,
+    );
     eprintln!("proportionality check: {:?}", t0.elapsed());
 
     let mut per_book: BTreeMap<String, usize> = BTreeMap::new();
     for f in &findings {
-        let book = ssc_core::key::parse_key(target.key(f.key_idx)).unwrap().book.to_string();
+        let book = ssc_core::key::parse_key(target.key(f.key_idx))
+            .unwrap()
+            .book
+            .to_string();
         *per_book.entry(book).or_default() += 1;
     }
 
@@ -361,10 +386,7 @@ fn main() {
     print_findings(&target, by_z.iter().rev().take(15).copied());
 }
 
-fn print_findings<'a>(
-    target: &Corpus,
-    findings: impl Iterator<Item = &'a ssc_core::Finding>,
-) {
+fn print_findings<'a>(target: &Corpus, findings: impl Iterator<Item = &'a ssc_core::Finding>) {
     for f in findings {
         let Some(FindingArgs::LengthRatio { ratio_pct, scope }) = f.args else {
             continue;
@@ -546,8 +568,7 @@ fn fleet(dir: &Path, out: &Path) {
 
             let mut surfaced = vec![0u32; n_rules];
             let mut sites = vec![0u32; n_rules];
-            let mut hists: Vec<Vec<u64>> =
-                edges.iter().map(|e| vec![0u64; e.len() - 1]).collect();
+            let mut hists: Vec<Vec<u64>> = edges.iter().map(|e| vec![0u64; e.len() - 1]).collect();
             let mut samples: Vec<Vec<FleetSample>> = (0..n_rules).map(|_| Vec::new()).collect();
 
             for f in &findings {
@@ -565,9 +586,8 @@ fn fleet(dir: &Path, out: &Path) {
                 surfaced[ri] += 1;
                 // Keep the 2 best surfaced samples per rule per corpus.
                 let sv = &mut samples[ri];
-                let better_than = |x: &FleetSample| {
-                    f.score.unwrap_or(0.0) > x.score.unwrap_or(f32::INFINITY)
-                };
+                let better_than =
+                    |x: &FleetSample| f.score.unwrap_or(0.0) > x.score.unwrap_or(f32::INFINITY);
                 if sv.len() < 2 || sv.iter().any(better_than) {
                     let text = map.text(f.key_idx);
                     let sample = FleetSample {
@@ -594,7 +614,15 @@ fn fleet(dir: &Path, out: &Path) {
             if n.is_multiple_of(100) {
                 eprintln!("  …{n}/{total}");
             }
-            FleetRow { id, verses, chars, surfaced, sites, hists, samples }
+            FleetRow {
+                id,
+                verses,
+                chars,
+                surfaced,
+                sites,
+                hists,
+                samples,
+            }
         })
         .collect();
 
@@ -736,7 +764,10 @@ fn zwsp_calib(dir: &Path) {
                 == Some("\u{200B}")
         })
         .count();
-    let redundant: Vec<_> = f.iter().filter(|f| f.code == RuleId::RedundantZeroWidthSpace).collect();
+    let redundant: Vec<_> = f
+        .iter()
+        .filter(|f| f.code == RuleId::RedundantZeroWidthSpace)
+        .collect();
     println!(
         "U+200B raw={raw}  redundant runs flagged={}  (hyg U+200B flags: {hyg_zwsp}, must be 0)",
         redundant.len()
@@ -945,7 +976,11 @@ fn punct_only_calib(dir: &Path) {
     }
     let mut top: Vec<_> = pattern_count.iter().collect();
     top.sort_by(|a, b| b.1.cmp(a.1));
-    let head: Vec<String> = top.iter().take(6).map(|(p, n)| format!("[{p}]x{n}")).collect();
+    let head: Vec<String> = top
+        .iter()
+        .take(6)
+        .map(|(p, n)| format!("[{p}]x{n}"))
+        .collect();
     eprintln!(
         "{corpus}: {} verses, {total} candidates, {} distinct patterns | {}",
         target.len(),
@@ -955,7 +990,10 @@ fn punct_only_calib(dir: &Path) {
 
     // Production score distribution at floor 0, and the shipped-floor count.
     let rule = PunctOnlyToken {
-        cfg: PunctOnlyTokenConfig { emit_score_min: 0.0, ..Default::default() },
+        cfg: PunctOnlyTokenConfig {
+            emit_score_min: 0.0,
+            ..Default::default()
+        },
     };
     let books = ssc_core::corpus::by_book(&target);
     let findings = rule.judge(&rule.reduce(&books, None, None).0, &books, None, None);
@@ -983,7 +1021,10 @@ fn bracket_calib(dir: &Path) {
     // Floor-0 run of the production rule: every orphan and every long-span pair
     // surfaces, so the score distribution shows the sub-floor mass too.
     let rule = BracketBalance {
-        cfg: BracketBalanceConfig { emit_score_min: 0.0, ..Default::default() },
+        cfg: BracketBalanceConfig {
+            emit_score_min: 0.0,
+            ..Default::default()
+        },
     };
     let books = ssc_core::corpus::by_book(&target);
     let t0 = std::time::Instant::now();
@@ -1006,14 +1047,14 @@ fn bracket_calib(dir: &Path) {
             if !class_of(c).is_punctuation() {
                 continue;
             }
-            let (family, is_open, open_glyph, close_glyph) = if let Some(close) = bracket_close_of(c)
-            {
-                (c, true, c, close)
-            } else if let Some(open) = bracket_open_of(c) {
-                (open, false, open, c)
-            } else {
-                continue;
-            };
+            let (family, is_open, open_glyph, close_glyph) =
+                if let Some(close) = bracket_close_of(c) {
+                    (c, true, c, close)
+                } else if let Some(open) = bracket_open_of(c) {
+                    (open, false, open, c)
+                } else {
+                    continue;
+                };
             let e = fams.entry(family).or_default();
             e.open = open_glyph;
             e.close = close_glyph;
@@ -1038,10 +1079,16 @@ fn bracket_calib(dir: &Path) {
             .or_else(|| bracket_open_of(glyph))
             .unwrap_or(glyph);
         match &f.args {
-            Some(FindingArgs::BracketWindow { measure: BracketMeasure::Pairing, .. }) => {
+            Some(FindingArgs::BracketWindow {
+                measure: BracketMeasure::Pairing,
+                ..
+            }) => {
                 *orphans.entry(family).or_default() += 1;
             }
-            Some(FindingArgs::BracketWindow { measure: BracketMeasure::ShortSpan, .. }) => {
+            Some(FindingArgs::BracketWindow {
+                measure: BracketMeasure::ShortSpan,
+                ..
+            }) => {
                 *long_spans.entry(family).or_default() += 1;
             }
             _ => {}
@@ -1064,15 +1111,7 @@ fn bracket_calib(dir: &Path) {
         let rate = (events.saturating_sub(orph)) as f64 / events.max(1) as f64 * 100.0;
         println!(
             "  {}…{}  U+{:04X}  {:>8} {:>7} {:>7} {:>9} {:>7} {:>8.1}%",
-            f.open,
-            f.close,
-            f.open as u32,
-            events,
-            f.opens,
-            f.closes,
-            orph,
-            long,
-            rate
+            f.open, f.close, f.open as u32, events, f.opens, f.closes, orph, long, rate
         );
     }
 
@@ -1081,15 +1120,21 @@ fn bracket_calib(dir: &Path) {
     println!("\nsample findings (up to 20) with delimiter inventories:");
     let mut samples: Vec<&Finding> = findings.iter().collect();
     samples.sort_by(|a, b| {
-        b.score.unwrap_or(0.0).partial_cmp(&a.score.unwrap_or(0.0)).unwrap()
+        b.score
+            .unwrap_or(0.0)
+            .partial_cmp(&a.score.unwrap_or(0.0))
+            .unwrap()
     });
     for f in samples.iter().take(20) {
         let text = target.text(f.key_idx);
         let glyph = f.range.slice(text);
         let (measure, window, majority, total) = match &f.args {
-            Some(FindingArgs::BracketWindow { measure, window, majority, total }) => {
-                (*measure, window, *majority, *total)
-            }
+            Some(FindingArgs::BracketWindow {
+                measure,
+                window,
+                majority,
+                total,
+            }) => (*measure, window, *majority, *total),
             _ => continue,
         };
         let kind = match measure {
@@ -1125,7 +1170,10 @@ fn punct_calib(dir: &Path) {
     let target = load_corpus(dir);
     eprintln!("{} verses", target.len());
     let rule = PunctuationAdjacencyAnomaly {
-        cfg: PunctuationAdjacencyConfig { emit_score_min: 0.0, ..Default::default() },
+        cfg: PunctuationAdjacencyConfig {
+            emit_score_min: 0.0,
+            ..Default::default()
+        },
     };
     let t0 = std::time::Instant::now();
     let books = ssc_core::corpus::by_book(&target);
@@ -1186,7 +1234,8 @@ fn spacing_fleet_sweep(dir: &Path) {
             },
         };
         let books = ssc_core::corpus::by_book(map);
-        rule.judge(&rule.reduce(&books, None, None).0, &books, None, None).len()
+        rule.judge(&rule.reduce(&books, None, None).0, &books, None, None)
+            .len()
     };
 
     // Per-corpus: for each (k, rate) cell, the finding count. Reduce fleet in
@@ -1219,7 +1268,9 @@ fn spacing_fleet_sweep(dir: &Path) {
     }
 
     println!("=== punct.spacing-anomaly fleet knee/floor sweep (floor 0.5, z 1.96) ===");
-    println!("production per-side (left/right) rule; cells = total fleet findings (corpora with ≥1)");
+    println!(
+        "production per-side (left/right) rule; cells = total fleet findings (corpora with ≥1)"
+    );
     print!("      {:>6}", "k\\rate");
     for &rate in RATES {
         print!("  {:>14}", format!("{rate:.0}/10k"));
@@ -1267,7 +1318,10 @@ fn spacing_fleet_sweep(dir: &Path) {
 fn report_scored(name: &str, target: &Corpus, findings: &[Finding]) {
     println!("\n{name}: {} scored sites (floor 0)", findings.len());
     for floor in [0.5_f32, 0.7, 0.9, 0.99] {
-        let n = findings.iter().filter(|f| f.score.unwrap_or(0.0) >= floor).count();
+        let n = findings
+            .iter()
+            .filter(|f| f.score.unwrap_or(0.0) >= floor)
+            .count();
         println!("  ≥ {floor:>4}: {n}");
     }
     // 10-bucket histogram of evidence scores — shows the sub-floor mass.
@@ -1283,7 +1337,12 @@ fn report_scored(name: &str, target: &Corpus, findings: &[Finding]) {
         println!("    [{lo:.1},{:.1}) {n:>6} {bar}", lo + 0.1);
     }
     let mut by_score: Vec<&Finding> = findings.iter().collect();
-    by_score.sort_by(|a, b| b.score.unwrap_or(0.0).partial_cmp(&a.score.unwrap_or(0.0)).unwrap());
+    by_score.sort_by(|a, b| {
+        b.score
+            .unwrap_or(0.0)
+            .partial_cmp(&a.score.unwrap_or(0.0))
+            .unwrap()
+    });
     println!("  top 10 by score:");
     print_scored(target, by_score.iter().take(10).copied());
     println!("  bottom 5 by score:");
@@ -1368,8 +1427,12 @@ fn rarity_abs(minority: u64, k: f64) -> f64 {
 
 /// A site's two channel scores at knee `k` (0 where the channel is absent).
 fn site_scores(s: &SiteEval, k: f64) -> (f64, f64) {
-    let intr = s.intrinsic.map_or(0.0, |f| f.dominance * rarity_abs(f.minority, k));
-    let pos = s.positional.map_or(0.0, |f| f.dominance * rarity_abs(f.minority, k));
+    let intr = s
+        .intrinsic
+        .map_or(0.0, |f| f.dominance * rarity_abs(f.minority, k));
+    let pos = s
+        .positional
+        .map_or(0.0, |f| f.dominance * rarity_abs(f.minority, k));
     (intr, pos)
 }
 
@@ -1513,15 +1576,21 @@ fn analyze_casing(id: String, map: &Corpus) -> CasingCorpus {
 
         // Anchor capture.
         if anchor_corpus
-            && ANCHORS.iter().any(|&(ac, asid, aw)| ac == id && asid == map.key(s.key_idx) && aw == word)
+            && ANCHORS
+                .iter()
+                .any(|&(ac, asid, aw)| ac == id && asid == map.key(s.key_idx) && aw == word)
         {
             anchors.push(AnchorHit {
                 corpus: id.clone(),
                 sid: map.key(s.key_idx).to_string(),
                 word,
                 quad,
-                intr: s.intrinsic.map(|f| (f.dominance, f.minority, f.opportunities)),
-                pos: s.positional.map(|f| (f.dominance, f.minority, f.opportunities)),
+                intr: s
+                    .intrinsic
+                    .map(|f| (f.dominance, f.minority, f.opportunities)),
+                pos: s
+                    .positional
+                    .map(|f| (f.dominance, f.minority, f.opportunities)),
             });
         }
     }
@@ -1544,8 +1613,17 @@ fn analyze_casing(id: String, map: &Corpus) -> CasingCorpus {
 
 /// ~24 chars of lead-in plus the flagged word, whitespace flattened.
 fn casing_ctx(text: &str, start: usize, end: usize) -> String {
-    let ctx_start = text[..start].char_indices().rev().nth(23).map(|(i, _)| i).unwrap_or(0);
-    let ctx_end = text[end..].char_indices().nth(24).map(|(i, _)| end + i).unwrap_or(text.len());
+    let ctx_start = text[..start]
+        .char_indices()
+        .rev()
+        .nth(23)
+        .map(|(i, _)| i)
+        .unwrap_or(0);
+    let ctx_end = text[end..]
+        .char_indices()
+        .nth(24)
+        .map(|(i, _)| end + i)
+        .unwrap_or(text.len());
     text[ctx_start..ctx_end].replace(['\t', '\n'], " ")
 }
 
@@ -1585,7 +1663,9 @@ fn print_casing_samples(samples: &[&CasingSample]) {
             s.sid,
             s.quad,
             s.word,
-            s.glyph.map(|c| format!("{c:?}")).unwrap_or_else(|| "^".to_string()),
+            s.glyph
+                .map(|c| format!("{c:?}"))
+                .unwrap_or_else(|| "^".to_string()),
             s.dom,
             s.minority,
             s.opps,
@@ -1674,7 +1754,10 @@ fn casing_fleet(dir: &Path) {
         }
     }
 
-    println!("=== CASING TWO-FACTOR (ADR 0051) — fleet aggregate ({} corpora) ===", corpora.len());
+    println!(
+        "=== CASING TWO-FACTOR (ADR 0051) — fleet aggregate ({} corpora) ===",
+        corpora.len()
+    );
     println!(
         "\n-- reference setting (k=32, floor 0.95) --\n  surfaced: {}  (intrinsic {ref_i}, positional {ref_p}, both {ref_b})  across {corpora_with_ref} corpora",
         ref_i + ref_p + ref_b
@@ -1696,9 +1779,19 @@ fn casing_fleet(dir: &Path) {
         let affected = counts.len() as u32;
         counts.sort_unstable_by(|a, b| b.cmp(a));
         let top5: u64 = counts.iter().take(5).sum();
-        (total, affected, if total > 0 { top5 as f64 / total as f64 } else { 0.0 })
+        (
+            total,
+            affected,
+            if total > 0 {
+                top5 as f64 / total as f64
+            } else {
+                0.0
+            },
+        )
     };
-    println!("\n-- packet 1: per-channel surfaced volume | total (affected corpora; top-5 share) --");
+    println!(
+        "\n-- packet 1: per-channel surfaced volume | total (affected corpora; top-5 share) --"
+    );
     for (chan, name) in [(0u8, "intrinsic"), (1, "positional"), (2, "both-quadrant")] {
         println!("  [{name}]  rows = floor, cols = k");
         print!("    {:>6}", "fl\\k");
@@ -1720,19 +1813,38 @@ fn casing_fleet(dir: &Path) {
     let all_anchors: Vec<&AnchorHit> = corpora.iter().flat_map(|c| c.anchors.iter()).collect();
     println!("\n-- packet 2: anchor fates — factors, score@k, alive floors at k=32 --");
     for &(ac, asid, aw) in ANCHORS {
-        match all_anchors.iter().find(|h| h.corpus == ac && h.sid == asid && h.word == aw) {
+        match all_anchors
+            .iter()
+            .find(|h| h.corpus == ac && h.sid == asid && h.word == aw)
+        {
             Some(h) => {
                 let (s8, s16, s32) = (h.score(8.0), h.score(16.0), h.score(32.0));
-                let alive: Vec<String> = PACKET_FLOORS.iter().filter(|&&fl| s32 >= fl).map(|fl| format!("{fl:.2}")).collect();
-                let ifac = h.intr.map(|(d, m, o)| format!("i(d{d:.3} m{m} o{o})")).unwrap_or_default();
-                let pfac = h.pos.map(|(d, m, o)| format!("p(d{d:.3} m{m} o{o})")).unwrap_or_default();
+                let alive: Vec<String> = PACKET_FLOORS
+                    .iter()
+                    .filter(|&&fl| s32 >= fl)
+                    .map(|fl| format!("{fl:.2}"))
+                    .collect();
+                let ifac = h
+                    .intr
+                    .map(|(d, m, o)| format!("i(d{d:.3} m{m} o{o})"))
+                    .unwrap_or_default();
+                let pfac = h
+                    .pos
+                    .map(|(d, m, o)| format!("p(d{d:.3} m{m} o{o})"))
+                    .unwrap_or_default();
                 println!(
                     "  {ac:<11} {asid:<9} {aw:<11} {:<11} {ifac} {pfac}  s@8={s8:.3} @16={s16:.3} @32={s32:.3}  alive≥[{}]",
                     h.quad,
-                    if alive.is_empty() { "dead@0.80+".to_string() } else { alive.join(",") },
+                    if alive.is_empty() {
+                        "dead@0.80+".to_string()
+                    } else {
+                        alive.join(",")
+                    },
                 );
             }
-            None => println!("  {ac:<11} {asid:<9} {aw:<11} — not captured (not a lowercase anomaly candidate)"),
+            None => println!(
+                "  {ac:<11} {asid:<9} {aw:<11} — not captured (not a lowercase anomaly candidate)"
+            ),
         }
     }
 
@@ -1758,9 +1870,24 @@ fn casing_fleet(dir: &Path) {
 
     // Samples from major-language corpora.
     const MAJOR: &[&str] = &[
-        "eng-web", "eng-kjv", "engwebster", "WA-en-ulb", "spaRV1909", "WA-es-419-ulb",
-        "fraLSG", "WA-fr-ulb", "porblt", "ita1885", "ron1924", "deu1912", "swhulb",
-        "WA-sw-ulb", "ind", "nld", "vie1934", "tglulb",
+        "eng-web",
+        "eng-kjv",
+        "engwebster",
+        "WA-en-ulb",
+        "spaRV1909",
+        "WA-es-419-ulb",
+        "fraLSG",
+        "WA-fr-ulb",
+        "porblt",
+        "ita1885",
+        "ron1924",
+        "deu1912",
+        "swhulb",
+        "WA-sw-ulb",
+        "ind",
+        "nld",
+        "vie1934",
+        "tglulb",
     ];
     println!("\n-- surfaced samples from major-language corpora (ref knee) --");
     for c in &corpora {
@@ -1769,7 +1896,14 @@ fn casing_fleet(dir: &Path) {
         }
         let mut s: Vec<&CasingSample> = c.samples.iter().collect();
         s.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
-        println!("  [{}] surfaced {} (i {}, p {}, b {}):", c.id, c.ref_intrinsic + c.ref_positional + c.ref_both, c.ref_intrinsic, c.ref_positional, c.ref_both);
+        println!(
+            "  [{}] surfaced {} (i {}, p {}, b {}):",
+            c.id,
+            c.ref_intrinsic + c.ref_positional + c.ref_both,
+            c.ref_intrinsic,
+            c.ref_positional,
+            c.ref_both
+        );
         print_casing_samples(&s.iter().take(3).copied().collect::<Vec<_>>());
     }
 }
@@ -1790,7 +1924,9 @@ fn casing_size(dir: &Path) {
         .filter(|p| p.extension().is_some_and(|x| x == "txt"))
         .collect();
     files.sort();
-    let rule = SentenceInitialLowercase { cfg: CasingConfig::default() };
+    let rule = SentenceInitialLowercase {
+        cfg: CasingConfig::default(),
+    };
     let mut rows: Vec<(String, usize)> = files
         .par_iter()
         .map(|path| {
@@ -1806,7 +1942,12 @@ fn casing_size(dir: &Path) {
     let n = rows.len();
     let pct = |q: f64| rows[((n - 1) as f64 * q) as usize].1;
     println!("casing CasingStats JSON size over {n} corpora:");
-    println!("  p50 {} B  p90 {} B  max {} B", pct(0.5), pct(0.9), pct(1.0));
+    println!(
+        "  p50 {} B  p90 {} B  max {} B",
+        pct(0.5),
+        pct(0.9),
+        pct(1.0)
+    );
     println!("  largest: {} ({} B)", rows[n - 1].0, rows[n - 1].1);
     for id in ["eng-kjv", "deu1912", "swhulb", "vie1934"] {
         if let Some((_, b)) = rows.iter().find(|r| r.0 == id) {
@@ -1828,8 +1969,7 @@ const GLYPH_HIST_LABELS: [&str; 8] = ["1", "2", "3-4", "5-8", "9-16", "17-32", "
 // Round 3: alphabet closure is now a LETTER-SCALAR share (hapax L-scalar types /
 // all L-scalar occurrences), which is far smaller than the round-2 word-hapax
 // share, so the self-disable sweep uses finer low-end steps: 0.001% … 2%.
-const CLOSURE_SCALAR_SHARES: [f64; 8] =
-    [0.00001, 0.0001, 0.0005, 0.001, 0.002, 0.005, 0.01, 0.02];
+const CLOSURE_SCALAR_SHARES: [f64; 8] = [0.00001, 0.0001, 0.0005, 0.001, 0.002, 0.005, 0.01, 0.02];
 // Round 3: knee ≤1–5 was conjecture; sweep ≤1 through ≤8 to see where the
 // retained set stops being flat.
 const LETTER_RARE_MAX_COUNTS: [u64; 8] = [1, 2, 3, 4, 5, 6, 7, 8];
@@ -1970,7 +2110,11 @@ fn letter_word_shapes(map: &Corpus) -> BTreeMap<String, WordShape> {
                     // the next letter token sees (cursor deliberately unmoved).
                     continue;
                 }
-                glyph_advance_gap(&text[cursor..token.span.start as usize], &mut pending, &mut prev_letter);
+                glyph_advance_gap(
+                    &text[cursor..token.span.start as usize],
+                    &mut pending,
+                    &mut prev_letter,
+                );
                 let mut word_chars = word.chars();
                 let first = word_chars.next().unwrap();
                 // Titlecase shape: uppercase first letter AND >=1 following
@@ -1981,7 +2125,10 @@ fn letter_word_shapes(map: &Corpus) -> BTreeMap<String, WordShape> {
                 let forced = book_initial || matches!(pending.take(), Some(false));
                 book_initial = false;
                 shapes.insert(word.to_lowercase(), WordShape { titlecase, forced });
-                prev_letter = word.chars().next_back().is_some_and(|c| class_of(c).is_alphabetic());
+                prev_letter = word
+                    .chars()
+                    .next_back()
+                    .is_some_and(|c| class_of(c).is_alphabetic());
                 cursor = token.span.end as usize;
             }
             glyph_advance_gap(&text[cursor..], &mut pending, &mut prev_letter);
@@ -2011,7 +2158,9 @@ fn letter_round2(
     }
     let mut rare = Vec::new();
     for (&glyph, &count) in inventory {
-        if glyph_lane(glyph) != Some(GlyphLane::Letter) || count > *LETTER_RARE_MAX_COUNTS.last().unwrap() {
+        if glyph_lane(glyph) != Some(GlyphLane::Letter)
+            || count > *LETTER_RARE_MAX_COUNTS.last().unwrap()
+        {
             continue;
         }
         let Some(words) = glyph_words.get(&glyph) else {
@@ -2028,7 +2177,9 @@ fn letter_round2(
         let dominant = words.iter().max_by_key(|(_, occurrences)| **occurrences);
         let (lexical_word, lexical_word_tokens) = match dominant {
             Some((word, &occurrences))
-                if accounted == count && occurrences == count && word_tokens.get(word).copied().unwrap_or(0) >= 2 =>
+                if accounted == count
+                    && occurrences == count
+                    && word_tokens.get(word).copied().unwrap_or(0) >= 2 =>
             {
                 (Some(word.clone()), word_tokens[word])
             }
@@ -2219,7 +2370,10 @@ impl From<GlyphCorpus> for GlyphFleetSummary {
     }
 }
 
-fn glyph_candidates(inventory: &BTreeMap<char, u64>, lane_totals: &[u64; 4]) -> Vec<GlyphCandidate> {
+fn glyph_candidates(
+    inventory: &BTreeMap<char, u64>,
+    lane_totals: &[u64; 4],
+) -> Vec<GlyphCandidate> {
     inventory
         .iter()
         .filter_map(|(&glyph, &count)| {
@@ -2233,15 +2387,21 @@ fn glyph_candidates(inventory: &BTreeMap<char, u64>, lane_totals: &[u64; 4]) -> 
         .collect()
 }
 
-fn glyph_sweep(candidates: &[GlyphCandidate], score: impl Fn(GlyphCandidate) -> f64) -> [GlyphSweep; 4] {
-    candidates.iter().copied().fold([GlyphSweep::default(); 4], |mut out, candidate| {
-        if score(candidate) >= GLYPH_SWEEP_FLOOR {
-            let lane = &mut out[candidate.lane.index()];
-            lane.types += 1;
-            lane.sites += candidate.count;
-        }
-        out
-    })
+fn glyph_sweep(
+    candidates: &[GlyphCandidate],
+    score: impl Fn(GlyphCandidate) -> f64,
+) -> [GlyphSweep; 4] {
+    candidates
+        .iter()
+        .copied()
+        .fold([GlyphSweep::default(); 4], |mut out, candidate| {
+            if score(candidate) >= GLYPH_SWEEP_FLOOR {
+                let lane = &mut out[candidate.lane.index()];
+                lane.types += 1;
+                lane.sites += candidate.count;
+            }
+            out
+        })
 }
 
 fn glyph_sweep_total(sweep: &[GlyphSweep; 4]) -> GlyphSweep {
@@ -2253,8 +2413,17 @@ fn glyph_sweep_total(sweep: &[GlyphSweep; 4]) -> GlyphSweep {
 }
 
 fn glyph_context(text: &str, start: usize, end: usize) -> String {
-    let before = text[..start].char_indices().rev().nth(22).map(|(i, _)| i).unwrap_or(0);
-    let after = text[end..].char_indices().nth(22).map(|(i, _)| end + i).unwrap_or(text.len());
+    let before = text[..start]
+        .char_indices()
+        .rev()
+        .nth(22)
+        .map(|(i, _)| i)
+        .unwrap_or(0);
+    let after = text[end..]
+        .char_indices()
+        .nth(22)
+        .map(|(i, _)| end + i)
+        .unwrap_or(text.len());
     text[before..after].replace(['\t', '\n'], " ")
 }
 
@@ -2271,14 +2440,21 @@ fn glyph_samples(id: &str, map: &Corpus, candidates: &[GlyphCandidate]) -> Vec<G
 
     let mut wanted = BTreeMap::new();
     for lane in GlyphLane::ALL {
-        for candidate in ranked.iter().copied().filter(|candidate| candidate.lane == lane).take(6) {
+        for candidate in ranked
+            .iter()
+            .copied()
+            .filter(|candidate| candidate.lane == lane)
+            .take(6)
+        {
             wanted.insert(candidate.glyph, candidate);
         }
     }
     let mut samples = Vec::new();
     for (sid, text) in map.keys().iter().zip(map.texts()) {
         for (start, glyph) in text.char_indices() {
-            let Some(candidate) = wanted.remove(&glyph) else { continue };
+            let Some(candidate) = wanted.remove(&glyph) else {
+                continue;
+            };
             samples.push(GlyphSample {
                 corpus: id.to_string(),
                 sid: sid.to_string(),
@@ -2323,7 +2499,10 @@ fn glyph_retained_samples(
         .iter()
         .filter(|c| c.count <= RETAINED_SAMPLE_KNEE && c.lexical_word.is_none())
     {
-        wanted.insert(candidate.glyph, (candidate.count, candidate.proper_noun_shape));
+        wanted.insert(
+            candidate.glyph,
+            (candidate.count, candidate.proper_noun_shape),
+        );
     }
     let (mut proper, mut retained) = (Vec::new(), Vec::new());
     for (sid, text) in map.keys().iter().zip(map.texts()) {
@@ -2331,7 +2510,9 @@ fn glyph_retained_samples(
             break;
         }
         for (start, glyph) in text.char_indices() {
-            let Some((count, is_proper)) = wanted.remove(&glyph) else { continue };
+            let Some((count, is_proper)) = wanted.remove(&glyph) else {
+                continue;
+            };
             let sample = GlyphSample {
                 corpus: id.to_string(),
                 sid: sid.to_string(),
@@ -2378,7 +2559,9 @@ fn analyze_glyphs(id: String, map: &Corpus) -> GlyphCorpus {
                 && let Some(base) = previous
                 && !class_of(base).is_mark()
             {
-                *decomposed_pairs.entry(format!("{base}{glyph}")).or_default() += 1;
+                *decomposed_pairs
+                    .entry(format!("{base}{glyph}"))
+                    .or_default() += 1;
             }
             previous = Some(glyph);
         }
@@ -2390,7 +2573,10 @@ fn analyze_glyphs(id: String, map: &Corpus) -> GlyphCorpus {
             }
             let key = word.to_lowercase();
             *letter_words.entry(key.clone()).or_default() += 1;
-            for glyph in word.chars().filter(|&glyph| glyph_lane(glyph) == Some(GlyphLane::Letter)) {
+            for glyph in word
+                .chars()
+                .filter(|&glyph| glyph_lane(glyph) == Some(GlyphLane::Letter))
+            {
                 *letter_glyph_words
                     .entry(glyph)
                     .or_default()
@@ -2411,7 +2597,11 @@ fn analyze_glyphs(id: String, map: &Corpus) -> GlyphCorpus {
         .collect();
     let rate_sweeps = GLYPH_RATE_PER_10K
         .iter()
-        .map(|&rate| glyph_sweep(&candidates, |c| glyph_rarity_rate(c.count, c.lane_total, rate)))
+        .map(|&rate| {
+            glyph_sweep(&candidates, |c| {
+                glyph_rarity_rate(c.count, c.lane_total, rate)
+            })
+        })
         .collect();
     let samples = glyph_samples(&id, map, &candidates);
     let shapes = letter_word_shapes(map);
@@ -2440,7 +2630,9 @@ fn glyph_label(glyph: char) -> String {
 }
 
 fn print_glyph_sweeps(abs: &[[GlyphSweep; 4]], rate: &[[GlyphSweep; 4]]) {
-    println!("\nrecurrence sweeps (rows surface raw rarity >= {GLYPH_SWEEP_FLOOR:.2}; types / sites):");
+    println!(
+        "\nrecurrence sweeps (rows surface raw rarity >= {GLYPH_SWEEP_FLOOR:.2}; types / sites):"
+    );
     let describe = |sweep: &[GlyphSweep; 4]| {
         let total = glyph_sweep_total(sweep);
         let lanes = GlyphLane::ALL
@@ -2517,9 +2709,17 @@ fn add_letter_round2_tally(total: &mut LetterRound2Tally, add: LetterRound2Tally
     add_glyph_sweep(&mut total.retained, add.retained);
 }
 
-fn letter_round2_tally(round2: &LetterRound2, max_count: u64, closed_alphabet: bool) -> LetterRound2Tally {
+fn letter_round2_tally(
+    round2: &LetterRound2,
+    max_count: u64,
+    closed_alphabet: bool,
+) -> LetterRound2Tally {
     let mut out = LetterRound2Tally::default();
-    for candidate in round2.rare.iter().filter(|candidate| candidate.count <= max_count) {
+    for candidate in round2
+        .rare
+        .iter()
+        .filter(|candidate| candidate.count <= max_count)
+    {
         let candidate_sweep = GlyphSweep {
             types: 1,
             sites: candidate.count,
@@ -2569,8 +2769,16 @@ fn print_letter_round2_single(round2: &LetterRound2) {
             tally.retained.sites,
         );
     }
-    let lexical: Vec<_> = round2.rare.iter().filter(|candidate| candidate.lexical_word.is_some()).collect();
-    println!("  lexical-concentration discounts (first {} of {}):", lexical.len().min(20), lexical.len());
+    let lexical: Vec<_> = round2
+        .rare
+        .iter()
+        .filter(|candidate| candidate.lexical_word.is_some())
+        .collect();
+    println!(
+        "  lexical-concentration discounts (first {} of {}):",
+        lexical.len().min(20),
+        lexical.len()
+    );
     for candidate in lexical.iter().take(20) {
         println!(
             "    {:<15} count={} word={} ({} tokens)",
@@ -2580,8 +2788,16 @@ fn print_letter_round2_single(round2: &LetterRound2) {
             candidate.lexical_word_tokens,
         );
     }
-    let proper: Vec<_> = round2.rare.iter().filter(|candidate| candidate.proper_noun_shape).collect();
-    println!("  proper-noun-shape discounts (first {} of {}):", proper.len().min(20), proper.len());
+    let proper: Vec<_> = round2
+        .rare
+        .iter()
+        .filter(|candidate| candidate.proper_noun_shape)
+        .collect();
+    println!(
+        "  proper-noun-shape discounts (first {} of {}):",
+        proper.len().min(20),
+        proper.len()
+    );
     for candidate in proper.iter().take(20) {
         println!(
             "    {:<15} count={} (titlecase-shaped hapax word at a non-forced position)",
@@ -2592,7 +2808,10 @@ fn print_letter_round2_single(round2: &LetterRound2) {
 }
 
 fn glyph_single_report(corpus: &GlyphCorpus) {
-    println!("=== RARE-GLYPH SPIKE: {} ({} verses) ===", corpus.id, corpus.verses);
+    println!(
+        "=== RARE-GLYPH SPIKE: {} ({} verses) ===",
+        corpus.id, corpus.verses
+    );
     println!(
         "raw scalar inventory: {} occurrences / {} distinct scalars",
         corpus.scalar_count,
@@ -2600,8 +2819,17 @@ fn glyph_single_report(corpus: &GlyphCorpus) {
     );
     println!("candidate lane opportunities:");
     for lane in GlyphLane::ALL {
-        let types = corpus.inventory.keys().filter(|&&c| glyph_lane(c) == Some(lane)).count();
-        println!("  {}  {:>10} occurrences / {:>5} glyph types", lane.label(), corpus.lane_totals[lane.index()], types);
+        let types = corpus
+            .inventory
+            .keys()
+            .filter(|&&c| glyph_lane(c) == Some(lane))
+            .count();
+        println!(
+            "  {}  {:>10} occurrences / {:>5} glyph types",
+            lane.label(),
+            corpus.lane_totals[lane.index()],
+            types
+        );
     }
     print_glyph_histogram(&corpus.count_hist);
     print_glyph_sweeps(&corpus.abs_sweeps, &corpus.rate_sweeps);
@@ -2609,8 +2837,15 @@ fn glyph_single_report(corpus: &GlyphCorpus) {
 
     let mut candidates = glyph_candidates(&corpus.inventory, &corpus.lane_totals);
     candidates.sort_by_key(|c| (c.count, std::cmp::Reverse(c.lane_total), c.glyph));
-    println!("\nrarest candidate glyphs (first {} of {}):", candidates.len().min(120), candidates.len());
-    println!("  {:<15} {:<5} {:>8} {:>12} {:>14}", "glyph", "lane", "count", "lane total", "rate /10k");
+    println!(
+        "\nrarest candidate glyphs (first {} of {}):",
+        candidates.len().min(120),
+        candidates.len()
+    );
+    println!(
+        "  {:<15} {:<5} {:>8} {:>12} {:>14}",
+        "glyph", "lane", "count", "lane total", "rate /10k"
+    );
     for candidate in candidates.iter().take(120) {
         let rate = candidate.count as f64 * 10_000.0 / candidate.lane_total.max(1) as f64;
         println!(
@@ -2661,7 +2896,10 @@ fn glyph_fleet(dir: &Path) {
     let mut noisiest: Vec<(String, [u64; 4], [u64; 4], u64)> = Vec::new();
     let mut samples = Vec::new();
     let mut decomposed: BTreeMap<String, (u64, u64)> = BTreeMap::new();
-    let mut round2 = vec![vec![LetterRound2Tally::default(); LETTER_RARE_MAX_COUNTS.len()]; CLOSURE_SCALAR_SHARES.len()];
+    let mut round2 = vec![
+        vec![LetterRound2Tally::default(); LETTER_RARE_MAX_COUNTS.len()];
+        CLOSURE_SCALAR_SHARES.len()
+    ];
     let mut open_corpora = vec![0u64; CLOSURE_SCALAR_SHARES.len()];
     // (id, L scalars, hapax L scalars, scalar closure ppm, word-hapax share ppm)
     let mut closure_rows: Vec<(String, u64, u64, u64, u64)> = Vec::new();
@@ -2690,7 +2928,10 @@ fn glyph_fleet(dir: &Path) {
     for corpus in corpora {
         for lane in GlyphLane::ALL {
             lane_totals[lane.index()] += corpus.lane_totals[lane.index()];
-            for (sum, value) in count_hist[lane.index()].iter_mut().zip(corpus.count_hist[lane.index()]) {
+            for (sum, value) in count_hist[lane.index()]
+                .iter_mut()
+                .zip(corpus.count_hist[lane.index()])
+            {
                 *sum += value;
             }
         }
@@ -2779,7 +3020,9 @@ fn glyph_fleet(dir: &Path) {
     print_glyph_sweeps(&abs_sweeps, &rate_sweeps);
 
     println!("\nround 3 L-only stack (base is the small absolute knee; all counts are sites):");
-    println!("  closure threshold is hapax L-scalar types / all L-scalar occurrences (letter-SCALAR closure).");
+    println!(
+        "  closure threshold is hapax L-scalar types / all L-scalar occurrences (letter-SCALAR closure)."
+    );
     for (threshold_index, &threshold) in CLOSURE_SCALAR_SHARES.iter().enumerate() {
         println!(
             "  scalar closure <= {:.4}%: {}/{} corpora open the L lane",
@@ -2841,7 +3084,11 @@ fn glyph_fleet(dir: &Path) {
         println!(
             "  {id:<20} {} -> word {word:?} ({word_tokens} tokens){}",
             glyph_label(*glyph),
-            if upper { "  [uppercase → folds to repeated lowercase]" } else { "" },
+            if upper {
+                "  [uppercase → folds to repeated lowercase]"
+            } else {
+                ""
+            },
         );
     }
 
@@ -2921,7 +3168,11 @@ fn glyph_fleet(dir: &Path) {
             .cloned()
             .collect();
         lane_samples.sort_by_key(|sample| {
-            (std::cmp::Reverse(sample.lane_total), sample.count, sample.glyph)
+            (
+                std::cmp::Reverse(sample.lane_total),
+                sample.count,
+                sample.glyph,
+            )
         });
         println!("  [{}]", lane.label());
         print_glyph_samples(&lane_samples.into_iter().take(12).collect::<Vec<_>>());
@@ -2995,7 +3246,12 @@ mod glyph_tests {
     }
 
     fn rare(corpus: &GlyphCorpus, glyph: char) -> &LetterRare {
-        corpus.letter_round2.rare.iter().find(|c| c.glyph == glyph).unwrap()
+        corpus
+            .letter_round2
+            .rare
+            .iter()
+            .find(|c| c.glyph == glyph)
+            .unwrap()
     }
 
     #[test]
@@ -3297,7 +3553,14 @@ fn signature_opportunities(text: &str, graphemes: &[ssc_core::grapheme::GSpan]) 
         } else {
             sig_categorize(graphemes[k + 1].slice(text))
         };
-        out.push(SigOpp { mark, left, right, left_seam, right_seam, mark_off: gs.start as usize });
+        out.push(SigOpp {
+            mark,
+            left,
+            right,
+            left_seam,
+            right_seam,
+            mark_off: gs.start as usize,
+        });
     }
     out
 }
@@ -3330,8 +3593,17 @@ fn push_capped(v: &mut Vec<SigSample>, s: SigSample, cap: usize) {
 }
 
 fn sig_context(text: &str, start: usize, end: usize) -> String {
-    let before = text[..start].char_indices().rev().nth(24).map(|(i, _)| i).unwrap_or(0);
-    let after = text[end..].char_indices().nth(24).map(|(i, _)| end + i).unwrap_or(text.len());
+    let before = text[..start]
+        .char_indices()
+        .rev()
+        .nth(24)
+        .map(|(i, _)| i)
+        .unwrap_or(0);
+    let after = text[end..]
+        .char_indices()
+        .nth(24)
+        .map(|(i, _)| end + i)
+        .unwrap_or(text.len());
     text[before..after].replace(['\t', '\n'], " ")
 }
 
@@ -3398,7 +3670,8 @@ fn analyze_signatures(id: String, map: &Corpus) -> SigCorpus {
     let mut ref_surfaced = 0u64;
     let mut abs_grid = vec![[0u64; SIG_FLOORS.len()]; SIG_ABS_KS.len()];
     let mut rate_grid = vec![[0u64; SIG_FLOORS.len()]; SIG_RATE_PER_10K.len()];
-    let (mut colon_num, mut cluster_tail, mut verse_edge) = ((0u64, 0u64), (0u64, 0u64), (0u64, 0u64));
+    let (mut colon_num, mut cluster_tail, mut verse_edge) =
+        ((0u64, 0u64), (0u64, 0u64), (0u64, 0u64));
     let mut digit_surfaced = 0u64;
 
     for counts in marks.values() {
@@ -3575,7 +3848,9 @@ fn print_sig_samples(samples: &[SigSample]) {
 
 fn print_sig_hist(hist: &[u64; 40]) {
     let total: u64 = hist.iter().sum();
-    println!("\nsignature-score histogram over all mark occurrences (ref knee k=32) — {total} occurrences:");
+    println!(
+        "\nsignature-score histogram over all mark occurrences (ref knee k=32) — {total} occurrences:"
+    );
     for (i, &n) in hist.iter().enumerate() {
         if n == 0 {
             continue;
@@ -3587,7 +3862,9 @@ fn print_sig_hist(hist: &[u64; 40]) {
 }
 
 fn print_sig_grids(abs: &[[u64; SIG_FLOORS.len()]], rate: &[[u64; SIG_FLOORS.len()]]) {
-    println!("\nsurfaced-occurrence volume sweep (cells = occurrences whose signature clears the floor):");
+    println!(
+        "\nsurfaced-occurrence volume sweep (cells = occurrences whose signature clears the floor):"
+    );
     let header = || {
         print!("    {:>8}", "knee");
         for fl in SIG_FLOORS {
@@ -3621,7 +3898,10 @@ fn silent_pct(pair: (u64, u64)) -> f64 {
 
 /// Detailed single-corpus signature report.
 fn signature_single_report(c: &SigCorpus) {
-    println!("=== ATTACHMENT-SIGNATURES SPIKE: {} ({} verses) ===", c.id, c.verses);
+    println!(
+        "=== ATTACHMENT-SIGNATURES SPIKE: {} ({} verses) ===",
+        c.id, c.verses
+    );
     println!(
         "separator-mark occurrences: {}  distinct marks: {}  digit share of scalars: {:.3}%",
         c.marks.values().map(|m| m.iter().sum::<u64>()).sum::<u64>(),
@@ -3687,7 +3967,10 @@ fn signature_regression(id: &str) {
     // Live rule at shipped defaults, floor 0 — every scored minority site, so we
     // can split by the shipped floor ourselves.
     let live = PunctuationSpacingAnomaly {
-        cfg: PunctuationSpacingConfig { emit_score_min: 0.0, ..Default::default() },
+        cfg: PunctuationSpacingConfig {
+            emit_score_min: 0.0,
+            ..Default::default()
+        },
     };
     let live_floor = f64::from(PunctuationSpacingConfig::default().emit_score_min);
     let findings = live.judge(&live.reduce(&books, None, None).0, &books, None, None);
@@ -3717,7 +4000,9 @@ fn signature_regression(id: &str) {
     let mut dropped = 0u64;
     let mut rows: Vec<String> = Vec::new();
     for f in &findings {
-        let Some(FindingArgs::SpacingConvention { mark, .. }) = f.args else { continue };
+        let Some(FindingArgs::SpacingConvention { mark, .. }) = f.args else {
+            continue;
+        };
         let live_score = f.score.unwrap_or(0.0) as f64;
         if live_score < live_floor {
             continue;
@@ -3731,8 +4016,12 @@ fn signature_regression(id: &str) {
         let mark_off = text[f.range.start as usize..f.range.end as usize]
             .find(mark)
             .map(|rel| f.range.start as usize + rel);
-        let Some(sig) = mark_off.and_then(|off| site_sig.get(&(key.to_string(), off)).copied()) else {
-            rows.push(format!("    {:<10} {:?} live={:.3} | (no signature match)", key, mark, live_score));
+        let Some(sig) = mark_off.and_then(|off| site_sig.get(&(key.to_string(), off)).copied())
+        else {
+            rows.push(format!(
+                "    {:<10} {:?} live={:.3} | (no signature match)",
+                key, mark, live_score
+            ));
             continue;
         };
         let (count, total, s) = sig_verdict(mark, sig);
@@ -3751,7 +4040,11 @@ fn signature_regression(id: &str) {
                 count,
                 total,
                 s,
-                if s >= SIG_REF_FLOOR { "KEPT" } else { "dropped" },
+                if s >= SIG_REF_FLOOR {
+                    "KEPT"
+                } else {
+                    "dropped"
+                },
             ));
         }
     }
@@ -3812,7 +4105,8 @@ fn signature_fleet(dir: &Path) {
     let mut digit_surfaced = 0u64;
     let mut abs_grid = vec![[0u64; SIG_FLOORS.len()]; SIG_ABS_KS.len()];
     let mut rate_grid = vec![[0u64; SIG_FLOORS.len()]; SIG_RATE_PER_10K.len()];
-    let (mut colon_num, mut cluster_tail, mut verse_edge) = ((0u64, 0u64), (0u64, 0u64), (0u64, 0u64));
+    let (mut colon_num, mut cluster_tail, mut verse_edge) =
+        ((0u64, 0u64), (0u64, 0u64), (0u64, 0u64));
     let mut focus: BTreeMap<char, [u64; SIG_CELLS]> = BTreeMap::new();
     let mut mark_occ_total = 0u64;
     // Noisiest-by-digit-context corpora (FP class), with digit share.
@@ -3869,7 +4163,9 @@ fn signature_fleet(dir: &Path) {
     println!("total separator-mark occurrences: {mark_occ_total}");
 
     println!("\n-- fleet-summed per-mark signature distributions (major marks; top 6) --");
-    println!("   (raw counts summed across corpora mix conventions — a shape check, not a per-corpus verdict)");
+    println!(
+        "   (raw counts summed across corpora mix conventions — a shape check, not a per-corpus verdict)"
+    );
     for &mark in SIG_FOCUS_MARKS {
         if let Some(counts) = focus.get(&mark) {
             print_mark_dist(mark, counts, 6);
@@ -3894,7 +4190,9 @@ fn signature_fleet(dir: &Path) {
 
     print_sig_grids(&abs_grid, &rate_grid);
     print_sig_hist(&ref_hist);
-    println!("\nreference cell (k=32, floor 0.5): surfaced {ref_surfaced} occurrences ({digit_surfaced} digit-context)");
+    println!(
+        "\nreference cell (k=32, floor 0.5): surfaced {ref_surfaced} occurrences ({digit_surfaced} digit-context)"
+    );
 
     println!("\n-- dissolved special cases (fleet; ref cell; silent = learned below floor) --");
     println!(
@@ -3938,13 +4236,19 @@ fn signature_fleet(dir: &Path) {
             break;
         }
     }
-    println!("\n-- new-coverage samples: after-side anomalies the live rule cannot see (up to 24) --");
+    println!(
+        "\n-- new-coverage samples: after-side anomalies the live rule cannot see (up to 24) --"
+    );
     print_sig_samples(&nc_diverse);
 
     // False-positive focus: noisiest digit-context corpora + a sample.
     digit_rows.sort_by_key(|b| std::cmp::Reverse(b.1));
-    println!("\n-- false-positive focus: rare-CONTEXT signatures (digit side), noisiest corpora --");
-    println!("   digit_surfaced = surfaced occurrences with a digit neighbour; a low digit share means the context is rare, not the mark misplaced");
+    println!(
+        "\n-- false-positive focus: rare-CONTEXT signatures (digit side), noisiest corpora --"
+    );
+    println!(
+        "   digit_surfaced = surfaced occurrences with a digit neighbour; a low digit share means the context is rare, not the mark misplaced"
+    );
     for (id, n, share) in digit_rows.iter().take(15) {
         println!("  {id:<24} digit-context surfaced {n:>6}  (digit scalars {share:.3}% of corpus)");
     }
@@ -4031,7 +4335,10 @@ mod signature_tests {
         // prediction). Both are ordinary signatures, no special case.
         assert_eq!(
             sigs("what?! yes"),
-            vec![('?', Ctx::Letter, Ctx::Punct), ('!', Ctx::Punct, Ctx::Space)]
+            vec![
+                ('?', Ctx::Letter, Ctx::Punct),
+                ('!', Ctx::Punct, Ctx::Space)
+            ]
         );
     }
 
@@ -4072,7 +4379,10 @@ mod signature_tests {
         // dominant one scores ~0.
         // 100 occurrences: 99 in signature A, 1 in signature B.
         assert!(sig_score_abs(1, 100, 32.0) > 0.9, "rare minority is high");
-        assert!(sig_score_abs(99, 100, 32.0) < 0.1, "dominant signature is silent");
+        assert!(
+            sig_score_abs(99, 100, 32.0) < 0.1,
+            "dominant signature is silent"
+        );
         // A recurring minority is discounted toward a second convention.
         assert!(sig_score_abs(40, 100, 32.0) < sig_score_abs(1, 100, 32.0));
     }
@@ -4107,85 +4417,165 @@ fn deviate(c: &ClassTrust) -> f64 {
 
 /// Detailed single-corpus terminal-strength report.
 fn terminal_single(c: &TermCorpus) {
-    println!("=== terminal_strength SPIKE: {} ({} verses, {}) ===",
-        c.id, c.verses, if c.bicameral { "bicameral" } else { "caseless" });
-    println!("jurors (word-starts ≥10): {}  dropped classes (<30 events): {}",
-        c.trust.n_jurors, c.trust.dropped_classes);
+    println!(
+        "=== terminal_strength SPIKE: {} ({} verses, {}) ===",
+        c.id,
+        c.verses,
+        if c.bicameral { "bicameral" } else { "caseless" }
+    );
+    println!(
+        "jurors (word-starts ≥10): {}  dropped classes (<30 events): {}",
+        c.trust.n_jurors, c.trust.dropped_classes
+    );
     if let Some(r) = c.trust.reference {
         println!("agreement reference class: {}", r.label());
     }
     println!("\nper-class witnesses (sorted by trust_B):");
-    println!("  {:<8} {:>7} {:>7} {:>6} {:>6} {:>6} {:>6} {:>7} {:>7} {:>7}",
-        "class", "events", "s_case", "dev", "diff", "agree", "asym", "sR_A", "trustA", "trustB");
+    println!(
+        "  {:<8} {:>7} {:>7} {:>6} {:>6} {:>6} {:>6} {:>7} {:>7} {:>7}",
+        "class", "events", "s_case", "dev", "diff", "agree", "asym", "sR_A", "trustA", "trustB"
+    );
     let mut cls: Vec<&ClassTrust> = c.trust.classes.values().collect();
     cls.sort_by(|a, b| b.trust_b.partial_cmp(&a.trust_b).unwrap());
     for t in cls {
-        println!("  {:<8} {:>7} {:>7.3} {:>6.1} {:>6.3} {:>6.3} {:>6.3} {:>7.3} {:>7.3} {:>7.3}",
-            t.class.label(), t.events,
+        println!(
+            "  {:<8} {:>7} {:>7.3} {:>6.1} {:>6.3} {:>6.3} {:>6.3} {:>7.3} {:>7.3} {:>7.3}",
+            t.class.label(),
+            t.events,
             if t.s_case_seen { t.s_case } else { f64::NAN },
-            deviate(t), t.diff, t.agree, t.asym, t.s_reshuffle_a, t.trust_a, t.trust_b);
+            deviate(t),
+            t.diff,
+            t.agree,
+            t.asym,
+            t.s_reshuffle_a,
+            t.trust_a,
+            t.trust_b
+        );
     }
     println!("\nwiring deltas (floor 0.95, k=32) — baseline vs trust-wired (variant B):");
     println!("  intrinsic  {:>6} → {:<6}", c.base_i, c.tr_i);
     println!("  positional {:>6} → {:<6}", c.base_p, c.tr_p);
     println!("  both       {:>6} → {:<6}", c.base_b, c.tr_b);
-    println!("  pool: gained-cap {}  lost-cap {}  intrinsic-flip {:+}",
-        c.pool_gained, c.pool_lost, c.intrinsic_flips);
-    println!("  quote-context sites promoted & surfaced: {}", c.promoted_surfaced);
+    println!(
+        "  pool: gained-cap {}  lost-cap {}  intrinsic-flip {:+}",
+        c.pool_gained, c.pool_lost, c.intrinsic_flips
+    );
+    println!(
+        "  quote-context sites promoted & surfaced: {}",
+        c.promoted_surfaced
+    );
     if !c.anchors.is_empty() {
         println!("\nanchor fates:");
         for a in &c.anchors {
-            println!("  {:<9} {:<11} base={:.3}({}) tr={:.3}({}) quad={} class={} trust={:.3} habit={:.3}",
-                a.sid, a.word, a.base_score, if a.base_alive {"alive"} else {"dead"},
-                a.tr_score, if a.tr_alive {"alive"} else {"dead"}, a.quad, a.class, a.trust, a.habit);
+            println!(
+                "  {:<9} {:<11} base={:.3}({}) tr={:.3}({}) quad={} class={} trust={:.3} habit={:.3}",
+                a.sid,
+                a.word,
+                a.base_score,
+                if a.base_alive { "alive" } else { "dead" },
+                a.tr_score,
+                if a.tr_alive { "alive" } else { "dead" },
+                a.quad,
+                a.class,
+                a.trust,
+                a.habit
+            );
         }
     }
     let mut ch: Vec<&terminal::Change> = c.changes.iter().collect();
-    ch.sort_by(|a, b| b.tr_score.max(b.base_score).partial_cmp(&a.tr_score.max(a.base_score)).unwrap());
+    ch.sort_by(|a, b| {
+        b.tr_score
+            .max(b.base_score)
+            .partial_cmp(&a.tr_score.max(a.base_score))
+            .unwrap()
+    });
     println!("\nverdict changes ({} total; up to 25):", c.changes.len());
     for x in ch.iter().take(25) {
-        println!("  [{}] {:<9} {:<14} base={:.3} tr={:.3} {} trust={:.3} habit={:.3} dom={:.3} min={} rar={:.3} | {}",
-            x.direction, x.sid, x.word, x.base_score, x.tr_score, x.quad,
-            x.trust, x.habit, x.dominance, x.minority, x.rarity, x.ctx);
+        println!(
+            "  [{}] {:<9} {:<14} base={:.3} tr={:.3} {} trust={:.3} habit={:.3} dom={:.3} min={} rar={:.3} | {}",
+            x.direction,
+            x.sid,
+            x.word,
+            x.base_score,
+            x.tr_score,
+            x.quad,
+            x.trust,
+            x.habit,
+            x.dominance,
+            x.minority,
+            x.rarity,
+            x.ctx
+        );
     }
     if !c.samples_promoted.is_empty() {
         println!("\npromoted quote-context sites (up to 15):");
         for s in c.samples_promoted.iter().take(15) {
-            println!("  {:<9} {:<14} class={} trust={:.3} score={:.3} | {}",
-                s.sid, s.word, s.class, s.trust, s.score, s.ctx);
+            println!(
+                "  {:<9} {:<14} class={} trust={:.3} score={:.3} | {}",
+                s.sid, s.word, s.class, s.trust, s.score, s.ctx
+            );
         }
     }
 }
 
 const MAJOR: &[&str] = &[
-    "eng-web", "eng-kjv", "engwebster", "WA-en-ulb", "spaRV1909", "WA-es-419-ulb",
-    "fraLSG", "WA-fr-ulb", "porblt", "ita1885", "ron1924", "deu1912", "swhulb",
-    "WA-sw-ulb", "ind", "nld", "vie1934", "tglulb",
+    "eng-web",
+    "eng-kjv",
+    "engwebster",
+    "WA-en-ulb",
+    "spaRV1909",
+    "WA-es-419-ulb",
+    "fraLSG",
+    "WA-fr-ulb",
+    "porblt",
+    "ita1885",
+    "ron1924",
+    "deu1912",
+    "swhulb",
+    "WA-sw-ulb",
+    "ind",
+    "nld",
+    "vie1934",
+    "tglulb",
 ];
 
 /// Fleet aggregate: per-mark trust distributions, W2 variant comparison,
 /// sigmoid-refit evidence, and casing wiring deltas vs the shipped baseline.
 fn terminal_fleet(dir: &Path, variant_b: bool) {
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use rayon::prelude::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
         .unwrap_or_else(|e| panic!("read {}: {e}", dir.display()))
-        .flatten().map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|x| x == "txt")).collect();
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "txt"))
+        .collect();
     files.sort();
     let total = files.len();
-    eprintln!("terminal fleet: {total} corpora (W2 variant {})", if variant_b {"B (guarded)"} else {"A (plain)"});
+    eprintln!(
+        "terminal fleet: {total} corpora (W2 variant {})",
+        if variant_b {
+            "B (guarded)"
+        } else {
+            "A (plain)"
+        }
+    );
     let done = AtomicUsize::new(0);
     let t0 = std::time::Instant::now();
-    let corpora: Vec<TermCorpus> = files.par_iter().map(|path| {
-        let id = path.file_stem().unwrap().to_string_lossy().to_string();
-        let map = load_corpus(path);
-        let c = terminal::analyze_corpus(id, &map, variant_b);
-        let n = done.fetch_add(1, Ordering::Relaxed) + 1;
-        if n.is_multiple_of(200) { eprintln!("  …{n}/{total}"); }
-        c
-    }).collect();
+    let corpora: Vec<TermCorpus> = files
+        .par_iter()
+        .map(|path| {
+            let id = path.file_stem().unwrap().to_string_lossy().to_string();
+            let map = load_corpus(path);
+            let c = terminal::analyze_corpus(id, &map, variant_b);
+            let n = done.fetch_add(1, Ordering::Relaxed) + 1;
+            if n.is_multiple_of(200) {
+                eprintln!("  …{n}/{total}");
+            }
+            c
+        })
+        .collect();
     eprintln!("terminal fleet evaluate: {:?}", t0.elapsed());
 
     // ── Per-mark trust distributions (bare classes) across the fleet. ──
@@ -4196,97 +4586,195 @@ fn terminal_fleet(dir: &Path, variant_b: bool) {
             by_class.entry(t.class).or_default().push(t);
         }
     }
-    let focus_bare = ['.', ',', '?', '!', ':', ';', '\u{2014}', '"', '\u{201D}', '-', '\u{2026}'];
-    println!("\n=== TERMINAL_STRENGTH SPIKE — fleet ({} corpora) ===", corpora.len());
-    println!("\n-- per-mark trust distribution (bare classes; median [p25,p75] max over corpora) --");
-    println!("  {:<7} {:>7} {:>24} {:>24} {:>24} {:>24}",
-        "mark", "corpora", "s_case", "s_reshuffle_A(diff)", "trust_A", "trust_B");
-    let fmtq = |v: &mut Vec<f64>| { let (p25,med,p75,mx)=quartiles(v); format!("{med:.2}[{p25:.2},{p75:.2}]mx{mx:.2}") };
+    let focus_bare = [
+        '.', ',', '?', '!', ':', ';', '\u{2014}', '"', '\u{201D}', '-', '\u{2026}',
+    ];
+    println!(
+        "\n=== TERMINAL_STRENGTH SPIKE — fleet ({} corpora) ===",
+        corpora.len()
+    );
+    println!(
+        "\n-- per-mark trust distribution (bare classes; median [p25,p75] max over corpora) --"
+    );
+    println!(
+        "  {:<7} {:>7} {:>24} {:>24} {:>24} {:>24}",
+        "mark", "corpora", "s_case", "s_reshuffle_A(diff)", "trust_A", "trust_B"
+    );
+    let fmtq = |v: &mut Vec<f64>| {
+        let (p25, med, p75, mx) = quartiles(v);
+        format!("{med:.2}[{p25:.2},{p75:.2}]mx{mx:.2}")
+    };
     for &m in &focus_bare {
-        let key = ClassKey { mark: m, quoted: false };
+        let key = ClassKey {
+            mark: m,
+            quoted: false,
+        };
         if let Some(ts) = by_class.get(&key) {
-            let mut sc: Vec<f64> = ts.iter().filter(|t| t.s_case_seen).map(|t| t.s_case).collect();
+            let mut sc: Vec<f64> = ts
+                .iter()
+                .filter(|t| t.s_case_seen)
+                .map(|t| t.s_case)
+                .collect();
             let mut di: Vec<f64> = ts.iter().map(|t| t.s_reshuffle_a).collect();
             let mut ta: Vec<f64> = ts.iter().map(|t| t.trust_a).collect();
             let mut tb: Vec<f64> = ts.iter().map(|t| t.trust_b).collect();
-            println!("  {:<7} {:>7} {:>24} {:>24} {:>24} {:>24}",
-                key.label(), ts.len(), fmtq(&mut sc), fmtq(&mut di), fmtq(&mut ta), fmtq(&mut tb));
+            println!(
+                "  {:<7} {:>7} {:>24} {:>24} {:>24} {:>24}",
+                key.label(),
+                ts.len(),
+                fmtq(&mut sc),
+                fmtq(&mut di),
+                fmtq(&mut ta),
+                fmtq(&mut tb)
+            );
         }
     }
     println!("\n-- quote-context classes (mark+\") — the shortlist item-7 sweep --");
-    println!("  {:<7} {:>7} {:>24} {:>24}", "class", "corpora", "trust_B", "trust_A");
+    println!(
+        "  {:<7} {:>7} {:>24} {:>24}",
+        "class", "corpora", "trust_B", "trust_A"
+    );
     for &m in &['.', '?', '!', ':', ',', ';'] {
-        let key = ClassKey { mark: m, quoted: true };
+        let key = ClassKey {
+            mark: m,
+            quoted: true,
+        };
         if let Some(ts) = by_class.get(&key) {
             let mut tb: Vec<f64> = ts.iter().map(|t| t.trust_b).collect();
             let mut ta: Vec<f64> = ts.iter().map(|t| t.trust_a).collect();
-            println!("  {:<7} {:>7} {:>24} {:>24}", key.label(), ts.len(), fmtq(&mut tb), fmtq(&mut ta));
+            println!(
+                "  {:<7} {:>7} {:>24} {:>24}",
+                key.label(),
+                ts.len(),
+                fmtq(&mut tb),
+                fmtq(&mut ta)
+            );
         }
     }
 
     // ── Sigmoid-refit evidence: standardized deviate for '.' vs ','. ──
     println!("\n-- W2 sigmoid refit evidence: standardized multinomial-G² deviate --");
     for &m in &['.', ',', '?', '!', ':'] {
-        let key = ClassKey { mark: m, quoted: false };
+        let key = ClassKey {
+            mark: m,
+            quoted: false,
+        };
         if let Some(ts) = by_class.get(&key) {
             let mut d: Vec<f64> = ts.iter().map(|t| deviate(t)).collect();
             let (p25, med, p75, mx) = quartiles(&mut d);
-            println!("  {:<5} dev median {med:.1} [{p25:.1},{p75:.1}] max {mx:.1}", key.label());
+            println!(
+                "  {:<5} dev median {med:.1} [{p25:.1},{p75:.1}] max {mx:.1}",
+                key.label()
+            );
         }
     }
 
     // ── W2 variant comparison: genealogy guard — worst comma offenders. ──
     println!("\n-- genealogy guard: corpora where ',' is most over-trusted by variant A --");
-    let mut comma_rows: Vec<(&str, f64, f64, f64, f64)> = corpora.iter().filter_map(|c| {
-        c.trust.classes.get(&ClassKey{mark:',',quoted:false}).map(|t|
-            (c.id.as_str(), t.trust_a, t.trust_b, t.diff, t.agree))
-    }).collect();
+    let mut comma_rows: Vec<(&str, f64, f64, f64, f64)> = corpora
+        .iter()
+        .filter_map(|c| {
+            c.trust
+                .classes
+                .get(&ClassKey {
+                    mark: ',',
+                    quoted: false,
+                })
+                .map(|t| (c.id.as_str(), t.trust_a, t.trust_b, t.diff, t.agree))
+        })
+        .collect();
     comma_rows.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
-    println!("  {:<20} {:>8} {:>8} {:>8} {:>8}", "corpus", "trustA", "trustB", "diff", "agree");
+    println!(
+        "  {:<20} {:>8} {:>8} {:>8} {:>8}",
+        "corpus", "trustA", "trustB", "diff", "agree"
+    );
     for (id, ta, tb, d, ag) in comma_rows.iter().take(12) {
-        println!("  {:<20} {:>8.3} {:>8.3} {:>8.3} {:>8.3}", id, ta, tb, d, ag);
+        println!(
+            "  {:<20} {:>8.3} {:>8.3} {:>8.3} {:>8.3}",
+            id, ta, tb, d, ag
+        );
     }
 
     // ── Wiring deltas vs baseline. ──
-    let (mut bi, mut bp, mut bb, mut ti, mut tp, mut tb) = (0u64,0u64,0u64,0u64,0u64,0u64);
+    let (mut bi, mut bp, mut bb, mut ti, mut tp, mut tb) = (0u64, 0u64, 0u64, 0u64, 0u64, 0u64);
     let (mut pg, mut pl) = (0u64, 0u64);
     let mut promoted = 0u64;
     let mut corpora_changed = 0u32;
     for c in &corpora {
-        bi += c.base_i; bp += c.base_p; bb += c.base_b;
-        ti += c.tr_i; tp += c.tr_p; tb += c.tr_b;
-        pg += c.pool_gained; pl += c.pool_lost;
+        bi += c.base_i;
+        bp += c.base_p;
+        bb += c.base_b;
+        ti += c.tr_i;
+        tp += c.tr_p;
+        tb += c.tr_b;
+        pg += c.pool_gained;
+        pl += c.pool_lost;
         promoted += c.promoted_surfaced;
-        if !c.changes.is_empty() { corpora_changed += 1; }
+        if !c.changes.is_empty() {
+            corpora_changed += 1;
+        }
     }
-    println!("\n-- wiring deltas (floor 0.95, k=32; variant {}) --", if variant_b {"B"} else {"A"});
+    println!(
+        "\n-- wiring deltas (floor 0.95, k=32; variant {}) --",
+        if variant_b { "B" } else { "A" }
+    );
     println!("  channel     baseline   trust-wired      Δ");
-    println!("  intrinsic  {:>9} {:>13} {:>+7}", bi, ti, ti as i64 - bi as i64);
-    println!("  positional {:>9} {:>13} {:>+7}", bp, tp, tp as i64 - bp as i64);
-    println!("  both       {:>9} {:>13} {:>+7}", bb, tb, tb as i64 - bb as i64);
-    println!("  TOTAL      {:>9} {:>13} {:>+7}", bi+bp+bb, ti+tp+tb,
-        (ti+tp+tb) as i64 - (bi+bp+bb) as i64);
+    println!(
+        "  intrinsic  {:>9} {:>13} {:>+7}",
+        bi,
+        ti,
+        ti as i64 - bi as i64
+    );
+    println!(
+        "  positional {:>9} {:>13} {:>+7}",
+        bp,
+        tp,
+        tp as i64 - bp as i64
+    );
+    println!(
+        "  both       {:>9} {:>13} {:>+7}",
+        bb,
+        tb,
+        tb as i64 - bb as i64
+    );
+    println!(
+        "  TOTAL      {:>9} {:>13} {:>+7}",
+        bi + bp + bb,
+        ti + tp + tb,
+        (ti + tp + tb) as i64 - (bi + bp + bb) as i64
+    );
     println!("  corpora with ≥1 verdict change: {}", corpora_changed);
     println!("  pool recovery: word profiles gained-cap {pg}, lost-cap {pl}");
     println!("  quote-context sites promoted & surfaced (item-7 payoff): {promoted}");
 
     // ── Anchor fates. ──
     println!("\n-- anchor fates (12 ADR 0051 anchors) --");
-    println!("  {:<9} {:<11} {:<10} {:>7} {:>7} {:<7} {:<10} {:>6} {:>6}",
-        "corpus", "sid", "word", "base", "tr", "verdict", "class", "trust", "habit");
+    println!(
+        "  {:<9} {:<11} {:<10} {:>7} {:>7} {:<7} {:<10} {:>6} {:>6}",
+        "corpus", "sid", "word", "base", "tr", "verdict", "class", "trust", "habit"
+    );
     for &(ac, asid, aw) in terminal::ANCHORS {
-        let fate = corpora.iter().flat_map(|c| c.anchors.iter())
+        let fate = corpora
+            .iter()
+            .flat_map(|c| c.anchors.iter())
             .find(|a| a.corpus == ac && a.sid == asid && a.word == aw);
         match fate {
             Some(a) => {
                 let verdict = match (a.base_alive, a.tr_alive) {
-                    (true, true) => "kept", (true, false) => "DIED",
-                    (false, true) => "born", (false, false) => "silent",
+                    (true, true) => "kept",
+                    (true, false) => "DIED",
+                    (false, true) => "born",
+                    (false, false) => "silent",
                 };
-                println!("  {:<9} {:<11} {:<10} {:>7.3} {:>7.3} {:<7} {:<10} {:>6.3} {:>6.3}",
-                    ac, asid, aw, a.base_score, a.tr_score, verdict, a.class, a.trust, a.habit);
+                println!(
+                    "  {:<9} {:<11} {:<10} {:>7.3} {:>7.3} {:<7} {:<10} {:>6.3} {:>6.3}",
+                    ac, asid, aw, a.base_score, a.tr_score, verdict, a.class, a.trust, a.habit
+                );
             }
-            None => println!("  {:<9} {:<11} {:<10}  (not a candidate site)", ac, asid, aw),
+            None => println!(
+                "  {:<9} {:<11} {:<10}  (not a candidate site)",
+                ac, asid, aw
+            ),
         }
     }
 
@@ -4295,12 +4783,26 @@ fn terminal_fleet(dir: &Path, variant_b: bool) {
     ranked.sort_by_key(|c| std::cmp::Reverse(c.pos_delta));
     println!("\n-- top-10 corpora by positional-channel change --");
     for c in ranked.iter().take(10) {
-        println!("  {:<20} pos {}→{} (Δ{:+})  examples:", c.id, c.base_p, c.tr_p, c.tr_p as i64 - c.base_p as i64);
-        let mut ch: Vec<&terminal::Change> = c.changes.iter().filter(|x| x.quad != "intrinsic").collect();
-        ch.sort_by(|a,b| b.tr_score.max(b.base_score).partial_cmp(&a.tr_score.max(a.base_score)).unwrap());
+        println!(
+            "  {:<20} pos {}→{} (Δ{:+})  examples:",
+            c.id,
+            c.base_p,
+            c.tr_p,
+            c.tr_p as i64 - c.base_p as i64
+        );
+        let mut ch: Vec<&terminal::Change> =
+            c.changes.iter().filter(|x| x.quad != "intrinsic").collect();
+        ch.sort_by(|a, b| {
+            b.tr_score
+                .max(b.base_score)
+                .partial_cmp(&a.tr_score.max(a.base_score))
+                .unwrap()
+        });
         for x in ch.iter().take(3) {
-            println!("      [{}] {:<9} {:<12} base={:.3} tr={:.3} trust={:.3} | {}",
-                x.direction, x.sid, x.word, x.base_score, x.tr_score, x.trust, x.ctx);
+            println!(
+                "      [{}] {:<9} {:<12} base={:.3} tr={:.3} trust={:.3} | {}",
+                x.direction, x.sid, x.word, x.base_score, x.tr_score, x.trust, x.ctx
+            );
         }
     }
 
@@ -4308,32 +4810,61 @@ fn terminal_fleet(dir: &Path, variant_b: bool) {
     println!("\n-- changed-verdict samples from major-language corpora (parametric review) --");
     let mut shown = 0;
     for c in &corpora {
-        if !MAJOR.contains(&c.id.as_str()) || c.changes.is_empty() { continue; }
+        if !MAJOR.contains(&c.id.as_str()) || c.changes.is_empty() {
+            continue;
+        }
         println!("  [{}]:", c.id);
         let mut ch: Vec<&terminal::Change> = c.changes.iter().collect();
-        ch.sort_by(|a,b| b.tr_score.max(b.base_score).partial_cmp(&a.tr_score.max(a.base_score)).unwrap());
+        ch.sort_by(|a, b| {
+            b.tr_score
+                .max(b.base_score)
+                .partial_cmp(&a.tr_score.max(a.base_score))
+                .unwrap()
+        });
         for x in ch.iter().take(3) {
-            println!("    [{}] {:<9} {:<14} base={:.3} tr={:.3} {} trust={:.3} habit={:.3} dom={:.3} min={} rar={:.3} | {}",
-                x.direction, x.sid, x.word, x.base_score, x.tr_score, x.quad,
-                x.trust, x.habit, x.dominance, x.minority, x.rarity, x.ctx);
+            println!(
+                "    [{}] {:<9} {:<14} base={:.3} tr={:.3} {} trust={:.3} habit={:.3} dom={:.3} min={} rar={:.3} | {}",
+                x.direction,
+                x.sid,
+                x.word,
+                x.base_score,
+                x.tr_score,
+                x.quad,
+                x.trust,
+                x.habit,
+                x.dominance,
+                x.minority,
+                x.rarity,
+                x.ctx
+            );
             shown += 1;
         }
-        if shown >= 25 { break; }
+        if shown >= 25 {
+            break;
+        }
     }
 
     // ── Context-class payoff samples. ──
     println!("\n-- promoted quote-context sites from major-language corpora (item-7) --");
     let mut cnt = 0;
     for c in &corpora {
-        if !MAJOR.contains(&c.id.as_str()) || c.samples_promoted.is_empty() { continue; }
+        if !MAJOR.contains(&c.id.as_str()) || c.samples_promoted.is_empty() {
+            continue;
+        }
         for s in c.samples_promoted.iter().take(2) {
-            println!("  [{}] {:<9} {:<14} class={} trust={:.3} score={:.3} | {}",
-                c.id, s.sid, s.word, s.class, s.trust, s.score, s.ctx);
+            println!(
+                "  [{}] {:<9} {:<14} class={} trust={:.3} score={:.3} | {}",
+                c.id, s.sid, s.word, s.class, s.trust, s.score, s.ctx
+            );
             cnt += 1;
         }
-        if cnt >= 10 { break; }
+        if cnt >= 10 {
+            break;
+        }
     }
-    if cnt == 0 { println!("  (none surfaced in major-language corpora)"); }
+    if cnt == 0 {
+        println!("  (none surfaced in major-language corpora)");
+    }
 
     terminal_gate_sweep(&corpora, bi, bp, bb, ti, tp, tb, promoted, variant_b);
 }
@@ -4344,8 +4875,12 @@ fn terminal_fleet(dir: &Path, variant_b: bool) {
 #[allow(clippy::too_many_arguments)]
 fn terminal_gate_sweep(
     corpora: &[TermCorpus],
-    bi: u64, bp: u64, bb: u64,
-    ti: u64, tp: u64, tb: u64,
+    bi: u64,
+    bp: u64,
+    bb: u64,
+    ti: u64,
+    tp: u64,
+    tb: u64,
     mult_promoted: u64,
     variant_b: bool,
 ) {
@@ -4354,25 +4889,38 @@ fn terminal_gate_sweep(
     let base_total = bi + bp + bb;
     let mult_total = ti + tp + tb;
 
-    println!("\n═══ GATE-THRESHOLD SWEEP (2026-07-10; variant {}) ═══",
-        if variant_b { "B" } else { "A" });
+    println!(
+        "\n═══ GATE-THRESHOLD SWEEP (2026-07-10; variant {}) ═══",
+        if variant_b { "B" } else { "A" }
+    );
 
     // 1. Surfaced volume per channel + deltas vs baseline and multiplier.
     println!("\n-- 1. surfaced volume per channel (fleet) --");
     println!("  baseline (shipped): i {bi}  p {bp}  b {bb}  TOTAL {base_total}");
     println!("  multiplier wiring:  i {ti}  p {tp}  b {tb}  TOTAL {mult_total}");
-    println!("  {:<5} {:>8} {:>9} {:>6} {:>8} {:>10} {:>10}",
-        "T", "intrins", "positnl", "both", "TOTAL", "Δ vs base", "Δ vs mult");
+    println!(
+        "  {:<5} {:>8} {:>9} {:>6} {:>8} {:>10} {:>10}",
+        "T", "intrins", "positnl", "both", "TOTAL", "Δ vs base", "Δ vs mult"
+    );
     for (i, &t) in sweep.iter().enumerate() {
         let (mut gi, mut gp, mut gb) = (0u64, 0u64, 0u64);
         for c in corpora {
             let (a, b2, c2) = c.gate.counts[i];
-            gi += a; gp += b2; gb += c2;
+            gi += a;
+            gp += b2;
+            gb += c2;
         }
         let total = gi + gp + gb;
-        println!("  {:<5.2} {:>8} {:>9} {:>6} {:>8} {:>+10} {:>+10}",
-            t, gi, gp, gb, total,
-            total as i64 - base_total as i64, total as i64 - mult_total as i64);
+        println!(
+            "  {:<5.2} {:>8} {:>9} {:>6} {:>8} {:>+10} {:>+10}",
+            t,
+            gi,
+            gp,
+            gb,
+            total,
+            total as i64 - base_total as i64,
+            total as i64 - mult_total as i64
+        );
     }
 
     // 2. Middle population: sites lost between adjacent thresholds.
@@ -4390,28 +4938,42 @@ fn terminal_gate_sweep(
         }
         let mut cv: Vec<(&ClassKey, &u64)> = classes.iter().collect();
         cv.sort_by(|a, b| b.1.cmp(a.1));
-        let cs = cv.iter().take(6)
+        let cs = cv
+            .iter()
+            .take(6)
             .map(|(k, v)| format!("{}:{}", k.label(), v))
-            .collect::<Vec<_>>().join("  ");
+            .collect::<Vec<_>>()
+            .join("  ");
         println!("  {:<14} {:>7}   {}", format!("{lo:.2}→{hi:.2}"), total, cs);
     }
 
     // 3. The 12 ADR 0051 anchors, alive at each threshold (first 7 = TP).
     println!("\n-- 3. the 12 ADR 0051 anchors: alive at each threshold --");
-    print!("  {:<9} {:<11} {:<10} {:<4} {:<4}", "corpus", "sid", "word", "base", "mult");
-    for &t in sweep { print!(" {:>5.2}", t); }
+    print!(
+        "  {:<9} {:<11} {:<10} {:<4} {:<4}",
+        "corpus", "sid", "word", "base", "mult"
+    );
+    for &t in sweep {
+        print!(" {:>5.2}", t);
+    }
     println!("   kind");
     let mut tp_deaths: Vec<(String, f64)> = Vec::new();
     for (idx, &(ac, asid, aw)) in terminal::ANCHORS.iter().enumerate() {
         let is_tp = idx < 7;
-        let fate = corpora.iter().flat_map(|c| c.anchors.iter())
+        let fate = corpora
+            .iter()
+            .flat_map(|c| c.anchors.iter())
             .find(|a| a.corpus == ac && a.sid == asid && a.word == aw);
         match fate {
             Some(a) => {
-                print!("  {:<9} {:<11} {:<10} {:<4} {:<4}",
-                    ac, asid, aw,
+                print!(
+                    "  {:<9} {:<11} {:<10} {:<4} {:<4}",
+                    ac,
+                    asid,
+                    aw,
                     if a.base_alive { "✓" } else { "·" },
-                    if a.tr_alive { "✓" } else { "·" });
+                    if a.tr_alive { "✓" } else { "·" }
+                );
                 for (i, &t) in sweep.iter().enumerate() {
                     print!(" {:>5}", if a.gate_alive[i] { "✓" } else { "·" });
                     if is_tp && !a.gate_alive[i] {
@@ -4420,14 +4982,23 @@ fn terminal_gate_sweep(
                 }
                 println!("   {}", if is_tp { "TP" } else { "FP" });
             }
-            None => println!("  {:<9} {:<11} {:<10}  (not a candidate site)", ac, asid, aw),
+            None => println!(
+                "  {:<9} {:<11} {:<10}  (not a candidate site)",
+                ac, asid, aw
+            ),
         }
     }
     if tp_deaths.is_empty() {
         println!("  ALL 7 TPs stay alive at every swept threshold.");
     } else {
-        println!("  ⚠ TP deaths: {}",
-            tp_deaths.iter().map(|(s, _)| s.clone()).collect::<Vec<_>>().join(", "));
+        println!(
+            "  ⚠ TP deaths: {}",
+            tp_deaths
+                .iter()
+                .map(|(s, _)| s.clone())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
     }
 
     // 4. Readmissions vs the multiplier wiring.
@@ -4437,55 +5008,88 @@ fn terminal_gate_sweep(
         println!("  T={t:.2}: {r} findings the multiplier eroded, readmitted by the gate");
     }
     // The documented-known fraLSG MIC 2:6 disent-ils FP (expected readmitted).
-    let fralsg = corpora.iter().find(|c| c.id == "fraLSG")
+    let fralsg = corpora
+        .iter()
+        .find(|c| c.id == "fraLSG")
         .and_then(|c| c.gate.readmit_samples.iter().find(|s| s.sid == "MIC 2:6"));
     match fralsg {
         Some(s) => println!(
             "  fraLSG MIC 2:6 [{}]: trust={:.3} gate-score={:.3} base={:.3} (readmitted; known FP) | {}",
-            s.word, s.trust, s.score, s.base_score, s.ctx),
-        None => println!("  fraLSG MIC 2:6 disent-ils: NOT in the readmit set (unexpected — investigate)"),
+            s.word, s.trust, s.score, s.base_score, s.ctx
+        ),
+        None => println!(
+            "  fraLSG MIC 2:6 disent-ils: NOT in the readmit set (unexpected — investigate)"
+        ),
     }
     // Per-major-corpus readmit tally (T=0.50, the maximal readmit set) — shows
     // how much of the fleet-wide readmission lands in major vs minority langs.
     println!("\n  readmit count per major-language corpus (T=0.50):");
-    let major_readmit: u64 = corpora.iter()
+    let major_readmit: u64 = corpora
+        .iter()
         .filter(|c| MAJOR.contains(&c.id.as_str()))
-        .map(|c| c.gate.readmitted[0]).sum();
-    let mut mr: Vec<(&str, u64)> = corpora.iter()
+        .map(|c| c.gate.readmitted[0])
+        .sum();
+    let mut mr: Vec<(&str, u64)> = corpora
+        .iter()
         .filter(|c| MAJOR.contains(&c.id.as_str()) && c.gate.readmitted[0] > 0)
-        .map(|c| (c.id.as_str(), c.gate.readmitted[0])).collect();
+        .map(|c| (c.id.as_str(), c.gate.readmitted[0]))
+        .collect();
     mr.sort_by_key(|x| std::cmp::Reverse(x.1));
-    println!("    {} of {} fleet readmissions land in major-language corpora: {}",
-        major_readmit, corpora.iter().map(|c| c.gate.readmitted[0]).sum::<u64>(),
-        mr.iter().map(|(id, n)| format!("{id}:{n}")).collect::<Vec<_>>().join("  "));
+    println!(
+        "    {} of {} fleet readmissions land in major-language corpora: {}",
+        major_readmit,
+        corpora.iter().map(|c| c.gate.readmitted[0]).sum::<u64>(),
+        mr.iter()
+            .map(|(id, n)| format!("{id}:{n}"))
+            .collect::<Vec<_>>()
+            .join("  ")
+    );
     println!("\n  readmitted-site sample from major-language corpora (verse text):");
     let mut shown = 0;
     for c in corpora {
-        if !MAJOR.contains(&c.id.as_str()) { continue; }
-        for s in &c.gate.readmit_samples {
-            println!("    [{}] {:<9} {:<14} class={} trust={:.3} gate={:.3} base={:.3} | {}",
-                c.id, s.sid, s.word, s.class, s.trust, s.score, s.base_score, s.ctx);
-            shown += 1;
-            if shown >= 10 { break; }
+        if !MAJOR.contains(&c.id.as_str()) {
+            continue;
         }
-        if shown >= 10 { break; }
+        for s in &c.gate.readmit_samples {
+            println!(
+                "    [{}] {:<9} {:<14} class={} trust={:.3} gate={:.3} base={:.3} | {}",
+                c.id, s.sid, s.word, s.class, s.trust, s.score, s.base_score, s.ctx
+            );
+            shown += 1;
+            if shown >= 10 {
+                break;
+            }
+        }
+        if shown >= 10 {
+            break;
+        }
     }
-    if shown == 0 { println!("    (no readmissions in major-language corpora)"); }
+    if shown == 0 {
+        println!("    (no readmissions in major-language corpora)");
+    }
     // Erosion lands overwhelmingly in minority-language corpora, so also show a
     // fleet-wide sample from the highest-readmit corpora for adjudication.
     println!("\n  fleet-wide readmitted-site sample (highest-readmit corpora):");
-    let mut ranked: Vec<&TermCorpus> = corpora.iter()
-        .filter(|c| c.gate.readmitted[0] > 0).collect();
+    let mut ranked: Vec<&TermCorpus> = corpora
+        .iter()
+        .filter(|c| c.gate.readmitted[0] > 0)
+        .collect();
     ranked.sort_by_key(|c| std::cmp::Reverse(c.gate.readmitted[0]));
     let mut fshown = 0;
     for c in ranked {
         for s in c.gate.readmit_samples.iter().take(2) {
-            println!("    [{}] {:<9} {:<14} class={} trust={:.3} gate={:.3} base={:.3} | {}",
-                c.id, s.sid, s.word, s.class, s.trust, s.score, s.base_score, s.ctx);
+            println!(
+                "    [{}] {:<9} {:<14} class={} trust={:.3} gate={:.3} base={:.3} | {}",
+                c.id, s.sid, s.word, s.class, s.trust, s.score, s.base_score, s.ctx
+            );
             fshown += 1;
-            if fshown >= 10 { break; }
+            if fshown >= 10 {
+                break;
+            }
         }
-        if fshown >= 10 { break; }
+        if fshown >= 10 {
+            break;
+        }
     }
 
     // 5. The 237 promoted quote-context sites: survival at each threshold.
@@ -4499,12 +5103,17 @@ fn terminal_gate_sweep(
     // 6. Corpora that lose ALL positional coverage at each threshold.
     println!("\n-- 6. corpora that lose ALL positional coverage at each threshold --");
     for (i, &t) in sweep.iter().enumerate() {
-        let mut losers: Vec<&TermCorpus> = corpora.iter()
-            .filter(|c| c.gate.base_pos > 0 && !c.gate.pos_alive[i]).collect();
+        let mut losers: Vec<&TermCorpus> = corpora
+            .iter()
+            .filter(|c| c.gate.base_pos > 0 && !c.gate.pos_alive[i])
+            .collect();
         losers.sort_by_key(|c| std::cmp::Reverse(c.gate.base_pos));
-        let names = losers.iter().take(5)
+        let names = losers
+            .iter()
+            .take(5)
             .map(|c| format!("{}(base_pos {})", c.id, c.gate.base_pos))
-            .collect::<Vec<_>>().join(", ");
+            .collect::<Vec<_>>()
+            .join(", ");
         println!("  T={t:.2}: {} corpora  [largest: {names}]", losers.len());
     }
 }
@@ -4525,9 +5134,25 @@ fn terminal_gate_sweep(
 const MC_Z: f64 = 1.96;
 /// Corpora sampled in the fleet report for the convention-class adjudication.
 const MC_MAJOR: &[&str] = &[
-    "eng-web", "eng-kjv", "engwebster", "WA-en-ulb", "spaRV1909", "WA-es-419-ulb",
-    "fraLSG", "WA-fr-ulb", "porblt", "deu1912", "swhulb", "WA-sw-ulb", "WA-bem-reg",
-    "ind", "nld", "vie1934", "tglulb", "ron1924", "engojb",
+    "eng-web",
+    "eng-kjv",
+    "engwebster",
+    "WA-en-ulb",
+    "spaRV1909",
+    "WA-es-419-ulb",
+    "fraLSG",
+    "WA-fr-ulb",
+    "porblt",
+    "deu1912",
+    "swhulb",
+    "WA-sw-ulb",
+    "WA-bem-reg",
+    "ind",
+    "nld",
+    "vie1934",
+    "tglulb",
+    "ron1924",
+    "engojb",
 ];
 
 /// A word's observed case shape over its **cased** letters (marks and caseless
@@ -4702,13 +5327,22 @@ fn mc_walk(
                 if !is_letter_token(word) {
                     continue; // its text stays in the gap the next word sees
                 }
-                glyph_advance_gap(&text[cursor..token.span.start as usize], &mut pending, &mut prev_letter);
+                glyph_advance_gap(
+                    &text[cursor..token.span.start as usize],
+                    &mut pending,
+                    &mut prev_letter,
+                );
                 let forced = book_initial || matches!(pending.take(), Some(false));
                 book_initial = false;
-                prev_letter = word.chars().next_back().is_some_and(|c| class_of(c).is_alphabetic());
+                prev_letter = word
+                    .chars()
+                    .next_back()
+                    .is_some_and(|c| class_of(c).is_alphabetic());
                 cursor = token.span.end as usize;
 
-                let Some(shape) = mc_classify(word) else { continue };
+                let Some(shape) = mc_classify(word) else {
+                    continue;
+                };
                 let entry = profiles.entry(word.to_lowercase()).or_default();
                 let is_forced = forced;
                 if is_forced {
@@ -4758,7 +5392,11 @@ fn analyze_mixedcase(id: String, map: &Corpus) -> McCorpus {
     let other_tokens: u64 = profiles.values().map(|p| p.other).sum();
     let other_first_upper: u64 = profiles.values().map(|p| p.other_first_upper).sum();
     // Corpus-level "tokens are not other-mixed" dominance — the route-B factor.
-    let corpus_dominance = sig_wilson_lb(cased_tokens.saturating_sub(other_tokens), cased_tokens, MC_Z);
+    let corpus_dominance = sig_wilson_lb(
+        cased_tokens.saturating_sub(other_tokens),
+        cased_tokens,
+        MC_Z,
+    );
 
     let nk = PACKET_KS.len();
     let mut grid_within = vec![[0u64; PACKET_FLOORS.len()]; nk];
@@ -4828,7 +5466,11 @@ fn analyze_mixedcase(id: String, map: &Corpus) -> McCorpus {
     }
 
     excused.sort_by_key(|(_, other, _)| std::cmp::Reverse(*other));
-    let excused_set: HashSet<&str> = excused.iter().take(30).map(|(k, _, _)| k.as_str()).collect();
+    let excused_set: HashSet<&str> = excused
+        .iter()
+        .take(30)
+        .map(|(k, _, _)| k.as_str())
+        .collect();
 
     // Draw review samples from the capped candidate list.
     let (mut flagged_samples, mut fallback_samples, mut excused_samples) =
@@ -4841,7 +5483,9 @@ fn analyze_mixedcase(id: String, map: &Corpus) -> McCorpus {
         .map(|(k, t)| (k.as_str(), t.as_str()))
         .collect();
     for c in &cands {
-        let Some(p) = profiles.get(&c.key) else { continue };
+        let Some(p) = profiles.get(&c.key) else {
+            continue;
+        };
         let text = key_to_text[c.sid.as_str()];
         let word = text[c.start as usize..c.end as usize].to_string();
         let dom = sig_wilson_lb(p.not_other(), p.total(), MC_Z);
@@ -4915,7 +5559,9 @@ fn print_mc_grid(name: &str, grid: &[[u64; PACKET_FLOORS.len()]]) {
 
 fn print_mc_hist(hist: &[u64; 40]) {
     let total: u64 = hist.iter().sum();
-    println!("\nroute-A score histogram at ref knee (k=32) — {total} OtherMixed sites, 40 buckets:");
+    println!(
+        "\nroute-A score histogram at ref knee (k=32) — {total} OtherMixed sites, 40 buckets:"
+    );
     for (i, &n) in hist.iter().enumerate() {
         if n == 0 {
             continue;
@@ -4945,7 +5591,10 @@ fn print_mc_samples(samples: &[&McSample]) {
 }
 
 fn mixedcase_single_report(c: &McCorpus) {
-    println!("=== mixed-case word SPIKE: {} ({} verses) ===", c.id, c.verses);
+    println!(
+        "=== mixed-case word SPIKE: {} ({} verses) ===",
+        c.id, c.verses
+    );
     println!(
         "cased letter-run tokens: {}  |  OtherMixed tokens: {} ({:.4}%)  types: {} (hapax {}, recurring>=2 {})",
         c.cased_tokens,
@@ -4955,7 +5604,10 @@ fn mixedcase_single_report(c: &McCorpus) {
         c.hapax_other_types,
         c.recurring_other_types,
     );
-    println!("corpus 'not-other-mixed' dominance (route-B factor): {:.4}", c.corpus_dominance);
+    println!(
+        "corpus 'not-other-mixed' dominance (route-B factor): {:.4}",
+        c.corpus_dominance
+    );
     println!(
         "\nposition (route 4): OtherMixed rate  forced {:.4}% ({}/{})  vs  mid {:.4}% ({}/{})",
         c.other_forced as f64 * 100.0 / c.cased_forced.max(1) as f64,
@@ -4973,7 +5625,10 @@ fn mixedcase_single_report(c: &McCorpus) {
         "\nreference cell (k=32, floor 0.95): route-A within {}  |  route-B hapax-fallback {}",
         c.ref_within, c.ref_fallback
     );
-    println!("  of ref-flagged route-A sites: first-upper {}  forced-position {}", c.flagged_first_upper, c.flagged_forced);
+    println!(
+        "  of ref-flagged route-A sites: first-upper {}  forced-position {}",
+        c.flagged_first_upper, c.flagged_forced
+    );
     println!("\n-- route-A (within-word) volume sweep --");
     print_mc_grid("within-word", &c.grid_within);
     println!("\n-- route-B (corpus hapax fallback) volume sweep --");
@@ -5059,7 +5714,10 @@ fn mixedcase_fleet(dir: &Path) {
         }
     }
 
-    println!("=== MIXED-CASE WORD SPIKE — fleet aggregate ({} corpora) ===", corpora.len());
+    println!(
+        "=== MIXED-CASE WORD SPIKE — fleet aggregate ({} corpora) ===",
+        corpora.len()
+    );
     println!(
         "\ncased letter-run tokens {cased}  |  OtherMixed {other} ({:.4}% of cased)",
         other as f64 * 100.0 / cased.max(1) as f64
@@ -5089,7 +5747,10 @@ fn mixedcase_fleet(dir: &Path) {
     print_mc_hist(&hist);
 
     // Noisiest corpora by route-A ref volume, with storm diagnosis inputs.
-    let mut ranked: Vec<&McCorpus> = corpora.iter().filter(|c| c.ref_within + c.ref_fallback > 0).collect();
+    let mut ranked: Vec<&McCorpus> = corpora
+        .iter()
+        .filter(|c| c.ref_within + c.ref_fallback > 0)
+        .collect();
     ranked.sort_by_key(|c| std::cmp::Reverse(c.ref_within + c.ref_fallback));
     println!("\n-- top-20 noisiest corpora (ref cell) --");
     println!(
@@ -5109,7 +5770,9 @@ fn mixedcase_fleet(dir: &Path) {
     }
 
     // Convention-class adjudication across major-language corpora.
-    println!("\n-- convention adjudication (major corpora): flagged (route A), excused (recurring), hapax (route B) --");
+    println!(
+        "\n-- convention adjudication (major corpora): flagged (route A), excused (recurring), hapax (route B) --"
+    );
     for c in &corpora {
         if !MC_MAJOR.contains(&c.id.as_str()) {
             continue;
@@ -5502,8 +6165,11 @@ fn for_each_pool_opp(map: &Corpus, mut f: impl FnMut(&str, &str, &PoolOpp)) {
     // verse runs.
     let mut graphemes = Vec::new();
     for group in &ssc_core::corpus::by_book(map) {
-        let edges: Vec<(Option<SubClass>, Option<SubClass>)> =
-            group.texts.iter().map(|t| verse_edge_subclasses(t)).collect();
+        let edges: Vec<(Option<SubClass>, Option<SubClass>)> = group
+            .texts
+            .iter()
+            .map(|t| verse_edge_subclasses(t))
+            .collect();
         for (vi, (key, text)) in group.keys.iter().zip(group.texts).enumerate() {
             let left_cross = (0..vi).rev().find_map(|jj| edges[jj].1);
             let right_cross = (vi + 1..group.texts.len()).find_map(|jj| edges[jj].0);
@@ -5567,7 +6233,17 @@ fn eval_a_side(cell: &ACell, side: usize, s: Option<(bool, SubClass)>) -> Option
     } else {
         (top_flag, top_score, true)
     };
-    Some(ASide { flagged, score, used_top, cls, sub, bit, class_flag, top_flag, class_holds })
+    Some(ASide {
+        flagged,
+        score,
+        used_top,
+        cls,
+        sub,
+        bit,
+        class_flag,
+        top_flag,
+        class_holds,
+    })
 }
 
 /// One side's resolved Design-B verdict.
@@ -5589,7 +6265,13 @@ fn eval_b_side(cell: &BCell, side: usize, cat: BCat) -> BSide {
     let ci = cat.index();
     let score = bcat_score(modal_count, counts[ci], n);
     let flagged = ci != modal_idx && score >= POOL_FLOOR;
-    BSide { flagged, score, cat, count: counts[ci], total: n }
+    BSide {
+        flagged,
+        score,
+        cat,
+        count: counts[ci],
+        total: n,
+    }
 }
 
 #[derive(Clone, Default)]
@@ -5743,7 +6425,12 @@ fn analyze_pooled(id: String, map: &Corpus) -> PoolCorpus {
         cfg: PunctuationSpacingConfig::default(),
     };
     let shipped_findings = shipped_rule
-        .judge(&shipped_rule.reduce(&books, None, None).0, &books, None, None)
+        .judge(
+            &shipped_rule.reduce(&books, None, None).0,
+            &books,
+            None,
+            None,
+        )
         .len() as u64;
 
     // Pass 2 — evaluate each site under both designs.
@@ -5769,7 +6456,11 @@ fn analyze_pooled(id: String, map: &Corpus) -> PoolCorpus {
     let mut a_samples = Vec::new();
 
     for_each_pool_opp(map, |sid, text, opp| {
-        let (am, bm) = if opp.is_dash { (&a_pd, &b_pd) } else { (&a_po, &b_po) };
+        let (am, bm) = if opp.is_dash {
+            (&a_pd, &b_pd)
+        } else {
+            (&a_po, &b_po)
+        };
         let acell = &am[&opp.mark];
         let bcell = &bm[&opp.mark];
         let al = eval_a_side(acell, 0, opp.a_left);
@@ -5779,7 +6470,8 @@ fn analyze_pooled(id: String, map: &Corpus) -> PoolCorpus {
 
         no_neighbour += u64::from(opp.a_left.is_none()) + u64::from(opp.a_right.is_none());
 
-        let a_hit = al.as_ref().is_some_and(|s| s.flagged) || ar.as_ref().is_some_and(|s| s.flagged);
+        let a_hit =
+            al.as_ref().is_some_and(|s| s.flagged) || ar.as_ref().is_some_and(|s| s.flagged);
         let b_hit = bl.flagged || br.flagged;
         if opp.is_dash {
             a_pd_findings += u64::from(a_hit);
@@ -5809,8 +6501,7 @@ fn analyze_pooled(id: String, map: &Corpus) -> PoolCorpus {
         };
 
         // Design-A side telemetry, samples, hierarchy.
-        for (side_idx, side_ch, aside, bside) in
-            [(0usize, 'L', &al, &bl), (1usize, 'R', &ar, &br)]
+        for (side_idx, side_ch, aside, bside) in [(0usize, 'L', &al, &bl), (1usize, 'R', &ar, &br)]
         {
             let Some(a) = aside else { continue };
             a_hist[sig_bucket(a.score)] += 1;
@@ -5824,9 +6515,7 @@ fn analyze_pooled(id: String, map: &Corpus) -> PoolCorpus {
                 // Design-B-only flag on a side Design A leaves silent: the
                 // rare-content prediction (b). Attached content the thin A pool
                 // can't judge.
-                if !opp.is_dash
-                    && bside.flagged
-                    && matches!(bside.cat, BCat::Number | BCat::Punct)
+                if !opp.is_dash && bside.flagged && matches!(bside.cat, BCat::Number | BCat::Punct)
                 {
                     pool_push(
                         &mut pred_b,
@@ -5847,7 +6536,11 @@ fn analyze_pooled(id: String, map: &Corpus) -> PoolCorpus {
             let n_cls = cc[0] + cc[1];
             let top = a_top_counts(acell, side_idx);
             let n_top = top[0] + top[1];
-            let (count, total) = if a.used_top { (top[a.bit], n_top) } else { (cc[a.bit], n_cls) };
+            let (count, total) = if a.used_top {
+                (top[a.bit], n_top)
+            } else {
+                (cc[a.bit], n_cls)
+            };
             let form = if a.bit == 0 { "attached" } else { "spaced" };
             let lvl = if a.used_top { "top" } else { a.cls.label() };
             let label = format!("A:{lvl}/{form}");
@@ -5998,7 +6691,11 @@ fn print_pool_census(mark: char, cell: &ACell) {
             if n == 0 {
                 continue;
             }
-            let conv = if pool_holds_convention(cc[0], cc[1]) { "*" } else { " " };
+            let conv = if pool_holds_convention(cc[0], cc[1]) {
+                "*"
+            } else {
+                " "
+            };
             print!(" | {tag}.{}={n}:{form}{share:.0}%{conv}", cls.label());
         }
     }
@@ -6011,15 +6708,16 @@ fn print_pool_census(mark: char, cell: &ACell) {
         }
         let (qf, qs, qn) = pool_dominant(q);
         let (of, os, on) = pool_dominant(o);
-        print!(
-            " || {tag}.punct[quote {qn}:{qf}{qs:.0}% / other {on}:{of}{os:.0}%]"
-        );
+        print!(" || {tag}.punct[quote {qn}:{qf}{qs:.0}% / other {on}:{of}{os:.0}%]");
     }
     println!();
 }
 
 fn pooled_single_report(c: &PoolCorpus) {
-    println!("=== POOLED-SPACING SPIKE: {} ({} verses) ===", c.id, c.verses);
+    println!(
+        "=== POOLED-SPACING SPIKE: {} ({} verses) ===",
+        c.id, c.verses
+    );
     let po_occ: u64 = c.a_po.values().flatten().flatten().flatten().sum();
     let pd_occ: u64 = c.a_pd.values().flatten().flatten().flatten().sum();
     println!(
@@ -6027,7 +6725,9 @@ fn pooled_single_report(c: &PoolCorpus) {
         c.digit_scalars as f64 * 100.0 / c.total_scalars.max(1) as f64,
         c.no_neighbour,
     );
-    println!("\n-- per-mark per-side per-class census (Design A; * = Wilson-dominant convention) --");
+    println!(
+        "\n-- per-mark per-side per-class census (Design A; * = Wilson-dominant convention) --"
+    );
     let mut order: Vec<(&char, &ACell)> = c.a_po.iter().collect();
     order.sort_by_key(|(_, m)| std::cmp::Reverse(m.iter().flatten().flatten().sum::<u64>()));
     for (mark, cell) in order.iter().take(14) {
@@ -6039,7 +6739,11 @@ fn pooled_single_report(c: &PoolCorpus) {
     );
     println!(
         "Design A level attribution: letter {} number {} punct(quote {}, other {}) top-fallback {}",
-        c.a_level.letter, c.a_level.number, c.a_level.punct_quote, c.a_level.punct_other, c.a_level.top
+        c.a_level.letter,
+        c.a_level.number,
+        c.a_level.punct_quote,
+        c.a_level.punct_other,
+        c.a_level.top
     );
     println!(
         "hierarchy: class-vs-top disagreements {}  double-flags {}",
@@ -6091,7 +6795,10 @@ fn pooled_regression(id: &str) {
     }
     let books = ssc_core::corpus::by_book(&map);
     let live = PunctuationSpacingAnomaly {
-        cfg: PunctuationSpacingConfig { emit_score_min: 0.0, ..Default::default() },
+        cfg: PunctuationSpacingConfig {
+            emit_score_min: 0.0,
+            ..Default::default()
+        },
     };
     let live_floor = f64::from(PunctuationSpacingConfig::default().emit_score_min);
     let findings = live.judge(&live.reduce(&books, None, None).0, &books, None, None);
@@ -6099,7 +6806,12 @@ fn pooled_regression(id: &str) {
     // Build the pools + a (key, mark_off) → opp reads lookup.
     let mut a_po: BTreeMap<char, ACell> = BTreeMap::new();
     let mut b_po: BTreeMap<char, BCell> = BTreeMap::new();
-    type OppRead = (Option<(bool, SubClass)>, Option<(bool, SubClass)>, BCat, BCat);
+    type OppRead = (
+        Option<(bool, SubClass)>,
+        Option<(bool, SubClass)>,
+        BCat,
+        BCat,
+    );
     let mut reads: HashMap<(String, usize), OppRead> = HashMap::new();
     for_each_pool_opp(&map, |key, _text, opp| {
         if opp.is_dash {
@@ -6115,14 +6827,19 @@ fn pooled_regression(id: &str) {
         let bc = b_po.entry(opp.mark).or_insert([[0u64; 4]; 2]);
         bc[0][opp.b_left.index()] += 1;
         bc[1][opp.b_right.index()] += 1;
-        reads.insert((key.to_string(), opp.mark_off), (opp.a_left, opp.a_right, opp.b_left, opp.b_right));
+        reads.insert(
+            (key.to_string(), opp.mark_off),
+            (opp.a_left, opp.a_right, opp.b_left, opp.b_right),
+        );
     });
 
     let mut shipped = 0u64;
     let (mut a_op_keep, mut a_letter_keep, mut b_keep) = (0u64, 0u64, 0u64);
     let mut changed: Vec<String> = Vec::new();
     for f in &findings {
-        let Some(FindingArgs::SpacingConvention { mark, left, right }) = &f.args else { continue };
+        let Some(FindingArgs::SpacingConvention { mark, left, right }) = &f.args else {
+            continue;
+        };
         if f.score.unwrap_or(0.0) as f64 <= 0.0 || (f.score.unwrap_or(0.0) as f64) < live_floor {
             continue;
         }
@@ -6133,7 +6850,9 @@ fn pooled_regression(id: &str) {
         let mark_off = text[f.range.start as usize..f.range.end as usize]
             .find(mark)
             .map(|rel| f.range.start as usize + rel);
-        let Some((al, ar, blc, brc)) = mark_off.and_then(|o| reads.get(&(key.to_string(), o)).copied()) else {
+        let Some((al, ar, blc, brc)) =
+            mark_off.and_then(|o| reads.get(&(key.to_string(), o)).copied())
+        else {
             changed.push(format!("    {:<10} {:?} (no opp match)", key, mark));
             continue;
         };
@@ -6317,11 +7036,15 @@ fn pooled_fleet(dir: &Path) {
     }
 
     println!("=== POOLED-SPACING SPIKE — fleet aggregate ({total} corpora) ===");
-    println!("SPIKE — measurement only, nothing frozen. Reference constants: z 1.96, knee k=32 + 40/10k on the pool, floor 0.5.");
+    println!(
+        "SPIKE — measurement only, nothing frozen. Reference constants: z 1.96, knee k=32 + 40/10k on the pool, floor 0.5."
+    );
     println!("no-neighbour sides (book-edge seam-cross found nothing): {no_neighbour}");
 
     // 1. Per-pool volume census.
-    println!("\n══ 1. Per-pool volume census (Design A; * = Wilson-dominant convention at floor) ══");
+    println!(
+        "\n══ 1. Per-pool volume census (Design A; * = Wilson-dominant convention at floor) ══"
+    );
     for &mark in POOL_FOCUS_MARKS {
         if let Some(cell) = focus_a.get(&mark) {
             print_pool_census(mark, cell);
@@ -6337,7 +7060,10 @@ fn pooled_fleet(dir: &Path) {
     let diverse = |v: &[PoolSample], cap: usize| {
         let mut s = v.to_vec();
         s.sort_by(|a, b| {
-            b.score.partial_cmp(&a.score).unwrap().then_with(|| a.corpus.cmp(&b.corpus))
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap()
+                .then_with(|| a.corpus.cmp(&b.corpus))
         });
         let mut out = Vec::new();
         let mut per: BTreeMap<String, u64> = BTreeMap::new();
@@ -6370,10 +7096,19 @@ fn pooled_fleet(dir: &Path) {
 
     // 4. Fleet totals + per-class delta.
     println!("\n══ 4. Fleet totals + per-class delta ══");
-    println!("  shipped {shipped}  →  Design A {a_tot}  (delta {:+})   Design B {b_tot}  (delta {:+})", a_tot as i64 - shipped as i64, b_tot as i64 - shipped as i64);
+    println!(
+        "  shipped {shipped}  →  Design A {a_tot}  (delta {:+})   Design B {b_tot}  (delta {:+})",
+        a_tot as i64 - shipped as i64,
+        b_tot as i64 - shipped as i64
+    );
     println!(
         "  Design A findings by pool level: letter {} | number {} | punct(quote {} / other {}) | top-fallback {}  (total flagged sides {})",
-        a_level.letter, a_level.number, a_level.punct_quote, a_level.punct_other, a_level.top, a_level.total()
+        a_level.letter,
+        a_level.number,
+        a_level.punct_quote,
+        a_level.punct_other,
+        a_level.top,
+        a_level.total()
     );
     println!(
         "  Design B flagged sides by observed category: letter {} | number {} | ws {} | punct {}",
@@ -6392,11 +7127,15 @@ fn pooled_fleet(dir: &Path) {
     }
     println!("\n  disagreement (a) — A flags spaced-content, Design B structurally blind (Ws):");
     print_pool_samples(&diverse(&pred_a, 16));
-    println!("\n  disagreement (b) — Design B flags rare-content attachment, Design A's thin pool silent:");
+    println!(
+        "\n  disagreement (b) — Design B flags rare-content attachment, Design A's thin pool silent:"
+    );
     print_pool_samples(&diverse(&pred_b, 16));
 
     // Pd lane.
-    println!("\n══ Pd dash lane (separately reported — domain widening is an adjudication, not this spike's decision) ══");
+    println!(
+        "\n══ Pd dash lane (separately reported — domain widening is an adjudication, not this spike's decision) ══"
+    );
     println!("  Design A dash findings {a_pd_tot}   Design B dash findings {b_pd_tot}");
     println!("  fleet-summed dash per-side per-class census:");
     let mut pd_order: Vec<(&char, &ACell)> = pd_a.iter().collect();
@@ -6411,8 +7150,12 @@ fn pooled_fleet(dir: &Path) {
     println!("\n══ Head-to-head verdict ══");
     println!("  criterion                              Design A                         Design B");
     println!("  fleet findings (Po)                    {a_tot:<32} {b_tot}");
-    println!("  spaced-side-vs-content judgeable        yes (class conditions the pool)  NO (ws is terminal)");
-    println!("  rare-content hapax over-flag           thin pool self-gates (Wilson)    flags (non-modal content)");
+    println!(
+        "  spaced-side-vs-content judgeable        yes (class conditions the pool)  NO (ws is terminal)"
+    );
+    println!(
+        "  rare-content hapax over-flag           thin pool self-gates (Wilson)    flags (non-modal content)"
+    );
     println!("  see pred(a)/pred(b) samples + regression above for the confirmed/refuted calls.");
 }
 
@@ -6445,22 +7188,38 @@ mod pooled_tests {
         // English attached comma: letter-attached left, letter-spaced right.
         assert_eq!(
             a_reads("word, word"),
-            vec![(',', Some((true, SubClass::Letter)), Some((false, SubClass::Letter)))]
+            vec![(
+                ',',
+                Some((true, SubClass::Letter)),
+                Some((false, SubClass::Letter))
+            )]
         );
         // Missing space after: letter-attached both sides.
         assert_eq!(
             a_reads("word,word"),
-            vec![(',', Some((true, SubClass::Letter)), Some((true, SubClass::Letter)))]
+            vec![(
+                ',',
+                Some((true, SubClass::Letter)),
+                Some((true, SubClass::Letter))
+            )]
         );
         // A decimal: number-attached both sides (the digit pool).
         assert_eq!(
             a_reads("7.8"),
-            vec![('.', Some((true, SubClass::Number)), Some((true, SubClass::Number)))]
+            vec![(
+                '.',
+                Some((true, SubClass::Number)),
+                Some((true, SubClass::Number))
+            )]
         );
         // Spaced-from-a-number (`7. 800`): number class, SPACED bit on the right.
         assert_eq!(
             a_reads("7. 800"),
-            vec![('.', Some((true, SubClass::Number)), Some((false, SubClass::Number)))]
+            vec![(
+                '.',
+                Some((true, SubClass::Number)),
+                Some((false, SubClass::Number))
+            )]
         );
     }
 
@@ -6469,12 +7228,23 @@ mod pooled_tests {
         // `word."` — the period's right neighbour is a straight quote: sub-class
         // Quote (attached), whose model class is Punct.
         let r = a_reads("word.\"");
-        assert_eq!(r, vec![('.', Some((true, SubClass::Letter)), Some((true, SubClass::Quote)))]);
+        assert_eq!(
+            r,
+            vec![(
+                '.',
+                Some((true, SubClass::Letter)),
+                Some((true, SubClass::Quote))
+            )]
+        );
         assert_eq!(SubClass::Quote.pclass(), PClass::Punct);
         // Spaced from the quote: `word ."` — quote sub-class, spaced bit.
         assert_eq!(
             a_reads("word .\""),
-            vec![('.', Some((false, SubClass::Letter)), Some((true, SubClass::Quote)))]
+            vec![(
+                '.',
+                Some((false, SubClass::Letter)),
+                Some((true, SubClass::Quote))
+            )]
         );
     }
 
@@ -6507,14 +7277,21 @@ mod pooled_tests {
         });
         // Left = letter attached (Alpha); right = spaced (seam), class Letter
         // (Beta's first edge grapheme across the seam).
-        assert_eq!(got, Some((Some((true, SubClass::Letter)), Some((false, SubClass::Letter)))));
+        assert_eq!(
+            got,
+            Some((
+                Some((true, SubClass::Letter)),
+                Some((false, SubClass::Letter))
+            ))
+        );
     }
 
     #[test]
     fn book_edge_has_no_neighbour() {
         // A mark at the very end of the last verse of the book: right seam finds
         // nothing → no neighbour on that side.
-        let vm = Corpus::try_from_parts(vec!["GEN 1:1".to_string()], vec!["End.".to_string()]).unwrap();
+        let vm =
+            Corpus::try_from_parts(vec!["GEN 1:1".to_string()], vec!["End.".to_string()]).unwrap();
         let mut got = None;
         for_each_pool_opp(&vm, |_key, _t, opp| {
             if opp.mark == '.' {
@@ -6549,11 +7326,17 @@ mod pooled_tests {
         cell[1][SubClass::Letter.index()][0] = 300; // right letter attached
         let l = eval_a_side(&cell, 0, Some((true, SubClass::Letter))).unwrap();
         let r = eval_a_side(&cell, 1, Some((true, SubClass::Letter))).unwrap();
-        assert!(!l.flagged && !r.flagged, "medial-attached dash is the convention, silent");
+        assert!(
+            !l.flagged && !r.flagged,
+            "medial-attached dash is the convention, silent"
+        );
         // A lone SPACED dash in that attached-convention corpus is the anomaly.
         cell[1][SubClass::Letter.index()][1] = 1; // one spaced-right
         let anom = eval_a_side(&cell, 1, Some((false, SubClass::Letter))).unwrap();
-        assert!(anom.flagged, "the lone spaced dash surfaces against the attached convention");
+        assert!(
+            anom.flagged,
+            "the lone spaced dash surfaces against the attached convention"
+        );
     }
 
     #[test]
@@ -6565,7 +7348,10 @@ mod pooled_tests {
         let mut cell: ACell = [[[0u64; 2]; 4]; 2];
         cell[1][SubClass::Number.index()][0] = 1; // one attached number-right
         let cc = a_class_counts(&cell, 1, PClass::Number);
-        assert!(!pool_holds_convention(cc[0], cc[1]), "N=1 number pool holds no convention");
+        assert!(
+            !pool_holds_convention(cc[0], cc[1]),
+            "N=1 number pool holds no convention"
+        );
     }
 }
 
@@ -6609,7 +7395,12 @@ impl OracleScope {
     /// `full` → `Full`, `wa` → `Wa`. Anything else is a hard error so a typo
     /// can't silently widen the pass back to the full fleet.
     fn parse(rest: &[String]) -> Self {
-        match rest.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
+        match rest
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+            .as_slice()
+        {
             [] | ["full"] => Self::Full,
             ["wa"] => Self::Wa,
             other => panic!("unknown oracle scope {other:?} (want wa|full)"),
@@ -6665,7 +7456,9 @@ fn write_findings(
     findings: &[Finding],
 ) {
     for f in ssc_core::corpus::resolve_findings(corpus, findings) {
-        let score = f.score.map_or_else(|| "-".to_string(), |s| format!("{s:.6}"));
+        let score = f
+            .score
+            .map_or_else(|| "-".to_string(), |s| format!("{s:.6}"));
         let args = f
             .args
             .as_ref()
@@ -6720,7 +7513,13 @@ fn fnv64(s: &str) -> u64 {
 /// word, a spaced comma, an unbalanced paren.
 const EDIT_TEXT: &str = "He fell ,, the  gate stood.. qQx deJésus (broken";
 
-fn dump_incremental(path: &Path, out_path: &Path, cfg_name: &str, cached: bool, scope: OracleScope) {
+fn dump_incremental(
+    path: &Path,
+    out_path: &Path,
+    cfg_name: &str,
+    cached: bool,
+    scope: OracleScope,
+) {
     let cfg = oracle_config(cfg_name);
     let source = oracle_source(path);
     let files = oracle_files(path, scope);
@@ -6738,14 +7537,7 @@ fn dump_incremental(path: &Path, out_path: &Path, cfg_name: &str, cached: bool, 
         }
         let mut cache = cached.then(AnalysisCache::new);
         let (_, prior) =
-            ssc_core::analyze_stateful(
-                &target,
-                source.as_ref(),
-                &cfg,
-                None,
-                None,
-                cache.as_mut(),
-            );
+            ssc_core::analyze_stateful(&target, source.as_ref(), &cfg, None, None, cache.as_mut());
         // The edit: last verse of the first book. `Books` from `by_book` is
         // in presented order, so the first group always starts at position 0
         // — no need to resolve its global `KeyIdx` base (which this example,
@@ -6817,7 +7609,6 @@ fn time_configs(path: &Path) {
     }
 }
 
-
 // ─────────────────────────────────────────────────────────────────────────
 // Census (absolute mode) harness — plan 2026-07-10.
 // ─────────────────────────────────────────────────────────────────────────
@@ -6836,12 +7627,25 @@ fn census_single(path: &Path) {
         wire / 1024
     );
     for s in &inv.sections {
-        println!("\n== {:?} — lane_total {}, rows {}", s.id, s.lane_total, s.rows.len());
+        println!(
+            "\n== {:?} — lane_total {}, rows {}",
+            s.id,
+            s.lane_total,
+            s.rows.len()
+        );
         for r in s.rows.iter().take(20) {
-            println!("  {:>8}  {:?}  ({} examples)", r.count, r.key, r.examples.len());
+            println!(
+                "  {:>8}  {:?}  ({} examples)",
+                r.count,
+                r.key,
+                r.examples.len()
+            );
         }
         if s.rows.len() > 20 {
-            println!("  … {} more (ascending; tail above is the rare end)", s.rows.len() - 20);
+            println!(
+                "  … {} more (ascending; tail above is the rare end)",
+                s.rows.len() - 20
+            );
         }
     }
 }

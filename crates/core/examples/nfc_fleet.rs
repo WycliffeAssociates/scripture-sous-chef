@@ -12,7 +12,7 @@ use std::io::Write;
 use std::path::Path;
 
 use rayon::prelude::*;
-use unicode_normalization::{is_nfc, is_nfd, UnicodeNormalization};
+use unicode_normalization::{UnicodeNormalization, is_nfc, is_nfd};
 use unicode_segmentation::UnicodeSegmentation;
 
 #[path = "../dev/vref_io.rs"]
@@ -22,16 +22,19 @@ use vref_io::load_corpus;
 #[derive(Default)]
 struct Stats {
     verses: usize,
-    composed: u64,   // NFC form, has a decomposition (é)
-    decomposed: u64, // NFD form (e + combining)
-    neither: u64,    // precomposed-but-excluded (Bengali য়) / bad mark order
-    mixed_keys: u32, // distinct abstract chars appearing in >=2 raw forms
-    mixed_occ: u64,  // total occurrences belonging to mixed keys
+    composed: u64,     // NFC form, has a decomposition (é)
+    decomposed: u64,   // NFD form (e + combining)
+    neither: u64,      // precomposed-but-excluded (Bengali য়) / bad mark order
+    mixed_keys: u32,   // distinct abstract chars appearing in >=2 raw forms
+    mixed_occ: u64,    // total occurrences belonging to mixed keys
     minority_occ: u64, // occurrences NOT in the majority form of a mixed key
 }
 
 fn survey(map: &ssc_core::Corpus) -> Stats {
-    let mut s = Stats { verses: map.len(), ..Default::default() };
+    let mut s = Stats {
+        verses: map.len(),
+        ..Default::default()
+    };
     // nfc_key -> (raw_form -> count), only for non-neutral clusters.
     let mut classes: HashMap<String, HashMap<String, u64>> = HashMap::new();
 
@@ -52,7 +55,11 @@ fn survey(map: &ssc_core::Corpus) -> Stats {
                 s.neither += 1;
             }
             let key: String = g.nfc().collect();
-            *classes.entry(key).or_default().entry(g.to_string()).or_default() += 1;
+            *classes
+                .entry(key)
+                .or_default()
+                .entry(g.to_string())
+                .or_default() += 1;
         }
     }
 
@@ -111,8 +118,14 @@ fn main() {
         .count();
 
     println!("\n=== FLEET SUMMARY ({total} corpora) ===");
-    println!("corpora with ANY mixing (>=1 abstract char in 2 forms): {any_mix}  ({:.1}%)", pct(any_mix, total));
-    println!("corpora with MATERIAL mixing (minority-form occ >= 5):   {material_mix}  ({:.1}%)", pct(material_mix, total));
+    println!(
+        "corpora with ANY mixing (>=1 abstract char in 2 forms): {any_mix}  ({:.1}%)",
+        pct(any_mix, total)
+    );
+    println!(
+        "corpora with MATERIAL mixing (minority-form occ >= 5):   {material_mix}  ({:.1}%)",
+        pct(material_mix, total)
+    );
     println!("--- dominant meaningful form (of corpora that have any) ---");
     println!("mostly composed (NFC):   {mostly_composed}");
     println!("mostly decomposed (NFD): {mostly_decomposed}");
@@ -122,7 +135,10 @@ fn main() {
     // Top mixers by minority-form occurrences.
     rows.sort_by_key(|b| std::cmp::Reverse(b.1.minority_occ));
     println!("\n=== TOP 25 MIXERS (by minority-form occurrences) ===");
-    println!("{:<24} {:>7} {:>9} {:>11} {:>11} {:>10}", "corpus", "mixKeys", "minority", "%composed", "%decomp", "%neither");
+    println!(
+        "{:<24} {:>7} {:>9} {:>11} {:>11} {:>10}",
+        "corpus", "mixKeys", "minority", "%composed", "%decomp", "%neither"
+    );
     for (id, s) in rows.iter().take(25) {
         let meaningful = (s.composed + s.decomposed + s.neither).max(1);
         println!(
@@ -138,16 +154,33 @@ fn main() {
     // Full TSV to scratchpad.
     let out = "/private/tmp/claude-503/-Users-willkelly-Documents-Work-Code-scripture-sous-chef/1a7e5b9d-fb1c-48ce-aadb-10d97cb3a6f3/scratchpad/nfc_fleet.tsv";
     if let Ok(mut f) = fs::File::create(out) {
-        let _ = writeln!(f, "id\tverses\tcomposed\tdecomposed\tneither\tmixed_keys\tmixed_occ\tminority_occ");
+        let _ = writeln!(
+            f,
+            "id\tverses\tcomposed\tdecomposed\tneither\tmixed_keys\tmixed_occ\tminority_occ"
+        );
         // stable order by id for the file
         rows.sort_by(|a, b| a.0.cmp(&b.0));
         for (id, s) in &rows {
-            let _ = writeln!(f, "{id}\t{}\t{}\t{}\t{}\t{}\t{}\t{}", s.verses, s.composed, s.decomposed, s.neither, s.mixed_keys, s.mixed_occ, s.minority_occ);
+            let _ = writeln!(
+                f,
+                "{id}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                s.verses,
+                s.composed,
+                s.decomposed,
+                s.neither,
+                s.mixed_keys,
+                s.mixed_occ,
+                s.minority_occ
+            );
         }
         println!("\nfull table -> {out}");
     }
 }
 
 fn pct(n: usize, d: usize) -> f64 {
-    if d == 0 { 0.0 } else { 100.0 * n as f64 / d as f64 }
+    if d == 0 {
+        0.0
+    } else {
+        100.0 * n as f64 / d as f64
+    }
 }

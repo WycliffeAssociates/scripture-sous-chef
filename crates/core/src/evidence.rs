@@ -165,7 +165,10 @@ mod tests {
         assert!((wilson_lower_bound(1, 4, 0.0) - 0.25).abs() < 1e-9); // z=0 ⇒ observed
         for &(k, n, z) in &[(0, 1, 1.96), (1, 1, 1.96), (7, 7, 3.0), (3, 1000, 1.96)] {
             let lb = wilson_lower_bound(k, n, z);
-            assert!(lb.is_finite() && (0.0..=1.0).contains(&lb), "lb={lb} for {k}/{n}");
+            assert!(
+                lb.is_finite() && (0.0..=1.0).contains(&lb),
+                "lb={lb} for {k}/{n}"
+            );
         }
     }
 
@@ -200,7 +203,10 @@ mod tests {
             assert!((odds_amplify(1.0, g) - 1.0).abs() < 1e-12);
         }
         for &e in &[0.1, 0.5, 0.9] {
-            assert!(odds_amplify(e, 2.0) > odds_amplify(e, 1.0), "gain raises e={e}");
+            assert!(
+                odds_amplify(e, 2.0) > odds_amplify(e, 1.0),
+                "gain raises e={e}"
+            );
             for &g in &[1.0, 2.0, 8.0] {
                 let r = odds_amplify(e, g);
                 assert!((0.0..=1.0).contains(&r) && r.is_finite());
