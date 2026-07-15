@@ -17,7 +17,7 @@
 //!   whole corpus + prior; the edited book re-counts by content hash, clean
 //!   books carry, emission is global
 //! - `analyze/cached_edit_{3JN,PSA}` — the same complete-snapshot call with
-//!   `AnalysisCache` warmed in setup; clean books reuse both cache lanes
+//!   `PrepCache` warmed in setup; clean books reuse both cache lanes
 //! - `analyze/full_devanagari`— hi_ulb, the expensive-script case
 //! - `proportionality/nt_vs_bible` — bem_reg vs en_ulb through the rule
 //!
@@ -37,7 +37,7 @@ use ssc_core::key::parse_key;
 use ssc_core::rule::StatefulRule;
 use ssc_core::script::is_nt_book;
 use ssc_core::signals::proportionality::ProjectLengthRatio;
-use ssc_core::{AnalysisCache, Config, Corpus, analyze, analyze_stateful};
+use ssc_core::{PrepCache, Config, Corpus, analyze, analyze_stateful};
 
 #[path = "../dev/vref_io.rs"]
 mod vref_io;
@@ -158,7 +158,7 @@ fn bench_analyze(c: &mut Criterion) {
             g.bench_function(format!("cached_edit_{code}"), |b| {
                 b.iter_batched(
                     || {
-                        let mut cache = AnalysisCache::new();
+                        let mut cache = PrepCache::new();
                         let (_, prior) =
                             analyze_stateful(&bible, None, &cfg, None, Some(&mut cache));
                         (prior, cache)

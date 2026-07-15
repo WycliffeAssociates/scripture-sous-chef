@@ -53,7 +53,7 @@ use ssc_core::signals::proportionality::ProjectLengthRatio;
 use ssc_core::signals::punctuation::{PunctuationAdjacencyAnomaly, PunctuationSpacingAnomaly};
 use ssc_core::token::tokenize;
 use ssc_core::{
-    AnalysisCache, BracketMeasure, Config, Corpus, Finding, FindingArgs, LengthRatioScope, RuleId,
+    PrepCache, BracketMeasure, Config, Corpus, Finding, FindingArgs, LengthRatioScope, RuleId,
     analyze, analyze_with_config,
 };
 
@@ -7565,7 +7565,7 @@ fn dump_incremental(
         if target.is_empty() {
             continue;
         }
-        let mut cache = cached.then(AnalysisCache::new);
+        let mut cache = cached.then(PrepCache::new);
         let (_, prior) =
             ssc_core::analyze_stateful(&target, source.as_ref(), &cfg, None, cache.as_mut());
         // The edit: last verse of the first book. `Books` from `by_book` is

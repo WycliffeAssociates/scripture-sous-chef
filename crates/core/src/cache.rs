@@ -30,8 +30,13 @@ pub(crate) struct CachedPerVerseFinding {
     range: Span,
 }
 
-/// Cross-call memoization for pure per-book analysis products.
-pub struct AnalysisCache {
+/// Cross-call memoization for pure per-book analysis products: per-verse
+/// findings and walk products, keyed by a content hash of the book's text.
+/// Everything here is a pure function of that text (+ config), so a hash match
+/// is always safe to reuse and the whole cache is droppable at any moment for
+/// the price of a re-walk. It plays no part in the counting decision — proving
+/// which books re-tally is `Stats::tallied`'s job, not the cache's.
+pub struct PrepCache {
     fingerprint: Option<u64>,
     pub(crate) books: FxHashMap<Box<str>, BookEntry>,
     #[cfg(test)]
@@ -44,13 +49,13 @@ pub struct AnalysisCache {
     walk_misses: usize,
 }
 
-impl Default for AnalysisCache {
+impl Default for PrepCache {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl AnalysisCache {
+impl PrepCache {
     pub fn new() -> Self {
         Self {
             fingerprint: None,
@@ -338,7 +343,7 @@ mod tests {
 
     #[test]
     fn fingerprint_change_clears_entries() {
-        let mut cache = AnalysisCache::new();
+        let mut cache = PrepCache::new();
         let cfg = Config::v1_defaults();
         cache.ensure_fingerprint(&cfg);
         cache.store_per_verse("GEN", 1, KeyIdx::from_usize(0), &[]);
@@ -352,7 +357,7 @@ mod tests {
 
     #[test]
     fn content_replacement_clears_both_lanes_atomically() {
-        let mut cache = AnalysisCache::new();
+        let mut cache = PrepCache::new();
         let cfg = Config::v1_defaults();
         cache.ensure_fingerprint(&cfg);
 

@@ -32,7 +32,7 @@ mod tape;
 pub mod token;
 pub mod unicode;
 
-pub use cache::AnalysisCache;
+pub use cache::PrepCache;
 pub use catalog::{RuleCard, SENSITIVITY_STOPS, Verdict, rule_cards};
 pub use census::{CensusOptions, Inventory, census};
 pub use config::{
@@ -139,7 +139,7 @@ pub fn analyze_stateful(
     source: Option<&Corpus>,
     config: &Config,
     prior: Option<Stats>,
-    cache: Option<&mut AnalysisCache>,
+    cache: Option<&mut PrepCache>,
 ) -> (Vec<Finding>, Stats) {
     use std::collections::BTreeMap;
 
@@ -852,7 +852,7 @@ mod tests {
             keyed("EXO", &["x\ty", "clean"]),
         ]);
         let cfg = Config::v1_defaults();
-        let mut cache = AnalysisCache::new();
+        let mut cache = PrepCache::new();
 
         let (cold_findings, cold_stats) =
             analyze_stateful(&target, None, &cfg, None, Some(&mut cache));
@@ -880,7 +880,7 @@ mod tests {
             keyed("EXO", &["x\ty", "clean"]),
         ]);
         let cfg = Config::all();
-        let mut cache = AnalysisCache::new();
+        let mut cache = PrepCache::new();
 
         let (_, _) = analyze_stateful(&target, None, &cfg, None, Some(&mut cache));
         let mut changed_cfg = cfg.clone();
@@ -920,7 +920,7 @@ mod tests {
         ]);
 
         let cfg = Config::all();
-        let mut cache = AnalysisCache::new();
+        let mut cache = PrepCache::new();
         let (cold_cached_findings, cold_cached_stats) =
             analyze_stateful(&original, None, &cfg, None, Some(&mut cache));
         let (cold_findings, cold_stats) = analyze_stateful(&original, None, &cfg, None, None);
@@ -960,7 +960,7 @@ mod tests {
     #[test]
     fn cache_rebases_correctly_when_an_earlier_book_grows() {
         let cfg = Config::all();
-        let mut cache = AnalysisCache::new();
+        let mut cache = PrepCache::new();
         let original = corpus_of(vec![
             keyed("GEN", &["a  b", "one"]),
             keyed("EXO", &["x\ty", "two"]),
@@ -1000,7 +1000,7 @@ mod tests {
     #[test]
     fn cache_rebases_correctly_when_an_earlier_book_shrinks() {
         let cfg = Config::all();
-        let mut cache = AnalysisCache::new();
+        let mut cache = PrepCache::new();
         let original = corpus_of(vec![
             keyed("GEN", &["a  b", "one", "extra  space"]),
             keyed("EXO", &["x\ty", "two"]),
@@ -1042,7 +1042,7 @@ mod tests {
             keyed("LEV", &["clean text", "three"]),
         ]);
         let cfg = Config::all();
-        let mut cache = AnalysisCache::new();
+        let mut cache = PrepCache::new();
         let (_, prior) = analyze_stateful(&original, None, &cfg, None, Some(&mut cache));
         let old_gen_hash = cache.entry_hash("GEN").unwrap();
         let old_exo_hash = cache.entry_hash("EXO").unwrap();
@@ -1081,7 +1081,7 @@ mod tests {
     #[test]
     fn cached_empty_and_prior_none_calls_reuse_caseless_sentinel() {
         let cfg = Config::all();
-        let mut cache = AnalysisCache::new();
+        let mut cache = PrepCache::new();
         let empty = Corpus::try_from_parts(Vec::new(), Vec::new()).unwrap();
         let (_, _) = analyze_stateful(&empty, None, &cfg, None, Some(&mut cache));
         assert_eq!(cache.book_count(), 0);
@@ -1117,7 +1117,7 @@ mod tests {
             keyed("EXO", &["a  b, joyfullly", "A1 α qQx"]),
         ]);
         let cfg = Config::all();
-        let mut cache = AnalysisCache::new();
+        let mut cache = PrepCache::new();
         let (_, prior) = analyze_stateful(&original, None, &cfg, None, Some(&mut cache));
         assert_ne!(
             prior,
@@ -1142,7 +1142,7 @@ mod tests {
             keyed("EXO", &["x\ty", "two"]),
         ]);
         let cfg = Config::v1_defaults();
-        let mut cache = AnalysisCache::new();
+        let mut cache = PrepCache::new();
         let (_, prior) = analyze_stateful(&full, None, &cfg, None, Some(&mut cache));
         let gen_hash = cache.entry_hash("GEN").unwrap();
         let exo_hash = cache.entry_hash("EXO").unwrap();
@@ -1545,7 +1545,7 @@ mod tests {
         ]);
         let cfg = Config::all();
         let (_, prior_uncached) = analyze_stateful(&original, None, &cfg, None, None);
-        let mut cache = AnalysisCache::new();
+        let mut cache = PrepCache::new();
         let (_, prior_cached) = analyze_stateful(&original, None, &cfg, None, Some(&mut cache));
 
         let edited = corpus_of(vec![
