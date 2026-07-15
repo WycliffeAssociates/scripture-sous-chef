@@ -305,13 +305,6 @@ pub fn analyze_stateful(
             .collect()
     });
     let counted: Option<&[&str]> = stale.as_deref();
-    // Counting-side probe: how many books entered the tally scope this call.
-    // Distinct from walk reuse — a knob-only change clears prep yet re-tallies
-    // nothing, and only this count proves it.
-    #[cfg(test)]
-    if let Some(cache) = cache.as_deref_mut() {
-        cache.note_retallied(counted.map_or(books.len(), <[&str]>::len));
-    }
 
     // A walk-product hit is safe only for a clean book in the complete
     // snapshot shape. Echo and cold calls must walk every supplied book so
@@ -413,6 +406,16 @@ pub fn analyze_stateful(
     } else {
         stream::walk_fused(&books, counted, source, &plan)
     };
+
+    // Counting-side probe: count the books the fused walk actually tallied,
+    // observed from `BookOut::counted` rather than the derived stale set — so a
+    // counting path that ignored `counted` (and re-tallied everything) would be
+    // caught, not hidden. A knob-only change clears prep (every book re-walks for
+    // sites) yet tallies nothing.
+    #[cfg(test)]
+    if let Some(cache) = cache {
+        cache.note_retallied(fused.iter().filter(|o| o.counted).count());
+    }
 
     let token_cache: Option<rule::TokenCache> = plan
         .collect_tokens

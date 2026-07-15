@@ -5,8 +5,9 @@
 //! aggregate *plus* the cached candidate observations), then **judges**
 //! from that alone — so re-judging the whole corpus after an edit is
 //! `O(candidates)` with no re-scan. The shell holds `Stats` as a value and
-//! supplies it back as `prior`; on edit it re-supplies the edited books,
-//! which **supersede** their prior entries at book granularity. Core stays
+//! supplies it back as `prior` alongside the corpus it holds — the whole
+//! corpus, or a subset — and each supplied book **supersedes** its prior entry
+//! at book granularity while books it does not supply carry forward. Core stays
 //! pure (ADR 0010): it holds no state between calls.
 
 use std::collections::BTreeMap;
@@ -196,8 +197,10 @@ mod hex_u64 {
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
 pub struct Stats {
-    // Only enabled stateful rules appear, so the wire type is a *partial*
-    // record, not every `RuleId`.
+    // A *partial* record, not every `RuleId`: a rule gains an entry once it has
+    // been tallied, and that entry is retained even while the rule is disabled —
+    // so a disable→re-enable round trip keeps the rule's contribution instead of
+    // dropping it. Hence `Partial<Record<...>>` on the wire.
     #[cfg_attr(feature = "wasm", tsify(type = "Partial<Record<RuleId, RuleStats>>"))]
     rules: BTreeMap<RuleId, RuleStats>,
     /// Per-book provenance ([`Tally`]): what text, which same-slug source book,
