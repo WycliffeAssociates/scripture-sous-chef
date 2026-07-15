@@ -300,7 +300,7 @@ fn walk_book(
         plan.collect_tokens.then(|| Vec::with_capacity(group.len()));
 
     for (vi, (key, text)) in group.keys.iter().zip(group.texts.iter()).enumerate() {
-        let local_idx = LocalKeyIdx::new(vi as u16);
+        let local_idx = LocalKeyIdx::from_usize(vi);
         let text = text.as_str();
         if needs.tape {
             tape::build(text, &mut tape_buf);
@@ -413,7 +413,7 @@ pub(crate) fn drive_book<'g, A, T>(
     let mut tokens_buf: Vec<Token> = Vec::new();
     let mut folds_buf: Vec<Option<Cow<str>>> = Vec::new();
     for (vi, (key, text)) in group.keys.iter().zip(group.texts.iter()).enumerate() {
-        let local_idx = LocalKeyIdx::new(vi as u16);
+        let local_idx = LocalKeyIdx::from_usize(vi);
         let text = text.as_str();
         if needs.tape {
             tape::build(text, &mut tape_buf);

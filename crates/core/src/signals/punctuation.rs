@@ -235,7 +235,7 @@ impl StatefulRule for PunctuationAdjacencyAnomaly {
             } else {
                 let mut tape = Vec::new();
                 for (vi, text) in group.texts.iter().enumerate() {
-                    let key_idx = rebase(group.base, LocalKeyIdx::new(vi as u16));
+                    let key_idx = rebase(group.base, LocalKeyIdx::from_usize(vi));
                     crate::tape::build(text, &mut tape);
                     for span in adjacency_candidates(&tape) {
                         score(key_idx, text, span, &mut found);
@@ -1016,7 +1016,7 @@ fn for_each_spacing_opportunity(
         let left_cross = (0..vi).rev().find_map(|jj| edges[jj].1);
         let right_cross = (vi + 1..group.len()).find_map(|jj| edges[jj].0);
         for opp in spacing_opportunities(text, &per_verse[vi], left_cross, right_cross) {
-            f(LocalKeyIdx::new(vi as u16), &opp);
+            f(LocalKeyIdx::from_usize(vi), &opp);
         }
     }
 }
@@ -1939,11 +1939,11 @@ mod tests {
     fn cross_seam_class_is_resolved_from_book_neighbours() {
         let vm = book("GEN", &[(1, "see verse.".to_string()), (2, "3 fish".to_string())]);
         let o = book_opps(&vm);
-        let v1_period = o.iter().find(|(s, m, ..)| *s == LocalKeyIdx::new(0) && *m == '.').unwrap();
+        let v1_period = o.iter().find(|(s, m, ..)| *s == LocalKeyIdx::from_usize(0) && *m == '.').unwrap();
         assert_eq!(v1_period.3, read(PoolClass::Number, SideForm::Spaced));
         let vm2 = book("GEN", &[(1, "amen".to_string()), (2, ".word".to_string())]);
         let o2 = book_opps(&vm2);
-        let lead = o2.iter().find(|(s, m, ..)| *s == LocalKeyIdx::new(1) && *m == '.').unwrap();
+        let lead = o2.iter().find(|(s, m, ..)| *s == LocalKeyIdx::from_usize(1) && *m == '.').unwrap();
         assert_eq!(lead.2, read(PoolClass::Letter, SideForm::Spaced));
     }
 
@@ -1951,9 +1951,9 @@ mod tests {
     fn first_and_last_verse_book_edges_abstain() {
         let vm = book("GEN", &[(1, ".open".to_string()), (2, "close.".to_string())]);
         let o = book_opps(&vm);
-        let lead = o.iter().find(|(s, m, ..)| *s == LocalKeyIdx::new(0) && *m == '.').unwrap();
+        let lead = o.iter().find(|(s, m, ..)| *s == LocalKeyIdx::from_usize(0) && *m == '.').unwrap();
         assert_eq!(lead.2, None, "book-initial leading mark abstains on the left");
-        let trail = o.iter().find(|(s, m, ..)| *s == LocalKeyIdx::new(1) && *m == '.').unwrap();
+        let trail = o.iter().find(|(s, m, ..)| *s == LocalKeyIdx::from_usize(1) && *m == '.').unwrap();
         assert_eq!(trail.3, None, "book-final trailing mark abstains on the right");
     }
 

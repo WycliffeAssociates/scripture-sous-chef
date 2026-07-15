@@ -184,6 +184,21 @@ found anywhere in the fleet. All four oracle differences are fully explained
 by the two intentional, documented changes above (presented emission order;
 calibration-harness edit-target selection).
 
+**Adjudication and repin.** Both differences were put to the project owner
+(Will Kelly) for explicit sign-off rather than assumed. His adjudication,
+2026-07-15: *"that's intended to make caller own the order (i.e. not
+assuming a canonical order can support either Hebrew Bible ordering or
+Protestant) -> meaning caller present order is authoritative, yes"* —
+approving presented order as authoritative for both the finding-emission
+order and the calibration harness's edit-target selection, for exactly the
+reason given in Rationale above (no single canonical book order holds across
+the fleet's canon mix). This *is* the repin: the two behaviors above are now
+the accepted oracle baseline going forward, not a pending question. A later
+structural change that alters emission order or edit-target selection again
+must re-diff against this baseline and re-adjudicate, per the repo's
+oracle-gated engine rework doctrine — it does not get a fresh assumption of
+innocence just because this one was granted.
+
 ## Consequences
 
 - **Books order is now presented order, not canonical order**, everywhere:
@@ -205,13 +220,37 @@ calibration-harness edit-target selection).
   string cross-references). Both published packages (`pkg-web`,
   `pkg-bundler`) were rebuilt and their generated `.d.ts` inspected directly
   for this contract.
-- **`sid.rs`/`verse.rs` remain in the tree for now**, still exported
-  (`pub use sid::{BookId, Sid}`, `pub use verse::VerseMap`) — no production
-  code references them, but the deferred `#[cfg(test)]`-module batch
-  migration and any downstream consumers pinned to the old types have not
-  been sequenced yet. Deleting them is follow-up work once `rg` across the
-  whole tree (including tests, dev tools, and any external consumers) shows
-  zero references, per the plan's own gating instruction.
+- **`sid.rs`/`verse.rs` are deleted**, along with their `pub use`/`pub mod`
+  exports from `lib.rs`. An `rg` sweep across the whole tree (production
+  code, tests, dev tools, examples, benches) found zero remaining semantic
+  references — only historical prose comments describing "the old `Sid`/
+  `VerseMap`" for context, which name the retired types in passing but do
+  not compile against them. Two doc-comment intra-doc links that pointed at
+  the now-deleted `verse::by_book`/`verse::VerseMap` (`lexical.rs`,
+  `zero_width_space.rs`) were repointed/reworded accordingly.
+- **A review pass over the initial landing found four more gaps**, all
+  fixed before this ADR's final commit: (1) several `LocalKeyIdx::new(x as
+  u16)`/`KeyIdx::new(x as u32)` call sites (`stream.rs`, `lib.rs`, and five
+  signal modules) narrowed a loop index with a bare truncating `as` cast
+  instead of a checked conversion — replaced with `LocalKeyIdx::from_usize`/
+  `KeyIdx::from_usize` (panics rather than silently truncating if the
+  invariant is ever violated), and the unchecked `new` constructors were
+  removed entirely rather than left as a second, weaker construction path;
+  (2) `bracket_balance::DelimEvent` retained a raw `vi: usize` narrowed to
+  `LocalKeyIdx` only at read time — changed to store `LocalKeyIdx` directly,
+  matching every other retained per-book product; (3) the proportionality
+  test suite covered equal-duplicate-count pairing but not the plan's other
+  three required cases (more-target-duplicates, more-source-duplicates,
+  earlier-book-shift rebasing) — added; (4) a wasm test doc comment claimed
+  a nonexistent wasm-bindgen-test integration suite covered the `JsError`
+  rejection path — reworded to accurately describe the gap instead of
+  claiming coverage that does not exist. All four are representational
+  hardening with no intended behavior change, so rather than re-running the
+  full 1,504-corpus fleet oracle, this was spot-checked on a deterministic
+  39-corpus stride sample (every 38th file in `corpora/vref/`, both
+  `default` and `all` configs): `diff` before vs. after this remediation is
+  byte-identical (0 lines) on both dumps, confirming (1) and (2) above
+  changed representation only, not results.
 - **`cargo fmt --all --check` remains not clean** — confirmed pre-existing
   and unrelated to this migration (the pre-migration commit fails the same
   check with a comparable diff count across the same unrelated files); left

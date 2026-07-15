@@ -9,7 +9,7 @@
 //! findings but
 //! never bound analysis — a parenthetical or bracketed quotation legitimately
 //! spans verses (en_ulb has 12; kmr speech-parens span dozens), so pairing
-//! reads the book's verse stream in canonical order with no distance cutoff.
+//! reads the book's verse stream in presented order with no distance cutoff.
 //! Quotes stay excluded — direction-ambiguous (ADR 0011/0016).
 //!
 //! What makes an unmatched bracket a *finding* is corpus-relative (ADR 0037):
@@ -47,13 +47,15 @@ pub struct BracketBalance {
     pub cfg: BracketBalanceConfig,
 }
 
-/// One delimiter occurrence in a book, in canonical order. `vi` (its verse's
-/// position within the book) doubles as the local address — the same
-/// invariant every other retained per-book product relies on.
+/// One delimiter occurrence in a book, in presented order. `local` is its
+/// verse's book-local address — the same invariant every other retained
+/// per-book product relies on, stored directly (not narrowed from a raw
+/// index later) so this retained cache product satisfies the type-level
+/// local-address invariant everywhere else does.
 #[derive(Clone)]
 pub(crate) struct DelimEvent {
-    /// Index of the verse within its book (0-based, canonical order).
-    vi: usize,
+    /// Position of the verse within its book.
+    local: LocalKeyIdx,
     /// Byte offset of the glyph within its verse text.
     pub(crate) offset: usize,
     pub(crate) glyph: char,
@@ -64,7 +66,7 @@ pub(crate) struct DelimEvent {
 
 impl DelimEvent {
     pub(crate) fn local_idx(&self) -> LocalKeyIdx {
-        LocalKeyIdx::new(self.vi as u16)
+        self.local
     }
 }
 
@@ -126,7 +128,7 @@ pub(crate) fn emit(groups: &Books<'_>, books: &[BookMatch], cfg: &BracketBalance
             for &(oi, ci) in &b.pairs {
                 let t = families.entry(b.events[oi].family).or_default();
                 t.pairs += 1;
-                if b.events[ci].vi - b.events[oi].vi <= window {
+                if verse_distance(b.events[ci].local, b.events[oi].local) <= window {
                     t.short_pairs += 1;
                 }
             }
@@ -163,12 +165,12 @@ pub(crate) fn emit(groups: &Books<'_>, books: &[BookMatch], cfg: &BracketBalance
                     BracketMeasure::Pairing,
                     majority,
                     total,
-                    inventory(group, b, e.vi, window),
+                    inventory(group, b, e.local, window),
                 ));
             }
             for &(oi, ci) in &b.pairs {
                 let (open, close) = (&b.events[oi], &b.events[ci]);
-                if close.vi - open.vi <= window {
+                if verse_distance(close.local, open.local) <= window {
                     continue;
                 }
                 let score = short_span.get(&open.family).copied().unwrap_or(0.0);
@@ -184,7 +186,7 @@ pub(crate) fn emit(groups: &Books<'_>, books: &[BookMatch], cfg: &BracketBalance
                     BracketMeasure::ShortSpan,
                     majority,
                     total,
-                    inventory(group, b, open.vi, window),
+                    inventory(group, b, open.local, window),
                 ));
             }
         }
@@ -207,7 +209,7 @@ impl BracketAcc {
     }
 
     pub(crate) fn verse(&mut self, v: &stream::VerseInputs<'_, '_>) {
-        collect_events(v.tape, usize::from(v.local_idx.get()), &mut self.events);
+        collect_events(v.tape, v.local_idx, &mut self.events);
     }
 
     pub(crate) fn finish(self) -> BookMatch {
@@ -242,15 +244,32 @@ fn finding(
     }
 }
 
-/// The delimiter inventory within `window` verses of `vi`, so a reviewer
+/// Verse-count distance between two same-book events (`later` at or after
+/// `earlier` in presented order — always true for a LIFO-matched close/open
+/// pair). Widening `u16` → `usize` to compare against the `usize` window
+/// knob is a safe widen, not an address-narrowing cast.
+fn verse_distance(later: LocalKeyIdx, earlier: LocalKeyIdx) -> usize {
+    usize::from(later.get()) - usize::from(earlier.get())
+}
+
+/// The delimiter inventory within `window` verses of `local`, so a reviewer
 /// sees the whole context, not just the lone orphan.
-fn inventory(group: &BookGroup<'_>, b: &BookMatch, vi: usize, window: usize) -> Vec<DelimObservation> {
+fn inventory(
+    group: &BookGroup<'_>,
+    b: &BookMatch,
+    local: LocalKeyIdx,
+    window: usize,
+) -> Vec<DelimObservation> {
+    let vi = usize::from(local.get());
     let lo = vi.saturating_sub(window);
     let hi = vi + window;
     b.events
         .iter()
         .enumerate()
-        .filter(|(_, e)| e.vi >= lo && e.vi <= hi)
+        .filter(|(_, e)| {
+            let evi = usize::from(e.local.get());
+            evi >= lo && evi <= hi
+        })
         .map(|(j, e)| DelimObservation {
             sid: group.key(e.local_idx()).to_string(),
             glyph: e.glyph.to_string(),
@@ -277,7 +296,11 @@ fn match_book(group: &BookGroup<'_>) -> BookMatch {
 }
 
 /// One verse's delimiter events, appended in text order.
-fn collect_events(tape: &[crate::tape::TapeEntry], vi: usize, events: &mut Vec<DelimEvent>) {
+fn collect_events(
+    tape: &[crate::tape::TapeEntry],
+    local: LocalKeyIdx,
+    events: &mut Vec<DelimEvent>,
+) {
     for e in tape {
         // One fused-table read (from the tape) gates the pair lookups:
         // every UCD paired bracket is GC Ps/Pe ⊂ punctuation (pinned by
@@ -295,7 +318,7 @@ fn collect_events(tape: &[crate::tape::TapeEntry], vi: usize, events: &mut Vec<D
             continue;
         };
         events.push(DelimEvent {
-            vi,
+            local,
             offset: e.off as usize,
             glyph: ch,
             family,

@@ -426,6 +426,188 @@ mod tests {
         );
     }
 
+    /// More target duplicates of a key than the source has: the extra
+    /// occurrences find no source counterpart at their ordinal and must be
+    /// skipped entirely — never falling back to reuse an earlier ordinal's
+    /// source text, which would wrongly fire them too.
+    #[test]
+    fn more_target_duplicates_than_source_are_skipped() {
+        let base = "abcdefghij ".repeat(4); // 44 graphemes
+        let mut target_keys = Vec::new();
+        let mut target_texts = Vec::new();
+        let mut source_keys = Vec::new();
+        let mut source_texts = Vec::new();
+        for v in 1..=58u16 {
+            let k = key("GEN", v);
+            source_keys.push(k.clone());
+            source_texts.push(base.clone());
+            target_keys.push(k);
+            target_texts.push(if v % 2 == 0 {
+                format!("{base}x")
+            } else {
+                base.clone()
+            });
+        }
+        // Source has one "GEN 1:59" (5x, a genuine outlier length); target
+        // has three. Only the first target occurrence has a source
+        // counterpart; occurrences two and three must be skipped, not
+        // silently re-paired against that same source text (which would
+        // wrongly make all three fire instead of just the first).
+        source_keys.push(key("GEN", 59));
+        source_texts.push(base.repeat(5));
+        for _ in 0..3 {
+            target_keys.push(key("GEN", 59));
+            target_texts.push(base.clone());
+        }
+
+        let target = Corpus::try_from_parts(target_keys, target_texts).unwrap();
+        let source = Corpus::try_from_parts(source_keys, source_texts).unwrap();
+        let findings = run(&rule(), &target, Some(&source));
+        assert_eq!(
+            findings.len(),
+            1,
+            "only the first duplicate pairs with the source's sole occurrence; \
+             the extra two must be skipped, not reprocessed against the same \
+             source text: {findings:?}"
+        );
+        assert_eq!(target.key(findings[0].key_idx), key("GEN", 59));
+    }
+
+    /// More source duplicates of a key than the target has: the target's
+    /// single occurrence pairs with the source's first occurrence only —
+    /// the extra source occurrences are never consulted, however extreme
+    /// their content, since nothing on the target side reaches their ordinal.
+    #[test]
+    fn more_source_duplicates_than_target_are_irrelevant() {
+        let base = "abcdefghij ".repeat(4);
+        let mut target_keys = Vec::new();
+        let mut target_texts = Vec::new();
+        let mut source_keys = Vec::new();
+        let mut source_texts = Vec::new();
+        for v in 1..=58u16 {
+            let k = key("GEN", v);
+            source_keys.push(k.clone());
+            source_texts.push(base.clone());
+            target_keys.push(k);
+            target_texts.push(if v % 2 == 0 {
+                format!("{base}x")
+            } else {
+                base.clone()
+            });
+        }
+        // Target has one "GEN 1:59" (baseline length); source has three —
+        // the first is 5x (a genuine outlier pairing for ordinal 0), the
+        // other two are extreme/degenerate lengths that must have zero
+        // influence since the target never reaches their ordinal.
+        target_keys.push(key("GEN", 59));
+        target_texts.push(base.clone());
+        source_keys.push(key("GEN", 59));
+        source_texts.push(base.repeat(5));
+        source_keys.push(key("GEN", 59));
+        source_texts.push("z".repeat(9_999));
+        source_keys.push(key("GEN", 59));
+        source_texts.push(String::new());
+
+        let target = Corpus::try_from_parts(target_keys, target_texts).unwrap();
+        let source = Corpus::try_from_parts(source_keys, source_texts).unwrap();
+        let findings = run(&rule(), &target, Some(&source));
+        assert_eq!(
+            findings.len(),
+            1,
+            "the target's sole occurrence pairs with the source's first \
+             duplicate only; the other two extreme source duplicates must \
+             be irrelevant: {findings:?}"
+        );
+        assert_eq!(target.key(findings[0].key_idx), key("GEN", 59));
+    }
+
+    /// A complete-snapshot call where an earlier book's verse count shifts
+    /// (growing or shrinking) must still resolve a later book's *stored*
+    /// `RatioObs` correctly: `judge` rebases against the *current* call's
+    /// `BookGroup::base`, not whatever base was current when the
+    /// observation was reduced.
+    #[test]
+    fn earlier_book_shift_rebases_a_stored_proportionality_observation() {
+        let base = "abcdefghij ".repeat(4);
+        let r = rule();
+
+        // GEN: `gen_len` baseline (mildly jittered) verses — enough to clear
+        // `min_verses` alone or pooled with EXO. EXO: 5 verses, EXO 1:3 a 5x
+        // outlier — the stored observation under test.
+        let build_target = |gen_len: u16| {
+            let mut keys = Vec::new();
+            let mut texts = Vec::new();
+            for v in 1..=gen_len {
+                keys.push(key("GEN", v));
+                texts.push(if v % 2 == 0 {
+                    format!("{base}x")
+                } else {
+                    base.clone()
+                });
+            }
+            for v in 1..=5u16 {
+                keys.push(key("EXO", v));
+                // Same jitter parity as GEN (keeps the tie/MAD structure
+                // stable across the grown/shrunk variants below), except
+                // verse 3, unconditionally overridden to the 5x outlier.
+                let t = if v % 2 == 0 {
+                    format!("{base}x")
+                } else {
+                    base.clone()
+                };
+                texts.push(if v == 3 { base.repeat(5) } else { t });
+            }
+            Corpus::try_from_parts(keys, texts).unwrap()
+        };
+        let build_source = |gen_len: u16| {
+            let mut keys = Vec::new();
+            let mut texts = Vec::new();
+            for v in 1..=gen_len {
+                keys.push(key("GEN", v));
+                texts.push(base.clone());
+            }
+            for v in 1..=5u16 {
+                keys.push(key("EXO", v));
+                texts.push(base.clone());
+            }
+            Corpus::try_from_parts(keys, texts).unwrap()
+        };
+
+        // Reduce once with GEN at 60 verses. EXO's `RatioObs` are stored
+        // book-local (`LocalKeyIdx`), independent of GEN's size.
+        let target60 = build_target(60);
+        let source60 = build_source(60);
+        let books60 = by_book(&target60);
+        let stats = r.reduce(&books60, Some(&source60), None).0;
+        let findings60 = r.judge(&stats, &books60, None, None);
+        assert_eq!(findings60.len(), 1);
+        assert_eq!(target60.key(findings60[0].key_idx), key("EXO", 3));
+
+        // Judge the *same stored stats* against a call where GEN grew to 61
+        // verses — EXO's global base shifts by one, even though EXO's own
+        // content (and thus its stored `RatioObs`) is unchanged.
+        let target61 = build_target(61);
+        let books61 = by_book(&target61);
+        let findings_grown = r.judge(&stats, &books61, None, None);
+        assert_eq!(findings_grown.len(), 1);
+        assert_eq!(
+            target61.key(findings_grown[0].key_idx),
+            key("EXO", 3),
+            "EXO's stored ratio must resolve to EXO 1:3 even after GEN grew"
+        );
+
+        // And shrank to 59 verses — EXO's base shifts the other way.
+        let target59 = build_target(59);
+        let books59 = by_book(&target59);
+        let findings_shrunk = r.judge(&stats, &books59, None, None);
+        assert_eq!(findings_shrunk.len(), 1);
+        assert_eq!(
+            target59.key(findings_shrunk[0].key_idx),
+            key("EXO", 3),
+            "EXO's stored ratio must resolve to EXO 1:3 even after GEN shrank"
+        );
+    }
+
     #[test]
     fn uniform_ratios_produce_nothing() {
         // Identical ratios everywhere → MAD == 0 → skip, no findings.

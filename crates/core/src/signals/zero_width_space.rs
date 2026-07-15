@@ -22,9 +22,9 @@
 //! placement that is unconditionally redundant: exact duplicates.
 //!
 //! Also not flagged: a single in-token / punctuation- / digit-adjacent U+200B (all
-//! UAX #14–relevant break positions); a verse-edge U+200B (a
-//! [`VerseMap`](crate::verse::VerseMap) value is not a guaranteed layout unit —
-//! verses split mid-sentence and get concatenated); and a U+200B beside a
+//! UAX #14–relevant break positions); a verse-edge U+200B (a verse's text is
+//! not a guaranteed layout unit — verses split mid-sentence and get
+//! concatenated); and a U+200B beside a
 //! *different* character — a no-break space (NBSP, which is neither zero-width nor
 //! a format control), a joiner (ZWJ/ZWNJ), WJ, or a bidi control, each with its
 //! own line-break behaviour.

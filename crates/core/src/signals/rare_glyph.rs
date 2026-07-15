@@ -354,7 +354,7 @@ impl StatefulRule for RareGlyph {
         let mut out: Vec<Finding> = rule::map_books(books, |group| {
             let mut found = Vec::new();
             for (vi, text) in group.texts.iter().enumerate() {
-                let key_idx = rebase(group.base, LocalKeyIdx::new(vi as u16));
+                let key_idx = rebase(group.base, LocalKeyIdx::from_usize(vi));
                 emit_verse(key_idx, text, tokens, &surviving, &mut found);
             }
             found
@@ -456,7 +456,7 @@ impl CensusPages {
     }
 }
 
-/// The rare-glyph counting listener — walks one book in canonical order:
+/// The rare-glyph counting listener — walks one book in presented order:
 /// tally every scalar (census), and record word-level detail for eligible
 /// letter tokens, carrying casing's pending-terminal machine across verse
 /// seams (reset per book) for the forced-position fact. `finish` prunes to

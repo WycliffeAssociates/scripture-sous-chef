@@ -24,7 +24,6 @@ pub mod grapheme;
 pub mod key;
 pub mod rule;
 pub mod script;
-pub mod sid;
 pub mod signals;
 pub mod span;
 pub mod stats;
@@ -32,7 +31,6 @@ mod stream;
 mod tape;
 pub mod token;
 pub mod unicode;
-pub mod verse;
 
 pub use cache::AnalysisCache;
 pub use catalog::{RuleCard, SENSITIVITY_STOPS, Verdict, rule_cards};
@@ -46,10 +44,8 @@ pub use diagnostics::{
     BracketMeasure, DelimObservation, DelimRole, Finding, FindingArgs, LengthRatioScope, RuleId,
     Severity,
 };
-pub use sid::{BookId, Sid};
 pub use span::{GraphemeSpan, Span, Utf16Span};
 pub use stats::{RuleStats, Stats};
-pub use verse::VerseMap;
 
 use corpus::LocalKeyIdx;
 
@@ -228,7 +224,7 @@ pub fn analyze_stateful(
             let mut findings = Vec::new();
             let mut tape_buf = Vec::new();
             for (vi, text) in group.texts.iter().enumerate() {
-                let key_idx = corpus::rebase(group.base, LocalKeyIdx::new(vi as u16));
+                let key_idx = corpus::rebase(group.base, LocalKeyIdx::from_usize(vi));
                 let mask = tape::build_masked(text, &mut tape_buf);
                 findings.extend(verse_findings(key_idx, text, &tape_buf, mask, &per_verse));
             }
@@ -248,7 +244,7 @@ pub fn analyze_stateful(
                 .par_iter()
                 .enumerate()
                 .map_init(Vec::new, |tape_buf, (i, text)| {
-                    let key_idx = KeyIdx::new(i as u32);
+                    let key_idx = KeyIdx::from_usize(i);
                     let mask = tape::build_masked(text, tape_buf);
                     verse_findings(key_idx, text, tape_buf, mask, &per_verse)
                 })
@@ -260,7 +256,7 @@ pub fn analyze_stateful(
             let mut out = Vec::new();
             let mut tape_buf = Vec::new();
             for (i, text) in target.texts().iter().enumerate() {
-                let key_idx = KeyIdx::new(i as u32);
+                let key_idx = KeyIdx::from_usize(i);
                 let mask = tape::build_masked(text, &mut tape_buf);
                 out.extend(verse_findings(key_idx, text, &tape_buf, mask, &per_verse));
             }

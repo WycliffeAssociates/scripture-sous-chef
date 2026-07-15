@@ -1,8 +1,5 @@
-//! Ordered corpus and address newtypes (finding-address-representation
-//! plan, Step 1b) — additive scaffolding alongside the existing
-//! `Sid`/`VerseMap` path. This is temporary migration surface, not a
-//! compatibility promise: Step 2 cuts the engine over to it and deletes
-//! `sid.rs`/`VerseMap`.
+//! Ordered corpus and address newtypes (ADR 0061): the addressing substrate
+//! every rule, cache, and the wasm boundary builds on.
 //!
 //! Three things this module is strict about, because they are correctness,
 //! not style:
@@ -34,8 +31,12 @@ use crate::span::Span;
 pub struct KeyIdx(u32);
 
 impl KeyIdx {
-    pub(crate) fn new(v: u32) -> Self {
-        KeyIdx(v)
+    /// Narrow a corpus-loop index already bounded by `Corpus::try_from_parts`'s
+    /// own addressable-length check. Panics rather than silently truncating
+    /// if that invariant is ever violated — the checked constructor the
+    /// "never a truncating `as` cast" contract requires.
+    pub(crate) fn from_usize(v: usize) -> Self {
+        KeyIdx(u32::try_from(v).expect("index bounded by Corpus's validated addressable length"))
     }
 
     fn try_from_usize(v: usize) -> Result<Self, CorpusError> {
@@ -49,19 +50,26 @@ impl KeyIdx {
 /// calls (the retained-cache invariant). `u16` is safe: the largest book
 /// (Psalms, ~2.5k verses) is ~26x under the ceiling even with
 /// duplicate/sub-verse inflation, and [`Corpus::try_from_parts`] rejects
-/// any book block longer than `u16::MAX + 1`.
+/// any book block longer than `u16::MAX`.
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub(crate) struct LocalKeyIdx(u16);
 
 impl LocalKeyIdx {
-    pub(crate) fn new(v: u16) -> Self {
-        LocalKeyIdx(v)
-    }
-
     pub(crate) fn get(self) -> u16 {
         self.0
+    }
+
+    /// Narrow a verse-loop index already bounded by this book's own
+    /// `Corpus`-validated `LocalKeyIdx` capacity. Panics rather than silently
+    /// truncating if that invariant is ever violated — the checked
+    /// constructor the "never a truncating `as` cast" contract requires.
+    pub(crate) fn from_usize(v: usize) -> Self {
+        LocalKeyIdx(
+            u16::try_from(v)
+                .expect("verse index bounded by Corpus's validated book-block capacity"),
+        )
     }
 
     fn try_from_usize(v: usize, slug: &str) -> Result<Self, CorpusError> {
@@ -182,7 +190,7 @@ pub struct Corpus {
 impl Corpus {
     /// Validate and construct. Rejects mismatched array lengths, an
     /// unaddressable overall length, a malformed key (see [`parse_key`]), a
-    /// book block longer than `u16::MAX + 1`, and a noncontiguous repeated
+    /// book block longer than `u16::MAX`, and a noncontiguous repeated
     /// book block (`GEN, EXO, GEN`). Caller order and duplicate keys are
     /// preserved, not validated away.
     pub fn try_from_parts(keys: Vec<String>, texts: Vec<String>) -> Result<Self, CorpusError> {
@@ -297,7 +305,7 @@ pub fn by_book(corpus: &Corpus) -> Books<'_> {
         }
         groups.push(BookGroup {
             slug,
-            base: KeyIdx::new(start as u32),
+            base: KeyIdx::from_usize(start),
             keys: &corpus.keys[start..end],
             texts: &corpus.texts[start..end],
         });
@@ -380,23 +388,34 @@ mod tests {
     }
 
     #[test]
+    fn rejects_corpus_past_key_idx() {
+        // `u32::MAX + 1` entries is infeasible to allocate in a unit test
+        // (~4.3 billion strings); exercise the checked boundary
+        // `Corpus::try_from_parts` itself calls instead of the whole
+        // constructor.
+        assert!(KeyIdx::try_from_usize(u32::MAX as usize).is_ok());
+        let err = KeyIdx::try_from_usize(u32::MAX as usize + 1).unwrap_err();
+        assert!(matches!(err, CorpusError::CorpusTooLarge { .. }));
+    }
+
+    #[test]
     fn preserves_duplicate_keys() {
         let c = Corpus::try_from_parts(keys(&["GEN 1:1", "GEN 1:1"]), texts(2)).unwrap();
         assert_eq!(c.len(), 2);
-        assert_eq!(c.key(KeyIdx::new(0)), c.key(KeyIdx::new(1)));
+        assert_eq!(c.key(KeyIdx::from_usize(0)), c.key(KeyIdx::from_usize(1)));
     }
 
     #[test]
     fn preserves_sub_verse_tokens() {
         let c = Corpus::try_from_parts(keys(&["GEN 1:1a"]), texts(1)).unwrap();
-        assert_eq!(c.key(KeyIdx::new(0)), "GEN 1:1a");
+        assert_eq!(c.key(KeyIdx::from_usize(0)), "GEN 1:1a");
     }
 
     #[test]
     fn preserves_caller_order() {
         let c = Corpus::try_from_parts(keys(&["REV 1:1", "GEN 1:1"]), texts(2)).unwrap();
-        assert_eq!(c.key(KeyIdx::new(0)), "REV 1:1");
-        assert_eq!(c.key(KeyIdx::new(1)), "GEN 1:1");
+        assert_eq!(c.key(KeyIdx::from_usize(0)), "REV 1:1");
+        assert_eq!(c.key(KeyIdx::from_usize(1)), "GEN 1:1");
     }
 
     #[test]
@@ -422,14 +441,14 @@ mod tests {
 
     #[test]
     fn checked_index_conversion_and_rebase() {
-        let base = KeyIdx::new(10);
-        let local = LocalKeyIdx::new(5);
-        assert_eq!(rebase(base, local), KeyIdx::new(15));
+        let base = KeyIdx::from_usize(10);
+        let local = LocalKeyIdx::from_usize(5);
+        assert_eq!(rebase(base, local), KeyIdx::from_usize(15));
     }
 
     #[test]
     fn site_addr_pack_unpack_round_trips() {
-        let local = LocalKeyIdx::new(3);
+        let local = LocalKeyIdx::from_usize(3);
         let range = Span { start: 12, end: 34 };
         let packed = SiteAddr::pack(local, range);
         let (unpacked_local, unpacked_range) = packed.unpack();
@@ -444,7 +463,7 @@ mod tests {
             start: 0,
             end: u32::from(u16::MAX) + 1,
         };
-        SiteAddr::pack(LocalKeyIdx::new(0), range);
+        SiteAddr::pack(LocalKeyIdx::from_usize(0), range);
     }
 
     #[test]
@@ -453,10 +472,10 @@ mod tests {
         let groups = by_book(&c);
         assert_eq!(groups.len(), 2);
         assert_eq!(groups[0].slug, "REV");
-        assert_eq!(groups[0].base, KeyIdx::new(0));
+        assert_eq!(groups[0].base, KeyIdx::from_usize(0));
         assert_eq!(groups[0].keys, &c.keys()[0..2]);
         assert_eq!(groups[1].slug, "GEN");
-        assert_eq!(groups[1].base, KeyIdx::new(2));
+        assert_eq!(groups[1].base, KeyIdx::from_usize(2));
         assert_eq!(groups[1].keys, &c.keys()[2..3]);
     }
 }

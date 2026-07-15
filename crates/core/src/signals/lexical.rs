@@ -36,7 +36,7 @@ use crate::token::{Token, tokenize};
 /// **Book scope, chapter reset (ADR 0016 amendment).** A doubled word can
 /// straddle a verse boundary (`\v 1 …the thing \v 2 thing was…`), which a
 /// per-verse matcher can never see, so the rule is a `ProjectRule` that
-/// walks each book's verses in canonical order via [`verse::by_book`]. It
+/// walks each book's verses in presented order via [`corpus::by_book`]. It
 /// carries only the previous verse's last word token (adjacency is all
 /// duplication needs — no window, no stack), and **resets the carry at
 /// every chapter boundary**: a word repeating across a `\c` break is
@@ -167,7 +167,7 @@ impl<'t> DuplicateWordAcc<'t> {
 fn check_book(group: &BookGroup<'_>, cache: Option<&TokenCache>, out: &mut Vec<DuplicateHit>) {
     let mut tail: Option<Tail> = None;
     for (vi, (key, text)) in group.keys.iter().zip(group.texts.iter()).enumerate() {
-        let local_idx = LocalKeyIdx::new(vi as u16);
+        let local_idx = LocalKeyIdx::from_usize(vi);
         let text = text.as_str();
         // Use the shared per-verse tokens when the runner built a cache;
         // otherwise tokenize this verse ourselves (single-consumer case).
@@ -430,7 +430,7 @@ impl StatefulRule for PunctOnlyToken {
             } else {
                 let mut tape = Vec::new();
                 for (vi, text) in group.texts.iter().enumerate() {
-                    let local = LocalKeyIdx::new(vi as u16);
+                    let local = LocalKeyIdx::from_usize(vi);
                     crate::tape::build(text, &mut tape);
                     for span in scan_punct_only_token_tape(text, &tape) {
                         score(rebase(group.base, local), text, span, &mut found);
@@ -800,7 +800,7 @@ impl StatefulRule for RepeatedCharacterRun {
                 let mut tape = Vec::new();
                 let mut graphemes = Vec::new();
                 for (vi, text) in group.texts.iter().enumerate() {
-                    let local = LocalKeyIdx::new(vi as u16);
+                    let local = LocalKeyIdx::from_usize(vi);
                     let key_idx = rebase(group.base, local);
                     let owned: Vec<Token>;
                     let verse_tokens: &[Token] = match tokens.and_then(|c| c.get(&key_idx)) {

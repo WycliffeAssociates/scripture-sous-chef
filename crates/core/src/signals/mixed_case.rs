@@ -294,7 +294,7 @@ impl StatefulRule for MixedCaseWord {
         let mut out: Vec<Finding> = rule::map_books(books, |group| {
             let mut found = Vec::new();
             for (vi, text) in group.texts.iter().enumerate() {
-                let key_idx = rebase(group.base, LocalKeyIdx::new(vi as u16));
+                let key_idx = rebase(group.base, LocalKeyIdx::from_usize(vi));
                 emit_verse(key_idx, text, tokens, &surviving, &mut found);
             }
             found

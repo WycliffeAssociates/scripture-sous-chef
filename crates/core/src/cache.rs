@@ -294,7 +294,7 @@ mod tests {
     /// only reads `keys`/`texts`, so this skips a full `Corpus` for isolated
     /// hashing tests.
     fn group<'a>(keys: &'a [String], texts: &'a [String]) -> BookGroup<'a> {
-        BookGroup { slug: "GEN", base: KeyIdx::new(0), keys, texts }
+        BookGroup { slug: "GEN", base: KeyIdx::from_usize(0), keys, texts }
     }
 
     #[test]
@@ -321,7 +321,7 @@ mod tests {
         let mut cache = AnalysisCache::new();
         let cfg = Config::v1_defaults();
         cache.ensure_fingerprint(&cfg);
-        cache.store_per_verse("GEN", 1, KeyIdx::new(0), &[]);
+        cache.store_per_verse("GEN", 1, KeyIdx::from_usize(0), &[]);
         assert_eq!(cache.book_count(), 1);
 
         let mut changed = cfg.clone();
@@ -349,7 +349,7 @@ mod tests {
         cache.store_walk("GEN", 1, &output);
         assert!(cache.books.get("GEN").unwrap().casing.is_some());
 
-        cache.store_per_verse("GEN", 2, KeyIdx::new(0), &[]);
+        cache.store_per_verse("GEN", 2, KeyIdx::from_usize(0), &[]);
         let entry = cache.books.get("GEN").unwrap();
         assert_eq!(entry.hash, 2);
         assert!(entry.per_verse.is_some());

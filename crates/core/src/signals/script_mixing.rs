@@ -279,7 +279,7 @@ impl StatefulRule for MixedScriptInToken {
                 }
             } else {
                 for (vi, text) in group.texts.iter().enumerate() {
-                    let key_idx = rebase(group.base, LocalKeyIdx::new(vi as u16));
+                    let key_idx = rebase(group.base, LocalKeyIdx::from_usize(vi));
                     for (sig, span) in mixed_tokens(text, verse_tokens(key_idx, text, tokens).as_ref()) {
                         score(key_idx, &sig, span, &mut found);
                     }

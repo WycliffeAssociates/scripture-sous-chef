@@ -743,9 +743,12 @@ mod tests {
     /// addressable.
     ///
     /// (A malformed/mismatched-length `VrefCorpus` is rejected via `JsError`
-    /// rather than panicking — see `to_corpus` — but exercising that path
-    /// needs the wasm-bindgen JS glue, so it's covered by the wasm-side
-    /// integration tests, not this native `cargo test` suite.)
+    /// rather than panicking — see `to_corpus_or_reject` and the
+    /// `invalid_parallel_array_lengths_fail_loudly` test below, which covers
+    /// the `to_corpus` validation this native suite *can* exercise. The
+    /// `JsError` conversion itself needs a real wasm runtime to call, so
+    /// that specific hop is not covered by an automated test — there is no
+    /// wasm-bindgen-test suite in this crate yet.)
     #[test]
     fn duplicate_keys_are_preserved_not_collapsed() {
         let dup = VrefCorpus {
