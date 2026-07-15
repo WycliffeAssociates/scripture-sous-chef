@@ -139,7 +139,9 @@ same flow with the normative edge conditions spelled out.)
 
 ### 0.4 Tradeoffs (the memory-vs-compute adjudication, explicit)
 
-- `Stats.tallied`: one `(Box<str>, Tally)` per book (`Tally` = 40 bytes) —
+- `Stats.tallied`: one `(Box<str>, Tally)` per book (two u128 + one u64
+  per `Tally` — ~40 B, order-of-magnitude; assert the real figure with
+  `size_of::<Tally>()` if it is ever quoted) —
   ~3 KB for a full Bible. **No stats values are copied anywhere; no new
   clone traffic.** Compute cost: hashing every supplied book's text on
   every call (~0.5–1 ms serial on a full Bible — measured in the
@@ -210,7 +212,7 @@ reseed with zero hints.
 |---|---|
 | §6.1 segment-map vs text hash | **Out of scope.** `book_hash` stays text-derived. The onion segment map is the consumer's artifact; the consumer-side test is a recorded follow-up (§14), not built here. |
 | §6.2 prior key includes enabled set | Superseded by per-book provenance: `Tally.rules` records the enabled set each book was tallied under, inside the prior itself. `Galley::update_config` retains the prior — provenance decides what re-tallies. No external key exists to get wrong. |
-| §6.3 memory ceiling | Envelope re-stated in §13; this plan adds ~2 KB. |
+| §6.3 memory ceiling | Envelope re-stated in §13; this plan adds ~3 KB. |
 | §6.4 handle lifetime | wasm-bindgen's generated `free()`; dispose contract in §8.2; `FinalizationRegistry` explicitly NOT relied upon. |
 | §6.5 reload cost | **Decided: no snapshot in v1 (§16).** Reopening a project pays one cold analyze (~270 ms defaults / ~700 ms all-on serial, once), which does not justify a persistence format's complexity today. The option table and format sketch are preserved in §16 for the future revisit. |
 | §6.6 census yes / overlay no | `Galley::census` delegates to the pure `census(&corpus, opts)`. No overlay method — PO-demo concern (design doc ruling). Drill-down utilities (e.g. census row → sites) are later additive `Galley` methods over pure core functions. |
@@ -245,10 +247,15 @@ Record the exact `BookEntry` field list and the `Stats` struct shape from
 the code — this plan's field names must be corrected to match the code if
 they drifted.
 
-Baseline the four oracles exactly as Tier 2's Step 0 did (same commands,
-into `/tmp/oracle/resident-handle/base.*`). Intermediate steps may gate on
-the `wa` subset per the repo CLAUDE.md rule; the before/after bookends are
-always the full fleet.
+Baseline the four oracles in **both scopes** (eight files): the full fleet
+into `/tmp/oracle/resident-handle/base.full.*` and the WA subset (trailing
+`wa` arg, ~6× quicker, per the repo CLAUDE.md rule) into
+`/tmp/oracle/resident-handle/base.wa.*`. Scope is printed on the dump's
+stderr — keep it in the filename, and only ever diff `wa` against `wa`,
+`full` against `full`. **Gating protocol for this plan:** every
+intermediate phase gates on the `wa` files only (speed); the full-fleet
+files are touched exactly twice — pinned here, and diffed once at the §8.4
+final bookend. Do not re-run the full fleet in between.
 
 ## 4. Vocabulary (binding, extends the design doc's glossary)
 
@@ -287,8 +294,11 @@ always the full fleet.
   rules_fp(config) }` — a missing entry is a mismatch. With
   `prior = None`: every supplied book. **There is no `changed` parameter
   anymore.**
-- **`rules_fp(config)`**: xxh3-64 over the sorted ids of the enabled
-  stateful (counting) rules. Knob values are deliberately EXCLUDED: knobs
+- **`rules_fp(config)`**: xxh3-64 over the enabled stateful (counting)
+  rules' canonical string ids, sorted, each **length-prefixed** (u8 length
+  + bytes) so the encoding is unambiguous — never bare concatenation,
+  which would let two different id sets collide textually. Knob values are
+  deliberately EXCLUDED: knobs
   affect judging, not tallying, so a knob-only config change leaves every
   `Tally.rules` valid and re-tallies nothing. If any config knob is found
   to affect tallying it must join this fingerprint — audit at
@@ -391,6 +401,18 @@ only changes *which books* enter the fresh-tally set and records provenance
 on the way out. If any step appears to require touching a rule's tally
 logic, stop.
 
+**Binding invariant — disabled `RuleStats` variants are retained.**
+Disabled rules' statistics already present in the prior remain stored
+untouched (the existing merge does this: it starts from the prior and
+visits only enabled stateful rules). They are not judged or emitted while
+disabled, but they must NOT be pruned: an unsupplied book may retain an
+older `Tally.rules` that becomes current again if the enabled set returns
+to that value — its carried counts must still include the re-enabled
+rule's contribution for the fingerprint's claim to be true. Re-tallying
+supersedes stale contributions when that book is next supplied. Any
+"cleanup" that drops disabled variants breaks the disable→re-enable round
+trip (test A-11) and is a defect, not tidiness.
+
 ### 5.5 Oracle adjudication for the wire change (split-digest procedure)
 
 The dump harness's current stats digest is a single opaque hash over the
@@ -399,17 +421,41 @@ provenance." Phase 1 therefore begins with an **oracle-harness commit**,
 BEFORE any core change:
 
 1. Extend `--dump-incremental` / `--dump-incremental-cached` to emit, per
-   corpus: the finding columns (unchanged); a **rules-only stats digest**
-   (the per-rule sections serialized exactly as today, EXCLUDING any
-   provenance fields — via a serialization view, never string surgery);
-   and a separate **provenance digest** column (constant/absent
-   pre-change).
+   corpus: the finding lines (unchanged shape), plus exactly one
+   stats-digest line per corpus per mode with this **pinned schema** —
+   `stats<TAB><corpus-id><TAB><mode><TAB><rules_len><TAB><rules_fnv><TAB><prov_fnv>`
+   — where `rules_len`/`rules_fnv` cover the per-rule sections serialized
+   exactly as today EXCLUDING any provenance fields (via a serialization
+   view, never string surgery), and `prov_fnv` covers only the provenance
+   fields (the literal string `none` pre-change). Every stats line starts
+   with the `stats` sentinel column so it is mechanically separable.
 2. Re-pin the four baselines in the new format. This is a format-only
    re-pin: verify by cutting the digest columns and diffing the finding
    columns byte-identical against the old baselines.
-3. Land the `Stats` change. Gate: finding columns byte-identical AND the
-   rules-only digest byte-identical AND only the provenance column
-   changed. Record the adjudication in the ADR; re-pin.
+3. Land the `Stats` change. Gate, run literally (also in §14b):
+
+   ```sh
+   # <scope> = wa at the Phase 1 gate; full at the §8.4 bookend.
+   # findings only — must be byte-identical:
+   diff <(grep -v $'^stats\t' base.<scope>.incremental.tsv) \
+        <(grep -v $'^stats\t' new.<scope>.incremental.tsv)
+   # rules-only digests (corpus, mode, len, fnv) — must be byte-identical:
+   diff <(grep $'^stats\t' base.<scope>.incremental.tsv | cut -f1-5) \
+        <(grep $'^stats\t' new.<scope>.incremental.tsv  | cut -f1-5)
+   # provenance column — the ONLY permitted difference; adjudicate + record:
+   diff <(grep $'^stats\t' base.<scope>.incremental.tsv | cut -f6) \
+        <(grep $'^stats\t' new.<scope>.incremental.tsv  | cut -f6) | head
+   ```
+
+   (Same three commands for the cached dump.) Run this gate at **`wa`
+   scope**; record the adjudication in the ADR, then re-pin the `wa`
+   baselines: `cp new.wa.incremental.tsv base.wa.incremental.tsv` (and the
+   cached file) — later phases diff whole `wa` files plain again. The
+   **full-fleet** baselines are deliberately NOT re-pinned here: at the
+   §8.4 final bookend, the same three-command gate runs against the
+   original full baselines (findings and rules-only digests must still be
+   byte-identical to pre-plan; the provenance column is the one recorded
+   difference), and only then are the full baselines re-pinned.
 
 Any finding movement, or any rules-only digest movement, at any phase, is
 a regression — fix, never re-pin over it. Intermediate steps may gate on
@@ -417,8 +463,8 @@ the `wa` subset; bookends on the full fleet.
 
 ### 5.6 Phase 1 gates
 
-Suites (both feature sets), clippy `-D warnings`, wasm check; oracles per
-§5.5. Tests §12 group A. Commit:
+Suites (both feature sets), clippy `-D warnings`, wasm check; oracles at
+`wa` scope per §5.5. Tests §12 group A. Commit:
 `core: per-book Tally provenance — hash-derived counting, changed parameter removed`
 (preceded by the §5.5 oracle-harness commit).
 
@@ -482,8 +528,8 @@ expected to).
 
 ### 6.3 Phase 2 gates
 
-Unit tests (§12 group B); oracles (these helpers are dead code to the
-dumps — byte-identical trivially); suites/clippy/wasm. Commit:
+Unit tests (§12 group B); oracles at `wa` scope (these helpers are dead
+code to the dumps — byte-identical trivially); suites/clippy/wasm. Commit:
 `core: Corpus::replace_books + remove_book helpers (galley substrate)`.
 
 ## 7. Phase 3 — the `ssc-galley` crate (native shell)
@@ -606,7 +652,7 @@ Behavioral notes (each is a test in §12):
 
 §12 group C tests green under both feature sets; the crate compiles for
 `wasm32-unknown-unknown`; workspace clippy. Oracles untouched (no core
-change) — run anyway (cheap insurance). Commit:
+change) — run the `wa` gate anyway (cheap insurance). Commit:
 `galley: resident Galley shell (corpus + cache + prior, hint-free analyze)`.
 
 ## 8. Phase 4 — wasm wrapper (`crates/wasm`)
@@ -630,8 +676,8 @@ pub struct BookUpdateIn { pub slug: String, pub keys: Vec<String>, pub texts: Ve
 #[wasm_bindgen]
 impl Galley {
     #[wasm_bindgen(constructor)]
-    pub fn new(target: VrefCorpus, source: Option<VrefCorpus>, config: SousConfig)
-        -> Result<Galley, JsError>;
+    pub fn new(target: VrefCorpus, source: Option<VrefCorpus>, config: Option<SousConfig>)
+        -> Result<Galley, JsError>;   // None ⇒ v1 defaults, same as the stateless exports
     pub fn update_books(&mut self, batch: Vec<BookUpdateIn>) -> Result<(), JsError>;
     pub fn remove_books(&mut self, slugs: Vec<String>) -> u32;
     pub fn replace_corpus(&mut self, target: VrefCorpus) -> Result<(), JsError>;
@@ -643,8 +689,12 @@ impl Galley {
 ```
 
 `SousConfig` is the existing config input type of the stateless exports —
-reuse it verbatim (its exact name is verified in §3; do not invent a second
-config wire type). `analyze` projects through the **same** projection the
+reuse it verbatim including its optionality (the stateless surface accepts
+`Option<SousConfig>`; its exact name is verified in §3; do not invent a
+second config wire type). The constructor mirrors that (`None` ⇒ the same
+default construction the stateless exports use); `update_config` takes a
+**required** `SousConfig` — deliberately: a config *change* must be
+explicit, never an accidental reset-to-defaults. `analyze` projects through the **same** projection the
 stateless path uses (resolve `KeyIdx` → sid string, byte `Span` → UTF-16);
 factor it into one shared function if it isn't already. Conversion errors
 (`CorpusError`) become `JsError::new(&e.to_string())`.
@@ -681,6 +731,15 @@ Commit source and regenerated packages per the repo's generated-artifact
 policy. Commit: `wasm: Galley — resident handle over ssc-galley`
 (+ `pkg:` commit).
 
+**Final full-fleet bookend (after the last code commit, before docs):**
+re-run all four dumps at FULL scope and gate against the original
+`base.full.*` files: the two finding dumps byte-identical by plain diff;
+the two incremental dumps via §5.5's three commands (findings and
+rules-only digests byte-identical to *pre-plan*; provenance column = the
+one adjudicated difference). Then re-pin `base.full.*` and record the
+result in the ADR. If anything beyond the provenance column moved, a `wa`
+gate let something through — find it; never re-pin over it.
+
 ## 9. Snapshot persistence — Decided: not in v1
 
 Reopening a project pays one cold analyze (~270 ms defaults / ~700 ms
@@ -714,7 +773,7 @@ complexity today. The recorded design for the future revisit lives in §16.
     matches, nothing stales; `None → None` is a no-op; editing ONE source
     book stales only its same-slug target book.
 12. **Wrapper re-sends `update_config` with the same config**: no-op
-    (fingerprint compare) — cache and prior survive. (Test C-6.)
+    (plain `Config` equality, §7.2) — cache and prior survive. (Test C-6.)
 13. **A book in `prior.tallied` absent from the supplied corpus** (echo
     subset call): carries untouched, including its `tallied` entry —
     unchanged echo semantics.
@@ -835,6 +894,11 @@ complexity today. The recorded design for the future revisit lives in §16.
   equal cold-with-R (every `Tally.rules` mismatches; R's counts appear).
 - A-10 Knob-only config change: zero books re-tally; findings equal cold
   under the new knobs (judging moves, counting doesn't).
+- A-11 **Disable→re-enable round trip** (retention invariant, §5.4): prior
+  for A+B with rule R enabled → disable R, echo A only → re-enable R,
+  analyze A+B; findings and stats equal cold-with-R (B carried its R
+  contribution the whole time). Repeat with A *edited* while R was
+  disabled — A re-tallies, B still carries correctly.
 
 **B (Phase 2, mutation helpers):**
 - B-1 `replace_books` in-place (same slug, new text): splice correct, later
@@ -956,23 +1020,31 @@ cargo test -p ssc-wasm                          # Phases 1 (changed sweep) and 4
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo check -p ssc-wasm --target wasm32-unknown-unknown
 
-# Oracles — diff against /tmp/oracle/resident-handle/base.* (Phase 0 pins).
-# Intermediate steps may use the `wa` subset (trailing `wa` arg); bookends
-# are always the full fleet. Finding columns AND the rules-only stats
-# digest must be byte-identical at every phase; the provenance digest
-# column appears ONCE, at Phase 1 (§5.5 split-digest procedure + re-pin).
+# Oracles — protocol (§3): EVERY intermediate phase gates on the `wa`
+# subset only (append the trailing `wa` arg to each command below, write
+# new.wa.*, diff against base.wa.*). The FULL fleet runs exactly twice:
+# the Phase 0 pin and the §8.4 final bookend. Finding columns AND the
+# rules-only stats digest must be byte-identical at every gate; the
+# provenance digest column appears ONCE, at Phase 1 (§5.5 gate + wa
+# re-pin; full baselines re-pinned only at the bookend).
 cargo run --release -q -p ssc-core --example calibrate --features "serde parallel" -- \
-  --dump-findings corpora/vref /tmp/oracle/resident-handle/new.default.tsv default
+  --dump-findings corpora/vref /tmp/oracle/resident-handle/new.wa.default.tsv default wa
 cargo run --release -q -p ssc-core --example calibrate --features "serde parallel" -- \
-  --dump-findings corpora/vref /tmp/oracle/resident-handle/new.everything.tsv everything
+  --dump-findings corpora/vref /tmp/oracle/resident-handle/new.wa.everything.tsv everything wa
 cargo run --release -q -p ssc-core --example calibrate --features "serde parallel" -- \
-  --dump-incremental corpora/vref /tmp/oracle/resident-handle/new.incremental.tsv default
+  --dump-incremental corpora/vref /tmp/oracle/resident-handle/new.wa.incremental.tsv default wa
 cargo run --release -q -p ssc-core --example calibrate --features "serde parallel" -- \
-  --dump-incremental-cached corpora/vref /tmp/oracle/resident-handle/new.cached.tsv default
-diff /tmp/oracle/resident-handle/base.default.tsv     /tmp/oracle/resident-handle/new.default.tsv
-diff /tmp/oracle/resident-handle/base.everything.tsv  /tmp/oracle/resident-handle/new.everything.tsv
-diff /tmp/oracle/resident-handle/base.incremental.tsv /tmp/oracle/resident-handle/new.incremental.tsv
-diff /tmp/oracle/resident-handle/base.cached.tsv      /tmp/oracle/resident-handle/new.cached.tsv
+  --dump-incremental-cached corpora/vref /tmp/oracle/resident-handle/new.wa.cached.tsv default wa
+diff /tmp/oracle/resident-handle/base.wa.default.tsv     /tmp/oracle/resident-handle/new.wa.default.tsv
+diff /tmp/oracle/resident-handle/base.wa.everything.tsv  /tmp/oracle/resident-handle/new.wa.everything.tsv
+# Incremental dumps: whole-file diff EXCEPT at the Phase 1 landing step,
+# where the §5.5 three-command gate applies (findings grep-diff, rules-only
+# cut -f1-5 diff, provenance cut -f6 adjudication) followed by the wa
+# re-pin. At the §8.4 FINAL BOOKEND, run this whole block at full scope
+# (drop the `wa` arg, use base.full.* / new.full.*) with §5.5's three
+# commands for the incrementals, then re-pin base.full.*.
+diff /tmp/oracle/resident-handle/base.wa.incremental.tsv /tmp/oracle/resident-handle/new.wa.incremental.tsv
+diff /tmp/oracle/resident-handle/base.wa.cached.tsv      /tmp/oracle/resident-handle/new.wa.cached.tsv
 
 # wasm packages (any phase that touches the wasm surface):
 npm run check:wasm && npm run build:wasm
@@ -1043,3 +1115,9 @@ Foreground only, generous timeouts; never background-and-wait.
   1–2), `replace_corpus` deletion reconciliation (3), always-hash (4), the
   split-digest oracle procedure (5), `PrepCache::remove_book` (6), and
   atomic `Corpus::replace_books` (7) — plus all six advisories.
+- Confirmation pass (same reviewer, post-revision): per-book `Tally`
+  verified sound; verdict "dispatch" with one required addition — the
+  §5.4 disabled-variant retention invariant + A-11 (a guardrail pinning
+  behavior the existing merge already provides) — and the §5.5/§14b
+  executable gate, `Option<SousConfig>` constructor parity, and small
+  consistency corrections, all folded in.
