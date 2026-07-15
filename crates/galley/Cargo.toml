@@ -1,0 +1,12 @@
+[package]
+name = "ssc-galley"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+ssc-core = { workspace = true }
+
+[features]
+# Forward core's rayon per-verse fan-out (ADR 0018) so the shell can be
+# exercised under both feature sets; the Galley itself stays single-threaded.
+parallel = ["ssc-core/parallel"]

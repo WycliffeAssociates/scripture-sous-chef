@@ -498,6 +498,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "ssc-galley"
+version = "0.1.0"
+dependencies = [
+ "ssc-core",
+]
+
+[[package]]
 name = "ssc-wasm"
 version = "0.1.0"
 dependencies = [
