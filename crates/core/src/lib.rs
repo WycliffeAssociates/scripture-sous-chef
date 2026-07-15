@@ -39,7 +39,7 @@ pub use config::{
     BracketBalanceConfig, CasingConfig, Config, ProportionalityConfig, PunctOnlyTokenConfig,
     PunctuationAdjacencyConfig, PunctuationSpacingConfig, RepeatedCharacterRunConfig,
 };
-pub use corpus::{Corpus, KeyIdx};
+pub use corpus::{BookBlock, Corpus, CorpusError, KeyIdx};
 pub use diagnostics::{
     BracketMeasure, DelimObservation, DelimRole, Finding, FindingArgs, LengthRatioScope, RuleId,
     Severity,
@@ -1812,5 +1812,28 @@ mod tests {
         let (f_cold2, s_cold2) = analyze_stateful(&full2, None, &cfg_on, None, None);
         assert_eq!(f_re2, f_cold2);
         assert_eq!(s_re2, s_cold2);
+    }
+
+    /// B-4 (stats half): `Stats::remove_book` drops the slug from `tallied` as
+    /// well as from every rule variant — a removed book leaves no provenance
+    /// and no corpus-stats contribution behind.
+    #[test]
+    fn remove_book_also_drops_the_tallied_entry() {
+        let cfg = Config::all();
+        let corpus =
+            corpus_of(vec![keyed("GEN", &["a  b", "one"]), keyed("EXO", &["x\ty", "two"])]);
+        let (_, mut stats) = analyze_stateful(&corpus, None, &cfg, None, None);
+        assert!(stats.tallied.contains_key("GEN") && stats.tallied.contains_key("EXO"));
+
+        stats.remove_book("GEN");
+        assert!(!stats.tallied.contains_key("GEN"), "provenance entry removed");
+        assert!(stats.tallied.contains_key("EXO"), "sibling provenance retained");
+
+        // The rule-side removal (every variant) equals a corpus that never had
+        // GEN: an EXO-only analyze with the pruned prior matches cold EXO.
+        let exo = mk("EXO", &["x\ty", "two"]);
+        let (_, s_after) = analyze_stateful(&exo, None, &cfg, Some(stats), None);
+        let (_, s_cold) = analyze_stateful(&exo, None, &cfg, None, None);
+        assert_eq!(s_after, s_cold, "no GEN contribution survives in any rule");
     }
 }

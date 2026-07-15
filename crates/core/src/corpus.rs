@@ -16,7 +16,7 @@
 //!
 use std::fmt;
 
-use rustc_hash::FxHashSet;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::diagnostics::{Finding, FindingArgs, RuleId, Severity};
 use crate::key::{self, parse_key};
@@ -146,6 +146,13 @@ pub enum CorpusError {
     MalformedKey { key: String, source: key::KeyError },
     BookTooLarge { slug: String, len: usize },
     ReopenedBook { slug: String },
+    /// A [`BookBlock`] key whose parsed book slug is not the block's own slug.
+    SlugMismatch { slug: String, key: String },
+    /// A [`BookBlock`] with no verses. Removal is the explicit
+    /// [`Corpus::remove_book`], never an empty block.
+    EmptyBook { slug: String },
+    /// Two [`BookBlock`]s in one [`Corpus::replace_books`] batch share a slug.
+    DuplicateSlugInBatch { slug: String },
 }
 
 impl fmt::Display for CorpusError {
@@ -172,6 +179,16 @@ impl fmt::Display for CorpusError {
                 f,
                 "book {slug:?} reopens after another book started — book blocks must be contiguous"
             ),
+            CorpusError::SlugMismatch { slug, key } => write!(
+                f,
+                "book block {slug:?} contains key {key:?}, whose book is not {slug:?}"
+            ),
+            CorpusError::EmptyBook { slug } => {
+                write!(f, "book block {slug:?} is empty; use remove_book to delete a book")
+            }
+            CorpusError::DuplicateSlugInBatch { slug } => {
+                write!(f, "book {slug:?} appears more than once in one replace_books batch")
+            }
         }
     }
 }
@@ -185,6 +202,17 @@ impl std::error::Error for CorpusError {}
 pub struct Corpus {
     keys: Vec<String>,
     texts: Vec<String>,
+}
+
+/// One validated whole-book block for [`Corpus::replace_books`]. Shared by
+/// core and the shell crate — the shell does not define its own update type.
+/// Every `keys[i]` must parse to `slug`; `keys`/`texts` must match in length
+/// and be non-empty (removal is [`Corpus::remove_book`], never an empty block).
+#[derive(Debug, Clone)]
+pub struct BookBlock {
+    pub slug: Box<str>,
+    pub keys: Vec<String>,
+    pub texts: Vec<String>,
 }
 
 impl Corpus {
@@ -255,6 +283,147 @@ impl Corpus {
 
     pub fn texts(&self) -> &[String] {
         &self.texts
+    }
+
+    /// Atomically replace/insert whole books. Every block is validated first
+    /// (key grammar with book == slug; matched, non-empty `keys`/`texts`; the
+    /// `LocalKeyIdx` u16 ceiling; no duplicate slug in the batch) and the
+    /// resulting corpus length is checked addressable; only then does it splice,
+    /// so a rejected batch leaves the corpus untouched. An existing slug is
+    /// replaced in place (its presented position is kept); a new slug is
+    /// appended at the end in batch order. Splices move `String`s — no text
+    /// copies; validation only borrows.
+    pub fn replace_books(&mut self, batch: Vec<BookBlock>) -> Result<(), CorpusError> {
+        // 1. Validate every block, and reject a slug repeated within the batch.
+        let mut batch_slugs: FxHashSet<&str> = FxHashSet::default();
+        for block in &batch {
+            if block.keys.len() != block.texts.len() {
+                return Err(CorpusError::MismatchedLengths {
+                    keys: block.keys.len(),
+                    texts: block.texts.len(),
+                });
+            }
+            if block.keys.is_empty() {
+                return Err(CorpusError::EmptyBook {
+                    slug: block.slug.to_string(),
+                });
+            }
+            LocalKeyIdx::try_from_usize(block.keys.len(), &block.slug)?;
+            for k in &block.keys {
+                let parts = parse_key(k).map_err(|source| CorpusError::MalformedKey {
+                    key: k.clone(),
+                    source,
+                })?;
+                if parts.book != &*block.slug {
+                    return Err(CorpusError::SlugMismatch {
+                        slug: block.slug.to_string(),
+                        key: k.clone(),
+                    });
+                }
+            }
+            if !batch_slugs.insert(&block.slug) {
+                return Err(CorpusError::DuplicateSlugInBatch {
+                    slug: block.slug.to_string(),
+                });
+            }
+        }
+
+        // 2. Map each batch slug to its slot, and lay out the existing books so
+        //    replacements stay in place and the untouched books carry by move.
+        let mut slots: Vec<Option<BookBlock>> = batch.into_iter().map(Some).collect();
+        let slug_to_slot: FxHashMap<Box<str>, usize> = slots
+            .iter()
+            .enumerate()
+            .map(|(i, b)| (b.as_ref().expect("slot just filled").slug.clone(), i))
+            .collect();
+
+        // (start, end, Some(slot) if this existing book is being replaced).
+        let mut layout: Vec<(usize, usize, Option<usize>)> = Vec::new();
+        let mut start = 0usize;
+        while start < self.keys.len() {
+            let slug = parse_key(&self.keys[start]).expect("Corpus validated keys").book;
+            let mut end = start + 1;
+            while end < self.keys.len()
+                && parse_key(&self.keys[end]).expect("Corpus validated keys").book == slug
+            {
+                end += 1;
+            }
+            layout.push((start, end, slug_to_slot.get(slug).copied()));
+            start = end;
+        }
+
+        // 3. The resulting corpus must stay addressable (Corpus's own invariant,
+        //    checked before any mutation so the batch is still all-or-nothing).
+        let appended: usize = slots
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| !layout.iter().any(|&(_, _, r)| r == Some(*i)))
+            .map(|(_, slot)| slot.as_ref().map_or(0, |b| b.keys.len()))
+            .sum();
+        let final_len: usize = layout
+            .iter()
+            .map(|&(s, e, replaced)| match replaced {
+                Some(i) => slots[i].as_ref().expect("replacement slot present").keys.len(),
+                None => e - s,
+            })
+            .sum::<usize>()
+            + appended;
+        KeyIdx::try_from_usize(final_len)?;
+
+        // 4. Splice: existing books (replaced or carried) in order, then the
+        //    new-slug blocks appended in batch order. Everything moves.
+        let mut old_keys = std::mem::take(&mut self.keys).into_iter();
+        let mut old_texts = std::mem::take(&mut self.texts).into_iter();
+        let mut new_keys: Vec<String> = Vec::with_capacity(final_len);
+        let mut new_texts: Vec<String> = Vec::with_capacity(final_len);
+        for (s, e, replaced) in layout {
+            let n = e - s;
+            if let Some(i) = replaced {
+                for _ in 0..n {
+                    old_keys.next();
+                    old_texts.next();
+                }
+                let block = slots[i].take().expect("replacement slot present");
+                new_keys.extend(block.keys);
+                new_texts.extend(block.texts);
+            } else {
+                for _ in 0..n {
+                    new_keys.push(old_keys.next().expect("layout bounded by corpus length"));
+                    new_texts.push(old_texts.next().expect("layout bounded by corpus length"));
+                }
+            }
+        }
+        for slot in &mut slots {
+            if let Some(block) = slot.take() {
+                new_keys.extend(block.keys);
+                new_texts.extend(block.texts);
+            }
+        }
+        self.keys = new_keys;
+        self.texts = new_texts;
+        Ok(())
+    }
+
+    /// Remove `slug`'s contiguous block entirely. Returns `false` when the slug
+    /// is absent (a no-op). Removing the last book leaves a valid empty corpus.
+    pub fn remove_book(&mut self, slug: &str) -> bool {
+        let mut start = 0usize;
+        while start < self.keys.len() {
+            let book = parse_key(&self.keys[start]).expect("Corpus validated keys").book;
+            let mut end = start + 1;
+            while end < self.keys.len()
+                && parse_key(&self.keys[end]).expect("Corpus validated keys").book == book
+            {
+                end += 1;
+            }
+            if book == slug {
+                self.keys.drain(start..end);
+                self.texts.drain(start..end);
+                return true;
+            }
+            start = end;
+        }
+        false
     }
 }
 
@@ -477,5 +646,120 @@ mod tests {
         assert_eq!(groups[1].slug, "GEN");
         assert_eq!(groups[1].base, KeyIdx::from_usize(2));
         assert_eq!(groups[1].keys, &c.keys()[2..3]);
+    }
+
+    fn block(slug: &str, ks: &[&str], txt: &[&str]) -> BookBlock {
+        BookBlock {
+            slug: slug.into(),
+            keys: keys(ks),
+            texts: keys(txt),
+        }
+    }
+
+    /// B-1: replacing a book in place (same slug, new/longer text) splices at
+    /// the book's presented position and leaves later books byte-for-byte.
+    #[test]
+    fn replace_books_in_place_keeps_siblings_untouched() {
+        let mut c = Corpus::try_from_parts(
+            keys(&["GEN 1:1", "GEN 1:2", "EXO 1:1", "EXO 1:2"]),
+            keys(&["g1", "g2", "e1", "e2"]),
+        )
+        .unwrap();
+        c.replace_books(vec![block(
+            "GEN",
+            &["GEN 1:1", "GEN 1:2", "GEN 1:3"],
+            &["G1", "G2", "G3"],
+        )])
+        .unwrap();
+        assert_eq!(
+            c.keys(),
+            keys(&["GEN 1:1", "GEN 1:2", "GEN 1:3", "EXO 1:1", "EXO 1:2"]).as_slice()
+        );
+        assert_eq!(c.texts(), keys(&["G1", "G2", "G3", "e1", "e2"]).as_slice());
+    }
+
+    /// B-2: a new slug appends at the end; a mixed batch (replace + insert)
+    /// keeps existing presented order and appends the new book last.
+    #[test]
+    fn replace_books_appends_new_slug_and_handles_mixed_batch() {
+        let mut c =
+            Corpus::try_from_parts(keys(&["GEN 1:1", "EXO 1:1"]), keys(&["g", "e"])).unwrap();
+        c.replace_books(vec![
+            block("EXO", &["EXO 1:1", "EXO 1:2"], &["E1", "E2"]),
+            block("LEV", &["LEV 1:1"], &["l"]),
+        ])
+        .unwrap();
+        assert_eq!(
+            c.keys(),
+            keys(&["GEN 1:1", "EXO 1:1", "EXO 1:2", "LEV 1:1"]).as_slice()
+        );
+        assert_eq!(c.texts(), keys(&["g", "E1", "E2", "l"]).as_slice());
+    }
+
+    /// B-3: a batch failing on its LAST block leaves the corpus untouched —
+    /// validation is complete before any splice (all-or-nothing).
+    #[test]
+    fn replace_books_is_atomic_on_a_late_failure() {
+        let original =
+            Corpus::try_from_parts(keys(&["GEN 1:1", "EXO 1:1"]), keys(&["g", "e"])).unwrap();
+
+        // SlugMismatch on the second block.
+        let mut c = original.clone();
+        let err = c
+            .replace_books(vec![
+                block("GEN", &["GEN 1:1"], &["G"]),
+                block("EXO", &["GEN 1:9"], &["x"]), // key's book != slug
+            ])
+            .unwrap_err();
+        assert!(matches!(err, CorpusError::SlugMismatch { .. }));
+        assert_eq!(c, original, "a rejected batch leaves the corpus untouched");
+
+        // Length mismatch on the last block.
+        let mut c = original.clone();
+        let err = c
+            .replace_books(vec![BookBlock {
+                slug: "EXO".into(),
+                keys: keys(&["EXO 1:1", "EXO 1:2"]),
+                texts: keys(&["only-one"]),
+            }])
+            .unwrap_err();
+        assert!(matches!(err, CorpusError::MismatchedLengths { .. }));
+        assert_eq!(c, original);
+
+        // Duplicate slug within one batch.
+        let mut c = original.clone();
+        let err = c
+            .replace_books(vec![
+                block("GEN", &["GEN 1:1"], &["a"]),
+                block("GEN", &["GEN 1:2"], &["b"]),
+            ])
+            .unwrap_err();
+        assert!(matches!(err, CorpusError::DuplicateSlugInBatch { .. }));
+        assert_eq!(c, original);
+
+        // An empty block is an error, never a removal.
+        let mut c = original.clone();
+        let err = c
+            .replace_books(vec![BookBlock {
+                slug: "EXO".into(),
+                keys: Vec::new(),
+                texts: Vec::new(),
+            }])
+            .unwrap_err();
+        assert!(matches!(err, CorpusError::EmptyBook { .. }));
+        assert_eq!(c, original);
+    }
+
+    /// B-4 (corpus half): `remove_book` returns true/false and removing the
+    /// last book leaves a valid empty corpus.
+    #[test]
+    fn remove_book_reports_presence_and_empties_cleanly() {
+        let mut c =
+            Corpus::try_from_parts(keys(&["GEN 1:1", "EXO 1:1"]), keys(&["g", "e"])).unwrap();
+        assert!(!c.remove_book("LEV"), "absent slug is a no-op");
+        assert!(c.remove_book("GEN"));
+        assert_eq!(c.keys(), keys(&["EXO 1:1"]).as_slice());
+        assert!(c.remove_book("EXO"));
+        assert!(c.is_empty(), "removing the last book leaves a valid empty corpus");
     }
 }

@@ -85,6 +85,13 @@ impl PrepCache {
         self.books.clear();
     }
 
+    /// Remove a book's cached products. Returns `false` when absent. Public
+    /// because the shell (a separate crate) owns the corpus↔cache lifecycle and
+    /// the per-book map is otherwise private.
+    pub fn remove_book(&mut self, slug: &str) -> bool {
+        self.books.remove(slug).is_some()
+    }
+
     pub(crate) fn ensure_fingerprint(&mut self, config: &Config) {
         let fingerprint = config_fingerprint(config);
         if self.fingerprint != Some(fingerprint) {
@@ -400,5 +407,18 @@ mod tests {
             entry.casing.is_none(),
             "old walk lane must not survive a hash change"
         );
+    }
+
+    /// B-4 (cache half): `PrepCache::remove_book` reports presence and clears
+    /// the book's entry.
+    #[test]
+    fn remove_book_reports_presence_and_clears_entry() {
+        let mut cache = PrepCache::new();
+        cache.ensure_fingerprint(&Config::v1_defaults());
+        cache.store_per_verse("GEN", 1, KeyIdx::from_usize(0), &[]);
+        assert_eq!(cache.book_count(), 1);
+        assert!(cache.remove_book("GEN"));
+        assert!(!cache.remove_book("GEN"), "a second removal is a no-op");
+        assert_eq!(cache.book_count(), 0);
     }
 }
