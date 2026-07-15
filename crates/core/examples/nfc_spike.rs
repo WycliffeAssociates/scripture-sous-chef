@@ -41,15 +41,15 @@ fn main() {
         }
         let map = load_corpus(&path);
         let verses = map.len();
-        let chars: usize = map.iter().map(|(_, t)| t.chars().count()).sum();
+        let chars: usize = map.texts().iter().map(|t| t.chars().count()).sum();
 
         // How many verses are NOT already NFC (the check firing).
-        let non_nfc = map.iter().filter(|(_, t)| !is_nfc(t)).count();
+        let non_nfc = map.texts().iter().filter(|t| !is_nfc(t)).count();
 
         // Warm up, then time enough passes to total ~0.5s of work.
-        let one = |map: &ssc_core::VerseMap| {
+        let one = |map: &ssc_core::Corpus| {
             let mut acc = 0usize;
-            for (_, t) in map.iter() {
+            for t in map.texts() {
                 if is_nfc(black_box(t)) {
                     acc += 1;
                 }

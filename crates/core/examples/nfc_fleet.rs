@@ -30,12 +30,12 @@ struct Stats {
     minority_occ: u64, // occurrences NOT in the majority form of a mixed key
 }
 
-fn survey(map: &ssc_core::VerseMap) -> Stats {
+fn survey(map: &ssc_core::Corpus) -> Stats {
     let mut s = Stats { verses: map.len(), ..Default::default() };
     // nfc_key -> (raw_form -> count), only for non-neutral clusters.
     let mut classes: HashMap<String, HashMap<String, u64>> = HashMap::new();
 
-    for (_, text) in map.iter() {
+    for text in map.texts() {
         for g in text.graphemes(true) {
             if g.is_ascii() {
                 continue; // neutral: no decomposition, no form signal
@@ -120,7 +120,7 @@ fn main() {
     println!("no form signal at all (pure-ASCII/atomic scripts): {no_signal}");
 
     // Top mixers by minority-form occurrences.
-    rows.sort_by(|a, b| b.1.minority_occ.cmp(&a.1.minority_occ));
+    rows.sort_by_key(|b| std::cmp::Reverse(b.1.minority_occ));
     println!("\n=== TOP 25 MIXERS (by minority-form occurrences) ===");
     println!("{:<24} {:>7} {:>9} {:>11} {:>11} {:>10}", "corpus", "mixKeys", "minority", "%composed", "%decomp", "%neither");
     for (id, s) in rows.iter().take(25) {
