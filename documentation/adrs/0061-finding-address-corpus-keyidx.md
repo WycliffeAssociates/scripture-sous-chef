@@ -248,13 +248,19 @@ innocence just because this one was granted.
   duplicate-count tests in (3) still didn't cover a key present *only* on
   the source side (as opposed to a surplus duplicate of a *shared* key) —
   added `keys_present_only_in_source_are_ignored`, symmetric to the
-  existing target-only-key test. All of the above are representational
-  hardening with no intended behavior change, so rather than re-running the
-  full 1,504-corpus fleet oracle for each pass, this was spot-checked on a
+  existing target-only-key test. Each pass was first spot-checked on a
   deterministic 39-corpus stride sample (every 38th file in
-  `corpora/vref/`, both `default` and `all` configs): `diff` before vs.
-  after the as-cast/`DelimEvent` remediation in (1)/(2) is byte-identical
-  (0 lines) on both dumps.
+  `corpora/vref/`); the full 1,504-corpus fleet was then re-run on the
+  final state (all four oracles, per CLAUDE.md's oracle-gated rework
+  doctrine) as the closing gate before acceptance: `default` and `all`
+  sorted diffs against the pre-migration baseline are byte-identical (0
+  lines, same as originally reported above); `incremental`/`cached`
+  sorted diffs against the pre-migration baseline are unchanged from the
+  pre-remediation full-fleet run (110,545 lines each, both runs — proving
+  this remediation altered nothing beyond the already-adjudicated
+  edit-target-selection difference, not a new drift); and the cache
+  invariant (`final.incremental.tsv` vs. `final.cached.tsv`, direct diff,
+  full fleet) is byte-identical (0 lines).
 - **`cargo fmt --all --check` remains not clean** — confirmed pre-existing
   and unrelated to this migration (the pre-migration commit fails the same
   check with a comparable diff count across the same unrelated files);
