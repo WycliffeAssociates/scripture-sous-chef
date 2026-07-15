@@ -78,6 +78,7 @@ isn't visible from the code alone.
 | 0059 | 2026-07-11 | [Association goes G²-only — retire the Fisher fallback as the default](0059-association-g2-only.md) | Accepted |
 | 0060 | 2026-07-13 | [Cross-call analysis caches — content-keyed per-book products](0060-cross-call-analysis-caches.md) | Draft |
 | 0061 | 2026-07-14 | [Finding addresses become an ordered `Corpus` + `KeyIdx`/`LocalKeyIdx` (retires `Sid`/`BookId`/`VerseMap`)](0061-finding-address-corpus-keyidx.md) | Accepted (amends 0010/0040) |
+| 0062 | 2026-07-15 | [Resident galley shell + per-book `Tally` provenance](0062-resident-galley-tally-provenance.md) | Draft (supersedes 0043's `changed` contract) |
 
 ## Format
 

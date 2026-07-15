@@ -268,9 +268,10 @@ fn main() {
             return;
         }
         // Incremental oracle: for each corpus, mutate one verse, then run the
-        // complete-snapshot call (whole corpus + prior + changed=[book]) and
-        // dump its findings + a stats digest. Pins the prior/merge/changed
-        // path across the port. Trailing `wa`|`full` scopes the fleet as above.
+        // complete-snapshot call (whole corpus + prior; the edited book
+        // re-tallies by content hash) and dump its findings + a split stats
+        // digest. Pins the prior/merge/provenance path across the port.
+        // Trailing `wa`|`full` scopes the fleet as above.
         [flag, path, out, cfg_name, rest @ ..] if flag == "--dump-incremental" => {
             dump_incremental(
                 Path::new(path),

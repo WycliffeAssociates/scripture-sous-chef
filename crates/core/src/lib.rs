@@ -305,6 +305,13 @@ pub fn analyze_stateful(
             .collect()
     });
     let counted: Option<&[&str]> = stale.as_deref();
+    // Counting-side probe: how many books entered the tally scope this call.
+    // Distinct from walk reuse — a knob-only change clears prep yet re-tallies
+    // nothing, and only this count proves it.
+    #[cfg(test)]
+    if let Some(cache) = cache.as_deref_mut() {
+        cache.note_retallied(counted.map_or(books.len(), <[&str]>::len));
+    }
 
     // A walk-product hit is safe only for a clean book in the complete
     // snapshot shape. Echo and cold calls must walk every supplied book so
@@ -1620,6 +1627,23 @@ mod tests {
         let (_, stats3) = analyze_stateful(&target, None, &cfg, Some(stats), None);
         assert_eq!(stats3.tallied["GEN"].source, SOURCE_NONE, "dropping source ⇒ SOURCE_NONE");
         assert_eq!(stats3.tallied["EXO"].source, SOURCE_NONE, "dropping source ⇒ SOURCE_NONE");
+
+        // None → Some: re-adding a source re-tallies affected books off SOURCE_NONE.
+        let (_, stats4) =
+            analyze_stateful(&target, Some(&source_v2), &cfg, Some(stats3.clone()), None);
+        assert_ne!(stats4.tallied["GEN"].source, SOURCE_NONE, "re-adding source re-tallies GEN");
+        assert_ne!(stats4.tallied["EXO"].source, SOURCE_NONE, "re-adding source re-tallies EXO");
+
+        // A present source lacking the target's slug ⇒ that book's source is
+        // SOURCE_NONE even though a source corpus is supplied.
+        let gen_only_source = mk("GEN", &["s1 s2 CHANGED", "s3 s4"]);
+        let (_, stats5) =
+            analyze_stateful(&target, Some(&gen_only_source), &cfg, Some(stats4.clone()), None);
+        assert_ne!(stats5.tallied["GEN"].source, SOURCE_NONE, "GEN has a same-slug source book");
+        assert_eq!(
+            stats5.tallied["EXO"].source, SOURCE_NONE,
+            "EXO absent from the source ⇒ SOURCE_NONE despite a present source"
+        );
     }
 
     /// A-4: a prior from one text lineage with a corpus from another re-tallies
@@ -1738,11 +1762,17 @@ mod tests {
         let target = mks("GEN", &casing_fire(40));
         let cfg1 = casing_on(0.5, 0.0);
         let cfg2 = casing_on(0.9, 3.0); // same enabled set, stricter knobs
-        let (_, prior) = analyze_stateful(&target, None, &cfg1, None, None);
-        let (f_inc, s_inc) = analyze_stateful(&target, None, &cfg2, Some(prior.clone()), None);
-        assert_eq!(s_inc.tallied, prior.tallied, "no book re-tallies on a knob-only change");
+        let mut cache = PrepCache::new();
+        let (_, prior) = analyze_stateful(&target, None, &cfg1, None, Some(&mut cache));
+        assert_eq!(cache.retallied_count(), 1, "the cold call tallies the one book");
+        let (f_inc, s_inc) =
+            analyze_stateful(&target, None, &cfg2, Some(prior.clone()), Some(&mut cache));
+        // The counting probe — not `tallied` equality, which redundant counting
+        // could also satisfy — proves the knob-only change re-tallied zero books.
+        assert_eq!(cache.retallied_count(), 0, "knob-only change re-tallies nothing");
+        assert_eq!(s_inc.tallied, prior.tallied, "provenance unchanged");
         let (f_cold, _) = analyze_stateful(&target, None, &cfg2, None, None);
-        assert_eq!(f_inc, f_cold, "findings track the new knobs");
+        assert_eq!(f_inc, f_cold, "findings track the new knobs (judging moved, counting didn't)");
     }
 
     /// A-11: the disable→re-enable round trip (the §5.4 retention invariant) —

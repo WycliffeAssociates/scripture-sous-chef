@@ -209,8 +209,9 @@ impl WalkPlan {
 
 /// One book's fused-walk outputs: each enabled counting listener's
 /// `(book stats, sites)`, the project listeners' outputs, and the book's
-/// token cache slice. For a book outside the `counted` scope (ADR 0043) the
-/// walk still runs the site-bearing listeners — the judge phase consumes the
+/// token cache slice. For a book outside the `counted` scope (the
+/// provenance-derived stale set) the walk still runs the site-bearing
+/// listeners — the judge phase consumes the
 /// sites (ADR 0044) instead of re-scanning the book per rule — but the
 /// assembly discards the stats half (`counted == false`), so the carried
 /// prior counts stay authoritative. Site-free rules (proportionality,
@@ -249,7 +250,7 @@ pub(crate) struct BookOut {
 /// The fused walk over every supplied book, fan-out per book (ADR 0042).
 /// Output is index-aligned with `books` (its presented order — see
 /// `Corpus`), not keyed by book identity. `counted` says which book *slugs*
-/// the counting listeners run for (the ADR 0043 `changed` scope narrows
+/// the counting listeners run for (the provenance-derived stale set narrows
 /// counting, never the project listeners or the token cache); `None` counts
 /// every book.
 pub(crate) fn walk_fused(

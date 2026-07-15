@@ -5,9 +5,9 @@
 //! aggregate *plus* the cached candidate observations), then **judges**
 //! from that alone — so re-judging the whole corpus after an edit is
 //! `O(candidates)` with no re-scan. The shell holds `Stats` as a value and
-//! supplies it back as `prior`; on edit it re-supplies only the changed
-//! books, which **supersede** their prior entries at book granularity. Core
-//! stays pure (ADR 0010): it holds no state between calls.
+//! supplies it back as `prior`; on edit it re-supplies the edited books,
+//! which **supersede** their prior entries at book granularity. Core stays
+//! pure (ADR 0010): it holds no state between calls.
 
 use std::collections::BTreeMap;
 
@@ -201,10 +201,10 @@ pub struct Stats {
     #[cfg_attr(feature = "wasm", tsify(type = "Partial<Record<RuleId, RuleStats>>"))]
     rules: BTreeMap<RuleId, RuleStats>,
     /// Per-book provenance ([`Tally`]): what text, which same-slug source book,
-    /// and which enabled counting-rule set each book's counts came from. This
-    /// replaces the old caller-declared `changed` set — a book re-tallies iff
-    /// its current `Tally` differs from this record. Serialized with the stats
-    /// wire in deterministic (`BTreeMap`) order.
+    /// and which enabled counting-rule set each book's counts came from. A book
+    /// re-tallies iff its current `Tally` differs from this record — staleness
+    /// is proven from content, never declared. Serialized with the stats wire
+    /// in deterministic (`BTreeMap`) order.
     #[cfg_attr(feature = "wasm", tsify(type = "Record<string, Tally>"))]
     pub tallied: BTreeMap<Box<str>, Tally>,
 }

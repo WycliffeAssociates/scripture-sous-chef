@@ -47,6 +47,11 @@ pub struct PrepCache {
     walk_hits: usize,
     #[cfg(test)]
     walk_misses: usize,
+    /// Books re-tallied (entered the counting scope) on the most recent call —
+    /// the counting-side probe, distinct from walk reuse: a knob-only change
+    /// clears prep (so every book re-walks for sites) yet re-tallies nothing.
+    #[cfg(test)]
+    retallied: usize,
 }
 
 impl Default for PrepCache {
@@ -68,6 +73,8 @@ impl PrepCache {
             walk_hits: 0,
             #[cfg(test)]
             walk_misses: 0,
+            #[cfg(test)]
+            retallied: 0,
         }
     }
 
@@ -227,6 +234,17 @@ impl PrepCache {
     #[cfg(test)]
     pub(crate) fn walk_miss_count(&self) -> usize {
         self.walk_misses
+    }
+
+    /// Record how many books were re-tallied (the counting scope) this call.
+    #[cfg(test)]
+    pub(crate) fn note_retallied(&mut self, n: usize) {
+        self.retallied = n;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn retallied_count(&self) -> usize {
+        self.retallied
     }
 }
 

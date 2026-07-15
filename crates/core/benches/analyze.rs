@@ -194,13 +194,13 @@ fn bench_analyze(c: &mut Criterion) {
 // come from `cargo bench -p ssc-core --features parallel` with no mirror
 // to drift.
 
-/// The counting-vs-emission split (ADR 0043 territory): how much of the
-/// stateful phase is `reduce` (invalidated only by text edits, book-granular)
-/// vs `judge` (re-paid by any complete-emission call). This is the number
-/// that prices a hypothetical `changed: &[BookId]` argument — a whole-corpus
-/// call that re-counts one book saves ~the reduce line and still pays the
-/// judge line. Tokens are `None` here (no shared cache), so repeated-run
-/// tokenizes in both phases — a slight overcount of each, same direction.
+/// The counting-vs-emission split: how much of the stateful phase is `reduce`
+/// (invalidated only by text edits, book-granular) vs `judge` (re-paid by any
+/// complete-emission call). This is the number behind hash-derived counting's
+/// payoff — a whole-corpus call that re-counts only the edited book saves ~the
+/// reduce line and still pays the judge line. Tokens are `None` here (no shared
+/// cache), so repeated-run tokenizes in both phases — a slight overcount of
+/// each, same direction.
 fn bench_phases(c: &mut Criterion) {
     let Some(bible) = corpus("WA-en-ulb") else {
         return;
