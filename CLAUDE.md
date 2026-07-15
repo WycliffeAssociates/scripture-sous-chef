@@ -34,6 +34,16 @@ be the referee):
    digest over a fixed mutation). These dumps are the behavior contract.
 2. **Gate every step**: re-dump and diff; byte-identical or the step does
    not land. Commit per gated step.
+   - **Scale the gate to the step.** For a multi-step refactor, intermediate
+     steps may gate on the WA subset only — pass a trailing `wa` to any dump
+     command (`--dump-findings corpora/vref out.tsv default wa`); that's the
+     ~251-corpus Wycliffe Associates slice, ~6× quicker, and it's a faithful
+     slice (per-corpus findings are identical to the full run). Use it to keep
+     work moving. But the **before pin and the final after pin are always the
+     full fleet** — a subset gate never substitutes for the bookends.
+   - A `wa` dump only ever diffs against another `wa` dump; the scopes are
+     different contracts. The dump's stderr prints `scope=wa|full` and the
+     corpus count so a file's scope is unambiguous — mark it in the filename.
 3. **Intentional behavior changes are not perf work**: they get their own
    ADR recording the measured drift (counts, max delta, samples), user
    adjudication, and a re-pinned oracle — see ADR 0059 for the template.

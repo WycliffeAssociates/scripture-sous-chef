@@ -20,6 +20,9 @@ rayon = { version = "1", optional = true }
 [dev-dependencies]
 serde_json = "1"
 criterion = "0.5"
+# THROWAWAY SPIKE (nfc_spike example) — measuring is_nfc cost before
+# committing to the dep. Remove with the example if the spike is abandoned.
+unicode-normalization = "0.1"
 # Corpus-level fan-out for the fleet survey (calibrate --fleet); dev-only —
 # the library's own `parallel` feature stays optional and separate.
 rayon = "1"
