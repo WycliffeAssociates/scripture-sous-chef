@@ -331,6 +331,8 @@ impl Corpus {
         // 2. Map each batch slug to its slot, and lay out the existing books so
         //    replacements stay in place and the untouched books carry by move.
         let mut slots: Vec<Option<BookBlock>> = batch.into_iter().map(Some).collect();
+        // The lookup map clones each slug (a short book code) — never a key or
+        // text `String`, so the "no text copies" contract holds.
         let slug_to_slot: FxHashMap<Box<str>, usize> = slots
             .iter()
             .enumerate()
@@ -678,73 +680,99 @@ mod tests {
         assert_eq!(c.texts(), keys(&["G1", "G2", "G3", "e1", "e2"]).as_slice());
     }
 
-    /// B-2: a new slug appends at the end; a mixed batch (replace + insert)
-    /// keeps existing presented order and appends the new book last.
+    /// B-2: a mixed batch replaces in place and appends new books in batch
+    /// order. Two new slugs (NUM before LEV) straddle the EXO replacement, so
+    /// the append order genuinely reflects batch order — not slug order or the
+    /// replacement's position.
     #[test]
-    fn replace_books_appends_new_slug_and_handles_mixed_batch() {
+    fn replace_books_appends_new_slugs_in_batch_order() {
         let mut c =
             Corpus::try_from_parts(keys(&["GEN 1:1", "EXO 1:1"]), keys(&["g", "e"])).unwrap();
         c.replace_books(vec![
-            block("EXO", &["EXO 1:1", "EXO 1:2"], &["E1", "E2"]),
-            block("LEV", &["LEV 1:1"], &["l"]),
+            block("NUM", &["NUM 1:1"], &["n"]),                    // new (batch idx 0)
+            block("EXO", &["EXO 1:1", "EXO 1:2"], &["E1", "E2"]), // replacement
+            block("LEV", &["LEV 1:1"], &["l"]),                    // new (batch idx 2)
         ])
         .unwrap();
+        // GEN carried, EXO replaced in place, then new books in batch order
+        // (NUM before LEV), regardless of the replacement sitting between them.
         assert_eq!(
             c.keys(),
-            keys(&["GEN 1:1", "EXO 1:1", "EXO 1:2", "LEV 1:1"]).as_slice()
+            keys(&["GEN 1:1", "EXO 1:1", "EXO 1:2", "NUM 1:1", "LEV 1:1"]).as_slice()
         );
-        assert_eq!(c.texts(), keys(&["g", "E1", "E2", "l"]).as_slice());
+        assert_eq!(c.texts(), keys(&["g", "E1", "E2", "n", "l"]).as_slice());
     }
 
     /// B-3: a batch failing on its LAST block leaves the corpus untouched —
-    /// validation is complete before any splice (all-or-nothing).
+    /// validation is complete before any splice (all-or-nothing). Each case
+    /// puts a valid block first so the failure is genuinely late.
     #[test]
     fn replace_books_is_atomic_on_a_late_failure() {
         let original =
             Corpus::try_from_parts(keys(&["GEN 1:1", "EXO 1:1"]), keys(&["g", "e"])).unwrap();
+        let good = || block("GEN", &["GEN 1:1"], &["G"]);
 
-        // SlugMismatch on the second block.
+        // SlugMismatch: last block's key parses to a different book.
         let mut c = original.clone();
         let err = c
-            .replace_books(vec![
-                block("GEN", &["GEN 1:1"], &["G"]),
-                block("EXO", &["GEN 1:9"], &["x"]), // key's book != slug
-            ])
+            .replace_books(vec![good(), block("EXO", &["GEN 1:9"], &["x"])])
             .unwrap_err();
         assert!(matches!(err, CorpusError::SlugMismatch { .. }));
         assert_eq!(c, original, "a rejected batch leaves the corpus untouched");
 
-        // Length mismatch on the last block.
+        // MismatchedLengths on the last block.
         let mut c = original.clone();
         let err = c
-            .replace_books(vec![BookBlock {
-                slug: "EXO".into(),
-                keys: keys(&["EXO 1:1", "EXO 1:2"]),
-                texts: keys(&["only-one"]),
-            }])
+            .replace_books(vec![
+                good(),
+                BookBlock {
+                    slug: "EXO".into(),
+                    keys: keys(&["EXO 1:1", "EXO 1:2"]),
+                    texts: keys(&["only-one"]),
+                },
+            ])
             .unwrap_err();
         assert!(matches!(err, CorpusError::MismatchedLengths { .. }));
         assert_eq!(c, original);
 
-        // Duplicate slug within one batch.
+        // BookTooLarge: last block past the LocalKeyIdx u16 ceiling.
+        let big_keys: Vec<String> = (0..=u32::from(u16::MAX) + 1)
+            .map(|v| format!("EXO 1:{v}"))
+            .collect();
+        let n = big_keys.len();
         let mut c = original.clone();
         let err = c
             .replace_books(vec![
-                block("GEN", &["GEN 1:1"], &["a"]),
-                block("GEN", &["GEN 1:2"], &["b"]),
+                good(),
+                BookBlock {
+                    slug: "EXO".into(),
+                    keys: big_keys,
+                    texts: texts(n),
+                },
             ])
+            .unwrap_err();
+        assert!(matches!(err, CorpusError::BookTooLarge { .. }));
+        assert_eq!(c, original);
+
+        // DuplicateSlugInBatch: the duplicate is the last block.
+        let mut c = original.clone();
+        let err = c
+            .replace_books(vec![good(), block("GEN", &["GEN 1:2"], &["b"])])
             .unwrap_err();
         assert!(matches!(err, CorpusError::DuplicateSlugInBatch { .. }));
         assert_eq!(c, original);
 
-        // An empty block is an error, never a removal.
+        // EmptyBook (last block): an empty block is an error, never a removal.
         let mut c = original.clone();
         let err = c
-            .replace_books(vec![BookBlock {
-                slug: "EXO".into(),
-                keys: Vec::new(),
-                texts: Vec::new(),
-            }])
+            .replace_books(vec![
+                good(),
+                BookBlock {
+                    slug: "EXO".into(),
+                    keys: Vec::new(),
+                    texts: Vec::new(),
+                },
+            ])
             .unwrap_err();
         assert!(matches!(err, CorpusError::EmptyBook { .. }));
         assert_eq!(c, original);
