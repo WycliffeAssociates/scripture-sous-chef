@@ -436,6 +436,38 @@ export interface CasingOverrides {
 }
 
 /**
+ * Per-book provenance for a rule-count set: the hashes of the target text,
+ * the same-slug source book, and the enabled counting-rule set the counts were
+ * tallied from. A book re-tallies iff its current `Tally` differs from the one
+ * recorded in [`Stats::tallied`] — staleness is proven from content, never
+ * declared by the caller.
+ *
+ * The hash fields serialize as fixed-width lowercase hex strings (32 chars for
+ * each u128, 16 for the u64) so the wire stays JSON-safe and deterministic and
+ * never emits a JS `number` for a value past 2⁵³.
+ */
+export interface Tally {
+    /**
+     * `book_hash` of the target text these counts were tallied from.
+     */
+    text: string;
+    /**
+     * `book_hash` of the same-slug source book at tally time, or [`SOURCE_NONE`]
+     * when no source (or no such book) existed. A target book\'s keys all parse
+     * to its own slug and proportionality pairs by key, so a book\'s counts
+     * depend on exactly one source book — its own slug.
+     */
+    source: string;
+    /**
+     * `rules_fp` of the enabled counting-rule set at tally time — records WHICH
+     * rules\' contributions exist for this book. Text hashes alone cannot: a
+     * prior built with a rule disabled has no counts for it even though every
+     * text hash matches.
+     */
+    rules: string;
+}
+
+/**
  * Per-rule cached statistics — a **closed** union like `FindingArgs`, one
  * variant per stateful rule. The orchestration treats it opaquely; each
  * rule reduces into / judges from its own variant.
@@ -501,6 +533,14 @@ export type Findings = Finding[];
  */
 export interface Stats {
     rules: Partial<Record<RuleId, RuleStats>>;
+    /**
+     * Per-book provenance ([`Tally`]): what text, which same-slug source book,
+     * and which enabled counting-rule set each book\'s counts came from. This
+     * replaces the old caller-declared `changed` set — a book re-tallies iff
+     * its current `Tally` differs from this record. Serialized with the stats
+     * wire in deterministic (`BTreeMap`) order.
+     */
+    tallied: Record<string, Tally>;
 }
 
 /**
@@ -561,20 +601,13 @@ export function analyze_vref(target: VrefCorpus, source?: VrefCorpus | null, con
 
 /**
  * Stateful analyze (ADR 0017). Same as [`analyze_vref`] but returns the
- * corpus `Stats`; pass it back as `prior` along with only the edited
- * verses in `target` to re-analyze incrementally — the changed books
- * supersede their prior entries and stateful rules re-judge the whole
- * corpus from the cache. Omit `prior` (and pass the whole corpus) on the
- * first call.
- *
- * `changed` (ADR 0043): with a `prior`, book codes (e.g. `["GEN"]`) naming
- * the books edited since that prior — only those are re-counted, while
- * findings still cover everything supplied (the complete-snapshot call at
- * roughly half full-pass cost). A promise, not a filter: name every edited
- * book or its counts go silently stale. Unknown codes are ignored; omit it
- * (or omit `prior`) for the original re-count-everything behavior.
+ * corpus `Stats`; pass it back as `prior` along with the corpus (or just the
+ * edited books) to re-analyze incrementally. Counting is proof-driven: each
+ * supplied book re-tallies only if its content, same-slug source, or enabled
+ * rule set differs from the prior's recorded provenance — the caller declares
+ * nothing. Omit `prior` (and pass the whole corpus) on the first call.
  */
-export function analyze_vref_stateful(target: VrefCorpus, source?: VrefCorpus | null, config?: SousConfig | null, prior?: Stats | null, changed?: string[] | null): Analysis;
+export function analyze_vref_stateful(target: VrefCorpus, source?: VrefCorpus | null, config?: SousConfig | null, prior?: Stats | null): Analysis;
 
 /**
  * Census a vref corpus (ADR 0058): the knob-free absolute-count report
@@ -612,7 +645,7 @@ export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembl
 export interface InitOutput {
     readonly memory: WebAssembly.Memory;
     readonly analyze_vref: (a: any, b: number, c: number) => [number, number, number];
-    readonly analyze_vref_stateful: (a: any, b: number, c: number, d: number, e: number, f: number) => [number, number, number];
+    readonly analyze_vref_stateful: (a: any, b: number, c: number, d: number) => [number, number, number];
     readonly census: (a: any, b: number) => [number, number, number, number];
     readonly rule_catalog: () => any;
     readonly stats_remove_book: (a: any, b: number, c: number) => any;
