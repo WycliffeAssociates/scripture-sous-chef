@@ -451,40 +451,22 @@ pub struct Analysis {
 }
 
 /// Stateful analyze (ADR 0017). Same as [`analyze_vref`] but returns the
-/// corpus `Stats`; pass it back as `prior` along with only the edited
-/// verses in `target` to re-analyze incrementally — the changed books
-/// supersede their prior entries and stateful rules re-judge the whole
-/// corpus from the cache. Omit `prior` (and pass the whole corpus) on the
-/// first call.
-///
-/// `changed` (ADR 0043): with a `prior`, book codes (e.g. `["GEN"]`) naming
-/// the books edited since that prior — only those are re-counted, while
-/// findings still cover everything supplied (the complete-snapshot call at
-/// roughly half full-pass cost). A promise, not a filter: name every edited
-/// book or its counts go silently stale. Unknown codes are ignored; omit it
-/// (or omit `prior`) for the original re-count-everything behavior.
+/// corpus `Stats`; pass it back as `prior` along with the corpus (or just the
+/// edited books) to re-analyze incrementally. Counting is proof-driven: each
+/// supplied book re-tallies only if its content, same-slug source, or enabled
+/// rule set differs from the prior's recorded provenance — the caller declares
+/// nothing. Omit `prior` (and pass the whole corpus) on the first call.
 #[wasm_bindgen]
 pub fn analyze_vref_stateful(
     target: VrefCorpus,
     source: Option<VrefCorpus>,
     config: Option<SousConfig>,
     prior: Option<Stats>,
-    changed: Option<Vec<String>>,
 ) -> Result<Analysis, JsError> {
     let target = to_corpus_or_reject(target)?;
     let source = source.map(to_corpus_or_reject).transpose()?;
     let cfg = build_config(config);
-    let changed_slugs: Option<Vec<&str>> = changed
-        .as_ref()
-        .map(|list| list.iter().map(String::as_str).collect());
-    let (findings, stats) = analyze_stateful(
-        &target,
-        source.as_ref(),
-        &cfg,
-        prior,
-        changed_slugs.as_deref(),
-        None,
-    );
+    let (findings, stats) = analyze_stateful(&target, source.as_ref(), &cfg, prior, None);
     Ok(Analysis {
         findings: project(&target, &findings),
         stats,
@@ -719,7 +701,7 @@ mod tests {
         texts.push("word , word".to_string());
 
         let analysis =
-            analyze_vref_stateful(VrefCorpus { keys, texts }, None, enable(), None, None).unwrap();
+            analyze_vref_stateful(VrefCorpus { keys, texts }, None, enable(), None).unwrap();
         let full_score = analysis
             .findings
             .iter()
@@ -736,7 +718,7 @@ mod tests {
             keys: vec!["EXO 1:1".to_string()],
             texts: vec!["word , word".to_string()],
         };
-        let inc = analyze_vref_stateful(exo, None, enable(), Some(prior), None).unwrap();
+        let inc = analyze_vref_stateful(exo, None, enable(), Some(prior)).unwrap();
         let hits: Vec<_> = inc
             .findings
             .iter()

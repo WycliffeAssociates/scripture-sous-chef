@@ -13,9 +13,9 @@
 //! - `analyze/incremental_edit_{3JN,MAT,PSA}` — the local-echo call: cached
 //!   corpus `Stats` as prior, only the edited book supplied (ADR 0017),
 //!   across the book-size spread (floor / large / largest)
-//! - `analyze/changed_edit_{3JN,MAT,PSA}` — the complete-snapshot call
-//!   (ADR 0043): whole corpus + prior + `changed=[book]`; counting is
-//!   book-scoped, emission is global
+//! - `analyze/changed_edit_{3JN,MAT,PSA}` — the complete-snapshot call:
+//!   whole corpus + prior; the edited book re-counts by content hash, clean
+//!   books carry, emission is global
 //! - `analyze/cached_edit_{3JN,PSA}` — the same complete-snapshot call with
 //!   `AnalysisCache` warmed in setup; clean books reuse both cache lanes
 //! - `analyze/full_devanagari`— hi_ulb, the expensive-script case
@@ -94,7 +94,7 @@ fn bench_analyze(c: &mut Criterion) {
         // book sizes bounds the range: 3JN (~15 verses, floor), MAT (large),
         // PSA (~2.5k verses, the worst case).
         let cfg = Config::v1_defaults();
-        let (_, cached) = analyze_stateful(&bible, None, &cfg, None, None, None);
+        let (_, cached) = analyze_stateful(&bible, None, &cfg, None, None);
         for code in ["3JN", "MAT", "PSA"] {
             let book = filter_books(&bible, |book| book == code);
             if book.is_empty() {
@@ -115,18 +115,17 @@ fn bench_analyze(c: &mut Criterion) {
                             black_box(&cfg),
                             Some(prior),
                             None,
-                            None,
                         )
                     },
                     BatchSize::LargeInput,
                 )
             });
 
-            // The complete-snapshot call (ADR 0043): whole corpus supplied,
-            // `changed` names the edited book — only it re-counts, findings
-            // cover everything (a tipped convention re-emits in every book,
-            // this same call). The payoff vs `full_bible` is the counting
-            // saved; vs `incremental_edit_*` it buys global consistency.
+            // The complete-snapshot call: the whole corpus is supplied with the
+            // prior — the edited book re-counts by content hash, clean books
+            // carry, and findings cover everything (a tipped convention re-emits
+            // in every book, this same call). The payoff vs `full_bible` is the
+            // counting saved; vs `incremental_edit_*` it buys global consistency.
             let edit_pos = bible
                 .keys()
                 .iter()
@@ -135,7 +134,6 @@ fn bench_analyze(c: &mut Criterion) {
             let mut edited_texts = bible.texts().to_vec();
             edited_texts[edit_pos].push_str(" edited");
             let edited = Corpus::try_from_parts(bible.keys().to_vec(), edited_texts).unwrap();
-            let changed = [code];
             g.throughput(Throughput::Elements(edited.len() as u64));
             g.bench_function(format!("changed_edit_{code}"), |b| {
                 b.iter_batched(
@@ -146,7 +144,6 @@ fn bench_analyze(c: &mut Criterion) {
                             None,
                             black_box(&cfg),
                             Some(prior),
-                            Some(black_box(&changed)),
                             None,
                         )
                     },
@@ -163,7 +160,7 @@ fn bench_analyze(c: &mut Criterion) {
                     || {
                         let mut cache = AnalysisCache::new();
                         let (_, prior) =
-                            analyze_stateful(&bible, None, &cfg, None, None, Some(&mut cache));
+                            analyze_stateful(&bible, None, &cfg, None, Some(&mut cache));
                         (prior, cache)
                     },
                     |(prior, mut cache)| {
@@ -172,7 +169,6 @@ fn bench_analyze(c: &mut Criterion) {
                             None,
                             black_box(&cfg),
                             Some(prior),
-                            Some(black_box(&changed)),
                             Some(&mut cache),
                         )
                     },

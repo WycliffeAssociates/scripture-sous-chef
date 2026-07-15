@@ -45,7 +45,7 @@ pub use diagnostics::{
     Severity,
 };
 pub use span::{GraphemeSpan, Span, Utf16Span};
-pub use stats::{RuleStats, Stats};
+pub use stats::{RuleStats, SOURCE_NONE, Stats, Tally};
 
 use corpus::LocalKeyIdx;
 
@@ -104,7 +104,7 @@ pub fn analyze_with_config(
 ) -> Vec<Finding> {
     // The one-shot sugar over the stateful entry point: no prior, discard
     // the returned stats (ADR 0017).
-    analyze_stateful(target, source, config, None, None, None).0
+    analyze_stateful(target, source, config, None, None).0
 }
 
 /// Analyze, returning the corpus [`Stats`] so a caller can cache it and feed
@@ -123,23 +123,22 @@ pub fn analyze_with_config(
 /// is next supplied. (This also keeps every finding projectable: the caller
 /// need only hand in the text for the verses it asked about.)
 ///
-/// **`changed` narrows the *counting*, never the emission (ADR 0043).** With
-/// `prior = Some` and `changed = Some(books)`, only the named books are
-/// re-reduced — every other supplied book carries its prior counts — while
-/// judging and emission still cover all of `target`. This is the
-/// complete-snapshot call for a shell that holds the whole corpus: pass
-/// everything, name what was edited, and a convention the edit tipped
-/// re-emits in *every* book in this one call, at roughly half the full-pass
-/// cost (the counting half). `changed` is a **promise, not a filter**: name
-/// fewer books than were actually edited since `prior` and their counts go
-/// silently stale. It is ignored without a `prior` (there are no carried
-/// counts to reuse — everything must be counted).
+/// **Counting is proof-driven, never declared (supersedes ADR 0043's
+/// `changed`).** With a `prior`, each supplied book is re-reduced iff its
+/// current provenance — content hash, same-slug source hash, and enabled-rule
+/// fingerprint — differs from the [`Tally`] the prior recorded for that slug;
+/// every matching book carries its prior counts, and books absent this call
+/// carry untouched (echo semantics). Judging and emission still cover all of
+/// `target`, so a convention an edit tips re-emits across every supplied book
+/// in one call. There is no `changed` parameter: the ~1 ms of hashing the
+/// supplied books each call buys a correctness no promise could — the caller
+/// cannot under-declare an edit. Without a `prior` there is nothing to carry,
+/// so every supplied book counts.
 pub fn analyze_stateful(
     target: &Corpus,
     source: Option<&Corpus>,
     config: &Config,
     prior: Option<Stats>,
-    changed: Option<&[&str]>,
     cache: Option<&mut AnalysisCache>,
 ) -> (Vec<Finding>, Stats) {
     use std::collections::BTreeMap;
@@ -183,20 +182,31 @@ pub fn analyze_stateful(
             || config.is_enabled(RuleId::MixedScriptInToken),
     };
 
-    // The book view is shared by both analysis lanes. A cache only hashes and
-    // fingerprints at call entry; the cache-free path remains the shipped
-    // walk and per-verse loop below. `source` is intentionally not part of
-    // the fingerprint: it feeds only proportionality counting, counting
-    // never reads the cache, and no cached lane depends on source.
+    // The book view is shared by both analysis lanes. `source` is intentionally
+    // not part of the cache fingerprint: it feeds only proportionality counting,
+    // counting never reads the cache, and no cached lane depends on source.
     let books = corpus::by_book(target);
     let mut cache = cache;
-    let hashes: Vec<u128> = match cache.as_deref_mut() {
-        Some(cache) => {
-            cache.ensure_fingerprint(config);
-            books.iter().map(cache::book_hash).collect()
-        }
-        None => Vec::new(),
-    };
+    if let Some(cache) = cache.as_deref_mut() {
+        cache.ensure_fingerprint(config);
+    }
+    // Every supplied book's content hash, on EVERY call (~0.5–1 ms serial on a
+    // full Bible): the counting decision is proven from these hashes against the
+    // prior's per-book provenance, so there is no zero-hash path — fresh tallies
+    // must be stamped even on a cold, cache-less call.
+    let hashes: Vec<u128> = books.iter().map(cache::book_hash).collect();
+    // Source book hashes by slug, for per-book source provenance. A target book
+    // pairs only with the same-slug source book (its keys parse to its slug), so
+    // that is the only source text its counts depend on.
+    let source_hashes: Option<BTreeMap<&str, u128>> = source.map(|s| {
+        corpus::by_book(s)
+            .iter()
+            .map(|g| (g.slug, cache::book_hash(g)))
+            .collect()
+    });
+    // Fingerprint of the enabled counting-rule set: records which rules'
+    // contributions a book's counts include, so toggling any rule re-tallies.
+    let rules_fp = rules_fp(&stateful);
 
     // The per-verse phase is embarrassingly parallel — each verse is judged
     // from its own text by `Sync` rules. Under the `parallel` feature it fans
@@ -268,16 +278,33 @@ pub fn analyze_stateful(
     // phases — the book is the corpus-scoped unit (supersede granularity,
     // cross-verse seams, and the `parallel` fan-out; ADR 0042). Rules never
     // rebuild this grouping.
-    // The reduce scope (ADR 0043): with a prior and `changed`, only the named
-    // books are re-counted — the others' counts carry forward through the
-    // supersede merge untouched. The walk still visits every supplied book
-    // (the project listeners' and the token cache's scope); `counted` only
-    // gates the counting listeners. Without a prior there are no carried
-    // counts, so `changed` is ignored for correctness.
-    let counted: Option<&[&str]> = match (&prior, changed) {
-        (Some(_), Some(list)) => Some(list),
-        _ => None,
-    };
+    // The reduce scope, now derived from provenance instead of declared: a book
+    // is counted iff its current Tally differs from the prior's record for that
+    // slug (a missing entry is a mismatch). The walk still visits every supplied
+    // book (the project listeners' and the token cache's scope); `counted` only
+    // gates the counting listeners. Without a prior there is nothing to carry,
+    // so every supplied book is counted.
+    let current: Vec<Tally> = books
+        .iter()
+        .enumerate()
+        .map(|(i, g)| Tally {
+            text: hashes[i],
+            source: source_hashes
+                .as_ref()
+                .and_then(|m| m.get(g.slug).copied())
+                .unwrap_or(SOURCE_NONE),
+            rules: rules_fp,
+        })
+        .collect();
+    let stale: Option<Vec<&str>> = prior.as_ref().map(|p| {
+        books
+            .iter()
+            .enumerate()
+            .filter(|&(i, g)| p.tallied.get(g.slug) != Some(&current[i]))
+            .map(|(_, g)| g.slug)
+            .collect()
+    });
+    let counted: Option<&[&str]> = stale.as_deref();
 
     // A walk-product hit is safe only for a clean book in the complete
     // snapshot shape. Echo and cold calls must walk every supplied book so
@@ -631,6 +658,15 @@ pub fn analyze_stateful(
         stats.insert(id, merged);
     }
 
+    // Stamp per-book provenance for every supplied book: a freshly-counted book
+    // gets its new Tally; a non-stale supplied book gets the identical value it
+    // already carried (a no-op by construction). Books in the prior but not
+    // supplied this call keep their own Tally untouched — nothing global is
+    // updated over their heads (echo semantics).
+    for (i, group) in books.iter().enumerate() {
+        stats.tallied.insert(Box::from(group.slug), current[i]);
+    }
+
     // Deterministic order, independent of the `parallel` feature (ADR 0018):
     // the parallel per-verse phase collects in nondeterministic order, so sort
     // by (key_idx, range start, rule) to make feature-on output byte-identical
@@ -638,6 +674,22 @@ pub fn analyze_stateful(
     out.sort_by_key(|f| (f.key_idx, f.range.start, f.code));
 
     (out, stats)
+}
+
+/// Fingerprint the enabled counting-rule set: xxh3-64 over the rules' canonical
+/// string ids, sorted and length-prefixed (u8 length + bytes) so distinct id
+/// sets cannot collide by textual concatenation. Knob values are excluded —
+/// knobs affect judging, not tallying, so a knob-only config change leaves every
+/// `Tally.rules` valid and re-tallies nothing.
+fn rules_fp(stateful: &[Box<dyn rule::StatefulRule>]) -> u64 {
+    let mut ids: Vec<&str> = stateful.iter().map(|r| r.id().code()).collect();
+    ids.sort_unstable();
+    let mut hasher = xxhash_rust::xxh3::Xxh3::new();
+    for id in ids {
+        hasher.update(&[id.len() as u8]);
+        hasher.update(id.as_bytes());
+    }
+    hasher.digest()
 }
 
 #[cfg(test)]
@@ -803,10 +855,10 @@ mod tests {
         let mut cache = AnalysisCache::new();
 
         let (cold_findings, cold_stats) =
-            analyze_stateful(&target, None, &cfg, None, None, Some(&mut cache));
+            analyze_stateful(&target, None, &cfg, None, Some(&mut cache));
         let misses_after_cold = cache.lane1_miss_count();
         let (warm_findings, warm_stats) =
-            analyze_stateful(&target, None, &cfg, None, None, Some(&mut cache));
+            analyze_stateful(&target, None, &cfg, None, Some(&mut cache));
 
         assert_eq!(cold_findings, warm_findings);
         assert_eq!(cold_stats, warm_stats);
@@ -830,30 +882,31 @@ mod tests {
         let cfg = Config::all();
         let mut cache = AnalysisCache::new();
 
-        let (_, _) = analyze_stateful(&target, None, &cfg, None, None, Some(&mut cache));
+        let (_, _) = analyze_stateful(&target, None, &cfg, None, Some(&mut cache));
         let mut changed_cfg = cfg.clone();
         changed_cfg.rules.insert(RuleId::BracketBalance, false);
         let (_, changed_prior) =
-            analyze_stateful(&target, None, &changed_cfg, None, None, Some(&mut cache));
+            analyze_stateful(&target, None, &changed_cfg, None, Some(&mut cache));
 
         // A config change clears the old products, so the first call under the
         // new fingerprint warms both books instead of reading either lane.
         assert_eq!(cache.lane1_hit_count(), 0);
         assert_eq!(cache.walk_hit_count(), 0);
 
+        // Content and enabled set are unchanged since the rewarm, so nothing is
+        // stale: both books reuse both re-warmed lanes.
         let (_, _) = analyze_stateful(
             &target,
             None,
             &changed_cfg,
             Some(changed_prior),
-            Some(&["GEN"]),
             Some(&mut cache),
         );
         assert_eq!(cache.lane1_hit_count(), 2);
         assert_eq!(
             cache.walk_hit_count(),
-            1,
-            "the clean sibling reuses its re-warmed walk"
+            2,
+            "both books reuse their re-warmed walk (nothing stale)"
         );
     }
 
@@ -869,8 +922,8 @@ mod tests {
         let cfg = Config::all();
         let mut cache = AnalysisCache::new();
         let (cold_cached_findings, cold_cached_stats) =
-            analyze_stateful(&original, None, &cfg, None, None, Some(&mut cache));
-        let (cold_findings, cold_stats) = analyze_stateful(&original, None, &cfg, None, None, None);
+            analyze_stateful(&original, None, &cfg, None, Some(&mut cache));
+        let (cold_findings, cold_stats) = analyze_stateful(&original, None, &cfg, None, None);
         assert_eq!(cold_cached_findings, cold_findings);
         assert_eq!(cold_cached_stats, cold_stats);
 
@@ -880,22 +933,10 @@ mod tests {
             keyed("EXO", &["a  b, joyfullly", "A1 α qQx edited"]),
             keyed("LEV", &["He said. The gate.", "clean text"]),
         ]);
-        let (scratch_findings, scratch_stats) = analyze_stateful(
-            &edited,
-            None,
-            &cfg,
-            Some(cold_stats.clone()),
-            Some(&["EXO"]),
-            None,
-        );
-        let (cached_findings, cached_stats) = analyze_stateful(
-            &edited,
-            None,
-            &cfg,
-            Some(cold_cached_stats),
-            Some(&["EXO"]),
-            Some(&mut cache),
-        );
+        let (scratch_findings, scratch_stats) =
+            analyze_stateful(&edited, None, &cfg, Some(cold_stats.clone()), None);
+        let (cached_findings, cached_stats) =
+            analyze_stateful(&edited, None, &cfg, Some(cold_cached_stats), Some(&mut cache));
 
         assert_eq!(cached_findings, scratch_findings);
         assert_eq!(cached_stats, scratch_stats);
@@ -924,23 +965,16 @@ mod tests {
             keyed("GEN", &["a  b", "one"]),
             keyed("EXO", &["x\ty", "two"]),
         ]);
-        let (_, prior) = analyze_stateful(&original, None, &cfg, None, None, Some(&mut cache));
+        let (_, prior) = analyze_stateful(&original, None, &cfg, None, Some(&mut cache));
 
         // GEN grows by one verse: EXO's global KeyIdx base shifts forward.
         let grown = corpus_of(vec![
             keyed("GEN", &["a  b", "one", "extra  space"]),
             keyed("EXO", &["x\ty", "two"]),
         ]);
-        let (cached, cached_stats) = analyze_stateful(
-            &grown,
-            None,
-            &cfg,
-            Some(prior.clone()),
-            Some(&["GEN"]),
-            Some(&mut cache),
-        );
-        let (cold, cold_stats) =
-            analyze_stateful(&grown, None, &cfg, Some(prior), Some(&["GEN"]), None);
+        let (cached, cached_stats) =
+            analyze_stateful(&grown, None, &cfg, Some(prior.clone()), Some(&mut cache));
+        let (cold, cold_stats) = analyze_stateful(&grown, None, &cfg, Some(prior), None);
 
         assert_eq!(
             cached, cold,
@@ -971,23 +1005,16 @@ mod tests {
             keyed("GEN", &["a  b", "one", "extra  space"]),
             keyed("EXO", &["x\ty", "two"]),
         ]);
-        let (_, prior) = analyze_stateful(&original, None, &cfg, None, None, Some(&mut cache));
+        let (_, prior) = analyze_stateful(&original, None, &cfg, None, Some(&mut cache));
 
         // GEN shrinks by one verse: EXO's global KeyIdx base shifts backward.
         let shrunk = corpus_of(vec![
             keyed("GEN", &["a  b", "one"]),
             keyed("EXO", &["x\ty", "two"]),
         ]);
-        let (cached, cached_stats) = analyze_stateful(
-            &shrunk,
-            None,
-            &cfg,
-            Some(prior.clone()),
-            Some(&["GEN"]),
-            Some(&mut cache),
-        );
-        let (cold, cold_stats) =
-            analyze_stateful(&shrunk, None, &cfg, Some(prior), Some(&["GEN"]), None);
+        let (cached, cached_stats) =
+            analyze_stateful(&shrunk, None, &cfg, Some(prior.clone()), Some(&mut cache));
+        let (cold, cold_stats) = analyze_stateful(&shrunk, None, &cfg, Some(prior), None);
 
         assert_eq!(
             cached, cold,
@@ -1016,7 +1043,7 @@ mod tests {
         ]);
         let cfg = Config::all();
         let mut cache = AnalysisCache::new();
-        let (_, prior) = analyze_stateful(&original, None, &cfg, None, None, Some(&mut cache));
+        let (_, prior) = analyze_stateful(&original, None, &cfg, None, Some(&mut cache));
         let old_gen_hash = cache.entry_hash("GEN").unwrap();
         let old_exo_hash = cache.entry_hash("EXO").unwrap();
         let old_lev_hash = cache.entry_hash("LEV").unwrap();
@@ -1026,24 +1053,13 @@ mod tests {
             keyed("EXO", &["x\ty", "two"]),
             keyed("LEV", &["clean text", "three"]),
         ]);
-        // GEN is edited but EXO is named as changed, so GEN remains eligible
-        // for the lane-2 probe after lane 1 replaces its entry by hash.
-        let (cold_findings, cold_stats) = analyze_stateful(
-            &edited,
-            None,
-            &cfg,
-            Some(prior.clone()),
-            Some(&["EXO"]),
-            None,
-        );
-        let (cached_findings, cached_stats) = analyze_stateful(
-            &edited,
-            None,
-            &cfg,
-            Some(prior),
-            Some(&["EXO"]),
-            Some(&mut cache),
-        );
+        // Only GEN's content changed. Its hash mismatch makes it stale, so it is
+        // walked directly (never probed); EXO and LEV are clean and reuse their
+        // walk products. GEN's cache entry is replaced by hash; siblings' hold.
+        let (cold_findings, cold_stats) =
+            analyze_stateful(&edited, None, &cfg, Some(prior.clone()), None);
+        let (cached_findings, cached_stats) =
+            analyze_stateful(&edited, None, &cfg, Some(prior), Some(&mut cache));
 
         assert_eq!(cached_findings, cold_findings);
         assert_eq!(cached_stats, cold_stats);
@@ -1052,95 +1068,14 @@ mod tests {
         assert_eq!(cache.entry_hash("LEV"), Some(old_lev_hash));
         assert_eq!(
             cache.walk_miss_count(),
-            1,
-            "the edited clean book must miss lane 2"
-        );
-        assert_eq!(
-            cache.walk_hit_count(),
-            1,
-            "the untouched clean sibling reuses lane 2"
-        );
-    }
-
-    #[test]
-    fn changed_promise_with_identical_content_matches_uncached_snapshot() {
-        let target = corpus_of(vec![
-            keyed("GEN", &["a  b", "same text"]),
-            keyed("EXO", &["x\ty", "clean"]),
-        ]);
-        let cfg = Config::v1_defaults();
-        let mut cache = AnalysisCache::new();
-        let (_, prior) = analyze_stateful(&target, None, &cfg, None, None, Some(&mut cache));
-
-        let (cold_findings, cold_stats) = analyze_stateful(
-            &target,
-            None,
-            &cfg,
-            Some(prior.clone()),
-            Some(&["GEN"]),
-            None,
-        );
-        let (cached_findings, cached_stats) = analyze_stateful(
-            &target,
-            None,
-            &cfg,
-            Some(prior),
-            Some(&["GEN"]),
-            Some(&mut cache),
-        );
-
-        assert_eq!(cached_findings, cold_findings);
-        assert_eq!(cached_stats, cold_stats);
-        assert_eq!(
-            cache.lane1_hit_count(),
-            2,
-            "unchanged content reuses lane 1 for both books"
-        );
-        assert_eq!(cache.walk_hit_count(), 1, "the clean sibling reuses lane 2");
-    }
-
-    #[test]
-    fn clean_book_hash_mismatch_forces_a_walk_even_when_not_named_changed() {
-        let original = corpus_of(vec![
-            keyed("GEN", &["one", "two"]),
-            keyed("EXO", &["three", "four"]),
-        ]);
-        let cfg = Config::all();
-        let mut cache = AnalysisCache::new();
-        let (_, prior) = analyze_stateful(&original, None, &cfg, None, None, Some(&mut cache));
-        let old_exo_hash = cache.entry_hash("EXO").unwrap();
-
-        let edited = corpus_of(vec![
-            keyed("GEN", &["one", "two"]),
-            keyed("EXO", &["changed text", "four"]),
-        ]);
-        // This deliberately lies about the edit. The content hash must still
-        // prevent a stale clean-book walk product from being reused.
-        let (cold_findings, cold_stats) = analyze_stateful(
-            &edited,
-            None,
-            &cfg,
-            Some(prior.clone()),
-            Some(&["GEN"]),
-            None,
-        );
-        let (cached_findings, cached_stats) = analyze_stateful(
-            &edited,
-            None,
-            &cfg,
-            Some(prior),
-            Some(&["GEN"]),
-            Some(&mut cache),
-        );
-
-        assert_eq!(cached_findings, cold_findings);
-        assert_eq!(cached_stats, cold_stats);
-        assert_eq!(
-            cache.walk_hit_count(),
             0,
-            "the hash-mismatched book must be walked"
+            "the stale book is walked directly, never probed"
         );
-        assert_ne!(cache.entry_hash("EXO"), Some(old_exo_hash));
+        assert_eq!(
+            cache.walk_hit_count(),
+            2,
+            "both clean siblings reuse lane 2"
+        );
     }
 
     #[test]
@@ -1148,12 +1083,12 @@ mod tests {
         let cfg = Config::all();
         let mut cache = AnalysisCache::new();
         let empty = Corpus::try_from_parts(Vec::new(), Vec::new()).unwrap();
-        let (_, _) = analyze_stateful(&empty, None, &cfg, None, None, Some(&mut cache));
+        let (_, _) = analyze_stateful(&empty, None, &cfg, None, Some(&mut cache));
         assert_eq!(cache.book_count(), 0);
 
         let caseless = mk("GEN", &["你好"]);
-        let (_, _) = analyze_stateful(&caseless, None, &cfg, None, None, Some(&mut cache));
-        let (_, _) = analyze_stateful(&caseless, None, &cfg, None, None, Some(&mut cache));
+        let (_, _) = analyze_stateful(&caseless, None, &cfg, None, Some(&mut cache));
+        let (_, _) = analyze_stateful(&caseless, None, &cfg, None, Some(&mut cache));
         assert_eq!(
             cache.lane1_hit_count(),
             1,
@@ -1168,17 +1103,10 @@ mod tests {
         );
 
         let full = corpus_of(vec![keyed("GEN", &["你好"]), keyed("EXO", &["a  b"])]);
-        let (_, prior) = analyze_stateful(&full, None, &cfg, None, None, Some(&mut cache));
+        let (_, prior) = analyze_stateful(&full, None, &cfg, None, Some(&mut cache));
         let edited = corpus_of(vec![keyed("GEN", &["你好"]), keyed("EXO", &["edited"])]);
         let walk_hits_before = cache.walk_hit_count();
-        let (_, _) = analyze_stateful(
-            &edited,
-            None,
-            &cfg,
-            Some(prior),
-            Some(&["EXO"]),
-            Some(&mut cache),
-        );
+        let (_, _) = analyze_stateful(&edited, None, &cfg, Some(prior), Some(&mut cache));
         assert_eq!(cache.walk_hit_count(), walk_hits_before + 1);
     }
 
@@ -1190,7 +1118,7 @@ mod tests {
         ]);
         let cfg = Config::all();
         let mut cache = AnalysisCache::new();
-        let (_, prior) = analyze_stateful(&original, None, &cfg, None, None, Some(&mut cache));
+        let (_, prior) = analyze_stateful(&original, None, &cfg, None, Some(&mut cache));
         assert_ne!(
             prior,
             Stats::default(),
@@ -1201,22 +1129,9 @@ mod tests {
             keyed("GEN", &["changed text", "one) word word 12"]),
             keyed("EXO", &["a  b, joyfullly", "A1 α qQx"]),
         ]);
-        let (_, cold_stats) = analyze_stateful(
-            &edited,
-            None,
-            &cfg,
-            Some(prior.clone()),
-            Some(&["GEN"]),
-            None,
-        );
-        let (_, cached_stats) = analyze_stateful(
-            &edited,
-            None,
-            &cfg,
-            Some(prior),
-            Some(&["GEN"]),
-            Some(&mut cache),
-        );
+        let (_, cold_stats) = analyze_stateful(&edited, None, &cfg, Some(prior.clone()), None);
+        let (_, cached_stats) =
+            analyze_stateful(&edited, None, &cfg, Some(prior), Some(&mut cache));
         assert_eq!(cached_stats, cold_stats);
     }
 
@@ -1228,21 +1143,14 @@ mod tests {
         ]);
         let cfg = Config::v1_defaults();
         let mut cache = AnalysisCache::new();
-        let (_, prior) = analyze_stateful(&full, None, &cfg, None, None, Some(&mut cache));
+        let (_, prior) = analyze_stateful(&full, None, &cfg, None, Some(&mut cache));
         let gen_hash = cache.entry_hash("GEN").unwrap();
         let exo_hash = cache.entry_hash("EXO").unwrap();
         let echo = mk("EXO", &["x\ty", "two"]);
 
-        let (cached_findings, cached_stats) = analyze_stateful(
-            &echo,
-            None,
-            &cfg,
-            Some(prior.clone()),
-            None,
-            Some(&mut cache),
-        );
-        let (cold_findings, cold_stats) =
-            analyze_stateful(&echo, None, &cfg, Some(prior), None, None);
+        let (cached_findings, cached_stats) =
+            analyze_stateful(&echo, None, &cfg, Some(prior.clone()), Some(&mut cache));
+        let (cold_findings, cold_stats) = analyze_stateful(&echo, None, &cfg, Some(prior), None);
 
         assert_eq!(cached_findings, cold_findings);
         assert_eq!(cached_stats, cold_stats);
@@ -1426,7 +1334,7 @@ mod tests {
         let cfg = casing_on(0.5, 0.0);
         let target = mks("GEN", &casing_fire(40));
 
-        let (f1, stats) = analyze_stateful(&target, None, &cfg, None, None, None);
+        let (f1, stats) = analyze_stateful(&target, None, &cfg, None, None);
         assert!(
             f1.iter()
                 .any(|f| f.code == RuleId::SentenceInitialLowercase)
@@ -1435,7 +1343,7 @@ mod tests {
         let json = serde_json::to_string(&stats).unwrap();
         let back: Stats = serde_json::from_str(&json).unwrap();
 
-        let (f2, _) = analyze_stateful(&target, None, &cfg, Some(back), None, None);
+        let (f2, _) = analyze_stateful(&target, None, &cfg, Some(back), None);
         assert_eq!(f1, f2);
     }
 
@@ -1449,7 +1357,7 @@ mod tests {
         let anomalous = casing_fire(40);
         let full = corpus_of(vec![keyed("GEN", &anomalous), keyed("EXO", &anomalous)]);
 
-        let (f_full, stats) = analyze_stateful(&full, None, &cfg, None, None, None);
+        let (f_full, stats) = analyze_stateful(&full, None, &cfg, None, None);
         assert!(f_full.iter().any(|f| {
             crate::key::parse_key(full.key(f.key_idx)).unwrap().book == "GEN"
                 && f.code == RuleId::SentenceInitialLowercase
@@ -1460,7 +1368,7 @@ mod tests {
         }));
 
         let exo_only = mks("EXO", &anomalous);
-        let (f_inc, _) = analyze_stateful(&exo_only, None, &cfg, Some(stats), None, None);
+        let (f_inc, _) = analyze_stateful(&exo_only, None, &cfg, Some(stats), None);
         assert!(!f_inc.is_empty());
         assert!(
             f_inc
@@ -1469,13 +1377,13 @@ mod tests {
         ); // nothing from GEN
     }
 
-    /// The `changed` reduce scope (ADR 0043) is exactly a performance hint:
-    /// a whole-corpus call naming only the edited book must produce findings
-    /// AND stats identical to a from-scratch recompute of the edited corpus —
-    /// including findings that *moved in the untouched book* because the edit
-    /// tipped a pooled convention (the copy-paste-a-new-Genesis case).
+    /// A whole-corpus incremental call — prior supplied, only the edited book
+    /// stale by content hash — must produce findings AND stats identical to a
+    /// from-scratch recompute of the edited corpus, including findings that
+    /// *moved in the untouched book* because the edit tipped a pooled
+    /// convention (the copy-paste-a-new-Genesis case).
     #[test]
-    fn changed_scope_matches_full_recompute() {
+    fn incremental_snapshot_matches_full_recompute() {
         let cfg = casing_on(0.5, 0.0);
         // Clean establishing verses (a capital-after-`.` habit, no anomaly).
         // ≥ 30 so the `.` boundary class clears ADR 0052's event floor.
@@ -1483,29 +1391,17 @@ mod tests {
             .map(|_| "The men saw the gate.".to_string())
             .collect();
         let original = corpus_of(vec![keyed("GEN", &clean), keyed("EXO", &clean)]);
-        let (_, prior) = analyze_stateful(&original, None, &cfg, None, None, None);
+        let (_, prior) = analyze_stateful(&original, None, &cfg, None, None);
 
         // Edit GEN only: introduce a lowercase-after-terminal anomaly.
         let edited = corpus_of(vec![keyed("GEN", &casing_fire(40)), keyed("EXO", &clean)]);
 
-        let (f_scratch, s_scratch) = analyze_stateful(&edited, None, &cfg, None, None, None);
-        let (f_changed, s_changed) = analyze_stateful(
-            &edited,
-            None,
-            &cfg,
-            Some(prior.clone()),
-            Some(&["GEN"]),
-            None,
-        );
-        assert_eq!(f_scratch, f_changed);
-        assert_eq!(s_scratch, s_changed);
-
-        // Without a prior, `changed` is ignored (nothing to carry): still a
-        // full recompute, never a tiny-counts corpus.
-        let (f_no_prior, s_no_prior) =
-            analyze_stateful(&edited, None, &cfg, None, Some(&["GEN"]), None);
-        assert_eq!(f_scratch, f_no_prior);
-        assert_eq!(s_scratch, s_no_prior);
+        let (f_scratch, s_scratch) = analyze_stateful(&edited, None, &cfg, None, None);
+        // GEN's hash changed, so it re-tallies; EXO carries — yet the tipped
+        // convention re-emits in EXO too, matching the from-scratch snapshot.
+        let (f_inc, s_inc) = analyze_stateful(&edited, None, &cfg, Some(prior), None);
+        assert_eq!(f_scratch, f_inc);
+        assert_eq!(s_scratch, s_inc);
     }
 
     /// `Stats::remove_book` drops a book's contribution to the corpus
@@ -1525,7 +1421,7 @@ mod tests {
         let exo_anom = ["He fell. the gate stood.".to_string()];
         let full = corpus_of(vec![keyed("GEN", &gen_clean), keyed("EXO", &exo_anom)]);
 
-        let (f_full, mut stats) = analyze_stateful(&full, None, &cfg, None, None, None);
+        let (f_full, mut stats) = analyze_stateful(&full, None, &cfg, None, None);
         assert!(
             f_full.iter().any(|f| {
                 crate::key::parse_key(full.key(f.key_idx)).unwrap().book == "EXO"
@@ -1536,7 +1432,7 @@ mod tests {
 
         stats.remove_book("GEN");
         let (f_after, _) =
-            analyze_stateful(&mks("EXO", &exo_anom), None, &cfg, Some(stats), None, None);
+            analyze_stateful(&mks("EXO", &exo_anom), None, &cfg, Some(stats), None);
         // EXO's own few observations can't back a confident dominance now.
         assert!(
             f_after
@@ -1633,5 +1529,255 @@ mod tests {
             serde_json::to_string(&RuleId::ExcessHWhitespace).unwrap(),
             "\"lex.excess-h-whitespace\""
         );
+    }
+
+    // ── Per-book `Tally` provenance (hash-derived counting) ──────────────────
+
+    /// A-1: cold → edit the middle book → incremental call (uncached AND cached)
+    /// both reproduce a from-scratch analyze of the edited corpus, findings and
+    /// stats. The single strongest per-book-provenance equivalence check.
+    #[test]
+    fn tally_incremental_equivalence_uncached_and_cached() {
+        let original = corpus_of(vec![
+            keyed("GEN", &["(He said. the gate stood.", "one) word word 12"]),
+            keyed("EXO", &["a  b, joyfullly", "A1 α qQx"]),
+            keyed("LEV", &["He said. The gate.", "clean text"]),
+        ]);
+        let cfg = Config::all();
+        let (_, prior_uncached) = analyze_stateful(&original, None, &cfg, None, None);
+        let mut cache = AnalysisCache::new();
+        let (_, prior_cached) = analyze_stateful(&original, None, &cfg, None, Some(&mut cache));
+
+        let edited = corpus_of(vec![
+            keyed("GEN", &["(He said. the gate stood.", "one) word word 12"]),
+            keyed("EXO", &["a  b, joyfullly edited", "A1 α qQx"]),
+            keyed("LEV", &["He said. The gate.", "clean text"]),
+        ]);
+        let (f_cold, s_cold) = analyze_stateful(&edited, None, &cfg, None, None);
+        let (f_unc, s_unc) = analyze_stateful(&edited, None, &cfg, Some(prior_uncached), None);
+        let (f_cac, s_cac) =
+            analyze_stateful(&edited, None, &cfg, Some(prior_cached), Some(&mut cache));
+        assert_eq!((f_unc, s_unc), (f_cold.clone(), s_cold.clone()), "uncached ≡ cold");
+        assert_eq!((f_cac, s_cac), (f_cold, s_cold), "cached ≡ cold");
+    }
+
+    /// A-2: editing one book re-tallies exactly that book; the others carry
+    /// their prior `Tally` untouched.
+    #[test]
+    fn tally_derived_stale_set_is_exact() {
+        let cfg = Config::all();
+        let original = corpus_of(vec![
+            keyed("GEN", &["a  b", "one"]),
+            keyed("EXO", &["x\ty", "two"]),
+            keyed("LEV", &["clean", "three"]),
+        ]);
+        let (_, prior) = analyze_stateful(&original, None, &cfg, None, None);
+        let edited = corpus_of(vec![
+            keyed("GEN", &["a  b", "one"]),
+            keyed("EXO", &["x\ty", "two edited"]),
+            keyed("LEV", &["clean", "three"]),
+        ]);
+        let (_, stats) = analyze_stateful(&edited, None, &cfg, Some(prior.clone()), None);
+        assert_ne!(
+            stats.tallied["EXO"].text, prior.tallied["EXO"].text,
+            "the edited book re-tallies to a new text hash"
+        );
+        assert_eq!(stats.tallied["GEN"], prior.tallied["GEN"], "clean book carries");
+        assert_eq!(stats.tallied["LEV"], prior.tallied["LEV"], "clean book carries");
+    }
+
+    /// A-3: `Tally.source` granularity — editing one source book stales only its
+    /// same-slug target book; a same-content source re-supply stales nothing;
+    /// dropping the source flips every book to `SOURCE_NONE`.
+    #[test]
+    fn tally_source_granularity() {
+        let cfg = Config::all();
+        let target = corpus_of(vec![
+            keyed("GEN", &["aa bb", "cc dd"]),
+            keyed("EXO", &["ee ff", "gg hh"]),
+        ]);
+        let source_v1 = corpus_of(vec![
+            keyed("GEN", &["s1 s2", "s3 s4"]),
+            keyed("EXO", &["t1 t2", "t3 t4"]),
+        ]);
+        let (_, prior) = analyze_stateful(&target, Some(&source_v1), &cfg, None, None);
+        assert_ne!(prior.tallied["GEN"].source, SOURCE_NONE, "source present ⇒ real hash");
+
+        let source_v2 = corpus_of(vec![
+            keyed("GEN", &["s1 s2 CHANGED", "s3 s4"]),
+            keyed("EXO", &["t1 t2", "t3 t4"]),
+        ]);
+        let (_, stats) = analyze_stateful(&target, Some(&source_v2), &cfg, Some(prior.clone()), None);
+        assert_ne!(
+            stats.tallied["GEN"].source, prior.tallied["GEN"].source,
+            "editing source GEN stales target GEN"
+        );
+        assert_eq!(stats.tallied["EXO"], prior.tallied["EXO"], "EXO's source unchanged ⇒ carries");
+
+        let (_, stats2) = analyze_stateful(&target, Some(&source_v2), &cfg, Some(stats.clone()), None);
+        assert_eq!(stats2.tallied, stats.tallied, "same-content source re-supply stales nothing");
+
+        let (_, stats3) = analyze_stateful(&target, None, &cfg, Some(stats), None);
+        assert_eq!(stats3.tallied["GEN"].source, SOURCE_NONE, "dropping source ⇒ SOURCE_NONE");
+        assert_eq!(stats3.tallied["EXO"].source, SOURCE_NONE, "dropping source ⇒ SOURCE_NONE");
+    }
+
+    /// A-4: a prior from one text lineage with a corpus from another re-tallies
+    /// every mismatched book; output equals a cold analyze of the new lineage.
+    #[test]
+    fn tally_lineage_mismatch_is_self_healing() {
+        let cfg = Config::all();
+        let x = corpus_of(vec![keyed("GEN", &["a  b", "one"]), keyed("EXO", &["x\ty", "two"])]);
+        let y = corpus_of(vec![keyed("GEN", &["p  q", "three"]), keyed("EXO", &["r\ts", "four"])]);
+        let (_, prior_x) = analyze_stateful(&x, None, &cfg, None, None);
+        let (f_inc, s_inc) = analyze_stateful(&y, None, &cfg, Some(prior_x), None);
+        let (f_cold, s_cold) = analyze_stateful(&y, None, &cfg, None, None);
+        assert_eq!(f_inc, f_cold);
+        assert_eq!(s_inc, s_cold);
+    }
+
+    /// A-5: an echo subset carries an unsupplied book's `Tally` untouched.
+    #[test]
+    fn tally_echo_subset_carries_book_and_its_tally() {
+        let cfg = Config::all();
+        let full = corpus_of(vec![keyed("GEN", &["a  b", "one"]), keyed("EXO", &["x\ty", "two"])]);
+        let (_, prior) = analyze_stateful(&full, None, &cfg, None, None);
+        let echo = mk("EXO", &["x\ty", "two"]);
+        let (_, stats) = analyze_stateful(&echo, None, &cfg, Some(prior.clone()), None);
+        assert_eq!(stats.tallied["GEN"], prior.tallied["GEN"], "unsupplied GEN carries its Tally");
+        assert_eq!(stats.tallied["EXO"], prior.tallied["EXO"], "unchanged EXO matches");
+    }
+
+    /// A-6: a supplied book absent from the prior's `tallied` is stale by
+    /// definition (a missing entry is a mismatch) and is tallied fresh.
+    #[test]
+    fn tally_new_book_absent_from_prior_is_tallied_fresh() {
+        let cfg = Config::all();
+        let one = mk("GEN", &["a  b", "one"]);
+        let (_, prior) = analyze_stateful(&one, None, &cfg, None, None);
+        assert!(!prior.tallied.contains_key("EXO"));
+        let two = corpus_of(vec![keyed("GEN", &["a  b", "one"]), keyed("EXO", &["x\ty", "two"])]);
+        let (f_inc, s_inc) = analyze_stateful(&two, None, &cfg, Some(prior), None);
+        assert!(s_inc.tallied.contains_key("EXO"), "new book gets a fresh Tally");
+        let (f_cold, s_cold) = analyze_stateful(&two, None, &cfg, None, None);
+        assert_eq!(f_inc, f_cold);
+        assert_eq!(s_inc, s_cold);
+    }
+
+    /// A-7: the serialized `Stats` round-trips with `tallied`, whose hash fields
+    /// are fixed-width lowercase hex strings (never a JS number).
+    #[test]
+    fn tally_wire_round_trips_with_hex_fields() {
+        let cfg = Config::all();
+        let target = corpus_of(vec![keyed("GEN", &["a  b", "one"]), keyed("EXO", &["x\ty", "two"])]);
+        let (_, stats) = analyze_stateful(&target, None, &cfg, None, None);
+        assert!(!stats.tallied.is_empty());
+        let json = serde_json::to_string(&stats).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let (_, tally) = v["tallied"].as_object().unwrap().iter().next().unwrap();
+        assert_eq!(tally["text"].as_str().unwrap().len(), 32, "u128 text ⇒ 32 hex chars");
+        assert_eq!(tally["source"].as_str().unwrap().len(), 32, "u128 source ⇒ 32 hex chars");
+        assert_eq!(tally["rules"].as_str().unwrap().len(), 16, "u64 rules ⇒ 16 hex chars");
+        let back: Stats = serde_json::from_str(&json).unwrap();
+        assert_eq!(stats, back, "Stats round-trips through serde");
+    }
+
+    /// A-8: the source partial-echo regression — echo one book under a new
+    /// source, then a full call; the un-echoed book re-tallies from its OWN
+    /// `Tally.source`, so no global field falsely certifies its stale counts.
+    #[test]
+    fn tally_source_partial_echo_regression() {
+        let cfg = Config::all();
+        let target = corpus_of(vec![
+            keyed("GEN", &["aa bb", "cc dd"]),
+            keyed("EXO", &["ee ff", "gg hh"]),
+        ]);
+        let source_x = corpus_of(vec![
+            keyed("GEN", &["x1 x2", "x3 x4"]),
+            keyed("EXO", &["x5 x6", "x7 x8"]),
+        ]);
+        let source_y = corpus_of(vec![
+            keyed("GEN", &["y1 y2", "y3 y4"]),
+            keyed("EXO", &["y5 y6", "y7 y8"]),
+        ]);
+        let (_, prior_x) = analyze_stateful(&target, Some(&source_x), &cfg, None, None);
+        let gen_only = mk("GEN", &["aa bb", "cc dd"]);
+        let (_, after_echo) =
+            analyze_stateful(&gen_only, Some(&source_y), &cfg, Some(prior_x), None);
+        let (f_full, s_full) =
+            analyze_stateful(&target, Some(&source_y), &cfg, Some(after_echo), None);
+        let (f_cold, s_cold) = analyze_stateful(&target, Some(&source_y), &cfg, None, None);
+        assert_eq!(f_full, f_cold, "un-echoed EXO re-tallies under source Y");
+        assert_eq!(s_full, s_cold);
+    }
+
+    /// A-9: the enabled-set regression — a prior built with rule R disabled,
+    /// text unchanged, re-analyzed with R enabled must equal cold-with-R (every
+    /// `Tally.rules` mismatches, so R's counts appear).
+    #[test]
+    fn tally_enabled_set_regression() {
+        let target = mks("GEN", &casing_fire(40));
+        let cfg_off = Config::v1_defaults(); // SentenceInitialLowercase off
+        let cfg_on = casing_on(0.5, 0.0); // SentenceInitialLowercase on
+        let (_, prior_off) = analyze_stateful(&target, None, &cfg_off, None, None);
+        let (f_on, s_on) = analyze_stateful(&target, None, &cfg_on, Some(prior_off), None);
+        let (f_cold, s_cold) = analyze_stateful(&target, None, &cfg_on, None, None);
+        assert_eq!(f_on, f_cold);
+        assert_eq!(s_on, s_cold);
+        assert!(
+            f_on.iter().any(|f| f.code == RuleId::SentenceInitialLowercase),
+            "the re-enabled rule's finding appears"
+        );
+    }
+
+    /// A-10: a knob-only config change re-tallies nothing (every `Tally.rules`
+    /// still matches) while findings track the new knobs — judging moves,
+    /// counting doesn't.
+    #[test]
+    fn tally_knob_only_change_retallies_nothing() {
+        let target = mks("GEN", &casing_fire(40));
+        let cfg1 = casing_on(0.5, 0.0);
+        let cfg2 = casing_on(0.9, 3.0); // same enabled set, stricter knobs
+        let (_, prior) = analyze_stateful(&target, None, &cfg1, None, None);
+        let (f_inc, s_inc) = analyze_stateful(&target, None, &cfg2, Some(prior.clone()), None);
+        assert_eq!(s_inc.tallied, prior.tallied, "no book re-tallies on a knob-only change");
+        let (f_cold, _) = analyze_stateful(&target, None, &cfg2, None, None);
+        assert_eq!(f_inc, f_cold, "findings track the new knobs");
+    }
+
+    /// A-11: the disable→re-enable round trip (the §5.4 retention invariant) —
+    /// a book carried while its rule was disabled keeps that rule's contribution,
+    /// so re-enabling reproduces cold-with-R. Then the same with the echoed book
+    /// edited while disabled: it re-tallies, the carried book still contributes.
+    #[test]
+    fn tally_disable_reenable_round_trip_retains_contribution() {
+        let cfg_on = casing_on(0.5, 0.0);
+        let mut cfg_off = cfg_on.clone();
+        cfg_off.rules.insert(RuleId::SentenceInitialLowercase, false);
+        let a = casing_fire(40);
+        let b = casing_fire(40);
+        let full = corpus_of(vec![keyed("GEN", &a), keyed("EXO", &b)]);
+        let (_, prior_on) = analyze_stateful(&full, None, &cfg_on, None, None);
+
+        // Disable R, echo GEN only; re-enable R, analyze GEN+EXO.
+        let gen_only = mks("GEN", &a);
+        let (_, after_disable) =
+            analyze_stateful(&gen_only, None, &cfg_off, Some(prior_on.clone()), None);
+        let (f_re, s_re) = analyze_stateful(&full, None, &cfg_on, Some(after_disable), None);
+        let (f_cold, s_cold) = analyze_stateful(&full, None, &cfg_on, None, None);
+        assert_eq!(f_re, f_cold, "EXO's carried R contribution survives the disable");
+        assert_eq!(s_re, s_cold);
+
+        // Now GEN edited while R was disabled: GEN re-tallies, EXO still carries.
+        let mut a2 = casing_fire(40);
+        a2.push("He fell. the extra one.".to_string());
+        let full2 = corpus_of(vec![keyed("GEN", &a2), keyed("EXO", &b)]);
+        let gen_only2 = mks("GEN", &a2);
+        let (_, after_disable2) =
+            analyze_stateful(&gen_only2, None, &cfg_off, Some(prior_on), None);
+        let (f_re2, s_re2) = analyze_stateful(&full2, None, &cfg_on, Some(after_disable2), None);
+        let (f_cold2, s_cold2) = analyze_stateful(&full2, None, &cfg_on, None, None);
+        assert_eq!(f_re2, f_cold2);
+        assert_eq!(s_re2, s_cold2);
     }
 }

@@ -120,6 +120,71 @@ impl RuleStats {
     }
 }
 
+/// The sentinel [`Tally::source`] value meaning "no source corpus, or no
+/// same-slug source book, existed at tally time". A real `book_hash` is a
+/// 128-bit content digest; the chance one equals zero is 2⁻¹²⁸, ignored by the
+/// same policy that ignores content-hash collisions.
+pub const SOURCE_NONE: u128 = 0;
+
+/// Per-book provenance for a rule-count set: the hashes of the target text,
+/// the same-slug source book, and the enabled counting-rule set the counts were
+/// tallied from. A book re-tallies iff its current `Tally` differs from the one
+/// recorded in [`Stats::tallied`] — staleness is proven from content, never
+/// declared by the caller.
+///
+/// The hash fields serialize as fixed-width lowercase hex strings (32 chars for
+/// each u128, 16 for the u64) so the wire stays JSON-safe and deterministic and
+/// never emits a JS `number` for a value past 2⁵³.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+pub struct Tally {
+    /// `book_hash` of the target text these counts were tallied from.
+    #[cfg_attr(feature = "serde", serde(with = "hex_u128"))]
+    #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+    pub text: u128,
+    /// `book_hash` of the same-slug source book at tally time, or [`SOURCE_NONE`]
+    /// when no source (or no such book) existed. A target book's keys all parse
+    /// to its own slug and proportionality pairs by key, so a book's counts
+    /// depend on exactly one source book — its own slug.
+    #[cfg_attr(feature = "serde", serde(with = "hex_u128"))]
+    #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+    pub source: u128,
+    /// `rules_fp` of the enabled counting-rule set at tally time — records WHICH
+    /// rules' contributions exist for this book. Text hashes alone cannot: a
+    /// prior built with a rule disabled has no counts for it even though every
+    /// text hash matches.
+    #[cfg_attr(feature = "serde", serde(with = "hex_u64"))]
+    #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+    pub rules: u64,
+}
+
+/// Serialize a `u128` as a fixed 32-char lowercase hex string.
+#[cfg(feature = "serde")]
+mod hex_u128 {
+    pub fn serialize<S: serde::Serializer>(v: &u128, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&format!("{v:032x}"))
+    }
+    pub fn deserialize<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u128, D::Error> {
+        use serde::Deserialize;
+        let s = String::deserialize(d)?;
+        u128::from_str_radix(&s, 16).map_err(serde::de::Error::custom)
+    }
+}
+
+/// Serialize a `u64` as a fixed 16-char lowercase hex string.
+#[cfg(feature = "serde")]
+mod hex_u64 {
+    pub fn serialize<S: serde::Serializer>(v: &u64, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&format!("{v:016x}"))
+    }
+    pub fn deserialize<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u64, D::Error> {
+        use serde::Deserialize;
+        let s = String::deserialize(d)?;
+        u64::from_str_radix(&s, 16).map_err(serde::de::Error::custom)
+    }
+}
+
 /// What `analyze_stateful` returns and the shell threads back. It is a
 /// strongly-typed value across the wasm boundary, but **treated as opaque**:
 /// the caller holds and round-trips it and should not depend on its shape.
@@ -135,16 +200,34 @@ pub struct Stats {
     // record, not every `RuleId`.
     #[cfg_attr(feature = "wasm", tsify(type = "Partial<Record<RuleId, RuleStats>>"))]
     rules: BTreeMap<RuleId, RuleStats>,
+    /// Per-book provenance ([`Tally`]): what text, which same-slug source book,
+    /// and which enabled counting-rule set each book's counts came from. This
+    /// replaces the old caller-declared `changed` set — a book re-tallies iff
+    /// its current `Tally` differs from this record. Serialized with the stats
+    /// wire in deterministic (`BTreeMap`) order.
+    #[cfg_attr(feature = "wasm", tsify(type = "Record<string, Tally>"))]
+    pub tallied: BTreeMap<Box<str>, Tally>,
 }
 
 impl Stats {
-    /// Drop a book's cached statistics across every rule — the sanctioned
-    /// caller-side deletion (ADR 0017), so a removed book stops contributing
-    /// to corpus aggregates and stops emitting findings.
+    /// Drop a book's cached statistics across every rule AND its provenance
+    /// entry — the sanctioned caller-side deletion (ADR 0017), so a removed book
+    /// stops contributing to corpus aggregates, stops emitting findings, and
+    /// leaves no `tallied` record to certify counts that no longer exist.
     pub fn remove_book(&mut self, slug: &str) {
         for stats in self.rules.values_mut() {
             stats.remove_book(slug);
         }
+        self.tallied.remove(slug);
+    }
+
+    /// The per-rule sections, for the oracle's rules-only digest gate. Exposed
+    /// for the calibrate harness only (so it can digest rules and provenance
+    /// separately and prove a wire change touched only provenance); ordinary
+    /// callers treat `Stats` as opaque and round-trip it whole.
+    #[doc(hidden)]
+    pub fn oracle_rules(&self) -> &BTreeMap<RuleId, RuleStats> {
+        &self.rules
     }
 
     pub(crate) fn take(&mut self, id: RuleId) -> Option<RuleStats> {

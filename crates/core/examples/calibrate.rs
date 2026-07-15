@@ -7512,18 +7512,28 @@ fn fnv64(s: &str) -> u64 {
 /// `stats<TAB>id<TAB>mode<TAB>rules_len<TAB>rules_fnv<TAB>prov_fnv`. The `stats`
 /// sentinel is column 1 so every digest line is mechanically separable from
 /// finding lines (which start with the corpus id). `rules_len`/`rules_fnv`
-/// digest the per-rule sections; `prov_fnv` digests the provenance sections
+/// digest the per-rule sections alone; `prov_fnv` digests the provenance map
 /// alone — split so the gate can prove a wire change touched only provenance.
 ///
-/// The whole serialized `Stats` is currently the rules-only view: there are no
-/// provenance sections yet, so `prov_fnv` is the literal `none`.
+/// The rules view (`{"rules":…}`) is byte-identical to the whole-`Stats`
+/// serialization before provenance existed, so `rules_fnv` stays pinned across
+/// the provenance addition; only `prov_fnv` moves.
 fn write_stats_digest(out: &mut impl Write, id: &str, mode: &str, stats: &ssc_core::Stats) {
-    let rules = serde_json::to_string(stats).unwrap();
+    #[derive(serde::Serialize)]
+    struct RulesView<'a> {
+        rules: &'a std::collections::BTreeMap<ssc_core::RuleId, ssc_core::RuleStats>,
+    }
+    let rules = serde_json::to_string(&RulesView {
+        rules: stats.oracle_rules(),
+    })
+    .unwrap();
+    let prov = serde_json::to_string(&stats.tallied).unwrap();
     writeln!(
         out,
-        "stats\t{id}\t{mode}\t{}\t{:016x}\tnone",
+        "stats\t{id}\t{mode}\t{}\t{:016x}\t{:016x}",
         rules.len(),
         fnv64(&rules),
+        fnv64(&prov),
     )
     .unwrap();
 }
@@ -7557,7 +7567,7 @@ fn dump_incremental(
         }
         let mut cache = cached.then(AnalysisCache::new);
         let (_, prior) =
-            ssc_core::analyze_stateful(&target, source.as_ref(), &cfg, None, None, cache.as_mut());
+            ssc_core::analyze_stateful(&target, source.as_ref(), &cfg, None, cache.as_mut());
         // The edit: last verse of the first book. `Books` from `by_book` is
         // in presented order, so the first group always starts at position 0
         // — no need to resolve its global `KeyIdx` base (which this example,
@@ -7565,7 +7575,6 @@ fn dump_incremental(
         // crate-private).
         let first_books = ssc_core::corpus::by_book(&target);
         let first_group = first_books.first().unwrap();
-        let first_slug = first_group.slug.to_string();
         let first_len = first_group.keys.len();
         drop(first_books);
 
@@ -7584,19 +7593,18 @@ fn dump_incremental(
             source.as_ref(),
             &cfg,
             Some(prior.clone()),
-            None,
             cache.as_mut(),
         );
         write_findings(&mut out, &id, "echo", &echo, &echo_findings);
         write_stats_digest(&mut out, &id, "echo", &echo_stats);
 
-        // Complete snapshot: whole corpus + prior + changed=[book].
+        // Complete snapshot: whole corpus + prior. The edited book re-tallies by
+        // content hash; clean siblings carry — no changed hint.
         let (snap, stats) = ssc_core::analyze_stateful(
             &edited,
             source.as_ref(),
             &cfg,
             Some(prior),
-            Some(&[first_slug.as_str()]),
             cache.as_mut(),
         );
         write_findings(&mut out, &id, "snap", &edited, &snap);
