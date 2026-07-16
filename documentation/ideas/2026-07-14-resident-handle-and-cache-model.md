@@ -1,6 +1,9 @@
 # Design — resident engine handle, and the shared cache/stats vocabulary
 
-Date: 2026-07-14. Status: **design settled; BLOCKED on finding-address Tier 2.**
+Date: 2026-07-14. Status: **implemented** — plan
+`plans/2026-07-14-resident-handle-plan.md`, landed as ADR 0062 on branch
+`galley-resident-handle` (§6.8 amended per the plan's §0.5: `Stats.tallied`
+carries provenance, no per-book stats-contribution copy).
 This is the design record, not yet a plan. The resident-handle work is a
 **follow-up plan** to be written *after*
 `plans/2026-07-14-finding-address-representation-plan.md` lands in full — it is

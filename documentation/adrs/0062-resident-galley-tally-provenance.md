@@ -1,7 +1,9 @@
 # ADR 0062: Resident galley shell + per-book `Tally` provenance
 
 - **Date:** 2026-07-15
-- **Status:** Draft (Phase 1 landed; galley phases + full-fleet bookend pending)
+- **Status:** Accepted (all four phases implemented on `galley-resident-handle`;
+  full-fleet oracle bookend clean; a warm-path perf re-measurement is owed
+  before master — see Consequences)
 - **Builds on:** ADR 0010 (pure analyzer), ADR 0017 (caller-held `Stats`),
   ADR 0060 (cross-call `PrepCache`), ADR 0061 (`Corpus`/`KeyIdx` addresses)
 - **Supersedes:** ADR 0043's caller-declared `changed` contract (the
@@ -23,12 +25,13 @@ footgun one layer up.
 
 ## Decision
 
-Make `Stats` self-describing and delete `changed`; counting scope is derived
-from per-book provenance. (The resident `Galley` shell that owns the inputs is
-the follow-on work in later phases of this plan; this ADR is written as those
-phases land and currently records Phase 1.)
+Make `Stats` self-describing and delete `changed` (counting scope derived from
+per-book provenance), then build the resident `Galley` shell that owns the
+inputs. All four phases landed: the core provenance change; the
+`Corpus::replace_books`/`remove_book` + `PrepCache::remove_book` mutation
+helpers; the `ssc-galley` shell crate; and the `#[wasm_bindgen] Galley` wrapper.
 
-### Per-book `Tally` provenance (landed, Phase 1)
+### Per-book `Tally` provenance
 
 `Stats` gains `tallied: BTreeMap<Box<str>, Tally>`, one entry per book:
 
@@ -96,35 +99,47 @@ never string surgery) and `prov_fnv` the provenance map alone. The rules view is
 byte-identical to the whole-`Stats` serialization before provenance existed, so
 `rules_fnv` stays pinned across the addition.
 
-**Phase 1 gate (WA subset — owner-approved for intermediate steps; the WA slice
-is a faithful per-corpus mirror of the full fleet):**
+Intermediate phases gated on the **WA subset** (owner-approved for speed; the WA
+slice is a faithful per-corpus mirror of the full fleet): finding dumps and both
+incremental dumps' finding lines + rules-only digests byte-identical, provenance
+the only movement.
 
-- Finding dumps (defaults + everything-on): **byte-identical**.
-- Both incremental dumps' finding lines and rules-only digests
-  (`cut -f1-5`): **byte-identical**.
-- Provenance column: `none` → real hashes on all 64 stats lines (32 corpora ×
-  {echo, snap}) — the single adjudicated difference, as intended.
-
-So the `changed` deletion is behaviorally inert and the only wire movement is the
-new provenance digest.
-
-**Pending (recorded at the Phase-4 bookend):** the full-fleet re-run against the
-original `base.full.*` (findings + rules-only digests byte-identical to pre-plan;
-provenance the one recorded difference), and the measured warm re-analyze ladder.
+**Full-fleet bookend (the second and final full run):** all four oracles at full
+scope. Findings byte-identical to **pre-plan** across the whole fleet — defaults
+(1504 corpora), everything-on (1504), and both incremental dumps. Rules-only
+stats digests value-identical (old `(len, fnv)` == new `(rules_len, rules_fnv)`
+per corpus). Provenance is the one adjudicated addition (real hashes throughout).
+So the `changed` deletion is behaviorally inert fleet-wide; the only wire
+movement is the new provenance digest. `base.full.*` re-pinned in the
+split-digest format.
 
 ## Consequences
 
-- Every caller — not just the eventual shell — gets proof-driven counting for the
-  cost of hashing the corpus. A bulk corpus reseed re-tallies exactly the books
-  whose content changed, with zero bookkeeping anywhere.
-- Memory: `Stats.tallied` adds one `Tally` per book (~40 B; assert with
-  `size_of::<Tally>()` if quoted) — ~3 KB for a full Bible. No new clone traffic.
+- Every caller — not just the shell — gets proof-driven counting for the cost of
+  hashing the corpus. A bulk corpus reseed re-tallies exactly the books whose
+  content changed, with zero bookkeeping anywhere.
+- The resident `Galley` (native `ssc-galley` + `#[wasm_bindgen]` wrapper) owns
+  corpus + source + config + prep + prior and exposes only mutate-and-analyze
+  verbs — **no dirty field**; which books re-tally is derived inside
+  `analyze_stateful`. Core stays pure (ADR 0010): the shell owns inputs and
+  delegates.
+- Memory: `Stats.tallied` adds one `Tally` per book (`size_of::<Tally>()` = 40 B)
+  — ~2.6 KB for a 66-book Bible. No new clone traffic.
+- Warm cost: this plan adds ~0.5–1 ms of book hashing per call (measured in the
+  anchor-cache spike) and does **not** change the warm reuse path — so the
+  measured warm re-analyze ladder from ADR 0060 (~5–25 ms defaults / ~50–120 ms
+  all-on, serial, full Bible) carries. A fresh full warm-path re-measurement
+  (criterion/samply, the perf-campaign) is owed before master, folded into the
+  perf pass already outstanding for the casing/terminal-strength work.
 - Hash collision is ignored by policy: 128-bit content hashes, non-adversarial
   setting, ~2⁻¹²⁸. `SOURCE_NONE` is `0`, relying on `book_hash` never returning 0
   (the empty book hashes non-zero; same policy).
 - Wire: `Tally` serializes its hash fields as fixed-width lowercase hex strings
   (32 chars per u128, 16 per u64) — JSON-safe, deterministic, never a JS `number`.
   Generated TypeScript: `tallied: Record<string, Tally>` with `string` fields.
+- Test observability: a default-off `test-probes` feature exposes
+  `PrepCache::probe()` so a downstream crate's tests can assert cache-reuse and
+  zero-re-tally invariants directly; compiled out of release (oracle unaffected).
 
 ## Relates to
 
