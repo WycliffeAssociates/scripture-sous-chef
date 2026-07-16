@@ -4,6 +4,12 @@ Date: 2026-07-14. Status: **implemented** — plan
 `plans/2026-07-14-resident-handle-plan.md`, landed as ADR 0062 on branch
 `galley-resident-handle` (§6.8 amended per the plan's §0.5: `Stats.tallied`
 carries provenance, no per-book stats-contribution copy).
+
+*Everything below is the original pre-plan design snapshot, preserved as
+written; the plan and ADR 0062 named above are the authority. Where the snapshot
+speaks of a plan "to be written" or work that "lands after Tier 2", that has
+since happened — read it as the design thinking that seeded the plan.*
+
 This is the design record, not yet a plan. The resident-handle work is a
 **follow-up plan** to be written *after*
 `plans/2026-07-14-finding-address-representation-plan.md` lands in full — it is

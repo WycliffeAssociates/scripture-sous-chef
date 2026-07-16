@@ -139,7 +139,9 @@ split-digest format.
   Generated TypeScript: `tallied: Record<string, Tally>` with `string` fields.
 - Test observability: a default-off `test-probes` feature exposes
   `PrepCache::probe()` so a downstream crate's tests can assert cache-reuse and
-  zero-re-tally invariants directly; compiled out of release (oracle unaffected).
+  zero-re-tally invariants directly. It is independent of the build profile —
+  default-off, compiled out only when the feature is disabled; the
+  calibrate/oracle build leaves it off, so the oracle is unaffected.
 
 ## Relates to
 
