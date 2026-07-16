@@ -428,6 +428,15 @@ mod tests {
 
     // ── uni.mixed-normalization through the resident Galley (ADR 0063) ──────
 
+    /// `v1_defaults` with `uni.mixed-normalization` explicitly enabled — the
+    /// rule ships default-**off** (ADR 0063's perf adjudication), so every
+    /// test below that wants it to actually run opts in explicitly.
+    fn mixed_normalization_on() -> Config {
+        let mut cfg = Config::v1_defaults();
+        cfg.rules.insert(RuleId::MixedNormalization, true);
+        cfg
+    }
+
     /// Cold pass, a no-edit rewarm (same finding, cache actually reused),
     /// introducing a second raw form under an existing book, fixing it back,
     /// then removing the only deviant book — every step must equal a fresh
@@ -435,7 +444,7 @@ mod tests {
     /// `BookNormalization` product invalidates and clears correctly.
     #[test]
     fn mixed_normalization_through_a_scripted_galley_sequence() {
-        let cfg = Config::v1_defaults(); // default-on
+        let cfg = mixed_normalization_on();
         let c0 = corpus_of(vec![
             keyed("GEN", &["caf\u{00E9}", "clean text"]),
             keyed("EXO", &["more clean text", "still clean"]),
@@ -501,7 +510,7 @@ mod tests {
     /// anchor exactly as a cold call over that new order would.
     #[test]
     fn mixed_normalization_reorder_changes_anchor_through_galley() {
-        let cfg = Config::v1_defaults();
+        let cfg = mixed_normalization_on();
         let forward = corpus_of(vec![
             keyed("GEN", &["cafe\u{0301}"]),
             keyed("EXO", &["caf\u{00E9}"]),
@@ -525,36 +534,36 @@ mod tests {
         );
     }
 
-    /// Disabling the rule through `update_config` suppresses the finding;
-    /// re-enabling reproduces exactly the cold default-on result.
+    /// The rule is silent under the shipped default config; enabling it
+    /// through `update_config` fires it, and disabling again reproduces
+    /// exactly the cold default-off result (ADR 0063: default-off).
     #[test]
     fn mixed_normalization_disable_then_reenable_matches_cold() {
-        let cfg_on = Config::v1_defaults();
-        let mut cfg_off = cfg_on.clone();
-        cfg_off.rules.insert(RuleId::MixedNormalization, false);
+        let cfg_off = Config::v1_defaults();
+        let cfg_on = mixed_normalization_on();
 
         let corpus = corpus_of(vec![keyed("GEN", &["caf\u{00E9}", "cafe\u{0301}"])]);
-        let mut g = Galley::new(corpus.clone(), None, cfg_on.clone());
+        let mut g = Galley::new(corpus.clone(), None, cfg_off.clone());
         assert!(
-            g.analyze().iter().any(|f| f.code == RuleId::MixedNormalization),
-            "fires under the default-on config"
+            g.analyze().iter().all(|f| f.code != RuleId::MixedNormalization),
+            "silent under the default-off config"
         );
 
-        g.update_config(cfg_off.clone());
-        let off = g.analyze();
-        assert_eq!(off, cold(&corpus, &cfg_off));
-        assert!(off.iter().all(|f| f.code != RuleId::MixedNormalization));
-
         g.update_config(cfg_on.clone());
-        let back_on = g.analyze();
-        assert_eq!(back_on, cold(&corpus, &cfg_on), "re-enabling matches the cold default-on result");
+        let on = g.analyze();
+        assert_eq!(on, cold(&corpus, &cfg_on));
+        assert!(on.iter().any(|f| f.code == RuleId::MixedNormalization));
+
+        g.update_config(cfg_off.clone());
+        let back_off = g.analyze();
+        assert_eq!(back_off, cold(&corpus, &cfg_off), "disabling again matches the cold default-off result");
     }
 
     /// The rule ignores the source corpus entirely (plan §0): swapping or
     /// updating it through the resident handle must not move the finding.
     #[test]
     fn mixed_normalization_source_only_update_does_not_change_the_finding() {
-        let cfg = Config::v1_defaults();
+        let cfg = mixed_normalization_on();
         let target = corpus_of(vec![keyed("GEN", &["caf\u{00E9}", "cafe\u{0301}"])]);
         let mut g = Galley::new(target.clone(), None, cfg.clone());
         let without_source = g.analyze();

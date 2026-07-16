@@ -807,21 +807,22 @@ mod tests {
         assert!(cfg.is_enabled(RuleId::RedundantZeroWidthSpace));
         assert!(!cfg.is_enabled(RuleId::DuplicateWord));
         assert!(
-            cfg.is_enabled(RuleId::MixedNormalization),
-            "omitted config keeps uni.mixed-normalization enabled"
+            !cfg.is_enabled(RuleId::MixedNormalization),
+            "omitted config keeps uni.mixed-normalization disabled (ADR 0063: default-off)"
         );
     }
 
-    /// An explicit `rules["uni.mixed-normalization"] = false` disables it
+    /// An explicit `rules["uni.mixed-normalization"] = true` enables it
     /// through the same wasm-boundary `SousConfig.rules` map every other
     /// rule uses — no typed sub-config exists for this knob-free rule.
+    /// (ADR 0063: default-off, so this is the meaningful opt-in direction.)
     #[test]
-    fn build_config_explicit_false_disables_mixed_normalization() {
+    fn build_config_explicit_true_enables_mixed_normalization() {
         let cfg = build_config(Some(SousConfig {
-            rules: Some([(RuleId::MixedNormalization, false)].into_iter().collect()),
+            rules: Some([(RuleId::MixedNormalization, true)].into_iter().collect()),
             ..Default::default()
         }));
-        assert!(!cfg.is_enabled(RuleId::MixedNormalization));
+        assert!(cfg.is_enabled(RuleId::MixedNormalization));
     }
 
     /// The wasm projection of a `uni.mixed-normalization` finding: `severity`
@@ -834,12 +835,17 @@ mod tests {
             keys: vec!["GEN 1:1".to_string(), "GEN 1:2".to_string()],
             texts: vec!["caf\u{00E9}".to_string(), "cafe\u{0301}".to_string()],
         };
-        let findings = analyze_vref(corpus, None, None).unwrap();
+        // Default-off (ADR 0063) — explicitly enable to exercise the finding.
+        let config = Some(SousConfig {
+            rules: Some([(RuleId::MixedNormalization, true)].into_iter().collect()),
+            ..Default::default()
+        });
+        let findings = analyze_vref(corpus, None, config).unwrap();
         let hit = findings
             .0
             .iter()
             .find(|f| f.code == RuleId::MixedNormalization)
-            .expect("the mix fires under default-on config");
+            .expect("the mix fires once explicitly enabled");
         let json = serde_json::to_string(hit).unwrap();
         assert!(json.contains(r#""severity":"warning""#), "{json}");
         assert!(json.contains(r#""kind":"normalization""#), "{json}");

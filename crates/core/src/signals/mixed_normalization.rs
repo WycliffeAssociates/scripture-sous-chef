@@ -82,22 +82,18 @@ pub(crate) struct BookNormalization {
 /// the NFC-key computation to run once per **distinct raw form** instead (a
 /// small, book-local set), which is where it belongs.
 ///
-/// `ascii` is a direct-addressed fast path for single-ASCII-byte grapheme
-/// clusters (`a`, `.`, ` `, digits, …) — overwhelmingly the dominant class in
-/// scripture text, per the profiled cost of hashing every one of them.
-/// `forms` still carries every multi-byte or non-ASCII raw form; the ASCII
-/// split changes nothing about which forms are counted (K/Kelvin mixing is
-/// still sound — ASCII `K` just counts through `ascii[b'K' as usize]`
-/// instead of `forms`).
+/// No separate ASCII fast path: once the `NORM_RELEVANT` prefilter (below)
+/// gates `verse()`, only a tiny singleton-target subset of ASCII (`K`, `;`,
+/// …) ever reaches this map at all — a dedicated array measured no benefit
+/// even before the prefilter existed, and would be pure redundant complexity
+/// after it.
 pub(crate) struct NormalizationAcc {
-    ascii: [Option<FormSummary>; 128],
     forms: FxHashMap<Box<str>, FormSummary>,
 }
 
 impl NormalizationAcc {
     pub(crate) fn new() -> Self {
         NormalizationAcc {
-            ascii: std::array::from_fn(|_| None),
             forms: FxHashMap::default(),
         }
     }
@@ -123,22 +119,6 @@ impl NormalizationAcc {
                 continue;
             }
             let raw = g.slice(v.text);
-            let bytes = raw.as_bytes();
-            if bytes.len() == 1 && bytes[0].is_ascii() {
-                match &mut self.ascii[bytes[0] as usize] {
-                    Some(summary) => summary.count += 1,
-                    slot => {
-                        *slot = Some(FormSummary {
-                            count: 1,
-                            first: FirstSite {
-                                local: v.local_idx,
-                                span: g.range(),
-                            },
-                        });
-                    }
-                }
-                continue;
-            }
             match self.forms.get_mut(raw) {
                 Some(summary) => summary.count += 1,
                 None => {
@@ -163,12 +143,6 @@ impl NormalizationAcc {
     pub(crate) fn finish(self) -> BookNormalization {
         let mut grouped: FxHashMap<Box<str>, FxHashMap<Box<str>, FormSummary>> =
             FxHashMap::default();
-        for (byte, summary) in self.ascii.into_iter().enumerate() {
-            let Some(summary) = summary else { continue };
-            // An ASCII byte is trivially its own NFC key.
-            let raw: Box<str> = (byte as u8 as char).to_string().into_boxed_str();
-            grouped.entry(raw.clone()).or_default().insert(raw, summary);
-        }
         for (raw, summary) in self.forms {
             // Fast borrow path: a non-ASCII form that is already NFC (which
             // includes the both-NFC-and-NFD composition-exclusion case)
@@ -605,11 +579,14 @@ mod tests {
             ],
         );
         let direct = run(&c);
-        let fused: Vec<Finding> =
-            crate::analyze_with_config(&c, None, &crate::Config::v1_defaults())
-                .into_iter()
-                .filter(|f| f.code == RuleId::MixedNormalization)
-                .collect();
+        // Default-off (ADR 0063 perf adjudication) — explicitly enable to
+        // exercise the fused path here.
+        let mut cfg = crate::Config::v1_defaults();
+        cfg.rules.insert(RuleId::MixedNormalization, true);
+        let fused: Vec<Finding> = crate::analyze_with_config(&c, None, &cfg)
+            .into_iter()
+            .filter(|f| f.code == RuleId::MixedNormalization)
+            .collect();
         assert_eq!(direct, fused, "direct and fused paths must agree exactly");
         assert_eq!(direct.len(), 1, "{direct:?}");
     }
@@ -746,7 +723,9 @@ mod tests {
     /// a cache-less cold analyze of the same grown corpus (plan §8.3 #2/#3).
     #[test]
     fn cached_finding_rebases_when_an_earlier_book_grows() {
-        let cfg = crate::Config::v1_defaults();
+        // Default-off (ADR 0063 perf adjudication) — explicitly enable.
+        let mut cfg = crate::Config::v1_defaults();
+        cfg.rules.insert(RuleId::MixedNormalization, true);
         let original = multi_book(&[
             ("GEN", &[(1, "clean text")][..]),
             ("EXO", &[(1, "caf\u{00E9}"), (2, "cafe\u{0301}")][..]),

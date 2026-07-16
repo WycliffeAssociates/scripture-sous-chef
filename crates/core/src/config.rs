@@ -581,6 +581,15 @@ impl Config {
             RuleId::InconsistentWordCasing,
             RuleId::RareGlyph,
             RuleId::MixedCaseWord,
+            // Deviates from ADR 0063's original default-on plan ruling: the
+            // rule's own detection cost (recording every grapheme cluster,
+            // not just mixed ones, per its no-unsafe-skip contract) measured
+            // a real +27-33% warm-path cost on the shipped keystroke path
+            // even after the NORM_RELEVANT prefilter closed most of an
+            // initial ~150% regression. Owner call: cold/explicit-only
+            // until a demonstrably cheaper design exists, not a further
+            // hot-path redesign. See ADR 0063 Consequences.
+            RuleId::MixedNormalization,
         ])
     }
 

@@ -1563,14 +1563,18 @@ mod tests {
         );
     }
 
-    /// `uni.mixed-normalization` is default-on (absent from `v1_defaults`'s
-    /// disabling list) and, like every rule, an explicit `false` in the
-    /// config's `rules` map turns it off.
+    /// `uni.mixed-normalization` is default-**off** (ADR 0063's perf
+    /// adjudication: the detector's own no-unsafe-skip cost measured a real
+    /// warm-path regression even after the `NORM_RELEVANT` prefilter, so it
+    /// ships cold/explicit-only rather than as a further hot-path redesign)
+    /// and, like every rule, an explicit `true` in the config's `rules` map
+    /// turns it on.
     #[test]
-    fn mixed_normalization_is_default_on_and_explicitly_disableable() {
-        assert!(Config::v1_defaults().is_enabled(RuleId::MixedNormalization));
-        let off = Config::disabling(&[RuleId::MixedNormalization]);
-        assert!(!off.is_enabled(RuleId::MixedNormalization));
+    fn mixed_normalization_is_default_off_and_explicitly_enableable() {
+        assert!(!Config::v1_defaults().is_enabled(RuleId::MixedNormalization));
+        let mut on = Config::v1_defaults();
+        on.rules.insert(RuleId::MixedNormalization, true);
+        assert!(on.is_enabled(RuleId::MixedNormalization));
     }
 
     // ── Per-book `Tally` provenance (hash-derived counting) ──────────────────
