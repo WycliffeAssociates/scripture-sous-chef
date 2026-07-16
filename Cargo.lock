@@ -511,6 +511,7 @@ dependencies = [
  "serde",
  "serde_json",
  "ssc-core",
+ "ssc-galley",
  "tsify",
  "wasm-bindgen",
 ]

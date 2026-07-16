@@ -575,6 +575,121 @@ pub fn census(target: VrefCorpus, example_cap: Option<u32>) -> Result<String, Js
     Ok(serde_json::to_string(&inventory).expect("Inventory always serializes"))
 }
 
+/// One whole-book update block from JS. TS: `{ slug, keys, texts }`. Chapter
+/// or verse edits are the caller's to roll up to their whole book before
+/// sending — the book is the invalidation unit.
+#[derive(Deserialize, Tsify)]
+#[tsify(from_wasm_abi)]
+pub struct BookUpdateIn {
+    pub slug: String,
+    pub keys: Vec<String>,
+    pub texts: Vec<String>,
+}
+
+impl From<BookUpdateIn> for ssc_core::BookBlock {
+    fn from(b: BookUpdateIn) -> Self {
+        ssc_core::BookBlock {
+            slug: b.slug.into(),
+            keys: b.keys,
+            texts: b.texts,
+        }
+    }
+}
+
+/// The resident analysis handle for the editor. Wraps [`ssc_galley::Galley`],
+/// which owns the corpus, optional source, config, prep cache, and prior across
+/// calls. The caller updates the corpus/source/config and asks for findings or
+/// an inventory; it never threads a prior, stats, cache, or changed set.
+///
+/// **Lifetime:** the handle owns wasm-linear-memory-resident state. JS **must**
+/// call `free()` when swapping workspace or unmounting (the worker's `dispose`
+/// message is the home for that). `FinalizationRegistry` is a backstop some
+/// runtimes provide, never the contract — an un-`free`d handle leaks until the
+/// worker itself is torn down.
+#[wasm_bindgen]
+pub struct Galley {
+    inner: ssc_galley::Galley,
+}
+
+#[wasm_bindgen]
+impl Galley {
+    /// Seed the handle. `source` is an optional parallel corpus; `config`
+    /// omitted ⇒ `Config::v1_defaults()`, exactly like the stateless exports.
+    /// The first `analyze` is a full cold pass.
+    #[wasm_bindgen(constructor)]
+    pub fn new(
+        target: VrefCorpus,
+        source: Option<VrefCorpus>,
+        config: Option<SousConfig>,
+    ) -> Result<Galley, JsError> {
+        let target = to_corpus_or_reject(target)?;
+        let source = source.map(to_corpus_or_reject).transpose()?;
+        let cfg = build_config(config);
+        Ok(Galley {
+            inner: ssc_galley::Galley::new(target, source, cfg),
+        })
+    }
+
+    /// Batch replace/insert whole books. Atomic (all-or-nothing): a rejected
+    /// batch leaves the handle unchanged. Does not analyze.
+    pub fn update_books(&mut self, batch: Vec<BookUpdateIn>) -> Result<(), JsError> {
+        let blocks = batch.into_iter().map(Into::into).collect();
+        self.inner
+            .update_books(blocks)
+            .map_err(|e| JsError::new(&e.to_string()))
+    }
+
+    /// Remove books by slug. Unknown slugs are no-ops; returns the number removed.
+    pub fn remove_books(&mut self, slugs: Vec<String>) -> u32 {
+        let refs: Vec<&str> = slugs.iter().map(String::as_str).collect();
+        self.inner.remove_books(&refs) as u32
+    }
+
+    /// Reseed the whole corpus (project switch, git pull). Books absent from the
+    /// new corpus leave the prior and cache before it is adopted.
+    pub fn replace_corpus(&mut self, target: VrefCorpus) -> Result<(), JsError> {
+        let corpus = to_corpus_or_reject(target)?;
+        self.inner.replace_corpus(corpus);
+        Ok(())
+    }
+
+    /// Swap the source corpus. The prior is retained; provenance stales the
+    /// same-slug target books whose source changed on the next analyze.
+    pub fn update_source(&mut self, source: Option<VrefCorpus>) -> Result<(), JsError> {
+        let source = source.map(to_corpus_or_reject).transpose()?;
+        self.inner.update_source(source);
+        Ok(())
+    }
+
+    /// Swap the config. Required (not optional): a config change is explicit,
+    /// never an accidental reset to defaults. Equal config ⇒ no-op; otherwise
+    /// the prep cache clears and the prior is retained (provenance decides what
+    /// re-tallies).
+    pub fn update_config(&mut self, config: SousConfig) -> Result<(), JsError> {
+        self.inner.update_config(build_config(Some(config)));
+        Ok(())
+    }
+
+    /// Analyze the resident corpus; findings carry UTF-16 ranges, the same wire
+    /// shape as the stateless [`analyze_vref`].
+    pub fn analyze(&mut self) -> Findings {
+        let findings = self.inner.analyze();
+        Findings(project(self.inner.corpus(), &findings))
+    }
+
+    /// Census (absolute inventory) over the resident corpus, serialized to the
+    /// ADR 0058 JSON string, exactly like the stateless [`census`].
+    pub fn census(&self, example_cap: Option<u32>) -> String {
+        let opts = match example_cap {
+            Some(cap) => ssc_core::CensusOptions {
+                example_cap: cap as usize,
+            },
+            None => ssc_core::CensusOptions::default(),
+        };
+        serde_json::to_string(&self.inner.census(&opts)).expect("Inventory always serializes")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -793,5 +908,35 @@ mod tests {
         assert_eq!(cfg.repeated_character_run, d.repeated_character_run);
         assert!(cfg.is_enabled(RuleId::RedundantZeroWidthSpace));
         assert!(!cfg.is_enabled(RuleId::DuplicateWord));
+    }
+
+    /// The wasm `Galley` boundary: construct → edit a book → analyze twice. The
+    /// wrapper projects UTF-16 findings and delegates idempotently (the second
+    /// analyze matches the first), and the edited book's finding surfaces.
+    #[test]
+    fn galley_boundary_construct_edit_analyze_twice() {
+        let mut g = Galley::new(
+            VrefCorpus {
+                keys: vec!["GEN 1:1".to_string(), "GEN 1:2".to_string()],
+                texts: vec!["a  b".to_string(), "one".to_string()],
+            },
+            None,
+            None,
+        )
+        .unwrap();
+        let _ = g.analyze();
+        g.update_books(vec![BookUpdateIn {
+            slug: "GEN".to_string(),
+            keys: vec!["GEN 1:1".to_string(), "GEN 1:2".to_string()],
+            texts: vec!["a  b edited".to_string(), "one".to_string()],
+        }])
+        .unwrap();
+        let a = serde_json::to_string(&g.analyze()).unwrap();
+        let b = serde_json::to_string(&g.analyze()).unwrap();
+        assert_eq!(a, b, "analyze is idempotent through the wasm wrapper");
+        assert!(
+            a.contains("lex.excess-h-whitespace"),
+            "the edited double-space surfaces"
+        );
     }
 }

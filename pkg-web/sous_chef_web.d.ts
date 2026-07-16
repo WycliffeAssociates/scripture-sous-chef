@@ -316,6 +316,17 @@ export interface SpacingSide {
 }
 
 /**
+ * One whole-book update block from JS. TS: `{ slug, keys, texts }`. Chapter
+ * or verse edits are the caller\'s to roll up to their whole book before
+ * sending — the book is the invalidation unit.
+ */
+export interface BookUpdateIn {
+    slug: string;
+    keys: string[];
+    texts: string[];
+}
+
+/**
  * One word\'s raw case tallies within one book. Mid-flow upper/lower (the
  * intrinsic profile), forced upper/lower split by the *bare* terminal glyph
  * (`after_glyph`) and by the *quote-context* glyph (`after_quote`, the `.\"`
@@ -535,10 +546,10 @@ export interface Stats {
     rules: Partial<Record<RuleId, RuleStats>>;
     /**
      * Per-book provenance ([`Tally`]): what text, which same-slug source book,
-     * and which enabled counting-rule set each book\'s counts came from. This
-     * replaces the old caller-declared `changed` set — a book re-tallies iff
-     * its current `Tally` differs from this record. Serialized with the stats
-     * wire in deterministic (`BTreeMap`) order.
+     * and which enabled counting-rule set each book\'s counts came from. A book
+     * re-tallies iff its current `Tally` differs from this record — staleness
+     * is proven from content, never declared. Serialized with the stats wire
+     * in deterministic (`BTreeMap`) order.
      */
     tallied: Record<string, Tally>;
 }
@@ -590,6 +601,65 @@ export interface SensitivityStop {
     label: string;
 }
 
+
+/**
+ * The resident analysis handle for the editor. Wraps [`ssc_galley::Galley`],
+ * which owns the corpus, optional source, config, prep cache, and prior across
+ * calls. The caller updates the corpus/source/config and asks for findings or
+ * an inventory; it never threads a prior, stats, cache, or changed set.
+ *
+ * **Lifetime:** the handle owns wasm-linear-memory-resident state. JS **must**
+ * call `free()` when swapping workspace or unmounting (the worker's `dispose`
+ * message is the home for that). `FinalizationRegistry` is a backstop some
+ * runtimes provide, never the contract — an un-`free`d handle leaks until the
+ * worker itself is torn down.
+ */
+export class Galley {
+    free(): void;
+    [Symbol.dispose](): void;
+    /**
+     * Analyze the resident corpus; findings carry UTF-16 ranges, the same wire
+     * shape as the stateless [`analyze_vref`].
+     */
+    analyze(): Findings;
+    /**
+     * Census (absolute inventory) over the resident corpus, serialized to the
+     * ADR 0058 JSON string, exactly like the stateless [`census`].
+     */
+    census(example_cap?: number | null): string;
+    /**
+     * Seed the handle. `source` is an optional parallel corpus; `config`
+     * omitted ⇒ `Config::v1_defaults()`, exactly like the stateless exports.
+     * The first `analyze` is a full cold pass.
+     */
+    constructor(target: VrefCorpus, source?: VrefCorpus | null, config?: SousConfig | null);
+    /**
+     * Remove books by slug. Unknown slugs are no-ops; returns the number removed.
+     */
+    remove_books(slugs: string[]): number;
+    /**
+     * Reseed the whole corpus (project switch, git pull). Books absent from the
+     * new corpus leave the prior and cache before it is adopted.
+     */
+    replace_corpus(target: VrefCorpus): void;
+    /**
+     * Batch replace/insert whole books. Atomic (all-or-nothing): a rejected
+     * batch leaves the handle unchanged. Does not analyze.
+     */
+    update_books(batch: BookUpdateIn[]): void;
+    /**
+     * Swap the config. Required (not optional): a config change is explicit,
+     * never an accidental reset to defaults. Equal config ⇒ no-op; otherwise
+     * the prep cache clears and the prior is retained (provenance decides what
+     * re-tallies).
+     */
+    update_config(config: SousConfig): void;
+    /**
+     * Swap the source corpus. The prior is retained; provenance stales the
+     * same-slug target books whose source changed on the next analyze.
+     */
+    update_source(source?: VrefCorpus | null): void;
+}
 
 /**
  * Analyze a vref corpus. `source` is an optional parallel corpus; `config`
@@ -644,9 +714,18 @@ export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembl
 
 export interface InitOutput {
     readonly memory: WebAssembly.Memory;
+    readonly __wbg_galley_free: (a: number, b: number) => void;
     readonly analyze_vref: (a: any, b: number, c: number) => [number, number, number];
     readonly analyze_vref_stateful: (a: any, b: number, c: number, d: number) => [number, number, number];
     readonly census: (a: any, b: number) => [number, number, number, number];
+    readonly galley_analyze: (a: number) => any;
+    readonly galley_census: (a: number, b: number) => [number, number];
+    readonly galley_new: (a: any, b: number, c: number) => [number, number, number];
+    readonly galley_remove_books: (a: number, b: number, c: number) => number;
+    readonly galley_replace_corpus: (a: number, b: any) => [number, number];
+    readonly galley_update_books: (a: number, b: number, c: number) => [number, number];
+    readonly galley_update_config: (a: number, b: any) => [number, number];
+    readonly galley_update_source: (a: number, b: number) => [number, number];
     readonly rule_catalog: () => any;
     readonly stats_remove_book: (a: any, b: number, c: number) => any;
     readonly __wbindgen_malloc: (a: number, b: number) => number;

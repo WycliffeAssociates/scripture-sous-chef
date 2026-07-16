@@ -1,6 +1,135 @@
 /* @ts-self-types="./sous_chef_web.d.ts" */
 
 /**
+ * The resident analysis handle for the editor. Wraps [`ssc_galley::Galley`],
+ * which owns the corpus, optional source, config, prep cache, and prior across
+ * calls. The caller updates the corpus/source/config and asks for findings or
+ * an inventory; it never threads a prior, stats, cache, or changed set.
+ *
+ * **Lifetime:** the handle owns wasm-linear-memory-resident state. JS **must**
+ * call `free()` when swapping workspace or unmounting (the worker's `dispose`
+ * message is the home for that). `FinalizationRegistry` is a backstop some
+ * runtimes provide, never the contract — an un-`free`d handle leaks until the
+ * worker itself is torn down.
+ */
+export class Galley {
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        GalleyFinalization.unregister(this);
+        return ptr;
+    }
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_galley_free(ptr, 0);
+    }
+    /**
+     * Analyze the resident corpus; findings carry UTF-16 ranges, the same wire
+     * shape as the stateless [`analyze_vref`].
+     * @returns {Findings}
+     */
+    analyze() {
+        const ret = wasm.galley_analyze(this.__wbg_ptr);
+        return ret;
+    }
+    /**
+     * Census (absolute inventory) over the resident corpus, serialized to the
+     * ADR 0058 JSON string, exactly like the stateless [`census`].
+     * @param {number | null} [example_cap]
+     * @returns {string}
+     */
+    census(example_cap) {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const ret = wasm.galley_census(this.__wbg_ptr, isLikeNone(example_cap) ? Number.MAX_SAFE_INTEGER : (example_cap) >>> 0);
+            deferred1_0 = ret[0];
+            deferred1_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+        }
+    }
+    /**
+     * Seed the handle. `source` is an optional parallel corpus; `config`
+     * omitted ⇒ `Config::v1_defaults()`, exactly like the stateless exports.
+     * The first `analyze` is a full cold pass.
+     * @param {VrefCorpus} target
+     * @param {VrefCorpus | null} [source]
+     * @param {SousConfig | null} [config]
+     */
+    constructor(target, source, config) {
+        const ret = wasm.galley_new(target, isLikeNone(source) ? 0 : addToExternrefTable0(source), isLikeNone(config) ? 0 : addToExternrefTable0(config));
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        this.__wbg_ptr = ret[0];
+        GalleyFinalization.register(this, this.__wbg_ptr, this);
+        return this;
+    }
+    /**
+     * Remove books by slug. Unknown slugs are no-ops; returns the number removed.
+     * @param {string[]} slugs
+     * @returns {number}
+     */
+    remove_books(slugs) {
+        const ptr0 = passArrayJsValueToWasm0(slugs, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.galley_remove_books(this.__wbg_ptr, ptr0, len0);
+        return ret >>> 0;
+    }
+    /**
+     * Reseed the whole corpus (project switch, git pull). Books absent from the
+     * new corpus leave the prior and cache before it is adopted.
+     * @param {VrefCorpus} target
+     */
+    replace_corpus(target) {
+        const ret = wasm.galley_replace_corpus(this.__wbg_ptr, target);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * Batch replace/insert whole books. Atomic (all-or-nothing): a rejected
+     * batch leaves the handle unchanged. Does not analyze.
+     * @param {BookUpdateIn[]} batch
+     */
+    update_books(batch) {
+        const ptr0 = passArrayJsValueToWasm0(batch, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.galley_update_books(this.__wbg_ptr, ptr0, len0);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * Swap the config. Required (not optional): a config change is explicit,
+     * never an accidental reset to defaults. Equal config ⇒ no-op; otherwise
+     * the prep cache clears and the prior is retained (provenance decides what
+     * re-tallies).
+     * @param {SousConfig} config
+     */
+    update_config(config) {
+        const ret = wasm.galley_update_config(this.__wbg_ptr, config);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * Swap the source corpus. The prior is retained; provenance stales the
+     * same-slug target books whose source changed on the next analyze.
+     * @param {VrefCorpus | null} [source]
+     */
+    update_source(source) {
+        const ret = wasm.galley_update_source(this.__wbg_ptr, isLikeNone(source) ? 0 : addToExternrefTable0(source));
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+}
+if (Symbol.dispose) Galley.prototype[Symbol.dispose] = Galley.prototype.free;
+
+/**
  * Analyze a vref corpus. `source` is an optional parallel corpus; `config`
  * overrides the shipped defaults (omitted ⇒ `Config::v1_defaults()`:
  * language-agnostic rules on, convention-dependent rules off). Returns
@@ -147,6 +276,10 @@ function __wbg_get_imports() {
     };
 }
 
+const GalleyFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_galley_free(ptr, 1));
+
 function addToExternrefTable0(obj) {
     const idx = wasm.__externref_table_alloc();
     wasm.__wbindgen_externrefs.set(idx, obj);
@@ -184,6 +317,16 @@ function handleError(f, args) {
 
 function isLikeNone(x) {
     return x === undefined || x === null;
+}
+
+function passArrayJsValueToWasm0(array, malloc) {
+    const ptr = malloc(array.length * 4, 4) >>> 0;
+    for (let i = 0; i < array.length; i++) {
+        const add = addToExternrefTable0(array[i]);
+        getDataViewMemory0().setUint32(ptr + 4 * i, add, true);
+    }
+    WASM_VECTOR_LEN = array.length;
+    return ptr;
 }
 
 function passStringToWasm0(arg, malloc, realloc) {
