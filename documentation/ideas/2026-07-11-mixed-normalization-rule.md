@@ -1,8 +1,11 @@
 # Idea — `uni.mixed-normalization` (composed vs decomposed inconsistency)
 
-Date: 2026-07-11. Status: **proposal — approved direction, deliberately not
-started** (user call: hold until scheduled; the detector data is ready-made,
-the mapping infrastructure is not).
+Date: 2026-07-11. Status: **superseded** by
+`plans/2026-07-14-mixed-normalization-plan.md`, which replaced this idea's
+scored/probabilistic design and vendored-table plan with a binary,
+deterministic verdict over `unicode-normalization` (the spike showed the
+useful condition has no threshold to calibrate). Implemented under
+[ADR 0063](../adrs/0063-mixed-normalization-deterministic-nfc.md).
 
 ## Claim
 

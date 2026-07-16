@@ -21,7 +21,7 @@ args, and fix capability** (what a front end can `replace()`), see
 | File | Namespace | Rules |
 | --- | --- | --- |
 | [`hyg.md`](hyg.md) | `hyg.*` | tab-in-body, control-chars, zero-width-misuse, empty-verse, invalid-codepoint, replacement-run |
-| [`uni.md`](uni.md) | `uni.*` | combining-mark-without-base, mixed-script-in-token, redundant-zero-width-space, mixed-numeral-systems |
+| [`uni.md`](uni.md) | `uni.*` | combining-mark-without-base, mixed-script-in-token, redundant-zero-width-space, mixed-numeral-systems, mixed-normalization |
 | [`lex.md`](lex.md) | `lex.*` | excess-h-whitespace, duplicate-word, punct-only-token, repeated-character-run |
 | [`struct.md`](struct.md) | `struct.*` | source-marker-leftover, merge-conflict-marker |
 | [`punct.md`](punct.md) | `punct.*` | bracket-balance, adjacency-anomaly, spacing-anomaly |
@@ -52,6 +52,7 @@ diverge — `lex.excess-h-whitespace` lives in `whitespace.rs`,
 | `uni.mixed-numeral-systems` | Warning | on | per-verse | ✅ documented |
 | `uni.redundant-zero-width-space` | Info | on | per-verse | ✅ documented (ADR 0027) |
 | `punct.bracket-balance` | Info | on | project (corpus-relative scored) | ✅ documented (ADR 0037) |
+| `uni.mixed-normalization` | Warning | on | project (deterministic) | ✅ documented (ADR 0063) |
 | `prop.length-ratio` | Warning | on | project | 🗣 pending discussion |
 | `punct.adjacency-anomaly` | Info | on | stateful | ✅ documented (ADR 0024, 0031) |
 | `lex.punct-only-token` | Warning | on | stateful | ✅ documented (ADR 0030, 0032) |

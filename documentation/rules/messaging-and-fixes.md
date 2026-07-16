@@ -35,6 +35,11 @@ accounted for:
 ### Wire discipline (the constraints these args respect)
 
 - Single glyphs/marks are `char` (4 B, `Copy`) — never a heap `String`.
+  **Intentional exception:** `uni.mixed-normalization`'s `example` is a
+  `String`. Its domain is an NFC-normalized grapheme cluster, not a single
+  glyph — composition exclusions (Bengali `U+09DF` → `U+09AF U+09BC`) and
+  multi-mark clusters can be more than one scalar, so `char` cannot
+  represent it (ADR 0063).
 - Counts are `u32` / rates are `f32` — `Copy`, set at `judge`, no extra alloc
   beyond the `Finding` itself.
 - The only unavoidable per-finding string is `punct.adjacency-anomaly`'s
@@ -81,6 +86,7 @@ is larger); the engine ships the counts, not the derived value.
 | `punct.adjacency-anomaly` | Corpus | Unusual punctuation combination | "The punctuation ‘{pattern}’ is unusual here — {k} of {lead_n} times, in {books} of {corpus} books." | `AdjacencyEvidence { pattern, k, lead_n, books, corpus }` |
 | `uni.mixed-script-in-token` | Corpus | Mixed alphabets in one word | "This word mixes writing systems — a mix this translation uses in only {books} of {corpus} books." | `ScriptMixEvidence { k, n, books, corpus }` |
 | `lex.repeated-character-run` | Corpus | Repeated letter | "‘{ch}’ repeats {run} times here — a repetition this translation doesn't otherwise use." | `RepeatEvidence { ch, run }` |
+| `uni.mixed-normalization` | Det | Mixed character encoding | "This text writes ‘{example}’ in two different encodings in {affected} places." | `Normalization { affected, example }` |
 
 ## Fix capability — what a front end can `replace()`
 
@@ -112,6 +118,7 @@ from the op + the finding's `range` + verse text; only `ToDominantForm` /
 | `struct.merge-conflict-marker` | None | can't auto-pick a side | ❌ |
 | `hyg.empty-verse` | None | nothing to fix *to* | ❌ |
 | `prop.length-ratio` | None | semantic, not mechanical | ❌ |
+| `uni.mixed-normalization` | None *(project-wide action, not per-finding)* | bulk `text.normalize("NFC")` over every verse in the project — no dominant form, example, or count needed; gated on the editor adopting a whole-project resident `Galley` (ADR 0062/0063 §11) | ❌ |
 
 ### `updateSafe()` — bulk apply
 

@@ -372,6 +372,13 @@ arithmetic, and every rule ships `1.96`.
 > — Info, **default-on, no knobs** — so it has no entry here. See the rules
 > catalog and ADR 0027.
 
+> **`uni.mixed-normalization`** (a supplied corpus writes canonically
+> equivalent grapheme clusters in more than one raw Unicode encoding) is
+> Warning, **default-on, no knobs** — deterministic and corpus-scoped like
+> the redundant-ZWSP rule above, so it has no typed sub-config or entry here
+> either. Toggle it through the same `rules` map every rule uses. See the
+> rules catalog and ADR 0063.
+
 ### `punct.adjacency-anomaly` (`Config.punctuation_adjacency`) — **default ON**
 
 | knob | meaning |

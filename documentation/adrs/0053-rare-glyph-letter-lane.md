@@ -158,5 +158,12 @@ rule uses.
 - **Preset rows** (conservative/normal/aggressive `recurrence_k`) from the
   truncation experiment, like every other corpus-relative rule.
 - **Normalized-grapheme inventory keys** to lift the M exclusion and to fold the
-  composed/decomposed mixed-normalization residual into an honest signal.
+  composed/decomposed mixed-normalization residual into an honest signal. ADR
+  0063 (`uni.mixed-normalization`) now detects that residual as its own
+  deterministic, corpus-scoped rule — it does **not** change this rule's `char`
+  keying or M exclusion, and the two rules are not yet coordinated: a scalar
+  that is merely a normalization variant of a common grapheme can still surface
+  in both. That coordination (suppressing a `uni.rare-glyph` finding when the
+  scalar is a normalization variant) is an explicit, separately reviewed
+  follow-up (ADR 0063 §14), not landed.
 - The **glyph census** proper — this rule's `inventory` is its substrate.

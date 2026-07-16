@@ -15,9 +15,14 @@ and flags only a *doubled* U+200B run (line-break redundant) at Info (ADR
 (`uni.zero-width-space-anomaly`, ADR 0023), retired because a cross-corpus ablation
 found no error class it uniquely caught.
 
+`uni.mixed-normalization` is the one exception to "script identity": it
+compares raw Unicode encodings of the same abstract character, not scripts,
+and is deterministic and corpus-scoped rather than per-verse (ADR 0063).
+
 Source: `crates/core/src/signals/hygiene.rs`,
 `crates/core/src/signals/script_mixing.rs`,
-`crates/core/src/signals/zero_width_space.rs`.
+`crates/core/src/signals/zero_width_space.rs`,
+`crates/core/src/signals/mixed_normalization.rs`.
 
 ---
 
@@ -257,3 +262,64 @@ verse is judged against its own digits.
 split picks a "majority" deterministically but not meaningfully. A
 corpus-wide numeral convention (the way `case.*` observes the whole corpus)
 would be more robust for that case, but isn't built — deferred.
+
+---
+
+## `uni.mixed-normalization` — the same character stored two different ways
+
+> **Severity** Warning · **Default** on · **Scope** project (deterministic,
+> corpus-scoped) · **Knobs** none · **Source**
+> `signals/mixed_normalization.rs` · **ADR** 0063
+
+**Flags** — A supplied corpus writing a canonically equivalent grapheme
+cluster in two or more raw Unicode forms — one finding for the whole
+corpus, anchored at the earliest deviant occurrence:
+- precomposed `é` (`U+00E9`) in most of the text, `e` + COMBINING ACUTE
+  (`U+0065 U+0301`) somewhere else
+- plain ASCII `K` alongside KELVIN SIGN `U+212A` (canonically equivalent to
+  `K`, but visually and byte-wise distinct)
+- Bengali `U+09DF` (composition-excluded) alongside its decomposed form
+  `U+09AF U+09BC`
+
+**Clean** — A corpus that consistently writes one raw form throughout —
+composed *or* decomposed — for every character it uses. Being non-NFC is
+not itself a defect: a text that decomposes everything is silent, exactly
+like one that composes everything.
+
+**Why it matters** — Canonically equivalent strings can look identical on
+screen while breaking exact-match search, de-duplication, token identity,
+and cross-corpus tooling — the classic "why doesn't this search find that
+verse" bug when the same word is spelled two different ways under the
+hood.
+
+**Config** — On/off only. There is no threshold, calibration knob, or
+language-specific convention to learn — the condition is binary: does the
+corpus write a canonically equivalent cluster two ways, yes or no.
+
+**Nuance & ADR ties** — Unit of comparison is one extended grapheme
+cluster (the repository's existing UAX #29 segmenter), keyed by its NFC
+form via `unicode-normalization` (canonical ordering, recursive
+decomposition, singleton mappings, and composition exclusions — a
+generated partial table would disagree with JS
+`String.prototype.normalize` at the wasm boundary, so this is delegated,
+not reimplemented). Every raw form is recorded, including plain ASCII and
+forms that are already both NFC and NFD — skipping either would miss real
+cases (the Kelvin/ASCII singleton, the Bengali composition exclusion). The
+finding's `affected` sums minority-form occurrences across every mixed key
+in the corpus; its `example` is the anchor's NFC key as a `String` (not
+`char` — composition exclusions and multi-mark clusters can be more than
+one scalar). Cardinality is capped at one finding per supplied corpus —
+this is a deterministic fact about the corpus, not a per-occurrence
+annotation. Wired as a fused project listener (parallel to
+`punct.bracket-balance`) with a content-keyed cached per-book product, not
+a `RuleStats`/`Tally` entry (ADR 0063).
+
+**Open issues / future work** — The fix (bulk `text.normalize("NFC")` over
+every verse in the project) is a project-wide action, not a per-finding
+`replace()`, and is gated on the downstream editor adopting a whole-project
+resident `Galley` (ADR 0062) before it can act on cross-book mixing
+correctly — see ADR 0063 §11 and the cross-repo handoff. Coordinating
+suppression with `uni.rare-glyph` (so a normalization-variant scalar isn't
+flagged twice) is a separate, not-yet-scoped follow-up. An NFD fix target
+is deferred unless a future product decision values preserving a
+decomposed house style over NFC interoperability.
