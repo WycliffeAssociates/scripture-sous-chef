@@ -658,7 +658,7 @@ mod tests {
         }
     }
 
-    /// B-1: replacing a book in place (same slug, new/longer text) splices at
+    /// Replacing a book in place (same slug, new/longer text) splices at
     /// the book's presented position and leaves later books byte-for-byte.
     #[test]
     fn replace_books_in_place_keeps_siblings_untouched() {
@@ -680,7 +680,7 @@ mod tests {
         assert_eq!(c.texts(), keys(&["G1", "G2", "G3", "e1", "e2"]).as_slice());
     }
 
-    /// B-2: a mixed batch replaces in place and appends new books in batch
+    /// A mixed batch replaces in place and appends new books in batch
     /// order. Two new slugs (NUM before LEV) straddle the EXO replacement, so
     /// the append order genuinely reflects batch order — not slug order or the
     /// replacement's position.
@@ -703,7 +703,7 @@ mod tests {
         assert_eq!(c.texts(), keys(&["g", "E1", "E2", "n", "l"]).as_slice());
     }
 
-    /// B-3: a batch failing on its LAST block leaves the corpus untouched —
+    /// A batch failing on its LAST block leaves the corpus untouched —
     /// validation is complete before any splice (all-or-nothing). Each case
     /// puts a valid block first so the failure is genuinely late.
     #[test]
@@ -778,7 +778,7 @@ mod tests {
         assert_eq!(c, original);
     }
 
-    /// B-4 (corpus half): `remove_book` returns true/false and removing the
+    /// `remove_book` returns true/false and removing the
     /// last book leaves a valid empty corpus.
     #[test]
     fn remove_book_reports_presence_and_empties_cleanly() {

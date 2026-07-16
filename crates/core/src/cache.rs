@@ -39,19 +39,36 @@ pub(crate) struct CachedPerVerseFinding {
 pub struct PrepCache {
     fingerprint: Option<u64>,
     pub(crate) books: FxHashMap<Box<str>, BookEntry>,
-    #[cfg(test)]
+    // Observability counters (the `test-probes` feature, or this crate's own
+    // tests). Exposed downstream via `probe()` so the shell can assert its
+    // no-work invariants across the crate boundary; zero-cost when off.
+    #[cfg(any(test, feature = "test-probes"))]
     lane1_hits: usize,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-probes"))]
     lane1_misses: usize,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-probes"))]
     walk_hits: usize,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-probes"))]
     walk_misses: usize,
     /// Books re-tallied (entered the counting scope) on the most recent call —
     /// the counting-side probe, distinct from walk reuse: a knob-only change
     /// clears prep (so every book re-walks for sites) yet re-tallies nothing.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-probes"))]
     retallied: usize,
+}
+
+/// A snapshot of [`PrepCache`]'s observability counters (the `test-probes`
+/// feature). `walk_*` and `lane1_*` accumulate across calls; `retallied` is the
+/// most recent call's counting scope. Lets a downstream crate (the shell) prove
+/// its no-work invariants — cache reuse and zero re-tally — directly.
+#[cfg(any(test, feature = "test-probes"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CacheProbe {
+    pub lane1_hits: usize,
+    pub lane1_misses: usize,
+    pub walk_hits: usize,
+    pub walk_misses: usize,
+    pub retallied: usize,
 }
 
 impl Default for PrepCache {
@@ -65,16 +82,28 @@ impl PrepCache {
         Self {
             fingerprint: None,
             books: FxHashMap::default(),
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-probes"))]
             lane1_hits: 0,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-probes"))]
             lane1_misses: 0,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-probes"))]
             walk_hits: 0,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-probes"))]
             walk_misses: 0,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-probes"))]
             retallied: 0,
+        }
+    }
+
+    /// Snapshot the observability counters (`test-probes` feature).
+    #[cfg(any(test, feature = "test-probes"))]
+    pub fn probe(&self) -> CacheProbe {
+        CacheProbe {
+            lane1_hits: self.lane1_hits,
+            lane1_misses: self.lane1_misses,
+            walk_hits: self.walk_hits,
+            walk_misses: self.walk_misses,
+            retallied: self.retallied,
         }
     }
 
@@ -125,7 +154,7 @@ impl PrepCache {
                         .collect()
                 })
             });
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-probes"))]
         if hit.is_some() {
             self.lane1_hits += 1;
         } else {
@@ -175,7 +204,7 @@ impl PrepCache {
                 duplicate: entry.duplicate.clone(),
                 tokens: entry.tokens.clone(),
             });
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-probes"))]
         if hit.is_some() {
             self.walk_hits += 1;
         } else {
@@ -244,7 +273,7 @@ impl PrepCache {
     }
 
     /// Record how many books were re-tallied (the counting scope) this call.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-probes"))]
     pub(crate) fn note_retallied(&mut self, n: usize) {
         self.retallied = n;
     }
@@ -409,7 +438,7 @@ mod tests {
         );
     }
 
-    /// B-4 (cache half): `PrepCache::remove_book` reports presence and clears
+    /// `PrepCache::remove_book` reports presence and clears
     /// the book's entry.
     #[test]
     fn remove_book_reports_presence_and_clears_entry() {

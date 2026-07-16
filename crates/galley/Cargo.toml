@@ -10,3 +10,8 @@ ssc-core = { workspace = true }
 # Forward core's rayon per-verse fan-out (ADR 0018) so the shell can be
 # exercised under both feature sets; the Galley itself stays single-threaded.
 parallel = ["ssc-core/parallel"]
+
+[dev-dependencies]
+# The shell's tests read PrepCache::probe() to prove cache-reuse and
+# zero-re-tally invariants directly across the crate boundary.
+ssc-core = { workspace = true, features = ["test-probes"] }

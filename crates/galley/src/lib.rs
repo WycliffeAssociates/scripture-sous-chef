@@ -8,10 +8,11 @@
 //! all hashing, provenance, and cache invalidation are internal.
 //!
 //! Core stays a pure function (ADR 0010): the `Galley` *owns* inputs and
-//! *delegates*. No resident mutable state lives in `ssc-core`. The shell holds
-//! no `unsafe`, no interior mutability, no globals, and no side-effectful
-//! `Drop`, so it is `Send` (a Tauri command handler can hold it in a `Mutex`)
-//! and compiles to `wasm32-unknown-unknown` for the web worker wrapper.
+//! *delegates*. No resident mutable state lives in `ssc-core`. Every field the
+//! shell owns is `Send`, so the `Galley` is `Send` — a Tauri command handler can
+//! hold it behind a `Mutex` (a compile-time test pins this). It has no interior
+//! mutability or globals and compiles to `wasm32-unknown-unknown` for the web
+//! worker wrapper.
 
 use std::collections::HashSet;
 
@@ -216,7 +217,7 @@ mod tests {
         v
     }
 
-    /// C-1 (the strongest): a `Galley` is observationally equal to the pure
+    /// The strongest test: a `Galley` is observationally equal to the pure
     /// analyzer across a scripted mutation sequence — after every step its
     /// findings match a from-scratch cold analyze of the same corpus.
     #[test]
@@ -251,8 +252,8 @@ mod tests {
         assert_eq!(g.analyze(), cold(&c3, &cfg), "after replace_corpus");
     }
 
-    /// C-2: a failed batch leaves the whole handle (corpus, prior, prep)
-    /// untouched — a re-analyze after the failed attempt is identical.
+    /// A failed batch leaves the whole handle (corpus, prior, prep) untouched —
+    /// a re-analyze after the failed attempt is identical.
     #[test]
     fn failed_update_books_leaves_the_galley_untouched() {
         let cfg = Config::all();
@@ -274,19 +275,35 @@ mod tests {
         assert_eq!(g.analyze(), before, "a rejected batch is a genuine no-op");
     }
 
-    /// C-3: two analyzes with no mutation between return identical findings.
+    /// A re-analyze with no edits does no work: identical findings, and — what
+    /// output equality alone cannot witness — zero books re-tallied and every
+    /// prep entry reused (via the `test-probes` counters).
     #[test]
-    fn idempotent_reanalyze() {
+    fn reanalyze_without_edits_does_no_work() {
         let cfg = Config::all();
-        let c0 = corpus_of(vec![keyed("GEN", &["a  b"]), keyed("EXO", &["x\ty"])]);
+        let c0 = corpus_of(vec![keyed("GEN", &["a  b", "one"]), keyed("EXO", &["x\ty", "two"])]);
         let mut g = Galley::new(c0, None, cfg);
         let a = g.analyze();
-        assert_eq!(g.analyze(), a);
+        let before = g.prep.probe();
+        let b = g.analyze();
+        let after = g.prep.probe();
+        assert_eq!(a, b, "identical findings");
+        assert_eq!(after.retallied, 0, "the no-edit re-analyze re-tallies nothing");
+        assert_eq!(after.walk_hits - before.walk_hits, 2, "both books reuse their walk products");
+        assert_eq!(after.walk_misses, before.walk_misses, "no re-walk");
+        assert_eq!(
+            after.lane1_hits - before.lane1_hits,
+            2,
+            "both books reuse their per-verse findings"
+        );
     }
 
-    /// C-4: after remove → analyze, the removed slug is gone everywhere — no
-    /// finding addresses it, the prior's provenance drops it, the prep entry is
-    /// gone, and the result equals a corpus that never held it.
+    /// After remove → analyze, the removed slug is gone everywhere: no finding
+    /// addresses it, the prior's provenance drops it, the prep entry is gone,
+    /// and the result equals a corpus that never held it. Exhaustive per-rule
+    /// removal is core's `Stats::remove_book` contract (proven in ssc-core);
+    /// `remove_books` composes on it, and this test verifies the shell drives it
+    /// and the observable outcome matches a book-free corpus.
     #[test]
     fn remove_then_analyze_drops_the_book_everywhere() {
         let cfg = Config::all();
@@ -312,8 +329,8 @@ mod tests {
         assert_eq!(findings, cold(&expected, &cfg), "equals a corpus without GEN");
     }
 
-    /// C-5: an enabled-set change (rule off → on) re-analyzes to exactly the
-    /// cold result under the new config, and the newly enabled rule fires.
+    /// An enabled-set change (rule off → on) re-analyzes to exactly the cold
+    /// result under the new config, and the newly enabled rule fires.
     #[test]
     fn update_config_enabled_set_change_matches_cold() {
         let cfg_off = Config::v1_defaults();
@@ -332,25 +349,34 @@ mod tests {
         );
     }
 
-    /// C-6: re-supplying the same config is a no-op — a re-analyze is identical.
+    /// Re-supplying the same config is a true no-op: it clears neither prep nor
+    /// prior. Proven not by identical findings (a clear-then-cold-analyze would
+    /// also produce those) but by the next analyze re-tallying nothing and
+    /// reusing every prep entry.
     #[test]
-    fn update_config_identical_is_a_noop() {
+    fn update_config_identical_preserves_prior_and_prep() {
         let cfg = Config::all();
-        let corpus = corpus_of(vec![keyed("GEN", &["a  b"]), keyed("EXO", &["x\ty"])]);
+        let corpus = corpus_of(vec![keyed("GEN", &["a  b", "one"]), keyed("EXO", &["x\ty", "two"])]);
         let mut g = Galley::new(corpus, None, cfg.clone());
         let a = g.analyze();
-        g.update_config(cfg);
-        assert_eq!(g.analyze(), a);
+        g.update_config(cfg); // identical → no-op
+        let before = g.prep.probe();
+        let b = g.analyze();
+        let after = g.prep.probe();
+        assert_eq!(a, b, "identical findings");
+        assert_eq!(after.retallied, 0, "prior survived: nothing stale");
+        assert_eq!(after.walk_hits - before.walk_hits, 2, "prep survived: both books reused");
+        assert_eq!(after.walk_misses, before.walk_misses, "no re-walk");
     }
 
-    /// C-7: `Galley` is `Send` (a Tauri command holds it behind a `Mutex`).
+    /// `Galley` is `Send` (a Tauri command holds it behind a `Mutex`).
     #[test]
     fn galley_is_send() {
         fn assert_send<T: Send>() {}
         assert_send::<Galley>();
     }
 
-    /// C-8: growing then shrinking an earlier book through `update_books` shifts
+    /// Growing then shrinking an earlier book through `update_books` shifts
     /// later books' global keys; a later book's cached findings rebase to the
     /// new positions (matches cold each time).
     #[test]
@@ -378,18 +404,21 @@ mod tests {
         assert_eq!(g.analyze(), cold(&shrunk, &cfg), "shrink rebases too");
     }
 
-    /// C-9: a knob-only config change (same enabled set, stricter knobs)
-    /// re-analyzes to the cold result under the new knobs — judging moves while
-    /// the retained prior's counts stay valid.
+    /// A knob-only config change (same enabled set, stricter knobs) re-analyzes
+    /// to the cold result under the new knobs and — proven by the counting
+    /// probe, not just findings — the retained prior means zero books re-tally,
+    /// even though a knob change clears prep and re-walks for sites.
     #[test]
-    fn update_config_knob_only_change_matches_cold() {
+    fn update_config_knob_only_change_retallies_nothing() {
         let cfg1 = casing_on(0.5, 0.0);
         let cfg2 = casing_on(0.9, 3.0);
         let corpus = corpus_book("GEN", &casing_fire(40));
         let mut g = Galley::new(corpus.clone(), None, cfg1);
         g.analyze();
-        g.update_config(cfg2.clone());
-        assert_eq!(g.analyze(), cold(&corpus, &cfg2));
+        g.update_config(cfg2.clone()); // knob-only: clears prep, retains prior
+        let findings = g.analyze();
+        assert_eq!(g.prep.probe().retallied, 0, "knob-only change re-tallies nothing");
+        assert_eq!(findings, cold(&corpus, &cfg2), "findings track the new knobs");
     }
 
     /// `census` is a pure read of the resident corpus, independent of prior.

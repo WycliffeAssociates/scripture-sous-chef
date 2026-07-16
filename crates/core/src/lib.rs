@@ -33,6 +33,8 @@ pub mod token;
 pub mod unicode;
 
 pub use cache::PrepCache;
+#[cfg(any(test, feature = "test-probes"))]
+pub use cache::CacheProbe;
 pub use catalog::{RuleCard, SENSITIVITY_STOPS, Verdict, rule_cards};
 pub use census::{CensusOptions, Inventory, census};
 pub use config::{
@@ -412,7 +414,7 @@ pub fn analyze_stateful(
     // counting path that ignored `counted` (and re-tallied everything) would be
     // caught, not hidden. A knob-only change clears prep (every book re-walks for
     // sites) yet tallies nothing.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-probes"))]
     if let Some(cache) = cache {
         cache.note_retallied(fused.iter().filter(|o| o.counted).count());
     }
@@ -1543,7 +1545,7 @@ mod tests {
 
     // ── Per-book `Tally` provenance (hash-derived counting) ──────────────────
 
-    /// A-1: cold → edit the middle book → incremental call (uncached AND cached)
+    /// Cold → edit the middle book → incremental call (uncached AND cached)
     /// both reproduce a from-scratch analyze of the edited corpus, findings and
     /// stats. The single strongest per-book-provenance equivalence check.
     #[test]
@@ -1571,7 +1573,7 @@ mod tests {
         assert_eq!((f_cac, s_cac), (f_cold, s_cold), "cached ≡ cold");
     }
 
-    /// A-2: editing one book re-tallies exactly that book; the others carry
+    /// Editing one book re-tallies exactly that book; the others carry
     /// their prior `Tally` untouched.
     #[test]
     fn tally_derived_stale_set_is_exact() {
@@ -1596,7 +1598,7 @@ mod tests {
         assert_eq!(stats.tallied["LEV"], prior.tallied["LEV"], "clean book carries");
     }
 
-    /// A-3: `Tally.source` granularity — editing one source book stales only its
+    /// `Tally.source` granularity — editing one source book stales only its
     /// same-slug target book; a same-content source re-supply stales nothing;
     /// dropping the source flips every book to `SOURCE_NONE`.
     #[test]
@@ -1649,7 +1651,7 @@ mod tests {
         );
     }
 
-    /// A-4: a prior from one text lineage with a corpus from another re-tallies
+    /// A prior from one text lineage with a corpus from another re-tallies
     /// every mismatched book; output equals a cold analyze of the new lineage.
     #[test]
     fn tally_lineage_mismatch_is_self_healing() {
@@ -1663,7 +1665,7 @@ mod tests {
         assert_eq!(s_inc, s_cold);
     }
 
-    /// A-5: an echo subset carries an unsupplied book's `Tally` untouched.
+    /// An echo subset carries an unsupplied book's `Tally` untouched.
     #[test]
     fn tally_echo_subset_carries_book_and_its_tally() {
         let cfg = Config::all();
@@ -1675,7 +1677,7 @@ mod tests {
         assert_eq!(stats.tallied["EXO"], prior.tallied["EXO"], "unchanged EXO matches");
     }
 
-    /// A-6: a supplied book absent from the prior's `tallied` is stale by
+    /// A supplied book absent from the prior's `tallied` is stale by
     /// definition (a missing entry is a mismatch) and is tallied fresh.
     #[test]
     fn tally_new_book_absent_from_prior_is_tallied_fresh() {
@@ -1691,7 +1693,7 @@ mod tests {
         assert_eq!(s_inc, s_cold);
     }
 
-    /// A-7: the serialized `Stats` round-trips with `tallied`, whose hash fields
+    /// The serialized `Stats` round-trips with `tallied`, whose hash fields
     /// are fixed-width lowercase hex strings (never a JS number).
     #[test]
     fn tally_wire_round_trips_with_hex_fields() {
@@ -1709,7 +1711,7 @@ mod tests {
         assert_eq!(stats, back, "Stats round-trips through serde");
     }
 
-    /// A-8: the source partial-echo regression — echo one book under a new
+    /// The source partial-echo regression — echo one book under a new
     /// source, then a full call; the un-echoed book re-tallies from its OWN
     /// `Tally.source`, so no global field falsely certifies its stale counts.
     #[test]
@@ -1738,7 +1740,7 @@ mod tests {
         assert_eq!(s_full, s_cold);
     }
 
-    /// A-9: the enabled-set regression — a prior built with rule R disabled,
+    /// The enabled-set regression — a prior built with rule R disabled,
     /// text unchanged, re-analyzed with R enabled must equal cold-with-R (every
     /// `Tally.rules` mismatches, so R's counts appear).
     #[test]
@@ -1757,7 +1759,7 @@ mod tests {
         );
     }
 
-    /// A-10: a knob-only config change re-tallies nothing (every `Tally.rules`
+    /// A knob-only config change re-tallies nothing (every `Tally.rules`
     /// still matches) while findings track the new knobs — judging moves,
     /// counting doesn't.
     #[test]
@@ -1778,7 +1780,7 @@ mod tests {
         assert_eq!(f_inc, f_cold, "findings track the new knobs (judging moved, counting didn't)");
     }
 
-    /// A-11: the disable→re-enable round trip (the §5.4 retention invariant) —
+    /// The disable→re-enable round trip (the disabled-rule retention invariant) —
     /// a book carried while its rule was disabled keeps that rule's contribution,
     /// so re-enabling reproduces cold-with-R. Then the same with the echoed book
     /// edited while disabled: it re-tallies, the carried book still contributes.
@@ -1814,7 +1816,7 @@ mod tests {
         assert_eq!(s_re2, s_cold2);
     }
 
-    /// B-4 (stats half): `Stats::remove_book` drops the slug from `tallied` as
+    /// `Stats::remove_book` drops the slug from `tallied` as
     /// well as from every rule variant — a removed book leaves no provenance
     /// and no corpus-stats contribution behind.
     #[test]
