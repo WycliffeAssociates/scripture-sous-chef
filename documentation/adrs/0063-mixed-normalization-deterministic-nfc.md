@@ -2,9 +2,11 @@
 
 - **Date:** 2026-07-16
 - **Status:** Draft — implementation landed on `mixed-normalization-warning`
-  (Phases A–E complete, full test/oracle gate green); the warm-path
-  performance residual (see Consequences) is under active
-  owner/reviewer adjudication before this ADR is accepted.
+  (Phases A–F, full test/oracle/wasm gate green, including the
+  `NORM_RELEVANT` prefilter below). The owner has confirmed the wasm
+  dependency cost is acceptable if the prefilter makes runtime negligible;
+  final confirmation on whether the measured residual (see Consequences)
+  clears that bar is the one open item before this ADR is accepted.
 - **Builds on:** ADR 0010 (pure analyzer contract), ADR 0021 (grapheme
   segmenter), ADR 0057 (event-stream engine, internal-hot-path-map
   pattern), ADR 0060 (`PrepCache`), ADR 0061 (`Corpus`/`KeyIdx` addressing),
@@ -109,6 +111,53 @@ Both paths share one accumulator/emitter (`NormalizationAcc` → `finish()` →
 `BookNormalization`, merged by `emit()`), so they cannot drift — proven by a
 dedicated direct-vs-fused equivalence test.
 
+### The `NORM_RELEVANT` prefilter
+
+The no-unsafe-skip contract above means `NormalizationAcc::verse()` must
+touch **every** grapheme cluster in the corpus, not just mixed ones — a real,
+measured cost (see Consequences). The fix is a safe-superset prefilter, not
+a relaxation of the contract: bit 29 (`NORM_RELEVANT`) of the existing fused
+per-scalar `Class` bitfield (ADR 0020/0022) marks every scalar that could
+*possibly* participate in a canonical-equivalence collision. A grapheme
+cluster is hash-counted only if at least one of its scalars carries the bit;
+every other cluster is *provably* a canonical singleton — `NFC(raw) == raw`
+for every possible raw form built only from unmarked scalars — so skipping
+it cannot miss a real mixing case.
+
+The bit is computed (`xtask/src/gen_charclass_table.rs`, using
+`unicode_normalization::char::{decompose_canonical, canonical_combining_class}`
+directly — not a `UnicodeData.txt` decomposition-column scan, which is empty
+for Hangul's algorithmic decomposition and would silently miss all 11,172
+syllables) as three rules, deliberately narrower than "mark every
+decomposition-target scalar":
+
+1. every scalar whose own canonical decomposition differs from itself
+   (composed accented letters, Kelvin/Ohm/Angstrom-style singletons, Hangul
+   syllables);
+2. every scalar with nonzero canonical combining class (any combining
+   mark) — this alone gates any cluster containing a decomposed accent's
+   mark, or a pure mark-reordering case, without needing to mark the base
+   letter too;
+3. decomposition **target** scalars, but only when that decomposition's
+   entire output has combining class zero — canonical singleton targets
+   like plain `K` (Kelvin's target), plain `;` (a target of GREEK QUESTION
+   MARK `U+037E` — a real Unicode singleton this project hadn't previously
+   catalogued), and Hangul Jamo. An ordinary accent target like plain `e`
+   (target of `é`) is deliberately **not** marked — rule 2 already gates
+   that cluster via the mark, so marking the base letter too would only
+   widen the candidate set without closing any gap.
+
+Verified against real Unicode data before implementation (a dispatched
+research pass, not just reasoning): swept all ~1.1M scalars, cross-checked
+the resulting union against every one of `unicode-normalization`'s actual
+961 composable pairs — zero gaps. Guarded permanently by an exhaustive
+completeness test (`charclass::tests::norm_relevant_bit_equals_closure_over_all_scalars`,
+mirroring the file's existing full-sweep pattern for `CONTROL`/`ZW_FORMAT`/
+`INVALID_CP`) plus named fixtures and a selectivity assertion over ordinary
+ASCII. `NormalizationAcc::verse()` reads the bit off the same tape the
+grapheme segmenter already built, advancing a cursor in lockstep with the
+grapheme spans — no extra pass over the text.
+
 The lower-level `analyze_stateful` API's partial-target semantics are
 unchanged: like every `ProjectRule`, this rule treats the target supplied on
 that call as its corpus and does not merge absent books from `Stats`. The
@@ -175,45 +224,59 @@ internal data structures did.
   dev-dependency to a real workspace dependency. Default features are just
   `["std"]` — no surprises. `Cargo.lock` needed no textual change (already
   resolved the same version).
-- **Wasm size:** +145,682 bytes (~12.4%, both `pkg-web` and `pkg-bundler`;
-  1,172,170 → 1,317,852) / +68,424 bytes gzip-compressed (416,727 →
-  485,151, independently measured). A nonzero delta is expected and was
-  adjudicated as acceptable: full-fidelity NFC tables (composition,
-  decomposition, canonical ordering, exclusions) are inherently data-heavy,
-  and a partial table was explicitly rejected (Context).
+- **Wasm size:** the `unicode-normalization` dependency itself added
+  +145,682 raw bytes (~12.4%) / +68,424 gzip bytes to both `pkg-web` and
+  `pkg-bundler`; the `NORM_RELEVANT` table growth (§ below) added a further
+  +28,005 raw / +10,111 gzip. Total from the pre-dependency baseline:
+  **+173,687 raw bytes (+14.8%), +78,535 gzip bytes (+18.8%)**
+  (1,172,170 → 1,345,857 raw; 416,727 → 495,262 gzip). The owner confirmed
+  this is acceptable: full-fidelity NFC tables (composition, decomposition,
+  canonical ordering, exclusions) are inherently data-heavy, and a partial
+  table was explicitly rejected (Context).
 - **Memory:** the retained per-book product is a flat map of distinct raw
   forms, grouped by NFC key at `finish()` (not per-occurrence). Measured
   cardinality: `WA-en-ulb` (full English Bible, 31,086 verses) — 82
   distinct raw forms / 82 NFC keys (zero mixed); `WA-as-ulb` (the spike's
   worst measured corpus, 31,083 verses) — 1,542 distinct raw forms grouped
   into 1,529 NFC keys (13 mixed). Trivially small either way; this rule
-  does not dominate memory.
-- **Warm-path performance — UNRESOLVED, pending adjudication.** `cargo
-  bench -p ssc-core -- analyze` (criterion, serial, `v1_defaults`, en_ulb)
-  found a real regression against ADR 0062's measured `cached_edit_*` band
-  (5–25 ms): the naive nested-`BTreeMap` implementation measured
-  37–48 ms for `cached_edit_PSA` (was 18.9 ms), driven by an unconditional
-  lookup-or-insert per grapheme cluster across the **entire** verse text —
-  not just mixed occurrences, per the no-unsafe-skip contract above. Three
-  rounds of behavior-preserving optimization (confirmed byte-identical via
-  full test suite + oracle re-dump after each): `BTreeMap` → `FxHashMap`
-  (ADR 0057's internal-hot-path-map pattern); flattening the accumulator to
-  one map keyed by raw form, deferring NFC-key computation from every
-  *occurrence* to once per *distinct* raw form in `finish()`; and a
-  128-slot direct-addressed array for single-ASCII-byte clusters beside the
-  flat map. Net: `cached_edit_PSA` down to ~26–28 ms (~40% off the worst
-  measurement) but **still outside the 5–25 ms band** (~+43% vs. the 18.9 ms
-  baseline); `cached_edit_MAT`/`cached_edit_3JN` are back inside the band.
-  Profiling (`samply`) traced the residual to the hash/map operations
-  themselves (not cloning on cache hits, not `is_nfc`/`.nfc()`, both
-  measured and ruled out). A fourth, larger architectural option — a
-  `NORM_RELEVANT` prefilter bit in the shared per-scalar `Class` bitfield
-  (ADR 0020/0022), gating which grapheme clusters enter the map at all — is
-  under verification (safe-superset argument against Unicode data, expected
-  range-table/wasm delta) before any implementation. **This ADR is not
-  accepted until the residual is adjudicated** — either the numbers above
-  are accepted as-is, or a further change lands and this section is
-  updated.
+  does not dominate memory. `NORM_RELEVANT` adds no width to the existing
+  BMP table (a spare bit in an already-resident `u32`).
+- **Warm-path performance.** `cargo bench -p ssc-core -- analyze`
+  (criterion, serial, `v1_defaults`, en_ulb) found a real regression
+  against ADR 0062's measured `cached_edit_*` band (5–25 ms): the naive
+  nested-`BTreeMap` implementation measured 37–48 ms for `cached_edit_PSA`
+  (was 18.9 ms), driven by an unconditional lookup-or-insert per grapheme
+  cluster across the **entire** verse text — not just mixed occurrences,
+  per the no-unsafe-skip contract above. Four rounds of behavior-preserving
+  optimization (confirmed byte-identical via full test suite + oracle
+  re-dump after each): `BTreeMap` → `FxHashMap` (ADR 0057's internal-
+  hot-path-map pattern); flattening the accumulator to one map keyed by raw
+  form, deferring NFC-key computation from every *occurrence* to once per
+  *distinct* raw form in `finish()`; a 128-slot direct-addressed array for
+  single-ASCII-byte clusters; and finally the `NORM_RELEVANT` prefilter
+  above, which skips the large majority of clusters entirely (measured
+  candidate rate on `en_ulb`'s PSA: ~0% — this corpus has essentially no
+  combining marks or decomposable characters at all).
+
+  Net result: `cached_edit_PSA` 37–48 ms → **24.97–25.16 ms** (mean
+  25.07 ms), reproducible on a clean re-run. Against the 18.9 ms baseline
+  that is **~+33%**, essentially at the 5–25 ms band's upper edge — down
+  from the initial ~+150% regression. `cached_edit_MAT`: 16.8–17.2 ms
+  (baseline 13.1 ms, ~+30%). `cached_edit_3JN`: 6.5–6.8 ms (baseline
+  5.2 ms, ~+27%). Profiling (`samply`) before the prefilter traced the
+  cost to the hash/map operations themselves — cloning on cache hits and
+  `is_nfc`/`.nfc()` calls were both measured and ruled out as dominant
+  costs.
+
+  This is a substantial, real recovery, and default-on remains the shipped
+  decision; whether ~+30% (landing at, not comfortably inside, the
+  historical band) clears the owner's "negligible" bar for the web app is
+  the one confirmation this ADR is still waiting on before moving to
+  Accepted. If a future measurement or product call decides otherwise, the
+  documented fallback is **default-off** (add `MixedNormalization` to
+  `Config::v1_defaults`'s disabling list — a one-line, well-precedented
+  change, matching `DuplicateWord`/`RareGlyph`/the casing pair), not a fifth
+  round of hot-path optimization.
 
 ## Relates to
 
