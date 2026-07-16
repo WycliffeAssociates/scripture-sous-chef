@@ -257,6 +257,13 @@ pub fn card(id: RuleId) -> RuleCard {
             ),
             CorpusRelative,
         ),
+        RuleId::MixedNormalization => (
+            "Mixed character encoding",
+            "The translation writes canonically equivalent characters in more than one encoding — the same accented letter stored as one character in one place and as a letter plus a separate accent mark in another.",
+            "Visually identical text can still fail exact search and matching when it's stored two different ways under the hood.",
+            None,
+            Deterministic,
+        ),
     };
     RuleCard {
         code: id,
@@ -473,6 +480,12 @@ pub fn message(id: RuleId, args: Option<&FindingArgs>) -> String {
                 "‘{word}’ has a capital in the middle here — this translation writes it that way {other} of {total} times."
             ),
             _ => "A word with an unexpected capital letter in the middle.".into(),
+        },
+        RuleId::MixedNormalization => match args {
+            Some(FindingArgs::Normalization { affected, example }) => format!(
+                "This text writes ‘{example}’ in two different encodings in {affected} places."
+            ),
+            _ => "This text writes the same character in two different encodings.".into(),
         },
     }
 }

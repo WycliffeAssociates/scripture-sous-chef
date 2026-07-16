@@ -1548,6 +1548,16 @@ mod tests {
         );
     }
 
+    /// `uni.mixed-normalization` is default-on (absent from `v1_defaults`'s
+    /// disabling list) and, like every rule, an explicit `false` in the
+    /// config's `rules` map turns it off.
+    #[test]
+    fn mixed_normalization_is_default_on_and_explicitly_disableable() {
+        assert!(Config::v1_defaults().is_enabled(RuleId::MixedNormalization));
+        let off = Config::disabling(&[RuleId::MixedNormalization]);
+        assert!(!off.is_enabled(RuleId::MixedNormalization));
+    }
+
     // ── Per-book `Tally` provenance (hash-derived counting) ──────────────────
 
     /// Cold → edit the middle book → incremental call (uncached AND cached)

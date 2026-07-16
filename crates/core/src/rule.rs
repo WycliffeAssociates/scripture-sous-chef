@@ -219,9 +219,12 @@ pub(crate) fn per_verse_rules() -> Vec<Box<dyn PerVerseRule>> {
 /// constructed from `config`'s typed sub-configs here, once per analyze
 /// call — `ProjectRule::check` itself never sees the `Config`.
 pub fn project_rules(config: &Config) -> Vec<Box<dyn ProjectRule>> {
-    vec![Box::new(signals::bracket_balance::BracketBalance {
-        cfg: config.bracket_balance,
-    })]
+    vec![
+        Box::new(signals::bracket_balance::BracketBalance {
+            cfg: config.bracket_balance,
+        }),
+        Box::new(signals::mixed_normalization::MixedNormalization),
+    ]
 }
 
 /// Project-scoped rules that also consult per-verse tokens.

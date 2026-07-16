@@ -13,5 +13,6 @@ ssc-galley = { path = "crates/galley" }
 unicode-segmentation = "1.12"
 unicode-script = "0.5"
 unicode-properties = "0.1"
+unicode-normalization = "0.1"
 rustc-hash = "2"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }

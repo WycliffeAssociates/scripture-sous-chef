@@ -82,6 +82,7 @@ define_rule_ids! {
     InconsistentWordCasing   => "case.inconsistent-word-casing",
     RareGlyph                => "uni.rare-glyph",
     MixedCaseWord            => "case.mixed-case-word",
+    MixedNormalization       => "uni.mixed-normalization",
 }
 
 impl std::fmt::Display for RuleId {
@@ -315,6 +316,15 @@ pub enum FindingArgs {
         other: u32,
         total: u32,
     },
+    /// `uni.mixed-normalization`: the translation writes canonically
+    /// equivalent grapheme clusters in more than one raw Unicode form (ADR
+    /// 0063) — e.g. precomposed `é` in one place, `e` + COMBINING ACUTE in
+    /// another. `example` is the anchor's NFC key: a `String`, not `char`,
+    /// because composition exclusions and multi-mark clusters can make it
+    /// more than one scalar. `affected` sums the minority-form occurrence
+    /// count across every mixed key in the corpus, not just the anchor's.
+    #[cfg_attr(feature = "serde", serde(rename = "normalization"))]
+    Normalization { affected: u32, example: String },
 }
 
 /// One addressable content finding in one verse.
