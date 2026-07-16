@@ -670,4 +670,76 @@ mod tests {
         assert_eq!(forward.key(f1[0].key_idx), "EXO 1:1");
         assert_eq!(reversed.key(f2[0].key_idx), "GEN 1:1");
     }
+
+    /// The `Config::all()`-driven generic cache tests in `lib.rs` use only
+    /// ASCII/non-equivalent text, so this rule never fires there — they
+    /// prove an `Option<BookNormalization>` exists/hits generically, but
+    /// never observe a real cached `FirstSite` restored, rebased, and used
+    /// in a cross-book verdict. This is the dedicated regression: warm a
+    /// two-book corpus where the mix (and its anchor) lives in the *later*
+    /// book, prove a no-edit rerun reuses the walk and returns the identical
+    /// finding, then grow the *earlier* book — shifting the later book's
+    /// global `KeyIdx` base — while the later book stays a cache hit, and
+    /// prove the finding resolves to its new, shifted position exactly like
+    /// a cache-less cold analyze of the same grown corpus (plan §8.3 #2/#3).
+    #[test]
+    fn cached_finding_rebases_when_an_earlier_book_grows() {
+        let cfg = crate::Config::v1_defaults();
+        let original = multi_book(&[
+            ("GEN", &[(1, "clean text")][..]),
+            ("EXO", &[(1, "caf\u{00E9}"), (2, "cafe\u{0301}")][..]),
+        ]);
+        let mut cache = crate::PrepCache::new();
+        let (cold_cached, cold_cached_stats) =
+            crate::analyze_stateful(&original, None, &cfg, None, Some(&mut cache));
+        let hit = cold_cached
+            .iter()
+            .find(|f| f.code == RuleId::MixedNormalization)
+            .expect("the mix fires");
+        assert_eq!(original.key(hit.key_idx), "EXO 1:2");
+
+        // No-edit warm rerun: identical finding, walk actually reused.
+        let before = cache.probe();
+        let (warm, _) = crate::analyze_stateful(
+            &original,
+            None,
+            &cfg,
+            Some(cold_cached_stats.clone()),
+            Some(&mut cache),
+        );
+        let after = cache.probe();
+        assert_eq!(warm, cold_cached, "no-edit warm rerun matches the cold pass");
+        assert_eq!(after.walk_hits - before.walk_hits, 2, "both books reuse their walk");
+
+        // Grow GEN (earlier) by one verse — EXO's global KeyIdx base shifts
+        // forward. EXO's content is unchanged, so it must stay a walk hit;
+        // its cached FirstSite.local must rebase against the NEW base.
+        let grown = multi_book(&[
+            ("GEN", &[(1, "clean text"), (2, "extra  space")][..]),
+            ("EXO", &[(1, "caf\u{00E9}"), (2, "cafe\u{0301}")][..]),
+        ]);
+        let before_grow = cache.probe();
+        let (cached, cached_stats) =
+            crate::analyze_stateful(&grown, None, &cfg, Some(cold_cached_stats), Some(&mut cache));
+        let after_grow = cache.probe();
+        // A book already known stale (GEN, by content-hash mismatch) walks
+        // fresh without ever probing the cache — `walk_hits`/`walk_misses`
+        // only observe `cloned_walk` calls, which are short-circuited for
+        // it. Only EXO (clean) calls in, and hits.
+        assert_eq!(after_grow.walk_hits - before_grow.walk_hits, 1, "EXO (unchanged) reuses its walk");
+
+        let (cold, cold_stats) = crate::analyze_stateful(&grown, None, &cfg, None, None);
+        assert_eq!(cached, cold, "cache-hit result must equal a cache-less cold analyze");
+        assert_eq!(cached_stats, cold_stats);
+
+        let rebased_hit = cached
+            .iter()
+            .find(|f| f.code == RuleId::MixedNormalization)
+            .expect("the mix still fires");
+        assert_eq!(
+            grown.key(rebased_hit.key_idx),
+            "EXO 1:2",
+            "the finding resolves to EXO's shifted position, not a stale one"
+        );
+    }
 }
