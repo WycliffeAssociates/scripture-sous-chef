@@ -474,6 +474,58 @@ mod tests {
     }
 
     #[test]
+    fn two_distinct_mixed_keys_sum_affected_and_use_globally_earliest_anchor() {
+        // Two independently-mixed NFC keys (é and K) in one corpus: still
+        // exactly one finding, `affected` sums both keys' minority counts,
+        // and the anchor/example come from whichever key's deviant occurs
+        // earliest in corpus order — the cross-key accumulator/global-anchor
+        // loop (`emit`'s outer loop over `merged`), which a single-key test
+        // never exercises.
+        let c = book(
+            "GEN",
+            &[
+                (1, "caf\u{00E9}"),  // é key, majority
+                (2, "cafe\u{0301}"), // é key, minority — globally first deviant
+                (3, "5K"),           // K key, majority
+                (4, "5\u{212A}"),    // K key, minority — later than verse 2
+            ],
+        );
+        let f = run(&c);
+        assert_eq!(f.len(), 1, "{f:?}");
+        match &f[0].args {
+            Some(FindingArgs::Normalization { affected, example }) => {
+                assert_eq!(*affected, 2, "one minority occurrence from each key");
+                assert_eq!(example, "\u{00E9}", "anchor must come from the é key, not K");
+            }
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(
+            c.key(f[0].key_idx),
+            "GEN 1:2",
+            "the é key's deviant (verse 2) is globally earlier than K's (verse 4)"
+        );
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn serde_wire_shape_is_pinned() {
+        // Multi-scalar `example` (the composition-exclusion NFC key) proves
+        // `example` really serializes as a JSON string, not a bare char.
+        let c = book("GEN", &[(1, YYA), (2, YYA), (3, YA_NUKTA)]);
+        let f = run(&c);
+        assert_eq!(f.len(), 1, "{f:?}");
+        let json = serde_json::to_value(&f[0].args).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "kind": "normalization",
+                "affected": 1,
+                "example": YA_NUKTA,
+            })
+        );
+    }
+
+    #[test]
     fn fifty_fifty_tie_first_seen_wins_and_later_form_anchors() {
         // Decomposed appears first (1 occurrence), composed appears second
         // (1 occurrence) — a pure count tie. First-seen must win the
