@@ -354,6 +354,9 @@ pub fn analyze_stateful(
         for (i, cached) in cached_walks {
             slots[i] = Some(stream::BookOut {
                 counted: false,
+                // A cache-hit book is clean: it did no counting work.
+                #[cfg(any(test, feature = "test-probes"))]
+                counting_accs_ran: false,
                 casing: plan
                     .casing
                     .then(|| (Default::default(), cached.casing.expect("casing lane hit"))),
@@ -409,14 +412,16 @@ pub fn analyze_stateful(
         stream::walk_fused(&books, counted, source, &plan)
     };
 
-    // Counting-side probe: count the books the fused walk actually tallied,
-    // observed from `BookOut::counted` rather than the derived stale set — so a
-    // counting path that ignored `counted` (and re-tallied everything) would be
-    // caught, not hidden. A knob-only change clears prep (every book re-walks for
-    // sites) yet tallies nothing.
+    // Counting-side probe: count the books whose site-free counting
+    // accumulators actually ran (`counting_accs_ran`), observed from the
+    // accumulators — not from the `counted` decision flag. A listener that
+    // counted an anchor-mode book (ignoring the stale set) would set this true
+    // while `counted` stayed false, so the probe would catch it. Meaningful
+    // when at least one site-free counting rule (rare-glyph / mixed-case /
+    // proportionality) is enabled.
     #[cfg(any(test, feature = "test-probes"))]
     if let Some(cache) = cache {
-        cache.note_retallied(fused.iter().filter(|o| o.counted).count());
+        cache.note_retallied(fused.iter().filter(|o| o.counting_accs_ran).count());
     }
 
     let token_cache: Option<rule::TokenCache> = plan
@@ -1759,22 +1764,23 @@ mod tests {
         );
     }
 
-    /// A knob-only config change re-tallies nothing (every `Tally.rules`
-    /// still matches) while findings track the new knobs — judging moves,
-    /// counting doesn't.
+    /// A knob-only config change re-tallies nothing while findings track the
+    /// new knobs — judging moves, counting doesn't. `Config::all` so a site-free
+    /// counting rule backs the probe, which observes actual counting-accumulator
+    /// runs (not the decision flag): a listener that counted a clean book would
+    /// make it read nonzero.
     #[test]
     fn tally_knob_only_change_retallies_nothing() {
-        let target = mks("GEN", &casing_fire(40));
-        let cfg1 = casing_on(0.5, 0.0);
-        let cfg2 = casing_on(0.9, 3.0); // same enabled set, stricter knobs
+        let target = mk("GEN", &["a  b", "A1 α qQx joyfullly"]);
+        let cfg1 = Config::all();
+        let mut cfg2 = Config::all();
+        cfg2.casing.emit_score_min = 0.9; // knob-only: same enabled set, stricter knob
         let mut cache = PrepCache::new();
         let (_, prior) = analyze_stateful(&target, None, &cfg1, None, Some(&mut cache));
-        assert_eq!(cache.retallied_count(), 1, "the cold call tallies the one book");
+        assert_eq!(cache.retallied_count(), 1, "the cold call counts the one book");
         let (f_inc, s_inc) =
             analyze_stateful(&target, None, &cfg2, Some(prior.clone()), Some(&mut cache));
-        // The counting probe — not `tallied` equality, which redundant counting
-        // could also satisfy — proves the knob-only change re-tallied zero books.
-        assert_eq!(cache.retallied_count(), 0, "knob-only change re-tallies nothing");
+        assert_eq!(cache.retallied_count(), 0, "knob-only change did no counting work");
         assert_eq!(s_inc.tallied, prior.tallied, "provenance unchanged");
         let (f_cold, _) = analyze_stateful(&target, None, &cfg2, None, None);
         assert_eq!(f_inc, f_cold, "findings track the new knobs (judging moved, counting didn't)");

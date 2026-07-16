@@ -221,6 +221,14 @@ pub(crate) struct BookOut {
     /// Whether the counting listeners' stats are valid for the supersede
     /// merge (the book was in the reduce scope).
     pub counted: bool,
+    /// Test observability (`test-probes`): whether this book's count-gated
+    /// site-free accumulators (rare-glyph / mixed-case / proportionality) were
+    /// actually instantiated and run. A witness of real counting work read from
+    /// the accumulators themselves, not from `counted` above — so a listener
+    /// that counted an anchor-mode (clean) book would diverge from the decision
+    /// flag and be caught.
+    #[cfg(any(test, feature = "test-probes"))]
+    pub counting_accs_ran: bool,
     pub casing: Option<(casing::BookCasing, casing::CasingSites)>,
     pub adjacency: Option<(
         punctuation::BookPunctuationAdjacency,
@@ -377,8 +385,16 @@ fn walk_book(
         }
     }
 
+    // Witness actual counting-accumulator setup (test-probes) from the accs,
+    // before `finish` consumes them — independent of the `count` flag below.
+    #[cfg(any(test, feature = "test-probes"))]
+    let counting_accs_ran =
+        rare_glyph_acc.is_some() || mixed_case_acc.is_some() || prop_acc.is_some();
+
     BookOut {
         counted: count,
+        #[cfg(any(test, feature = "test-probes"))]
+        counting_accs_ran,
         casing: casing_acc.map(casing::CasingAcc::finish),
         adjacency: adjacency_acc.map(punctuation::AdjacencyAcc::finish),
         spacing: spacing_acc.map(punctuation::SpacingAcc::finish),

@@ -359,7 +359,7 @@ mod tests {
         let corpus = corpus_of(vec![keyed("GEN", &["a  b", "one"]), keyed("EXO", &["x\ty", "two"])]);
         let mut g = Galley::new(corpus, None, cfg.clone());
         let a = g.analyze();
-        g.update_config(cfg); // identical → no-op
+        g.update_config(cfg);
         let before = g.prep.probe();
         let b = g.analyze();
         let after = g.prep.probe();
@@ -404,20 +404,25 @@ mod tests {
         assert_eq!(g.analyze(), cold(&shrunk, &cfg), "shrink rebases too");
     }
 
-    /// A knob-only config change (same enabled set, stricter knobs) re-analyzes
-    /// to the cold result under the new knobs and — proven by the counting
-    /// probe, not just findings — the retained prior means zero books re-tally,
-    /// even though a knob change clears prep and re-walks for sites.
+    /// A knob-only config change re-analyzes to the cold result under the new
+    /// knobs and — proven by the counting probe (actual accumulator runs, not
+    /// the decision flag) — the retained prior means zero books re-tally, even
+    /// though a knob change clears prep and re-walks for sites. `Config::all` so
+    /// a site-free counting rule backs the probe.
     #[test]
     fn update_config_knob_only_change_retallies_nothing() {
-        let cfg1 = casing_on(0.5, 0.0);
-        let cfg2 = casing_on(0.9, 3.0);
-        let corpus = corpus_book("GEN", &casing_fire(40));
+        let cfg1 = Config::all();
+        let mut cfg2 = Config::all();
+        cfg2.casing.emit_score_min = 0.9; // knob-only: same enabled set, stricter knob
+        let corpus = corpus_of(vec![
+            keyed("GEN", &["a  b", "A1 α qQx joyfullly"]),
+            keyed("EXO", &["x\ty", "one) word word"]),
+        ]);
         let mut g = Galley::new(corpus.clone(), None, cfg1);
         g.analyze();
-        g.update_config(cfg2.clone()); // knob-only: clears prep, retains prior
+        g.update_config(cfg2.clone());
         let findings = g.analyze();
-        assert_eq!(g.prep.probe().retallied, 0, "knob-only change re-tallies nothing");
+        assert_eq!(g.prep.probe().retallied, 0, "knob-only change did no counting work");
         assert_eq!(findings, cold(&corpus, &cfg2), "findings track the new knobs");
     }
 
