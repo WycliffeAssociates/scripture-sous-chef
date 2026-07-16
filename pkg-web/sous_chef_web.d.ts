@@ -109,17 +109,6 @@ export interface PunctuationSpacingStats {
 }
 
 /**
- * Findings plus the corpus [`Stats`] to cache for incremental re-analysis.
- */
-export interface Analysis {
-    findings: Finding[];
-    /**
-     * Caller-opaque cache: hold it and pass it back as `prior` next call.
-     */
-    stats: Stats;
-}
-
-/**
  * Forced-position first-letter tallies after one key. Raw and mergeable.
  */
 export interface ForcedTally {
@@ -670,16 +659,6 @@ export class Galley {
 export function analyze_vref(target: VrefCorpus, source?: VrefCorpus | null, config?: SousConfig | null): Findings;
 
 /**
- * Stateful analyze (ADR 0017). Same as [`analyze_vref`] but returns the
- * corpus `Stats`; pass it back as `prior` along with the corpus (or just the
- * edited books) to re-analyze incrementally. Counting is proof-driven: each
- * supplied book re-tallies only if its content, same-slug source, or enabled
- * rule set differs from the prior's recorded provenance — the caller declares
- * nothing. Omit `prior` (and pass the whole corpus) on the first call.
- */
-export function analyze_vref_stateful(target: VrefCorpus, source?: VrefCorpus | null, config?: SousConfig | null, prior?: Stats | null): Analysis;
-
-/**
  * Census a vref corpus (ADR 0058): the knob-free absolute-count report
  * (`ssc_core::Inventory`, eight lanes) as opposed to `analyze`'s judged
  * findings. `target` is the same shape as [`analyze_vref`]'s; `example_cap`
@@ -702,21 +681,12 @@ export function census(target: VrefCorpus, example_cap?: number | null): string;
  */
 export function rule_catalog(): RuleCatalog;
 
-/**
- * Drop a book from cached `Stats` (e.g. it was removed from the project),
- * returning the updated stats — the sanctioned deletion path so callers
- * don't mutate the opaque value's internals. `book` is a 3-letter USFM code
- * (e.g. `"GEN"`); an unknown code is a no-op.
- */
-export function stats_remove_book(stats: Stats, book: string): Stats;
-
 export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
 
 export interface InitOutput {
     readonly memory: WebAssembly.Memory;
     readonly __wbg_galley_free: (a: number, b: number) => void;
     readonly analyze_vref: (a: any, b: number, c: number) => [number, number, number];
-    readonly analyze_vref_stateful: (a: any, b: number, c: number, d: number) => [number, number, number];
     readonly census: (a: any, b: number) => [number, number, number, number];
     readonly galley_analyze: (a: number) => any;
     readonly galley_census: (a: number, b: number) => [number, number];
@@ -727,7 +697,6 @@ export interface InitOutput {
     readonly galley_update_config: (a: number, b: any) => [number, number];
     readonly galley_update_source: (a: number, b: number) => [number, number];
     readonly rule_catalog: () => any;
-    readonly stats_remove_book: (a: any, b: number, c: number) => any;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
     readonly __wbindgen_exn_store: (a: number) => void;

@@ -2,8 +2,8 @@
 
 - **Date:** 2026-07-15
 - **Status:** Accepted (all four phases implemented on `galley-resident-handle`;
-  full-fleet oracle bookend clean; a warm-path perf re-measurement is owed
-  before master — see Consequences)
+  full-fleet oracle bookend clean; warm-path perf re-measured 2026-07-16 — the
+  ladder holds with no regression, see Consequences)
 - **Builds on:** ADR 0010 (pure analyzer), ADR 0017 (caller-held `Stats`),
   ADR 0060 (cross-call `PrepCache`), ADR 0061 (`Corpus`/`KeyIdx` addresses)
 - **Supersedes:** ADR 0043's caller-declared `changed` contract (the
@@ -125,12 +125,40 @@ split-digest format.
   delegates.
 - Memory: `Stats.tallied` adds one `Tally` per book (`size_of::<Tally>()` = 40 B)
   — ~2.6 KB for a 66-book Bible. No new clone traffic.
-- Warm cost: this plan adds ~0.5–1 ms of book hashing per call (measured in the
-  anchor-cache spike) and does **not** change the warm reuse path — so the
-  measured warm re-analyze ladder from ADR 0060 (~5–25 ms defaults / ~50–120 ms
-  all-on, serial, full Bible) carries. A fresh full warm-path re-measurement
-  (criterion/samply, the perf-campaign) is owed before master, folded into the
-  perf pass already outstanding for the casing/terminal-strength work.
+- Warm cost — **re-measured 2026-07-16** (criterion, serial, `v1_defaults`,
+  en_ulb; `cargo bench -p ssc-core -- analyze`). The always-hash addition
+  introduces **no warm-path regression**: every warm call is same-or-faster than
+  its ADR 0043 predecessor, so the ~0.5–1 ms per-call book hashing (data-
+  independent xxh3 over the corpus text) is absorbed within the intervening
+  engine wins (e.g. the Fisher→G² swap). The `Galley` ships exactly one warm
+  shape — the *complete* whole-corpus re-analyze — so the ladder is that shape
+  cold-cache then warm-cache, plus the cold seed (3JN/MAT/PSA book spread):
+  - complete snapshot, cold cache (whole corpus + prior; every book hashed, the
+    edited book re-tallies on content-hash mismatch): **~171–175 ms** (was
+    ~196–206 ms with the old caller-declared `changed`).
+  - complete snapshot, prep cache warmed — **the shipped keystroke steady
+    state**: **5.2 / 13.1 / 18.9 ms**, squarely in ADR 0060's ~5–25 ms defaults
+    band, confirming the warm reuse path is unchanged.
+  - cold seed **256.7 ms** (was 358.7).
+
+  ADR 0043's book-scoped **echo** call (supply only the edited book; findings
+  scoped to it) is **retired**: the resident `Galley` always runs the complete
+  whole-corpus call, because the warm cache made it keystroke-fast, so there is
+  no longer a reason to trade completeness (echo never surfaced cross-book flips)
+  for speed. This retired the whole caller-held-`Stats` wasm surface it existed
+  to serve — the `#[wasm_bindgen]` free functions `analyze_vref_stateful` and its
+  `stats_remove_book` companion, plus the `Analysis` return struct — all deleted
+  (zero consumers; `Galley`'s resident verbs supersede them), packages
+  regenerated. The one capability only the free path offered — caller-held
+  `Stats` for a stateless/server deployment — is not on the roadmap; if it ever
+  is, the right shape is a `Galley` rehydration constructor, not a parallel
+  stateless API. The `incremental_edit_*` bench went with it.
+
+  The harness measures `v1_defaults` only; the all-on ladder (~50–120 ms, ADR
+  0060) carries — book hashing is config-independent, so the always-hash cost is
+  identical there. The isolated ~1 ms hashing figure stays carried from the
+  anchor-cache spike (`book_hash` is `pub(crate)`, so no dedicated micro-bench
+  pins it in isolation yet; the `snapshot_edit_*` benches carry it in aggregate).
 - Hash collision is ignored by policy: 128-bit content hashes, non-adversarial
   setting, ~2⁻¹²⁸. `SOURCE_NONE` is `0`, relying on `book_hash` never returning 0
   (the empty book hashes non-zero; same policy).

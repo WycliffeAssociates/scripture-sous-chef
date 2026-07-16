@@ -10,12 +10,10 @@
 //! gitignored):
 //! - `analyze/full_bible`   — en_ulb, ~31k verses, `Config::v1_defaults()`
 //! - `analyze/nt`           — en_ulb NT subset, ~7.9k verses
-//! - `analyze/incremental_edit_{3JN,MAT,PSA}` — the local-echo call: cached
-//!   corpus `Stats` as prior, only the edited book supplied (ADR 0017),
-//!   across the book-size spread (floor / large / largest)
-//! - `analyze/changed_edit_{3JN,MAT,PSA}` — the complete-snapshot call:
-//!   whole corpus + prior; the edited book re-counts by content hash, clean
-//!   books carry, emission is global
+//! - `analyze/snapshot_edit_{3JN,MAT,PSA}` — the complete-snapshot call:
+//!   whole corpus + prior; every supplied book is hashed, the edited book
+//!   re-counts by content-hash mismatch, clean books carry, emission is global.
+//!   This is where the always-hash cost lands: all books hash, one re-tallies
 //! - `analyze/cached_edit_{3JN,PSA}` — the same complete-snapshot call with
 //!   `PrepCache` warmed in setup; clean books reuse both cache lanes
 //! - `analyze/full_devanagari`— hi_ulb, the expensive-script case
@@ -85,57 +83,40 @@ fn bench_analyze(c: &mut Criterion) {
         g.throughput(Throughput::Elements(nt.len() as u64));
         g.bench_function("nt", |b| b.iter(|| analyze(black_box(&nt), None)));
 
-        // The editor's steady state (ADR 0017): the full corpus was analyzed
-        // once and its `Stats` cached; a chapter edit re-supplies its whole
-        // book (book granularity is the supersede unit) with that prior. This
-        // is the incremental cost a keystroke-adjacent consumer pays —
-        // measured without the prior clone (`iter_batched` setup), since the
-        // shell hands the value back rather than rebuilding it. The spread of
-        // book sizes bounds the range: 3JN (~15 verses, floor), MAT (large),
-        // PSA (~2.5k verses, the worst case).
+        // The editor's shipped steady state (ADR 0062): a resident `Galley`
+        // holds the whole corpus + prior + warm prep cache, and every edit runs
+        // the *complete* whole-corpus call — never a book-scoped "echo". The
+        // cache is what makes that affordable (see `cached_edit_*`, ~5-19 ms):
+        // once whole-corpus warm re-analyze is keystroke-fast, there is no
+        // reason to trade completeness for the old book-only echo (ADR 0043),
+        // which never surfaced cross-book flips. So the benches below model the
+        // two whole-corpus shapes a `Galley` actually pays: cold cache
+        // (`snapshot_edit_*`) and warm cache (`cached_edit_*`, the true
+        // steady state). The book spread bounds the range: 3JN (~15 verses,
+        // floor), MAT (large), PSA (~2.5k verses, worst case).
         let cfg = Config::v1_defaults();
         let (_, cached) = analyze_stateful(&bible, None, &cfg, None, None);
         for code in ["3JN", "MAT", "PSA"] {
-            let book = filter_books(&bible, |book| book == code);
-            if book.is_empty() {
-                eprintln!("{code} not present in en_ulb — skipping its bench");
-                continue;
-            }
-            let mut book_texts = book.texts().to_vec();
-            book_texts[0].push_str(" edited");
-            let book = Corpus::try_from_parts(book.keys().to_vec(), book_texts).unwrap();
-            g.throughput(Throughput::Elements(book.len() as u64));
-            g.bench_function(format!("incremental_edit_{code}"), |b| {
-                b.iter_batched(
-                    || cached.clone(),
-                    |prior| {
-                        analyze_stateful(
-                            black_box(&book),
-                            None,
-                            black_box(&cfg),
-                            Some(prior),
-                            None,
-                        )
-                    },
-                    BatchSize::LargeInput,
-                )
-            });
-
-            // The complete-snapshot call: the whole corpus is supplied with the
-            // prior — the edited book re-counts by content hash, clean books
-            // carry, and findings cover everything (a tipped convention re-emits
-            // in every book, this same call). The payoff vs `full_bible` is the
-            // counting saved; vs `incremental_edit_*` it buys global consistency.
-            let edit_pos = bible
+            let Some(edit_pos) = bible
                 .keys()
                 .iter()
                 .position(|k| parse_key(k).expect("vref key").book == code)
-                .expect("book present (checked above)");
+            else {
+                eprintln!("{code} not present in en_ulb — skipping its bench");
+                continue;
+            };
+
+            // The complete-snapshot call: the whole corpus is supplied with the
+            // prior — every supplied book is hashed (no caller-declared changed
+            // set exists any more; ADR 0062), the edited book re-counts on its
+            // content-hash mismatch, clean books carry, and findings cover
+            // everything (a tipped convention re-emits in every book, this same
+            // call). The payoff vs `full_bible` is the counting saved.
             let mut edited_texts = bible.texts().to_vec();
             edited_texts[edit_pos].push_str(" edited");
             let edited = Corpus::try_from_parts(bible.keys().to_vec(), edited_texts).unwrap();
             g.throughput(Throughput::Elements(edited.len() as u64));
-            g.bench_function(format!("changed_edit_{code}"), |b| {
+            g.bench_function(format!("snapshot_edit_{code}"), |b| {
                 b.iter_batched(
                     || cached.clone(),
                     |prior| {

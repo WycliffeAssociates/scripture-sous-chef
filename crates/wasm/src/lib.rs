@@ -10,9 +10,7 @@
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
-use ssc_core::{
-    Config, Corpus, FindingArgs, RuleId, Severity, Stats, analyze_stateful, analyze_with_config,
-};
+use ssc_core::{analyze_with_config, Config, Corpus, FindingArgs, RuleId, Severity};
 use tsify::Tsify;
 use wasm_bindgen::prelude::*;
 
@@ -441,38 +439,6 @@ pub fn analyze_vref(
     Ok(Findings(project(&target, &findings)))
 }
 
-/// Findings plus the corpus [`Stats`] to cache for incremental re-analysis.
-#[derive(Serialize, Tsify)]
-#[tsify(into_wasm_abi)]
-pub struct Analysis {
-    pub findings: Vec<Finding>,
-    /// Caller-opaque cache: hold it and pass it back as `prior` next call.
-    pub stats: Stats,
-}
-
-/// Stateful analyze (ADR 0017). Same as [`analyze_vref`] but returns the
-/// corpus `Stats`; pass it back as `prior` along with the corpus (or just the
-/// edited books) to re-analyze incrementally. Counting is proof-driven: each
-/// supplied book re-tallies only if its content, same-slug source, or enabled
-/// rule set differs from the prior's recorded provenance — the caller declares
-/// nothing. Omit `prior` (and pass the whole corpus) on the first call.
-#[wasm_bindgen]
-pub fn analyze_vref_stateful(
-    target: VrefCorpus,
-    source: Option<VrefCorpus>,
-    config: Option<SousConfig>,
-    prior: Option<Stats>,
-) -> Result<Analysis, JsError> {
-    let target = to_corpus_or_reject(target)?;
-    let source = source.map(to_corpus_or_reject).transpose()?;
-    let cfg = build_config(config);
-    let (findings, stats) = analyze_stateful(&target, source.as_ref(), &cfg, prior, None);
-    Ok(Analysis {
-        findings: project(&target, &findings),
-        stats,
-    })
-}
-
 /// One rule's human-facing card (ADR 0038): plain-language title, what a
 /// finding is, why it might deserve an eyeball, the enable question behind a
 /// language-dependent toggle, and how its verdict works. `code` is the same
@@ -538,16 +504,6 @@ pub fn rule_catalog() -> RuleCatalog {
             })
             .collect(),
     }
-}
-
-/// Drop a book from cached `Stats` (e.g. it was removed from the project),
-/// returning the updated stats — the sanctioned deletion path so callers
-/// don't mutate the opaque value's internals. `book` is a 3-letter USFM code
-/// (e.g. `"GEN"`); an unknown code is a no-op.
-#[wasm_bindgen]
-pub fn stats_remove_book(mut stats: Stats, book: String) -> Stats {
-    stats.remove_book(&book);
-    stats
 }
 
 /// Census a vref corpus (ADR 0058): the knob-free absolute-count report
@@ -787,64 +743,6 @@ mod tests {
         assert_eq!(cfg.mixed_case.emit_score_min, 0.85);
         assert_eq!(cfg.mixed_case.recurrence_k, 20.0);
         assert_eq!(cfg.mixed_case.confidence_z, 1.5);
-    }
-
-    /// The corpus-relative `punct.spacing-anomaly` survives an incremental,
-    /// `Stats`-round-tripped pass through the boundary entry point: judging the
-    /// edited book alone (with the rest pooled in the round-tripped prior) scores
-    /// its minority mark corpus-wide, identical to the full analysis.
-    #[test]
-    fn spacing_anomaly_incremental_round_trips_through_the_boundary() {
-        let enable = || {
-            Some(SousConfig {
-                rules: Some(
-                    [(RuleId::PunctuationSpacingAnomaly, true)]
-                        .into_iter()
-                        .collect(),
-                ),
-                ..Default::default()
-            })
-        };
-        // GEN establishes an attached-comma convention; EXO holds one spaced minority.
-        let mut keys = Vec::new();
-        let mut texts = Vec::new();
-        for v in 1..=100u16 {
-            keys.push(format!("GEN 1:{v}"));
-            texts.push("word, word".to_string());
-        }
-        keys.push("EXO 1:1".to_string());
-        texts.push("word , word".to_string());
-
-        let analysis =
-            analyze_vref_stateful(VrefCorpus { keys, texts }, None, enable(), None).unwrap();
-        let full_score = analysis
-            .findings
-            .iter()
-            .find(|f| f.sid == "EXO 1:1" && f.code == RuleId::PunctuationSpacingAnomaly)
-            .expect("minority surfaces in the full pass")
-            .score;
-
-        // Round-trip the opaque `Stats` as the editor does across the JS boundary.
-        let prior: Stats =
-            serde_json::from_str(&serde_json::to_string(&analysis.stats).unwrap()).unwrap();
-
-        // Re-supply only the edited book; the score must stay corpus-wide.
-        let exo = VrefCorpus {
-            keys: vec!["EXO 1:1".to_string()],
-            texts: vec!["word , word".to_string()],
-        };
-        let inc = analyze_vref_stateful(exo, None, enable(), Some(prior)).unwrap();
-        let hits: Vec<_> = inc
-            .findings
-            .iter()
-            .filter(|f| f.code == RuleId::PunctuationSpacingAnomaly)
-            .collect();
-        assert_eq!(hits.len(), 1, "emits only for the edited book");
-        assert_eq!(hits[0].sid, "EXO 1:1");
-        assert_eq!(
-            hits[0].score, full_score,
-            "incremental score is corpus-wide"
-        );
     }
 
     /// A duplicate key entry is preserved (not collapsed into one row the
