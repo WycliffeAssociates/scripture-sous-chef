@@ -210,3 +210,44 @@ common single-form case) without review, since that's real additional
 complexity in a still-fresh, correctness-sensitive rule. Continuing with
 other Phase F work (ADR draft, docs) that doesn't depend on this call while
 it's outstanding.
+
+### Profiling (reviewer asked for the warm path to be actually measured)
+
+Built a temporary release-mode harness (`examples/perf_probe_normalization.rs`,
+deleted after use) reproducing `cached_edit_PSA` exactly: warm once, then
+loop 400 calls ping-ponging PSA's text so every call sees exactly one
+changed book against an otherwise-fully-warm cache. Profiled with `samply`
+(`mcp__samply__samply_record` + `samply_breakdown_subsystems` +
+`samply_focus_functions`), presymbolicated.
+
+Findings (corrects the reviewer's cloning hypothesis with data):
+- `PrepCache::cloned_walk` (clones **every** lane's retained product for
+  **every** cache-hit book, not just this rule's) is only ~4% of total
+  `analyze_stateful` samples (512/11871). Cloning is not the dominant cost.
+- `NormalizationAcc::verse` itself is ~14% of total samples (1679/11871) —
+  real, but *less* than already-accepted default-on rules in the same walk:
+  `RepeatedRunAcc::verse` (2731) and `MixedScriptAcc::verse` (1926).
+- Of `NormalizationAcc::verse`'s own cost, ~79% (1328/1679) is inside
+  `hashbrown::map::HashMap::get_mut` — the two nested-map lookups per
+  grapheme cluster (one to reach the NFC-key bucket, one to reach the raw
+  form inside it). `is_nfc`/`.nfc()` don't appear as a measurable cost at
+  all (almost certainly inlined and cheap — the ASCII fast path skips it
+  for the large majority of scripture text).
+- Memory proxy (plan §10.3, one-off probe mirroring the exact borrow rule):
+  `WA-en-ulb` (full English Bible, 31,086 verses): **82** distinct NFC
+  keys / 82 (key, raw-form) summaries — i.e. zero mixed keys, consistent
+  with "consistently composed is silent." `WA-as-ulb` (the spike's worst
+  measured corpus, 31,083 verses): **1,529** distinct NFC keys / **1,542**
+  summaries (13 keys have 2 forms) — trivially small either way; this rule
+  does not dominate memory.
+
+Net read: the residual regression is real and squarely attributable to
+this rule's own per-character map-lookup cost (inherent to "record every
+raw form, no unsafe skip" — §3.2's contract), not a design mistake
+elsewhere, and its magnitude is in the same neighborhood as peer rules
+already inside the accepted band. Options going forward (owner/reviewer
+call, not deciding unilaterally): (a) accept the current numbers — PSA's
+overshoot is modest and the rule's cost is comparable to already-accepted
+peers; or (b) flatten the nested map to one compound-key map (one lookup
+instead of two per cluster), which the profile suggests would materially
+help but is a second accumulator redesign I haven't had reviewed yet.
