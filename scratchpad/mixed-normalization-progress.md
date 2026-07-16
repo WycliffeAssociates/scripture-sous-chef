@@ -251,3 +251,34 @@ overshoot is modest and the rule's cost is comparable to already-accepted
 peers; or (b) flatten the nested map to one compound-key map (one lookup
 instead of two per cluster), which the profile suggests would materially
 help but is a second accumulator redesign I haven't had reviewed yet.
+
+### Reviewer's flat-map redesign (crossed in flight with the profiling report)
+
+Reviewer independently proposed a better fix than either option above:
+uphold the stop clause (don't accept 29-30ms), but instead of a
+compound-key map, make `NormalizationAcc` **flat and NFC-free on the hot
+path** — `forms: FxHashMap<Box<str> /* raw */, FormSummary>`, one lookup
+per grapheme cluster, zero `is_nfc`/`.nfc()` calls in `verse()`. Move all
+NFC-key computation into `finish()`, run once per **distinct raw form**
+(small, book-local — 82 to ~1500 in the fleet) instead of once per
+*occurrence* (corpus-wide). `finish()` groups the flat map into the
+existing `BookNormalization` shape by NFC key, so `emit()` and every
+downstream consumer are untouched.
+
+Implemented exactly this. Re-ran the full gate:
+- 406/406 tests still pass byte-identical; clippy clean.
+- Re-dumped `new2.wa.default.tsv` — byte-identical to the prior post-Phase-D
+  dump (confirms zero behavior change, again).
+- `cargo bench -p ssc-core -- analyze`: cached_edit_MAT 19.4-19.8ms →
+  18.6-18.8ms (vs 13.1ms baseline, now +42-44%, was +48-51%);
+  **cached_edit_PSA 29.0-29.6ms → 27.9-28.1ms (vs 18.9ms baseline, now
+  +47-49%, was +53-58%) — still outside the 5-25ms band.** cached_edit_3JN
+  unchanged (~7.4ms; too small for the per-occurrence saving to register).
+
+Per the reviewer's own explicit instruction ("if PSA still exceeds 25ms,
+stop again with numbers; do not layer further tricks without review") —
+stopping here. Two rounds of legitimate, behavior-preserving optimization
+(BTreeMap→FxHashMap, then flat-map-with-deferred-NFC) have taken PSA from
+37-48ms down to 27.9-28.1ms — a real, substantial improvement — but the
+residual ~3ms/12% overshoot past the band is still there. Not attempting a
+third redesign without explicit sign-off.
