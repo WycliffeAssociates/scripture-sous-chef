@@ -313,3 +313,83 @@ Implemented exactly as specified. Re-ran the full gate:
 **PSA still sits outside the 5-25ms band** (mean ~27.0ms, ADR 0062 baseline
 18.9ms, ~+43%). Reviewer's own stated plan: adjudicate the residual at this
 point rather than request a fourth redesign. Reporting final numbers now.
+
+### Owner adjudication and the NORM_RELEVANT bitmap (round four, authorized)
+
+Owner (Will, direct): comfortable with the ~68KB gzip `unicode-normalization`
+dependency if the bitmap makes runtime negligible; if not, the cleaner trade
+is default-off, not a more elaborate hot detector. Reviewer independently
+converged on the same architecture (a `Class` prefilter bit) and, after my
+dispatched research agent verified the safe-superset argument against real
+Unicode data (zero gaps across all 961 actual composition pairs; union =
+15,541 scalars / 1,348 ranges; ~18-32KB estimated wasm delta), refined the
+spec to a narrower bit definition (message #25): rule A (own decomposition
+differs, including algorithmic Hangul) + rule B (nonzero ccc) + rule C
+(decomposition targets ONLY when the entire output is ccc=0 — canonical
+singletons like `K`/Hangul Jamo, deliberately NOT ordinary accent targets
+like plain `e`, since the mark's own rule-B bit already gates that cluster).
+
+**Implemented exactly as specified:**
+- `xtask/src/gen_charclass_table.rs`: computes the 3-rule closure via
+  `unicode_normalization::char::{decompose_canonical, canonical_combining_class}`
+  directly (not a UnicodeData.txt scan — respects the verified Hangul
+  caveat), packs it into bit 29 (`NORM_RELEVANT`) of the existing `Class`
+  bitfield.
+- `crates/core/src/charclass.rs`: `Class::is_norm_relevant()`; an exhaustive
+  ~1.1M-scalar completeness test (`norm_relevant_bit_equals_closure_over_all_scalars`,
+  mirroring the file's existing `control`/`zero_width_format`/
+  `invalid_codepoint` sweep pattern) plus named fixtures (Hangul syllable +
+  both Jamo, Kelvin, Bengali exclusion, both combining-mark fixtures, the
+  `;`/GREEK QUESTION MARK U+037E singleton I hadn't anticipated — caught by
+  my own negative-selectivity test, which initially asserted `;` was
+  ordinary and failed) and a selectivity assertion over ordinary
+  ASCII letters/digits/punctuation.
+- `crates/core/src/signals/mixed_normalization.rs`: `NormalizationAcc::verse()`
+  advances a tape cursor in lockstep with `v.graphemes` (both built from the
+  same tape in text order) and only hash-counts a cluster if any of its
+  scalars carry the bit; every other cluster is skipped entirely (provably
+  cannot collide with anything). Flat-map/ASCII-array/`finish()` grouping
+  unchanged.
+- Regenerated `charclass_table.rs`: 3,751 → 5,811 ranges (+2,060, within the
+  verified 1,500-2,700 estimate).
+
+**Full gate, re-run completely:**
+- `cargo test --workspace --all-features`: 408/408 (was 406; +2 new
+  charclass tests). All 28 `mixed_normalization` tests still pass unchanged
+  — every previously-verified fixture (K/Kelvin, Bengali exclusion, mark
+  reordering, ASCII singleton, cross-book, cache/rebase) still fires
+  correctly through the prefilter, proving the safe-superset argument holds
+  in the actual detector, not just in the abstract closure.
+- `cargo clippy --workspace --all-targets --all-features -- -D warnings`:
+  clean.
+- Oracle re-dump (default AND all configs, WA scope): byte-identical to the
+  pre-Phase-D baseline — zero behavior change, fourth confirmation, now
+  including the prefilter.
+- Candidate-grapheme rate on PSA (reviewer's ask): **~0%** — this specific
+  English `en_ulb` corpus has essentially no combining marks or decomposable
+  characters at all (a "clean ASCII" translation), so the prefilter skips
+  nearly every cluster. (Measured via rules A+B only, a slight
+  underestimate — the rule-C target set like `K`/`;` is a small fixed list
+  independent of corpus, negligible for a rate.)
+- **Bench: `cached_edit_PSA` 27.9-28.1ms (post-round-3) → 24.97-25.16ms
+  (mean 25.07ms), re-confirmed stable on a clean re-run** (criterion:
+  "no change detected" between the two cached_edit_PSA re-runs, i.e.
+  reproducible). vs. the ADR 0062 baseline 18.9ms: **~+32.6%, essentially
+  at the top edge of the 5-25ms band** — down from the original
+  regression's 37-48ms (~+150%). `cached_edit_MAT`: 16.8-17.2ms (baseline
+  13.1ms, ~+29-31%, was ~+42-44%). `cached_edit_3JN`: 6.5-6.8ms (baseline
+  5.2ms, ~+25-31%, was ~+42-46%). Every book comfortably inside or right at
+  the band boundary now, a real and substantial recovery.
+- Wasm: raw 1,317,852 → 1,345,857 (**+28,005 bytes**, within the verified
+  18-32KB estimate); gzip 485,151 → 495,262 (**+10,111 bytes**). Total from
+  the pre-`unicode-normalization` baseline: raw +173,687 (+14.8%), gzip
+  +78,535 (+18.8%).
+
+**Open call for the owner/reviewer:** PSA's mean (25.07ms) sits essentially
+at the accepted band's upper edge (not comfortably inside it, not clearly
+outside either) — this is the "negligible?" judgment call Will's adjudication
+was contingent on. My read: this is a dramatic, real recovery (from a ~150%
+regression down to ~+30%, landing at the historical band boundary), and
+default-on remains defensible; but "negligible" is inherently a threshold
+call for the product owner, not mine to declare unilaterally. Reporting the
+final numbers rather than deciding.

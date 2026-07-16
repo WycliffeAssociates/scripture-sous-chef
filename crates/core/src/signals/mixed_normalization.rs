@@ -103,7 +103,25 @@ impl NormalizationAcc {
     }
 
     pub(crate) fn verse(&mut self, v: &stream::VerseInputs<'_, '_>) {
+        // Prefilter (ADR 0063): a grapheme cluster only needs hash-counting
+        // if at least one of its scalars carries the tape's NORM_RELEVANT
+        // bit; every other cluster is a provably canonical singleton that
+        // cannot collide with any other raw form in the corpus (verified
+        // safe-superset argument — see `charclass::Class::is_norm_relevant`).
+        // `ti` advances monotonically in lockstep with `v.graphemes`: both
+        // are built from the same tape in text order, so each tape entry
+        // belongs to exactly one grapheme cluster and is visited once.
+        let mut ti = 0usize;
         for g in v.graphemes {
+            let end = g.start + g.len;
+            let mut relevant = false;
+            while ti < v.tape.len() && v.tape[ti].off < end {
+                relevant |= v.tape[ti].cl.is_norm_relevant();
+                ti += 1;
+            }
+            if !relevant {
+                continue;
+            }
             let raw = g.slice(v.text);
             let bytes = raw.as_bytes();
             if bytes.len() == 1 && bytes[0].is_ascii() {

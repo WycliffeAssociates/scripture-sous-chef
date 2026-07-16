@@ -705,6 +705,7 @@ version = "0.1.0"
 dependencies = [
  "serde_json",
  "ssc-core",
+ "unicode-normalization",
  "unicode-properties",
  "unicode-script",
  "unicode-segmentation",

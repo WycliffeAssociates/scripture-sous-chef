@@ -74,7 +74,10 @@ const CONTROL: u32 = 1 << 25; // GC Cc (C0 U+0000..=001F + C1 U+007F..=009F)
 const ZW_FORMAT: u32 = 1 << 26; // exactly ssc_core::unicode::is_zero_width_or_format
 const INVALID_CP: u32 = 1 << 27; // exactly ssc_core::unicode::is_invalid_text_codepoint
 const QUOTE: u32 = 1 << 28; // engine-defined quote set (NOT a UCD property)
-// bits 29..=31 free; bit 6 reserved (clinging).
+// NORM_RELEVANT (ADR 0063): a safe-superset prefilter for uni.mixed-normalization
+// — see the computation below for the exact three-rule definition.
+const NORM_RELEVANT: u32 = 1 << 29;
+// bits 30..=31 free; bit 6 reserved (clinging).
 
 const MAX_CP: u32 = 0x10FFFF;
 
@@ -204,6 +207,55 @@ pub fn run(ssc_core: &Path) {
         }
     }
 
+    // NORM_RELEVANT (ADR 0063): a safe-superset prefilter for
+    // `uni.mixed-normalization`. A grapheme cluster only needs hash-counting
+    // if at least one of its scalars carries this bit; every other cluster is
+    // provably a canonical singleton with no possible raw-form collision
+    // (verified against the crate's actual composition table — see the ADR).
+    // Three rules, deliberately narrow (do NOT mark the full decomposition-
+    // target closure — a cluster only needs one marked scalar, and ordinary
+    // accent decompositions are already gated by rule B on the mark itself):
+    //   (A) every scalar whose canonical decomposition differs from itself —
+    //       includes algorithmic Hangul (`decompose_canonical` handles it,
+    //       since Hangul's decomposition is NOT in UnicodeData.txt's
+    //       Decomposition_Mapping column — a naive UCD-file scan would
+    //       silently miss the single largest affected block, 11,172 syllables);
+    //   (B) every scalar with nonzero canonical combining class (any
+    //       combining mark) — catches pure mark-reordering even when neither
+    //       individual scalar has its own decomposition;
+    //   (C) decomposition TARGET scalars, but only when that decomposition's
+    //       entire output has ccc=0 for every scalar — canonical singleton
+    //       targets like plain `K` (target of KELVIN SIGN) or Hangul Jamo
+    //       (target of a precomposed syllable). An ordinary accent target
+    //       like plain `e` (target of `é`) is deliberately NOT marked here:
+    //       the decomposed form `e` + combining acute is already caught by
+    //       the mark's own rule-B bit, so marking `e` too would be needless.
+    let mut norm_relevant = vec![false; (MAX_CP + 1) as usize];
+    let mut decomposed: Vec<char> = Vec::new();
+    for cp in 0..=MAX_CP {
+        if (0xD800..=0xDFFF).contains(&cp) {
+            continue;
+        }
+        let c = char::from_u32(cp).unwrap();
+        if unicode_normalization::char::canonical_combining_class(c) != 0 {
+            norm_relevant[cp as usize] = true; // rule B
+        }
+        decomposed.clear();
+        unicode_normalization::char::decompose_canonical(c, |d| decomposed.push(d));
+        let differs = decomposed.len() != 1 || decomposed[0] != c;
+        if differs {
+            norm_relevant[cp as usize] = true; // rule A
+            if decomposed
+                .iter()
+                .all(|&d| unicode_normalization::char::canonical_combining_class(d) == 0)
+            {
+                for &d in &decomposed {
+                    norm_relevant[d as usize] = true; // rule C
+                }
+            }
+        }
+    }
+
     // Paired brackets (BidiBrackets.txt `o` entries): the runtime inventory
     // for `punct.bracket-balance`. Emitted alongside the class ranges so a
     // Unicode bump regenerates both from one command.
@@ -289,6 +341,9 @@ pub fn run(ssc_core: &Path) {
         }
         if QUOTE_CHARS.contains(&c) {
             b |= QUOTE;
+        }
+        if norm_relevant[cp as usize] {
+            b |= NORM_RELEVANT;
         }
         match c.general_category_group() {
             GeneralCategoryGroup::Mark => b |= MARK,

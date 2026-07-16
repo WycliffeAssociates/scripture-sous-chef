@@ -76,7 +76,15 @@ const INVALID_CP: u32 = 1 << 27; // exactly `unicode::is_invalid_text_codepoint`
 // `signals::punctuation::is_quote_char`), NOT a UCD property — the punctuation
 // scans read it per char in their adjacency / spacing / punct-only hot loops.
 const QUOTE: u32 = 1 << 28;
-// bits 29..=31 free; bit 6 reserved (a future `clinging` flag).
+// A safe-superset prefilter for `uni.mixed-normalization` (ADR 0063): a
+// grapheme cluster only needs hash-counting for that rule if at least one of
+// its scalars carries this bit; every other cluster is provably a canonical
+// singleton with no possible raw-form collision. See
+// `xtask/src/gen_charclass_table.rs` for the exact three-rule computation
+// (own-decomposition, nonzero canonical combining class, and canonical-
+// singleton decomposition targets) and its correctness argument.
+const NORM_RELEVANT: u32 = 1 << 29;
+// bits 30..=31 free; bit 6 reserved (a future `clinging` flag).
 
 impl Class {
     #[inline]
@@ -161,6 +169,12 @@ impl Class {
     #[inline]
     pub fn is_quote(self) -> bool {
         self.0 & QUOTE != 0
+    }
+    /// The `uni.mixed-normalization` prefilter bit (ADR 0063) — see
+    /// `NORM_RELEVANT`'s doc comment for the safe-superset argument.
+    #[inline]
+    pub(crate) fn is_norm_relevant(self) -> bool {
+        self.0 & NORM_RELEVANT != 0
     }
 
     /// Raw packed bits, and the three ADR-0046 rare-family masks in this
@@ -429,6 +443,103 @@ mod tests {
         ];
         for c in all_scalars() {
             assert_eq!(class_of(c).is_quote(), QUOTES.contains(&c), "quote {c:?}");
+        }
+    }
+
+    /// The exact three-rule `NORM_RELEVANT` closure (ADR 0063), duplicated
+    /// here as the reference implementation the generated table must match —
+    /// exactly the `control`/`zero_width_format`/`invalid_codepoint` pattern
+    /// above, so a Unicode-version bump or a codegen drift fails loudly
+    /// instead of silently reopening the mixed-normalization performance
+    /// regression this bit exists to close.
+    fn norm_relevant_reference(c: char) -> bool {
+        use unicode_normalization::char::{canonical_combining_class, decompose_canonical};
+        if canonical_combining_class(c) != 0 {
+            return true; // rule B
+        }
+        let mut decomposed = Vec::new();
+        decompose_canonical(c, |d| decomposed.push(d));
+        decomposed.len() != 1 || decomposed[0] != c // rule A
+    }
+
+    /// The full closure (rules A+B+C) over every scalar, matching the
+    /// generator's computation exactly — including rule C's decomposition-
+    /// target propagation, which `norm_relevant_reference` alone doesn't
+    /// capture (that function only proves a scalar's own rule A/B status; a
+    /// pure rule-C target like plain `K` has neither).
+    fn norm_relevant_closure() -> std::collections::HashSet<char> {
+        use unicode_normalization::char::{canonical_combining_class, decompose_canonical};
+        let mut set = std::collections::HashSet::new();
+        for c in all_scalars() {
+            if norm_relevant_reference(c) {
+                set.insert(c);
+            }
+        }
+        // Rule C: decomposition targets whose entire output is ccc=0.
+        for c in all_scalars() {
+            let mut decomposed = Vec::new();
+            decompose_canonical(c, |d| decomposed.push(d));
+            let differs = decomposed.len() != 1 || decomposed[0] != c;
+            if differs && decomposed.iter().all(|&d| canonical_combining_class(d) == 0) {
+                set.extend(decomposed.iter().copied());
+            }
+        }
+        set
+    }
+
+    /// The generated table's `NORM_RELEVANT` bit is exact-equal to the
+    /// three-rule closure over every Unicode scalar — not just a sample.
+    /// This is the completeness guarantee the whole prefilter optimization
+    /// depends on: a false negative here would silently drop a real
+    /// mixed-normalization occurrence (an unsafe skip), not just cost
+    /// performance.
+    #[test]
+    fn norm_relevant_bit_equals_closure_over_all_scalars() {
+        let closure = norm_relevant_closure();
+        for c in all_scalars() {
+            assert_eq!(
+                class_of(c).is_norm_relevant(),
+                closure.contains(&c),
+                "norm-relevant {c:?} (U+{:04X})",
+                c as u32
+            );
+        }
+    }
+
+    /// Named fixtures for the specific cases the prefilter exists to catch —
+    /// concrete, human-checkable pins alongside the exhaustive sweep above.
+    #[test]
+    fn norm_relevant_fixtures() {
+        // Rule A: composed forms whose own decomposition differs.
+        assert!(class_of('\u{00E9}').is_norm_relevant(), "é (composed)");
+        assert!(class_of('\u{212A}').is_norm_relevant(), "KELVIN SIGN");
+        assert!(class_of('\u{09DF}').is_norm_relevant(), "Bengali YYA (composed, composition-excluded)");
+        // Rule B: combining marks (catches pure mark-reordering and the
+        // decomposed side of any accent pair).
+        assert!(class_of('\u{0301}').is_norm_relevant(), "COMBINING ACUTE ACCENT");
+        assert!(class_of('\u{0316}').is_norm_relevant(), "COMBINING GRAVE ACCENT BELOW");
+        assert!(class_of('\u{09BC}').is_norm_relevant(), "Bengali nukta (combining)");
+        // Rule C: canonical-singleton decomposition targets.
+        assert!(class_of('K').is_norm_relevant(), "ASCII K (KELVIN's target)");
+        assert!(
+            class_of(';').is_norm_relevant(),
+            "ASCII semicolon (GREEK QUESTION MARK U+037E's canonical singleton target)"
+        );
+        assert!(class_of('\u{1100}').is_norm_relevant(), "Hangul leading Jamo (a precomposed syllable's target)");
+        assert!(class_of('\u{1161}').is_norm_relevant(), "Hangul vowel Jamo");
+        // Hangul precomposed syllable itself (rule A: its own NFD differs).
+        assert!(class_of('\u{AC00}').is_norm_relevant(), "가 (precomposed Hangul syllable)");
+
+        // Negative/selectivity: ordinary letters, space, and digits must NOT
+        // be flagged — this is what makes the prefilter actually narrow the
+        // hot loop. Plain 'e'/'a' are deliberately not rule-C targets (the
+        // accent's own combining mark already gates that cluster via rule
+        // B); 'K' and ';' are excluded from this set — both are genuinely
+        // flagged above as real singleton decomposition targets.
+        for c in "abcdefghijlmnopqrstuvwxyzABCDEFGHIJLMNOPQRSTUVWXYZ0123456789 .,!?"
+            .chars()
+        {
+            assert!(!class_of(c).is_norm_relevant(), "ordinary {c:?} must be selective");
         }
     }
 }
