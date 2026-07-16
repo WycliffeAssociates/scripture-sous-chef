@@ -78,3 +78,51 @@ Plan: `documentation/plans/2026-07-14-mixed-normalization-plan.md`
   fused wiring to exist first).
 - Gate: 24/24 new tests pass; full suite 402/402; clippy clean
   (`--all-features --all-targets -- -D warnings`).
+- Review round: reviewer flagged two plan-contract gaps — no test with two
+  distinct mixed NFC keys (the cross-key accumulator/global-anchor loop in
+  `emit()` was untested), and no serde wire-shape pin (the Rust-enum
+  pattern-match tests can't catch a wrong `serde(rename)`/field shape).
+  Added `two_distinct_mixed_keys_sum_affected_and_use_globally_earliest_anchor`
+  and `serde_wire_shape_is_pinned`; both passed first run (26/26). Commit
+  a65ce81.
+
+## Phase D — fused production + cache integration
+
+- Wired `stream::WalkPlan.normalization`, `project_needs()` (needs
+  graphemes), `walk_book`'s `NormalizationAcc` listener (always-on project
+  listener, same tier as bracket/duplicate — runs on every supplied book
+  regardless of `count`), and `BookOut.normalization`.
+- Wired `cache.rs`: `BookEntry`/`CachedWalk.normalization`, `store_walk`,
+  `cloned_walk`, `has_walk_lanes`.
+- Wired `lib.rs`: `WalkPlan.normalization = config.is_enabled(...)`, the
+  cache-hit `BookOut` synthesis arm, and the `if plan.normalization { ... }`
+  emission block (mirrors `if plan.bracket`/`if plan.duplicate`).
+- Added `direct_path_and_fused_path_agree` (plan §8.2): one corpus exercising
+  Latin, Bengali exclusion, and mark-order cases; asserts
+  `MixedNormalization.check(...)` and `analyze_with_config(...)` (filtered to
+  this rule) return byte-identical `Finding`s. Passed first run.
+- Did NOT add a bespoke normalization cache test: `Config::all()`-driven
+  generic tests already in `lib.rs`
+  (`cached_snapshot_matches_cold_snapshot_across_all_walk_lanes`,
+  `cache_rebases_correctly_when_an_earlier_book_grows/shrinks`) enable every
+  rule including this one, so they already exercise cold==warm equivalence
+  and `FirstSite.local` rebasing generically — matching the existing
+  convention that no other project rule (bracket, duplicate) has its own
+  dedicated cache test either. All passed with this rule wired in.
+- WA addition-only oracle (§10.2): pinned `new.wa.{default,all,incremental,
+  cached}.tsv` against HEAD with the rule wired; filtered diffs against the
+  Phase-A baselines are byte-identical on all four — no pre-existing finding
+  moved, incremental/cached stats lines unchanged. 45/251 WA corpora gained a
+  `uni.mixed-normalization` finding (extrapolates higher than the old spike's
+  69/1504 full-fleet count — expected per plan §2, since this implementation
+  deliberately records ASCII and both-NFC-and-NFD forms the spike shortcut
+  skipped). Spot-checked the 45 rows: plausible real cases across Latin
+  (à/í/õ/ñ diacritics), Devanagari/Bengali/Gurmukhi nukta forms, and Arabic
+  shadda+kasra ordering — matches the plan's anticipated evidence classes
+  (Latin compose/decompose, Indic composition exclusions), nothing that
+  looks like a false-positive pattern (no ASCII-only examples, no
+  affected-count anomalies). To record in the ADR at Phase F closeout per
+  plan §9 item 9.
+- Gate: `cargo test -p ssc-core --all-features` 405/405 (serial and
+  `--features "serde parallel"` both green); clippy clean; filtered oracle
+  diffs empty on all four dumps.

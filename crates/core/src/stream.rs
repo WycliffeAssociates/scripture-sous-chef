@@ -38,8 +38,8 @@ use crate::corpus::{BookGroup, Books, Corpus, LocalKeyIdx};
 use crate::grapheme::{self, GSpan};
 use crate::rule::{self, TokenCache};
 use crate::signals::{
-    bracket_balance, casing, lexical, mixed_case, proportionality, punctuation, rare_glyph,
-    script_mixing,
+    bracket_balance, casing, lexical, mixed_case, mixed_normalization, proportionality,
+    punctuation, rare_glyph, script_mixing,
 };
 use crate::tape::{self, TapeEntry};
 use crate::token::{self, Token};
@@ -144,6 +144,7 @@ pub(crate) struct WalkPlan {
     pub proportionality: bool,
     pub bracket: bool,
     pub duplicate: bool,
+    pub normalization: bool,
     pub collect_tokens: bool,
 }
 
@@ -203,6 +204,9 @@ impl WalkPlan {
         if self.duplicate || self.collect_tokens {
             n.tokens = true;
         }
+        if self.normalization {
+            n.graphemes = true;
+        }
         n
     }
 }
@@ -252,6 +256,7 @@ pub(crate) struct BookOut {
     pub proportionality: Option<Vec<proportionality::RatioObs>>,
     pub bracket: Option<bracket_balance::BookMatch>,
     pub duplicate: Option<Vec<lexical::DuplicateHit>>,
+    pub normalization: Option<mixed_normalization::BookNormalization>,
     pub tokens: Option<Vec<(LocalKeyIdx, Vec<Token>)>>,
 }
 
@@ -313,6 +318,9 @@ fn walk_book(
     // Project listeners (every supplied book — their emission scope).
     let mut bracket_acc = plan.bracket.then(bracket_balance::BracketAcc::new);
     let mut duplicate_acc = plan.duplicate.then(lexical::DuplicateWordAcc::new);
+    let mut normalization_acc = plan
+        .normalization
+        .then(mixed_normalization::NormalizationAcc::new);
 
     let mut tape_buf: Vec<TapeEntry> = Vec::new();
     let mut graphemes_buf: Vec<GSpan> = Vec::new();
@@ -379,6 +387,9 @@ fn walk_book(
         if let Some(a) = &mut duplicate_acc {
             a.verse(&v);
         }
+        if let Some(a) = &mut normalization_acc {
+            a.verse(&v);
+        }
 
         if let Some(c) = &mut cache {
             c.push((local_idx, std::mem::take(&mut tokens_buf)));
@@ -406,6 +417,7 @@ fn walk_book(
         proportionality: prop_acc.map(proportionality::ProportionalityAcc::finish),
         bracket: bracket_acc.map(bracket_balance::BracketAcc::finish),
         duplicate: duplicate_acc.map(lexical::DuplicateWordAcc::finish),
+        normalization: normalization_acc.map(mixed_normalization::NormalizationAcc::finish),
         tokens: cache,
     }
 }

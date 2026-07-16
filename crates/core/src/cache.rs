@@ -11,7 +11,9 @@ use xxhash_rust::xxh3::{Xxh3, xxh3_64};
 use crate::config::Config;
 use crate::corpus::{BookGroup, KeyIdx, LocalKeyIdx, SiteAddr, rebase, unrebase};
 use crate::diagnostics::{Finding, RuleId, Severity};
-use crate::signals::{bracket_balance, casing, lexical, punctuation, script_mixing};
+use crate::signals::{
+    bracket_balance, casing, lexical, mixed_normalization, punctuation, script_mixing,
+};
 use crate::span::Span;
 use crate::stream::{BookOut, WalkPlan};
 use crate::token::Token;
@@ -202,6 +204,7 @@ impl PrepCache {
                 mixed_script: entry.mixed_script.clone(),
                 bracket: entry.bracket.clone(),
                 duplicate: entry.duplicate.clone(),
+                normalization: entry.normalization.clone(),
                 tokens: entry.tokens.clone(),
             });
         #[cfg(any(test, feature = "test-probes"))]
@@ -229,6 +232,7 @@ impl PrepCache {
         entry.mixed_script = output.mixed_script.as_ref().map(|(_, sites)| sites.clone());
         entry.bracket = output.bracket.clone();
         entry.duplicate = output.duplicate.clone();
+        entry.normalization = output.normalization.clone();
         entry.tokens = output.tokens.clone();
     }
 
@@ -295,6 +299,7 @@ pub(crate) struct BookEntry {
     pub(crate) mixed_script: Option<Vec<script_mixing::MixedScriptSite>>,
     pub(crate) bracket: Option<bracket_balance::BookMatch>,
     pub(crate) duplicate: Option<Vec<lexical::DuplicateHit>>,
+    pub(crate) normalization: Option<mixed_normalization::BookNormalization>,
     pub(crate) tokens: Option<Vec<(LocalKeyIdx, Vec<Token>)>>,
 }
 
@@ -311,6 +316,7 @@ impl BookEntry {
             mixed_script: None,
             bracket: None,
             duplicate: None,
+            normalization: None,
             tokens: None,
         }
     }
@@ -324,6 +330,7 @@ impl BookEntry {
             && (!plan.mixed_script || self.mixed_script.is_some())
             && (!plan.bracket || self.bracket.is_some())
             && (!plan.duplicate || self.duplicate.is_some())
+            && (!plan.normalization || self.normalization.is_some())
             && (!plan.collect_tokens || self.tokens.is_some())
     }
 }
@@ -337,6 +344,7 @@ pub(crate) struct CachedWalk {
     pub(crate) mixed_script: Option<Vec<script_mixing::MixedScriptSite>>,
     pub(crate) bracket: Option<bracket_balance::BookMatch>,
     pub(crate) duplicate: Option<Vec<lexical::DuplicateHit>>,
+    pub(crate) normalization: Option<mixed_normalization::BookNormalization>,
     pub(crate) tokens: Option<Vec<(LocalKeyIdx, Vec<Token>)>>,
 }
 

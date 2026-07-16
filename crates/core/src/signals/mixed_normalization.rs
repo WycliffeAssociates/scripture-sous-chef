@@ -525,6 +525,33 @@ mod tests {
         );
     }
 
+    /// Exercises Latin, the Bengali composition exclusion, and canonical
+    /// mark-order cases together — proves the direct `ProjectRule::check`
+    /// path and `analyze_with_config`'s fused-walk path share one
+    /// accumulator/emitter and cannot drift (plan §8.2).
+    #[test]
+    fn direct_path_and_fused_path_agree() {
+        let c = book(
+            "GEN",
+            &[
+                (1, "caf\u{00E9}"),
+                (2, "cafe\u{0301}"),
+                (3, YYA),
+                (4, YA_NUKTA),
+                (5, "a\u{0301}\u{0316}"),
+                (6, "a\u{0316}\u{0301}"),
+            ],
+        );
+        let direct = run(&c);
+        let fused: Vec<Finding> =
+            crate::analyze_with_config(&c, None, &crate::Config::v1_defaults())
+                .into_iter()
+                .filter(|f| f.code == RuleId::MixedNormalization)
+                .collect();
+        assert_eq!(direct, fused, "direct and fused paths must agree exactly");
+        assert_eq!(direct.len(), 1, "{direct:?}");
+    }
+
     #[test]
     fn fifty_fifty_tie_first_seen_wins_and_later_form_anchors() {
         // Decomposed appears first (1 occurrence), composed appears second

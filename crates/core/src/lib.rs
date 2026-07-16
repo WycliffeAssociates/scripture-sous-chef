@@ -178,6 +178,7 @@ pub fn analyze_stateful(
         proportionality: config.is_enabled(RuleId::ProjectLengthRatio),
         bracket: config.is_enabled(RuleId::BracketBalance),
         duplicate: config.is_enabled(RuleId::DuplicateWord),
+        normalization: config.is_enabled(RuleId::MixedNormalization),
         collect_tokens: config.is_enabled(RuleId::RepeatedCharacterRun)
             || config.is_enabled(RuleId::RareGlyph)
             || config.is_enabled(RuleId::MixedCaseWord)
@@ -399,6 +400,9 @@ pub fn analyze_stateful(
                 duplicate: plan
                     .duplicate
                     .then(|| cached.duplicate.expect("duplicate lane hit")),
+                normalization: plan
+                    .normalization
+                    .then(|| cached.normalization.expect("normalization lane hit")),
                 tokens: plan
                     .collect_tokens
                     .then(|| cached.tokens.expect("token lane hit")),
@@ -452,6 +456,17 @@ pub fn analyze_stateful(
                 .expect("duplicate listener ran on every book");
             out.extend(signals::lexical::emit(group, hits));
         }
+    }
+    if plan.normalization {
+        let summaries: Vec<_> = fused
+            .iter_mut()
+            .map(|b| {
+                b.normalization
+                    .take()
+                    .expect("normalization listener ran on every book")
+            })
+            .collect();
+        out.extend(signals::mixed_normalization::emit(&books, &summaries));
     }
 
     // Assemble each rule's fresh stats + forwarded sites (ADR 0044) from the
