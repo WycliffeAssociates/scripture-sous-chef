@@ -167,3 +167,46 @@ Plan: `documentation/plans/2026-07-14-mixed-normalization-plan.md`
   correctness tests), so a real "no-edit warm" number needs a new bench,
   which is bigger-than-this-chunk work; will surface to the owner before
   adding one rather than assuming it's wanted.
+
+## Phase F — perf gate (§10.3), STOP-CLAUSE-ADJACENT FINDING
+
+Ran `cargo bench -p ssc-core -- analyze` (criterion, serial defaults) as
+the "after" measurement plan §10.3 asks for. Result: **a real, large
+regression**, not the "reuses already-computed graphemes for free"
+assumption I'd been carrying:
+
+| bench | ADR 0062 baseline | first measurement (BTreeMap) | after FxHashMap swap |
+| --- | --- | --- | --- |
+| cached_edit_3JN | 5.2 ms | 8.2-8.7 ms (+52-66%) | 7.4-7.6 ms (+42-46%) |
+| cached_edit_MAT | 13.1 ms | 25.4-25.6 ms (+91-97%) | 19.4-19.8 ms (+48-51%) |
+| cached_edit_PSA | 18.9 ms | 37.4-47.9 ms (+95-166%, noisy) | 29.0-29.6 ms (+53-58%) |
+
+Root cause: `NormalizationAcc` does a lookup-or-insert on a **nested
+`BTreeMap`** for **every grapheme cluster in the entire verse text** — not
+just mixed/candidate ones, per the rule's own no-unsafe-skip contract
+(§3.2). That's O(corpus size) tree-lookup cost added to the hot per-verse
+walk, unlike sparser rules whose per-character cost is near-zero. Fixed
+one clear, zero-behavior-change win: swapped both `NormalizationAcc`/
+`BookNormalization.forms` and `emit()`'s cross-book `merged` map from
+`BTreeMap` to `FxHashMap` (ADR 0057's established internal-hot-path-map
+pattern — same rationale as `TokenCache`, casing's interner, rare-glyph's
+walk maps). Safe because nothing in `emit()` ever relies on map iteration
+order — every reduction (majority, tie-break, anchor) is an explicit
+`(KeyIdx, Span)` comparison, never a traversal order. 406/406 tests still
+pass byte-identical after the swap (confirms zero behavior change); clippy
+clean.
+
+**This roughly halved the regression but did not close it.** `cached_edit_PSA`
+at 29.0-29.6 ms now sits **outside** ADR 0062's 5-25 ms acceptance band
+(plan §10.3's explicit gate); 3JN and MAT are back inside the band but
+still 42-51% above their individual baselines. This is the plan's own
+named stop clause ("If the cache summary itself dominates warm time... stop
+and bring back measurements. Do not silently switch to a full rescan, a
+Stats wire addition, or a partial normalization table.") — flagging to the
+owner/reviewer rather than either (a) declaring this acceptable
+unilaterally, or (b) attempting a deeper data-structure redesign (e.g.
+flattening to one compound-key map, or a small-map fast path for the
+common single-form case) without review, since that's real additional
+complexity in a still-fresh, correctness-sensitive rule. Continuing with
+other Phase F work (ADR draft, docs) that doesn't depend on this call while
+it's outstanding.

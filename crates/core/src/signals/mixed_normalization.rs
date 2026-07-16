@@ -14,8 +14,8 @@
 //! `String.prototype.normalize` at the wasm boundary.
 
 use std::borrow::Cow;
-use std::collections::BTreeMap;
 
+use rustc_hash::FxHashMap;
 use unicode_normalization::{UnicodeNormalization, is_nfc};
 
 use crate::corpus::{BookGroup, Books, Corpus, LocalKeyIdx, rebase};
@@ -51,9 +51,18 @@ struct FirstSite {
 /// byte form. Retained by the analysis cache exactly like bracket-balance's
 /// `BookMatch` — a pure function of the book's text, reused unchanged while
 /// the book's content hash doesn't move.
+///
+/// `FxHashMap`, not `BTreeMap` (ADR 0057's internal-hot-path-map pattern):
+/// this map takes two lookups per grapheme cluster in the *entire* verse
+/// text — every letter, digit, and mark, not just mixed ones — so its
+/// lookup cost is corpus-wide, not proportional to the (tiny) mixed set.
+/// The nested-`BTreeMap` first cut measured a ~2x `analyze` regression on
+/// the criterion bench; iteration order is never observed (`emit` orders
+/// everything explicitly by `KeyIdx`/`Span`), so there is no correctness
+/// reason to pay for sorted iteration here.
 #[derive(Clone, Default)]
 pub(crate) struct BookNormalization {
-    forms: BTreeMap<Box<str>, BTreeMap<Box<str>, FormSummary>>,
+    forms: FxHashMap<Box<str>, FxHashMap<Box<str>, FormSummary>>,
 }
 
 /// The mixed-normalization listener: every grapheme cluster in the book,
@@ -64,13 +73,13 @@ pub(crate) struct BookNormalization {
 /// the Bengali composition-exclusion pair (`U+09AF U+09BC`, itself both NFC
 /// and NFD, against composition-excluded `U+09DF`, which normalizes to it).
 pub(crate) struct NormalizationAcc {
-    forms: BTreeMap<Box<str>, BTreeMap<Box<str>, FormSummary>>,
+    forms: FxHashMap<Box<str>, FxHashMap<Box<str>, FormSummary>>,
 }
 
 impl NormalizationAcc {
     pub(crate) fn new() -> Self {
         NormalizationAcc {
-            forms: BTreeMap::new(),
+            forms: FxHashMap::default(),
         }
     }
 
@@ -105,7 +114,7 @@ impl NormalizationAcc {
                     }
                 },
                 None => {
-                    let mut raw_forms = BTreeMap::new();
+                    let mut raw_forms = FxHashMap::default();
                     raw_forms.insert(
                         Box::from(raw),
                         FormSummary {
@@ -181,7 +190,7 @@ impl MergedForm {
 /// walk. `groups` and `summaries` must be index-aligned (`walk_fused`'s
 /// output contract, like bracket-balance's `emit`).
 pub(crate) fn emit(groups: &Books<'_>, summaries: &[BookNormalization]) -> Vec<Finding> {
-    let mut merged: BTreeMap<Box<str>, BTreeMap<Box<str>, MergedForm>> = BTreeMap::new();
+    let mut merged: FxHashMap<Box<str>, FxHashMap<Box<str>, MergedForm>> = FxHashMap::default();
     for (group, summary) in groups.iter().zip(summaries) {
         for (nfc_key, raw_forms) in &summary.forms {
             let key_entry = merged.entry(nfc_key.clone()).or_default();
