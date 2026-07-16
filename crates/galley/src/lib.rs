@@ -426,6 +426,146 @@ mod tests {
         assert_eq!(findings, cold(&corpus, &cfg2), "findings track the new knobs");
     }
 
+    // ── uni.mixed-normalization through the resident Galley (ADR 0063) ──────
+
+    /// Cold pass, a no-edit rewarm (same finding, cache actually reused),
+    /// introducing a second raw form under an existing book, fixing it back,
+    /// then removing the only deviant book — every step must equal a fresh
+    /// cold analyze of the same corpus, proving the cached
+    /// `BookNormalization` product invalidates and clears correctly.
+    #[test]
+    fn mixed_normalization_through_a_scripted_galley_sequence() {
+        let cfg = Config::v1_defaults(); // default-on
+        let c0 = corpus_of(vec![
+            keyed("GEN", &["caf\u{00E9}", "clean text"]),
+            keyed("EXO", &["more clean text", "still clean"]),
+        ]);
+        let mut g = Galley::new(c0.clone(), None, cfg.clone());
+        let cold_pass = g.analyze();
+        assert_eq!(cold_pass, cold(&c0, &cfg), "cold pass");
+        assert!(
+            cold_pass.iter().all(|f| f.code != RuleId::MixedNormalization),
+            "consistently composed é is silent"
+        );
+
+        // No-edit rewarm: same output, and the walk products were actually
+        // reused (not just re-derived to the same answer).
+        let before = g.prep.probe();
+        let warm = g.analyze();
+        let after = g.prep.probe();
+        assert_eq!(warm, cold_pass, "no-edit rewarm matches the cold pass");
+        assert_eq!(after.walk_hits - before.walk_hits, 2, "both books reuse their walk");
+        assert_eq!(after.walk_misses, before.walk_misses, "no re-walk");
+
+        // Introduce a second (decomposed) raw form under é's NFC key.
+        let mut expected = c0.clone();
+        let exo_mixed = book("EXO", &["cafe\u{0301}", "still clean"]);
+        expected.replace_books(vec![exo_mixed.clone()]).unwrap();
+        g.update_books(vec![exo_mixed]).unwrap();
+        let mixed = g.analyze();
+        assert_eq!(mixed, cold(&expected, &cfg), "after introducing the second form");
+        assert!(
+            mixed.iter().any(|f| f.code == RuleId::MixedNormalization),
+            "the mix now fires"
+        );
+
+        // Fix the deviant form back — the finding clears.
+        let mut expected2 = expected.clone();
+        let exo_fixed = book("EXO", &["caf\u{00E9}", "still clean"]);
+        expected2.replace_books(vec![exo_fixed.clone()]).unwrap();
+        g.update_books(vec![exo_fixed]).unwrap();
+        let fixed = g.analyze();
+        assert_eq!(fixed, cold(&expected2, &cfg), "after fixing the deviant form");
+        assert!(fixed.iter().all(|f| f.code != RuleId::MixedNormalization));
+
+        // Reintroduce the mix, then remove the only deviant book — clears.
+        let exo_mixed_again = book("EXO", &["cafe\u{0301}", "still clean"]);
+        let mut expected3 = expected2.clone();
+        expected3.replace_books(vec![exo_mixed_again.clone()]).unwrap();
+        g.update_books(vec![exo_mixed_again]).unwrap();
+        assert!(g.analyze().iter().any(|f| f.code == RuleId::MixedNormalization));
+
+        expected3.remove_book("EXO");
+        assert_eq!(g.remove_books(&["EXO"]), 1);
+        let after_remove = g.analyze();
+        assert_eq!(
+            after_remove,
+            cold(&expected3, &cfg),
+            "removing the only deviant book clears it"
+        );
+        assert!(after_remove.iter().all(|f| f.code != RuleId::MixedNormalization));
+    }
+
+    /// Caller-presented order, not canonical book order, decides the anchor
+    /// (ADR 0061) — a `replace_corpus` that reorders books must move the
+    /// anchor exactly as a cold call over that new order would.
+    #[test]
+    fn mixed_normalization_reorder_changes_anchor_through_galley() {
+        let cfg = Config::v1_defaults();
+        let forward = corpus_of(vec![
+            keyed("GEN", &["cafe\u{0301}"]),
+            keyed("EXO", &["caf\u{00E9}"]),
+        ]);
+        let mut g = Galley::new(forward.clone(), None, cfg.clone());
+        let f1 = g.analyze();
+        assert_eq!(f1, cold(&forward, &cfg));
+        assert_eq!(forward.key(f1[0].key_idx), "EXO 1:1");
+
+        let reversed = corpus_of(vec![
+            keyed("EXO", &["caf\u{00E9}"]),
+            keyed("GEN", &["cafe\u{0301}"]),
+        ]);
+        g.replace_corpus(reversed.clone());
+        let f2 = g.analyze();
+        assert_eq!(f2, cold(&reversed, &cfg));
+        assert_eq!(
+            reversed.key(f2[0].key_idx),
+            "GEN 1:1",
+            "reordering books changes which occurrence is globally earliest"
+        );
+    }
+
+    /// Disabling the rule through `update_config` suppresses the finding;
+    /// re-enabling reproduces exactly the cold default-on result.
+    #[test]
+    fn mixed_normalization_disable_then_reenable_matches_cold() {
+        let cfg_on = Config::v1_defaults();
+        let mut cfg_off = cfg_on.clone();
+        cfg_off.rules.insert(RuleId::MixedNormalization, false);
+
+        let corpus = corpus_of(vec![keyed("GEN", &["caf\u{00E9}", "cafe\u{0301}"])]);
+        let mut g = Galley::new(corpus.clone(), None, cfg_on.clone());
+        assert!(
+            g.analyze().iter().any(|f| f.code == RuleId::MixedNormalization),
+            "fires under the default-on config"
+        );
+
+        g.update_config(cfg_off.clone());
+        let off = g.analyze();
+        assert_eq!(off, cold(&corpus, &cfg_off));
+        assert!(off.iter().all(|f| f.code != RuleId::MixedNormalization));
+
+        g.update_config(cfg_on.clone());
+        let back_on = g.analyze();
+        assert_eq!(back_on, cold(&corpus, &cfg_on), "re-enabling matches the cold default-on result");
+    }
+
+    /// The rule ignores the source corpus entirely (plan §0): swapping or
+    /// updating it through the resident handle must not move the finding.
+    #[test]
+    fn mixed_normalization_source_only_update_does_not_change_the_finding() {
+        let cfg = Config::v1_defaults();
+        let target = corpus_of(vec![keyed("GEN", &["caf\u{00E9}", "cafe\u{0301}"])]);
+        let mut g = Galley::new(target.clone(), None, cfg.clone());
+        let without_source = g.analyze();
+        assert!(without_source.iter().any(|f| f.code == RuleId::MixedNormalization));
+
+        let source = corpus_of(vec![keyed("GEN", &["whatever source text"])]);
+        g.update_source(Some(source));
+        let with_source = g.analyze();
+        assert_eq!(with_source, without_source, "source-only update does not move the finding");
+    }
+
     /// `census` is a pure read of the resident corpus, independent of prior.
     #[test]
     fn census_reads_the_resident_corpus() {

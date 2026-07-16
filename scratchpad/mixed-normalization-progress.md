@@ -126,3 +126,44 @@ Plan: `documentation/plans/2026-07-14-mixed-normalization-plan.md`
 - Gate: `cargo test -p ssc-core --all-features` 405/405 (serial and
   `--features "serde parallel"` both green); clippy clean; filtered oracle
   diffs empty on all four dumps.
+
+## Phase E — Galley and wasm boundary
+
+- No sub-config/override struct needed in `crates/wasm/src/lib.rs` — the
+  rule is knob-free (on/off only via the existing `SousConfig.rules` map),
+  and `FindingArgs`/`RuleId` are used as-is from `ssc_core`, so Tsify carries
+  the new arm automatically. Only additions were three native wasm-crate
+  tests (no code changes to the boundary itself): omitted-config default-on,
+  explicit-`false` disable, and a projection test pinning `severity:
+  "warning"` and the `{kind:"normalization",...}` JSON shape.
+- Added 4 resident-`Galley`-specific tests in `crates/galley/src/lib.rs`
+  (plan §8.3 items 3-8; items 1/2/9 already covered by the crate's existing
+  `Config::all()`-driven generic tests, which automatically pick up any
+  default-on rule): a scripted sequence (cold → no-edit rewarm with real
+  cache-hit proof → introduce a second form → fix it → remove the only
+  deviant book), a caller-order reorder test (`replace_corpus` moves the
+  anchor exactly as a cold call over the new order would), a disable/
+  re-enable-via-`update_config` test, and a source-only-update-is-inert
+  test. All 14 galley tests pass (10 existing + 4 new); clippy clean.
+- Regenerated both wasm packages (`npm run build:wasm`): `pkg-web` and
+  `pkg-bundler`'s `.d.ts` both gained `"uni.mixed-normalization"` on `RuleId`
+  and `{ kind: "normalization"; affected: number; example: string }` on
+  `FindingArgs` — matches the plan's TS shape exactly (§8.4).
+  `unicode-normalization`'s default features are just `["std"]` (no
+  surprises); `Cargo.lock` needed no textual change (it already resolved
+  the same version as a dev-dependency).
+- **Wasm byte delta: +145,682 bytes** (1,172,170 → 1,317,852, both
+  packages, ~12.4%). Nonzero delta is expected per plan §6; treating this as
+  within bounds (full-fidelity Unicode NFC tables — composition,
+  decomposition, canonical ordering, exclusions — are inherently
+  data-heavy), not a "disproportionate artifact increase" stop clause, but
+  flagging the exact number for the owner/reviewer to confirm rather than
+  deciding unilaterally that it's fine.
+- Gate: `cargo test -p ssc-galley` 14/14; `cargo test -p ssc-wasm` 7/7;
+  `cargo check -p ssc-wasm --target wasm32-unknown-unknown` clean;
+  `npm run check:wasm` clean; `npm run build:wasm` succeeded both targets.
+- Deferred to Phase F: the warm-ladder / resident-Galley perf re-measurement
+  (§10.3) — no criterion bench exists in `crates/galley` at all (only
+  correctness tests), so a real "no-edit warm" number needs a new bench,
+  which is bigger-than-this-chunk work; will surface to the owner before
+  adding one rather than assuming it's wanted.
