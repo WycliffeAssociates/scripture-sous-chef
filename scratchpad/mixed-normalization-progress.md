@@ -393,3 +393,66 @@ regression down to ~+30%, landing at the historical band boundary), and
 default-on remains defensible; but "negligible" is inherently a threshold
 call for the product owner, not mine to declare unilaterally. Reporting the
 final numbers rather than deciding.
+
+### Final adjudication: default-OFF
+
+Reviewer's call (message #34): the bit-29 implementation itself is sound
+(offline closure, exhaustive completeness test, single monotonic tape
+merge — no second text pass), but ~+27-33% on the default keystroke path
+is not comfortably inside the owner's default-on budget, and total wasm
+remains +78,535 gzip (+18.8%). Per the stated fallback: **ship
+`uni.mixed-normalization` default-off**, cold/explicit-opt-in. Keep
+`NORM_RELEVANT` (it's the right design regardless of default status —
+identical detection once enabled, just paid for by whoever opts in).
+Additionally: **remove the 128-slot ASCII array** (commit e451d48) — after
+the prefilter, only a tiny singleton-target subset of ASCII (`K`, `;`, a
+few others) ever reaches counting at all, so the dedicated array measured
+no benefit even before the prefilter and is now pure redundant complexity
+on top of it. Retain the flat `FxHashMap` + deferred-NFC `finish()`.
+
+Implemented exactly:
+- `crates/core/src/config.rs`: added `RuleId::MixedNormalization` to
+  `Config::v1_defaults()`'s disabling list, with a comment recording the
+  measured numbers and pointing to ADR 0063.
+- `crates/core/src/signals/mixed_normalization.rs`: removed the `ascii:
+  [Option<FormSummary>; 128]` field and its two code paths (`verse()`'s
+  ascii branch, `finish()`'s ascii-fold loop); `NormalizationAcc` is back
+  to the pure flat `forms: FxHashMap<Box<str>, FormSummary>` shape, still
+  gated by the `NORM_RELEVANT` prefilter.
+- Fixed every test that assumed default-on and broke: two in
+  `mixed_normalization.rs` (`direct_path_and_fused_path_agree`,
+  `cached_finding_rebases_when_an_earlier_book_grows` — both now build an
+  explicitly-enabled config on top of `v1_defaults()`), one in `lib.rs`
+  (renamed `mixed_normalization_is_default_on_and_explicitly_disableable`
+  to `..._is_default_off_and_explicitly_enableable`, inverted the
+  assertions), four in `crates/galley/src/lib.rs` (added a
+  `mixed_normalization_on()` test helper; three tests now use it in place
+  of bare `v1_defaults()`; the disable/re-enable test's whole semantics
+  flipped — `cfg_off` is now literally `v1_defaults()`, `cfg_on` is the
+  helper), and two in `crates/wasm/src/lib.rs` (`build_config_omitted_keeps_defaults`
+  flipped its assertion; `build_config_explicit_false_disables_mixed_normalization`
+  renamed to `build_config_explicit_true_enables_mixed_normalization` — the
+  meaningful opt-in direction now; `mixed_normalization_projects_warning_severity_and_args`
+  now passes an explicit enabling config to `analyze_vref`).
+
+Gate, re-run completely:
+- `cargo test --workspace --all-features`: 408/408 (same count — the
+  fixes changed test bodies/names, not counts).
+- `cargo clippy --workspace --all-targets --all-features -- -D warnings`:
+  clean.
+- Oracle re-dump, **both directions now meaningfully different and both
+  correct**: the `default`-config WA dump is **byte-identical to the
+  original Phase-A pre-change baseline with zero filtering needed** (the
+  rule contributes nothing under the shipped default — the cleanest
+  possible confirmation). The `all`-config WA dump still shows all 45 rows
+  and remains byte-identical elsewhere after filtering them out — the rule
+  still detects identically once enabled.
+- Regenerated both wasm packages: raw size 1,348,947 bytes (+3,090 from the
+  pre-array-removal build — noise-level, likely wasm-opt layout jitter, not
+  a meaningful change; the array's own compiled code was tiny).
+
+Docs updated to match: `documentation/rules/uni.md`, `README.md`,
+`config.md`, the editor handoff doc, and ADR 0063 itself (Status flipped to
+Accepted, Decision/Wire-contract/Oracle sections updated, the perf
+Consequences section rewritten with the final default-off adjudication and
+the ASCII-array removal recorded).

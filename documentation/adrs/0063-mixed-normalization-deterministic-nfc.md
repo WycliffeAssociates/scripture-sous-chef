@@ -1,12 +1,12 @@
 # ADR 0063: `uni.mixed-normalization` — a deterministic, corpus-scoped NFC-mixing finding
 
 - **Date:** 2026-07-16
-- **Status:** Draft — implementation landed on `mixed-normalization-warning`
-  (Phases A–F, full test/oracle/wasm gate green, including the
-  `NORM_RELEVANT` prefilter below). The owner has confirmed the wasm
-  dependency cost is acceptable if the prefilter makes runtime negligible;
-  final confirmation on whether the measured residual (see Consequences)
-  clears that bar is the one open item before this ADR is accepted.
+- **Status:** Accepted — implementation landed on `mixed-normalization-warning`
+  (Phases A–F, full test/oracle/wasm gate green). The rule ships
+  **default-off** — a deliberate deviation from this plan's original
+  default-on ruling, adjudicated after the measured warm-path cost (see
+  Consequences) did not clear the owner's "negligible" bar even after the
+  `NORM_RELEVANT` prefilter closed most of an initial regression.
 - **Builds on:** ADR 0010 (pure analyzer contract), ADR 0021 (grapheme
   segmenter), ADR 0057 (event-stream engine, internal-hot-path-map
   pattern), ADR 0060 (`PrepCache`), ADR 0061 (`Corpus`/`KeyIdx` addressing),
@@ -40,8 +40,11 @@ the analysis scope is genuinely the whole project.
 
 ## Decision
 
-Ship `uni.mixed-normalization` as a **deterministic, corpus-scoped, default-on**
-rule with no knobs.
+Ship `uni.mixed-normalization` as a **deterministic, corpus-scoped**
+rule with no knobs. It ships **default-off** (see Consequences for why this
+deviates from the plan's original default-on ruling) — toggled through the
+same `Config.rules` map every rule uses, with identical detection once
+enabled.
 
 ### Detection semantics
 
@@ -85,8 +88,8 @@ MixedNormalization => "uni.mixed-normalization",   // RuleId
 Normalization { affected: u32, example: String },  // FindingArgs, kind: "normalization"
 ```
 
-Severity `Warning`, `score: None`, verdict `Deterministic`, default-on (absent
-from `Config::v1_defaults`'s disabling list; toggled through the same
+Severity `Warning`, `score: None`, verdict `Deterministic`, **default-off**
+(present in `Config::v1_defaults`'s disabling list; toggled through the same
 `rules` map every rule uses — no typed sub-config, since there is nothing to
 tune).
 
@@ -198,14 +201,17 @@ canonical mark reordering, Indic composition exclusions).
 
 ## Oracle adjudication
 
-Because the rule is default-on, finding dumps are expected to gain rows; no
-pre-existing finding may move and `Stats` must remain byte-identical
-(non-stateful product). WA-scope addition-only diffs (default/all/
-incremental/cached) were byte-identical against the pre-change baseline
-after filtering the new rule's rows, confirmed after **every** implementation
-phase including three rounds of internal accumulator optimization — the
+`Stats` must remain byte-identical regardless of default status
+(non-stateful product). Because the rule ships default-**off**, the
+`default`-config WA-scope dump is **byte-identical to the pre-change
+baseline with no filtering needed at all** — the rule contributes zero rows
+under the shipped default. The `all`-config dump (which enables every rule)
+gained 45 new rows across the WA-scope 251 corpora; filtering those out
+leaves every pre-existing finding byte-identical. Both were reconfirmed
+after every implementation phase, including four rounds of internal
+accumulator optimization and the final default-on → default-off flip — the
 detector's observable behavior never moved once implemented, only its
-internal data structures did.
+internal data structures and its default did.
 
 ## Consequences
 
@@ -218,8 +224,10 @@ internal data structures did.
   (`if (finding.code === "uni.mixed-normalization") { verses =
   verses.map(t => t.normalize("NFC")) }`) without needing `affected`/
   `example` — those are presentation-only. Publication/adoption is gated on
-  the editor first adopting a whole-project resident `Galley`; until then,
-  core commits may merge but the end-to-end fix must not be advertised.
+  the editor first adopting a whole-project resident `Galley` **and**
+  explicitly enabling the rule (it ships default-off — see below); until
+  then, core commits may merge but the end-to-end fix must not be
+  advertised.
 - **Dependency.** `unicode-normalization` promoted from a throwaway
   dev-dependency to a real workspace dependency. Default features are just
   `["std"]` — no surprises. `Cargo.lock` needed no textual change (already
@@ -241,42 +249,50 @@ internal data structures did.
   into 1,529 NFC keys (13 mixed). Trivially small either way; this rule
   does not dominate memory. `NORM_RELEVANT` adds no width to the existing
   BMP table (a spare bit in an already-resident `u32`).
-- **Warm-path performance.** `cargo bench -p ssc-core -- analyze`
-  (criterion, serial, `v1_defaults`, en_ulb) found a real regression
-  against ADR 0062's measured `cached_edit_*` band (5–25 ms): the naive
-  nested-`BTreeMap` implementation measured 37–48 ms for `cached_edit_PSA`
-  (was 18.9 ms), driven by an unconditional lookup-or-insert per grapheme
-  cluster across the **entire** verse text — not just mixed occurrences,
-  per the no-unsafe-skip contract above. Four rounds of behavior-preserving
-  optimization (confirmed byte-identical via full test suite + oracle
-  re-dump after each): `BTreeMap` → `FxHashMap` (ADR 0057's internal-
-  hot-path-map pattern); flattening the accumulator to one map keyed by raw
-  form, deferring NFC-key computation from every *occurrence* to once per
-  *distinct* raw form in `finish()`; a 128-slot direct-addressed array for
-  single-ASCII-byte clusters; and finally the `NORM_RELEVANT` prefilter
-  above, which skips the large majority of clusters entirely (measured
-  candidate rate on `en_ulb`'s PSA: ~0% — this corpus has essentially no
-  combining marks or decomposable characters at all).
+- **Warm-path performance — why the rule ships default-off.** `cargo bench
+  -p ssc-core -- analyze` (criterion, serial, `v1_defaults`, en_ulb) found a
+  real regression against ADR 0062's measured `cached_edit_*` band
+  (5–25 ms): the naive nested-`BTreeMap` implementation measured 37–48 ms
+  for `cached_edit_PSA` (was 18.9 ms), driven by an unconditional
+  lookup-or-insert per grapheme cluster across the **entire** verse text —
+  not just mixed occurrences, per the no-unsafe-skip contract above. Four
+  rounds of behavior-preserving optimization (confirmed byte-identical via
+  full test suite + oracle re-dump after each): `BTreeMap` → `FxHashMap`
+  (ADR 0057's internal-hot-path-map pattern); flattening the accumulator to
+  one map keyed by raw form, deferring NFC-key computation from every
+  *occurrence* to once per *distinct* raw form in `finish()`; a 128-slot
+  direct-addressed array for single-ASCII-byte clusters (measured no
+  statistically significant benefit, and **removed** once the prefilter
+  below made it redundant — after `NORM_RELEVANT`, only a tiny
+  singleton-target subset of ASCII like `K`/`;` ever reaches the map at
+  all); and finally the `NORM_RELEVANT` prefilter, which skips the large
+  majority of clusters entirely (measured candidate rate on `en_ulb`'s PSA:
+  ~0% — this corpus has essentially no combining marks or decomposable
+  characters at all).
 
   Net result: `cached_edit_PSA` 37–48 ms → **24.97–25.16 ms** (mean
   25.07 ms), reproducible on a clean re-run. Against the 18.9 ms baseline
-  that is **~+33%**, essentially at the 5–25 ms band's upper edge — down
-  from the initial ~+150% regression. `cached_edit_MAT`: 16.8–17.2 ms
+  that is **~+33%**, essentially at the 5–25 ms band's upper edge — a
+  substantial, real recovery from the initial ~+150% regression, but
+  **not comfortably inside the band**. `cached_edit_MAT`: 16.8–17.2 ms
   (baseline 13.1 ms, ~+30%). `cached_edit_3JN`: 6.5–6.8 ms (baseline
   5.2 ms, ~+27%). Profiling (`samply`) before the prefilter traced the
   cost to the hash/map operations themselves — cloning on cache hits and
   `is_nfc`/`.nfc()` calls were both measured and ruled out as dominant
   costs.
 
-  This is a substantial, real recovery, and default-on remains the shipped
-  decision; whether ~+30% (landing at, not comfortably inside, the
-  historical band) clears the owner's "negligible" bar for the web app is
-  the one confirmation this ADR is still waiting on before moving to
-  Accepted. If a future measurement or product call decides otherwise, the
-  documented fallback is **default-off** (add `MixedNormalization` to
-  `Config::v1_defaults`'s disabling list — a one-line, well-precedented
-  change, matching `DuplicateWord`/`RareGlyph`/the casing pair), not a fifth
-  round of hot-path optimization.
+  **Owner/reviewer adjudication:** ~+30% on the default keystroke path,
+  landing at rather than comfortably inside the historical band, does not
+  clear the "negligible" bar the default-on decision was contingent on. Per
+  the pre-agreed fallback, the rule ships **default-off** — a cold,
+  explicit-opt-in check (add it to your project's `rules` map, or run it
+  through the census/calibration surfaces) rather than a fifth round of
+  hot-path optimization. This is recorded here as a deliberate deviation
+  from the plan's original default-on ruling (repo convention for
+  intentional behavior changes: recorded with the measured numbers and the
+  adjudication, not silently reverted). Revisit only if a demonstrably
+  cheaper detection design emerges — not by layering further tricks onto
+  this one.
 
 ## Relates to
 

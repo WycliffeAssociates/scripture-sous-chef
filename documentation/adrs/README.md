@@ -79,7 +79,7 @@ isn't visible from the code alone.
 | 0060 | 2026-07-13 | [Cross-call analysis caches — content-keyed per-book products](0060-cross-call-analysis-caches.md) | Draft |
 | 0061 | 2026-07-14 | [Finding addresses become an ordered `Corpus` + `KeyIdx`/`LocalKeyIdx` (retires `Sid`/`BookId`/`VerseMap`)](0061-finding-address-corpus-keyidx.md) | Accepted (amends 0010/0040) |
 | 0062 | 2026-07-15 | [Resident galley shell + per-book `Tally` provenance](0062-resident-galley-tally-provenance.md) | Accepted (supersedes 0043's `changed` contract) |
-| 0063 | 2026-07-16 | [`uni.mixed-normalization` — a deterministic, corpus-scoped NFC-mixing finding](0063-mixed-normalization-deterministic-nfc.md) | Draft (warm-path perf residual pending adjudication) |
+| 0063 | 2026-07-16 | [`uni.mixed-normalization` — a deterministic, corpus-scoped NFC-mixing finding](0063-mixed-normalization-deterministic-nfc.md) | Accepted (ships default-off — perf-adjudicated deviation from the plan's default-on ruling) |
 
 ## Format
 

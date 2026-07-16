@@ -374,10 +374,13 @@ arithmetic, and every rule ships `1.96`.
 
 > **`uni.mixed-normalization`** (a supplied corpus writes canonically
 > equivalent grapheme clusters in more than one raw Unicode encoding) is
-> Warning, **default-on, no knobs** — deterministic and corpus-scoped like
-> the redundant-ZWSP rule above, so it has no typed sub-config or entry here
-> either. Toggle it through the same `rules` map every rule uses. See the
-> rules catalog and ADR 0063.
+> Warning, deterministic and corpus-scoped like the redundant-ZWSP rule
+> above, so it has no typed sub-config or entry here either — but unlike
+> that rule, it ships **default-off, no knobs**: recording every grapheme
+> cluster in the corpus measured a real warm-path cost even after a
+> `Class`-bit prefilter closed most of an initial regression. Toggle it
+> through the same `rules` map every rule uses. See the rules catalog and
+> ADR 0063.
 
 ### `punct.adjacency-anomaly` (`Config.punctuation_adjacency`) — **default ON**
 

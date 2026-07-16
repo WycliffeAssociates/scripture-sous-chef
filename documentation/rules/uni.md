@@ -267,7 +267,7 @@ would be more robust for that case, but isn't built — deferred.
 
 ## `uni.mixed-normalization` — the same character stored two different ways
 
-> **Severity** Warning · **Default** on · **Scope** project (deterministic,
+> **Severity** Warning · **Default** off · **Scope** project (deterministic,
 > corpus-scoped) · **Knobs** none · **Source**
 > `signals/mixed_normalization.rs` · **ADR** 0063
 
@@ -294,7 +294,13 @@ hood.
 
 **Config** — On/off only. There is no threshold, calibration knob, or
 language-specific convention to learn — the condition is binary: does the
-corpus write a canonically equivalent cluster two ways, yes or no.
+corpus write a canonically equivalent cluster two ways, yes or no. Ships
+**default-off**, unlike most deterministic rules in this family: recording
+every grapheme cluster in the corpus (not just mixed ones — see below)
+measured a real warm-path cost on the shipped keystroke path even after a
+prefilter closed most of an initial regression (ADR 0063). Turn it on
+explicitly through the same `rules` map every rule uses; it detects
+identically once enabled.
 
 **Nuance & ADR ties** — Unit of comparison is one extended grapheme
 cluster (the repository's existing UAX #29 segmenter), keyed by its NFC

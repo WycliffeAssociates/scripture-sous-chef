@@ -52,7 +52,7 @@ diverge — `lex.excess-h-whitespace` lives in `whitespace.rs`,
 | `uni.mixed-numeral-systems` | Warning | on | per-verse | ✅ documented |
 | `uni.redundant-zero-width-space` | Info | on | per-verse | ✅ documented (ADR 0027) |
 | `punct.bracket-balance` | Info | on | project (corpus-relative scored) | ✅ documented (ADR 0037) |
-| `uni.mixed-normalization` | Warning | on | project (deterministic) | ✅ documented (ADR 0063) |
+| `uni.mixed-normalization` | Warning | **off** | project (deterministic) | ✅ documented (ADR 0063, perf-gated default-off) |
 | `prop.length-ratio` | Warning | on | project | 🗣 pending discussion |
 | `punct.adjacency-anomaly` | Info | on | stateful | ✅ documented (ADR 0024, 0031) |
 | `lex.punct-only-token` | Warning | on | stateful | ✅ documented (ADR 0030, 0032) |
