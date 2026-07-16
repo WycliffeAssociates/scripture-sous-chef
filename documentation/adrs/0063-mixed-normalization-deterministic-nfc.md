@@ -1,0 +1,226 @@
+# ADR 0063: `uni.mixed-normalization` — a deterministic, corpus-scoped NFC-mixing finding
+
+- **Date:** 2026-07-16
+- **Status:** Draft — implementation landed on `mixed-normalization-warning`
+  (Phases A–E complete, full test/oracle gate green); the warm-path
+  performance residual (see Consequences) is under active
+  owner/reviewer adjudication before this ADR is accepted.
+- **Builds on:** ADR 0010 (pure analyzer contract), ADR 0021 (grapheme
+  segmenter), ADR 0057 (event-stream engine, internal-hot-path-map
+  pattern), ADR 0060 (`PrepCache`), ADR 0061 (`Corpus`/`KeyIdx` addressing),
+  ADR 0062 (resident `Galley` + per-book `Tally`)
+- **Supersedes:** the scored/probabilistic design in
+  `documentation/ideas/2026-07-11-mixed-normalization-rule.md` and its
+  vendored-decomposition-table plan
+
+## Context
+
+A translation corpus can write the same abstract character in more than one
+raw Unicode encoding — most commonly precomposed vs. decomposed Latin
+diacritics (`é` U+00E9 vs. `e` + COMBINING ACUTE), but also ASCII/singleton
+equivalences (plain `K` vs. KELVIN SIGN U+212A) and Indic composition
+exclusions (Bengali `U+09DF` vs. its decomposed `U+09AF U+09BC`). Canonically
+equivalent strings render identically but break exact-match search,
+de-duplication, token identity, and cross-corpus tooling.
+
+The original idea (2026-07-11) proposed a scored, calibrated rule with a
+house-vendored decomposition table. A throwaway spike
+(`examples/nfc_spike.rs`, `examples/nfc_fleet.rs`) established that the
+useful condition is **binary**, not scored: a supplied corpus either mixes
+two raw forms under one NFC key or it doesn't. There is no threshold,
+recurrence knee, or language-specific convention to learn — mixing is rare
+(69/1504 corpora in the spike, using a shortcut that skipped ASCII and
+both-NFC-and-NFD forms) and, where it fires, precise.
+
+The plan additionally required the resident `Galley` (ADR 0062) as a
+prerequisite, since a "one finding per corpus" contract is only honest once
+the analysis scope is genuinely the whole project.
+
+## Decision
+
+Ship `uni.mixed-normalization` as a **deterministic, corpus-scoped, default-on**
+rule with no knobs.
+
+### Detection semantics
+
+The unit of comparison is one extended grapheme cluster (the repository's
+existing UAX #29 segmenter, ADR 0021), keyed by its NFC form via
+`unicode-normalization` — not a house-vendored table, since correct NFC
+needs canonical ordering, recursive decomposition, singleton mappings, and
+composition exclusions, and a partial reimplementation would disagree with
+JS `String.prototype.normalize` at the wasm boundary.
+
+**No unsafe skip.** Every distinct raw grapheme form is recorded, including
+plain ASCII and forms that are already both NFC and NFD:
+
+- Skipping ASCII would miss `K` mixing with KELVIN SIGN `U+212A` (which
+  normalizes to `K`).
+- Skipping an `is_nfc(raw) && is_nfd(raw)` cluster would miss the Bengali
+  composition-exclusion case: `U+09AF U+09BC` is itself both NFC and NFD,
+  while composition-excluded `U+09DF` normalizes to it — the exclusion
+  case is unrepresentable if the decomposed form is treated as "already
+  fine and skippable."
+
+**Majority, tie-break, and anchor.** For each NFC key with ≥2 raw forms
+("mixed"), the majority form is chosen by: greater corpus-wide count; on a
+tie, earlier first occurrence in caller-presented corpus order (ADR 0061 —
+never canonical book order); on a further tie (defensive), lexicographically
+smaller raw UTF-8 bytes. `affected` sums every mixed key's minority count.
+The one emitted finding anchors at the corpus-wide earliest non-majority
+occurrence across every mixed key; its `example` is that key's NFC form as a
+`String` — **not `char`**, since composition exclusions and multi-mark
+clusters can be more than one scalar (the repository's one documented
+exception to "single glyphs are `char`" — see
+`documentation/rules/messaging-and-fixes.md`).
+
+Cardinality is capped at one finding per supplied corpus. `source` is
+ignored entirely (mixing is intrinsic to the target).
+
+### Wire contract
+
+```rust
+MixedNormalization => "uni.mixed-normalization",   // RuleId
+Normalization { affected: u32, example: String },  // FindingArgs, kind: "normalization"
+```
+
+Severity `Warning`, `score: None`, verdict `Deterministic`, default-on (absent
+from `Config::v1_defaults`'s disabling list; toggled through the same
+`rules` map every rule uses — no typed sub-config, since there is nothing to
+tune).
+
+### Runtime architecture
+
+Registering a `ProjectRule` alone does not make it run in production: the
+fused `analyze_stateful` path emits project findings from explicit
+per-listener blocks (`if plan.bracket`, `if plan.duplicate`), so this rule
+needed both:
+
+1. A direct `ProjectRule::check` (for calibration/direct callers), driving
+   the shared listener via `stream::drive_book` — the same pattern as
+   `bracket_balance::match_book`.
+2. The fused walk: `WalkPlan.normalization`, `project_needs()` (requires
+   graphemes), a `NormalizationAcc` listener parallel to bracket/duplicate,
+   `BookOut.normalization`, and a content-keyed `PrepCache` product
+   (`BookEntry`/`CachedWalk.normalization`, `has_walk_lanes`) — **not** a
+   `RuleStats`/`Tally` entry. This is a pure per-book product of the text
+   alone; it does not enter `rules_fp` or the serialized `Stats` digest.
+
+Both paths share one accumulator/emitter (`NormalizationAcc` → `finish()` →
+`BookNormalization`, merged by `emit()`), so they cannot drift — proven by a
+dedicated direct-vs-fused equivalence test.
+
+The lower-level `analyze_stateful` API's partial-target semantics are
+unchanged: like every `ProjectRule`, this rule treats the target supplied on
+that call as its corpus and does not merge absent books from `Stats`. The
+resident `Galley` (ADR 0062) is what makes "one finding per corpus" an
+honest contract — it always analyzes its complete resident corpus.
+
+### Fleet evidence vs. the spike
+
+The production detector is deliberately more complete than the spike
+(records ASCII and both-NFC-and-NFD forms the spike's shortcut skipped), so
+its fleet counts move. On the WA-scope (251-corpus) subset: 45 corpora gained
+a `uni.mixed-normalization` finding — a materially higher rate than the
+spike's full-fleet 69/1504 would extrapolate to, entirely attributable to
+the completeness fix, not a false-positive class. Spot-checked rows are
+plausible real cases: Latin diacritic mixing (à/í/õ/ñ), Devanagari/Bengali/
+Gurmukhi nukta forms, and Arabic shadda+kasra ordering — matching the
+spike's anticipated evidence classes (Latin compose/decompose, Hebrew
+canonical mark reordering, Indic composition exclusions).
+
+## Rejected-for-now
+
+- **NFD as an alternative fix target.** NFC is the one explicit downstream
+  fix; NFD would only be worth adding if a future editor product decision
+  values preserving a decomposed house style over NFC interoperability.
+- **Folding into `uni.rare-glyph`.** ADR 0053 already records a residual
+  where a normalization-variant scalar surfaces mislabeled as "rare." This
+  rule gives that residual its own honest finding but does **not**
+  coordinate suppression with `uni.rare-glyph` — a scalar that is merely a
+  normalization variant of a common grapheme can still surface in both
+  rules today. Coordinating them needs a separately reviewed ownership
+  predicate (§14 follow-up).
+- **A census normalization lane.** Absolute composed/decomposed/neither
+  counts for fleet inspection is a separate, not-yet-scoped census
+  addition; this rule's deterministic finding payload does not carry that
+  reporting detail.
+- **A house-vendored decomposition table**, per the original idea — see
+  Context.
+
+## Oracle adjudication
+
+Because the rule is default-on, finding dumps are expected to gain rows; no
+pre-existing finding may move and `Stats` must remain byte-identical
+(non-stateful product). WA-scope addition-only diffs (default/all/
+incremental/cached) were byte-identical against the pre-change baseline
+after filtering the new rule's rows, confirmed after **every** implementation
+phase including three rounds of internal accumulator optimization — the
+detector's observable behavior never moved once implemented, only its
+internal data structures did.
+
+## Consequences
+
+- **Editor gate (§11 in the plan).** This repository ships the detector,
+  catalog, wasm wire, and generated packages, but cannot truthfully ship the
+  editor's one-click project fix yet: the live editor
+  (`scripture-editor-proto-2`) still calls stateless `analyze_vref` per book,
+  so cross-book mixing is invisible there and `SousFinding` doesn't preserve
+  `args`. The first JS consumer can dispatch on the closed rule id alone
+  (`if (finding.code === "uni.mixed-normalization") { verses =
+  verses.map(t => t.normalize("NFC")) }`) without needing `affected`/
+  `example` — those are presentation-only. Publication/adoption is gated on
+  the editor first adopting a whole-project resident `Galley`; until then,
+  core commits may merge but the end-to-end fix must not be advertised.
+- **Dependency.** `unicode-normalization` promoted from a throwaway
+  dev-dependency to a real workspace dependency. Default features are just
+  `["std"]` — no surprises. `Cargo.lock` needed no textual change (already
+  resolved the same version).
+- **Wasm size:** +145,682 bytes (~12.4%, both `pkg-web` and `pkg-bundler`;
+  1,172,170 → 1,317,852) / +68,424 bytes gzip-compressed (416,727 →
+  485,151, independently measured). A nonzero delta is expected and was
+  adjudicated as acceptable: full-fidelity NFC tables (composition,
+  decomposition, canonical ordering, exclusions) are inherently data-heavy,
+  and a partial table was explicitly rejected (Context).
+- **Memory:** the retained per-book product is a flat map of distinct raw
+  forms, grouped by NFC key at `finish()` (not per-occurrence). Measured
+  cardinality: `WA-en-ulb` (full English Bible, 31,086 verses) — 82
+  distinct raw forms / 82 NFC keys (zero mixed); `WA-as-ulb` (the spike's
+  worst measured corpus, 31,083 verses) — 1,542 distinct raw forms grouped
+  into 1,529 NFC keys (13 mixed). Trivially small either way; this rule
+  does not dominate memory.
+- **Warm-path performance — UNRESOLVED, pending adjudication.** `cargo
+  bench -p ssc-core -- analyze` (criterion, serial, `v1_defaults`, en_ulb)
+  found a real regression against ADR 0062's measured `cached_edit_*` band
+  (5–25 ms): the naive nested-`BTreeMap` implementation measured
+  37–48 ms for `cached_edit_PSA` (was 18.9 ms), driven by an unconditional
+  lookup-or-insert per grapheme cluster across the **entire** verse text —
+  not just mixed occurrences, per the no-unsafe-skip contract above. Three
+  rounds of behavior-preserving optimization (confirmed byte-identical via
+  full test suite + oracle re-dump after each): `BTreeMap` → `FxHashMap`
+  (ADR 0057's internal-hot-path-map pattern); flattening the accumulator to
+  one map keyed by raw form, deferring NFC-key computation from every
+  *occurrence* to once per *distinct* raw form in `finish()`; and a
+  128-slot direct-addressed array for single-ASCII-byte clusters beside the
+  flat map. Net: `cached_edit_PSA` down to ~26–28 ms (~40% off the worst
+  measurement) but **still outside the 5–25 ms band** (~+43% vs. the 18.9 ms
+  baseline); `cached_edit_MAT`/`cached_edit_3JN` are back inside the band.
+  Profiling (`samply`) traced the residual to the hash/map operations
+  themselves (not cloning on cache hits, not `is_nfc`/`.nfc()`, both
+  measured and ruled out). A fourth, larger architectural option — a
+  `NORM_RELEVANT` prefilter bit in the shared per-scalar `Class` bitfield
+  (ADR 0020/0022), gating which grapheme clusters enter the map at all — is
+  under verification (safe-superset argument against Unicode data, expected
+  range-table/wasm delta) before any implementation. **This ADR is not
+  accepted until the residual is adjudicated** — either the numbers above
+  are accepted as-is, or a further change lands and this section is
+  updated.
+
+## Relates to
+
+- Plan: `documentation/plans/2026-07-14-mixed-normalization-plan.md` (this
+  ADR is its expected 0063).
+- Superseded idea: `documentation/ideas/2026-07-11-mixed-normalization-rule.md`.
+- ADR 0053's residual note now points here (does not claim rare-glyph
+  coordination has landed).
+- Downstream handoff: see the cross-repo handoff note (§11) for the exact
+  live seams the editor implementation must address.
