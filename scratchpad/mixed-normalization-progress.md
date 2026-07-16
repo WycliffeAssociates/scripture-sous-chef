@@ -282,3 +282,34 @@ stopping here. Two rounds of legitimate, behavior-preserving optimization
 37-48ms down to 27.9-28.1ms — a real, substantial improvement — but the
 residual ~3ms/12% overshoot past the band is still there. Not attempting a
 third redesign without explicit sign-off.
+
+### Round three: ASCII fast-path array (reviewer-requested, bounded)
+
+Reviewer requested one final bounded change: a 128-slot
+`[Option<FormSummary>; 128]` array beside the flat `FxHashMap`, direct-
+addressed by byte value for single-ASCII-byte grapheme clusters (the
+dominant class in scripture text) — bypassing hashing entirely for that
+class. `finish()` folds occupied slots into the same NFC-grouped
+`BookNormalization` (ASCII byte == its own NFC key). K/Kelvin mixing stays
+sound (ASCII `K` now counts through `ascii[b'K' as usize]` instead of
+`forms`, still counted).
+
+Implemented exactly as specified. Re-ran the full gate:
+- 406/406 tests byte-identical (including the pre-existing
+  `ascii_kelvin_singleton_equivalence_fires`, retained, not re-added);
+  clippy clean.
+- Oracle re-dump byte-identical again — zero behavior change, third time.
+- Bench: cached_edit_MAT 18.6-18.8ms → 18.0-19.0ms ("no change detected",
+  p=0.27); **cached_edit_PSA 27.9-28.1ms → 26.2-28.3ms, mean ~27.0ms
+  ("no change detected", p=0.10) — statistically indistinguishable from
+  the flat-map-only version.** The ASCII array did not move the needle
+  further for `en_ulb`: a ~80-entry `FxHashMap` was apparently already
+  fast enough in steady state that avoiding hashing outright wasn't the
+  remaining bottleneck. cached_edit_3JN unchanged. `full_devanagari` (no
+  `cached_edit` equivalent exists for it) shows a further improvement,
+  consistent with a script with many more distinct non-ASCII forms
+  benefiting more from earlier changes than this specific one.
+
+**PSA still sits outside the 5-25ms band** (mean ~27.0ms, ADR 0062 baseline
+18.9ms, ~+43%). Reviewer's own stated plan: adjudicate the residual at this
+point rather than request a fourth redesign. Reporting final numbers now.

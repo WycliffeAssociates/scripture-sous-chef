@@ -74,20 +74,30 @@ pub(crate) struct BookNormalization {
 /// undetected.
 ///
 /// Deliberately **flat and NFC-free on the hot path**: `verse()` does exactly
-/// one `FxHashMap` lookup per grapheme cluster and never calls `is_nfc`/
-/// `.nfc()`. An earlier two-level (NFC key → raw form) shape computed the
-/// NFC key for every *occurrence* — i.e. corpus-wide, not proportional to
-/// the (tiny) distinct-form set — and profiling confirmed that nested
-/// lookup, not normalization itself, was the measurable `analyze` cost.
-/// [`finish`] moves the NFC-key computation to run once per **distinct raw
-/// form** instead (a small, book-local set), which is where it belongs.
+/// one lookup per grapheme cluster and never calls `is_nfc`/`.nfc()`. An
+/// earlier two-level (NFC key → raw form) shape computed the NFC key for
+/// every *occurrence* — i.e. corpus-wide, not proportional to the (tiny)
+/// distinct-form set — and profiling confirmed that nested lookup, not
+/// normalization itself, was the measurable `analyze` cost. [`finish`] moves
+/// the NFC-key computation to run once per **distinct raw form** instead (a
+/// small, book-local set), which is where it belongs.
+///
+/// `ascii` is a direct-addressed fast path for single-ASCII-byte grapheme
+/// clusters (`a`, `.`, ` `, digits, …) — overwhelmingly the dominant class in
+/// scripture text, per the profiled cost of hashing every one of them.
+/// `forms` still carries every multi-byte or non-ASCII raw form; the ASCII
+/// split changes nothing about which forms are counted (K/Kelvin mixing is
+/// still sound — ASCII `K` just counts through `ascii[b'K' as usize]`
+/// instead of `forms`).
 pub(crate) struct NormalizationAcc {
+    ascii: [Option<FormSummary>; 128],
     forms: FxHashMap<Box<str>, FormSummary>,
 }
 
 impl NormalizationAcc {
     pub(crate) fn new() -> Self {
         NormalizationAcc {
+            ascii: std::array::from_fn(|_| None),
             forms: FxHashMap::default(),
         }
     }
@@ -95,6 +105,22 @@ impl NormalizationAcc {
     pub(crate) fn verse(&mut self, v: &stream::VerseInputs<'_, '_>) {
         for g in v.graphemes {
             let raw = g.slice(v.text);
+            let bytes = raw.as_bytes();
+            if bytes.len() == 1 && bytes[0].is_ascii() {
+                match &mut self.ascii[bytes[0] as usize] {
+                    Some(summary) => summary.count += 1,
+                    slot => {
+                        *slot = Some(FormSummary {
+                            count: 1,
+                            first: FirstSite {
+                                local: v.local_idx,
+                                span: g.range(),
+                            },
+                        });
+                    }
+                }
+                continue;
+            }
             match self.forms.get_mut(raw) {
                 Some(summary) => summary.count += 1,
                 None => {
@@ -119,14 +145,19 @@ impl NormalizationAcc {
     pub(crate) fn finish(self) -> BookNormalization {
         let mut grouped: FxHashMap<Box<str>, FxHashMap<Box<str>, FormSummary>> =
             FxHashMap::default();
+        for (byte, summary) in self.ascii.into_iter().enumerate() {
+            let Some(summary) = summary else { continue };
+            // An ASCII byte is trivially its own NFC key.
+            let raw: Box<str> = (byte as u8 as char).to_string().into_boxed_str();
+            grouped.entry(raw.clone()).or_default().insert(raw, summary);
+        }
         for (raw, summary) in self.forms {
-            // Fast borrow path: ASCII is trivially its own NFC form; a
-            // non-ASCII form that is already NFC (which includes the
-            // both-NFC-and-NFD composition-exclusion case) also borrows
-            // `raw` unchanged. Only a form that actually needs normalizing
-            // allocates — and only once per distinct form, not per
-            // occurrence.
-            let key: Cow<'_, str> = if raw.is_ascii() || is_nfc(&raw) {
+            // Fast borrow path: a non-ASCII form that is already NFC (which
+            // includes the both-NFC-and-NFD composition-exclusion case)
+            // borrows `raw` unchanged. Only a form that actually needs
+            // normalizing allocates — and only once per distinct form, not
+            // per occurrence.
+            let key: Cow<'_, str> = if is_nfc(&raw) {
                 Cow::Borrowed(raw.as_ref())
             } else {
                 Cow::Owned(raw.nfc().collect::<String>())
