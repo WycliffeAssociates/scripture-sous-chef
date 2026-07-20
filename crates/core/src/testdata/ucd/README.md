@@ -1,9 +1,10 @@
 # Unicode Character Database extracts (UCD 17.0.0)
 
-Provenance for the fused classification table and the grapheme-segmenter
-conformance gate (ADR 0021). These are **committed reference data**, not
-generated — the single source of truth for both `charclass_table.rs`
-(via `examples/gen_charclass_table.rs`) and the in-crate conformance test.
+Provenance for the fused classification table and the grapheme-segmenter and
+word-break conformance gates (ADR 0021, ADR 0064). These are **committed
+reference data**, not generated — the single source of truth for both
+`charclass_table.rs` (via `examples/gen_charclass_table.rs`) and the
+in-crate conformance tests.
 
 ## Files
 
@@ -13,6 +14,8 @@ generated — the single source of truth for both `charclass_table.rs`
 | `emoji-data.txt` | `emoji/emoji-data.txt` | table generator (`Extended_Pictographic` → `COMPLEX`) | pristine |
 | `DerivedCoreProperties-InCB.txt` | `DerivedCoreProperties.txt` | table generator (`INCB_*` bits) | **extract** — see below |
 | `GraphemeBreakTest.txt` | `auxiliary/GraphemeBreakTest.txt` | `grapheme::tests::conforms_to_graphemebreaktest` | pristine |
+| `WordBreakProperty.txt` | `auxiliary/WordBreakProperty.txt` | table generator (`WB_EXTEND`/`WB_SEP` bits, ADR 0064) | pristine |
+| `WordBreakTest.txt` | `auxiliary/WordBreakTest.txt` | `token::tests::conforms_to_wordbreaktest` | pristine |
 
 The full **`DerivedCoreProperties.txt`** (~1.1 MB, all derived properties) is at
 <https://www.unicode.org/Public/17.0.0/ucd/DerivedCoreProperties.txt>. We consume
@@ -36,14 +39,14 @@ As of this writing: **Unicode 17.0.0**, `unicode-segmentation` 1.13.x.
 
 1. Bump `unicode-segmentation` and note the Unicode version it targets
    (`tables::UNICODE_VERSION` in that crate).
-2. Re-download the four files above from the matching
+2. Re-download the files above from the matching
    `https://www.unicode.org/Public/<VERSION>/ucd/` path; re-trim the InCB
    extract with the command above.
 3. `cargo xtask gen-charclass-table` to
    regenerate `src/charclass_table.rs`.
-4. `cargo test -p ssc-core` — both gates (conformance + `matches_std_predicates`)
-   must stay green. Re-run the whole-corpus differential (ADR 0021) as the
-   calibration check.
+4. `cargo test -p ssc-core` — all gates (grapheme conformance, word-break
+   conformance, `matches_std_predicates`) must stay green. Re-run the
+   whole-corpus differentials (ADR 0021, ADR 0064) as the calibration check.
 
 ## Licence
 

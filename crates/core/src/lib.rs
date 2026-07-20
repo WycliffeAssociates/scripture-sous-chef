@@ -35,6 +35,8 @@ pub mod unicode;
 pub use cache::PrepCache;
 #[cfg(any(test, feature = "test-probes"))]
 pub use cache::CacheProbe;
+#[cfg(feature = "bench-probes")]
+pub use stream::{FloorNeeds, walk_floor};
 pub use catalog::{RuleCard, SENSITIVITY_STOPS, Verdict, rule_cards};
 pub use census::{CensusOptions, Inventory, census};
 pub use config::{

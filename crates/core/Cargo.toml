@@ -33,6 +33,11 @@ rayon = "1"
 name = "analyze"
 harness = false
 
+[[bench]]
+name = "floor"
+harness = false
+required-features = ["bench-probes"]
+
 [features]
 default = ["serde"]
 serde = ["dep:serde"]
@@ -50,3 +55,10 @@ parallel = ["dep:rayon"]
 # downstream crate's tests (the shell) can assert cache-reuse and zero-re-tally
 # invariants directly. Test-only infrastructure; carries no runtime cost off.
 test-probes = []
+# Un-gates `walk_floor`/`FloorNeeds` (benches/floor.rs only): the fused walk's
+# per-verse substrate with zero rule listeners attached, so a bench can learn
+# the floor cost any rule combination pays into before its own logic runs.
+# Not part of the crate's real public API — no downstream consumer (galley,
+# wasm) enables this feature; it exists only so the floor bench binary can
+# reach the walk's private primitives without exposing them generally.
+bench-probes = []

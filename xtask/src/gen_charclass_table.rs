@@ -34,6 +34,17 @@
 //!       emoji-data `Extended_Pictographic`
 //!     - `INCB_CONSONANT` / `INCB_LINKER` / `INCB_MARK` ← DerivedCoreProperties
 //!       `InCB` `Consonant` / `Linker` / `Extend`
+//! - **Word-break fast-path SPIKE bits** — see
+//!   `documentation/calibration/2026-07-17-word-break-fast-path-survey.md`
+//!   for the full feasibility analysis; not yet a shipped feature, but the
+//!   last 2 free `Class` bits are committed to it:
+//!     - `WB_EXTEND` ← WordBreakProperty `Extend` / `ZWJ` (NOT `SpacingMark`
+//!       — deliberately narrower than `EXTENDER`, which conflates all three
+//!       for grapheme-clustering purposes)
+//!     - `WB_SEP` ← WordBreakProperty `MidLetter` / `MidNum` / `MidNumLet` /
+//!       `ExtendNumLet` / `Single_Quote` / `Double_Quote` (a hot-loop
+//!       candidate-separator prefilter; literal char matching disambiguates
+//!       which of the six on the rare hit)
 //!
 //! ## The bit layout below MUST match `charclass.rs`
 //!
@@ -77,7 +88,11 @@ const QUOTE: u32 = 1 << 28; // engine-defined quote set (NOT a UCD property)
 // NORM_RELEVANT (ADR 0063): a safe-superset prefilter for uni.mixed-normalization
 // — see the computation below for the exact three-rule definition.
 const NORM_RELEVANT: u32 = 1 << 29;
-// bits 30..=31 free; bit 6 reserved (clinging).
+// Word-break fast-path SPIKE bits (see
+// documentation/calibration/2026-07-17-word-break-fast-path-survey.md) — the
+// last 2 free bits, both spoken for now; bit 6 stays reserved (clinging).
+const WB_EXTEND: u32 = 1 << 30; // Word_Break in {Extend, ZWJ} — NOT SpacingMark
+const WB_SEP: u32 = 1 << 31; // Word_Break in {MidLetter,MidNum,MidNumLet,ExtendNumLet,Single_Quote,Double_Quote}
 
 const MAX_CP: u32 = 0x10FFFF;
 
@@ -204,6 +219,19 @@ pub fn run(ssc_core: &Path) {
                 Some("Extend") => set(lo, hi, INCB_MARK),
                 _ => {}
             }
+        }
+    }
+    // WB_EXTEND / WB_SEP (word-break fast-path SPIKE): derived from the
+    // committed `WordBreakProperty.txt` the same way the grapheme-break bits
+    // above are derived from `GraphemeBreakProperty.txt` — not eyeballed.
+    // `WB_EXTEND` is deliberately narrower than `EXTENDER` (see its doc
+    // comment in charclass.rs): only `Extend`/`ZWJ`, not `SpacingMark`.
+    for (lo, hi, f) in parse_ucd(&ucd.join("WordBreakProperty.txt")) {
+        match f[0].as_str() {
+            "Extend" | "ZWJ" => set(lo, hi, WB_EXTEND),
+            "MidLetter" | "MidNum" | "MidNumLet" | "ExtendNumLet" | "Single_Quote"
+            | "Double_Quote" => set(lo, hi, WB_SEP),
+            _ => {}
         }
     }
 

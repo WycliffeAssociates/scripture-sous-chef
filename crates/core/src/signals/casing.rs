@@ -74,7 +74,7 @@
 //! kept with raw tallies.
 
 use std::cell::RefCell;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use rustc_hash::FxHashMap;
@@ -417,8 +417,8 @@ fn logistic(z: f64) -> f64 {
 /// sizes. `base` is the word-start distribution and **includes** the after-c
 /// occurrences, so the "elsewhere" column subtracts them out.
 fn reshuffle_deviate(
-    after: &HashMap<&str, u64>,
-    base: &HashMap<&str, u64>,
+    after: &FxHashMap<&str, u64>,
+    base: &FxHashMap<&str, u64>,
     jurors: &[&str],
 ) -> f64 {
     let n_after: u64 = jurors
@@ -453,7 +453,7 @@ fn reshuffle_deviate(
 
 /// Total-variation distance `½·Σ|p_w − q_w|` between two juror distributions —
 /// a size-independent effect size in `[0, 1]`; 0 iff the distributions match.
-fn tv_distance(p: &HashMap<&str, u64>, q: &HashMap<&str, u64>, jurors: &[&str]) -> f64 {
+fn tv_distance(p: &FxHashMap<&str, u64>, q: &FxHashMap<&str, u64>, jurors: &[&str]) -> f64 {
     let np: u64 = jurors.iter().map(|w| p.get(w).copied().unwrap_or(0)).sum();
     let nq: u64 = jurors.iter().map(|w| q.get(w).copied().unwrap_or(0)).sum();
     if np == 0 || nq == 0 {
@@ -476,10 +476,10 @@ fn tv_distance(p: &HashMap<&str, u64>, q: &HashMap<&str, u64>, jurors: &[&str]) 
 /// counts, baseline word-start distribution) are reindexed here from the
 /// per-word forced tallies — the reshuffle witness is case-free, so a word's
 /// forced upper+lower after a class is its occurrence count there.
-fn build_trust(words: &HashMap<String, WordStats>, z: f64) -> HashMap<ClassKey, f64> {
+fn build_trust(words: &FxHashMap<String, WordStats>, z: f64) -> FxHashMap<ClassKey, f64> {
     // Baseline word-start distribution + per-class aftermath (reindex).
-    let mut word_start_total: HashMap<&str, u64> = HashMap::new();
-    let mut after: HashMap<ClassKey, HashMap<&str, u64>> = HashMap::new();
+    let mut word_start_total: FxHashMap<&str, u64> = FxHashMap::default();
+    let mut after: FxHashMap<ClassKey, FxHashMap<&str, u64>> = FxHashMap::default();
     for (key, w) in words {
         let key = key.as_str();
         let total = w.all_total();
@@ -525,12 +525,12 @@ fn build_trust(words: &HashMap<String, WordStats>, z: f64) -> HashMap<ClassKey, 
         .map(|(&k, _)| k)
         .collect();
     if kept.is_empty() {
-        return HashMap::new();
+        return FxHashMap::default();
     }
 
     // W1 case-follow per class: capitalize dominance over lexicon-lowercase
     // followers — exactly ADR 0051's per-glyph habit, re-derived per class.
-    let mut w1: HashMap<ClassKey, (u64, u64)> = HashMap::new();
+    let mut w1: FxHashMap<ClassKey, (u64, u64)> = FxHashMap::default();
     for w in words.values() {
         if !w.is_lexicon_lower(z) {
             continue;
@@ -563,7 +563,7 @@ fn build_trust(words: &HashMap<String, WordStats>, z: f64) -> HashMap<ClassKey, 
         diff: f64,
         events: u64,
     }
-    let mut prelim: HashMap<ClassKey, Prelim> = HashMap::new();
+    let mut prelim: FxHashMap<ClassKey, Prelim> = FxHashMap::default();
     for &ck in &kept {
         let a = &after[&ck];
         let dev = reshuffle_deviate(a, &word_start_total, &jurors);
@@ -616,7 +616,7 @@ fn build_trust(words: &HashMap<String, WordStats>, z: f64) -> HashMap<ClassKey, 
     let ref_after = reference.map(|r| &after[&r]);
     let ref_base_tv = ref_after.map(|ra| tv_distance(&word_start_total, ra, &jurors).max(1e-6));
 
-    let mut trust = HashMap::with_capacity(prelim.len());
+    let mut trust = FxHashMap::with_capacity_and_hasher(prelim.len(), Default::default());
     for (&ck, p) in &prelim {
         let agree = if Some(ck) == reference {
             1.0
@@ -640,12 +640,12 @@ fn build_trust(words: &HashMap<String, WordStats>, z: f64) -> HashMap<ClassKey, 
 /// below `judge_casing`: both casing rules build the identical model from
 /// the same merged stats within one `analyze` call).
 struct Model {
-    words: HashMap<String, WordStats>,
+    words: FxHashMap<String, WordStats>,
     /// Per class trust; `None`-keyed book-initial is always fully trusted.
-    trust: HashMap<ClassKey, f64>,
+    trust: FxHashMap<ClassKey, f64>,
     /// Lexicon-restricted capitalize-after-class counts (up, total). `None` =
     /// book-initial. A quote class is present only when promoted.
-    habit: HashMap<Option<ClassKey>, (u64, u64)>,
+    habit: FxHashMap<Option<ClassKey>, (u64, u64)>,
     z: f64,
     gate: f64,
 }
@@ -707,7 +707,7 @@ impl Model {
         let z = clamp_z(cfg.confidence_z);
         let gate = f64::from(clamp_unit(cfg.trust_gate));
         // Corpus-wide word table: sum each book's raw tallies.
-        let mut words: HashMap<String, WordStats> = HashMap::new();
+        let mut words: FxHashMap<String, WordStats> = FxHashMap::default();
         for bc in stats.per_book.values() {
             for (key, w) in &bc.words {
                 words.entry(key.clone()).or_default().add(w);
@@ -721,7 +721,7 @@ impl Model {
         // always contribute (structurally forced); a quote class contributes
         // only when promoted, so trust adds the quote channel without moving the
         // bare-terminal convention.
-        let mut habit: HashMap<Option<ClassKey>, (u64, u64)> = HashMap::new();
+        let mut habit: FxHashMap<Option<ClassKey>, (u64, u64)> = FxHashMap::default();
         for w in words.values() {
             if !w.is_lexicon_lower(z) {
                 continue;

@@ -84,7 +84,28 @@ const QUOTE: u32 = 1 << 28;
 // (own-decomposition, nonzero canonical combining class, and canonical-
 // singleton decomposition targets) and its correctness argument.
 const NORM_RELEVANT: u32 = 1 << 29;
-// bits 30..=31 free; bit 6 reserved (a future `clinging` flag).
+// The following two bits back the word-break fast-path SPIKE (measurement
+// only, not yet a shipped feature — see
+// `documentation/calibration/2026-07-17-word-break-fast-path-survey.md`),
+// which found both by actually building a prototype and running it against
+// the corpus fleet, not by inspection alone.
+//
+// WB_EXTEND: UCD `Word_Break` ∈ {Extend, ZWJ} — the WB4 "absorb into the
+// preceding atom" set for word-boundary purposes. Deliberately narrower than
+// `EXTENDER` above: `EXTENDER` is GCB ∈ {Extend, SpacingMark, ZWJ}, correct
+// for grapheme clustering (all three glue to the base cluster), but wrong
+// for word-breaking — some `GCB=SpacingMark` scalars are genuinely
+// `Word_Break=Other` (e.g. U+0EB3 LAO VOWEL SIGN AM), so reusing `EXTENDER`
+// for word-break absorption wrongly fused them into the preceding word (the
+// Lao "ນ້ຳ" bug the prototype's corpus differential found).
+const WB_EXTEND: u32 = 1 << 30;
+// WB_SEP: a word-break "candidate separator" prefilter — UCD `Word_Break` ∈
+// {MidLetter, MidNum, MidNumLet, ExtendNumLet, Single_Quote, Double_Quote}
+// (42 codepoints total across the six categories). Mirrors why `QUOTE`
+// above gets its own bit despite being only 14 chars: these are read in a
+// per-scalar hot loop, so one OR'd bit is a cheap fast-reject; a literal
+// char match disambiguates which of the six categories on the rare hit.
+const WB_SEP: u32 = 1 << 31;
 
 impl Class {
     #[inline]
@@ -228,6 +249,21 @@ impl Class {
     #[inline]
     pub fn is_incb_mark(self) -> bool {
         self.0 & INCB_MARK != 0
+    }
+
+    // Word-break queries (SPIKE — see `WB_EXTEND`/`WB_SEP` doc comments
+    // above) — `#[doc(hidden)]` public for the same reason as the
+    // grapheme-break bits: dev-tooling prototypes need them without
+    // re-deriving the private bit layout.
+    #[doc(hidden)]
+    #[inline]
+    pub fn is_wb_extend(self) -> bool {
+        self.0 & WB_EXTEND != 0
+    }
+    #[doc(hidden)]
+    #[inline]
+    pub fn is_wb_sep(self) -> bool {
+        self.0 & WB_SEP != 0
     }
 }
 

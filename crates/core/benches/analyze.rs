@@ -26,6 +26,11 @@
 //! The wasm-side equivalent is `npm run bench:wasm` (same NT through
 //! `analyze_vref`, marshaling included).
 //! Baseline numbers: `documentation/calibration/2026-06-09-perf-baseline.md`
+//!
+//! For "what's the unavoidable substrate cost before any rule's own logic
+//! runs" (as opposed to the collective cost of the shipped rules), see the
+//! sibling `floor.rs` bench (`cargo bench -p ssc-core --features
+//! bench-probes --bench floor`) — same corpora, zero rule listeners.
 
 use std::hint::black_box;
 

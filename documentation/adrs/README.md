@@ -80,6 +80,7 @@ isn't visible from the code alone.
 | 0061 | 2026-07-14 | [Finding addresses become an ordered `Corpus` + `KeyIdx`/`LocalKeyIdx` (retires `Sid`/`BookId`/`VerseMap`)](0061-finding-address-corpus-keyidx.md) | Accepted (amends 0010/0040) |
 | 0062 | 2026-07-15 | [Resident galley shell + per-book `Tally` provenance](0062-resident-galley-tally-provenance.md) | Accepted (supersedes 0043's `changed` contract) |
 | 0063 | 2026-07-16 | [`uni.mixed-normalization` — a deterministic, corpus-scoped NFC-mixing finding](0063-mixed-normalization-deterministic-nfc.md) | Accepted (ships default-off — perf-adjudicated deviation from the plan's default-on ruling) |
+| 0064 | 2026-07-17 | [Word-break fast path over the fused `Class` table, plus a per-book adaptive ASCII gate](0064-word-break-fast-path.md) | Accepted (extends 0021/0022/0045/0057/0018) |
 
 ## Format
 

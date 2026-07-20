@@ -282,6 +282,53 @@ pub(crate) fn walk_fused(
     })
 }
 
+/// Sample size for the per-book adaptive tokenize gate (ADR 0064): the
+/// number of a book's leading verses whose non-ASCII codepoint density
+/// decides whether the WHOLE book delegates to `unicode_word_indices()` or
+/// runs `token`'s hand-rolled walker — decided once, not re-checked per
+/// verse. Calibrated in the ADR's book-level sampling survey (fleet-wide,
+/// this N already reaches near-total directional agreement against several
+/// candidate crossover thresholds).
+const ADAPTIVE_SAMPLE_N: usize = 5;
+
+/// PLACEHOLDER threshold, not a measured crossover — see the ADR. Only
+/// ~0% (delegating wins big), ~10% (delegating still wins), and ~50%+ (the
+/// hand-rolled walker wins big) are pinned down by direct measurement; 30%
+/// is simply the midpoint of the still-unmeasured 10-50% gap, picked so this
+/// gate could ship at all. Revisit once the real crossover is measured.
+const ADAPTIVE_THRESHOLD: f64 = 0.30;
+
+/// The per-book adaptive tokenize decision (ADR 0064): samples the non-ASCII
+/// codepoint density of the first `ADAPTIVE_SAMPLE_N` verses (or fewer, for
+/// a short book) and decides ONCE whether the whole book should delegate to
+/// `unicode_word_indices()` (`true`) or run `token`'s hand-rolled walker
+/// (`false`). A plain per-book-local decision — no atomic, no mutex: each
+/// book's own walk is already strictly sequential even under the parallel
+/// per-book fan-out (ADR 0018), so there is nothing to synchronize, and a
+/// counter shared *across* books would need real synchronization for no
+/// benefit (each book's own density is what determines whether ITS walk
+/// should delegate). Applies uniformly regardless of whether the book is in
+/// the `counted` or anchor (uncounted) set — this is a pure
+/// tokenization-performance detail, not a counting concern.
+fn book_prefers_delegation(texts: &[String]) -> bool {
+    let sample_n = ADAPTIVE_SAMPLE_N.min(texts.len());
+    let (mut non_ascii, mut total) = (0u64, 0u64);
+    for t in &texts[..sample_n] {
+        for c in t.chars() {
+            total += 1;
+            if !c.is_ascii() {
+                non_ascii += 1;
+            }
+        }
+    }
+    let density = if total > 0 {
+        non_ascii as f64 / total as f64
+    } else {
+        0.0
+    };
+    density < ADAPTIVE_THRESHOLD
+}
+
 /// Walk one book's verses once, feeding every listener the plan enables.
 fn walk_book(
     group: &BookGroup<'_>,
@@ -298,6 +345,9 @@ fn walk_book(
     } else {
         plan.anchor_needs().union(plan.project_needs())
     };
+    // Short-circuits (no sampling cost) when nothing on this walk needs
+    // tokens at all.
+    let delegate_tokens = needs.tokens && book_prefers_delegation(group.texts);
 
     let mut casing_acc = plan.casing.then(casing::CasingAcc::new);
     let mut adjacency_acc = plan
@@ -339,7 +389,11 @@ fn walk_book(
             grapheme::segment_tape(text, &tape_buf, &mut graphemes_buf);
         }
         if needs.tokens {
-            token::tokenize_into(text, &mut tokens_buf);
+            if delegate_tokens {
+                token::tokenize_oracle_into(text, &mut tokens_buf);
+            } else {
+                token::tokenize_hand_rolled_into(text, &mut tokens_buf);
+            }
         }
         if needs.folds {
             fold_letter_tokens(text, &tokens_buf, &mut folds_buf);
@@ -450,6 +504,11 @@ pub(crate) fn drive_book<'g, A, T>(
     finish: impl FnOnce(A) -> T,
 ) -> T {
     let needs = needs.union(Needs::default()); // normalize graphemes ⇒ tape, folds ⇒ tokens
+    // Same per-book adaptive gate as `walk_book` (ADR 0064) — computed
+    // identically (a pure function of `group.texts`) so this trait-driven
+    // path and the fused walk can never diverge on which one a given book
+    // takes.
+    let delegate_tokens = needs.tokens && book_prefers_delegation(group.texts);
     let mut tape_buf: Vec<TapeEntry> = Vec::new();
     let mut graphemes_buf: Vec<GSpan> = Vec::new();
     let mut tokens_buf: Vec<Token> = Vec::new();
@@ -464,7 +523,11 @@ pub(crate) fn drive_book<'g, A, T>(
             grapheme::segment_tape(text, &tape_buf, &mut graphemes_buf);
         }
         if needs.tokens {
-            token::tokenize_into(text, &mut tokens_buf);
+            if delegate_tokens {
+                token::tokenize_oracle_into(text, &mut tokens_buf);
+            } else {
+                token::tokenize_hand_rolled_into(text, &mut tokens_buf);
+            }
         }
         if needs.folds {
             fold_letter_tokens(text, &tokens_buf, &mut folds_buf);
@@ -481,4 +544,46 @@ pub(crate) fn drive_book<'g, A, T>(
         feed(&mut acc, &v);
     }
     finish(acc)
+}
+
+/// Bench-only mirror of [`Needs`] (`bench-probes` feature): which per-verse
+/// products to force on, with zero rule listener attached. Kept as its own
+/// type rather than exposing `Needs` itself, so the production type's
+/// crate-private visibility never has to move for a dev tool.
+#[cfg(feature = "bench-probes")]
+#[derive(Clone, Copy, Default)]
+pub struct FloorNeeds {
+    pub tape: bool,
+    pub graphemes: bool,
+    pub tokens: bool,
+    pub folds: bool,
+}
+
+/// The fused walk's substrate cost over `books`, for the requested
+/// [`FloorNeeds`], with no rule listener attached — the floor any rule
+/// combination pays into before its own logic runs. Drives the exact same
+/// per-verse build every real listener shares ([`drive_book`]), so this can
+/// never silently drift from what `analyze`'s benches measure. Returns the
+/// summed product counts (tape entries + graphemes + tokens) so the compiler
+/// can't fold the walk away.
+#[cfg(feature = "bench-probes")]
+pub fn walk_floor(books: &Books<'_>, needs: FloorNeeds) -> usize {
+    let needs = Needs {
+        tape: needs.tape,
+        graphemes: needs.graphemes,
+        tokens: needs.tokens,
+        folds: needs.folds,
+    };
+    books
+        .iter()
+        .map(|group| {
+            drive_book(
+                group,
+                needs,
+                0usize,
+                |acc, v| *acc += v.tape.len() + v.graphemes.len() + v.tokens.len(),
+                |acc| acc,
+            )
+        })
+        .sum()
 }
