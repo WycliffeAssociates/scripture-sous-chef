@@ -275,6 +275,129 @@ pub struct Finding {
 #[tsify(into_wasm_abi)]
 pub struct Findings(pub Vec<Finding>);
 
+/// Bench-only (`bench-probes` feature): synthesizes one realistic `Finding`
+/// at cycle position `i`, picking from a handful of real `RuleId` variants
+/// — some with the `args` payload the real rule carries, some without, one
+/// scored, one not — with a verse-ref-shaped `sid` that advances
+/// deterministically. Used by [`bench_synthetic_findings`] to build a
+/// `Findings` set that looks like real `analyze_vref` output without
+/// invoking any corpus construction or rule compute, so a timing harness
+/// measures only the marshaling step.
+#[cfg(feature = "bench-probes")]
+fn synthetic_finding(i: u32) -> Finding {
+    const BOOKS: [&str; 5] = ["MAT", "MRK", "LUK", "JHN", "ACT"];
+    let book = BOOKS[(i as usize / 20) % BOOKS.len()];
+    let chapter = (i / 20) % 28 + 1;
+    let verse = (i % 20) + 1;
+    let sid = format!("{book} {chapter}:{verse}");
+    let start = i % 50;
+    let end = start + 5;
+    match i % 5 {
+        0 => Finding {
+            sid,
+            code: RuleId::ExcessHWhitespace,
+            severity: Severity::Warning,
+            start,
+            end,
+            score: None,
+            args: None,
+        },
+        1 => Finding {
+            sid,
+            code: RuleId::DuplicateWord,
+            severity: Severity::Warning,
+            start,
+            end,
+            score: None,
+            args: Some(FindingArgs::DuplicateWord {
+                first_sid: format!("{book} {chapter}:{}", verse.max(1)),
+            }),
+        },
+        2 => Finding {
+            sid,
+            code: RuleId::PunctuationAdjacencyAnomaly,
+            severity: Severity::Warning,
+            start,
+            end,
+            score: Some(0.82),
+            args: Some(FindingArgs::AdjacencyEvidence {
+                pattern: "..".to_string(),
+                k: 3,
+                lead_n: 120,
+                books: 4,
+                corpus: 66,
+            }),
+        },
+        3 => Finding {
+            sid,
+            code: RuleId::RareGlyph,
+            severity: Severity::Info,
+            start,
+            end,
+            score: Some(0.61),
+            args: Some(FindingArgs::RareGlyph {
+                glyph: 'ẃ',
+                count: 7,
+            }),
+        },
+        _ => Finding {
+            sid,
+            code: RuleId::MixedCaseWord,
+            severity: Severity::Warning,
+            start,
+            end,
+            score: Some(0.95),
+            args: Some(FindingArgs::MixedCaseWord {
+                word: "dios".to_string(),
+                other: 1,
+                total: 41,
+            }),
+        },
+    }
+}
+
+/// Bench-only (`bench-probes` feature): `count` synthetic-but-realistic
+/// `Finding`s, returned through the exact same marshaling path `analyze_vref`
+/// uses (`Findings` → `tsify::into_wasm_abi`). Isolates wasm→JS marshaling
+/// cost from compute cost — building `count` synthetic findings natively is
+/// cheap and roughly known from the separate Rust-allocation-cost
+/// measurement, so whatever this costs beyond that is the marshaling step.
+/// Not part of the crate's real public API — no downstream consumer (the
+/// editor) enables `bench-probes`.
+#[cfg(feature = "bench-probes")]
+#[wasm_bindgen]
+pub fn bench_synthetic_findings(count: u32) -> Findings {
+    Findings((0..count).map(synthetic_finding).collect())
+}
+
+/// Bench-only (`bench-probes` feature): the packed-buffer alternative to
+/// [`bench_synthetic_findings`] — `count` conceptually-equivalent findings,
+/// packed into a flat `count * 16`-byte layout (1 byte rule-id slot, 2 bytes
+/// key_idx, 2 bytes span start, 2 bytes span end, 9 bytes unused/zero; the
+/// exact bit layout isn't load-bearing, only a realistic per-record size),
+/// returned as raw bytes (`Vec<u8>` marshals to a JS `Uint8Array`). Isolates
+/// wasm→JS marshaling cost for the competing packed-buffer design, against
+/// the same synthetic cycle used above. Not part of the crate's real public
+/// API — no downstream consumer (the editor) enables `bench-probes`.
+#[cfg(feature = "bench-probes")]
+#[wasm_bindgen]
+pub fn bench_synthetic_findings_packed(count: u32) -> Vec<u8> {
+    const RECORD_LEN: usize = 16;
+    let mut buf = vec![0u8; count as usize * RECORD_LEN];
+    for i in 0..count {
+        let rec = &mut buf[(i as usize) * RECORD_LEN..(i as usize + 1) * RECORD_LEN];
+        rec[0] = (i % 5) as u8; // rule id slot, mirrors the 5-variant cycle above
+        let key_idx = (i % 5_000) as u16; // realistic small-corpus verse index
+        let start = (i % 50) as u16;
+        let end = start + 5;
+        rec[1..3].copy_from_slice(&key_idx.to_le_bytes());
+        rec[3..5].copy_from_slice(&start.to_le_bytes());
+        rec[5..7].copy_from_slice(&end.to_le_bytes());
+        // remaining 9 bytes stay zero — unused in this bench layout.
+    }
+    buf
+}
+
 /// Build core's `Config` from the shipped defaults (P2 rules off) plus the
 /// caller's explicit per-rule entries and knob overrides.
 fn build_config(config: Option<SousConfig>) -> Config {
