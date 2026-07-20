@@ -452,7 +452,7 @@ Gate, re-run completely:
   a meaningful change; the array's own compiled code was tiny).
 
 Docs updated to match: `documentation/rules/uni.md`, `README.md`,
-`config.md`, the editor handoff doc, and ADR 0063 itself (Status flipped to
+`documentation/reference/config.md`, the editor handoff doc, and ADR 0063 itself (Status flipped to
 Accepted, Decision/Wire-contract/Oracle sections updated, the perf
 Consequences section rewritten with the final default-off adjudication and
 the ASCII-array removal recorded).

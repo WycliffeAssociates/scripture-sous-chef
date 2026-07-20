@@ -82,7 +82,7 @@ Each mature corpus is its own ground truth — no cross-language labels.
    "aggressive"` in config (core + wasm `SousConfig`), expanding to the
    per-rule table *before* explicit knob overrides apply (explicit knobs
    always win; the preset is sugar, never a lock-in).
-4. Catalog/docs: config.md gains the preset section; the fleet HTML report
+4. Catalog/docs: documentation/reference/config.md gains the preset section; the fleet HTML report
    can grow a preset-comparison view later (optional).
 
 ## Sequencing

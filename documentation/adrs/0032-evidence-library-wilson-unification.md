@@ -61,7 +61,7 @@ shrunk toward 0 → evidence survives).
 4. `Finding.score`'s exported unit is **anomaly evidence** (1 ≈ unlike
    anything this corpus does). Spacing's dominance score already *is* the
    site's anomaly evidence — the strength of the convention the site
-   violates — so no code changes; the documentation claim in `config.md` is
+   violates — so no code changes; the documentation claim in `documentation/reference/config.md` is
    corrected rather than the rule.
 
 ## Consequences

@@ -5,7 +5,7 @@
   production code was touched. The bench project is a fully standalone
   Cargo crate (path dependency on the real `ssc-core` for read-only reuse of
   its corpus loader, nothing else), preserved at
-  `documentation/calibration/2026-07-18-grapheme-interning-bench/` (copied
+  `spike-bench/archive/2026-07-18-grapheme-interning-bench/` (copied
   from the session's ephemeral scratchpad so it survives past this session).
 - **Question:** the word-frequency-caching idea (queued spikes item 4) is
   expensive specifically because most words are hapax legomena (high
@@ -19,7 +19,7 @@
 ## Harness
 
 A standalone Rust/Cargo project, `graphbench`, built entirely outside the
-real workspace (`documentation/calibration/2026-07-18-grapheme-interning-bench/`
+real workspace (`spike-bench/archive/2026-07-18-grapheme-interning-bench/`
 holds `Cargo.toml` and `main.rs`; nothing was added to the real repo's
 `Cargo.toml`/`Cargo.lock`). It path-depends on the real `ssc-core` crate
 purely to reuse its existing corpus loader (`crates/core/dev/vref_io.rs`,
@@ -163,7 +163,7 @@ below as canonical (`results-20trial-canonical.tsv` in the bench folder).
 
 ## Harness notes / where the code lives
 
-`documentation/calibration/2026-07-18-grapheme-interning-bench/`:
+`spike-bench/archive/2026-07-18-grapheme-interning-bench/`:
 - `Cargo.toml` / `main.rs` — the full standalone bench (path-depends on the
   real `ssc-core` crate for corpus loading only).
 - `results-20trial-canonical.tsv` / `results-20trial-canonical.stderr.log` —

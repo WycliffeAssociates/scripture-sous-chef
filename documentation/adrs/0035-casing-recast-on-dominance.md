@@ -1,5 +1,9 @@
 # ADR 0035: Casing joins the evidence library — dominance verdict, aggregate stats
 
+> **⚠ Scoring model superseded by [ADR 0051](0051-casing-two-factor-word-lexicon.md).**
+> The dominance scorer described here was replaced by the two-factor word-lexicon
+> model; the walk mechanics and emergent-gate reasoning below remain current.
+
 - **Date:** 2026-07-06
 - **Status:** Scoring model superseded by
   [ADR 0051](0051-casing-two-factor-word-lexicon.md) (2026-07-10); the walk

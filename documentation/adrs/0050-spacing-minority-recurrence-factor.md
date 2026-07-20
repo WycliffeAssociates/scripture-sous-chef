@@ -140,7 +140,7 @@ any mid-mass volume — there is none left to admit.
   The histogram is now bimodal — the shape ADR 0029's score lacked.
 - The `1 − upper_bound(minority_share)` reading of the score from ADR 0029 no
   longer holds literally: the number is now `dominance × rarity`, a two-factor
-  cutoff, not a convention share. Documented in `config.md` and `punct.md`.
+  cutoff, not a convention share. Documented in `documentation/reference/config.md` and `punct.md`.
 - A genuine slip cluster and an *emerging* second convention that coincide in
   magnitude cannot be told apart by count alone (the ne_udb `?` / am `፡`
   collision). A future `mark × script` grain (deferred, ADR 0029) or a

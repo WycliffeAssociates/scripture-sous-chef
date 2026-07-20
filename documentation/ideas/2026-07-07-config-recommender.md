@@ -15,11 +15,11 @@ it blind).
 **Why.** Every bool toggle in the catalog is a language question the
 translator may not know how to answer in our terms — but the corpus usually
 can, and the machinery to ask it (recurrence rates + `dominance`) already
-ships. This is the practical descendant of methods.md §5.9's
+ships. This is the practical descendant of documentation/overview/methods.md §5.9's
 `CorpusProfile`/recommendation sketch, scoped down to the toggles we
 actually have. Output is a recommendation surface (profile report +
 suggested `sous.json` fragment the user copies in), consistent with the
-"we never silently override user config" line already in config.md.
+"we never silently override user config" line already in documentation/reference/config.md.
 
 **Open questions for the conversation.** Where the recommendation runs
 (shell? a `profile` entry point in core?); whether recommendations re-run

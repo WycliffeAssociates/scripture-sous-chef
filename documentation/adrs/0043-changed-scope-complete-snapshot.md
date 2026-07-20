@@ -1,5 +1,10 @@
 # ADR 0043: `changed` narrows counting, never emission — the complete-snapshot call
 
+> **⚠ Superseded by [ADR 0062](0062-resident-galley-tally-provenance.md).** The
+> `changed` parameter described here is gone; counting scope now derives from
+> per-book `Tally` provenance. Read 0062 for the current contract; this record
+> is kept for the reasoning that led there.
+
 - **Date:** 2026-07-07
 - **Status:** Superseded by [ADR 0062](0062-resident-galley-tally-provenance.md)
   (the `changed` parameter is deleted; counting scope is now derived from

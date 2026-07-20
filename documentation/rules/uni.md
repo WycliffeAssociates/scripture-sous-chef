@@ -149,8 +149,8 @@ segmentation can even shift on an added U+200B). **Only exact duplicates** are
 flagged. Space-adjacency is *not* — it is not provably redundant: LB8 breaks after
 `ZW` (over LB13's precedence), so a U+200B can add a break the space alone doesn't
 (in `word␠<ZWSP>/next` removing the U+200B leaves `␠/`, which LB13 *prohibits*
-breaking before even after a space). Verse edges are excluded too — a `VerseMap`
-value is not a guaranteed layout unit (verses split mid-sentence and concatenate).
+breaking before even after a space). Verse edges are excluded too — a verse's
+text is not a guaranteed layout unit (verses split mid-sentence and concatenate).
 
 **Open issues / future work** — Gives up every *single* U+200B, including
 space-adjacent ones and a lone one in a valid-looking position inside a corpus that

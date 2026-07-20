@@ -136,5 +136,5 @@ into the given verse text, `sid`-anchored, no rendered messages,
   [ADR 0011](0011-statefulness-incrementality-strategy.md) (what stays
   parked), [ADR 0012](0012-ruleid-closed-enum-config-surface.md)
   (per-rule recipe), [ADR 0013](0013-proportionality-first-cross-map-rule.md)
-- `documentation/vision.md` §8 (catalog), §10 (volume bar), §12.15
+- `documentation/overview/vision.md` §8 (catalog), §10 (volume bar), §12.15
   (tokenizer knob, deferred)

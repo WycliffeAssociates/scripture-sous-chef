@@ -30,7 +30,7 @@ fn analyze(target: &VerseMap, source: Option<&VerseMap>) -> Vec<Finding>
   sous ships no rendered message.
 
 See [ADR 0010](documentation/adrs/0010-pure-analyzer-contract-v1-reset.md)
-and [the v1 reset design narrative](documentation/v1-reset-design.md).
+and [the v1 reset design narrative](documentation/overview/v1-reset-design.md).
 
 ## Status
 

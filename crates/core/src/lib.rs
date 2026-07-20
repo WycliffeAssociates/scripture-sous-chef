@@ -8,7 +8,7 @@
 //! is over the text it was handed and its findings are still ranges into that
 //! same text. Mapping a returned range back to a DOM node or source offset is
 //! the orchestrator's job, via onion's `segments`. See ADR 0010 and
-//! `documentation/v1-reset-design.md`.
+//! `documentation/overview/v1-reset-design.md`.
 
 pub mod analysis;
 mod cache;

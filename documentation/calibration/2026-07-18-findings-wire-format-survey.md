@@ -6,7 +6,7 @@
   a small, additive `bench-probes` feature (mirroring `ssc-core`'s existing
   one) exposing two bench-only exported functions — left in place,
   uncommitted, zero cost when the feature is off. Everything else lives in
-  `documentation/calibration/2026-07-18-wire-format-benches/` (copied here
+  `spike-bench/archive/2026-07-18-wire-format-benches/` (copied here
   from the session's ephemeral `/tmp` scratchpad specifically so it survives
   past this session).
 - **Question:** does serializing/marshaling `Finding`s across the wasm-worker
@@ -168,7 +168,7 @@ assuming it holds indefinitely.
 ## Harness notes / where the code lives
 
 All benchmark scripts are preserved in
-`documentation/calibration/2026-07-18-wire-format-benches/` (copied from the
+`spike-bench/archive/2026-07-18-wire-format-benches/` (copied from the
 session's own `/tmp` scratchpad, which is not expected to survive past this
 session):
 - `bench.mjs` / `worker.mjs` — object-array baseline (`postMessage`,

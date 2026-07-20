@@ -123,4 +123,4 @@ knob-bearing rule follows.
 - Execution brief: `documentation/plans/2026-06-09-proportionality.md`
 - Calibration: `documentation/calibration/2026-06-09-proportionality.md`
 - [ADR 0010](0010-pure-analyzer-contract-v1-reset.md), [ADR 0011](0011-statefulness-incrementality-strategy.md), [ADR 0012](0012-ruleid-closed-enum-config-surface.md)
-- `documentation/methods.md` §3.4; `documentation/vision.md` §8 (`SSC-PROP-001`), §9, §12.5
+- `documentation/overview/methods.md` §3.4; `documentation/overview/vision.md` §8 (`SSC-PROP-001`), §9, §12.5

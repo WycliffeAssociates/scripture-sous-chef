@@ -12,10 +12,11 @@ phenomenon.
 `case.inconsistent-word-casing`) model an occurrence's case as the OR of two
 causes: the position forces uppercase, or the word is intrinsically
 capitalized. Censoring is one-directional — uppercase at a forced position is
-uninformative about the word; lowercase is informative everywhere. Both score a
+uninformative about the word (weighted by the terminal class's learned trust —
+ADR 0052); lowercase is informative everywhere. Both score a
 lowercase site as `dominance × rarity` and share one config (`Config.casing`:
-`emit_score_min` 0.95, `recurrence_k` 32, `confidence_z` 1.96). All three rules
-ship **default OFF**.
+`emit_score_min` 0.95, `recurrence_k` 32, `confidence_z` 1.96, `trust_gate` 0.90).
+All three rules ship **default OFF**.
 
 Forced positions are structural: a word right after a *bare* attached terminal
 glyph (the pending-terminal machine, carried across verse seams), plus the
@@ -29,7 +30,7 @@ dropped; `case.mixed-case-word` uses the *unmerged* letter-run token instead
 
 ## `case.sentence-initial-lowercase` — lowercase after a casing-convention terminal
 
-> **Severity** Info · **Default** OFF · **Scope** stateful (per-book word table) · **Knobs** `emit_score_min` (0.95), `recurrence_k` (32), `confidence_z` (1.96) · **ADR** 0017, 0035, 0051
+> **Severity** Info · **Default** OFF · **Scope** stateful (per-book word table) · **Knobs** `emit_score_min` (0.95), `recurrence_k` (32), `confidence_z` (1.96), `trust_gate` (0.90) · **ADR** 0017, 0035, 0051, 0052
 
 **Flags** — A forced-position lowercase word-start, scored by how established
 the corpus's capitalize-after-this-terminal habit is (measured only on words
@@ -65,15 +66,33 @@ lowercase words (the decontaminated ADR 0035 number). `rarity = 1 − min(minori
 set as recurring second-conventions and exposes corpora whose "sentence-start
 convention" was pure proper-noun confound.
 
+**Trust gate (ADR 0052)** — Before a forced site is scored at all, its
+**boundary class** — the terminal glyph *plus* whether a close-quote intervened
+(`.` and `."` are separate classes, each earning its own trust) — must clear a
+learned `trust ≥ trust_gate` (0.90); `habit` is measured per class, not per bare
+glyph. `trust` is a noisy-OR of two witnesses: the lexicon-restricted
+capitalize-after habit (the `habit` above) and a case-free word-reshuffle witness
+(does the class's following-word distribution diverge from the corpus baseline,
+guarded by its agreement with the reference terminal's aftermath). A class that
+clears the gate is scored with the *unchanged* `habit × rarity` — trust never
+multiplies into the score (three honest ~0.97 factors would compound a confident
+finding under the floor; multiplicative wiring eroded 373 genuine findings). Below
+the gate the positional channel is silent for that class. The gate sits in a
+measured plateau (identical fleet totals for every `trust_gate ∈ [0.50, 0.95]`)
+and is deliberately below the 0.95 emit floor so the two constants can't be
+conflated. Caseless scripts and thin/rare classes contribute 0 trust and
+self-silence. This wiring took the fleet from 3,547 to 4,005 findings (+519
+newly-policeable quote-context sites, +373 readmitted erosion victims).
+
 **Config** — `emit_score_min` (0.95), `recurrence_k` (32), `confidence_z`
-(1.96); see `documentation/config.md`. **Stricter:** raise the floor or lower
-`recurrence_k`. **Looser:** the reverse.
+(1.96), `trust_gate` (0.90); see `documentation/reference/config.md`. **Stricter:** raise
+the floor or lower `recurrence_k`. **Looser:** the reverse.
 
 ---
 
 ## `case.inconsistent-word-casing` — a usually-capitalized word written lowercase
 
-> **Severity** Info · **Default** OFF · **Scope** stateful (per-book word table) · **Knobs** shared `Config.casing` · **ADR** 0051 (new rule)
+> **Severity** Info · **Default** OFF · **Scope** stateful (per-book word table) · **Knobs** shared `Config.casing` · **ADR** 0051 (new rule), 0052
 
 **Flags** — A lowercase occurrence of a word this translation almost always
 capitalizes, scored by how dominantly it capitalizes that exact word times how
@@ -97,7 +116,9 @@ project's proper-noun set and orthography.
 **Verdict model (ADR 0051)** — `score = dominance(word's soft-censored
 capitalized share) × rarity(word's lowercase recurrence)`. The dominance is the
 Wilson lower bound of the word's mid-flow uppercase share, with forced-position
-uppercase re-entering at weight `1 − habit(glyph)` (soft censoring, one pass):
+uppercase re-entering at weight `1 − trust × habit` (soft censoring weighted by
+the terminal class's learned trust — ADR 0052; a capital after a *distrusted*
+mark is not position-explained and re-enters the word's profile — one pass):
 in a no-habit corpus a word capitalized only at sentence starts still earns a
 profile; in a strong-habit corpus the position explains its capitals. A
 both-quadrant site (forced-position lowercase of a capitalized word) may also
@@ -116,15 +137,19 @@ lower `recurrence_k`. **Looser:** the reverse.
 ---
 
 **Stats / ADR ties** — Per book, the word table stores raw case tallies (mid-
-flow upper/lower and forced upper/lower split by terminal glyph); the lexicon
-classification, per-glyph habit, and soft censoring are all judge-time
-arithmetic over the merged table, so book-supersede stays sound and `reduce`
-stays one walk. Only uncased-only words are pruned (the sole per-book-safe
-drop — see the module doc for why dropping either case mass is unsound across
-the merge). Findings are recovered from the forwarded reduce sites, or by
-re-walking a book counted from the prior (ADR 0044). See ADR 0017 (stateful
-shape), 0042 (book fan-out), 0044 (reduce→judge sites), 0050 (two-factor
-precedent), and the 2026-07-09 casing calibration doc.
+flow upper/lower and forced upper/lower split by **boundary class** — the mark
+plus its adjacent-close-quote context, ADR 0052 — not the bare glyph); the
+lexicon classification, per-class habit, `terminal_strength` trust, the gate, and
+soft censoring are all judge-time arithmetic over the merged table, so
+book-supersede stays sound and `reduce` stays one walk. The trust's second
+witness needs a second word-level aggregate — per-class following-word (juror)
+counts and the baseline word-start distribution (ADR 0052). Only uncased-only
+words are pruned (the sole per-book-safe drop — see the module doc for why
+dropping either case mass is unsound across the merge). Findings are recovered
+from the forwarded reduce sites, or by re-walking a book counted from the prior
+(ADR 0044). See ADR 0017 (stateful shape), 0042 (book fan-out), 0044
+(reduce→judge sites), 0050 (two-factor precedent), 0052 (mark-trust gate), and
+the 2026-07-09 casing calibration doc.
 
 ---
 

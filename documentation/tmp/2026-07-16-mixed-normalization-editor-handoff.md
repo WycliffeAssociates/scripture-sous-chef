@@ -1,6 +1,6 @@
 # Handoff — `uni.mixed-normalization` for the editor (`scripture-editor-proto-2`)
 
-Date: 2026-07-16. Full detail: [ADR 0063](adrs/0063-mixed-normalization-deterministic-nfc.md).
+Date: 2026-07-16. Full detail: [ADR 0063](../adrs/0063-mixed-normalization-deterministic-nfc.md).
 This repository (`ssc-core`/`ssc-galley`/`ssc-wasm`) ships the detector,
 catalog, wasm wire, and generated packages. It cannot ship the editor's
 one-click project fix — that work belongs in the editor repository, is not

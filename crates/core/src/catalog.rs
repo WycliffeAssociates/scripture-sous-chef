@@ -18,7 +18,7 @@
 //!   `???` runs, conflict markers) where the verdict really is mechanical.
 //! - **No statistics vocabulary.** The dial is "how unusual before we show
 //!   it", never "Wilson lower bound"; the advanced knobs stay documented in
-//!   `config.md` for calibrators, not here.
+//!   `documentation/reference/config.md` for calibrators, not here.
 
 use crate::diagnostics::{BracketMeasure, FindingArgs, RuleId};
 

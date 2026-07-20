@@ -43,7 +43,7 @@ so one labelled dial serves them all.
    never does"*, 0.7 *"unusual for this translation"*, 0.5 *"anything even
    moderately unusual"*. Tier 2 (calibration): `convention_rate`,
    `confidence_z`, and rule-specific structure knobs — all still exposed in
-   `Config`/wasm overrides, documented in `config.md`, absent from the
+   `Config`/wasm overrides, documented in `documentation/reference/config.md`, absent from the
    cards.
 4. English cards are the **shipped reference text**, not a resource file.
    Localization happens consumer-side keyed on `code`; the cards are what a

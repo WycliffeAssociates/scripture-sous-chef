@@ -323,8 +323,8 @@ automaton remains the deferred upgrade, migrating rules + census together.
    say so in the doc header).
 6. wasm surface + Tsify types (+ pkg regen as its own `pkg:` commit), if
    question 2 resolved to same-change; else stop at core.
-7. Docs: `documentation/outputs.md` gains the Inventory schema;
-   `config.md` explicitly notes the census is config-independent.
+7. Docs: `documentation/reference/outputs.md` gains the Inventory schema;
+   `documentation/reference/config.md` explicitly notes the census is config-independent.
 
 Repo conventions binding on the agent: synthetic tests only; timestamped
 ADR; no compat shims; corpora live at `corpora/vref/` (gitignored — absolute

@@ -128,8 +128,8 @@ not Warning.
 **Config** — On/off only.
 
 **Nuance & ADR ties** — The Info severity *is* the design: this is a
-review-prompt, not a verdict (see the severity model in `config.md` /
-`outputs.md`).
+review-prompt, not a verdict (see the severity model in `documentation/reference/config.md` /
+`documentation/reference/outputs.md`).
 
 **Open issues / future work** — A cross-map check could sharpen this:
 "empty here but present in the reference" is likely a real drop, while "empty

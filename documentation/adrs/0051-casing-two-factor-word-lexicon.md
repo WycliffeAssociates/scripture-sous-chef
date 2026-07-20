@@ -9,7 +9,7 @@
 - **Builds on:** [ADR 0050](0050-spacing-minority-recurrence-factor.md) (the
   dominance × rarity two-factor shape and its linear recurrence knee),
   `evidence::dominance` (ADR 0035), and the verse-invariant doctrine in
-  `CLAUDE.md` / `methods.md` §0.1.
+  `CLAUDE.md` / `documentation/overview/methods.md` §0.1.
 
 ## Context
 

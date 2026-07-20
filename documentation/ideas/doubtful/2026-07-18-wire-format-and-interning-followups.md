@@ -124,7 +124,7 @@ reading live in
 `documentation/calibration/2026-07-18-grapheme-interning-survey.md`; the
 reproducible standalone bench project (Cargo.toml/main.rs, plus the
 canonical 20-trial result TSV) is preserved at
-`documentation/calibration/2026-07-18-grapheme-interning-bench/` — it was
+`spike-bench/archive/2026-07-18-grapheme-interning-bench/` — it was
 never a git worktree, just a standalone Cargo crate built in the session's
 ephemeral scratchpad and copied here afterward so it survives; it
 path-depends on the real `ssc-core` crate read-only, purely to reuse its

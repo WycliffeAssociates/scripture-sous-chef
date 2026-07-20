@@ -22,7 +22,7 @@ const loc: Record<RuleId, MessageDescriptor> = { … }    // localization
 
 where adding a rule to the engine becomes a *compile error* in the
 consumer's exhaustive maps until handled. This is graduation-order item #1
-("config") from `v1-reset-design.md`, and the prerequisite for
+("config") from `documentation/overview/v1-reset-design.md`, and the prerequisite for
 proportionality (#2).
 
 `usfm_onion` already does this for its lint codes: a closed `LintCode`
@@ -108,7 +108,7 @@ ADR 0010 otherwise stands.
   contract; item 5 (RuleId representation) is refined here.
 - [ADR 0011](0011-statefulness-incrementality-strategy.md) — §8
   cadence-class / preset sugar, documented-as-future.
-- `documentation/v1-reset-design.md` — graduation order (config first).
+- `documentation/overview/v1-reset-design.md` — graduation order (config first).
 - Precedent: `usfm_onion_wasm/src/lib.rs` (`LintCode` closed enum + Tsify).
 - Touch points: `crates/core/src/diagnostics.rs`, `config.rs`, `lib.rs`,
   `signals/{whitespace,hygiene}.rs`; `crates/wasm/src/lib.rs`.

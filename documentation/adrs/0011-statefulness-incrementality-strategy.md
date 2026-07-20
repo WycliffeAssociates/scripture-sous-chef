@@ -145,7 +145,7 @@ Nine coupled choices.
    stateless, sub-ms) / `Warm` (book-scoped refit) / `Cold`
    (corpus-statistical) / `Glacial` (cross-corpus alignment, 10s+),
    possibly a *function of the corpus profile* (word-bigram is hot on
-   analytic English, cold on agglutinative Bemba — see `methods.md` §5.9)
+   analytic English, cold on agglutinative Bemba — see `documentation/overview/methods.md` §5.9)
    — plus preset rule-enable sets (`hot()`, `warm()`, …) is the right
    shape for letting a consumer wire hot/cold/coldest loops. It lands in
    the rule trait **when the first cold rule graduates**, additively;
@@ -237,9 +237,9 @@ Nine coupled choices.
 
 - [ADR 0010](0010-pure-analyzer-contract-v1-reset.md) — the pure analyzer
   contract this extends.
-- `documentation/v1-reset-design.md` — graduation order; the
+- `documentation/overview/v1-reset-design.md` — graduation order; the
   evidence-scope vs cadence split.
-- `documentation/methods.md` — §3.4 (length-ratio via median+MAD), §5
+- `documentation/overview/methods.md` — §3.4 (length-ratio via median+MAD), §5
   (`fit`/`score` split), §5.9 (corpus-profile-dependent weighting).
 - Consumer transport at decision time:
   `scripture-editor-proto-2/src/app/state/WorkingFilesStore.ts`
