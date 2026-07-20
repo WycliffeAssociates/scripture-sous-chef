@@ -1,0 +1,19 @@
+[package]
+name = "graphbench"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "graphbench"
+path = "src/main.rs"
+
+[dependencies]
+lasso = "0.7"
+string-interner = "0.18"
+rustc-hash = "2"
+unicode-segmentation = "1.12"
+ssc-core = { path = "/Users/willkelly/Documents/Work/Code/scripture-sous-chef/.claude/worktrees/line-cook-finding-address/crates/core" }
+
+[profile.release]
+opt-level = 3

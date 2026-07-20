@@ -1,0 +1,31 @@
+corpus	script	total_occurrences	distinct_clusters	approach	build_median_ns	build_variance	build_mem_bytes	mem_stable	hit_rate_pct	lookup_median_ns	lookup_variance	lookup_ns_per_cluster	lookup_misses
+cmn-cu89s	Chinese (CJK / Han, simplified)	1070839	3016	lasso	28796083	min=28.135833ms max=31.262ms spread=10.9%	84072	true	99.72	27845000	min=27.720416ms max=29.11175ms spread=5.0%	26.00	0
+cmn-cu89s	Chinese (CJK / Han, simplified)	1070839	3016	string-interner+Fx	29540375	min=28.586125ms max=31.083375ms spread=8.5%	69640	true	99.72	28911334	min=28.69075ms max=29.915083ms spread=4.2%	27.00	0
+cmn-cu89s	Chinese (CJK / Han, simplified)	1070839	3016	handrolled-FxHashMap	27775208	min=27.603166ms max=29.165875ms spread=5.6%	186026	true	99.72	27548167	min=27.344ms max=28.479334ms spread=4.1%	25.73	0
+jpn1965	Japanese (CJK: kanji + hiragana/katakana)	458424	1569	lasso	12770875	min=12.712542ms max=14.114334ms spread=11.0%	48232	true	99.66	12523709	min=12.4865ms max=13.594875ms spread=8.9%	27.32	0
+jpn1965	Japanese (CJK: kanji + hiragana/katakana)	458424	1569	string-interner+Fx	13075416	min=12.773375ms max=13.563667ms spread=6.0%	34824	true	99.66	12953917	min=12.869542ms max=13.652625ms spread=6.0%	28.26	0
+jpn1965	Japanese (CJK: kanji + hiragana/katakana)	458424	1569	handrolled-FxHashMap	12651625	min=12.423458ms max=13.576959ms spread=9.1%	93386	true	99.66	12371167	min=12.333625ms max=12.872125ms spread=4.4%	26.99	0
+hin2017	Hindi (Devanagari)	2549620	1408	lasso	123362208	min=120.996542ms max=143.741792ms spread=18.4%	64616	true	99.94	120591541	min=117.91775ms max=147.181084ms spread=24.3%	47.30	0
+hin2017	Hindi (Devanagari)	2549620	1408	string-interner+Fx	120585250	min=119.648667ms max=125.294209ms spread=4.7%	43016	true	99.94	121295791	min=120.667791ms max=125.656916ms spread=4.1%	47.57	0
+hin2017	Hindi (Devanagari)	2549620	1408	handrolled-FxHashMap	119214916	min=117.35325ms max=125.396166ms spread=6.7%	111062	true	99.94	118163875	min=117.106167ms max=124.994167ms spread=6.7%	46.35	0
+tel2017	Telugu (Brahmic, distinct from Devanagari)	2153271	1842	lasso	129593500	min=127.962834ms max=132.935416ms spread=3.8%	100456	true	99.91	127619042	min=125.563083ms max=132.157084ms spread=5.2%	59.27	0
+tel2017	Telugu (Brahmic, distinct from Devanagari)	2153271	1842	string-interner+Fx	127554416	min=126.972834ms max=133.684375ms spread=5.3%	69640	true	99.91	132691084	min=127.926542ms max=138.137084ms spread=7.7%	61.62	0
+tel2017	Telugu (Brahmic, distinct from Devanagari)	2153271	1842	handrolled-FxHashMap	127383917	min=124.770791ms max=137.893917ms spread=10.3%	173120	true	99.91	125636916	min=124.641333ms max=129.573833ms spread=3.9%	58.35	0
+arb-vd	Arabic (RTL)	2364323	443	lasso	91431084	min=91.180834ms max=95.675334ms spread=4.9%	19488	true	99.98	90046500	min=89.513541ms max=92.960042ms spread=3.8%	38.09	0
+arb-vd	Arabic (RTL)	2364323	443	string-interner+Fx	93295084	min=90.810584ms max=103.026125ms spread=13.1%	8712	true	99.98	91739584	min=91.035459ms max=94.447125ms spread=3.7%	38.80	0
+arb-vd	Arabic (RTL)	2364323	443	handrolled-FxHashMap	90737292	min=88.911833ms max=93.481666ms spread=5.0%	24988	true	99.98	93341208	min=91.536875ms max=96.683458ms spread=5.5%	39.48	0
+dwrENT	Dawro (Ethiopic/Ge'ez script)	556049	169	lasso	14029250	min=13.775ms max=14.284292ms spread=3.6%	8608	true	99.97	13824458	min=13.35575ms max=14.472459ms spread=8.1%	24.86	0
+dwrENT	Dawro (Ethiopic/Ge'ez script)	556049	169	string-interner+Fx	14400125	min=13.864334ms max=14.860583ms spread=6.9%	3848	true	99.97	14437042	min=14.104792ms max=14.841417ms spread=5.1%	25.96	0
+dwrENT	Dawro (Ethiopic/Ge'ez script)	556049	169	handrolled-FxHashMap	13918292	min=13.172542ms max=14.408041ms spread=8.9%	11482	true	99.97	13130417	min=13.104625ms max=13.216333ms spread=0.9%	23.61	0
+bel	Belarusian (Cyrillic)	3329621	75	lasso	73301667	min=72.254333ms max=75.95425ms spread=5.0%	6368	true	100.00	74350833	min=71.579958ms max=76.423833ms spread=6.5%	22.33	0
+bel	Belarusian (Cyrillic)	3329621	75	string-interner+Fx	75702791	min=74.248667ms max=77.462709ms spread=4.2%	1928	true	100.00	74749125	min=74.426209ms max=78.105208ms spread=4.9%	22.45	0
+bel	Belarusian (Cyrillic)	3329621	75	handrolled-FxHashMap	71782500	min=70.561333ms max=73.858292ms spread=4.6%	5532	true	100.00	71147500	min=70.480791ms max=72.893458ms spread=3.4%	21.37	0
+thaKJV	Thai	3146842	673	lasso	119251375	min=117.160042ms max=122.219875ms spread=4.2%	30312	true	99.98	117367709	min=113.938458ms max=148.049166ms spread=29.1%	37.30	0
+thaKJV	Thai	3146842	673	string-interner+Fx	118222083	min=115.808584ms max=122.961333ms spread=6.1%	21512	true	99.98	118839459	min=116.777417ms max=121.053042ms spread=3.6%	37.76	0
+thaKJV	Thai	3146842	673	handrolled-FxHashMap	115029708	min=113.173417ms max=117.801958ms spread=4.0%	50974	true	99.98	114969000	min=113.380375ms max=117.895792ms spread=3.9%	36.53	0
+hboWLC	Hebrew (Masoretic OT, RTL)	1514270	6517	lasso	65462500	min=65.005375ms max=66.818875ms spread=2.8%	307304	true	99.57	64539542	min=63.749833ms max=65.46625ms spread=2.7%	42.62	0
+hboWLC	Hebrew (Masoretic OT, RTL)	1514270	6517	string-interner+Fx	65736458	min=64.903916ms max=69.999ms spread=7.8%	172040	true	99.57	65601083	min=64.769833ms max=67.686708ms spread=4.4%	43.32	0
+hboWLC	Hebrew (Masoretic OT, RTL)	1514270	6517	handrolled-FxHashMap	65077125	min=63.792584ms max=68.694042ms spread=7.5%	420502	true	99.57	64247375	min=63.314583ms max=65.186708ms spread=2.9%	42.43	0
+WA-vi-ulb	Vietnamese (Latin + diacritics)	4073168	192	lasso	91380500	min=90.148458ms max=93.083ms spread=3.2%	8608	true	100.00	90795375	min=90.161708ms max=92.868375ms spread=3.0%	22.29	0
+WA-vi-ulb	Vietnamese (Latin + diacritics)	4073168	192	string-interner+Fx	94905292	min=93.005125ms max=120.9875ms spread=29.5%	3848	true	100.00	94799084	min=93.671667ms max=97.455625ms spread=4.0%	23.27	0
+WA-vi-ulb	Vietnamese (Latin + diacritics)	4073168	192	handrolled-FxHashMap	89559167	min=88.629291ms max=92.246167ms spread=4.0%	11284	true	100.00	90122834	min=88.97625ms max=92.322833ms spread=3.7%	22.13	0

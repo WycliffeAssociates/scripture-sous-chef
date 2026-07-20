@@ -1,0 +1,12 @@
+=== graphbench: 20 trials per (corpus, approach, phase) ===
+-- cmn-cu89s (Chinese (CJK / Han, simplified)): 31016 verses, 1070839 grapheme occurrences, 3016 distinct clusters
+-- jpn1965 (Japanese (CJK: kanji + hiragana/katakana)): 7938 verses, 458424 grapheme occurrences, 1569 distinct clusters
+-- hin2017 (Hindi (Devanagari)): 31099 verses, 2549620 grapheme occurrences, 1408 distinct clusters
+-- tel2017 (Telugu (Brahmic, distinct from Devanagari)): 30999 verses, 2153271 grapheme occurrences, 1842 distinct clusters
+-- arb-vd (Arabic (RTL)): 31098 verses, 2364323 grapheme occurrences, 443 distinct clusters
+-- dwrENT (Dawro (Ethiopic/Ge'ez script)): 7802 verses, 556049 grapheme occurrences, 169 distinct clusters
+-- bel (Belarusian (Cyrillic)): 31160 verses, 3329621 grapheme occurrences, 75 distinct clusters
+-- thaKJV (Thai): 31097 verses, 3146842 grapheme occurrences, 673 distinct clusters
+-- hboWLC (Hebrew (Masoretic OT, RTL)): 23213 verses, 1514270 grapheme occurrences, 6517 distinct clusters
+-- WA-vi-ulb (Vietnamese (Latin + diacritics)): 31087 verses, 4073168 grapheme occurrences, 192 distinct clusters
+checksum (sanity, ignore value): 107747816280
