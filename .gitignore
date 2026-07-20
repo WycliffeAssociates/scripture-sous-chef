@@ -1,8 +1,10 @@
 /target
 /corpora
+/oracle-blobs
 /data
 /ebible-main
 /debug
+/node_modules
 # .claude/ holds worktrees, local settings, and session state that must
 # never be tracked — except skills/, which is repo-shared tooling knowledge
 # (see .claude/skills/oracle-gate/SKILL.md) meant to travel with the repo.

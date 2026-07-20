@@ -72,18 +72,26 @@ reloaded with a single sequential read instead of N file opens:
 
 ```
 # build once per preset (regenerate only if corpora/vref itself changes)
-./target/release/examples/calibrate --build-blob corpora/vref small target/oracle-blobs/small.blob
-./target/release/examples/calibrate --build-blob corpora/vref wa    target/oracle-blobs/wa.blob
-./target/release/examples/calibrate --build-blob corpora/vref full  target/oracle-blobs/full.blob
+./target/release/examples/calibrate --build-blob corpora/vref small oracle-blobs/small.blob
+./target/release/examples/calibrate --build-blob corpora/vref wa    oracle-blobs/wa.blob
+./target/release/examples/calibrate --build-blob corpora/vref full  oracle-blobs/full.blob
 
 # pass the .blob file anywhere a directory path is expected — it's a drop-in
 # replacement; the trailing scope token is ignored (the blob's preset already
 # implies it), byte-identical to the equivalent directory-based dump:
-./target/release/examples/calibrate --dump-findings target/oracle-blobs/wa.blob out.tsv default full
+./target/release/examples/calibrate --dump-findings oracle-blobs/wa.blob out.tsv default full
 ```
 
-Blobs live under `target/` (gitignored) — never commit one. Three fixed
-tiers, matching the "prove small, confirm mid, bookend full" pattern:
+Blobs live in `oracle-blobs/` at the repo root (gitignored, same pattern as
+`corpora/`) — never commit one. In practice this is a single real directory
+outside any one worktree (a sibling to the real `corpora/` directory),
+symlinked as `oracle-blobs/` into each worktree that needs it — same
+reasoning as `corpora/` itself: expensive to build/store, cheap to
+regenerate, no reason to duplicate per worktree or lose on worktree
+creation. If a new worktree is missing either symlink, that's a one-time
+`ln -s /path/to/scripture-sous-chef/{corpora,oracle-blobs} .` in its root,
+not a rebuild. Three fixed tiers, matching the "prove small, confirm mid,
+bookend full" pattern:
 
 | preset | size | corpora | what it's for |
 | --- | --- | --- | --- |
