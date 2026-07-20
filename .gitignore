@@ -3,7 +3,11 @@
 /data
 /ebible-main
 /debug
-/.claude
+# .claude/ holds worktrees, local settings, and session state that must
+# never be tracked — except skills/, which is repo-shared tooling knowledge
+# (see .claude/skills/oracle-gate/SKILL.md) meant to travel with the repo.
+/.claude/*
+!/.claude/skills/
 notes.md
 .repomix
 /experiments
@@ -14,5 +18,3 @@ profile.json.gz
 
 # macOS finder cruft
 .DS_Store
-
-.claude/

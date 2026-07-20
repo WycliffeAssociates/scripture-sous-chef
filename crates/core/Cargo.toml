@@ -28,6 +28,9 @@ criterion = "0.5"
 # Corpus-level fan-out for the fleet survey (calibrate --fleet); dev-only —
 # the library's own `parallel` feature stays optional and separate.
 rayon = "1"
+# Pre-parsed corpus blob cache (calibrate --build-blob): a plain binary
+# serde round-trip, dev-tooling only — never touches core's own types.
+bincode = "1.3"
 
 [[bench]]
 name = "analyze"

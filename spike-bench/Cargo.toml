@@ -1,0 +1,28 @@
+[package]
+name = "spike-bench"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# Explicitly its own workspace root — otherwise Cargo assumes this directory
+# belongs to the real scripture-sous-chef workspace above it, which would
+# defeat the whole point (a completely separate target/ and Cargo.lock).
+[workspace]
+
+# Deliberately NOT a member of the workspace root Cargo.toml — this crate
+# never ships, never affects ssc-core/ssc-wasm's build or CI, and its
+# Cargo.lock/target/ stay entirely separate from the real workspace's.
+# It exists so a new measurement spike is "add a file to an existing,
+# already-compiled project" instead of "stand up a new throwaway Cargo
+# project from zero" (dependency resolution + a fresh ssc-core compile)
+# every single time — see documentation/calibration/ for the two spikes
+# (2026-07-18 wire-format, 2026-07-18 grapheme-interning) that each paid
+# that cold-start cost independently before this crate existed.
+
+[dependencies]
+ssc-core = { path = "../crates/core" }
+rustc-hash = "2"
+unicode-segmentation = "1.12"
+
+[profile.release]
+opt-level = 3
