@@ -78,6 +78,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use rustc_hash::FxHashMap;
+use xxhash_rust::xxh3::Xxh3;
 
 use crate::analysis::association::Table2;
 use crate::charclass::class_of;
@@ -347,12 +348,68 @@ impl WordStats {
 }
 
 /// Cached casing statistics, keyed by book so an edit supersedes only its book.
-#[derive(Debug, Clone, Default, PartialEq)]
+///
+/// Carries a cheap content fingerprint (`fp`) so [`Model::build`]'s memo can
+/// prove a hit with a `u128` compare instead of deep-equating the whole
+/// per-book word table (the old memo key, ~4–6 ms/call under all-rules — the
+/// two casing rules build the identical model from clones of the same stats).
+/// The fingerprint is an order-independent XOR of per-book digests, maintained
+/// incrementally through [`merge`](Self::merge) / [`remove_book`](Self::remove_book)
+/// and computed once at construction — so the warm path never re-hashes the
+/// clean books. It is a pure function of `per_book` (never serialized: a
+/// deserialized value carries `None` and recomputes lazily on first use), so it
+/// is excluded from [`PartialEq`] and the oracle wire alike.
+#[derive(Debug, Clone, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct CasingStats {
     #[cfg_attr(feature = "wasm", tsify(type = "Record<string, BookCasing>"))]
     pub(crate) per_book: BTreeMap<Box<str>, BookCasing>,
+    /// Content fingerprint (XOR of per-book digests), `None` until computed.
+    /// `#[serde(skip)]` keeps it off the wire — a deserialized value is `None`
+    /// and [`fingerprint`](Self::fingerprint) recomputes it on demand.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    #[cfg_attr(feature = "wasm", tsify(skip))]
+    fp: Option<u128>,
+}
+
+// The fingerprint is a derived cache of `per_book`, never part of content
+// identity — equal tables are equal regardless of whether either has computed
+// its fingerprint yet. (Also keeps `Stats`/`RuleStats` equality — used in
+// tests — faithful to content.)
+impl PartialEq for CasingStats {
+    fn eq(&self, other: &Self) -> bool {
+        self.per_book == other.per_book
+    }
+}
+
+/// Digest one book's contribution deterministically (the `BTreeMap` orders keep
+/// this stable). Delimiters between the two glyph maps and after each word key
+/// keep distinct structures from colliding by byte concatenation.
+fn book_fp(slug: &str, bc: &BookCasing) -> u128 {
+    let mut h = Xxh3::new();
+    h.update(slug.as_bytes());
+    h.update(&bc.cased_starts.to_le_bytes());
+    for (word, ws) in &bc.words {
+        h.update(word.as_bytes());
+        h.update(&[0]);
+        h.update(&ws.mid_upper.to_le_bytes());
+        h.update(&ws.mid_lower.to_le_bytes());
+        h.update(&ws.book_initial.upper.to_le_bytes());
+        h.update(&ws.book_initial.lower.to_le_bytes());
+        for (c, t) in &ws.after_glyph {
+            h.update(&(*c as u32).to_le_bytes());
+            h.update(&t.upper.to_le_bytes());
+            h.update(&t.lower.to_le_bytes());
+        }
+        h.update(&[1]);
+        for (c, t) in &ws.after_quote {
+            h.update(&(*c as u32).to_le_bytes());
+            h.update(&t.upper.to_le_bytes());
+            h.update(&t.lower.to_le_bytes());
+        }
+    }
+    h.digest128()
 }
 
 /// One book's contribution: the pruned word table plus the cased-word-start
@@ -369,17 +426,61 @@ pub(crate) struct BookCasing {
 }
 
 impl CasingStats {
+    /// Build from a per-book table, computing the fingerprint over its books.
+    pub(crate) fn from_per_book(per_book: BTreeMap<Box<str>, BookCasing>) -> CasingStats {
+        let fp = per_book
+            .iter()
+            .fold(0u128, |acc, (slug, bc)| acc ^ book_fp(slug, bc));
+        CasingStats {
+            per_book,
+            fp: Some(fp),
+        }
+    }
+
+    /// The content fingerprint — the maintained value, or a fresh full compute
+    /// (a deserialized value arrives with `fp == None`).
+    fn fingerprint(&self) -> u128 {
+        self.fp.unwrap_or_else(|| {
+            self.per_book
+                .iter()
+                .fold(0u128, |acc, (slug, bc)| acc ^ book_fp(slug, bc))
+        })
+    }
+
     /// Book-level supersede: books in `other` replace those in `self`.
     pub(crate) fn merge(mut self, other: CasingStats) -> CasingStats {
+        // Maintain the fingerprint incrementally when a base is known: XOR out
+        // each replaced book's old digest, XOR in its new one. With no base
+        // (deserialized `self`), recompute once at the end.
+        let base = self.fp;
+        let mut delta = 0u128;
         for (book, bc) in other.per_book {
+            if base.is_some() {
+                if let Some(old) = self.per_book.get(&book) {
+                    delta ^= book_fp(&book, old);
+                }
+                delta ^= book_fp(&book, &bc);
+            }
             self.per_book.insert(book, bc);
         }
+        self.fp = Some(base.map_or_else(
+            || {
+                self.per_book
+                    .iter()
+                    .fold(0u128, |acc, (slug, bc)| acc ^ book_fp(slug, bc))
+            },
+            |f| f ^ delta,
+        ));
         self
     }
 
     /// Drop a book's contribution.
     pub(crate) fn remove_book(&mut self, slug: &str) {
-        self.per_book.remove(slug);
+        if let Some(bc) = self.per_book.remove(slug) {
+            if let Some(f) = self.fp.as_mut() {
+                *f ^= book_fp(slug, &bc);
+            }
+        }
     }
 }
 
@@ -666,14 +767,17 @@ pub struct Factors {
 // identical model from the same merged `CasingStats` + `CasingConfig` inside
 // one `analyze_stateful` call — the Fisher/G² association math in
 // `build_trust` is ~44% of everything-on self-time on English, so rebuilding
-// it twice per call is pure waste. Keyed by *content* equality (both
-// `CasingStats` and `CasingConfig` already derive `PartialEq`), not by
-// reference identity — the two calls pass distinct clones with identical
-// content, so identity-keying would never hit. A size-2 LRU is enough to
-// catch the two adjacent judge calls; it is not a correctness dependency —
-// a miss just rebuilds.
+// it twice per call is pure waste. Keyed by the stats' cheap content
+// fingerprint (`CasingStats::fingerprint`) + `CasingConfig`, not by deep
+// equality — the two calls pass distinct clones with identical content, so
+// their fingerprints match with a single `u128` compare instead of a memcmp
+// over every book's word table (the old key, ~4–6 ms/call under all-rules).
+// A collision is a false hit, forbidden — but the fingerprint is a 128-bit
+// xxh3 digest, so it is ignored by the same 2⁻¹²⁸ policy as `book_hash`.
+// A size-2 LRU is enough to catch the two adjacent judge calls; it is not a
+// correctness dependency — a miss just rebuilds.
 thread_local! {
-    static MODEL_CACHE: RefCell<Vec<(CasingStats, CasingConfig, Arc<Model>)>> =
+    static MODEL_CACHE: RefCell<Vec<(u128, CasingConfig, Arc<Model>)>> =
         const { RefCell::new(Vec::new()) };
 }
 
@@ -681,10 +785,11 @@ const MODEL_CACHE_CAP: usize = 2;
 
 impl Model {
     fn build(stats: &CasingStats, cfg: &CasingConfig) -> Arc<Model> {
+        let fp = stats.fingerprint();
         if let Some(hit) = MODEL_CACHE.with(|c| {
             c.borrow()
                 .iter()
-                .find(|(s, c, _)| s == stats && c == cfg)
+                .find(|(f, c, _)| *f == fp && c == cfg)
                 .map(|(_, _, m)| Arc::clone(m))
         }) {
             return hit;
@@ -697,7 +802,7 @@ impl Model {
             if c.len() >= MODEL_CACHE_CAP {
                 c.remove(0);
             }
-            c.push((stats.clone(), *cfg, Arc::clone(&model)));
+            c.push((fp, *cfg, Arc::clone(&model)));
         });
 
         model
@@ -1231,7 +1336,7 @@ fn reduce_casing(books: &Books<'_>) -> (CasingStats, BTreeMap<Box<str>, CasingSi
         per_book.insert(Box::from(group.slug), bc);
         sites.insert(Box::from(group.slug), book_sites);
     }
-    (CasingStats { per_book }, sites)
+    (CasingStats::from_per_book(per_book), sites)
 }
 
 /// True iff the merged corpus has any cased word-start — the emergent gate.
