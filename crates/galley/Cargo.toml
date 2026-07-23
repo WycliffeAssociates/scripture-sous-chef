@@ -5,6 +5,7 @@ edition.workspace = true
 
 [dependencies]
 ssc-core = { workspace = true }
+rustc-hash = { workspace = true }
 
 [features]
 # Forward core's rayon per-verse fan-out (ADR 0018) so the shell can be
@@ -15,3 +16,6 @@ parallel = ["ssc-core/parallel"]
 # The shell's tests read PrepCache::probe() to prove cache-reuse and
 # zero-re-tally invariants directly across the crate boundary.
 ssc-core = { workspace = true, features = ["test-probes"] }
+
+[lints]
+workspace = true

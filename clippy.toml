@@ -1,0 +1,4 @@
+disallowed-types = [
+    { path = "std::collections::HashMap", reason = "use rustc_hash::FxHashMap (ADR 0057 house hasher); if iteration order can reach output, the swap is oracle-gated" },
+    { path = "std::collections::HashSet", reason = "use rustc_hash::FxHashSet (ADR 0057 house hasher); if iteration order can reach output, the swap is oracle-gated" },
+]

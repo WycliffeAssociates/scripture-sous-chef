@@ -45,6 +45,9 @@
 //! their class is trusted). Deltas at the frozen knobs (floor 0.95, k = 32) are
 //! the payload.
 
+// Spike/survey/dev code — std collections are fine here; the workspace
+// disallowed-types ban targets shipped engine code.
+#![allow(clippy::disallowed_types)]
 #![allow(dead_code)]
 
 use std::collections::{BTreeMap, HashMap};

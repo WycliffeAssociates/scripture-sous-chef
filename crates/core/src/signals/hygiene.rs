@@ -391,10 +391,17 @@ impl PerVerseRule for MixedNumeralSystems {
     }
 }
 
+// Iteration-order audit (FxHashMap swap, 2026-07-22): `counts` is read only
+// via `.len()` (order-independent) and `.iter().max_by_key(...)`, whose key
+// `(n, Reverse(sys))` is a strict total order — `sys` is the map key so no
+// two entries can tie on the full key, meaning `max_by_key` always returns
+// the same unique winner regardless of iteration order. The span-emitting
+// loop below walks `tape` directly, not `counts`, so hasher choice never
+// reaches the emitted `Vec<Span>`.
 pub(crate) fn scan_mixed_numeral_systems(tape: &[TapeEntry]) -> Vec<Span> {
-    use std::collections::HashMap;
+    use rustc_hash::FxHashMap;
 
-    let mut counts: HashMap<u32, usize> = HashMap::new();
+    let mut counts: FxHashMap<u32, usize> = FxHashMap::default();
     for e in tape {
         // The tape's decimal-digit bit gates the block-zero derivation, so
         // `numeral_system` runs only on actual digits.

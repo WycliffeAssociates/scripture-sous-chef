@@ -14,3 +14,6 @@ unicode-segmentation = { workspace = true }
 unicode-normalization = { workspace = true }
 serde_json = "1"
 
+
+[lints]
+workspace = true

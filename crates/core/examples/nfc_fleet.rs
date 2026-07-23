@@ -6,6 +6,9 @@
 //!
 //! Run: cargo run --release -p ssc-core --example nfc_fleet
 
+// Spike/survey/dev code — std collections are fine here; the workspace
+// disallowed-types ban targets shipped engine code.
+#![allow(clippy::disallowed_types)]
 use std::collections::HashMap;
 use std::fs;
 use std::io::Write;

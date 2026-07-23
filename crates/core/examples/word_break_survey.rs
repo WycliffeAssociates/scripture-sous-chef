@@ -28,6 +28,9 @@
 //!   cargo run -p ssc-core --release --example word_break_survey -- [N]
 //! Optional arg `N` caps the number of WA-* corpora processed (smoke test).
 
+// Spike/survey/dev code — std collections are fine here; the workspace
+// disallowed-types ban targets shipped engine code.
+#![allow(clippy::disallowed_types)]
 use std::cmp::Ordering;
 use std::collections::HashSet;
 use std::env;

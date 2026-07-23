@@ -503,9 +503,9 @@ mod tests {
     /// target propagation, which `norm_relevant_reference` alone doesn't
     /// capture (that function only proves a scalar's own rule A/B status; a
     /// pure rule-C target like plain `K` has neither).
-    fn norm_relevant_closure() -> std::collections::HashSet<char> {
+    fn norm_relevant_closure() -> rustc_hash::FxHashSet<char> {
         use unicode_normalization::char::{canonical_combining_class, decompose_canonical};
-        let mut set = std::collections::HashSet::new();
+        let mut set = rustc_hash::FxHashSet::default();
         for c in all_scalars() {
             if norm_relevant_reference(c) {
                 set.insert(c);

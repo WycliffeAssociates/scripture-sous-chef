@@ -7,6 +7,14 @@ members = ["crates/core", "crates/galley", "crates/wasm", "xtask"]
 version = "0.1.0"
 edition = "2024"
 
+# `std::collections::{HashMap, HashSet}` (SipHash) are banned in favor of
+# rustc-hash's FxHashMap/FxHashSet (ADR 0057's established internal hasher);
+# the type list lives in clippy.toml. Existing pre-ban sites carry annotated
+# `#[allow]`s pending their gated swap (hasher changes can reorder iteration,
+# so swaps in emit-adjacent code go through the oracle gate, not this lint).
+[workspace.lints.clippy]
+disallowed_types = "deny"
+
 [workspace.dependencies]
 ssc-core = { path = "crates/core" }
 ssc-galley = { path = "crates/galley" }

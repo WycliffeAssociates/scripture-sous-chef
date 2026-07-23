@@ -35,6 +35,9 @@
 //!   cargo run --release -p ssc-core --example calibrate -- \
 //!       --dump-findings corpora/vref /tmp/findings.wa.tsv default wa
 
+// Spike/survey/dev code — std collections are fine here; the workspace
+// disallowed-types ban targets shipped engine code.
+#![allow(clippy::disallowed_types)]
 use std::collections::BTreeMap;
 use std::path::Path;
 

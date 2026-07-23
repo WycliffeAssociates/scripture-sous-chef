@@ -14,8 +14,7 @@
 //! mutability or globals and compiles to `wasm32-unknown-unknown` for the web
 //! worker wrapper.
 
-use std::collections::HashSet;
-
+use rustc_hash::FxHashSet;
 use ssc_core::{
     BookBlock, CensusOptions, Config, Corpus, CorpusError, Finding, Inventory, PrepCache, Stats,
     analyze_stateful, census,
@@ -80,7 +79,7 @@ impl Galley {
     /// per-book `Tally` comparison on the next analyze re-tallies exactly the
     /// books whose content differs; unchanged books carry.
     pub fn replace_corpus(&mut self, corpus: Corpus) {
-        let new_slugs: HashSet<&str> = ssc_core::corpus::by_book(&corpus)
+        let new_slugs: FxHashSet<&str> = ssc_core::corpus::by_book(&corpus)
             .iter()
             .map(|g| g.slug)
             .collect();

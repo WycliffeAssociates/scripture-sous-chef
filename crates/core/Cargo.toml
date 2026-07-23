@@ -65,3 +65,6 @@ test-probes = []
 # wasm) enables this feature; it exists only so the floor bench binary can
 # reach the walk's private primitives without exposing them generally.
 bench-probes = []
+
+[lints]
+workspace = true
