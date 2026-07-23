@@ -490,7 +490,7 @@ pub fn analyze_stateful(
             }
         }
         (
-            signals::casing::CasingStats { per_book: pb },
+            signals::casing::CasingStats::from_per_book(pb),
             rule::RuleSites::Casing(st),
         )
     });

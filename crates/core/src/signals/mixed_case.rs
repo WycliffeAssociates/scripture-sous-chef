@@ -262,7 +262,20 @@ impl StatefulRule for MixedCaseWord {
         let z = clamp_z(self.cfg.confidence_z);
 
         // Corpus-wide per-word profiles: sum each book's raw shape counts.
-        let mut words: BTreeMap<&str, ShapeProfile> = BTreeMap::new();
+        // Hash-keyed (not a `BTreeMap`): the same word type recurs across many
+        // books, so this loop is dominated by `entry` probes — a hash probe per
+        // key instead of a log-n string memcmp descent (the measured cost, ~half
+        // the ~11-13 ms/call under all-rules). Output order is unaffected: the
+        // findings are span-sorted below, never word-order-dependent. Presized to
+        // the largest single book's table to blunt the initial rehash storm.
+        let cap = stats
+            .per_book
+            .values()
+            .map(|bmc| bmc.words.len())
+            .max()
+            .unwrap_or(0);
+        let mut words: FxHashMap<&str, ShapeProfile> =
+            FxHashMap::with_capacity_and_hasher(cap, Default::default());
         for bmc in stats.per_book.values() {
             for (key, p) in &bmc.words {
                 words.entry(key.as_str()).or_default().add(p);
@@ -271,8 +284,9 @@ impl StatefulRule for MixedCaseWord {
 
         // Score each word that was ever OtherMixed. A hapax mixed word has
         // not_other == 0 ⇒ dominance 0 ⇒ silent, structurally. Survivors carry
-        // (score, other, total) for the finding args.
-        let mut surviving: BTreeMap<&str, (f32, u32, u32)> = BTreeMap::new();
+        // (score, other, total) for the finding args. Hash-keyed and looked up by
+        // key in `emit_verse`, so order-independent like `words`.
+        let mut surviving: FxHashMap<&str, (f32, u32, u32)> = FxHashMap::default();
         for (&key, p) in &words {
             if p.other == 0 {
                 continue;
@@ -315,7 +329,7 @@ fn emit_verse(
     key_idx: KeyIdx,
     text: &str,
     tokens: Option<&TokenCache>,
-    surviving: &BTreeMap<&str, (f32, u32, u32)>,
+    surviving: &FxHashMap<&str, (f32, u32, u32)>,
     out: &mut Vec<Finding>,
 ) {
     let toks = verse_tokens(key_idx, text, tokens);
