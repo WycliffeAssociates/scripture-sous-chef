@@ -1718,6 +1718,15 @@ score that is NaN, infinite, or outside `[0, 1]`; otherwise encode
 calibration/reporting reads core `Finding` directly, never this wasm wire, so
 the quantization cannot change its exact-f32 tooling.
 
+The **wire offset unit is deliberately UTF-16**, while core `Span` remains
+UTF-8 byte offsets. JavaScript strings and the editor annotation surface index
+UTF-16 code units, so projecting once while Rust has the authoritative verse
+text makes each decoded record directly usable. Storing UTF-8 offsets would
+force the decoder to also retain/receive texts and scan Unicode—or build a
+per-verse byte-to-UTF-16 table—before it could place even one annotation. The
+live survey already includes the packed projection cost and found it negligible
+at the measured scales. Do not add dual offset modes or defer conversion to JS.
+
 #### A.1.1 Per-code payload digests
 
 The payload is interpreted **by `code`** — a manual discriminated union. Two
@@ -2147,6 +2156,18 @@ No finding/rule behavior changes ⇒ no oracle re-dump. Instead:
   the record of why (full-send is ~free; receiver reconciliation needs no
   removal protocol). A Galley-internal diff is not part of v1 and requires new
   measurement before reconsideration.
+- **Book-segmented/container wire** — deferred with the same delta gate. A
+  complete container with a directory and per-book lengths would still transfer
+  and decode the complete snapshot, merely adding headers. Sending/replacing
+  only changed book segments is a different protocol: it needs base/new
+  analysis-id validation, book-local addressing or checked rebase, removed-book
+  tombstones, full-resync behavior, and engine-produced changed-partition
+  decisions. A target book hash alone cannot validate a segment because some
+  judges use corpus-wide evidence and may change findings in otherwise
+  untouched books. Reconsider only if measured pack/transfer/decode/reconcile
+  cost becomes material (or the existing >~1 MB stop clause fires); then spike
+  a directory + book-local-record design against the flat baseline before
+  changing v1.
 - **Tauri IPC measurement** — the survey's named gap; unchanged by this
   plan. The packed buffer can only make that boundary cheaper, but the
   real number still wants a minimal Tauri app when the desktop path is

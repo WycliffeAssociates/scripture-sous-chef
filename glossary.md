@@ -81,8 +81,9 @@ uses a temporary instance. Dropping it can only make the next analysis slower.
 
 Its lanes have distinct invalidation regimes:
 
-- shared preparation and per-substrate chapter products are invalidated by
-  relevant input/schema changes;
+- shared preparation and per-substrate chapter observations are invalidated by
+  relevant input/schema changes; ordered reduced results also depend on their
+  entering boundary state;
 - resident finding partitions are invalidated or patched by substrate deltas
   and rule-judging configuration.
 
@@ -113,8 +114,9 @@ facts, not the whole cached family.
 ### Observation substrate
 
 A closed, strongly typed family of evidence that one or more rule judges may
-consume. A substrate defines its key, chapter contribution, boundary state,
-book contribution, corpus stats, and changed-key calculation.
+consume. A substrate defines its key, input-independent chapter observation,
+ordered reduced-chapter result, boundary state, book contribution, corpus
+stats, and changed-key calculation.
 
 Rules consume substrates; rules never implicitly depend on other rules. Two
 rules that need the same evidence share one substrate.
@@ -126,28 +128,38 @@ independently: for example, a punctuation mark, normalized word, glyph, or
 word/position-class pair. Old and new contributions produce changed substrate
 keys.
 
-### Chapter contribution
+### Chapter observation
 
-One chapter's mergeable contribution to one observation substrate, produced by
-the substrate's pure map step after its boundary input state is known. It may
-include keyed counts and chapter-local candidate sites.
+One chapter's self-contained typed evidence for one observation substrate,
+produced by the pure map step without predecessor state. It may contain keyed
+counts, chapter-local candidate sites, or a compact ordered event summary. Its
+caller-order chapter slot is authoritative; it need not implement lexical or
+numeric `Ord`.
+
+### Reduced chapter result
+
+The contribution/sites obtained by applying one substrate's entering boundary
+state to a cached chapter observation. It records the leaving boundary state.
+Changing predecessor carry may recompute this compact result but never remaps
+unchanged chapter text.
 
 ### Boundary state
 
 The explicit owned, equality-comparable state carried from one chapter into
-the next for one substrate. It may be empty, fixed-size, or variable-size.
-After an edit, chapter replay stops at the earliest unchanged chapter whose
-cached input state equals the newly produced state; otherwise it may continue
-to book end. No arbitrary correctness cap is imposed by the engine.
+the next by one substrate's ordered reducer. It may be empty, fixed-size, or
+variable-size. After an edit, reduction replay stops after the earliest chapter
+whose newly produced leaving state equals its cached leaving state; otherwise
+it may continue over cached observations to book end. No arbitrary correctness
+cap is imposed by the engine.
 
 Examples: the previous word for duplicate-word; pending sentence-terminal
 state for casing; an unmatched-delimiter stack for bracket pairing.
 
 ### Book contribution
 
-The fold of one book's valid chapter contributions for one substrate. The
-public/corpus aggregate may remain book-keyed even though preparation and
-replay are chapter-grained.
+The fold of one book's valid reduced chapter results for one substrate. The
+public/corpus aggregate may remain book-keyed even though preparation, mapping,
+and reduction replay are chapter-grained.
 
 ### Corpus stats
 
@@ -160,24 +172,30 @@ not invalidate it.
 The pure text-facing step:
 
 ```text
-chapter text + shared prep + boundary input state
-    → chapter contribution + boundary output state
+chapter text + shared prep
+    → chapter observation
 ```
 
-The correctness baseline is one fused walk over every affected/replayed
-chapter, feeding every active substrate mapper. Mapper-specific edit masks are
-later measured optimizations, not part of the initial architecture.
+Map never takes boundary state. The correctness baseline is one fused walk over
+each dirty chapter, feeding every substrate mapper whose observation stamp is
+dirty for that chapter. Native whole-corpus work fans out books; native
+single-book/multi-dirty-chapter work may fan out indexed caller-order chapters.
+Mapper-specific edit masks are later measured optimizations.
 
 ### Reduce
 
 The pure aggregation step:
 
 ```text
-chapter contributions → book contribution → corpus stats
+chapter observation + entering boundary state
+    → reduced chapter result + leaving boundary state
+ordered reduced chapter results → book contribution → corpus stats
 ```
 
-Reducing also compares old and new contributions to produce changed substrate
-keys. It does not apply rule aggression, thresholds, or message policy.
+Reducing also compares old and new reduced results to produce changed substrate
+keys. It is ordered and sequential within a book, but consumes compact cached
+observations rather than rewalking chapter text. It does not apply rule
+aggression, thresholds, or message policy.
 
 ## Judging and findings
 
