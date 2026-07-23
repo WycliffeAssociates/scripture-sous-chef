@@ -471,3 +471,161 @@ this packet.
   worktree to the `granularity-spine` branch checked out in the main tree
   (owner decision — single visible checkout; worktrees remain available for
   clean-base comparison builds).
+
+---
+
+## Entry 3 — Work Packet 1: Phase A steps 1–4 (complete-snapshot API + Corpus residency floor)
+
+- **Date:** 2026-07-23
+- **Branch:** `granularity-spine` (main tree). Base for this packet: `9678610`.
+- **Scope:** plan §8 Phase A steps 1–4 only. Steps 5–8 are the next packet.
+- **Discipline:** per-commit WA oracle gate (four dumps: findings + incremental
+  × default + all) + full `cargo test --workspace` + `cargo check -p ssc-wasm
+  --target wasm32-unknown-unknown`. Full-fleet bookend is Phase F, not here.
+
+### WA oracle base pin (this packet's per-commit referee)
+
+Pinned at HEAD `9678610`, `/tmp/oracle/spine/wp1.base.wa.*.tsv`, scope=wa (251
+corpora findings; 32 corpora incremental). sha256:
+
+| file | sha256 |
+| --- | --- |
+| `wp1.base.wa.findings.default.tsv` | `38a0ceadcc792a6656905c7a0f9e2e4c2720c86f47f41f94c66e7a8ad1a9702c` |
+| `wp1.base.wa.findings.all.tsv` | `128fdd933dc71cda0a4a6d9d9971ceb5648a5703f8b22ee798d30b09d2c15660` |
+| `wp1.base.wa.inc.default.tsv` | `0fc53080df7bea224d84a8a5592473ca6c97c76dbe4de41b730cefabdafbf365` |
+| `wp1.base.wa.inc.all.tsv` | `462a0e69239d69332e1e3ad388d612aa5a15654bb16f3b207f03ba812e53c62d` |
+
+**Every one of steps 1–4 re-dumped all four and diffed byte-identical to this
+base** (`diff -q` clean; `/tmp/oracle/spine/step{1,2,3,4}.wa.*.tsv`). No step
+moved a single byte of finding or provenance output. Workspace tests green at
+every step (core 415→417→417→427, galley 15→15→17→17, wasm 7); wasm target
+checks clean at every step.
+
+### Per-step commits
+
+| step | commit | what landed |
+| --- | --- | --- |
+| 1 | `c7c78ec` | No-reopened-chapter validation in `Corpus` construction + `replace_books`; `CorpusError::ReopenedChapter`; synthetic reject/accept tests. |
+| 2 | `71d3ce4` | Corpus-owned private `BookLayout`/`ChapterLayout` (ranges + content hashes), rebuilt atomically; `by_book` reads layout; one hashing primitive `corpus::content_hash` (cache delegates). |
+| 3 | `0cb9ce3` | `ChapterBlock`+`Corpus::replace_chapter`; `MutationEffect::{Unchanged,Changed}` across the surface; Galley/wasm renames to the §3.1 table; wasm string union + `ChapterUpdateIn`; transcript extended. |
+| 4 | `fde6bd5` | Hashing read from owned layout (per-analyze hash walk deleted; `cache::book_hash` removed); core `identity` module (`AnalysisId`/`TargetContextId`/`ANALYSIS_ENGINE_STAMP`); `InputDependency` registry; `KeyIdx::get`; Galley identity accessors. |
+
+### Mutation-path enumeration (stop-clause: no path may change keys/texts
+without rebuilding derived metadata)
+
+The only writes to `Corpus.{keys,texts}` are:
+
+1. `try_from_parts` (construction) — builds layout after validation.
+2. `replace_books` — rebuilds layout on `Changed`; a proven byte-identical
+   no-op returns `Unchanged` and touches nothing.
+3. `remove_book` — rebuilds layout after the drain.
+4. `replace_chapter` (new) — splices the run in place, then rebuilds layout on
+   `Changed`; a proven no-op touches nothing.
+
+Every one rebuilds (or, for a proven no-op, provably preserves) `BookLayout`
+atomically with the vectors. No other code path mutates the vectors. Galley
+verbs (`update_book`/`update_chapter`/`remove_books`/`replace_corpus`/
+`replace_source`/`update_config`) delegate to these and manage prior/prep;
+none mutates keys/texts directly. **Stop clause not triggered.**
+
+### Transcript extension coverage (§12.5)
+
+`crates/galley` `complete_snapshot_mutation_transcript_matches_cold_every_step`
+now uses the real `update_book` (single `BookBlock`) throughout and adds:
+- **Step 11**: replace the SAME chapter twice before ONE analyze via
+  `update_chapter` (latest wins; both report `Changed`), self-refereed against
+  `replace_chapter` on the expected corpus + cold analyze.
+- **Step 12**: a byte-identical chapter re-supply reports `Unchanged` and the
+  following analyze still equals cold.
+Plus a focused `mutation_effects_report_changed_and_unchanged` test across
+every verb, and `identity_accessors_track_inputs` (galley). Still deferred to
+Phase A-W: failure injection after map/reduce/judge/pack and the
+`(analysis_id, args, buffer)` publication assertions (no wire/pack layer yet).
+
+### Identity fold design notes
+
+- `ANALYSIS_ENGINE_STAMP` lives in `crates/core/src/identity.rs` as a single
+  deterministic `pub const u64 = 1` (never a timestamp). Phase F folds per-rule
+  stamps into it; for now it is bumped by hand on a semantic change.
+- `TargetContextId` fold (xxh3-64): domain tag `b"ssc.target-context.v1"` +
+  `ANALYSIS_ENGINE_STAMP` + config fingerprint + `fold_book_leaves(target)`.
+- `AnalysisId` fold (xxh3-64): domain tag `b"ssc.analysis-id.v1"` +
+  target-context id + a 1-byte reference-present/absent tag + (when present)
+  `fold_book_leaves(reference)`.
+- `fold_book_leaves` = count-prefixed, per-leaf length-prefixed
+  `(slug, owned book content hash)` in presented order — reads `BookLayout`,
+  never verse text (O(book count)).
+- Config fingerprint = `xxh3_64` over `format!("{config:?}")` (complete config
+  incl. every knob; deterministic via the `BTreeMap` rule set) — computed in
+  `identity.rs`, independent of the cache's own private config fingerprint (no
+  gate-adjacent code touched).
+- `InputDependency::of` via `RuleId::input_dependency()` (exhaustive match in
+  `diagnostics.rs`): only `prop.length-ratio` is
+  `TargetAndReferenceSilentWhenAbsent`; all others `TargetOnly`. Registry tests
+  pin total coverage and reference-absence silence.
+
+### §12 tests added
+
+- §12.1 corpus/update: reopened-chapter reject (construction + block);
+  out-of-order-verse and noncanonical-chapter accept; layout ranges/hashes
+  correct; mutations keep layout current; `replace_chapter` splice/no-op/atomic
+  rejections; MutationEffect changed/unchanged across every verb.
+- §12.1 identity: ids deterministic across instances and semantic no-ops; move
+  on target/reference/config/stamp change; target-context id ignores reference;
+  accessors available before analyze (galley).
+- §5.2/§A.5 registry: `input_dependency` covers every rule; reference-silent
+  rules emit nothing with no reference.
+
+### Ladder vs Gate-0 baselines (guarding against regression only)
+
+`spike-bench/warm_ladder_profile` over `corpora/vref/WA-en-ulb.txt`, 200
+trials, warm median/call (loaded machine — spreads 167–2192%, so mins are the
+honest floor). Gate-0 baselines from Entry 1.
+
+| book/cfg | Gate-0 median | this packet median | this packet min |
+| --- | ---: | ---: | ---: |
+| 3JN default | 4.40 ms | 2.96 ms | 2.49 ms |
+| MAT default | 12.64 ms | 12.32 ms | 10.46 ms |
+| PSA default | 19.16 ms | 18.95 ms | 16.94 ms |
+| 3JN all | 32.66 ms | 37.3–37.8 ms | 29.0 ms |
+| MAT all | 51.79 ms | 53.9–55.7 ms | 45.3 ms |
+| PSA all | 65.78 ms | 64.7–75.5 ms | 61.1 ms |
+
+The per-iteration warm path only *lost* work this packet (step 4 deleted the
+per-analyze book-hash walk; step-2 layout building happens at construction,
+which the warm loop does once outside the timed loop). Every scenario's min
+sits at or below its Gate-0 median; default 3JN improved outright (2.96 vs
+4.40). The all-config median jitter is loaded-machine noise, not regression
+(re-runs bounced 37.3↔37.8, 53.9↔55.7, 64.7↔75.5 with the same code). No
+material regression. Per-phase map/reduce/judge/pack timers still do not exist
+(owed to a later phase, per §2 item 5).
+
+### Deviation flagged for owner adjudication
+
+**Book content-hash mechanism (plan §4).** Plan §4 says the book hash "folds
+ordered (chapter token, chapter hash) with lengths." This packet defines the
+owned book content hash as the **flat** content hash over the book's verses
+(byte-identical to the retired `cache::book_hash`). Rationale: the per-book
+content hash feeds `Tally.text`, whose value the incremental oracle's
+provenance digest (`prov_fnv`) embeds, so byte-identity with today's value is a
+hard, non-negotiable gate requirement — a chapter-folded hash would produce a
+different value and diff the incremental gate. The flat hash already meets §4's
+stated anti-collision goal ("order and chapter boundaries cannot
+concatenate-collide") because every hashed key is length-prefixed and carries
+its own chapter token. Chapter-level hashes are the flat content hash of each
+chapter's verses (used for the `replace_chapter` no-op fast path). `AnalysisId`
+uses this flat book hash; since `AnalysisId` is not oracle-gated and no wire is
+persisted until Phase A-W, a future switch to a chapter-folded book hash is a
+non-breaking internal change (it would simply change ids, which
+`ANALYSIS_ENGINE_STAMP`/algorithm changes are expected to do). **No plan edit
+made; owner may confirm the flat mechanism or direct chapter-folding with a
+separate provenance hash.**
+
+### Stop-safe next step
+
+Phase A steps 1–4 are landed and byte-identical-gated. Next stop-safe step is
+Phase A step 5 (remove echo semantics; delete `analyze_vref_stateful` and the
+serialized/TS `Stats` surfaces) — the next packet. NOTE: `oracle.rs` still
+relies on echo semantics + `Stats` (untouched this packet, per instruction);
+step 5 must re-pin the oracle's incremental transcript to §12.5 as it removes
+echo.
