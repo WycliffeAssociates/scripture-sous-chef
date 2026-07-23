@@ -448,3 +448,26 @@ recorded. **Next stop-safe step is Phase A step 1** (add the no-reopened-chapter
 validation to `Corpus` + its Gate-0 scan test) — which begins engine work and
 so re-enters the per-commit WA-oracle discipline. Do not begin Phase A within
 this packet.
+
+---
+
+## Entry 2 — Owner adjudication: within-rule equal-key order is the contract
+
+- **Date:** 2026-07-23
+- **Trigger:** Gate-0 Item B evidence — every collision on the final stable-sort
+  key `(key_idx, range.start, code)` is intra-rule because each `RuleId` emits
+  through exactly one lane; cross-lane pre-sort order is therefore fixed by the
+  sort key itself and preserves an implementation accident, not an observable
+  contract.
+- **Decision (owner, verbatim intent):** plan §2 item 4 and §6.4 amended.
+  Phase B must preserve each rule's internal emission order among findings with
+  identical final sort keys (scan-order/duplicate ordinal only where required);
+  cross-lane insertion order is not contractual; a rule that ever emits through
+  multiple lanes is a stop-and-define event; emitted order is never derived
+  from unordered iteration.
+- **Risk framing:** negligible under the verified one-rule/one-lane invariant,
+  and guarded continuously by the byte-identical oracle gates.
+- **Also:** execution moved from the `.claude/worktrees/granularity-spine`
+  worktree to the `granularity-spine` branch checked out in the main tree
+  (owner decision — single visible checkout; worktrees remain available for
+  clean-base comparison builds).

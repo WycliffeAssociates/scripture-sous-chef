@@ -204,9 +204,10 @@ clause.
 3. Pin full-fleet findings for default/everything configs and the current
    complete-snapshot Galley mutation oracle. The old echo dump is historical;
    replace it with the complete-snapshot mutation transcript in §12.5.
-4. Pin the current output order, including records that collide on today's
-   stable-sort key `(key_idx, range.start, code)`. Record pre-sort lane order and
-   within-rule duplicate order. If it cannot be reproduced from partitions,
+4. Pin records that collide on today's stable-sort key `(key_idx, range.start,
+   code)`, verify that each `RuleId` emits through exactly one lane, and record
+   each rule's within-rule equal-key order. Cross-lane pre-sort order is not
+   contractual. If the within-rule order cannot be reproduced from partitions,
    stop in Phase B.
 5. Record warm ladder baselines for 3JN/MAT/PSA, default/everything, plus cold
    complete analysis. Add separate timers for map, reduce, judge, pack, and JS
@@ -843,11 +844,14 @@ The complete returned order remains byte-identical to the pre-plan oracle:
 
 - retain today's stable final sort key unless an owner-adjudicated oracle change
   says otherwise;
-- reproduce pre-sort lane order (per-verse/direct, project listeners, stateful
-  registry) and within-rule site order;
-- retain a local site/duplicate ordinal where equal sort keys need stable tie
-  order;
-- never iterate an unordered map directly into emitted order.
+- preserve each rule's internal emission order among findings with identical
+  final sort keys; retain a local scan-order/duplicate ordinal only where
+  required to reproduce that order;
+- cross-lane insertion order is not contractual: each `RuleId` emits through
+  exactly one lane, and `(key_idx, range.start, code)` orders findings from
+  different rules. If a rule ever begins emitting through multiple lanes, stop
+  and define its equal-key ordering explicitly;
+- never derive emitted order from unordered iteration.
 
 Phase B pins collision cases before changing assembly. If the old order cannot
 be represented by partitions, stop rather than silently choosing a new order.
