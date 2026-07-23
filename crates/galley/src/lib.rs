@@ -585,4 +585,334 @@ mod tests {
         let pure = census(&corpus, &CensusOptions::default());
         assert_eq!(from_galley, pure);
     }
+
+    // ── Gate-0 complete-snapshot mutation transcript (granularity-spine §2
+    //    item 3 / §12.5) ──────────────────────────────────────────────────
+    //
+    // A single scripted mutation sequence over ONE realistic hand-built
+    // synthetic corpus, exercising the mutation surface Galley exposes TODAY.
+    // The referee is self-validating: after every mutation + analyze, the
+    // resident result is compared against a fresh COLD complete analysis of
+    // the same inputs — equality is required at every step. This pins today's
+    // resident-vs-cold behavior so Phase A's chapter machinery cannot silently
+    // drift it; the transcript grows as `update_chapter`/`update_book` and the
+    // wire/pack layer land (those §12.5 steps are deferred below).
+    //
+    // The corpus is built to the §12.5 spirit within the current (whole-book)
+    // surface: three books; several chapters; out-of-order verse tokens;
+    // duplicate keys; a cross-chapter duplicate word; sentence-casing state and
+    // bracket state that carry ACROSS chapter seams within a book; and a
+    // source-paired corpus so proportionality is source-dependent. Config::all
+    // so every rule (casing, bracket, duplicate, proportionality, …) runs.
+
+    /// Build a `Corpus` from explicit `(key, text)` pairs — lets a chapter/
+    /// verse token be anything (out-of-order, duplicated, multi-chapter),
+    /// unlike the `1:v` `keyed` helper. Book blocks must be presented
+    /// contiguously (Corpus's own invariant).
+    fn corpus_pairs(pairs: &[(&str, &str)]) -> Corpus {
+        let keys = pairs.iter().map(|(k, _)| k.to_string()).collect();
+        let texts = pairs.iter().map(|(_, t)| t.to_string()).collect();
+        Corpus::try_from_parts(keys, texts).unwrap()
+    }
+
+    /// Build one `BookBlock` from explicit `(key, text)` pairs, all of whose
+    /// keys must parse to `slug`.
+    fn block_pairs(slug: &str, pairs: &[(&str, &str)]) -> BookBlock {
+        BookBlock {
+            slug: slug.into(),
+            keys: pairs.iter().map(|(k, _)| k.to_string()).collect(),
+            texts: pairs.iter().map(|(_, t)| t.to_string()).collect(),
+        }
+    }
+
+    /// The self-validating referee: a from-scratch cold complete analyze of
+    /// the given target/source under `cfg`. Every transcript step asserts the
+    /// resident `Galley::analyze()` equals this for the same inputs.
+    fn cold_src(target: &Corpus, source: Option<&Corpus>, cfg: &Config) -> Vec<Finding> {
+        analyze_stateful(target, source, cfg, None, None).0
+    }
+
+    /// GEN: three chapters. Chapter 1 opens a bracket that only closes in
+    /// chapter 2 (bracket carry across a chapter seam); a period at the end of
+    /// 1:2 leaves pending-terminal casing state that carries into 2:1 (casing
+    /// carry across a chapter seam); verse tokens 1:3 and 1:2 are presented
+    /// out of order; `GEN 2:1` appears twice (duplicate key); and the word
+    /// "work" ends chapter 2 and opens chapter 3 (cross-chapter duplicate).
+    fn gen_book_0() -> Vec<(&'static str, &'static str)> {
+        vec![
+            ("GEN 1:1", "In the beginning God created (the heavens."),
+            ("GEN 1:3", "The earth was formless and empty."),
+            ("GEN 1:2", "and darkness covered the deep."),
+            ("GEN 2:1", "the heavens) were finished and the work."),
+            ("GEN 2:1", "Thus he completed completed the work."),
+            ("GEN 3:1", "work now the serpent was more crafty."),
+        ]
+    }
+
+    /// EXO: two chapters, a bracket opened in 1:2 closing in 2:1.
+    fn exo_book_0() -> Vec<(&'static str, &'static str)> {
+        vec![
+            ("EXO 1:1", "A man went out. he saw a light ahead."),
+            ("EXO 1:2", "Then [the door opened slowly."),
+            ("EXO 2:1", "and closed] again behind him."),
+        ]
+    }
+
+    /// LEV: one chapter, an adjacent same-word duplicate.
+    fn lev_book_0() -> Vec<(&'static str, &'static str)> {
+        vec![("LEV 1:1", "The priest spoke and the people people listened.")]
+    }
+
+    /// A source corpus paired by slug/key so `prop.length-ratio` is genuinely
+    /// source-dependent for GEN/EXO/LEV (shorter reference text than target).
+    fn source_0() -> Corpus {
+        corpus_pairs(&[
+            ("GEN 1:1", "beginning"),
+            ("GEN 1:3", "earth"),
+            ("GEN 1:2", "darkness"),
+            ("GEN 2:1", "heavens"),
+            ("GEN 2:1", "work"),
+            ("GEN 3:1", "serpent"),
+            ("EXO 1:1", "man"),
+            ("EXO 1:2", "door"),
+            ("EXO 2:1", "closed"),
+            ("LEV 1:1", "priest"),
+        ])
+    }
+
+    fn full_target_0() -> Corpus {
+        let mut pairs = gen_book_0();
+        pairs.extend(exo_book_0());
+        pairs.extend(lev_book_0());
+        corpus_pairs(&pairs)
+    }
+
+    #[test]
+    fn complete_snapshot_mutation_transcript_matches_cold_every_step() {
+        let cfg = Config::all();
+
+        // ── Step 1: cold seed ───────────────────────────────────────────────
+        let mut target = full_target_0();
+        let mut source = Some(source_0());
+        let mut g = Galley::new(target.clone(), source.clone(), cfg.clone());
+        assert_eq!(
+            g.analyze(),
+            cold_src(&target, source.as_ref(), &cfg),
+            "step 1: cold seed"
+        );
+
+        // ── Step 2: delete a verse (rolled up to a whole-book GEN update) ────
+        // Drop the second GEN 2:1 (one of the duplicate-key verses).
+        let gen_del: Vec<(&str, &str)> = gen_book_0()
+            .into_iter()
+            .enumerate()
+            .filter(|(i, _)| *i != 4)
+            .map(|(_, p)| p)
+            .collect();
+        target.replace_books(vec![block_pairs("GEN", &gen_del)]).unwrap();
+        g.update_books(vec![block_pairs("GEN", &gen_del)]).unwrap();
+        assert_eq!(
+            g.analyze(),
+            cold_src(&target, source.as_ref(), &cfg),
+            "step 2: delete a verse via whole-book update"
+        );
+
+        // ── Step 3: insert two verses (whole-book GEN update) ────────────────
+        let mut gen_ins = gen_del.clone();
+        gen_ins.push(("GEN 3:2", "And the woman answered wisely."));
+        gen_ins.push(("GEN 3:3", "So they hid among among the trees."));
+        target.replace_books(vec![block_pairs("GEN", &gen_ins)]).unwrap();
+        g.update_books(vec![block_pairs("GEN", &gen_ins)]).unwrap();
+        assert_eq!(
+            g.analyze(),
+            cold_src(&target, source.as_ref(), &cfg),
+            "step 3: insert two verses"
+        );
+
+        // ── Step 4: replace the same book twice before ONE analyze ──────────
+        // (§12.5's "replace same chapter twice" adapted to the whole-book
+        // surface: two coalesced GEN updates, then a single analyze; only the
+        // latest content must survive.)
+        let mut gen_v1 = gen_ins.clone();
+        gen_v1[0] = ("GEN 1:1", "In the beginning God created (the skies.");
+        let mut gen_v2 = gen_ins.clone();
+        gen_v2[0] = ("GEN 1:1", "In the beginning God created (the vault of heaven.");
+        g.update_books(vec![block_pairs("GEN", &gen_v1)]).unwrap();
+        g.update_books(vec![block_pairs("GEN", &gen_v2)]).unwrap();
+        target.replace_books(vec![block_pairs("GEN", &gen_v2)]).unwrap();
+        assert_eq!(
+            g.analyze(),
+            cold_src(&target, source.as_ref(), &cfg),
+            "step 4: two coalesced book replacements, latest wins"
+        );
+
+        // ── Step 5: remove a chapter by whole-book update ────────────────────
+        // Drop all of GEN chapter 3.
+        let gen_no_ch3: Vec<(&str, &str)> =
+            gen_v2.iter().copied().filter(|(k, _)| !k.starts_with("GEN 3:")).collect();
+        target.replace_books(vec![block_pairs("GEN", &gen_no_ch3)]).unwrap();
+        g.update_books(vec![block_pairs("GEN", &gen_no_ch3)]).unwrap();
+        assert_eq!(
+            g.analyze(),
+            cold_src(&target, source.as_ref(), &cfg),
+            "step 5: remove a chapter via whole-book update"
+        );
+
+        // ── Step 6: remove then reinsert a whole book (EXO) ──────────────────
+        target.remove_book("EXO");
+        assert_eq!(g.remove_books(&["EXO"]), 1);
+        assert_eq!(
+            g.analyze(),
+            cold_src(&target, source.as_ref(), &cfg),
+            "step 6a: after removing EXO"
+        );
+        // Reinsert EXO. A re-added slug appends after existing books (API
+        // fixed order) — the referee cold analyze uses the SAME resulting
+        // order, so equality still holds.
+        target.replace_books(vec![block_pairs("EXO", &exo_book_0())]).unwrap();
+        g.update_books(vec![block_pairs("EXO", &exo_book_0())]).unwrap();
+        assert_eq!(
+            g.analyze(),
+            cold_src(&target, source.as_ref(), &cfg),
+            "step 6b: after reinserting EXO"
+        );
+
+        // ── Step 7: target replacement + source replacement ─────────────────
+        let new_target = corpus_pairs(&[
+            ("JHN 1:1", "In the beginning was the Word."),
+            ("JHN 1:2", "the Word was with God, [and was God."),
+            ("JHN 2:1", "and on the third day] there was a wedding."),
+            ("ROM 1:1", "Paul a servant, servant of Christ Jesus."),
+        ]);
+        g.replace_corpus(new_target.clone());
+        target = new_target;
+        let new_source = corpus_pairs(&[
+            ("JHN 1:1", "Word"),
+            ("JHN 1:2", "God"),
+            ("JHN 2:1", "wedding"),
+            ("ROM 1:1", "Paul"),
+        ]);
+        g.update_source(Some(new_source.clone()));
+        source = Some(new_source);
+        assert_eq!(
+            g.analyze(),
+            cold_src(&target, source.as_ref(), &cfg),
+            "step 7: target + source replacement"
+        );
+
+        // ── Step 8: toggle a shared consumer + change a knob ─────────────────
+        // The two casing rules share one substrate. Disable one, then change a
+        // casing knob, re-enabling nothing else — each config change must land
+        // exactly on the cold result under the new config.
+        let mut cfg_toggle = cfg.clone();
+        cfg_toggle.rules.insert(RuleId::InconsistentWordCasing, false);
+        g.update_config(cfg_toggle.clone());
+        assert_eq!(
+            g.analyze(),
+            cold_src(&target, source.as_ref(), &cfg_toggle),
+            "step 8a: disable one shared casing consumer"
+        );
+        let mut cfg_knob = cfg_toggle.clone();
+        cfg_knob.casing.emit_score_min = 0.9; // knob-only tightening
+        g.update_config(cfg_knob.clone());
+        assert_eq!(
+            g.analyze(),
+            cold_src(&target, source.as_ref(), &cfg_knob),
+            "step 8b: knob-only casing change"
+        );
+
+        // ── Step 9: edit-then-undo (coalesced back to identity) ─────────────
+        // Restore full config first, then edit JHN and immediately revert it
+        // before analyzing — the resident result must equal cold of the
+        // unchanged corpus.
+        g.update_config(cfg.clone());
+        assert_eq!(
+            g.analyze(),
+            cold_src(&target, source.as_ref(), &cfg),
+            "step 9a: config restored"
+        );
+        let jhn_edited = corpus_pairs(&[
+            ("JHN 1:1", "In the beginning was the WORD edited edited."),
+            ("JHN 1:2", "the Word was with God, [and was God."),
+            ("JHN 2:1", "and on the third day] there was a wedding."),
+        ]);
+        let jhn_orig = corpus_pairs(&[
+            ("JHN 1:1", "In the beginning was the Word."),
+            ("JHN 1:2", "the Word was with God, [and was God."),
+            ("JHN 2:1", "and on the third day] there was a wedding."),
+        ]);
+        // Two coalesced updates: edit, then undo, before a single analyze.
+        g.update_books(vec![block_pairs(
+            "JHN",
+            &jhn_edited
+                .keys()
+                .iter()
+                .zip(jhn_edited.texts())
+                .map(|(k, t)| (k.as_str(), t.as_str()))
+                .collect::<Vec<_>>(),
+        )])
+        .unwrap();
+        g.update_books(vec![block_pairs(
+            "JHN",
+            &jhn_orig
+                .keys()
+                .iter()
+                .zip(jhn_orig.texts())
+                .map(|(k, t)| (k.as_str(), t.as_str()))
+                .collect::<Vec<_>>(),
+        )])
+        .unwrap();
+        assert_eq!(
+            g.analyze(),
+            cold_src(&target, source.as_ref(), &cfg),
+            "step 9b: edit-then-undo coalesces to identity"
+        );
+
+        // ── Step 10: replay-to-book-end shape (edit early chapter, state
+        //    carries to book end) ─────────────────────────────────────────────
+        // Edit JHN chapter 1 so its bracket/casing state change would, under a
+        // (future) chapter-seam engine, have to propagate through chapter 2 to
+        // book end. Today it is a whole-book rewalk; either way resident must
+        // equal cold. This is the case Phase D's ordered-reduction replay must
+        // keep byte-identical.
+        let jhn_ch1_edit = corpus_pairs(&[
+            ("JHN 1:1", "In the beginning was the Word (unclosed here."),
+            ("JHN 1:2", "the Word was with God and was God."),
+            ("JHN 2:1", "on the third day there was a wedding."),
+        ]);
+        target.replace_books(vec![block_pairs(
+            "JHN",
+            &jhn_ch1_edit
+                .keys()
+                .iter()
+                .zip(jhn_ch1_edit.texts())
+                .map(|(k, t)| (k.as_str(), t.as_str()))
+                .collect::<Vec<_>>(),
+        )])
+        .unwrap();
+        g.update_books(vec![block_pairs(
+            "JHN",
+            &jhn_ch1_edit
+                .keys()
+                .iter()
+                .zip(jhn_ch1_edit.texts())
+                .map(|(k, t)| (k.as_str(), t.as_str()))
+                .collect::<Vec<_>>(),
+        )])
+        .unwrap();
+        assert_eq!(
+            g.analyze(),
+            cold_src(&target, source.as_ref(), &cfg),
+            "step 10: early-chapter edit whose state reaches book end"
+        );
+
+        // Deferred §12.5 steps (surface does not exist yet, per plan §2):
+        //   - true `update_chapter` (atomic single-chapter run replacement);
+        //   - `update_book` as a distinct atomic verb (only `update_books`
+        //     batch exists today);
+        //   - failure injection after map/reduce/judge/pack and the
+        //     publication (analysis_id/args/buffer) assertions — there is no
+        //     wire/pack layer, `MutationEffect`, or `AnalysisId` yet.
+        // Those land with Phase A / Phase A-W and extend this transcript.
+    }
 }
