@@ -16,8 +16,8 @@
 
 use rustc_hash::FxHashSet;
 use ssc_core::{
-    BookBlock, CensusOptions, Config, Corpus, CorpusError, Finding, Inventory, PrepCache, Stats,
-    analyze_stateful, census,
+    BookBlock, CensusOptions, ChapterBlock, Config, Corpus, CorpusError, Finding, Inventory,
+    MutationEffect, PrepCache, Stats, analyze_stateful, census,
 };
 
 /// The resident analysis handle. Owns everything that persists between calls;
@@ -43,15 +43,27 @@ impl Galley {
         }
     }
 
-    /// Batch replace/insert whole books. Verse- and chapter-level updates are
-    /// deliberately not offered: a chapter edit is the caller's to roll up to
-    /// its whole book and resend as a block (the book is the invalidation unit
-    /// — cross-verse discourse state means a verse is not a pure cache key).
-    /// Delegates to [`Corpus::replace_books`] — atomic, all-or-nothing, so a
-    /// rejected batch leaves the handle exactly as before. Does **not** analyze;
-    /// running is always the caller's explicit [`analyze`](Galley::analyze).
-    pub fn update_books(&mut self, batch: Vec<BookBlock>) -> Result<(), CorpusError> {
-        self.corpus.replace_books(batch)
+    /// Replace one complete book in place, or append it if its slug is new.
+    /// Atomic (all-or-nothing) via [`Corpus::replace_books`], so a rejected
+    /// block leaves the handle exactly as before. Reports whether the resident
+    /// input actually changed; a byte-identical replacement is a proven
+    /// [`MutationEffect::Unchanged`] no-op that preserves cache and publication
+    /// validity. Does **not** analyze — running is the caller's explicit
+    /// [`analyze`](Galley::analyze). Whole-chapter insert/remove/reorder rolls
+    /// up to a book here; a single existing chapter run uses
+    /// [`update_chapter`](Galley::update_chapter).
+    pub fn update_book(&mut self, block: BookBlock) -> Result<MutationEffect, CorpusError> {
+        self.corpus.replace_books(vec![block])
+    }
+
+    /// Replace exactly one existing `(slug, chapter)` run with a complete
+    /// [`ChapterBlock`]. Atomic via [`Corpus::replace_chapter`]; a rejected
+    /// block leaves the handle unchanged. Reports [`MutationEffect`]; a
+    /// byte-identical run is a proven no-op. Whole-chapter
+    /// insertion/removal/reorder uses [`update_book`](Galley::update_book).
+    /// Does **not** analyze.
+    pub fn update_chapter(&mut self, block: ChapterBlock) -> Result<MutationEffect, CorpusError> {
+        self.corpus.replace_chapter(block)
     }
 
     /// Remove books by slug. Unknown slugs are no-ops, excluded from the count.
@@ -73,12 +85,17 @@ impl Galley {
     }
 
     /// Whole-corpus reseed (project switch, git pull). The argument is the
-    /// **complete** new corpus. Before adopting it, every slug present in the
-    /// old corpus but absent from the new one is dropped from the prior and the
-    /// prep cache — deletion reconciliation, not changed-book hinting. After it,
-    /// per-book `Tally` comparison on the next analyze re-tallies exactly the
-    /// books whose content differs; unchanged books carry.
-    pub fn replace_corpus(&mut self, corpus: Corpus) {
+    /// **complete** new corpus. A corpus equal to the current resident target
+    /// is a proven [`MutationEffect::Unchanged`] no-op that retains everything.
+    /// Otherwise, before adopting it, every slug present in the old corpus but
+    /// absent from the new one is dropped from the prior and the prep cache —
+    /// deletion reconciliation, not changed-book hinting. After it, per-book
+    /// `Tally` comparison on the next analyze re-tallies exactly the books whose
+    /// content differs; unchanged books carry.
+    pub fn replace_corpus(&mut self, corpus: Corpus) -> MutationEffect {
+        if corpus == self.corpus {
+            return MutationEffect::Unchanged;
+        }
         let new_slugs: FxHashSet<&str> = ssc_core::corpus::by_book(&corpus)
             .iter()
             .map(|g| g.slug)
@@ -96,13 +113,20 @@ impl Galley {
             self.prep.remove_book(slug);
         }
         self.corpus = corpus;
+        MutationEffect::Changed
     }
 
-    /// Swap the source corpus. The prior is retained: on the next analyze,
-    /// per-book `Tally.source` stales exactly the books whose same-slug source
-    /// book changed (a same-content source, or `None -> None`, stales nothing).
-    pub fn update_source(&mut self, source: Option<Corpus>) {
+    /// Replace the optional complete reference (source) corpus. A reference
+    /// equal to the current one (including `None -> None`) is a proven
+    /// [`MutationEffect::Unchanged`] no-op. Otherwise the prior is retained: on
+    /// the next analyze, per-book `Tally.source` stales exactly the books whose
+    /// same-slug source book changed.
+    pub fn replace_source(&mut self, source: Option<Corpus>) -> MutationEffect {
+        if source == self.source {
+            return MutationEffect::Unchanged;
+        }
         self.source = source;
+        MutationEffect::Changed
     }
 
     /// Swap the config. An equal config (plain [`Config`] equality, not the
@@ -112,12 +136,13 @@ impl Galley {
     /// every `Tally.rules` and re-tallies naturally, while a knob-only change
     /// leaves counts valid and re-tallies nothing (knobs judge, they do not
     /// tally).
-    pub fn update_config(&mut self, config: Config) {
+    pub fn update_config(&mut self, config: Config) -> MutationEffect {
         if config == self.config {
-            return;
+            return MutationEffect::Unchanged;
         }
         self.prep.clear();
         self.config = config;
+        MutationEffect::Changed
     }
 
     /// Analyze the resident corpus and return its findings, global to the
@@ -234,7 +259,7 @@ mod tests {
         let mut expected = c0.clone();
         let exo = book("EXO", &["a  b, joyfullly edited", "A1 α qQx"]);
         expected.replace_books(vec![exo.clone()]).unwrap();
-        g.update_books(vec![exo]).unwrap();
+        g.update_book(exo).unwrap();
         assert_eq!(g.analyze(), cold(&expected, &cfg), "after update_books");
 
         // remove_books: drop GEN.
@@ -251,24 +276,22 @@ mod tests {
         assert_eq!(g.analyze(), cold(&c3, &cfg), "after replace_corpus");
     }
 
-    /// A failed batch leaves the whole handle (corpus, prior, prep) untouched —
+    /// A failed update leaves the whole handle (corpus, prior, prep) untouched —
     /// a re-analyze after the failed attempt is identical.
     #[test]
-    fn failed_update_books_leaves_the_galley_untouched() {
+    fn failed_update_book_leaves_the_galley_untouched() {
         let cfg = Config::all();
         let c0 = corpus_of(vec![keyed("GEN", &["a  b"]), keyed("EXO", &["x\ty"])]);
         let mut g = Galley::new(c0, None, cfg);
         let before = g.analyze();
 
-        // Second block is invalid: slug EXO but its key parses to GEN.
+        // The block is invalid: slug EXO but its key parses to GEN.
         let bad = BookBlock {
             slug: "EXO".into(),
             keys: keyed("GEN", &["oops"]).0,
             texts: vec!["oops".to_string()],
         };
-        let err = g
-            .update_books(vec![book("GEN", &["a  b c"]), bad])
-            .unwrap_err();
+        let err = g.update_book(bad).unwrap_err();
         assert!(matches!(err, CorpusError::SlugMismatch { .. }));
 
         assert_eq!(g.analyze(), before, "a rejected batch is a genuine no-op");
@@ -385,7 +408,7 @@ mod tests {
         let mut g = Galley::new(c0, None, cfg.clone());
         g.analyze(); // warms EXO's per-verse + walk products
 
-        g.update_books(vec![book("GEN", &["a  b", "one", "extra  space"])])
+        g.update_book(book("GEN", &["a  b", "one", "extra  space"]))
             .unwrap();
         let grown = corpus_of(vec![
             keyed("GEN", &["a  b", "one", "extra  space"]),
@@ -398,7 +421,7 @@ mod tests {
             "EXO's finding resolves to its shifted key"
         );
 
-        g.update_books(vec![book("GEN", &["a  b", "one"])]).unwrap();
+        g.update_book(book("GEN", &["a  b", "one"])).unwrap();
         let shrunk = corpus_of(vec![keyed("GEN", &["a  b", "one"]), keyed("EXO", &["x\ty", "two"])]);
         assert_eq!(g.analyze(), cold(&shrunk, &cfg), "shrink rebases too");
     }
@@ -469,7 +492,7 @@ mod tests {
         let mut expected = c0.clone();
         let exo_mixed = book("EXO", &["cafe\u{0301}", "still clean"]);
         expected.replace_books(vec![exo_mixed.clone()]).unwrap();
-        g.update_books(vec![exo_mixed]).unwrap();
+        g.update_book(exo_mixed).unwrap();
         let mixed = g.analyze();
         assert_eq!(mixed, cold(&expected, &cfg), "after introducing the second form");
         assert!(
@@ -481,7 +504,7 @@ mod tests {
         let mut expected2 = expected.clone();
         let exo_fixed = book("EXO", &["caf\u{00E9}", "still clean"]);
         expected2.replace_books(vec![exo_fixed.clone()]).unwrap();
-        g.update_books(vec![exo_fixed]).unwrap();
+        g.update_book(exo_fixed).unwrap();
         let fixed = g.analyze();
         assert_eq!(fixed, cold(&expected2, &cfg), "after fixing the deviant form");
         assert!(fixed.iter().all(|f| f.code != RuleId::MixedNormalization));
@@ -490,7 +513,7 @@ mod tests {
         let exo_mixed_again = book("EXO", &["cafe\u{0301}", "still clean"]);
         let mut expected3 = expected2.clone();
         expected3.replace_books(vec![exo_mixed_again.clone()]).unwrap();
-        g.update_books(vec![exo_mixed_again]).unwrap();
+        g.update_book(exo_mixed_again).unwrap();
         assert!(g.analyze().iter().any(|f| f.code == RuleId::MixedNormalization));
 
         expected3.remove_book("EXO");
@@ -569,9 +592,71 @@ mod tests {
         assert!(without_source.iter().any(|f| f.code == RuleId::MixedNormalization));
 
         let source = corpus_of(vec![keyed("GEN", &["whatever source text"])]);
-        g.update_source(Some(source));
+        g.replace_source(Some(source));
         let with_source = g.analyze();
         assert_eq!(with_source, without_source, "source-only update does not move the finding");
+    }
+
+    /// Every mutation verb reports `Changed` for a real edit and a proven
+    /// `Unchanged` for a byte-identical re-supply (§12.1); `remove_books` keeps
+    /// its count return (`0` == unchanged).
+    #[test]
+    fn mutation_effects_report_changed_and_unchanged() {
+        let cfg = Config::all();
+        let c0 = corpus_of(vec![keyed("GEN", &["a  b", "one"]), keyed("EXO", &["x\ty", "two"])]);
+        let src = corpus_of(vec![keyed("GEN", &["s"])]);
+        let mut g = Galley::new(c0, Some(src.clone()), cfg.clone());
+
+        // update_book: byte-identical GEN → Unchanged; a real edit → Changed;
+        // a new slug (append) → Changed.
+        assert_eq!(
+            g.update_book(book("GEN", &["a  b", "one"])).unwrap(),
+            MutationEffect::Unchanged
+        );
+        assert_eq!(
+            g.update_book(book("GEN", &["a  b edited", "one"])).unwrap(),
+            MutationEffect::Changed
+        );
+        assert_eq!(
+            g.update_book(book("LEV", &["clean"])).unwrap(),
+            MutationEffect::Changed
+        );
+
+        // update_chapter: identical run → Unchanged; edited → Changed.
+        let same = ChapterBlock {
+            slug: "EXO".into(),
+            chapter: "1".into(),
+            keys: vec!["EXO 1:1".into(), "EXO 1:2".into()],
+            texts: vec!["x\ty".into(), "two".into()],
+        };
+        assert_eq!(g.update_chapter(same).unwrap(), MutationEffect::Unchanged);
+        let edited = ChapterBlock {
+            slug: "EXO".into(),
+            chapter: "1".into(),
+            keys: vec!["EXO 1:1".into(), "EXO 1:2".into()],
+            texts: vec!["x\ty edited".into(), "two".into()],
+        };
+        assert_eq!(g.update_chapter(edited).unwrap(), MutationEffect::Changed);
+
+        // replace_source: identical → Unchanged; clearing → Changed; the
+        // re-cleared `None -> None` → Unchanged.
+        assert_eq!(g.replace_source(Some(src)), MutationEffect::Unchanged);
+        assert_eq!(g.replace_source(None), MutationEffect::Changed);
+        assert_eq!(g.replace_source(None), MutationEffect::Unchanged);
+
+        // replace_corpus: the current corpus back → Unchanged; a new one → Changed.
+        let current = g.corpus().clone();
+        assert_eq!(g.replace_corpus(current), MutationEffect::Unchanged);
+        let other = corpus_of(vec![keyed("GEN", &["totally different"])]);
+        assert_eq!(g.replace_corpus(other), MutationEffect::Changed);
+
+        // update_config: identical → Unchanged; different → Changed.
+        assert_eq!(g.update_config(cfg.clone()), MutationEffect::Unchanged);
+        assert_eq!(g.update_config(Config::v1_defaults()), MutationEffect::Changed);
+
+        // remove_books: absent slug → 0; present → 1.
+        assert_eq!(g.remove_books(&["NOPE"]), 0);
+        assert_eq!(g.remove_books(&["GEN"]), 1);
     }
 
     /// `census` is a pure read of the resident corpus, independent of prior.
@@ -710,7 +795,7 @@ mod tests {
             .map(|(_, p)| p)
             .collect();
         target.replace_books(vec![block_pairs("GEN", &gen_del)]).unwrap();
-        g.update_books(vec![block_pairs("GEN", &gen_del)]).unwrap();
+        g.update_book(block_pairs("GEN", &gen_del)).unwrap();
         assert_eq!(
             g.analyze(),
             cold_src(&target, source.as_ref(), &cfg),
@@ -722,7 +807,7 @@ mod tests {
         gen_ins.push(("GEN 3:2", "And the woman answered wisely."));
         gen_ins.push(("GEN 3:3", "So they hid among among the trees."));
         target.replace_books(vec![block_pairs("GEN", &gen_ins)]).unwrap();
-        g.update_books(vec![block_pairs("GEN", &gen_ins)]).unwrap();
+        g.update_book(block_pairs("GEN", &gen_ins)).unwrap();
         assert_eq!(
             g.analyze(),
             cold_src(&target, source.as_ref(), &cfg),
@@ -737,8 +822,8 @@ mod tests {
         gen_v1[0] = ("GEN 1:1", "In the beginning God created (the skies.");
         let mut gen_v2 = gen_ins.clone();
         gen_v2[0] = ("GEN 1:1", "In the beginning God created (the vault of heaven.");
-        g.update_books(vec![block_pairs("GEN", &gen_v1)]).unwrap();
-        g.update_books(vec![block_pairs("GEN", &gen_v2)]).unwrap();
+        g.update_book(block_pairs("GEN", &gen_v1)).unwrap();
+        g.update_book(block_pairs("GEN", &gen_v2)).unwrap();
         target.replace_books(vec![block_pairs("GEN", &gen_v2)]).unwrap();
         assert_eq!(
             g.analyze(),
@@ -751,7 +836,7 @@ mod tests {
         let gen_no_ch3: Vec<(&str, &str)> =
             gen_v2.iter().copied().filter(|(k, _)| !k.starts_with("GEN 3:")).collect();
         target.replace_books(vec![block_pairs("GEN", &gen_no_ch3)]).unwrap();
-        g.update_books(vec![block_pairs("GEN", &gen_no_ch3)]).unwrap();
+        g.update_book(block_pairs("GEN", &gen_no_ch3)).unwrap();
         assert_eq!(
             g.analyze(),
             cold_src(&target, source.as_ref(), &cfg),
@@ -770,7 +855,7 @@ mod tests {
         // fixed order) — the referee cold analyze uses the SAME resulting
         // order, so equality still holds.
         target.replace_books(vec![block_pairs("EXO", &exo_book_0())]).unwrap();
-        g.update_books(vec![block_pairs("EXO", &exo_book_0())]).unwrap();
+        g.update_book(block_pairs("EXO", &exo_book_0())).unwrap();
         assert_eq!(
             g.analyze(),
             cold_src(&target, source.as_ref(), &cfg),
@@ -792,7 +877,7 @@ mod tests {
             ("JHN 2:1", "wedding"),
             ("ROM 1:1", "Paul"),
         ]);
-        g.update_source(Some(new_source.clone()));
+        g.replace_source(Some(new_source.clone()));
         source = Some(new_source);
         assert_eq!(
             g.analyze(),
@@ -842,7 +927,7 @@ mod tests {
             ("JHN 2:1", "and on the third day] there was a wedding."),
         ]);
         // Two coalesced updates: edit, then undo, before a single analyze.
-        g.update_books(vec![block_pairs(
+        g.update_book(block_pairs(
             "JHN",
             &jhn_edited
                 .keys()
@@ -850,9 +935,9 @@ mod tests {
                 .zip(jhn_edited.texts())
                 .map(|(k, t)| (k.as_str(), t.as_str()))
                 .collect::<Vec<_>>(),
-        )])
+        ))
         .unwrap();
-        g.update_books(vec![block_pairs(
+        g.update_book(block_pairs(
             "JHN",
             &jhn_orig
                 .keys()
@@ -860,7 +945,7 @@ mod tests {
                 .zip(jhn_orig.texts())
                 .map(|(k, t)| (k.as_str(), t.as_str()))
                 .collect::<Vec<_>>(),
-        )])
+        ))
         .unwrap();
         assert_eq!(
             g.analyze(),
@@ -890,7 +975,7 @@ mod tests {
                 .collect::<Vec<_>>(),
         )])
         .unwrap();
-        g.update_books(vec![block_pairs(
+        g.update_book(block_pairs(
             "JHN",
             &jhn_ch1_edit
                 .keys()
@@ -898,7 +983,7 @@ mod tests {
                 .zip(jhn_ch1_edit.texts())
                 .map(|(k, t)| (k.as_str(), t.as_str()))
                 .collect::<Vec<_>>(),
-        )])
+        ))
         .unwrap();
         assert_eq!(
             g.analyze(),
@@ -906,13 +991,71 @@ mod tests {
             "step 10: early-chapter edit whose state reaches book end"
         );
 
-        // Deferred §12.5 steps (surface does not exist yet, per plan §2):
-        //   - true `update_chapter` (atomic single-chapter run replacement);
-        //   - `update_book` as a distinct atomic verb (only `update_books`
-        //     batch exists today);
+        // ── Step 11: replace the SAME chapter twice before ONE analyze via the
+        //    atomic `update_chapter` verb (§12.5 step 4, now un-deferred). Only
+        //    the latest content survives; the resident result equals cold. The
+        //    edited JHN chapter 1 changes its bracket/casing carry into
+        //    chapter 2, exercising cross-chapter state through a chapter-run
+        //    replacement (not a whole-book one).
+        let jhn_c1_v1 = ChapterBlock {
+            slug: "JHN".into(),
+            chapter: "1".into(),
+            keys: vec!["JHN 1:1".into(), "JHN 1:2".into()],
+            texts: vec![
+                "In the beginning was the WORD (first draft.".into(),
+                "the Word was with God and was God.".into(),
+            ],
+        };
+        let jhn_c1_v2 = ChapterBlock {
+            slug: "JHN".into(),
+            chapter: "1".into(),
+            keys: vec!["JHN 1:1".into(), "JHN 1:2".into()],
+            texts: vec![
+                "In the beginning was the Word [second draft.".into(),
+                "the Word word was with God and was God.".into(),
+            ],
+        };
+        assert_eq!(
+            g.update_chapter(jhn_c1_v1).unwrap(),
+            MutationEffect::Changed,
+            "first chapter replacement changes the resident input"
+        );
+        assert_eq!(g.update_chapter(jhn_c1_v2.clone()).unwrap(), MutationEffect::Changed);
+        // The referee: apply only the latest chapter content to `target`.
+        target.replace_chapter(jhn_c1_v2).unwrap();
+        assert_eq!(
+            g.analyze(),
+            cold_src(&target, source.as_ref(), &cfg),
+            "step 11: two coalesced chapter replacements, latest wins"
+        );
+
+        // ── Step 12: a byte-identical chapter re-supply is a proven no-op ─────
+        // Re-supply JHN chapter 1 with exactly its current content: the mutation
+        // reports `Unchanged` and the following analyze still equals cold.
+        let jhn_c1_same = ChapterBlock {
+            slug: "JHN".into(),
+            chapter: "1".into(),
+            keys: vec!["JHN 1:1".into(), "JHN 1:2".into()],
+            texts: vec![
+                "In the beginning was the Word [second draft.".into(),
+                "the Word word was with God and was God.".into(),
+            ],
+        };
+        assert_eq!(
+            g.update_chapter(jhn_c1_same).unwrap(),
+            MutationEffect::Unchanged,
+            "a byte-identical chapter re-supply is a proven no-op"
+        );
+        assert_eq!(
+            g.analyze(),
+            cold_src(&target, source.as_ref(), &cfg),
+            "step 12: no-op chapter update leaves the result unchanged"
+        );
+
+        // Still-deferred §12.5 items (no wire/pack layer until Phase A-W):
         //   - failure injection after map/reduce/judge/pack and the
         //     publication (analysis_id/args/buffer) assertions — there is no
-        //     wire/pack layer, `MutationEffect`, or `AnalysisId` yet.
-        // Those land with Phase A / Phase A-W and extend this transcript.
+        //     `ssc-wire` codec or `AnalysisId` yet.
+        // Those land with Phase A-W and extend this transcript further.
     }
 }

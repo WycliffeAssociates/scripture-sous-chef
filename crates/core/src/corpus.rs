@@ -162,6 +162,16 @@ pub enum CorpusError {
     EmptyBook { slug: String },
     /// Two [`BookBlock`]s in one [`Corpus::replace_books`] batch share a slug.
     DuplicateSlugInBatch { slug: String },
+    /// A [`ChapterBlock`] with no verses. A zero-verse chapter is a removal and
+    /// must go through a whole-book [`Corpus::replace_books`], never an empty
+    /// chapter block.
+    EmptyChapterBlock { slug: String, chapter: String },
+    /// A [`ChapterBlock`] key whose parsed chapter token is not the block's own
+    /// chapter (its book already matched, or `SlugMismatch` would have fired).
+    ChapterTokenMismatch { chapter: String, key: String },
+    /// [`Corpus::replace_chapter`] found no `(slug, chapter)` run to replace.
+    /// Whole-chapter insertion uses [`Corpus::replace_books`].
+    ChapterNotFound { slug: String, chapter: String },
 }
 
 impl fmt::Display for CorpusError {
@@ -203,11 +213,34 @@ impl fmt::Display for CorpusError {
             CorpusError::DuplicateSlugInBatch { slug } => {
                 write!(f, "book {slug:?} appears more than once in one replace_books batch")
             }
+            CorpusError::EmptyChapterBlock { slug, chapter } => write!(
+                f,
+                "chapter block {slug:?} {chapter:?} is empty; remove a chapter with a whole-book update"
+            ),
+            CorpusError::ChapterTokenMismatch { chapter, key } => write!(
+                f,
+                "chapter block {chapter:?} contains key {key:?}, whose chapter is not {chapter:?}"
+            ),
+            CorpusError::ChapterNotFound { slug, chapter } => write!(
+                f,
+                "no chapter {chapter:?} in book {slug:?} to replace; insert a chapter with a whole-book update"
+            ),
         }
     }
 }
 
 impl std::error::Error for CorpusError {}
+
+/// The explicit result of a validated resident mutation. `Unchanged` when the
+/// new ordered semantic input is identical to the current input (a proven
+/// no-op that preserves cache and publication validity); `Changed` otherwise.
+/// The wasm adapter uses this to stale its published lazy-args lookup without
+/// re-deriving equality by rehashing JS inputs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MutationEffect {
+    Unchanged,
+    Changed,
+}
 
 /// Content hash of an ordered `(keys, texts)` slice: xxh3-128 over each
 /// entry's length-prefixed key bytes then text bytes, so distinct sequences
@@ -323,6 +356,20 @@ pub struct BookBlock {
     pub texts: Vec<String>,
 }
 
+/// One validated whole-chapter-run block for [`Corpus::replace_chapter`]: the
+/// complete replacement for exactly one existing `(slug, chapter)` run. Every
+/// `keys[i]` must parse to `slug` and `chapter`; `keys`/`texts` must match in
+/// length and be non-empty (a zero-verse chapter is a removal — use a
+/// whole-book [`Corpus::replace_books`]). Caller order and duplicate keys are
+/// preserved. Whole-chapter insertion/removal/reorder is a whole-book update.
+#[derive(Debug, Clone)]
+pub struct ChapterBlock {
+    pub slug: Box<str>,
+    pub chapter: Box<str>,
+    pub keys: Vec<String>,
+    pub texts: Vec<String>,
+}
+
 impl Corpus {
     /// Validate and construct. Rejects mismatched array lengths, an
     /// unaddressable overall length, a malformed key (see [`parse_key`]), a
@@ -434,7 +481,11 @@ impl Corpus {
     /// replaced in place (its presented position is kept); a new slug is
     /// appended at the end in batch order. Splices move `String`s — no text
     /// copies; validation only borrows.
-    pub fn replace_books(&mut self, batch: Vec<BookBlock>) -> Result<(), CorpusError> {
+    ///
+    /// Returns [`MutationEffect::Unchanged`] — skipping the splice and the
+    /// layout rebuild — when every block is byte-identical to an existing
+    /// same-slug book (a proven no-op), else [`MutationEffect::Changed`].
+    pub fn replace_books(&mut self, batch: Vec<BookBlock>) -> Result<MutationEffect, CorpusError> {
         // 1. Validate every block, and reject a slug repeated within the batch.
         let mut batch_slugs: FxHashSet<&str> = FxHashSet::default();
         for block in &batch {
@@ -484,6 +535,13 @@ impl Corpus {
                     slug: block.slug.to_string(),
                 });
             }
+        }
+
+        // Proven no-op: every block byte-equals an existing same-slug book (so
+        // no new slug and no content change). Skip the splice and layout rebuild
+        // entirely, preserving the corpus and its derived metadata exactly.
+        if batch.iter().all(|block| self.book_matches(block)) {
+            return Ok(MutationEffect::Unchanged);
         }
 
         // 2. Map each batch slug to its slot, and lay out the existing books so
@@ -564,7 +622,117 @@ impl Corpus {
         // Rebuild the owned layout atomically with the spliced vectors, so the
         // derived hashes can never lag the text they describe.
         self.layout = build_layout(&self.keys, &self.texts);
-        Ok(())
+        Ok(MutationEffect::Changed)
+    }
+
+    /// Does an existing same-slug book byte-equal `block`? Fast-paths on the
+    /// owned book hash but confirms ordered semantic equality — a hash match
+    /// alone is not proof for untrusted replacement bytes (plan §16 footgun).
+    fn book_matches(&self, block: &BookBlock) -> bool {
+        let Some(book) = self.layout.iter().find(|b| *b.slug == *block.slug) else {
+            return false;
+        };
+        book.range.len() == block.keys.len()
+            && book.hash == content_hash(&block.keys, &block.texts)
+            && self.keys[book.range.clone()] == block.keys[..]
+            && self.texts[book.range.clone()] == block.texts[..]
+    }
+
+    /// Atomically replace exactly one existing `(slug, chapter)` run with a
+    /// complete [`ChapterBlock`]. Validates fully (matched non-empty
+    /// `keys`/`texts`; every key parses to `slug` and `chapter`; the run
+    /// exists; the resulting book/corpus stay addressable) before any mutation,
+    /// so a rejected block leaves the corpus untouched. Caller order and
+    /// duplicate keys inside the chapter are preserved. Whole-chapter
+    /// insertion/removal/reorder is a whole-book [`replace_books`] instead.
+    ///
+    /// Returns [`MutationEffect::Unchanged`] — skipping the splice — when the
+    /// block byte-equals the current run (a proven no-op), else
+    /// [`MutationEffect::Changed`].
+    pub fn replace_chapter(&mut self, block: ChapterBlock) -> Result<MutationEffect, CorpusError> {
+        // 1. Shape validation.
+        if block.keys.len() != block.texts.len() {
+            return Err(CorpusError::MismatchedLengths {
+                keys: block.keys.len(),
+                texts: block.texts.len(),
+            });
+        }
+        if block.keys.is_empty() {
+            return Err(CorpusError::EmptyChapterBlock {
+                slug: block.slug.to_string(),
+                chapter: block.chapter.to_string(),
+            });
+        }
+        for k in &block.keys {
+            let parts = parse_key(k).map_err(|source| CorpusError::MalformedKey {
+                key: k.clone(),
+                source,
+            })?;
+            if parts.book != &*block.slug {
+                return Err(CorpusError::SlugMismatch {
+                    slug: block.slug.to_string(),
+                    key: k.clone(),
+                });
+            }
+            if parts.chapter != &*block.chapter {
+                return Err(CorpusError::ChapterTokenMismatch {
+                    chapter: block.chapter.to_string(),
+                    key: k.clone(),
+                });
+            }
+        }
+
+        // 2. Locate the unique matching run. Corpus already guarantees a
+        //    chapter is one contiguous non-reopening run, so there is at most
+        //    one; absent means insertion, which is a whole-book update.
+        let range = self
+            .layout
+            .iter()
+            .find(|b| *b.slug == *block.slug)
+            .and_then(|b| b.chapters.iter().find(|c| *c.chapter == *block.chapter))
+            .map(|c| c.range.clone())
+            .ok_or_else(|| CorpusError::ChapterNotFound {
+                slug: block.slug.to_string(),
+                chapter: block.chapter.to_string(),
+            })?;
+
+        // 3. The resulting book and corpus must stay addressable, checked
+        //    before any mutation so the operation is all-or-nothing.
+        let book_range = self
+            .layout
+            .iter()
+            .find(|b| *b.slug == *block.slug)
+            .expect("book located above")
+            .range
+            .clone();
+        let new_book_len = book_range.len() - range.len() + block.keys.len();
+        LocalKeyIdx::try_from_usize(new_book_len, &block.slug)?;
+        let new_corpus_len = self.keys.len() - range.len() + block.keys.len();
+        KeyIdx::try_from_usize(new_corpus_len)?;
+
+        // 4. Proven no-op: the block byte-equals the current run. Fast-path on
+        //    the chapter hash, then confirm ordered equality (§16 footgun).
+        let chapter_hash = self
+            .layout
+            .iter()
+            .find(|b| *b.slug == *block.slug)
+            .and_then(|b| b.chapters.iter().find(|c| *c.chapter == *block.chapter))
+            .map(|c| c.hash)
+            .expect("chapter located above");
+        if range.len() == block.keys.len()
+            && chapter_hash == content_hash(&block.keys, &block.texts)
+            && self.keys[range.clone()] == block.keys[..]
+            && self.texts[range.clone()] == block.texts[..]
+        {
+            return Ok(MutationEffect::Unchanged);
+        }
+
+        // 5. Splice the run in place (preserves surrounding chapters, order,
+        //    and duplicates) and rebuild the owned layout atomically.
+        self.keys.splice(range.clone(), block.keys);
+        self.texts.splice(range, block.texts);
+        self.layout = build_layout(&self.keys, &self.texts);
+        Ok(MutationEffect::Changed)
     }
 
     /// Remove `slug`'s contiguous block entirely. Returns `false` when the slug
@@ -899,6 +1067,125 @@ mod tests {
         c.remove_book("EXO");
         let expect = Corpus::try_from_parts(c.keys().to_vec(), c.texts().to_vec()).unwrap();
         assert_eq!(c.layout, expect.layout, "layout current after remove_book");
+    }
+
+    fn chapter_block(slug: &str, chapter: &str, ks: &[&str], txt: &[&str]) -> ChapterBlock {
+        ChapterBlock {
+            slug: slug.into(),
+            chapter: chapter.into(),
+            keys: keys(ks),
+            texts: keys(txt),
+        }
+    }
+
+    /// Replacing an existing chapter run splices it in place (surrounding
+    /// chapters and books untouched), preserves duplicate keys, updates the
+    /// owned layout, and reports `Changed`. Insert/delete/reorder of verses
+    /// inside the replacement is allowed (the run may change length).
+    #[test]
+    fn replace_chapter_splices_in_place_and_reports_changed() {
+        let mut c = Corpus::try_from_parts(
+            keys(&["GEN 1:1", "GEN 1:2", "GEN 2:1", "EXO 1:1"]),
+            keys(&["g11", "g12", "g21", "e11"]),
+        )
+        .unwrap();
+        // Replace GEN chapter 1 (2 verses) with 3 verses, one a duplicate key
+        // and one reordered — a legal within-chapter reshape.
+        let effect = c
+            .replace_chapter(chapter_block(
+                "GEN",
+                "1",
+                &["GEN 1:3", "GEN 1:3", "GEN 1:1"],
+                &["n3", "n3b", "n1"],
+            ))
+            .unwrap();
+        assert_eq!(effect, MutationEffect::Changed);
+        assert_eq!(
+            c.keys(),
+            keys(&["GEN 1:3", "GEN 1:3", "GEN 1:1", "GEN 2:1", "EXO 1:1"]).as_slice()
+        );
+        assert_eq!(c.texts(), keys(&["n3", "n3b", "n1", "g21", "e11"]).as_slice());
+        // Layout equals a freshly-built corpus over the spliced vectors.
+        let expect = Corpus::try_from_parts(c.keys().to_vec(), c.texts().to_vec()).unwrap();
+        assert_eq!(c.layout, expect.layout);
+    }
+
+    /// A byte-identical chapter re-supply is a proven no-op: `Unchanged`, and
+    /// the corpus is untouched.
+    #[test]
+    fn replace_chapter_byte_identical_is_a_no_op() {
+        let mut c = Corpus::try_from_parts(
+            keys(&["GEN 1:1", "GEN 1:2", "GEN 2:1"]),
+            keys(&["g11", "g12", "g21"]),
+        )
+        .unwrap();
+        let before = c.clone();
+        let effect = c
+            .replace_chapter(chapter_block("GEN", "1", &["GEN 1:1", "GEN 1:2"], &["g11", "g12"]))
+            .unwrap();
+        assert_eq!(effect, MutationEffect::Unchanged);
+        assert_eq!(c, before, "a no-op chapter replace leaves the corpus untouched");
+    }
+
+    /// Every `replace_chapter` rejection is atomic — the corpus is untouched —
+    /// and each validation case fires its own error.
+    #[test]
+    fn replace_chapter_rejections_are_atomic() {
+        let original = Corpus::try_from_parts(
+            keys(&["GEN 1:1", "GEN 2:1"]),
+            keys(&["g11", "g21"]),
+        )
+        .unwrap();
+
+        // empty block
+        let mut c = original.clone();
+        let err = c
+            .replace_chapter(ChapterBlock {
+                slug: "GEN".into(),
+                chapter: "1".into(),
+                keys: Vec::new(),
+                texts: Vec::new(),
+            })
+            .unwrap_err();
+        assert!(matches!(err, CorpusError::EmptyChapterBlock { .. }));
+        assert_eq!(c, original);
+
+        // mismatched lengths
+        let mut c = original.clone();
+        let err = c
+            .replace_chapter(ChapterBlock {
+                slug: "GEN".into(),
+                chapter: "1".into(),
+                keys: keys(&["GEN 1:1", "GEN 1:2"]),
+                texts: keys(&["only-one"]),
+            })
+            .unwrap_err();
+        assert!(matches!(err, CorpusError::MismatchedLengths { .. }));
+        assert_eq!(c, original);
+
+        // key's book is not the block slug
+        let mut c = original.clone();
+        let err = c
+            .replace_chapter(chapter_block("GEN", "1", &["EXO 1:1"], &["x"]))
+            .unwrap_err();
+        assert!(matches!(err, CorpusError::SlugMismatch { .. }));
+        assert_eq!(c, original);
+
+        // key's chapter is not the block chapter
+        let mut c = original.clone();
+        let err = c
+            .replace_chapter(chapter_block("GEN", "1", &["GEN 2:9"], &["x"]))
+            .unwrap_err();
+        assert!(matches!(err, CorpusError::ChapterTokenMismatch { .. }));
+        assert_eq!(c, original);
+
+        // no such chapter run exists (insertion is a whole-book update)
+        let mut c = original.clone();
+        let err = c
+            .replace_chapter(chapter_block("GEN", "9", &["GEN 9:1"], &["x"]))
+            .unwrap_err();
+        assert!(matches!(err, CorpusError::ChapterNotFound { .. }));
+        assert_eq!(c, original);
     }
 
     #[test]
