@@ -16,9 +16,33 @@
 
 use rustc_hash::FxHashSet;
 use ssc_core::{
-    AnalysisId, BookBlock, CensusOptions, ChapterBlock, Config, Corpus, CorpusError, Finding,
-    Inventory, MutationEffect, PrepCache, Stats, TargetContextId, analyze_stateful, census,
+    AnalysisId, AnalyzeError, BookBlock, CensusOptions, ChapterBlock, Config, Corpus, CorpusError,
+    Finding, Inventory, MutationEffect, PrepCache, Stats, TargetContextId, analyze_resident, census,
 };
+
+/// The resident analysis lifecycle (plan §3.3, the semantic half).
+///
+/// Pure Rust owns only these two states; the `EngineCurrentWireStale` state in
+/// the plan is a wasm-adapter condition (a packed wire went stale while the
+/// engine result was current) that arrives with the wire layer, not here.
+///
+/// ```text
+/// CleanPublished
+///     changed mutation -> Dirty            no-op mutation -> CleanPublished
+/// Dirty
+///     more mutations   -> Dirty            analyze success -> CleanPublished
+///                                          analyze error   -> Dirty (no partial commit)
+/// ```
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Lifecycle {
+    /// The last successful [`analyze`](Galley::analyze) describes the current
+    /// resident inputs — nothing has changed since.
+    CleanPublished,
+    /// Resident inputs changed (or nothing has been analyzed yet); the next
+    /// [`analyze`](Galley::analyze) will recompute. Several mutations coalesce
+    /// here before one analyze.
+    Dirty,
+}
 
 /// The resident analysis handle. Owns everything that persists between calls;
 /// exposes only mutate-and-analyze verbs.
@@ -28,6 +52,7 @@ pub struct Galley {
     config: Config,
     prep: PrepCache,
     prior: Option<Stats>,
+    state: Lifecycle,
 }
 
 impl Galley {
@@ -40,7 +65,32 @@ impl Galley {
             config,
             prep: PrepCache::new(),
             prior: None,
+            // Nothing published yet — a fresh handle is dirty until its first
+            // successful analyze.
+            state: Lifecycle::Dirty,
         }
+    }
+
+    /// The current lifecycle state (plan §3.3, semantic half).
+    pub fn state(&self) -> Lifecycle {
+        self.state
+    }
+
+    /// Whether a new [`analyze`](Galley::analyze) is owed — a changed mutation
+    /// (or a never-analyzed handle) leaves the resident inputs ahead of the last
+    /// published findings.
+    pub fn is_dirty(&self) -> bool {
+        self.state == Lifecycle::Dirty
+    }
+
+    /// Record a mutation's adjudicated effect: a real change dirties the resident
+    /// state; a proven no-op preserves the current clean/dirty condition exactly
+    /// (plan §3.3). Centralized so every verb dirties identically.
+    fn note_effect(&mut self, effect: MutationEffect) -> MutationEffect {
+        if effect == MutationEffect::Changed {
+            self.state = Lifecycle::Dirty;
+        }
+        effect
     }
 
     /// Replace one complete book in place, or append it if its slug is new.
@@ -53,7 +103,8 @@ impl Galley {
     /// up to a book here; a single existing chapter run uses
     /// [`update_chapter`](Galley::update_chapter).
     pub fn update_book(&mut self, block: BookBlock) -> Result<MutationEffect, CorpusError> {
-        self.corpus.replace_books(vec![block])
+        let effect = self.corpus.replace_books(vec![block])?;
+        Ok(self.note_effect(effect))
     }
 
     /// Replace exactly one existing `(slug, chapter)` run with a complete
@@ -63,7 +114,8 @@ impl Galley {
     /// insertion/removal/reorder uses [`update_book`](Galley::update_book).
     /// Does **not** analyze.
     pub fn update_chapter(&mut self, block: ChapterBlock) -> Result<MutationEffect, CorpusError> {
-        self.corpus.replace_chapter(block)
+        let effect = self.corpus.replace_chapter(block)?;
+        Ok(self.note_effect(effect))
     }
 
     /// Remove books by slug. Unknown slugs are no-ops, excluded from the count.
@@ -80,6 +132,9 @@ impl Galley {
                 }
                 self.prep.remove_book(slug);
             }
+        }
+        if removed > 0 {
+            self.state = Lifecycle::Dirty;
         }
         removed
     }
@@ -113,7 +168,7 @@ impl Galley {
             self.prep.remove_book(slug);
         }
         self.corpus = corpus;
-        MutationEffect::Changed
+        self.note_effect(MutationEffect::Changed)
     }
 
     /// Replace the optional complete reference (source) corpus. A reference
@@ -126,7 +181,7 @@ impl Galley {
             return MutationEffect::Unchanged;
         }
         self.source = source;
-        MutationEffect::Changed
+        self.note_effect(MutationEffect::Changed)
     }
 
     /// Swap the config. An equal config (plain [`Config`] equality, not the
@@ -142,23 +197,57 @@ impl Galley {
         }
         self.prep.clear();
         self.config = config;
-        MutationEffect::Changed
+        self.note_effect(MutationEffect::Changed)
     }
 
     /// Analyze the resident corpus and return its findings, global to the
-    /// current corpus — exactly what the pure call would return. Everything
-    /// else (hashing, provenance, cache) is internal; the returned prior is
-    /// retained for the next call.
+    /// current corpus — exactly what the pure one-shot call would return for the
+    /// same inputs. Everything else (hashing, provenance, cache) is internal; the
+    /// resident prior is retained for the next call and the handle becomes
+    /// [`CleanPublished`](Lifecycle::CleanPublished).
+    ///
+    /// Total in every shipped build (the core transition has no failure path off
+    /// `test-probes`), so this is the ergonomic entry. See
+    /// [`try_analyze`](Galley::try_analyze) for the fallible form the failure-
+    /// injection tests drive.
     pub fn analyze(&mut self) -> Vec<Finding> {
-        let (findings, stats) = analyze_stateful(
+        self.try_analyze()
+            .expect("resident analyze is total without an injected fault")
+    }
+
+    /// The fallible analyze the clean/dirty lifecycle is built on (plan §3.3).
+    ///
+    /// On success it publishes the new complete snapshot: the resident prior is
+    /// replaced and the handle becomes
+    /// [`CleanPublished`](Lifecycle::CleanPublished). On a core map/reduce/judge
+    /// error (only reachable via the test-only [`fault`](ssc_core::fault) hook)
+    /// it commits **no** partial semantic state: the untouched prior handed back
+    /// by the core is restored, the self-validating warm cache stays, and the
+    /// handle stays [`Dirty`](Lifecycle::Dirty). Because the dirty work is
+    /// stamp-derived (never drained), a retry with no further mutation reuses the
+    /// valid warmed entries / recomputes the invalid ones and reaches exactly the
+    /// cold result — it can never mistake the failed attempt for a publication.
+    pub fn try_analyze(&mut self) -> Result<Vec<Finding>, AnalyzeError> {
+        let prior = self.prior.take();
+        match analyze_resident(
             &self.corpus,
             self.source.as_ref(),
             &self.config,
-            self.prior.take(),
-            Some(&mut self.prep),
-        );
-        self.prior = Some(stats);
-        findings
+            prior,
+            &mut self.prep,
+        ) {
+            Ok((findings, stats)) => {
+                self.prior = Some(stats);
+                self.state = Lifecycle::CleanPublished;
+                Ok(findings)
+            }
+            Err((err, prior)) => {
+                // Restore the resident prior exactly as it arrived (no partial
+                // merge), leave the warm prep in place, and stay Dirty.
+                self.prior = prior;
+                Err(err)
+            }
+        }
     }
 
     /// The content-derived identity of the current resident inputs
@@ -206,7 +295,7 @@ impl Galley {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ssc_core::{CasingConfig, CensusOptions, RuleId};
+    use ssc_core::{CasingConfig, CensusOptions, RuleId, analyze_stateful};
 
     fn keyed(book: &str, verses: &[&str]) -> (Vec<String>, Vec<String>) {
         (
@@ -745,6 +834,159 @@ mod tests {
         let from_galley = g.census(&CensusOptions::default());
         let pure = census(&corpus, &CensusOptions::default());
         assert_eq!(from_galley, pure);
+    }
+
+    // ── Phase A step 6: one core transition + clean/dirty lifecycle ──────────
+
+    /// The one-shot core path (`analyze_stateful` with no prior/cache) and the
+    /// resident path (`Galley::analyze`) run the SAME core transition, so for
+    /// identical inputs they return byte-identical findings — the plan §1
+    /// decision-16 invariant, pinned directly. Covers both configs and a
+    /// source-dependent corpus.
+    #[test]
+    fn one_shot_and_resident_findings_are_byte_identical() {
+        for cfg in [Config::v1_defaults(), Config::all()] {
+            let target = full_target_0();
+            let source = source_0();
+            // No reference, then with a reference (source-dependent rules).
+            for src in [None, Some(&source)] {
+                let one_shot = analyze_stateful(&target, src, &cfg, None, None).0;
+                let resident = Galley::new(target.clone(), src.cloned(), cfg.clone()).analyze();
+                assert_eq!(one_shot, resident, "one-shot == resident for identical inputs");
+            }
+        }
+    }
+
+    /// The lifecycle state machine (plan §3.3, semantic half): a fresh handle is
+    /// Dirty; a successful analyze publishes (CleanPublished); a changed mutation
+    /// dirties; a proven no-op preserves the clean state; several changed
+    /// mutations coalesce (stay Dirty) before one analyze republishes.
+    #[test]
+    fn lifecycle_state_transitions() {
+        let cfg = Config::all();
+        let c0 = corpus_of(vec![keyed("GEN", &["a  b", "one"]), keyed("EXO", &["x\ty", "two"])]);
+        let mut g = Galley::new(c0, None, cfg);
+
+        assert_eq!(g.state(), Lifecycle::Dirty, "a fresh handle is Dirty");
+        assert!(g.is_dirty());
+
+        g.analyze();
+        assert_eq!(g.state(), Lifecycle::CleanPublished, "a successful analyze publishes");
+        assert!(!g.is_dirty());
+
+        // A proven no-op preserves the clean state.
+        assert_eq!(
+            g.update_book(book("GEN", &["a  b", "one"])).unwrap(),
+            MutationEffect::Unchanged
+        );
+        assert_eq!(g.state(), Lifecycle::CleanPublished, "a no-op does not dirty");
+
+        // A changed mutation dirties; a second one coalesces (stays Dirty).
+        g.update_book(book("GEN", &["a  b edited", "one"])).unwrap();
+        assert_eq!(g.state(), Lifecycle::Dirty);
+        g.update_book(book("EXO", &["x\ty edited", "two"])).unwrap();
+        assert_eq!(g.state(), Lifecycle::Dirty, "coalesced mutations stay Dirty");
+
+        g.analyze();
+        assert_eq!(g.state(), Lifecycle::CleanPublished, "one analyze republishes");
+    }
+
+    /// Several changed mutations before ONE analyze coalesce to exactly the cold
+    /// result of the final resident inputs (plan §3.3 "multiple successful
+    /// mutations before analyze coalesce"), and a no-op re-supply in the middle
+    /// changes nothing.
+    #[test]
+    fn coalesced_mutations_equal_cold_of_the_final_inputs() {
+        let cfg = Config::all();
+        let c0 = corpus_of(vec![keyed("GEN", &["a  b", "one"]), keyed("EXO", &["x\ty", "two"])]);
+        let mut g = Galley::new(c0.clone(), None, cfg.clone());
+        g.analyze();
+
+        // A chain of changed + no-op mutations, then a single analyze.
+        g.update_book(book("GEN", &["a  b first", "one"])).unwrap();
+        g.update_book(book("EXO", &["x\ty two", "two"])).unwrap();
+        assert_eq!(
+            g.update_book(book("EXO", &["x\ty two", "two"])).unwrap(),
+            MutationEffect::Unchanged,
+            "a byte-identical re-supply mid-chain is a no-op"
+        );
+        g.update_book(book("GEN", &["a  b final", "one"])).unwrap(); // latest GEN wins
+
+        let mut expected = c0;
+        expected.replace_books(vec![book("GEN", &["a  b final", "one"])]).unwrap();
+        expected.replace_books(vec![book("EXO", &["x\ty two", "two"])]).unwrap();
+        assert_eq!(g.analyze(), cold(&expected, &cfg), "coalesced == cold of final inputs");
+    }
+
+    /// After analyze, a byte-identical re-supply is a proven no-op that keeps the
+    /// handle CleanPublished and leaves the next analyze equal to the last — the
+    /// no-op preservation half of the lifecycle.
+    #[test]
+    fn noop_update_preserves_publication() {
+        let cfg = Config::all();
+        let c0 = corpus_of(vec![keyed("GEN", &["a  b", "one"]), keyed("EXO", &["x\ty", "two"])]);
+        let mut g = Galley::new(c0.clone(), None, cfg.clone());
+        let published = g.analyze();
+        assert_eq!(g.state(), Lifecycle::CleanPublished);
+
+        assert_eq!(
+            g.update_book(book("GEN", &["a  b", "one"])).unwrap(),
+            MutationEffect::Unchanged
+        );
+        assert_eq!(g.state(), Lifecycle::CleanPublished, "no-op preserves publication");
+        assert_eq!(g.analyze(), published, "re-analyze after a no-op is unchanged");
+        assert_eq!(g.analyze(), cold(&c0, &cfg));
+    }
+
+    /// The retry-safety core of step 6 (plan §3.3, §12.5, §16 "destructively
+    /// draining"): inject a core failure at the map, reduce, and judge boundary
+    /// in turn. Each attempt fails and commits NO partial semantic state — the
+    /// handle stays Dirty and the untouched prior is restored — so a retry with
+    /// NO further mutation reuses the valid warmed entries / recomputes the
+    /// invalid ones and reaches exactly the cold result, then publishes.
+    #[test]
+    fn injected_core_faults_leave_retry_safe_and_equal_to_cold() {
+        use ssc_core::fault::Phase;
+        for phase in [Phase::Map, Phase::Reduce, Phase::Judge] {
+            let cfg = Config::all();
+            let c0 = full_target_0();
+            let source = source_0();
+            let mut g = Galley::new(c0.clone(), Some(source.clone()), cfg.clone());
+            g.analyze(); // a warm resident prior + prep worth protecting
+            assert_eq!(g.state(), Lifecycle::CleanPublished);
+
+            // A real edit dirties GEN (bracket/casing carry across its seams).
+            let mut gen_edit = gen_book_0();
+            gen_edit[0] = ("GEN 1:1", "In the beginning God created (the wide heavens.");
+            let mut expected = c0;
+            expected.replace_books(vec![block_pairs("GEN", &gen_edit)]).unwrap();
+            g.update_book(block_pairs("GEN", &gen_edit)).unwrap();
+            assert_eq!(g.state(), Lifecycle::Dirty);
+
+            // The attempt fails at `phase`. Guard is scoped so it is disarmed
+            // (belt-and-suspenders; fire-once already disarmed it) before retry.
+            {
+                let _guard = ssc_core::fault::arm(phase);
+                assert!(
+                    g.try_analyze().is_err(),
+                    "an injected {phase:?} fault fails the attempt"
+                );
+            }
+            assert_eq!(
+                g.state(),
+                Lifecycle::Dirty,
+                "a failed {phase:?} attempt commits nothing — still Dirty"
+            );
+
+            // Retry with no further mutation: warm, and byte-equal to cold.
+            let findings = g.try_analyze().expect("retry has no armed fault");
+            assert_eq!(g.state(), Lifecycle::CleanPublished, "retry publishes");
+            assert_eq!(
+                findings,
+                cold_src(&expected, Some(&source), &cfg),
+                "retry after an injected {phase:?} fault equals a cold analyze"
+            );
+        }
     }
 
     // ── Gate-0 complete-snapshot mutation transcript (granularity-spine §2

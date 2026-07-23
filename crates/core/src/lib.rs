@@ -113,8 +113,97 @@ pub fn analyze_with_config(
     analyze_stateful(target, source, config, None, None).0
 }
 
-/// Analyze, returning the corpus [`Stats`] so a caller can cache it and feed
-/// it back as `prior` for incremental re-analysis (ADR 0017).
+/// A resident analysis attempt that did not run to completion.
+///
+/// In a released engine the map/reduce/judge transition is *total* — it has no
+/// failure path — so this is only ever produced by the test-only [`fault`] hook
+/// (present under `test`/`test-probes`, absent from release builds). The type
+/// itself is unconditional so the resident entrypoint ([`analyze_resident`]) and
+/// [`Galley`](../ssc_galley/struct.Galley.html)'s fallible analyze keep one
+/// signature across every build; in release it is simply never constructed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct AnalyzeError {
+    /// The pipeline boundary the attempt stopped at: `"map"`, `"reduce"`, or
+    /// `"judge"`. Diagnostic only.
+    pub phase: &'static str,
+}
+
+/// Test-only fault injection for the resident analysis transition.
+///
+/// The whole module is gated behind `test`/`test-probes`, so it does **not**
+/// exist in release builds — a released [`analyze_resident`] therefore has no
+/// failure path at all (the fault polls in the transition compile to nothing).
+/// It exists so tests can prove the [`Galley`](../ssc_galley/struct.Galley.html)
+/// lifecycle's retry-safety: a failed attempt commits no partial semantic state,
+/// and a retry with no further mutation still reaches the cold result.
+#[cfg(any(test, feature = "test-probes"))]
+pub mod fault {
+    use std::cell::Cell;
+
+    /// The pipeline boundary at which to inject a one-shot failure.
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    pub enum Phase {
+        /// After the fused map walk completes (per-verse findings + substrate
+        /// observations), before any reduce.
+        Map,
+        /// After reduce (fresh substrate stats folded), before judging.
+        Reduce,
+        /// At the reduce→judge seam, before the resident prior is consumed.
+        Judge,
+    }
+
+    thread_local! {
+        static ARMED: Cell<Option<Phase>> = const { Cell::new(None) };
+    }
+
+    /// Arm a one-shot fault at `phase` on the current thread. The returned
+    /// guard disarms on drop, so a fault that is never reached (e.g. its phase
+    /// is skipped because every consuming rule is disabled) cannot leak into a
+    /// later call on the same thread. Bind it to a named local (`let _guard =`),
+    /// never `let _ =`, or it disarms immediately.
+    #[must_use]
+    pub fn arm(phase: Phase) -> Guard {
+        ARMED.with(|c| c.set(Some(phase)));
+        Guard
+    }
+
+    /// Disarms the thread-local fault on drop.
+    pub struct Guard;
+
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            ARMED.with(|c| c.set(None));
+        }
+    }
+
+    /// Fire-once: returns `true` (and immediately disarms) the first time the
+    /// armed phase is polled by the transition. Crate-internal — only the engine
+    /// polls it, and the fire-once + guard-on-drop pair keep an armed fault from
+    /// reaching a later cold-referee call.
+    pub(crate) fn fires(phase: Phase) -> bool {
+        ARMED.with(|c| {
+            if c.get() == Some(phase) {
+                c.set(None);
+                true
+            } else {
+                false
+            }
+        })
+    }
+}
+
+/// The one core map/reduce/judge transition. Both the one-shot path
+/// ([`analyze_stateful`], which hands it a fresh transient cache) and the
+/// resident path ([`analyze_resident`], which hands it `Galley`'s owned cache
+/// and prior) flow through this exact function — there is no second, "simpler"
+/// analyzer with its own rule logic (plan §1 decision 16).
+///
+/// Returns the corpus [`Stats`] so a resident caller can carry it as `prior`
+/// for incremental re-analysis (ADR 0017). It is fallible only to carry a
+/// test-injected [`fault`]; a released build has no failure path and always
+/// returns `Ok`. On the error path it hands the untouched `prior` back so the
+/// resident caller can restore it and retry — no partial semantic commit.
 ///
 /// `target` is the **complete** corpus this call answers for. With
 /// `prior = Some`, each book present in `target` **supersedes** its prior entry
@@ -139,13 +228,13 @@ pub fn analyze_with_config(
 /// no re-hash — is compared every call, buying a correctness no promise could:
 /// the caller cannot under-declare an edit. Without a `prior` there is nothing
 /// to carry, so every supplied book counts.
-pub fn analyze_stateful(
+fn transition(
     target: &Corpus,
     source: Option<&Corpus>,
     config: &Config,
     prior: Option<Stats>,
-    cache: Option<&mut PrepCache>,
-) -> (Vec<Finding>, Stats) {
+    cache: &mut PrepCache,
+) -> Result<(Vec<Finding>, Stats), (AnalyzeError, Option<Stats>)> {
     use std::collections::BTreeMap;
 
     let per_verse: Vec<_> = rule::per_verse_rules()
@@ -192,10 +281,7 @@ pub fn analyze_stateful(
     // not part of the cache fingerprint: it feeds only proportionality counting,
     // counting never reads the cache, and no cached lane depends on source.
     let books = corpus::by_book(target);
-    let mut cache = cache;
-    if let Some(cache) = cache.as_deref_mut() {
-        cache.ensure_fingerprint(config);
-    }
+    cache.ensure_fingerprint(config);
     // Every supplied book's content hash, read from the corpus's OWNED layout
     // rather than re-hashed per call: `Corpus` computes these at construction
     // and every mutation, so a stateless construction is still fresh proof and
@@ -226,7 +312,10 @@ pub fn analyze_stateful(
     // buffer — a `map_init` per-worker buffer under `parallel`, a plain reused
     // `Vec` serially — and shared by every per-verse rule, replacing their ~10
     // separate `char_indices()` walks with one decode+classify pass.
-    let mut out: Vec<Finding> = if let Some(cache) = cache.as_deref_mut() {
+    // The one core transition always maps through the cache — the one-shot path
+    // hands in a fresh empty one (plan §1 decision 16), so it is all misses and
+    // maps every book exactly as a no-cache walk would, then drops the cache.
+    let mut out: Vec<Finding> = {
         let mut out = Vec::new();
         let mut misses: corpus::Books<'_> = Vec::new();
         let mut miss_hashes: Vec<u128> = Vec::new();
@@ -254,33 +343,6 @@ pub fn analyze_stateful(
             out.extend(findings);
         }
         out
-    } else {
-        #[cfg(feature = "parallel")]
-        {
-            use rayon::prelude::*;
-            target
-                .texts()
-                .par_iter()
-                .enumerate()
-                .map_init(Vec::new, |tape_buf, (i, text)| {
-                    let key_idx = KeyIdx::from_usize(i);
-                    let mask = tape::build_masked(text, tape_buf);
-                    verse_findings(key_idx, text, tape_buf, mask, &per_verse)
-                })
-                .flatten_iter()
-                .collect()
-        }
-        #[cfg(not(feature = "parallel"))]
-        {
-            let mut out = Vec::new();
-            let mut tape_buf = Vec::new();
-            for (i, text) in target.texts().iter().enumerate() {
-                let key_idx = KeyIdx::from_usize(i);
-                let mask = tape::build_masked(text, &mut tape_buf);
-                out.extend(verse_findings(key_idx, text, &tape_buf, mask, &per_verse));
-            }
-            out
-        }
     };
 
     // The by-book view, computed once and shared by the project and stateful
@@ -324,7 +386,7 @@ pub fn analyze_stateful(
     // cache-hit book is synthesized directly into that position. Never
     // reassembled by book identity — `walk_fused`'s output is aligned only
     // to whatever subset of `books` it was given.
-    let mut fused: Vec<stream::BookOut> = if let Some(cache) = cache.as_mut() {
+    let mut fused: Vec<stream::BookOut> = {
         let mut books_to_walk: corpus::Books<'_> = Vec::new();
         let mut walk_positions: Vec<usize> = Vec::new();
         let mut cached_walks: Vec<(usize, cache::CachedWalk)> = Vec::new();
@@ -418,9 +480,17 @@ pub fn analyze_stateful(
             .into_iter()
             .map(|s| s.expect("every book walked or cache-hit"))
             .collect()
-    } else {
-        stream::walk_fused(&books, counted, source, &plan)
     };
+
+    // MAP boundary. Mapping is complete: per-verse findings plus every book's
+    // fused walk products, some now warmed into the (self-validating) cache. No
+    // reduce/judge has run, and `prior` is untouched — a test-injected fault
+    // here hands `prior` straight back so the resident caller restores it and a
+    // retry reuses the warmed entries. Compiles to nothing off `test-probes`.
+    #[cfg(any(test, feature = "test-probes"))]
+    if fault::fires(fault::Phase::Map) {
+        return Err((AnalyzeError { phase: "map" }, prior));
+    }
 
     // Counting-side probe: count the books whose site-free counting
     // accumulators actually ran (`counting_accs_ran`), observed from the
@@ -430,9 +500,7 @@ pub fn analyze_stateful(
     // when at least one site-free counting rule (rare-glyph / mixed-case /
     // proportionality) is enabled.
     #[cfg(any(test, feature = "test-probes"))]
-    if let Some(cache) = cache {
-        cache.note_retallied(fused.iter().filter(|o| o.counting_accs_ran).count());
-    }
+    cache.note_retallied(fused.iter().filter(|o| o.counting_accs_ran).count());
 
     let token_cache: Option<rule::TokenCache> = plan
         .collect_tokens
@@ -619,6 +687,24 @@ pub fn analyze_stateful(
     });
     drop(fused);
 
+    // REDUCE boundary. Every substrate's fresh book/corpus stats are folded and
+    // the project findings are emitted into the local `out`; nothing resident is
+    // committed yet and `prior` is still untouched. A fault here hands `prior`
+    // back intact — retry reuses the warm map cache and re-runs reduce/judge.
+    #[cfg(any(test, feature = "test-probes"))]
+    if fault::fires(fault::Phase::Reduce) {
+        return Err((AnalyzeError { phase: "reduce" }, prior));
+    }
+
+    // JUDGE boundary. The reduce→judge seam, immediately before the resident
+    // `prior` is consumed into the working stats. Injecting here proves the
+    // deepest failure still commits no partial semantic state: `prior` has not
+    // been merged, so it hands back exactly as it arrived.
+    #[cfg(any(test, feature = "test-probes"))]
+    if fault::fires(fault::Phase::Judge) {
+        return Err((AnalyzeError { phase: "judge" }, prior));
+    }
+
     // Stateful rules: supersede the prior cache at book granularity, judge the
     // whole merged corpus from the cache.
     //
@@ -732,7 +818,56 @@ pub fn analyze_stateful(
     // to serial. Cheap against the analysis: one O(n log n) over the findings.
     out.sort_by_key(|f| (f.key_idx, f.range.start, f.code));
 
-    (out, stats)
+    Ok((out, stats))
+}
+
+/// One-shot / oracle analysis over the [one core transition](transition).
+///
+/// `cache` is the *transient* half of decision 16: `Some` reuses a caller-owned
+/// cache (rare — most callers pass `None`), `None` spins up a fresh empty
+/// [`PrepCache`] for this one call and drops it. Either way the identical
+/// transition runs to completion. This path arms no [`fault`], so the transition
+/// is total here — an injected fault reaching it is a test misuse and panics.
+///
+/// See [`transition`] for the complete-snapshot / provenance / counting
+/// semantics (ADR 0017, ADR 0043 supersession).
+pub fn analyze_stateful(
+    target: &Corpus,
+    source: Option<&Corpus>,
+    config: &Config,
+    prior: Option<Stats>,
+    cache: Option<&mut PrepCache>,
+) -> (Vec<Finding>, Stats) {
+    let outcome = match cache {
+        Some(cache) => transition(target, source, config, prior, cache),
+        None => transition(target, source, config, prior, &mut PrepCache::new()),
+    };
+    match outcome {
+        Ok(result) => result,
+        Err((e, _)) => {
+            unreachable!("one-shot analysis is total; unexpected injected fault at {}", e.phase)
+        }
+    }
+}
+
+/// Resident analysis over the [one core transition](transition) — the entry the
+/// resident shell ([`Galley`](../ssc_galley/struct.Galley.html)) drives.
+///
+/// It owns and passes its resident `prior` and `cache` (ADR 0010: no engine
+/// state lives here). Fallible so the shell can implement a retry-safe
+/// clean/dirty lifecycle (plan §3.3): on error the untouched `prior` comes back
+/// in the error tuple, so the shell restores it, keeps its (self-validating)
+/// warm cache, and a retry with no further mutation reaches the cold result.
+/// In release there is no failure path (see [`fault`]); the `Result` shape is
+/// uniform so the shell's signature does not change between builds.
+pub fn analyze_resident(
+    target: &Corpus,
+    source: Option<&Corpus>,
+    config: &Config,
+    prior: Option<Stats>,
+    cache: &mut PrepCache,
+) -> Result<(Vec<Finding>, Stats), (AnalyzeError, Option<Stats>)> {
+    transition(target, source, config, prior, cache)
 }
 
 /// Fingerprint the enabled counting-rule set: xxh3-64 over the rules' canonical
