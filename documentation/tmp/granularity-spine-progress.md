@@ -848,3 +848,180 @@ until the folded hash is in (it is).
   caller obligation (complete snapshots prune automatically) — and spine-era
   production comments no longer cite plan sections; they state the invariants
   directly.
+
+---
+
+## Entry 7 — Work Packet 2b: Phase A step 6 + dependency-direction restore
+
+- **Date:** 2026-07-23
+- **Branch:** `granularity-spine` (main tree). Base for this packet: `7bfb018`.
+- **Scope:** plan §8 Phase A **step 6** (route one-shot + resident analysis
+  through one core transition; add the semantic clean/dirty/publication
+  lifecycle + stamp-derived retry) + the Entry-6 closeout **dependency-direction
+  restore** (remove the dev-only `ssc-core -> ssc-galley` cycle). Steps 7–8 are
+  the next packet.
+- **Discipline:** per-commit **WA** oracle (four dumps: findings + transcript ×
+  default + all, against `oracle-blobs/wa.blob`) byte-identical + full
+  `cargo test --workspace` + `cargo check -p ssc-wasm --target
+  wasm32-unknown-unknown`. Full-fleet findings bookend remains Phase F.
+
+### Commits (in order)
+
+| unit | commit | what landed |
+| --- | --- | --- |
+| 1 | `1a422c1` | Phase A step 6: one core `transition(&mut PrepCache)`; deleted the no-cache branch (one-shot now uses a fresh transient cache — decision 16); `analyze_stateful` (one-shot wrapper) + new fallible `analyze_resident` (resident); Galley `Lifecycle{CleanPublished,Dirty}` + `try_analyze` + dirty tracking; test-only `ssc_core::fault` hook; 5 new galley tests. |
+| 2 | `f6487e2` | Dep-direction restore: `dump_incremental`+`EDIT_TEXT` -> `crates/galley/examples/transcript_oracle.rs`; `galley_warm_edit_*` -> `crates/galley/benches/warm_edit.rs`; `ssc-galley` removed from `ssc-core` dev-deps; SKILL + calibrate usage doc updated. |
+| final | (this entry) | progress log + warm ladder. |
+
+### WA oracle base pin (this packet's per-commit referee)
+
+Pinned at HEAD `7bfb018`, `/tmp/oracle/spine/wp2b.base.wa.*.tsv`, scope=wa.
+Findings shasums are byte-identical to the WP1/WP2a standing contract; transcript
+shasums byte-identical to WP2a's `new-inc` (Entry 5):
+
+| file | sha256 |
+| --- | --- |
+| `wp2b.base.wa.findings.default.tsv` | `38a0ceadcc792a6656905c7a0f9e2e4c2720c86f47f41f94c66e7a8ad1a9702c` |
+| `wp2b.base.wa.findings.all.tsv` | `128fdd933dc71cda0a4a6d9d9971ceb5648a5703f8b22ee798d30b09d2c15660` |
+| `wp2b.base.wa.inc.default.tsv` | `7b19caa79b284bfa16a56f300f5660591ffc58ffa183888451daf82778676dca` |
+| `wp2b.base.wa.inc.all.tsv` | `c951a758823629c6b6d2e1d558e92c59c1873ed17856b328a60c7ebdc4cee74f` |
+
+**Both commits re-dumped all four and diffed byte-identical to this base**
+(`diff -q` clean; `step6.wa.*` after Unit 1, `u2.wa.*` after Unit 2 — the
+`u2.wa.inc.*` produced by the RELOCATED galley driver). The transcript survived
+the driver relocation byte-for-byte, and single-thread (`RAYON_NUM_THREADS=1`)
+matched default. Workspace tests green at both commits (core 420, galley
+17->22, wasm 7) serial and `--features parallel`; wasm32 target check clean.
+
+### Lifecycle design notes (Unit 1)
+
+- **One core transition.** `crates/core/src/lib.rs::transition(target, source,
+  config, prior: Option<Stats>, cache: &mut PrepCache) -> Result<(Vec<Finding>,
+  Stats), (AnalyzeError, Option<Stats>)>` is the single map/reduce/judge body.
+  The former `cache: Option` **no-cache** branch — the "simpler but
+  behaviorally different" analyzer the plan §1/§3 warns against — is deleted.
+  `analyze_stateful(cache: Option<&mut PrepCache>)` is the one-shot/oracle
+  wrapper: `Some` reuses a caller cache, `None` spins up a fresh transient
+  `PrepCache::new()` and drops it (decision 16). `analyze_resident(&mut cache)`
+  is the resident wrapper Galley drives. Both wrappers call the same
+  `transition`. Byte-identity of the collapse is proven by the findings dump
+  (which goes through the one-shot path) and the transcript dump (resident).
+- **State names.** `ssc_galley::Lifecycle { CleanPublished, Dirty }` — the
+  semantic half of plan §3.3. A fresh `Galley` is `Dirty` (nothing published).
+  Each mutation dirties on `MutationEffect::Changed` (via a private
+  `note_effect`; `remove_books` dirties on a positive count) and **preserves**
+  state on a proven no-op. Several mutations coalesce (stay `Dirty`) before one
+  analyze. `try_analyze` success -> `CleanPublished`; core error -> stays
+  `Dirty`. `EngineCurrentWireStale` is deliberately NOT built (it is the
+  wasm-adapter state that arrives with Phase A-W). Accessors: `state()`,
+  `is_dirty()`.
+- **Where dirty stamps live / retry-safety.** Dirty work is stamp-derived, not
+  drained: the transition recomputes what to re-tally each call by comparing
+  each book's current `Tally` (content/source/rules-fp, read from `Corpus`'s
+  owned layout) against the resident prior's recorded `Tally`, and the
+  `PrepCache` is content-hash-keyed and stored atomically per book (self-
+  validating). `Galley::try_analyze` does NOT destructively drain across a
+  failed attempt: on a core error the transition hands the **untouched** prior
+  back in the error tuple and Galley restores it, keeps the warm prep, and
+  stays `Dirty`. So a retry with no further mutation reuses valid warmed
+  entries / recomputes invalid ones and reaches exactly the cold result — it
+  can never mistake a partial attempt for a publication (plan §16
+  "destructively draining" footgun defended).
+- **Failure-injection mechanism.** `ssc_core::fault` — a module gated behind
+  `#[cfg(any(test, feature = "test-probes"))]`, so it does **not exist in
+  release builds** (the fault polls in `transition` compile to nothing; the
+  released `analyze_resident` has no failure path). It is a guard-armed,
+  fire-once thread-local: `fault::arm(Phase) -> Guard` (disarms on drop),
+  `Phase::{Map, Reduce, Judge}`, polled by crate-internal `fault::fires` at the
+  three boundaries. All three polls sit **before the prior is consumed**, so an
+  injected fault hands the prior back intact. `AnalyzeError { phase }` is an
+  unconditional type (so the resident signature is uniform across builds) that
+  is only ever constructed inside the gated poll. Galley tests reach it because
+  their dev-dep enables `ssc-core/test-probes`.
+- **Tests added (galley, +5 = 22).** `one_shot_and_resident_findings_are_byte_identical`
+  (decision-16 invariant, both configs, ±reference); `lifecycle_state_transitions`;
+  `coalesced_mutations_equal_cold_of_the_final_inputs`; `noop_update_preserves_publication`;
+  `injected_core_faults_leave_retry_safe_and_equal_to_cold` (map/reduce/judge ->
+  Err, stays Dirty, retry == cold, then CleanPublished). The existing §12.5
+  transcript test is untouched and still green.
+
+### Driver relocation record (Unit 2)
+
+- **Layout chosen.** `dump_incremental` + `EDIT_TEXT` live in
+  `crates/galley/examples/transcript_oracle.rs`; `galley_warm_edit_*` in
+  `crates/galley/benches/warm_edit.rs`. Both are in `ssc-galley`, so `ssc-core`
+  no longer dev-depends on `ssc-galley` (`cargo tree -p ssc-core --edges
+  dev-dependencies` shows no galley). `ssc-core`'s `oracle.rs` keeps only the
+  core-only shared helpers (dropped its `ssc_galley`/`BookBlock` uses;
+  `load_corpora`/`resolve_source` are now `pub`).
+- **Sharing choice: `#[path]`-include, NOT duplicate.** The galley example
+  `#[path]`-includes `ssc-core`'s `dev/vref_io.rs`, `examples/calibrate/
+  oracle.rs`, and `examples/calibrate/corpus_blob.rs` **verbatim** (matching the
+  module names those files expect: `crate::{vref_io, oracle, corpus_blob}`).
+  Rationale: `write_findings` is the gate-critical row formatter — a single
+  source cannot drift between the `--dump-findings` and `--dump-incremental`
+  bytes, which duplication would risk. The example carries
+  `#![allow(dead_code)]` because it includes those modules whole while
+  exercising only the transcript path. Galley gains dev-deps
+  rayon/serde_json/serde/bincode/criterion for the moved code.
+- **CLI change (SKILL + calibrate usage doc updated in the same commit):**
+  - OLD: `cargo run --release -p ssc-core --example calibrate -- --dump-incremental <path> <out> <cfg> [scope]`
+  - NEW: `cargo run --release -p ssc-galley --example transcript_oracle -- --dump-incremental <dir|blob> <out> <default|all> [wa|full]`
+  - `calibrate --dump-incremental` now prints the new command and exits 2.
+  - `.claude/skills/oracle-gate/SKILL.md`: updated the "must never change
+    casually" holdings list (transcript oracle now in galley; also dropped the
+    already-defunct `write_stats_digest`/`fnv64` mention) and the "Running a
+    dump" command block.
+
+### Warm ladder (packet end) vs Entry 5
+
+`spike-bench/warm_ladder_profile` over `corpora/vref/WA-en-ulb.txt`, 200
+trials, warm median/call (loaded machine — mins are the honest floor).
+
+| book/cfg | Entry 5 median | this packet median | this packet min |
+| --- | ---: | ---: | ---: |
+| 3JN default | 6.69 ms | 5.12 ms | 4.87 ms |
+| MAT default | 14.61 ms | 13.05 ms | 12.35 ms |
+| PSA default | 20.97 ms | 19.26 ms | 18.37 ms |
+| 3JN all | 34.00 ms | 32.48 ms | 30.07 ms |
+| MAT all | 53.04 ms | 51.51 ms | 47.79 ms |
+| PSA all | 67.53 ms | 65.03 ms | 60.27 ms |
+
+Step 6 did **not** materially move the ladder — every scenario is flat-to-
+slightly-better, within loaded-machine noise (the small improvements are noise,
+not a claimed win). The honest 3JN/default warm number is ~5.1 ms, still above
+the plan §13 `<=2 ms` floor target — which is explicitly **next packet's** work
+(Entry 6: Phase A steps 7–8 own the localized per-book/per-chapter
+layout+hash maintenance that closes the gap). Per-phase map/reduce/judge/pack
+timers still do not exist (owed to a later phase, plan §2 item 5).
+
+### Deviations / notes for the owner (clearly marked)
+
+1. **One-shot now allocates a transient `PrepCache`.** Per plan §3 / decision
+   16, the one-shot path ("`analyze_stateful(.., None)`", used by
+   `analyze_with_config`, the findings oracle, and every `cold()` test referee)
+   now spins up a fresh empty cache, maps through it, and drops it — instead of
+   the old lean no-cache walk. Output is byte-identical (findings WA dump
+   proves it). This adds per-one-shot allocation/copy overhead by design (the
+   plan optimizes the resident/warm path, not one-shot); the findings dump is
+   gated on bytes, not speed, and the warm ladder (resident path) is unaffected.
+   No plan deviation — this is the literal decision-16 shape.
+2. **Failure-injection placement.** All three faults (Map/Reduce/Judge) fire
+   *before* the resident prior is consumed, so each hands the prior back intact
+   (zero-clone retry-safety). The pure-Rust half has no separate "publish" step
+   from returning `Ok`, so a distinct "after judge, before pack" failure is not
+   modelled here (that is the wasm `EngineCurrentWireStale` case, Phase A-W).
+   The three boundaries still exercise progressively deeper failures; all leave
+   retry byte-equal to cold.
+3. **Full-fleet bookend deferred to Phase F** (as in WP1/WP2a). Both units are
+   refactors proven byte-identical on the WA slice (a faithful per-corpus slice
+   per repo `CLAUDE.md`); the changed one-shot path is directly exercised by the
+   findings dump and the changed resident path by the transcript dump.
+
+### Stop-safe next step
+
+WP2b complete and gated. Next stop-safe step is **Phase A step 7** (replace
+clean-book `cloned_walk` consumption with borrowed/read-only cached product
+views) — the next packet — followed by step 8 (the honest-ladder `<=2 ms`
+localized layout/hash maintenance). Phase A-W must not begin until Phase B; the
+folded book hash is already in (Entry 5).
