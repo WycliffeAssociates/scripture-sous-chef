@@ -44,7 +44,7 @@ Source-document disposition:
 | Document | Status after this plan |
 | --- | --- |
 | `../ideas/2026-07-22-incremental-judge.md` | **superseded/absorbed**; typed substrates, entry outcomes, and resident partitions here replace its design |
-| `../ideas/2026-07-21-chapter-granularity-invalidation.md` | **superseded/absorbed**; typed boundary-state replay here replaces its open road/seam choices |
+| `../ideas/2026-07-21-chapter-granularity-invalidation.md` | **superseded/absorbed**; independent chapter observations plus ordered boundary-state reduction here replace its open road/seam choices |
 | `../ideas/2026-07-21-galley-snapshot-persistence.md` | **reclassified as an application integration recipe**; only the engine-owned identity primitive in §3/§10 belongs here |
 | former `2026-07-21-packed-findings-wire-plan.md` | **deleted after full absorption** into Phase A-W and normative Appendix A |
 
@@ -72,8 +72,8 @@ update_chapter(complete replacement chapter)
     → invalidate that chapter's products
 
 analyze()
-    → recompute dirty chapters
-    → replay later chapters only until boundary state converges
+    → independently map dirty chapters into typed observations
+    → replay ordered reduction over cached observations until boundary state converges
     → update affected book contributions and corpus stats
     → incrementally rejudge changed substrate keys
     → return findings for the entire resident corpus
@@ -88,7 +88,7 @@ shared prep for that chapter changes
         ↓
 active typed observation substrates update
         ↓
-boundary-state replay until convergence
+ordered boundary-state reduction over cached observations until convergence
         ↓
 book contribution + corpus stats update
         ↓
@@ -108,8 +108,9 @@ Two invariants govern every phase:
    core transitions. No global/interior engine state appears.
 2. **Addresses are not discourse reset points:** caller book/chapter/verse
    order is retained, but sentence, punctuation, bracket, and quotation state
-   resets only where the rule says it does. Chapter replay carries explicit
-   boundary state; it never silently resets rule state at `\c`.
+   resets only where the rule says it does. Ordered reduction carries explicit
+   boundary state across cached chapter observations; it never silently resets
+   rule state at `\c`.
 
 ## 1. Owner decisions incorporated by this revision
 
@@ -144,13 +145,17 @@ These are settled. An implementer must not reopen them.
 10. **Closed registry, no `dyn Any`.** Substrate cache slots and consumer
     wiring are explicit and compile-time checked. A truly exceptional rule uses
     the permanent batch lane and pays its visible cost.
-11. **One chapter correctness mechanism.** A substrate exposes equality-
-    comparable boundary state. Replay continues until the next cached input
-    state matches or book end. There is no separate seam-window driver and no
-    arbitrary engine replay cap.
-12. **One fused affected-chapter walk.** Every active mapper sees each dirty or
-    replayed chapter. Mapper-specific edit masks are deferred until a profile
-    names a worthwhile one.
+11. **One chapter correctness mechanism.** Chapter mapping is independent of
+    predecessor state. A substrate's ordered reducer exposes equality-comparable
+    boundary state and replays cached chapter observations until the leaving
+    state matches the cached value or book end. There is no separate seam-
+    window driver and no arbitrary engine replay cap.
+12. **One fused dirty-chapter walk.** Every mapper whose observation stamp is
+    dirty sees that chapter exactly once; content edits normally select every
+    active mapper, while extractor-only changes select their owning substrate.
+    Later reduction replay consumes cached typed observations and never rewalks
+    unchanged text. Character-level mapper edit masks are deferred until a
+    profile names a worthwhile one.
 13. **Disabled rules cost no edit-path work.** Enabling pays one rule/substrate-
     local build; disabling drops the rule partition and drops a substrate when
     it has no remaining consumers. No toggle invalidates unrelated evidence.
@@ -164,10 +169,14 @@ These are settled. An implementer must not reopen them.
     and cache types. One-shot analysis invokes it with fresh transient state;
     `Galley` invokes the same path with resident state. `ssc-galley` orchestrates
     lifecycle only and may not fork rule logic.
-17. **No concurrency redesign.** Native builds may continue parallelizing
-    independent books. Replay within one book is sequential and deterministic.
-    This plan adds no locks, background analysis, cancellation protocol,
-    threaded wasm, workers, COOP/COEP requirement, or async mutation surface.
+17. **Adaptive native map fan-out; ordered reduction.** Native `parallel`
+    builds use the existing ordered book fan-out for whole-corpus/multi-book
+    work and ordered chapter fan-out when exactly one book has multiple dirty
+    chapters to map. Never nest both Rayon grains. Mapping results occupy caller-
+    order slots; compact boundary reduction within each book is sequential and
+    deterministic. This plan adds no locks, background analysis, cancellation
+    protocol, threaded wasm, workers, COOP/COEP requirement, or async mutation
+    surface.
 18. **Persistence is validation, not engine restore.** Applications may persist
     complete packed finding buffers. Galley exposes the expected identity for
     its current inputs, but does not read/write storage, adopt packed findings
@@ -422,8 +431,8 @@ Mutation reuse is conservative and deterministic:
 | Mutation | Reusable map products | Mandatory invalidation |
 | --- | --- | --- |
 | identical validated input | everything; operation is a no-op | none |
-| chapter replacement | unchanged prefix chapters and any later chapters whose boundary replay converges | changed chapter; replay suffix per substrate |
-| existing-book replacement | chapters with the same slug + opaque chapter token + relevant content stamp may be candidates | removed/changed chapters; begin replay at the first changed chapter-order/content boundary |
+| chapter replacement | every unchanged chapter observation whose content/schema/config stamp matches | map changed chapter; replay ordered reduction suffix per substrate |
+| existing-book replacement | chapters with the same slug + opaque chapter token + relevant content stamp may reuse their observations regardless of predecessor state | map added/changed chapters; begin ordered reduction at the first changed chapter-order/content boundary |
 | new book | none for that book | cold-build active substrates for it |
 | removed book | none for that book | subtract every contribution and remove every local partition record |
 | complete corpus/source replacement | only same-role, same-slug, same-chapter-token entries whose relevant stamps match | every added/removed/changed entry plus structural-order effects |
@@ -432,8 +441,10 @@ Never reuse a chapter merely because its text matches another slug/chapter.
 Target products cannot satisfy reference products or vice versa. A book hash
 may prove a whole book unchanged after its slug matches; otherwise compare its
 ordered chapter layout and chapter stamps. On whole-book structural change,
-the unchanged ordered prefix is reusable. The suffix is replayed until each
-substrate converges; removed cached chapters are dropped before reduction.
+every same-role chapter whose slug/token/content/extraction stamp still matches
+may reuse its map observation. Ordered reduction restarts at the first
+structural/contribution change and continues until each substrate converges;
+removed cached chapters are dropped first.
 
 Changing only global layout—such as reordering otherwise unchanged books—does
 not require remapping typed observations, because retained addresses are local.
@@ -466,7 +477,8 @@ Corpus
 
 AnalysisCache
     shared prep
-    per-substrate chapter products + boundary states
+    per-substrate input-independent chapter observations
+    per-substrate ordered-reduction boundary states/results
     typed per-substrate book contributions + corpus aggregates
     per-rule resident finding partitions
 ```
@@ -486,7 +498,8 @@ Each entry carries the relevant chapter content hash plus a prep schema stamp.
 It contains no enabled-rule bit, judging knob, corpus statistic, or finding.
 
 Before mapping, the closed active-substrate registry computes a typed
-`SharedPrepNeeds` bitset. For each dirty/replayed chapter:
+`SharedPrepNeeds` bitset. For each chapter whose observation input stamp is
+dirty:
 
 1. reuse every requested prep lane whose role/content/schema stamp matches;
 2. build each missing requested lane once;
@@ -498,8 +511,9 @@ Before mapping, the closed active-substrate registry computes a typed
 No mapper independently re-tokenizes/re-segments the same chapter during one
 analysis. Conversely, do not eagerly build an expensive prep lane merely
 because some disabled or batch rule could use it. Mechanical preparation that
-needs cross-chapter semantic carry is misclassified: move that state into a
-typed substrate `BoundaryState` rather than hiding it in shared prep.
+needs cross-chapter semantic carry is misclassified: map the chapter's raw
+typed events independently, then carry state in ordered substrate reduction
+rather than hiding it in shared prep.
 
 ### 5.2 Strongly typed substrate contract
 
@@ -512,22 +526,26 @@ trait ObservationSubstrate {
 
     type Key: Clone + Eq + Ord;
     type BoundaryState: Clone + Eq + Default;
-    type ChapterContribution: Clone + Eq;
+    type ChapterObservation: Clone + Eq;
+    type ReducedChapter: Clone + Eq;
     type BookContribution: Clone + Eq;
     type CorpusStats;
 
-    // Pure map: chapter + prep + input state -> contribution + output state.
-    // Pure fold/reduce and changed-key operations follow.
+    // Pure map has no predecessor input. Ordered reduction consumes the
+    // observation plus boundary state and produces the next state/result.
 }
 ```
 
 The implementation supplies typed operations equivalent to:
 
 ```text
-map_chapter(chapter, shared_prep, entering_state, extractor_config)
-    -> { contribution, keyed_sites, leaving_state }
+map_chapter(chapter, shared_prep, extractor_config)
+    -> chapter_observation
 
-fold_book(ordered chapter contributions)
+reduce_chapter(chapter_observation, entering_state)
+    -> { reduced_chapter, leaving_state }
+
+fold_book(ordered reduced chapters)
     -> book contribution
 
 replace_book_in_corpus_stats(old?, new?)
@@ -549,16 +567,20 @@ Orchestration is an exhaustive closed match/table over `SubstrateId` and
 `RuleId`, with registry completeness tests. This is intentional boilerplate:
 the compiler, not a string dependency list, proves judge/substrate pairing.
 
-Each typed cache entry carries a typed validity stamp, not a generic “cache is
-fresh” boolean:
+Each typed cache entry carries separate typed validity stamps, not a generic
+“cache is fresh” boolean:
 
 ```text
-SubstrateInputStamp
+ObservationInputStamp
     substrate schema stamp
     relevant target chapter/book hash (if declared)
     relevant reference chapter/book hash or explicit absent tag (if declared)
     extraction-only config fingerprint
-    ordered predecessor/output boundary state
+
+ReducedChapterStamp
+    observation generation/stamp
+    ordered entering boundary state
+    leaving boundary state + reduced chapter result
 ```
 
 The closed registry declares whether a substrate consumes target, reference,
@@ -591,7 +613,7 @@ non-silent absence behavior, external input, or other dependency becomes a new
 exhaustively matched variant; reference-removal persistence rejects it until
 its reuse semantics are explicitly designed. Do not collapse this to a bool.
 
-Rule enablement and judging knobs are absent from `SubstrateInputStamp`.
+Rule enablement and judging knobs are absent from `ObservationInputStamp`.
 Changing extraction behavior requires a named extractor-config field and must
 change the substrate's extraction fingerprint; it is not permissible to label
 an extraction input a “judging knob” merely to avoid remapping.
@@ -634,27 +656,32 @@ not inspect another rule's partition or enabled bit. A rule that cannot fit
 this contract remains an explicit batch rule and replaces only its own
 partition.
 
-### 5.4 Boundary replay
+### 5.4 Ordered reduction replay
 
 For substrate `S`, each cached chapter entry records:
 
 ```text
 chapter content hash
+S::ChapterObservation
 S::BoundaryState entering the chapter
 S::BoundaryState leaving the chapter
-S::ChapterContribution
-chapter-local keyed sites/products
+S::ReducedChapter (contribution + keyed sites/products)
 ```
 
 After a chapter edit:
 
-1. obtain the valid cached state entering the changed chapter (or default at
-   book start);
-2. remap the changed chapter and compare its new output state;
-3. for the next unchanged chapter, stop immediately if its cached input state
-   equals the new state;
-4. otherwise remap that chapter and continue;
-5. book end is the correctness fallback—there is no fixed replay cap.
+1. independently remap only chapters whose observation input stamp changed and
+   place each new observation in its caller-order chapter slot;
+2. obtain the cached reduction state entering the earliest changed/inserted/
+   removed/reordered observation (or default at book start);
+3. reduce that observation, update its reduced result, and compare the new
+   leaving state with the chapter's previously cached leaving state;
+4. if the leaving state differs, reduce the next chapter's **cached
+   observation** with the new state and continue; never rewalk its text merely
+   because carry changed;
+5. after updating the current reduced result, stop when its leaving state
+   equals the previously cached leaving state; book end is the correctness
+   fallback and there is no fixed replay cap.
 
 Variable-size states (for example a delimiter stack) are allowed. They require
 measured retained-size/clone/equality cost and pathological-depth tests; the
@@ -674,40 +701,80 @@ Examples:
 
 ### 6.1 Map baseline
 
-Keep today's fused-listener architecture but change the reusable/replay unit
-from book to chapter:
+Keep today's fused-listener architecture but make the reusable map unit an
+input-independent chapter observation:
 
 ```text
 today
     changed book -> one fused walk over whole book -> all active listeners
 
 proposed
-    changed/replayed chapter -> one fused walk over chapter
-                             -> all active substrate mappers
+    dirty chapter -> one fused walk over chapter
+                  -> all active substrate mappers
+                  -> typed observation cached in caller-order slot
+
+    carry change -> ordered reduction over cached chapter observations
+                 -> no unchanged-text rewalk
 ```
 
-All active mappers see every affected chapter. Existing safe per-verse gates
+All active mappers see every dirty chapter. Existing safe per-verse gates
 remain. Do not add old/new character-diff masks or mapper-specific invalidation
 gates in this plan; those require a measured follow-up and their own safe-
 superset tests.
 
-When several books are dirty, a native `parallel` build may process independent
-books with the existing book-level fan-out. All replay for one book is
-sequential because chapter `n + 1` consumes chapter `n`'s boundary state.
-Parallel workers return book-local typed results; corpus reduction and final
-assembly merge them in canonical corpus/registry order, never completion order.
-The non-parallel and parallel builds must produce byte-identical output. Wasm
-uses its current execution model; enabling wasm threads is a separate measured
-project.
+Native `parallel` builds choose exactly one Rayon grain per analyze call:
+
+```text
+dirty = plan_observation_work(corpus metadata, cache stamps, active substrates)
+// each chapter work item carries its closed typed dirty-mapper selection
+
+if dirty spans multiple books:
+    dirty books par_iter in caller order
+        each worker serially fused-maps that book's dirty chapter work items
+else if the one dirty book has multiple dirty chapters above threshold:
+    that book's dirty chapter views par_iter in caller order
+        each worker performs one fused walk for that item's dirty mappers
+else:
+    serially fused-map the sole/small dirty chapter work
+```
+
+The planning pass is internal and stamp-derived: a cold one-shot/cache miss
+marks every required chapter observation dirty; a whole-book replacement marks
+only non-reusable chapter observations; a chapter edit normally marks one
+chapter for every active mapper; an extractor-config change may mark one
+substrate across many chapters. It does not trust caller dirty hints and does
+not change Galley's complete-corpus semantic.
+
+| dirty map scope | native map scheduling |
+| --- | --- |
+| whole corpus or more than one dirty book | existing ordered `map_books`: `BookGroup` values fan out with `par_iter`; each book maps its dirty chapters serially |
+| exactly one dirty book with multiple dirty chapters above the named work threshold | caller-order chapter views fan out with indexed `par_iter().map(...).collect()`; each task performs the one fused mapper walk |
+| exactly one dirty chapter, or work below threshold | serial fused chapter map; there is only one useful map task |
+
+Do not derive lexical/numeric `Ord` from slug or opaque chapter token. Corpus
+layout supplies book/chapter ordinals, and indexed collection writes results
+back to those caller-order slots. Do not nest book and chapter Rayon fan-out.
+`PARALLEL_MIN_CHAPTER_MAP_BYTES` (or an equivalently cheap named work proxy) is
+chosen and recorded by the Phase C serial-vs-parallel calibration; it is a
+performance route only and may not affect output.
+
+Ordered reduction within each book is sequential because chapter `n + 1`
+consumes chapter `n`'s boundary state, but it walks compact cached observations,
+not chapter text. Parallel map workers return indexed typed observations;
+reduction, corpus aggregation, and final assembly use canonical corpus/registry
+order, never completion order. Serial and parallel builds must produce byte-
+identical observations, reduced results, and output. Wasm uses its current
+serial execution model; enabling wasm threads is a separate measured project.
 
 ### 6.2 Reduce and provenance
 
-Per-chapter contributions live in `AnalysisCache`; public/corpus stats remain
-book-contribution-shaped where that is natural:
+Per-chapter observations and reduced results live in `AnalysisCache`;
+public/corpus stats remain book-contribution-shaped where that is natural:
 
 ```text
-changed chapter contribution
-    -> fold affected book's cached chapter contributions
+changed chapter observation
+    -> ordered reduction to boundary convergence over cached observations
+    -> fold affected book's reduced chapter contributions
     -> replace old book contribution in substrate corpus stats
     -> return exact stats-delta keys
 ```
@@ -791,11 +858,11 @@ be represented by partitions, stop rather than silently choosing a new order.
 
 | Change | Corpus hashes/layout | substrate map/reduce | judging |
 | --- | --- | --- | --- |
-| target chapter text/keys | affected chapter + folded book | active substrates for replay range | changed keys only |
-| target whole book | affected book layout/hashes | active substrates for changed/repaired chapters; safe full-book fallback | changed keys only |
+| target chapter text/keys | affected chapter + folded book | map changed observation; ordered-reduce cached suffix to convergence | changed keys only |
+| target whole book | affected book layout/hashes | map added/changed observations; ordered-reduce from first structural/contribution change | changed keys only |
 | remove book | delete layout | remove every substrate book contribution | patch/remove affected findings |
 | complete corpus replace | diff derived hashes/layout | changed/added/deleted regions only; cold fallback valid | resulting changed keys |
-| source replace | reference hashes/layout only | each source-dependent substrate's declared affected regions; safe full-source fallback | their changed/site/order keys |
+| source replace | reference hashes/layout only | map changed source-dependent observations, then ordered-reduce declared affected regions; safe full-source fallback | their changed/site/order keys |
 | judging knob | none | none | changed rule only |
 | substrate schema/extractor | none | rebuild that substrate | all consumer partitions |
 
@@ -911,22 +978,28 @@ partition.
    completeness tests. No `dyn Any`, runtime downcast, or string dependency
    list.
 2. Migrate `PunctuationSpacing` as the first simple keyed substrate. Its
-   chapter contribution, book/corpus stats, keyed sites, delta keys, and
-   `EntryOutcome` must reproduce the existing rule exactly.
+   chapter observation, reduced result, book/corpus stats, keyed sites, delta
+   keys, and `EntryOutcome` must reproduce the existing rule exactly.
 3. Make knob-only spacing config changes map/reduce zero chapters and rejudge
    only spacing. Toggle isolation tests prove every unrelated substrate and
    partition remains byte-identical/no-work.
 4. Convert the direct per-verse lane to chapter-local cached products and patch
    only the replaced chapter's direct-rule partitions.
+5. Add one order-preserving native chapter-map seam beside `map_books`. Route
+   exactly-one-book/multiple-dirty-chapter work through indexed chapter
+   `par_iter().map(...).collect()`; retain book fan-out for multi-book work and
+   serial mapping for one chapter. Calibrate and record the named minimum-work
+   threshold on 3JN/MAT/PSA; never nest the two Rayon grains.
 
 Gate: spacing and direct-rule partitions equal full batch rebuild under
 randomized synthetic edits; full oracle identical; map/reduce/judge probes show
 the exact intended work.
 
-### Phase D — boundary-state replay with real consumers
+### Phase D — ordered reduction replay with real consumers
 
-1. Add generic `SubstrateCache<S>` chapter entries and the replay-to-convergence
-   driver from §5.4.
+1. Add generic `SubstrateCache<S>` chapter observations, reduced results, and
+   the ordered reduction-to-convergence driver from §5.4. Tests prove that
+   changing carry never remaps an unchanged chapter observation.
 2. Migrate `DuplicateWord` first. Boundary state is the previous relevant word
    and stable local address. Tests include duplicate across a chapter boundary,
    empty/nonletter intervening verses, immediate convergence, and propagation.
@@ -934,8 +1007,8 @@ the exact intended work.
    test the minimal complete casing boundary state; do not approximate it with
    a one-verse window. Casing judging becomes keyed/incremental while its two
    consumers continue sharing one substrate.
-4. Measure retained boundary-state size, replay distance distribution, map,
-   reduce, judge, and total time separately.
+4. Measure retained observation/state size, reduction replay-distance
+   distribution, map, reduce, judge, and total time separately.
 
 Gate: every replay result equals a cold whole-book/full-corpus run; a changed
 state may reach book end; no chapter reset changes pericope-shaped behavior;
@@ -973,7 +1046,8 @@ change.
 3. Record map/reduce/judge/pack/reconcile before/after tables in the warm-path
    calibration doc.
 4. ADRs (next free numbers): typed observation substrates/invalidation;
-   complete-snapshot Galley + chapter replay; shared packed wire/reconciliation
+   complete-snapshot Galley + independent chapter map/ordered reduction replay;
+   shared packed wire/reconciliation
    if not already recorded in Phase A-W. Update ADRs 0042/0043/0060/0062
    status/supersession text rather than leaving contradictory accepted prose.
 5. Regenerate wasm packages and declarations; update durable reference docs and
@@ -1196,7 +1270,8 @@ commit and recorded in progress.
 For every row, the implementer records:
 
 - exact active consumers and shared prep needs;
-- chapter contribution, boundary state, book contribution, corpus stats;
+- chapter observation, reduced chapter result, boundary state, book
+  contribution, corpus stats;
 - delta-key derivation and entry-outcome equality;
 - retained bytes and cold/warm timing;
 - migration verdict or evidence-backed batch fallback.
@@ -1248,6 +1323,12 @@ and oracle inputs, not checked-in fixtures.
 
 ### 12.3 Replay tests
 
+- mapper output for a chapter is identical regardless of predecessor state and
+  thread count;
+- one-book multi-chapter mapping collects into exact caller-order slots; whole-
+  corpus mapping fans out books; neither route nests book/chapter fan-out;
+- one changed chapter maps exactly one chapter even when ordered reduction
+  reaches book end;
 - empty state stops at changed chapter;
 - state converges at next chapter, after several chapters, and only book end;
 - duplicate word across chapter boundary;
@@ -1255,7 +1336,8 @@ and oracle inputs, not checked-in fixtures.
 - deep/crossed bracket stacks, closer convergence, unmatched to book end;
 - changed chapter boundaries via whole-book replacement invalidate/re-pair
   chapter cache entries safely;
-- several independently dirty books may fan out, but replay within each book is
+- several independently dirty books fan out by book; one dirty book with enough
+  dirty chapters fans out by chapter; ordered reduction within each book stays
   sequential and serial/parallel outputs are byte-identical.
 
 ### 12.4 Substrate/toggle tests
@@ -1344,6 +1426,7 @@ Required scenarios:
 | 3JN one-chapter edit default/all | report | report | report | report | report |
 | MAT one-chapter edit default/all | report | report | report | report | report |
 | PSA one-chapter edit default/all | report | report | report | report | report |
+| 3JN/MAT/PSA one-book cold map, serial vs chapter-parallel | report mapped bytes/chapters + threshold route | report separately | n/a | n/a | report speedup/regression |
 | casing carry across 1/3/all remaining chapters | report | report | report | report | report |
 | bracket convergence next chapter/book end | report | report | report | report | report |
 | knob-only rule change | must be 0 | must be 0 | report | report | report |
@@ -1365,7 +1448,8 @@ this plan:
 - why cached addresses are chapter-local and rebased during pack;
 - why `Corpus` metadata is proof while caller-supplied cached hashes would be a
   promise;
-- why boundary replay may reach book end;
+- why ordered reduction replay may reach book end without remapping unchanged
+  chapter text;
 - why rules consume substrates rather than other rules;
 - why a knob does not invalidate map/reduce;
 - why cache validity is stamp-derived and a failed analyze may warm cache but
@@ -1409,7 +1493,9 @@ These are the failure modes most likely to produce fast-but-wrong code:
 | Reusing target cache entries for reference text or across slugs | Cache keys include role + slug + chapter token + typed input stamp. |
 | Assuming equal counts mean equal finding sites | Union stats-delta and ordered site-delta keys. |
 | Stopping replay after one verse/chapter because the usual case is short | Stop only at boundary-state convergence or book end. |
-| Resetting discourse state at a chapter boundary | Boundary state enters every replayed chapter explicitly. |
+| Feeding predecessor state into `map_chapter` | Map an input-independent typed observation; apply boundary state only in ordered reduction. |
+| Resetting discourse state at a chapter boundary | Boundary state enters ordered reduction for every chapter explicitly. |
+| Nesting book and chapter Rayon fan-out | Select exactly one outer grain from dirty map scope; collect indexed results in caller order. |
 | Letting a rule read another rule's enabled bit/verdict | Extract a shared typed substrate or keep the rule in batch. |
 | Putting knobs/toggles in a global cache fingerprint | Classify judging vs extraction config per typed registry entry. |
 | Hash/virtual registry lookup inside the event loop | Resolve active typed accumulators before the fused walk. |
@@ -1429,6 +1515,9 @@ Stop and return to the owner when any of the following occurs:
 - A proposed substrate requires `dyn Any`, runtime downcasts, or an implicit
   rule-enabled dependency.
 - A mapper needs another rule's verdict rather than typed evidence.
+- A mapper needs predecessor boundary state and cannot instead emit a self-
+  contained exact chapter observation for ordered reduction; keep that rule in
+  the explicit batch lane and report the concrete missing summary.
 - Boundary state cannot be made complete/equality-comparable without an
   arbitrary correctness cap; keep that rule batch and report it.
 - Config/toggle probes show unrelated substrate map/reduce work.
