@@ -6,7 +6,7 @@
 //! analysis call.
 
 use rustc_hash::FxHashMap;
-use xxhash_rust::xxh3::{Xxh3, xxh3_64};
+use xxhash_rust::xxh3::xxh3_64;
 
 use crate::config::Config;
 use crate::corpus::{BookGroup, KeyIdx, LocalKeyIdx, SiteAddr, rebase, unrebase};
@@ -349,16 +349,11 @@ pub(crate) struct CachedWalk {
 }
 
 /// Hash a book's ordered keys and text, including length prefixes so
-/// distinct verse sequences cannot collapse through concatenation.
+/// distinct verse sequences cannot collapse through concatenation. Delegates
+/// to the one hashing primitive [`crate::corpus::content_hash`], so a book's
+/// cache hash is byte-identical to the same book's owned `BookLayout` hash.
 pub(crate) fn book_hash(group: &BookGroup<'_>) -> u128 {
-    let mut hasher = Xxh3::new();
-    for (key, text) in group.keys.iter().zip(group.texts.iter()) {
-        hasher.update(&(key.len() as u32).to_le_bytes());
-        hasher.update(key.as_bytes());
-        hasher.update(&(text.len() as u32).to_le_bytes());
-        hasher.update(text.as_bytes());
-    }
-    hasher.digest128()
+    crate::corpus::content_hash(group.keys, group.texts)
 }
 
 fn config_fingerprint(config: &Config) -> u64 {

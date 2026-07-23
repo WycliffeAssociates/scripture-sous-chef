@@ -18,8 +18,10 @@
 //!    compared opaquely — never parsed or ordered as numbers.
 //!
 use std::fmt;
+use std::ops::Range;
 
 use rustc_hash::{FxHashMap, FxHashSet};
+use xxhash_rust::xxh3::Xxh3;
 
 use crate::diagnostics::{Finding, FindingArgs, RuleId, Severity};
 use crate::key::{self, parse_key};
@@ -207,13 +209,107 @@ impl fmt::Display for CorpusError {
 
 impl std::error::Error for CorpusError {}
 
+/// Content hash of an ordered `(keys, texts)` slice: xxh3-128 over each
+/// entry's length-prefixed key bytes then text bytes, so distinct sequences
+/// cannot collapse through concatenation (and each key carries its own
+/// book/chapter/verse token, so a chapter-boundary rearrangement changes the
+/// hash). This is the one hashing primitive; `cache::book_hash` delegates
+/// here, and [`Corpus`]'s owned book/chapter hashes use it too, so a hash is
+/// byte-identical whether computed at construction or over a `BookGroup`.
+pub(crate) fn content_hash(keys: &[String], texts: &[String]) -> u128 {
+    let mut hasher = Xxh3::new();
+    for (key, text) in keys.iter().zip(texts.iter()) {
+        hasher.update(&(key.len() as u32).to_le_bytes());
+        hasher.update(key.as_bytes());
+        hasher.update(&(text.len() as u32).to_le_bytes());
+        hasher.update(text.as_bytes());
+    }
+    hasher.digest128()
+}
+
+/// One chapter's owned layout inside a [`BookLayout`]: its opaque token, the
+/// global verse range it occupies, and a content hash of that range. The token
+/// is compared opaquely; nothing here parses or orders it as a number.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ChapterLayout {
+    pub(crate) chapter: Box<str>,
+    pub(crate) range: Range<usize>,
+    pub(crate) hash: u128,
+}
+
+/// One book's owned layout: slug, its global verse range, its ordered chapter
+/// layouts, and a content hash of the whole book. The book hash is the flat
+/// content hash over the book's verses (byte-identical to `cache::book_hash`),
+/// which already distinguishes chapter boundaries because every hashed key
+/// carries its chapter token — the derived proof the analysis path reads
+/// instead of re-hashing per call.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct BookLayout {
+    pub(crate) slug: Box<str>,
+    pub(crate) range: Range<usize>,
+    pub(crate) chapters: Vec<ChapterLayout>,
+    pub(crate) hash: u128,
+}
+
+/// Build the derived book/chapter layout for an already-validated
+/// `(keys, texts)` pair (`try_from_parts` and every mutation validate the
+/// contiguity/grammar invariants first, so the parses here cannot fail). One
+/// pass in presented order; each book/chapter run is hashed once from its
+/// verse slices.
+fn build_layout(keys: &[String], texts: &[String]) -> Vec<BookLayout> {
+    let n = keys.len();
+    let mut books: Vec<BookLayout> = Vec::new();
+    let mut i = 0usize;
+    while i < n {
+        let book_start = i;
+        let slug = parse_key(&keys[i]).expect("Corpus validated keys").book;
+        let mut chapters: Vec<ChapterLayout> = Vec::new();
+        loop {
+            let chap_start = i;
+            let chapter = parse_key(&keys[i]).expect("Corpus validated keys").chapter;
+            i += 1;
+            while i < n {
+                let p = parse_key(&keys[i]).expect("Corpus validated keys");
+                if p.book != slug || p.chapter != chapter {
+                    break;
+                }
+                i += 1;
+            }
+            chapters.push(ChapterLayout {
+                chapter: Box::from(chapter),
+                range: chap_start..i,
+                hash: content_hash(&keys[chap_start..i], &texts[chap_start..i]),
+            });
+            if i >= n || parse_key(&keys[i]).expect("Corpus validated keys").book != slug {
+                break;
+            }
+        }
+        let range = book_start..i;
+        books.push(BookLayout {
+            slug: Box::from(slug),
+            hash: content_hash(&keys[range.clone()], &texts[range.clone()]),
+            range,
+            chapters,
+        });
+    }
+    books
+}
+
 /// Core's ordered structure-of-arrays. Preserves every input entry,
 /// including duplicate key strings, in the caller's presented order. See
 /// the module docs for the invariants `try_from_parts` enforces.
+///
+/// It also owns pure derived metadata — the per-book/per-chapter [`BookLayout`]
+/// (ranges + content hashes) — rebuilt atomically by construction and every
+/// mutation. This is *proof*, not a caller promise: because the `Corpus` alone
+/// owns its vectors, its layout cannot silently drift from the text it
+/// describes, so the analysis path reads these hashes instead of re-deriving
+/// them each call.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Corpus {
     keys: Vec<String>,
     texts: Vec<String>,
+    layout: Vec<BookLayout>,
 }
 
 /// One validated whole-book block for [`Corpus::replace_books`]. Shared by
@@ -291,7 +387,19 @@ impl Corpus {
             LocalKeyIdx::try_from_usize(current_len, slug)?;
         }
 
-        Ok(Corpus { keys, texts })
+        let layout = build_layout(&keys, &texts);
+        Ok(Corpus {
+            keys,
+            texts,
+            layout,
+        })
+    }
+
+    /// The owned per-book layout (ranges + content hashes), in presented order.
+    /// Crate-internal proof for the analysis path and cache keying; the storage
+    /// types are not part of the public API.
+    pub(crate) fn book_layout(&self) -> &[BookLayout] {
+        &self.layout
     }
 
     pub fn len(&self) -> usize {
@@ -453,6 +561,9 @@ impl Corpus {
         }
         self.keys = new_keys;
         self.texts = new_texts;
+        // Rebuild the owned layout atomically with the spliced vectors, so the
+        // derived hashes can never lag the text they describe.
+        self.layout = build_layout(&self.keys, &self.texts);
         Ok(())
     }
 
@@ -471,6 +582,8 @@ impl Corpus {
             if book == slug {
                 self.keys.drain(start..end);
                 self.texts.drain(start..end);
+                // Rebuild the owned layout atomically with the drained vectors.
+                self.layout = build_layout(&self.keys, &self.texts);
                 return true;
             }
             start = end;
@@ -506,33 +619,21 @@ impl<'a> BookGroup<'a> {
 pub type Books<'a> = Vec<BookGroup<'a>>;
 
 /// Group a validated [`Corpus`] into contiguous per-book slices, in the
-/// corpus's presented order (not canonical book order). Trusts the
-/// contiguity/grammar invariants `Corpus::try_from_parts` already enforced.
+/// corpus's presented order (not canonical book order). Reads the corpus's
+/// owned [`BookLayout`] instead of re-parsing every key — the layout is the
+/// authoritative record of the same book boundaries, kept current by
+/// construction and every mutation.
 pub fn by_book(corpus: &Corpus) -> Books<'_> {
-    let mut groups: Books<'_> = Vec::new();
-    let mut start = 0usize;
-    while start < corpus.keys.len() {
-        let slug = parse_key(&corpus.keys[start])
-            .expect("Corpus validated keys")
-            .book;
-        let mut end = start + 1;
-        while end < corpus.keys.len()
-            && parse_key(&corpus.keys[end])
-                .expect("Corpus validated keys")
-                .book
-                == slug
-        {
-            end += 1;
-        }
-        groups.push(BookGroup {
-            slug,
-            base: KeyIdx::from_usize(start),
-            keys: &corpus.keys[start..end],
-            texts: &corpus.texts[start..end],
-        });
-        start = end;
-    }
-    groups
+    corpus
+        .layout
+        .iter()
+        .map(|book| BookGroup {
+            slug: &book.slug,
+            base: KeyIdx::from_usize(book.range.start),
+            keys: &corpus.keys[book.range.clone()],
+            texts: &corpus.texts[book.range.clone()],
+        })
+        .collect()
 }
 
 /// Resolve a finding's global address back to its key string. Checked
@@ -732,6 +833,72 @@ mod tests {
             }
         );
         assert_eq!(c.keys(), keys(&["GEN 1:1"]).as_slice(), "rejected block is a no-op");
+    }
+
+    /// The owned layout records presented-order books and their contiguous
+    /// chapter runs with correct global ranges, and each book/chapter hash is
+    /// the flat content hash of its own verse slice — the book hash being
+    /// byte-identical to `cache::book_hash` over the same `BookGroup`.
+    #[test]
+    fn owned_layout_ranges_and_hashes_are_correct() {
+        let c = Corpus::try_from_parts(
+            keys(&["GEN 1:1", "GEN 1:2", "GEN 2:1", "EXO 1:1"]),
+            keys(&["g11", "g12", "g21", "e11"]),
+        )
+        .unwrap();
+        let layout = c.book_layout();
+        assert_eq!(layout.len(), 2);
+
+        assert_eq!(&*layout[0].slug, "GEN");
+        assert_eq!(layout[0].range, 0..3);
+        assert_eq!(layout[0].chapters.len(), 2);
+        assert_eq!(&*layout[0].chapters[0].chapter, "1");
+        assert_eq!(layout[0].chapters[0].range, 0..2);
+        assert_eq!(&*layout[0].chapters[1].chapter, "2");
+        assert_eq!(layout[0].chapters[1].range, 2..3);
+
+        assert_eq!(&*layout[1].slug, "EXO");
+        assert_eq!(layout[1].range, 3..4);
+
+        // Book hash == the flat content hash of its slice == cache::book_hash.
+        let groups = by_book(&c);
+        for (book, group) in layout.iter().zip(groups.iter()) {
+            assert_eq!(book.hash, crate::cache::book_hash(group));
+            assert_eq!(
+                book.hash,
+                content_hash(group.keys, group.texts),
+                "book hash is the flat content hash of its verses"
+            );
+        }
+        // Chapter hash == the content hash of just that chapter's verses.
+        let gen_book = &layout[0];
+        assert_eq!(
+            gen_book.chapters[0].hash,
+            content_hash(&c.keys()[0..2], &c.texts()[0..2])
+        );
+    }
+
+    /// Every mutation rebuilds the owned layout atomically: after a
+    /// replace-in-place, an append-new, and a remove, the layout equals a
+    /// freshly-constructed corpus's layout over the same final vectors.
+    #[test]
+    fn mutations_keep_owned_layout_current() {
+        let mut c =
+            Corpus::try_from_parts(keys(&["GEN 1:1", "EXO 1:1"]), keys(&["g", "e"])).unwrap();
+
+        // replace-in-place GEN (grows a chapter) + append-new LEV.
+        c.replace_books(vec![
+            block("GEN", &["GEN 1:1", "GEN 1:2"], &["G1", "G2"]),
+            block("LEV", &["LEV 1:1"], &["l"]),
+        ])
+        .unwrap();
+        let expect = Corpus::try_from_parts(c.keys().to_vec(), c.texts().to_vec()).unwrap();
+        assert_eq!(c.layout, expect.layout, "layout current after replace_books");
+
+        // remove EXO.
+        c.remove_book("EXO");
+        let expect = Corpus::try_from_parts(c.keys().to_vec(), c.texts().to_vec()).unwrap();
+        assert_eq!(c.layout, expect.layout, "layout current after remove_book");
     }
 
     #[test]
