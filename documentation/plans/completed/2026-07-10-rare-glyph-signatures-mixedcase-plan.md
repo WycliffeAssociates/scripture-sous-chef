@@ -1,8 +1,13 @@
 # Plan — the three agreed rules from the PO-checklist triage
 
-Date: 2026-07-10. Extracted from
-[the PO-checklist triage](2026-07-10-po-checklist-triage.md) — this doc is
-the actionable plan; the triage doc stays as the idea/survey record.
+Date: 2026-07-10. Status: **implemented** — rare-glyph
+[ADR 0053](../../adrs/0053-rare-glyph-letter-lane.md) (+
+[ADR 0056](../../adrs/0056-rare-glyph-reduce-page-table.md)), attachment
+signatures [ADR 0054](../../adrs/0054-spacing-attachment-signatures.md)
+(+ its two amendments), mixed-case word
+[ADR 0055](../../adrs/0055-mixed-case-word.md). Extracted from the
+PO-checklist triage idea (since condensed into
+`../../ideas/2026-07-07-next-checks-shortlist.md` and deleted).
 
 Agreed scope: three rules, in this order. Explicitly **not** in scope:
 absolute mode / census (needs its own discussion → ADR; note 0051/0052 are
@@ -89,7 +94,7 @@ smart-quote paste artifacts.
    `BTreeMap<char, u32>`), synthetic tests, docs page under `uni.md`.
 
 **Progress (2026-07-10)** — Step 1 and the fleet run are complete:
-[`calibrate --glyphs` spike](../calibration/2026-07-10-rare-glyph-spike.md)
+[`calibrate --glyphs` spike](../../calibration/2026-07-10-rare-glyph-spike.md)
 covered all 1,504 corpora. Raw scalar rarity is rejected as a single live
 L/N/P/S rule: alphabetic inventories alone produce a CJK/hapax storm, and the
 rate knee amplifies it. The raw accumulator remains validated for census work;
@@ -116,7 +121,7 @@ N stays census-only. P and S lanes need per-sample adjudication before
 any live proposal.
 
 **Round 2 progress (2026-07-10)** — implemented and swept on all 1,504
-corpora in the [calibration report](../calibration/2026-07-10-rare-glyph-spike.md).
+corpora in the [calibration report](../../calibration/2026-07-10-rare-glyph-spike.md).
 The closure threshold remains deliberately unfrozen. At the representative
 0.5% hapax-letter-token share and an absolute <=2 knee, closure removes 48.0%
 of 7,836 L sites, lexical concentration removes a further 28.9%, and 1,808
@@ -129,7 +134,7 @@ wrong thing: hapax letter-WORD share is *vocabulary* closure, which wrongly
 silenced closed-alphabet but morphologically rich corpora (Bantu, Sanskrit,
 Hebrew). Round three replaces it with **alphabet closure** = hapax letter-SCALAR
 occurrence share, read straight off the glyph inventory
-([calibration report](../calibration/2026-07-10-rare-glyph-spike.md) Round 3).
+([calibration report](../../calibration/2026-07-10-rare-glyph-spike.md) Round 3).
 The fix recovers 1,297 corpora that round two had closed. The discriminating
 band is narrow and low: at a 0.01% scalar-closure threshold, 1,496/1,504 corpora
 open and the eight left closed are exactly the Han/Hangul fleet
@@ -152,7 +157,7 @@ terminal is forced, verse-initial is not; bicameral-only falls out for free).
 At the representative 0.01% closure it removes a **fixed ~400 sites,
 knee-insensitive** (396 at ≤1, 400 from ≤2 on), cleanly excising the round-3
 residual (retained at knee ≤3 drops 4,249 → 3,849). Sample adjudication
-([report](../calibration/2026-07-10-rare-glyph-spike.md) Round 4): kills are
+([report](../../calibration/2026-07-10-rare-glyph-spike.md) Round 4): kills are
 overwhelmingly genuine names (Jesus, Quirinius, Alexander, Aquila, Eve, Roma,
 Cyrene, Tyre, Ruth); retained survivors are the intended lowercase
 script-intrusion typos (Latin letters inside Amharic/Assamese/Telugu/Arabic),
@@ -165,7 +170,7 @@ direction). Nothing frozen.
 
 **Round 5 progress (2026-07-10)** — the titlecase tightening landed and the
 L-lane spike is **measurement-complete**
-([calibration report](../calibration/2026-07-10-rare-glyph-spike.md) Round 5).
+([calibration report](../../calibration/2026-07-10-rare-glyph-spike.md) Round 5).
 The shape condition is now titlecase (upper first + ≥1 following lower) instead
 of bare capital-initial; at the representative 0.01% closure the proper-noun
 kill drops 396/400 → 354/358 sites — 42 sites return to retained at every knee,
@@ -234,7 +239,7 @@ opportunity pool ≠ the old binary pool).
 
 **Status (2026-07-10)** — **spike steps 1–2 done**; no ADR yet, the
 before-only `PunctuationSpacingStats` still ships. Before designing,
-read [ADR 0052](../adrs/0052-terminal-strength-mark-trust.md): its
+read [ADR 0052](../../adrs/0052-terminal-strength-mark-trust.md): its
 boundary classes (mark + close-quote context) and this rule's attachment
 signatures are the same idea at different granularities — share one
 class vocabulary rather than inventing a parallel one.
@@ -242,7 +247,7 @@ class vocabulary rather than inventing a parallel one.
 **Spike progress (2026-07-10)** — `calibrate --signatures` implemented
 (harness-only; `punctuation.rs` untouched) and swept over all 1,504
 corpora (~17 s):
-[calibration report](../calibration/2026-07-10-attachment-signatures-spike.md).
+[calibration report](../../calibration/2026-07-10-attachment-signatures-spike.md).
 The joint (left, right) signature model over {letter, space, punct, digit,
 edge} **confirms the hypothesis** — every mark has one/two dominant
 signatures (silent) and a thin rare tail; sanity anchors land as predicted
@@ -275,13 +280,13 @@ flaggable combos and multinomial-dominance-≈1 — and brought the fleet to
 genuine after-side coverage. Stats are `[u64; 4]` per mark per book; args are
 `SpacingConvention { mark, left, right }`. Six-corpus regression kept every old
 win and collapsed every 16-cell storm. Wasm regenerated. See the
-[ADR 0054 amendment](../adrs/0054-spacing-attachment-signatures.md#amendment-same-day-2026-07-10-per-side-factorization).
+[ADR 0054 amendment](../../adrs/0054-spacing-attachment-signatures.md#amendment-same-day-2026-07-10-per-side-factorization).
 
 **Spike round 2 (2026-07-10, user ruling)** — the `edge` category was a verse
 special case in disguise and is **removed**: the seam reads as whitespace
 (CLAUDE.md — a terminal is never attached across a seam), context classes are
 {letter, space, punct, digit}, 16 signatures. Re-run
-([report](../calibration/2026-07-10-attachment-signatures-spike.md) Round 2):
+([report](../../calibration/2026-07-10-attachment-signatures-spike.md) Round 2):
 pools merge (`.`→`letter|space` 90.2%), all regression corpora keep 100%, and
 the ne_udb danda question **resolves** — the remaining 40-site drop at the
 reference cell is purely the flat-k=32 spike knee vs the live rule's
@@ -293,7 +298,7 @@ book.
 
 **Pooled class-conditioned re-measurement (2026-07-10, post-0054)** — a follow-up
 spike revisits the after-side model as two rival designs over the 1,504-corpus
-fleet ([report](../calibration/2026-07-10-pooled-spacing-spike.md), harness
+fleet ([report](../../calibration/2026-07-10-pooled-spacing-spike.md), harness
 `calibrate --pooled-spacing`). **Design A** (the winner) conditions the per-side
 attached-vs-spaced binary on the first-non-ws neighbour's class {Letter, Number,
 Punct} (crossing seams for the class; seam = an ordinary spaced observation, no
@@ -329,7 +334,7 @@ regression corpora reproduce **100%** of the previous per-side rule's findings
 (**140/140**, incl. mya's one Punct-pool site). Knee constants unchanged. Wasm
 regenerated. `calibrate --pooled-spacing` stays as the historical spike;
 `--spacing-sweep` drives the production rule. See the
-[ADR 0054 second amendment](../adrs/0054-spacing-attachment-signatures.md#second-amendment-2026-07-11-pooled-class-conditioned-model).
+[ADR 0054 second amendment](../../adrs/0054-spacing-attachment-signatures.md#second-amendment-2026-07-11-pooled-class-conditioned-model).
 
 **Steps** —
 1. `calibrate --signatures` spike: per-mark signature distributions
@@ -373,7 +378,7 @@ prototyping surface now (`calibrate --casing` drives them).
 **Spike progress (2026-07-10)** — `calibrate --mixedcase` implemented
 (harness-only; `casing.rs` and all production code untouched) and swept
 over all 1,504 corpora (~22 s):
-[calibration report](../calibration/2026-07-10-mixedcase-spike.md). Token
+[calibration report](../../calibration/2026-07-10-mixedcase-spike.md). Token
 unit = the plain UAX letter-run word (no hyphen merge, so `Obed-Edom` is
 two Titlecase tokens); `OtherMixed` = has-both-cases and not Title/AllCaps
 ⇒ always an interior capital, with single-letter and caseless guards (six

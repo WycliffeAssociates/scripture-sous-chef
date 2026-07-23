@@ -3,7 +3,7 @@
 - **Date:** 2026-07-11
 - **Status:** Accepted
 - **Ratifies:** the "Answered here" section of the
-  [census plan](../plans/2026-07-10-absolute-mode-census-plan.md); built on
+  [census plan](../plans/completed/2026-07-10-absolute-mode-census-plan.md); built on
   the [event-stream engine](0057-event-stream-engine.md) it was queued
   behind (the plan's standing note — the census is exactly "one more
   subscriber" to the fused walk).

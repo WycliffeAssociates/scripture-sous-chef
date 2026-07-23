@@ -1,7 +1,9 @@
 # Idea — expose **both** attached and spaced example sites in the census mark-spacing lane
 
-Date: 2026-07-14. Status: **open — for discussion/adjudication.** No code.
-Small, contained change. Seeded from a `sousChefPlayground` census-triage thread.
+Date: 2026-07-14. Status: **committed — adjudicated (decisions below) and
+unblocked** (its stated sequencing gate, the finding-address Tier 2 plan,
+landed as ADR 0061). No code yet; small, contained assembly-stage change.
+Seeded from a `sousChefPlayground` census-triage thread.
 
 ## Current decision (ADR 0058)
 
@@ -33,8 +35,9 @@ lists), instead of collapsing to the minority. The per-book data already exists
 
 Adjudicated as a small **census-only** convenience, sequenced **after** the
 finding-address Tier 2 plan (it touches the same `census.rs` example assembly
-Tier 2 rewrites; Tier 2 explicitly defers cap/retention to a follow-up). Not a
-`Session` drill-down method — pure assembly.
+Tier 2 rewrites; Tier 2 explicitly deferred cap/retention to a follow-up).
+Tier 2 has since landed (ADR 0061), so this is now unblocked. Not a
+`Galley` drill-down method — pure assembly.
 
 - **Both forms, all mark rows.** Carry both attached+spaced capped examples per
   mark row (stop discarding the majority). Orthogonal to the cap: a *bimodal*
@@ -51,10 +54,10 @@ Tier 2 rewrites; Tier 2 explicitly defers cap/retention to a follow-up). Not a
   which form a site is (ADR 0058 ethos).
 - **Overlay/Venn:** separate, playground-only, finding-driven (start from
   `analyze` findings, map backward to census rows). Not part of this.
-- **Malloc on findings/stats:** not addressed here or in Tier 2. Tier 2 already
-  lands the site-packing win (6-byte `SiteAddr`); findings/stats are low-volume,
-  so any further reduction is a measure-later perf concern once the resident
-  handle exists — see `ideas/2026-07-14-resident-handle-and-cache-model.md`.
+- **Malloc on findings/stats:** not addressed here or in Tier 2. Tier 2 landed
+  the site-packing win (6-byte `SiteAddr`, ADR 0061); findings/stats are
+  low-volume, so any further reduction is a measure-later perf concern now
+  that the resident handle exists (ADR 0062).
 
 ## Adjudication points
 
@@ -74,4 +77,5 @@ Tier 2 rewrites; Tier 2 explicitly defers cap/retention to a follow-up). Not a
 - ADR 0058 (census; the minority-only example decision).
 - ADR 0054 (spacing attachment signatures — the per-mark cell model).
 - `census.rs` (`mark_form_first`, `mark_rows` assembly).
-- The site-cap policy note in `ideas/2026-07-14-finding-address-representation.md`.
+- The site-cap policy: `../2026-07-20-census-site-cap-policy.md` (records this
+  doc's cap-bump/keep-it-flat adjudication as the current stance).

@@ -22,7 +22,7 @@
 The PO checklist wanted a rule for "this corpus uses these glyphs; this one is
 barely ever used here" — the Hawaiian case (a Latin keyboard, a 13-letter
 alphabet, a stray `q`), which `uni.mixed-script-in-token` cannot see because it
-is *one* script. The [plan](../plans/2026-07-10-rare-glyph-signatures-mixedcase-plan.md)
+is *one* script. The [plan](../plans/completed/2026-07-10-rare-glyph-signatures-mixedcase-plan.md)
 scoped a per-book scalar accumulator that doubles as the future glyph census.
 
 Raw scalar rarity is not shippable on its own (spike round 1): an alphabetic

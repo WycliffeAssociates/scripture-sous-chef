@@ -11,9 +11,9 @@
   segmenter), ADR 0057 (event-stream engine, internal-hot-path-map
   pattern), ADR 0060 (`PrepCache`), ADR 0061 (`Corpus`/`KeyIdx` addressing),
   ADR 0062 (resident `Galley` + per-book `Tally`)
-- **Supersedes:** the scored/probabilistic design in
-  `documentation/ideas/2026-07-11-mixed-normalization-rule.md` and its
-  vendored-decomposition-table plan
+- **Supersedes:** the scored/probabilistic design in the
+  `uni.mixed-normalization` idea doc (deleted 2026-07-20 per the ideas
+  lifecycle) and its vendored-decomposition-table plan
 
 ## Context
 
@@ -296,9 +296,10 @@ internal data structures and its default did.
 
 ## Relates to
 
-- Plan: `documentation/plans/2026-07-14-mixed-normalization-plan.md` (this
+- Plan: `documentation/plans/completed/2026-07-14-mixed-normalization-plan.md` (this
   ADR is its expected 0063).
-- Superseded idea: `documentation/ideas/2026-07-11-mixed-normalization-rule.md`.
+- Superseded idea: the `uni.mixed-normalization` idea doc (deleted
+  2026-07-20 per the ideas lifecycle; the plan + this ADR are the record).
 - ADR 0053's residual note now points here (does not claim rare-glyph
   coordination has landed).
 - Downstream handoff: see the cross-repo handoff note (§11) for the exact

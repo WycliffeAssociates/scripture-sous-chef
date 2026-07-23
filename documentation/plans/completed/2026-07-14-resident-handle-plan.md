@@ -1,12 +1,15 @@
 # Plan — resident `Galley` handle + self-describing `Stats` provenance
 
 Date: 2026-07-14; settled 2026-07-15 (owner rulings recorded in §0.5).
-Status: **implementation-ready handoff spec** — written for a scoped
+Status: **implemented —
+[ADR 0062](../../adrs/0062-resident-galley-tally-provenance.md)**, all four
+phases landed and merged to `dev` (full-fleet bookend byte-identical;
+provenance the one adjudicated delta). Written as a handoff spec for a scoped
 implementer with no design improvisation permitted; every agreed behavior
-and edge case is normative here. Where this plan and the
-[design record](../ideas/2026-07-14-resident-handle-and-cache-model.md)
-differ, **this plan is the implementation authority** (it resolves the
-design doc's open questions §6.1–6.8; §0.5 records where it *amends* §6.8).
+and edge case is normative here. Where this plan and the design-record idea
+doc (since deleted; this plan + ADR 0062 are the record) differed, **this
+plan was the implementation authority** (it resolved that doc's open
+questions §6.1–6.8; §0.5 records where it *amends* its §6.8).
 
 **Hard precondition:** the finding-address Tier 2 plan
 (`2026-07-14-finding-address-representation-plan.md`) has landed **in full**
@@ -860,8 +863,8 @@ complexity today. The recorded design for the future revisit lives in §16.
   `pkg-bundler/` artifacts are committed at every wasm-input change, per
   the repo's generated-artifact policy.
 - `documentation/adrs/`: the new ADR + its README index entry.
-- `documentation/ideas/2026-07-14-resident-handle-and-cache-model.md`:
-  the §17 status-line update.
+- the resident-handle design-record idea doc: its status-line update
+  (that doc has since been deleted; this plan + ADR 0062 are the record).
 - Nothing under `crates/core/src/signals/` at all in this plan.
 
 ## 12. Test inventory (synthetic corpora only; grouped by phase)
@@ -1097,11 +1100,10 @@ Foreground only, generous timeouts; never background-and-wait.
 
 ## 17. Relates to
 
-- Design record: `ideas/2026-07-14-resident-handle-and-cache-model.md`
-  (update its status line to "plan written: this file; §6.8 amended per
-  §0.5" when this lands).
-- `plans/2026-07-14-finding-address-representation-plan.md` (precondition).
-- `plans/2026-07-13-anchor-cache-plan.md` (the cache this builds beside;
+- Design record: the resident-handle-and-cache-model idea doc (deleted
+  2026-07-20 per the ideas lifecycle; this plan + ADR 0062 are the record).
+- `plans/completed/2026-07-14-finding-address-representation-plan.md` (precondition).
+- `plans/completed/2026-07-13-anchor-cache-plan.md` (the cache this builds beside;
   its config-only fingerprint rationale is *restored* by this revision).
 - ADRs 0010, 0017, 0043 (whose `changed` contract this supersedes), 0044,
   0058; Tier 2's ADR 0061; this plan's ADR is the next free number at

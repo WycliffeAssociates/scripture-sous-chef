@@ -19,7 +19,7 @@
 
 ## Context
 
-The [plan](../plans/2026-07-10-rare-glyph-signatures-mixedcase-plan.md) rule 3:
+The [plan](../plans/completed/2026-07-10-rare-glyph-signatures-mixedcase-plan.md) rule 3:
 `wOrd` — a word with an *interior* capital — is a slip unless it is a
 convention, and the recurrence machinery must excuse the conventions (`McX`
 name shapes, `LORD`-inflected forms, class-prefix / clitic orthographies)

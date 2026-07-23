@@ -1,6 +1,6 @@
 # Progress — `uni.mixed-normalization`
 
-Plan: `documentation/plans/2026-07-14-mixed-normalization-plan.md`
+Plan: `documentation/plans/completed/2026-07-14-mixed-normalization-plan.md`
 
 ## Phase A — preflight and baselines
 

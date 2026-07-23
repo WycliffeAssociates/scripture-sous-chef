@@ -1,7 +1,11 @@
 # Plan — the single user knob: measured conservative / normal / aggressive presets
 
-Successor to [aggression presets](../ideas/2026-07-07-aggression-presets.md), upgraded
-from idea to committed plan (discussion 2026-07-09). The end-user requirement
+Successor to the aggression-presets idea, upgraded from idea to committed
+plan (discussion 2026-07-09; the idea doc was deleted 2026-07-20 per the
+ideas lifecycle — this plan is the record). The config-recommender idea was
+folded in the same day (see the section at the end): presets and the
+recommender are the same product surface — measured suggestions for config
+the user ratifies. The end-user requirement
 is now explicit: **field users get per-rule on/off toggles (the catalog
 `enable_question`s, aided by the config recommender) plus exactly ONE
 sensitivity control** — a three-position preset. Everything else (z, floors,
@@ -23,7 +27,7 @@ or excluded. Each rule's *effective* aggression dial is now its semantic knob:
 | lex.punct-only-token | `convention_rate_per_10k` (1.0) | higher |
 | punct.adjacency-anomaly | `convention_rate` | higher |
 | uni.mixed-script-in-token | `convention_rate` / breadth knobs | higher |
-| case.sentence-initial-lowercase | (post-rebuild — shortlist item 4) | — |
+| case.sentence-initial-lowercase | (rebuilt 2026-07-10, ADR 0051 — its dials join the table when the experiment runs) | — |
 | all of the above | `confidence_z` (1.96) | **lower** — thin evidence asserts conventions earlier; this is the *cold-start* dial and matters most at small corpus sizes |
 | all of the above | `emit_score_min` | secondary; near-inert once bimodal |
 
@@ -87,11 +91,41 @@ Each mature corpus is its own ground truth — no cross-language labels.
 
 ## Sequencing
 
-- Casing joins the tables **after** its planned rebuild (mid-flow counting +
-  minority recurrence, shortlist item 4) — deriving preset rows for a score
-  we intend to replace is wasted measurement.
+- Casing's rebuild landed (ADR 0051, 2026-07-10 — mid-flow counting +
+  minority recurrence), so casing joins the tables from the start; the
+  original wait-for-the-rebuild constraint is satisfied.
 - `prop.length-ratio` joins when source-paired survey mode exists (shortlist
   item 1); its `z_threshold` slots into the same table naturally.
 - Opt-in *language* toggles (duplicate-word, spacing enable, casing enable)
   stay out of the preset — they're truth questions about the language, owned
-  by the translator + config recommender, not sensitivity policy.
+  by the translator + the recommender below, not sensitivity policy.
+
+## Folded in: the config recommender (2026-07-20, was its own idea)
+
+The same product surface as the preset, answering the *truth* questions the
+preset deliberately excludes: a read-only pass that answers the rule
+catalog's `enable_question`s from the project's own data and **suggests** a
+config — never silently applies one (consistent with the
+never-silently-override line in `documentation/reference/config.md`).
+
+- Prototype case: `lex.duplicate-word` — its catalog question is "does your
+  language repeat words on purpose?", and the corpus can largely answer that
+  itself (measure the back-to-back-repeat rate; where doubling is rare,
+  recommend enabling). Same shape for the casing enable (recommend only
+  where the corpus is cased and shows a capitalization habit) and
+  `punct.spacing-anomaly` (warn about expected volume in genuinely mixed
+  texts before someone enables it blind).
+- Why here: every bool toggle in the catalog is a language question the
+  translator may not know how to answer in our terms — but the corpus
+  usually can, and the machinery to ask it (recurrence rates + `dominance`)
+  already ships. Practical descendant of methods.md §5.9's
+  `CorpusProfile`/recommendation sketch, scoped to the toggles we have.
+- Output: a recommendation surface — profile report + suggested `sous.json`
+  fragment the user copies in. One report with the preset suggestion (the
+  decay-schedule "suggested preset by corpus size" from the curves above);
+  the preset answers *policy*, the recommender answers *language truth*, and
+  they present together.
+- Still open: where the recommendation pass runs (shell? a `profile`
+  entrypoint in core?); whether recommendations re-run and *change* as the
+  corpus grows (probably yes, with a "your text now disagrees with your
+  config" tier-3 report).

@@ -1,10 +1,11 @@
 # Plan — cross-call result caches (anchor cache + per-verse findings cache)
 
-Date: 2026-07-13 (expanded to handoff grade same day). Status: **handoff-ready
-implementation spec** — written to be executed by a scoped implementer
-(line-cook) without design improvisation; every agreed behavior and edge case
-is normative here. Roadmap priority 4 ([post-port roadmap
-take](../ideas/2026-07-11-post-port-roadmap-take.md)), the ADR 0057 remainder.
+Date: 2026-07-13 (expanded to handoff grade same day). Status:
+**implemented — [ADR 0060](../../adrs/0060-cross-call-analysis-caches.md)**
+(the cache was later renamed `PrepCache` and its ownership moved into the
+resident `Galley`, ADR 0062). Written as a handoff-grade implementation spec —
+every agreed behavior and edge case is normative here. Roadmap priority 4 ([post-port roadmap
+take](../../ideas/2026-07-11-post-port-roadmap-take.md)), the ADR 0057 remainder.
 
 **Precondition:** the port branch (`worktree-agent-ab8b776c6d8b8c199`, through
 the census commits at `499a2f2`) has merged. All file references below are to

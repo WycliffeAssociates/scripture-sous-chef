@@ -1,7 +1,16 @@
 # Idea — census ↔ probabilistic-engine **overlay** ("the Venn")
 
-Date: 2026-07-14. Status: **open — for discussion/adjudication.** No code.
-Seeded from a `sousChefPlayground` census-triage thread.
+Date: 2026-07-14. Status: **open — partially adjudicated.** No code. Seeded
+from a `sousChefPlayground` census-triage thread. The resident-handle thread
+(2026-07-14, recorded as §6.6 of the since-deleted design record; restated
+below) already ruled on *where it lives*: the overlay is a **PO-demonstration
+tool** (showing rare ≠ wrong, and the probabilistic model's distinct value —
+floating the *most anomalous* to the top, not merely the *rare*), a
+playground/demo concern, **not** editor runtime and **not** a `Galley`
+method. When built it is **finding-driven** (classify each `analyze` finding
+into its census row; subtract from census counts), needing no bulk site
+storage — so it never pressures the Galley design. What remains open is the
+exact-vs-sampled question below.
 
 ## The want
 
@@ -48,9 +57,10 @@ census↔rule cross-reference the current doctrine didn't contemplate. Adjudicat
   engine's only obligation being to *enable* it (all-sites/enumeration)?
 - Or is there value in a **first-class engine API** that returns the overlay
   (e.g. for the editor shell), and does that muddy the count/judge separation?
-- Does the address-representation decision (`ideas/2026-07-14-finding-address-representation.md`
-  → index-based addresses) make the `(address, span)` join cheaper/cleaner? (It
-  should — both sides key off the same corpus-local index.)
+- The address-representation decision landed (ADR 0061: index-based
+  addresses, 6-byte `SiteAddr`), so the `(address, span)` join is now cheap
+  and clean — both sides key off the same corpus-local index. This
+  sub-question is resolved.
 
 ## Suggested first step
 
@@ -62,6 +72,8 @@ dependency.
 ## Relates to
 
 - ADR 0058 (census; equivalence framing + count/judge separation).
-- `ideas/2026-07-14-finding-address-representation.md` (all-sites/cap policy is
-  the shared dependency; index address makes the join cheaper).
+- `2026-07-20-census-site-cap-policy.md` (the all-sites/cap policy is the
+  shared dependency for an *exact* overlay; currently parked — the sampled
+  overlay needs nothing).
+- ADR 0061 (index addresses — makes the join cheap; landed).
 - ADR 0008 (multi-provenance surfacing — prior art on relating signals).

@@ -44,8 +44,9 @@ second factor.
 ## Decision
 
 Make the evidence two-factor, the same shape already adopted for the casing
-rule design (the Noah / god / Oven worked example,
-`documentation/ideas/2026-07-07-next-checks-shortlist.md` item 4), applied to
+rule design (the Noah / god / Oven worked example — in the pre-2026-07-20
+git history of `documentation/ideas/2026-07-07-next-checks-shortlist.md`,
+since condensed; the shape it specified shipped as ADR 0051), applied to
 marks instead of words:
 
 ```

@@ -37,8 +37,10 @@ Note: the *non*-radical version of this idea ("one classify, two
 independent consumers" — `4-modest`) isn't rejected and isn't a separate
 open item either — it turned out to be identical to whatever the word-break
 fast-path work already is, once that spike found zero new `Class` bits were
-needed. There's nothing left to file separately; it's subsumed by the live
-word-break investigation (`documentation/calibration/2026-07-17-word-break-fast-path-survey.md`).
+needed. There's nothing left to file separately; it was subsumed by the
+word-break investigation
+(`documentation/calibration/2026-07-17-word-break-fast-path-survey.md`),
+which has since landed as ADR 0064.
 
 ## GPU / WebGPU compute-shader classification
 

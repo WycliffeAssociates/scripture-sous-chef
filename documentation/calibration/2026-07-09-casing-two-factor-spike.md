@@ -5,7 +5,7 @@
   end for the before/after delta).
 - **Status:** SPIKE — exploratory. **No knob is frozen**, no rule/`RuleStats`/
   `CasingConfig` was touched. The measurements below inform the casing-rule
-  rebuild (next-checks-shortlist item 4); they are not a decision.
+  rebuild (since landed — ADR 0051); they are not a decision.
 - **Core change:** `walk_book_experimental` (+ `WordObsExperimental`,
   `PosClassExperimental`, `FirstCaseExperimental`) alongside `walk_book` in
   `crates/core/src/signals/casing.rs` — emits one observation per **word**

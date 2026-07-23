@@ -1,154 +1,100 @@
-# Idea — the next-checks shortlist (post-evidence-library), with discussion outcomes
+# Idea — the next-checks shortlist (live items only)
 
-The 4–8 candidate checks proposed after the ADR 0032–0038 batch, refined
-through discussion (2026-07-07). Ordering reflects the agreed queue, not the
-original proposal order. Companion ideas already filed separately:
-[config recommender](2026-07-07-config-recommender.md),
-[aggression presets](2026-07-07-aggression-presets.md); quote balance is
-**parked with census data** (ADR 0039).
+Originally 2026-07-07 (the post-ADR-0032–0038 candidate queue); condensed
+2026-07-20 to what is still live. Most of the original queue shipped —
+word-level casing (ADR 0051), terminal_strength (ADR 0052), rare-glyph
+(ADR 0053), attachment signatures (ADR 0054), mixed-case word (ADR 0055),
+the census (ADR 0058), G² association (ADR 0059) — and the shared-machinery
+ledger (word table, association port, robust baselines) landed with them.
+This doc also absorbs the still-live remainder of the 2026-07-10
+PO-checklist triage (deleted; its shipped adjudications live in the ADRs and
+`plans/completed/`).
 
-## The agreed queue
+## Live candidates, in rough priority order
 
-### 1. `prop.length-ratio` source-paired calibration — first, zero build
+### 1. `prop.length-ratio` source-paired calibration — zero build, never run
 
-Discussion surprise: this rule **already exists and already does the right
-statistics** (per-verse grapheme ratio vs source; median + MAD robust-z per
-book *and* per project, both scopes tagged; z 3.5, min 50 verses). It has
-simply never been calibrated: every 106-corpus survey runs `source = None`,
-so it has produced zero findings in every sweep. Likely the best
+The rule already exists and already does the right statistics (per-verse
+grapheme ratio vs source; median + MAD robust-z per book *and* per project;
+z 3.5, min 50 verses) — but every survey to date runs `source = None`, so it
+has produced **zero findings in every sweep, ever**. Likely still the best
 signal-per-effort on the board (omissions are the error class translators
 care most about). Actions: a source-paired survey mode over the corpora with
-checked-in sources; sample findings; validate z 3.5; align its output with
-the unified evidence unit. UI note: keep the MAD-z gate internally (adaptive
-per book — 30% off is normal in Psalms, an event in tight prose), but
-present the slider in percent terms translated per book:
-`flag boundary = median ± z·MAD/0.6745`, so the label can say "3.5 ≈ ~38%
-longer/shorter than typical in Luke, ~55% in Psalms."
+checked-in sources; sample findings; validate z 3.5. UI note: keep the MAD-z
+gate internal but present the slider in per-book percent terms
+(`flag boundary = median ± z·MAD/0.6745` → "3.5 ≈ ~38% longer/shorter than
+typical in Luke, ~55% in Psalms").
 
-### 2/3. The positional pair (labs revival: `unexpected_sentence_end` + sentence-start)
+### 2. Untranslated words / source-copy (from the PO triage)
 
-"This frequent word ends/starts a sentence approximately never — yet here it
-is." Catches orphaned periods, paste artifacts, wrong-pronoun/misplaced-
-particle ("Him is") — by word identity, so it works in caseless scripts.
-Zipf-gated to words seen ≥10× (hapax-heavy corpora: the gate is honest —
-"never happens" is only assertable with history; agglutinative corpora will
-get little from it and that silence is correct, worth saying via profile).
+The tier above proportionality: anything with a reference text. Walk target
+tokens, membership-test against the source verse's tokens, run-length bonus
+(consecutive shared words look like paste). Recurrence knee handles loan
+words: a source-identical word recurring corpus-wide is a convention, not a
+miss. Needs source loading — joins the source-paired work (item 1), same
+harness. (Greek Room's spelling report is different machinery — uroman +
+weighted edit distance gated on shared *alignment*; alignment is out of
+scope, so spelling stays out until/unless alignment research happens.)
 
-**Site-flagging ruling (2026-07-09, casing-rebuild discussion):** the
-`unexpected_sentence_end` half is **dead as a site rule**. Rarity-shaped
-evidence measures rarity, not wrongness, and legitimate terse finals are
-exactly as rare as errors — "He went in." is 2-in-1,000 for *in*, the same
-count shape as an orphaned period, and the counts don't encode
-grammaticality; precision collapses on the most natural sentences, and
-0/1,000 ("the") vs 2/1,000 ("in") isn't separable at site strength. The idea
-survives only in **aggregate** form: the word-reshuffle witness below
-operates per *mark* over the whole corpus, where terse-final noise averages
-out. Spuriously *inserted* terminals are already covered by the casing
-channel — the word after a bogus period shows up lowercase, the stronger
-witness of the same event. The sentence-*start* site rule was **not**
-adjudicated; before building it, run the same rare-but-valid base-rate
-scrutiny (poetic inversion, quoted fragments) that killed the end side. The
-`terminal_strength` machinery is unaffected and now has a concrete consumer:
-the casing rebuild's soft-censoring discount composes as
-`terminal_strength × habit`.
-
-**Position definition (ruling):** verse boundaries are addressing only —
-useful for *nothing* discourse-shaped. Position = adjacency to **validated
-terminal marks**. Validation per mark, two independent witnesses combined
-noisy-OR: (W1, bicameral only) capital-follow rate vs corpus mid-text base
-rate, one 2×2 per mark aggregated over all words; (W2, case-free) the
-word-reshuffle witness — a real terminal *depletes* some head words and
-*enriches* others in its aftermath; a decorative mark's aftermath looks like
-a random sample. `terminal_strength(c) = 1 − (1−s_case)(1−s_reshuffle)`.
-Corpora with neither case nor sentence punctuation (unspaced Thai) have no
-observable position and the rules stay silent — no free lunch.
-
-**Anti-circularity:** conventions are mark-level aggregates over thousands
-of events; judgments are single occurrences (≈1/N leverage on the convention
-they're judged against), and Wilson keeps thin marks from validating at all.
-Site evidence = word's own 2×2 evidence × `terminal_strength` of the site's
-mark. The casing rule keeps policing the *case* channel independently —
-same site tripping both is corroboration across different observables, not
-double-counting.
-
-**Machinery:** the per-book **word frequency table** (first word-level
-stats aggregate — design for size), a port of labs `association.rs`
-(Dunning G² fast path + Fisher's exact fallback on sparse tables, tested,
-with textbook fixtures), and a fleet-refit of the G²→[0,1] sigmoid (labs
-eyeballed scale 30 on en_ulb only). **Fisher vs Boschloo decision:** port
-Fisher as-is but make the sparse-table test pluggable; upgrade to Boschloo
-(or cheap mid-p Fisher) only if calibration shows the conservative-Fisher
-seam — sparse-table findings clustering understated vs the G² path. Buy
-power when the data exhibits the deficiency.
-
-### 4. Word-level casing consistency (labs revival: lexicon + proper-noun rule)
-
-"*Yesu* capitalized 214×; here it's *yesu*." Per-word case profile from
-**mid-flow occurrences only** (labs' counted/deferred split: anything after
-punctuation is position-forced and counts for nothing — this is what
-neutralizes the capitalize-after-terminal confound). Upgrade path for the
-existing casing rule too (stop flagging words the corpus itself writes
-lowercase after periods).
-
-**The Noah/god/Oven resolution (key discussion outcome):** the ratio was
-never the right variable — the discriminator is **whether the minority form
-recurs**. Composition is the standard two-factor shape:
-`evidence = established(majority) × rarity(minority_form)` —
-Wilson dominance of the capitalized form at a *modest* bar, times a
-recurrence knee on the minority form (hapax ≈ 1.0, fading as it recurs).
-Worked: Noah 8 caps/1 lower → ≈0.57 × ~1.0 → modest Info ✓; god 3,900/120 →
-minority recurs 120× → silent forever, no English exemption needed ✓;
-Oven 1/1 → dominance(1,2) ≈ 0.1 → silent (one-and-one can't establish
-which form is right) ✓. Floors from fleet calibration.
-
-### 5. Duplicate-word auto-recommendation
-
-Folded into the [config recommender](2026-07-07-config-recommender.md)
-idea: measure the corpus's own doubling rate; recommend the toggle, never
-auto-enable.
-
-### 6. Compression texture (labs revival — the wildcard, hold last)
+### 3. Compression texture (the wildcard)
 
 Verse-vs-corpus zstd-dictionary compression ratio, length-cohort baselines
 (cohorts are mandatory — labs found short verses always saturate), MAD-z →
 evidence. The only candidate that could catch wrong-codepage mojibake
-(`Ã©`-class, valid Unicode no codepoint rule can see). Both 2026 reviewers'
-pick for first "real" probabilistic signal. Hold until the positional work
-proves the G² plumbing; needs its own fleet calibration.
+(`Ã©`-class — valid Unicode no codepoint rule can see). The G² plumbing it
+was waiting on landed (ADR 0059); the length-cohort machinery is the only
+missing piece. Needs its own fleet calibration.
 
-### 7. Boundary-class refinement (only if 2/3 land)
+### 4. Sentence-*start* positional rule — pending base-rate scrutiny
 
-Learn *which boundary contexts* are trustworthy per corpus (bare terminal
-vs terminal+close-quote vs comma+quote), so positional/casing rules
-condition on proven boundaries instead of blanket-exempting quote-adjacent
-ones. Converts today's "intervening punctuation is unpoliceable" fiat into
-a learned per-corpus fact. Sample-splitting caveat: finer classes divide
-the data; the two questions factor (per-class trustworthiness is cheap and
-dominance-shaped; per-word anomaly only runs inside classes that passed).
+"This frequent word starts a sentence approximately never — yet here it is."
+By word identity, so it works in caseless scripts; Zipf-gated to words seen
+≥10×. The sentence-*end* twin is **dead as a site rule** (2026-07-09 ruling:
+rarity-shaped evidence measures rarity, not wrongness — legitimate terse
+finals are exactly as rare as errors; it survives only in aggregate form
+inside terminal_strength's reshuffle witness, ADR 0052). The start side was
+*not* adjudicated: before building it, run the same rare-but-valid base-rate
+scrutiny (poetic inversion, quoted fragments) that killed the end side.
+Position machinery already exists: adjacency to validated terminal marks via
+`terminal_strength` (ADR 0052) — never verse boundaries.
 
-## Demoted / parked from the original eight
+### 5. Chapter-end punctuation (low, cheap)
 
-- **Edit-distance typo pairs** ("recieve" 1× vs "receive" 300×): demoted on
-  discussion. The the/then/than/thin problem — in an NT, "thin" legitimately
-  occurs 1–2×, making it exactly the rare-near-frequent shape the rule
-  hunts; flagging it is trust-eroding. Mitigations (length gate ≥5–6,
-  rare-only, recurrence suppression) shrink the applicable set toward
-  nothing in agglutinative corpora, and it's the only candidate needing new
-  machinery (a neighborhood index; labs' all-pairs hung on 21k Bemba
-  types). Revisit only after 2–4 land, and only via a throwaway feasibility
-  probe (no index needed at probe scale) showing the post-gate survivor set
+"What fraction of this corpus's chapters end with a terminal mark" is an
+honest learned habit (really paragraph-final punctuation observed at a
+convenient boundary). Wilson dominance self-gates: an 80/20 corpus never
+establishes the habit and the rule stays silent. Cheap on the census walks.
+
+### 6. Boundary-class refinement → see the committed boundary-trust idea
+
+Learning *which boundary contexts* are trustworthy per corpus (bare terminal
+vs terminal+close-quote…) so positional/spacing/casing rules condition on
+proven boundaries. This grew into its own doc:
+`committed/2026-07-11-boundary-trust-substrate.md` — the single substrate
+unifying ADR 0052's trust classes and ADR 0054's pooled spacing.
+
+## Still owed to the PO (clarification, not build)
+
+From the triage's **ASK PO** rows: "Extra text / unmarked text" and
+"Optional text or untagged footnote" — meaning unclear; probably
+text-outside-any-marker → onion territory, but confirm with the PO before
+routing.
+
+## Demoted / parked (rulings that should not be re-litigated)
+
+- **Edit-distance typo pairs** ("recieve" 1× vs "receive" 300×): demoted.
+  The the/then/than/thin problem — in an NT, "thin" legitimately occurs
+  1–2×, exactly the rare-near-frequent shape the rule hunts; flagging it is
+  trust-eroding, mitigations shrink the applicable set toward nothing in
+  agglutinative corpora, and it's the only candidate needing new machinery
+  (a neighborhood index; labs' all-pairs hung on 21k Bemba types). Revisit
+  only via a throwaway feasibility probe showing the post-gate survivor set
   is worth a rule.
-- **Quote/discourse-marker balance**: parked with data, ADR 0039.
-
-## Shared machinery ledger (deduplicated)
-
-Build once, powers items 2–4 and future bigram work:
-1. **Per-book word table** — the first word-level `RuleStats` aggregate;
-   size needs design attention (word-type maps won't be "a few KB").
-2. **`association.rs` port** — G² + pluggable exact test + textbook-fixture
-   tests, into the evidence library.
-3. **`mad.rs` port** — robust baselines (also serves #1's calibration and
-   compression later).
-4. **Fleet-fit G²→evidence sigmoid** — replace the en_ulb-eyeballed scale.
-5. Deliberately absent: combiners, priors, posteriors. Every check emits
-   independently in the unified score unit; combination waits for labels.
+- **Quote balance / quote judgment**: parked with census data, ADR 0039.
+  (A no-verdict census *counting* lane is a separate open question —
+  `2026-07-14-census-quotes-lane.md`.)
+- **Spelling variants as site findings**: rejected with the typo-pairs
+  demotion; Greek Room escapes it only via alignment, which is out of scope.
+- **Sentence-end site rule**: dead per the 2026-07-09 ruling (see item 4).
+- **Verse-boundary anything**: verses are reference plumbing; no rule may
+  treat verse-initial as sentence-initial (repo CLAUDE.md, methods §0.1).

@@ -4,10 +4,10 @@ Date: 2026-07-17. Status: **not buried, not committed to** — plausible
 ideas from the same "ignore everything we've built, what would get this to
 60fps" exercise that didn't get rejected but also haven't been spiked or
 scheduled. See `documentation/ideas/rejected/2026-07-17-60fps-dream-list.md`
-for the items from the same exercise that *were* rejected, and the two live
-spikes in `documentation/calibration/` for the ones actively in progress
-(word-break fast path) or already resolved (fold cache — rejected, folded
-into that doc).
+for the items from the same exercise that *were* rejected. The two spikes
+that ran from the same exercise are both closed: the word-break fast path
+**landed** (ADR 0064), and the fold cache was rejected
+(`rejected/2026-07-17-fold-cache.md`).
 
 ## SIMD as an ASCII/common-case fast-reject prefilter
 
@@ -19,47 +19,19 @@ vectorized check — "is this whole chunk of bytes an ordinary ASCII
 letter/space run, skip the real table lookup entirely" — could handle the
 bulk of scalars, falling to the per-scalar lookup only for the minority that
 need it. Never spiked. Given tape-build's overall small absolute share of
-per-verse cost, this is a low-priority "someday, if curious" item, not
-something worth chasing ahead of the word-break work.
+per-verse cost, this is a low-priority "someday, if curious" item (the
+word-break work it once queued behind has since landed, ADR 0064 — that
+changes nothing about this item's low priority).
 
-## Stream-state checkpointing to bound book re-walk to the affected suffix
+## Stream-state checkpointing — promoted out of this doc (2026-07-21)
 
-Today, editing anything in a book forces a full re-walk of that book from
-verse 1 — every listener, full substrate rebuild — because `PrepCache`
-invalidates at whole-book granularity (ADR 0060). Listeners that carry
-state across verse seams within a book (casing's pending terminal,
-bracket-balance's LIFO stack, duplicate-word's tail, rare-glyph's
-forced-position machine, spacing's cross-seam neighbour classes — the
-"stream-order" rule class, per `stream.rs`'s own module doc) are, in
-principle, checkpointable: snapshot each such listener's state at every
-verse boundary, and re-walking from an edit only needs to replay forward
-until the newly-computed state re-converges with what was checkpointed
-before the edit. Worst case is still bounded by book length (state resets
-at book boundaries, never crosses them — repo `CLAUDE.md`), but the common
-case (most stream-order state resets frequently — a pending-terminal flag
-at most sentence boundaries, a bracket stack usually empty between
-well-formed pairs) could be much cheaper than "replay to the end of the
-book," let alone "replay the whole book from verse 1."
-
-This does **not** need to also solve corpus-wide statistical verdicts
-(Wilson-interval/proportionality/majority-tally rules, where an edit
-anywhere can in principle flip a verdict anywhere else) — that concern was
-raised and then walked back in the same conversation: `analyze_stateful`
-already separates the expensive, book-scoped **reduce** phase from a
-**judge** phase that is *already global on every call*, comparing
-already-computed tallies against thresholds rather than re-walking text.
-That's cheap because it scales with vocabulary/tally size, not corpus size
-in characters, and it's what already handles "a change anywhere can affect
-a verdict anywhere" — checkpointing stream-order state would be a pure
-optimization *on reduce*, orthogonal to judge, not blocked by it. The one
-thing worth confirming before trusting that reasoning at scale: whether
-judge's cost genuinely stays cheap as vocabulary size grows across the
-fleet, or whether it could itself become a bottleneck somewhere — not
-verified either way.
-
-Never spiked; a real candidate for a future engine-rework-scale
-investigation (would need the full oracle-gate discipline per `CLAUDE.md`,
-since it changes how the engine executes), not a small change.
+The checkpointing idea (snapshot stream-order listener state at seam
+addresses; replay from an edit only until state re-converges) grew into its
+own proposal with options:
+`../2026-07-21-chapter-granularity-invalidation.md` — "Road 1"
+(entry-state-keyed chapter memoization) is this item's direct descendant,
+and that doc also carries the still-unverified judge-cost-vs-vocabulary
+question this section flagged.
 
 ## xxh3 vs. rapidhash, benchmarked on our actual key shapes
 
@@ -73,5 +45,5 @@ for casing's maps, whole-book buffers for content-hashing) is genuinely
 unresolved — external benchmarks for these ultra-fast hashers are
 notoriously sensitive to input-size distribution and CPU microarchitecture,
 so a README win elsewhere doesn't necessarily transfer here. Cheap to
-resolve with a targeted criterion bench on real key shapes; not done yet,
-not prioritized ahead of the word-break work.
+resolve with a targeted criterion bench on real key shapes; not done yet.
+(The word-break work it once queued behind landed as ADR 0064.)

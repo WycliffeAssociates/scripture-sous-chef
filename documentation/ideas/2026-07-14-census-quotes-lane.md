@@ -22,8 +22,9 @@ spacing, curly/straight mixing, an `!"`-type cluster — is **invisible** in the
 one tool meant to surface the long tail below the Wilson gate.
 
 Prior intent exists: the census plan
-(`plans/2026-07-10-absolute-mode-census-plan.md`) lists *"quote-mark counts"* as
-a wanted census row (alongside the PO-checklist items), but it never shipped.
+(`plans/completed/2026-07-10-absolute-mode-census-plan.md`, since implemented
+as ADR 0058) lists *"quote-mark counts"* as a wanted census row (alongside
+the PO-checklist items), but that row never shipped.
 
 ## Proposal
 
@@ -62,4 +63,4 @@ glyphs visible.
 - ADR 0058 (census absolute mode — the quote exclusion + adopt-a-lane doctrine).
 - ADR 0039 (quote/discourse balance deferred; `calibration/data/2026-07-07-quote-census.tsv`).
 - ADR 0033 (separator class is Po, not ASCII), ADR 0049 (CJK corners excluded).
-- `plans/2026-07-10-absolute-mode-census-plan.md` (lists "quote-mark counts").
+- `plans/completed/2026-07-10-absolute-mode-census-plan.md` (lists "quote-mark counts").

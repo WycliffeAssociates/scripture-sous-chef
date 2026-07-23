@@ -4,8 +4,10 @@
 - **Status:** Accepted
 - **Builds on:** [ADR 0051](0051-casing-two-factor-word-lexicon.md) (which
   reserved this exact consumer contract), the shortlist 2/3 spec
-  (`documentation/ideas/2026-07-07-next-checks-shortlist.md` — two witnesses,
-  noisy-OR, Zipf-gated jurors, anti-circularity), and the labs
+  (two witnesses, noisy-OR, Zipf-gated jurors, anti-circularity — spec text in
+  the pre-2026-07-20 git history of
+  `documentation/ideas/2026-07-07-next-checks-shortlist.md`; that doc was
+  since condensed to live items, this ADR being the record), and the labs
   `association.rs` G²/Fisher machinery (ported; see below).
 
 ## Context

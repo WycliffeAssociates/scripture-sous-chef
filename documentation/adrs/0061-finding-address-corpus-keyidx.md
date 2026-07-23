@@ -7,9 +7,10 @@
   (amended below — its `VrefMap`/`Sid::parse` wording is superseded),
   [ADR 0060](0060-cross-call-analysis-caches.md) (the per-book cache products
   this ADR's `LocalKeyIdx`/rebasing design now backs).
-- **Plan:** `documentation/plans/2026-07-14-finding-address-representation-plan.md`.
-- **Idea doc:** `documentation/ideas/2026-07-14-finding-address-representation.md`
-  (status updated to landed, linking here).
+- **Plan:** `documentation/plans/completed/2026-07-14-finding-address-representation-plan.md`.
+- **Idea doc:** the finding-address-representation idea (deleted 2026-07-20
+  per the ideas lifecycle; its open census site-cap thread was extracted to
+  `documentation/ideas/2026-07-20-census-site-cap-policy.md`).
 
 ## Context
 

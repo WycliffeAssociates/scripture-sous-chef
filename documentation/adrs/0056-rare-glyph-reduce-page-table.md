@@ -3,7 +3,7 @@
 - **Date:** 2026-07-10
 - **Status:** accepted
 - **Context:** perf loop gating the absolute-mode census work (plan:
-  `documentation/plans/2026-07-10-absolute-mode-census-plan.md`)
+  `documentation/plans/completed/2026-07-10-absolute-mode-census-plan.md`)
 
 ## Problem
 

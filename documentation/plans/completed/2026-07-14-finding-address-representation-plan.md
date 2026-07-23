@@ -1,14 +1,16 @@
 # Plan — duplicate-preserving corpus and finding addresses
 
-Date: 2026-07-14. Status: **implemented — see [ADR 0061](../adrs/0061-finding-address-corpus-keyidx.md)**.
+Date: 2026-07-14. Status: **implemented — see [ADR 0061](../../adrs/0061-finding-address-corpus-keyidx.md)**.
 Owner decision: **support
 duplicate keys, sub-verses such as `1:1a`, and caller-presented order now**, and
 fold in the `Span` narrowing + 6-byte site packing while we are in here — they
 touch the same code and the fleet has no verse near the `u16` ceiling.
 
-Companion rationale:
-`documentation/ideas/2026-07-14-finding-address-representation.md`. This plan is
-the implementation authority where the two documents differ: it keeps local and
+Companion rationale: the finding-address-representation idea doc (deleted
+2026-07-20 per the ideas lifecycle; its one still-open thread — the census
+site-cap policy — was extracted to
+`../../ideas/2026-07-20-census-site-cap-policy.md`). This plan was the
+implementation authority where the two documents differed: it keeps local and
 global addresses distinct in the type system and replaces the map-shaped wasm
 corpus input with ordered parallel arrays.
 

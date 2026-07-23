@@ -29,7 +29,7 @@ minority form (ADR 0029, + ADR 0050's recurrence knee). Two structural limits:
    numeric `1:1` colons, cluster tails (`?!`'s `!`), verse-leading marks, and
    closing-quote-then-mark — a hand-maintained list.
 
-The [plan](../plans/2026-07-10-rare-glyph-signatures-mixedcase-plan.md) (rule 2)
+The [plan](../plans/completed/2026-07-10-rare-glyph-signatures-mixedcase-plan.md) (rule 2)
 proposed generalising the binary to a **joint `(left, right)` attachment
 signature**: one mechanism that subsumes the before-only rule, the after-side
 cases, and every exclusion (each dissolving into a *learned-silent* signature).

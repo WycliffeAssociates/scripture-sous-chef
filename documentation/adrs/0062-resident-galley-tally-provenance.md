@@ -173,9 +173,10 @@ split-digest format.
 
 ## Relates to
 
-- Plan: `plans/2026-07-14-resident-handle-plan.md` (this ADR is its expected 0062).
-- Design record: `ideas/2026-07-14-resident-handle-and-cache-model.md` (§6.8
-  amended per §0.5).
+- Plan: `plans/completed/2026-07-14-resident-handle-plan.md` (this ADR is its expected 0062).
+- Design record: the resident-handle-and-cache-model idea, §6.8 amended per
+  §0.5 (deleted 2026-07-20 per the ideas lifecycle; the plan + this ADR are
+  the record).
 - Second-opinion review (2026-07-15, clean-room): all seven blocking findings
   folded in — per-book `Tally` (findings 1–2), `replace_corpus` deletion
   reconciliation (3), always-hash (4), the split-digest oracle procedure (5),

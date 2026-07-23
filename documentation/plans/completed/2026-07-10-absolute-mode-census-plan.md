@@ -1,13 +1,15 @@
 # Plan — absolute mode: the census report
 
-Date: 2026-07-10 (fleshed out same day from the first cut). Extracted from
-[the PO-checklist triage](../ideas/2026-07-10-po-checklist-triage.md) —
-that doc stays the survey record; this is the committed plan, written to be
+Date: 2026-07-10 (fleshed out same day from the first cut). Status:
+**implemented — [ADR 0058](../../adrs/0058-census-absolute-mode.md)**.
+Extracted from the PO-checklist triage idea (since condensed into
+`../../ideas/2026-07-07-next-checks-shortlist.md` and deleted; the ADRs are
+the record of what shipped); this is the committed plan, written to be
 handed to an implementing agent as-is.
 **Sequencing (owner decision, 2026-07-10): queued after the
 [rare-glyph / signatures / mixed-casing plan](2026-07-10-rare-glyph-signatures-mixedcase-plan.md)
 completes (all three rules + the owed perf campaign), and before the
-[preset-table freeze](2026-07-09-preset-derivation-plan.md).** The ADR can be
+[preset-table freeze](../2026-07-09-preset-derivation-plan.md).** The ADR can be
 written earlier, during the rare-glyph tail — most of its questions are
 answered below; what remains is review, not research.
 

@@ -1,9 +1,9 @@
 # Idea — one boundary-trust substrate (ADR 0052 classes ∪ pooled-spacing pools)
 
-Date: 2026-07-11. Status: proposal — design pass wanted before any code.
-Companion to the [post-port roadmap](2026-07-11-post-port-roadmap-take.md)
-(priority 6 there); this is shortlist item 7 (boundary-class refinement)
-wearing its post-ADR-0054 shape.
+Date: 2026-07-11; moved to `committed/` 2026-07-20. Status: **committed —
+design pass wanted before any code.** On the
+[post-port roadmap](../2026-07-11-post-port-roadmap-take.md); this is the
+shortlist's boundary-class-refinement item wearing its post-ADR-0054 shape.
 
 ## The duplication
 
@@ -82,8 +82,11 @@ for whichever wins. Oracle-gated per the CLAUDE.md doctrine either way;
 
 ## Sequencing
 
-After the port branch merges and behind the roadmap's priorities 1–2
-(labels, preset experiment). Natural order: design pass → ADR (next free
-number) → implement as an event-stream listener with consumer views →
-only then consider the quote-adjacency judging expansion (its own
-calibration + floor decision, since it adds findings).
+Behind the roadmap's editor-Galley-adoption and preset-experiment
+priorities (the port branch merged long ago). Natural order: design pass →
+ADR (next free number) → implement as an event-stream listener with
+consumer views → only then consider the quote-adjacency judging expansion
+(its own calibration + floor decision, since it adds findings). Note for
+the design pass: the "hard question" below predates the resident `Galley`
+(ADR 0062) — re-examine it against `Stats.tallied` provenance and
+`PrepCache`, not the older per-rule wire round-trip model.

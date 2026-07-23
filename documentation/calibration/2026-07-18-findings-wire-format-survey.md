@@ -1,5 +1,20 @@
 # Measurement SPIKE: findings wire-format cost (serialization, marshaling, decode)
 
+> **Post-implementation confirmation (2026-07-21).** The packed format
+> shipped (branch `packed-findings-wire`, ADR 0065) and was re-measured on
+> the **live `analyze_vref` surfaces** — dev's object array vs the branch's
+> packed buffer, identical parsed input, all 25 rules, real emitted findings
+> (275 @ WA-bds-reg, 5,099 @ WA-as-ulb; counts matched exactly between
+> packages). Results reproduce this survey: `postMessage` 0.292 → 0.020 ms
+> (p50 corpus) and 3.305 → **0.012 ms** (p99 — transfer is
+> count-independent; the bigger corpus transferred *faster*); eager
+> full decode 0.002 / 0.031 ms; marshal savings via paired interleaved A/B
+> (40 pairs, needed because the delta is ~0.3–0.7% of an all-rules
+> stateless call) +1.66 ms / +7.75 ms — on this survey's count-scaled
+> predictions within noise. End-to-end wire cost is now ~0.02–0.04 ms at
+> every scale tested vs ~0.3–11 ms before. Harness + result JSONs:
+> `spike-bench/archive/2026-07-21-wire-live-confirmation/`.
+
 - **Date:** 2026-07-18.
 - **Status:** MEASUREMENT SPIKE only — informs, does not decide or build. No
   production code was committed. `crates/wasm/Cargo.toml`/`src/lib.rs` gained

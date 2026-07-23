@@ -1,9 +1,11 @@
 # Plan — `uni.mixed-normalization` (within-corpus encoding-mixing finding)
 
-Date: 2026-07-14. Depth: standard. Interview: quick. Testing: standard.
-Supersedes the design in `documentation/ideas/2026-07-11-mixed-normalization-rule.md`
-(the probabilistic/scored approach — see "Design provenance" below for why it
-was dropped).
+Date: 2026-07-14. Status: **implemented —
+[ADR 0063](../../adrs/0063-mixed-normalization-deterministic-nfc.md)**
+(shipped default-off). Depth: standard. Interview: quick. Testing: standard.
+Superseded the design in the `uni.mixed-normalization` idea doc (since
+deleted; this plan + ADR 0063 are the record — the idea's
+probabilistic/scored approach was dropped, see "Design provenance" below).
 
 ## Goal
 
