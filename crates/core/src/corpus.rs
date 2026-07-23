@@ -12,7 +12,10 @@
 //!    Rebase between them only through [`rebase`].
 //! 3. Each book slug must occupy one contiguous block. `GEN, EXO, GEN` is
 //!    rejected — accepting it would let a repeated slug collide in every
-//!    slug-keyed stats/cache map and silently reorder the caller's seams.
+//!    slug-keyed stats/cache map and silently reorder the caller's seams. The
+//!    same contiguity holds one level down: inside a book each opaque chapter
+//!    token is one run (`GEN 1, GEN 2, GEN 1` is rejected). Chapter tokens are
+//!    compared opaquely — never parsed or ordered as numbers.
 //!
 use std::fmt;
 
@@ -146,6 +149,10 @@ pub enum CorpusError {
     MalformedKey { key: String, source: key::KeyError },
     BookTooLarge { slug: String, len: usize },
     ReopenedBook { slug: String },
+    /// An opaque chapter token that reappears inside its book after another
+    /// token closed it (`GEN 1:1, GEN 2:1, GEN 1:2`). Like a book, a chapter is
+    /// one contiguous run; tokens are compared opaquely (no numeric ordering).
+    ReopenedChapter { slug: String, chapter: String },
     /// A [`BookBlock`] key whose parsed book slug is not the block's own slug.
     SlugMismatch { slug: String, key: String },
     /// A [`BookBlock`] with no verses. Removal is the explicit
@@ -178,6 +185,11 @@ impl fmt::Display for CorpusError {
             CorpusError::ReopenedBook { slug } => write!(
                 f,
                 "book {slug:?} reopens after another book started — book blocks must be contiguous"
+            ),
+            CorpusError::ReopenedChapter { slug, chapter } => write!(
+                f,
+                "chapter {chapter:?} in book {slug:?} reopens after another chapter started — \
+                 chapter runs must be contiguous"
             ),
             CorpusError::SlugMismatch { slug, key } => write!(
                 f,
@@ -230,9 +242,16 @@ impl Corpus {
         }
         KeyIdx::try_from_usize(keys.len())?;
 
+        // One pass validating both contiguity invariants: a book is one run
+        // that may not reopen, and inside a book each opaque chapter token is
+        // one run that may not reopen. Chapter tokens are only unique within a
+        // book, so `closed_chapters` resets at every book seam. Both closed sets
+        // borrow `&str` from `keys` (opaque comparison; never numeric).
         let mut current: Option<&str> = None;
+        let mut current_chapter: Option<&str> = None;
         let mut current_len = 0usize;
         let mut closed: FxHashSet<&str> = FxHashSet::default();
+        let mut closed_chapters: FxHashSet<&str> = FxHashSet::default();
         for key in &keys {
             let parts = parse_key(key).map_err(|source| CorpusError::MalformedKey {
                 key: key.clone(),
@@ -240,6 +259,18 @@ impl Corpus {
             })?;
             if Some(parts.book) == current {
                 current_len += 1;
+                if Some(parts.chapter) != current_chapter {
+                    if closed_chapters.contains(parts.chapter) {
+                        return Err(CorpusError::ReopenedChapter {
+                            slug: parts.book.to_string(),
+                            chapter: parts.chapter.to_string(),
+                        });
+                    }
+                    if let Some(ch) = current_chapter {
+                        closed_chapters.insert(ch);
+                    }
+                    current_chapter = Some(parts.chapter);
+                }
                 continue;
             }
             if let Some(slug) = current {
@@ -252,7 +283,9 @@ impl Corpus {
                 });
             }
             current = Some(parts.book);
+            current_chapter = Some(parts.chapter);
             current_len = 1;
+            closed_chapters.clear();
         }
         if let Some(slug) = current {
             LocalKeyIdx::try_from_usize(current_len, slug)?;
@@ -309,6 +342,11 @@ impl Corpus {
                 });
             }
             LocalKeyIdx::try_from_usize(block.keys.len(), &block.slug)?;
+            // A block is one whole book, so every key's book must be `slug`; its
+            // chapter tokens must also each be one contiguous non-reopening run
+            // (the same within-book invariant `try_from_parts` enforces).
+            let mut current_chapter: Option<&str> = None;
+            let mut closed_chapters: FxHashSet<&str> = FxHashSet::default();
             for k in &block.keys {
                 let parts = parse_key(k).map_err(|source| CorpusError::MalformedKey {
                     key: k.clone(),
@@ -319,6 +357,18 @@ impl Corpus {
                         slug: block.slug.to_string(),
                         key: k.clone(),
                     });
+                }
+                if Some(parts.chapter) != current_chapter {
+                    if closed_chapters.contains(parts.chapter) {
+                        return Err(CorpusError::ReopenedChapter {
+                            slug: block.slug.to_string(),
+                            chapter: parts.chapter.to_string(),
+                        });
+                    }
+                    if let Some(ch) = current_chapter {
+                        closed_chapters.insert(ch);
+                    }
+                    current_chapter = Some(parts.chapter);
                 }
             }
             if !batch_slugs.insert(&block.slug) {
@@ -608,6 +658,80 @@ mod tests {
                 slug: "GEN".to_string()
             }
         );
+    }
+
+    #[test]
+    fn rejects_reopened_chapter_in_construction() {
+        // GEN chapter 1 closes when chapter 2 starts; 1 then reappearing is a
+        // reopened chapter (distinct from an out-of-order verse within one
+        // chapter, which is legal — see below).
+        let err = Corpus::try_from_parts(
+            keys(&["GEN 1:1", "GEN 2:1", "GEN 1:2"]),
+            texts(3),
+        )
+        .unwrap_err();
+        assert_eq!(
+            err,
+            CorpusError::ReopenedChapter {
+                slug: "GEN".to_string(),
+                chapter: "1".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn accepts_out_of_order_verses_within_one_chapter() {
+        // Out-of-order verse tokens in the SAME chapter run are legal — the
+        // chapter did not reopen, only the verse order is noncanonical.
+        let c = Corpus::try_from_parts(
+            keys(&["GEN 1:1", "GEN 1:3", "GEN 1:2"]),
+            texts(3),
+        )
+        .unwrap();
+        assert_eq!(c.len(), 3);
+    }
+
+    #[test]
+    fn accepts_noncanonical_but_contiguous_chapter_runs() {
+        // Chapters need not be in numeric order, only contiguous: `3` then `1`
+        // is fine as long as neither reopens.
+        let c = Corpus::try_from_parts(
+            keys(&["GEN 3:1", "GEN 3:2", "GEN 1:1"]),
+            texts(3),
+        )
+        .unwrap();
+        assert_eq!(c.len(), 3);
+    }
+
+    #[test]
+    fn a_chapter_token_may_recur_in_a_different_book() {
+        // Chapter tokens are book-local: GEN 1 and EXO 1 do not collide.
+        let c = Corpus::try_from_parts(
+            keys(&["GEN 1:1", "EXO 1:1"]),
+            texts(2),
+        )
+        .unwrap();
+        assert_eq!(c.len(), 2);
+    }
+
+    #[test]
+    fn replace_books_rejects_a_reopened_chapter_in_a_block() {
+        let mut c = Corpus::try_from_parts(keys(&["GEN 1:1"]), keys(&["g"])).unwrap();
+        let err = c
+            .replace_books(vec![block(
+                "GEN",
+                &["GEN 1:1", "GEN 2:1", "GEN 1:2"],
+                &["a", "b", "c"],
+            )])
+            .unwrap_err();
+        assert_eq!(
+            err,
+            CorpusError::ReopenedChapter {
+                slug: "GEN".to_string(),
+                chapter: "1".to_string(),
+            }
+        );
+        assert_eq!(c.keys(), keys(&["GEN 1:1"]).as_slice(), "rejected block is a no-op");
     }
 
     #[test]
