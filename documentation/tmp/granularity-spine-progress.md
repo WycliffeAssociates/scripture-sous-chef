@@ -629,3 +629,28 @@ serialized/TS `Stats` surfaces) — the next packet. NOTE: `oracle.rs` still
 relies on echo semantics + `Stats` (untouched this packet, per instruction);
 step 5 must re-pin the oracle's incremental transcript to §12.5 as it removes
 echo.
+
+---
+
+## Entry 4 — Owner adjudication: flat book hash is a WP1 bridge; chapter-folded lands right after step 5
+
+- **Date:** 2026-07-23
+- **Decision (owner):** the flat book content hash landed in WP1 is accepted as
+  a temporary bridge. It is content-correct today (length-prefixed keys carry
+  chapter tokens, so §4's anti-collision goal is met) and it preserved the
+  incremental provenance oracle's byte-identity through WP1. The specified
+  ordered, length-delimited `(chapter token, chapter hash)` fold remains the
+  end state because it composes from already-owned chapter hashes instead of
+  rereading every verse.
+- **Sequencing requirement (WP2):** land Phase A step 5 (echo semantics and
+  serialized `Stats` retired; replacement complete-snapshot transcript oracle)
+  first; then, in the next small commit — before step 6 and definitely before
+  Phase A-W — switch the book hash to the chapter-folded form, updating every
+  comment/test that claims the book hash is flat, and pinning: ordered
+  chapter-token sensitivity; chapter-order sensitivity; construction and
+  mutation producing identical folded hashes; resident-vs-cold transcript
+  equality after the switch; unchanged finding dumps.
+- **Stamp constraint (recorded per owner):** no `ANALYSIS_ENGINE_STAMP` bump is
+  needed for this switch **provided no Phase A-W artifact or persisted id is
+  published between these commits**. Phase A-W must not begin until the folded
+  hash is in.
