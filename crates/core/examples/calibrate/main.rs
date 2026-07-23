@@ -26,8 +26,10 @@
 //!   # fleet survey → self-contained HTML report (all rules, floors zeroed,
 //!   # every corpus in the directory; out defaults to target/fleet-report.html):
 //!   cargo run --release -p ssc-core --example calibrate -- --fleet corpora/vref [out.html]
-//!   # incremental oracle: resident-Galley complete-snapshot mutation transcript
-//!   cargo run --release -p ssc-core --example calibrate -- \
+//!   # incremental oracle (resident-Galley complete-snapshot mutation
+//!   # transcript) now lives in ssc-galley's own example (dependency-direction
+//!   # restore — ssc-core no longer dev-depends on ssc-galley):
+//!   cargo run --release -p ssc-galley --example transcript_oracle -- \
 //!       --dump-incremental corpora/vref /tmp/incremental.tsv default
 //!   # fast inner-loop oracle: WA subset only (~251 corpora, ~6x quicker) —
 //!   # trailing `wa` scopes any dump command; omit (or `full`) for the whole
@@ -55,7 +57,7 @@ mod oracle;
 mod reporting;
 mod survey;
 use corpus_blob::{Preset, build_blob};
-use oracle::{OracleScope, dump_findings, dump_incremental};
+use oracle::{OracleScope, dump_findings};
 use reporting::{census_fleet, census_single, time_configs};
 use survey::casing::{analyze_casing, casing_fleet, casing_single_report, casing_size};
 use survey::glyphs::{analyze_glyphs, glyph_fleet, glyph_single_report};
@@ -288,20 +290,17 @@ fn main() {
             );
             return;
         }
-        // Incremental oracle: a resident-`Galley` complete-snapshot mutation
-        // transcript. For each corpus, seed a Galley over the complete corpus,
-        // apply the fixed edit to the first book (a complete-book replacement —
-        // no echo), analyze, and dump the post-mutation findings. Pins the
-        // resident mutate+re-analyze path (the editor's steady state) across
-        // the port. Trailing `wa`|`full` scopes the fleet as above.
-        [flag, path, out, cfg_name, rest @ ..] if flag == "--dump-incremental" => {
-            dump_incremental(
-                Path::new(path),
-                Path::new(out),
-                cfg_name,
-                OracleScope::parse(rest),
+        // The incremental oracle (`--dump-incremental`) moved to ssc-galley's
+        // own example so ssc-core no longer dev-depends on ssc-galley:
+        //   cargo run --release -p ssc-galley --example transcript_oracle -- \
+        //       --dump-incremental <dir|blob> <out> <default|all> [wa|full]
+        [flag, ..] if flag == "--dump-incremental" => {
+            eprintln!(
+                "--dump-incremental moved to ssc-galley: cargo run --release -p ssc-galley \
+                 --example transcript_oracle -- --dump-incremental <dir|blob> <out> \
+                 <default|all> [wa|full]"
             );
-            return;
+            std::process::exit(2);
         }
         // Wall-clock probe: min-of-5 analyze_with_config on one corpus under
         // both configs (build serial or --features parallel to compare).

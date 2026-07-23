@@ -24,12 +24,11 @@ rayon = { version = "1", optional = true }
 
 [dev-dependencies]
 serde_json = "1"
-# The resident shell, for the calibrate incremental oracle and the
-# `snapshot/cached_edit_*` criterion benches — both exercise the editor's
-# resident complete-snapshot mutation path (granularity-spine Phase A step 5).
-# A dev-only cycle (ssc-galley path-depends on ssc-core); Cargo permits it
-# because it is confined to examples/benches and never enters the library build.
-ssc-galley = { path = "../galley" }
+# NOTE: ssc-core deliberately does NOT dev-depend on ssc-galley. The resident
+# incremental transcript oracle and the `galley_warm_edit_*` benches that need
+# the shell live in ssc-galley's own example/bench (dependency-direction
+# restore, granularity-spine Phase A step 6 closeout) — a `ssc-core` dev-dep on
+# `ssc-galley` would reintroduce a dependency cycle.
 criterion = "0.5"
 # Corpus-level fan-out for the fleet survey (calibrate --fleet); dev-only —
 # the library's own `parallel` feature stays optional and separate.

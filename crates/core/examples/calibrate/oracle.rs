@@ -13,8 +13,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use rayon::prelude::*;
-use ssc_core::{BookBlock, Config, Corpus, Finding, RuleId, analyze_with_config};
-use ssc_galley::Galley;
+use ssc_core::{Config, Corpus, Finding, RuleId, analyze_with_config};
 
 use crate::vref_io::load_corpus;
 
@@ -105,7 +104,7 @@ pub fn oracle_source(path: &Path) -> Option<Corpus> {
 /// pre-parsed blob (`crate::corpus_blob`, one sequential read instead of N
 /// file opens) — whichever `path` points at. A blob was already built for a
 /// fixed preset, so it needs no further scope filtering here.
-fn load_corpora(path: &Path, scope: OracleScope) -> Vec<(String, Corpus)> {
+pub fn load_corpora(path: &Path, scope: OracleScope) -> Vec<(String, Corpus)> {
     if crate::corpus_blob::is_blob_path(path) {
         crate::corpus_blob::load_blob(path)
     } else {
@@ -124,7 +123,7 @@ fn load_corpora(path: &Path, scope: OracleScope) -> Vec<(String, Corpus)> {
 /// to `oracle_source`'s sibling-file lookup, unchanged) or a blob (a blob
 /// has no directory to probe — find `WA-en-ulb` in the already-loaded set
 /// instead; `None` either way if it isn't present).
-fn resolve_source(path: &Path, corpora: &[(String, Corpus)]) -> Option<Corpus> {
+pub fn resolve_source(path: &Path, corpora: &[(String, Corpus)]) -> Option<Corpus> {
     if crate::corpus_blob::is_blob_path(path) {
         corpora
             .iter()
@@ -203,92 +202,12 @@ pub fn dump_findings(path: &Path, out_path: &Path, cfg_name: &str, scope: Oracle
     );
 }
 
-/// A fixed, multi-rule-provoking edit applied to the last verse of the first
-/// book: doubles punctuation, excess whitespace, a rare glyph, a mixed-case
-/// word, a spaced comma, an unbalanced paren.
-const EDIT_TEXT: &str = "He fell ,, the  gate stood.. qQx deJésus (broken";
-
-/// The incremental oracle — a resident-`Galley` complete-snapshot mutation
-/// transcript (granularity-spine Phase A step 5; the echo/serialized-`Stats`
-/// oracle it replaces was retired with echo semantics, plan §2.3/§12.5).
-///
-/// Per corpus, exactly what the editor's resident steady state does: seed a
-/// `Galley` over the **complete** corpus (a cold analyze warming its resident
-/// prior + prep), apply the fixed `EDIT_TEXT` mutation to the first book as a
-/// complete-book replacement (`update_book` — never an echo subset), analyze
-/// again, and dump the post-mutation findings for the whole corpus. The mutated
-/// book re-tallies by content hash; clean siblings carry. No stats/provenance
-/// digest is written: the serialized `Stats` wire it digested no longer exists,
-/// and per-book provenance is now a private engine detail, not a gate contract.
-///
-/// Same parallel-render-then-sequential-write shape as `dump_findings` (see its
-/// doc comment): each corpus's own resident `Galley` is independent, so the
-/// `par_iter().map(..).collect()` preserves file order regardless of completion
-/// order — byte-stable across runs and thread counts. Keeps the `wa|full`
-/// scope token and the stderr scope print.
-pub fn dump_incremental(path: &Path, out_path: &Path, cfg_name: &str, scope: OracleScope) {
-    let cfg = oracle_config(cfg_name);
-    let corpora = load_corpora(path, scope);
-    let source = resolve_source(path, &corpora);
-    // Every 8th corpus (plus the first): the incremental gate needs breadth,
-    // not the whole fleet, and this dump runs two analyses per corpus. The
-    // WA subset is subsampled the same way (~32 corpora) after scope filtering.
-    let corpora: Vec<_> = corpora.into_iter().step_by(8).collect();
-    let total = corpora.len();
-    let done = AtomicUsize::new(0);
-    let buffers: Vec<Vec<u8>> = corpora
-        .par_iter()
-        .map(|(id, target)| {
-            let mut buf = Vec::new();
-            if target.is_empty() {
-                let n = done.fetch_add(1, Ordering::Relaxed) + 1;
-                if n % 20 == 0 {
-                    eprintln!("{n}/{total}");
-                }
-                return buf;
-            }
-
-            // Seed a resident Galley over the complete corpus (cold analyze
-            // warms its prior + prep), then mutate + re-analyze.
-            let mut galley = Galley::new(target.clone(), source.clone(), cfg.clone());
-            let _ = galley.analyze();
-
-            // The edit: last verse of the first book, as a complete-book
-            // replacement. `by_book` is in presented order, so the first book
-            // occupies positions `0..first_len` of the corpus.
-            let first_books = ssc_core::corpus::by_book(target);
-            let first = first_books.first().unwrap();
-            let first_len = first.keys.len();
-            let first_slug = first.slug.to_string();
-            drop(first_books);
-            let keys: Vec<String> = target.keys()[..first_len].to_vec();
-            let mut texts: Vec<String> = target.texts()[..first_len].to_vec();
-            texts[first_len - 1] = EDIT_TEXT.to_string();
-            galley
-                .update_book(BookBlock {
-                    slug: first_slug.into(),
-                    keys,
-                    texts,
-                })
-                .expect("first-book replacement is a valid complete-book update");
-
-            let findings = galley.analyze();
-            write_findings(&mut buf, id, "snap", galley.corpus(), &findings);
-
-            let n = done.fetch_add(1, Ordering::Relaxed) + 1;
-            if n % 20 == 0 {
-                eprintln!("{n}/{total}");
-            }
-            buf
-        })
-        .collect();
-    let mut out = std::io::BufWriter::new(std::fs::File::create(out_path).unwrap());
-    for buf in buffers {
-        out.write_all(&buf).unwrap();
-    }
-    eprintln!(
-        "dumped {total} corpora incremental ({cfg_name}, scope={}) -> {}",
-        scope.label(),
-        out_path.display()
-    );
-}
+// The resident-`Galley` incremental transcript oracle (`dump_incremental`) and
+// its `EDIT_TEXT` moved to `ssc-galley`'s own example so `ssc-core` no longer
+// dev-depends on `ssc-galley` (dependency-direction restore; see
+// `crates/galley/examples/transcript_oracle.rs`). This module keeps only the
+// core-only, gate-critical shared helpers — `OracleScope`, `oracle_files`,
+// `oracle_source`, `load_corpora`, `resolve_source`, `write_findings`,
+// `oracle_config` — which that galley example `#[path]`-includes verbatim, so
+// the transcript's row bytes are single-sourced through `write_findings` and
+// cannot drift between the two dump commands.

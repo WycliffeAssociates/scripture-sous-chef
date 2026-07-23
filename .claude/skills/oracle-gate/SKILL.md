@@ -14,13 +14,19 @@ re-deriving the workflow from scratch every time" companion.
 ## The one thing that must never change casually
 
 `crates/core/examples/calibrate/oracle.rs` holds `dump_findings`,
-`dump_incremental`, `OracleScope`, and everything they depend on
-(`oracle_config`, `oracle_files`, `oracle_source`, `write_findings`,
-`write_stats_digest`, `fnv64`, `EDIT_TEXT`). Its own module doc comment says
-it plainly: this is the byte-identical gate contract, diffed before/after
-any engine-execution change. A change here that alters *what* gets written
-(not just how fast) invalidates every pinned baseline anyone has sitting in
-`/tmp` or a calibration doc.
+`OracleScope`, and the shared gate helpers (`oracle_config`, `oracle_files`,
+`oracle_source`, `load_corpora`, `resolve_source`, `write_findings`). Its own
+module doc comment says it plainly: this is the byte-identical gate contract,
+diffed before/after any engine-execution change. A change here that alters
+*what* gets written (not just how fast) invalidates every pinned baseline
+anyone has sitting in `/tmp` or a calibration doc.
+
+The resident-`Galley` incremental transcript oracle (`dump_incremental` +
+`EDIT_TEXT`) lives in **`crates/galley/examples/transcript_oracle.rs`** — it
+was moved out of `ssc-core` so `ssc-core` does not dev-depend on `ssc-galley`
+(dependency-direction restore). It `#[path]`-includes `oracle.rs` verbatim, so
+`write_findings`' row bytes are single-sourced and the transcript stays
+byte-identical to the pre-move dumps.
 
 Everything else under `examples/calibrate/` is *not* gate-critical and can
 be refactored/extended freely:
@@ -49,8 +55,12 @@ cargo build --release -p ssc-core --example calibrate
 # WA-251 subset (~6x faster inner-loop oracle) — only ever diffs against another `wa` dump
 ./target/release/examples/calibrate --dump-findings corpora/vref out.wa.tsv default wa
 
-# incremental oracle (echo + snapshot + stats digest over a fixed mutation)
-./target/release/examples/calibrate --dump-incremental corpora/vref out.inc.tsv default full
+# incremental oracle (resident-Galley complete-snapshot mutation transcript) —
+# NOTE: this command lives in ssc-galley's own example now, not calibrate:
+cargo build --release -p ssc-galley --example transcript_oracle
+./target/release/examples/transcript_oracle --dump-incremental corpora/vref out.inc.tsv default full
+# blobs work here too (scope token ignored):
+./target/release/examples/transcript_oracle --dump-incremental oracle-blobs/wa.blob out.inc.tsv default wa
 ```
 
 Both `--dump-findings` and `--dump-incremental` are rayon-parallelized

@@ -498,7 +498,6 @@ dependencies = [
  "rustc-hash",
  "serde",
  "serde_json",
- "ssc-galley",
  "tsify",
  "unicode-normalization",
  "unicode-properties",
@@ -512,7 +511,12 @@ dependencies = [
 name = "ssc-galley"
 version = "0.1.0"
 dependencies = [
+ "bincode",
+ "criterion",
+ "rayon",
  "rustc-hash",
+ "serde",
+ "serde_json",
  "ssc-core",
 ]
 
