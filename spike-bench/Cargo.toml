@@ -23,6 +23,8 @@ publish = false
 ssc-core = { path = "../crates/core" }
 rustc-hash = "2"
 unicode-segmentation = "1.12"
+dhat = "0.3"
 
 [profile.release]
 opt-level = 3
+debug = 1
