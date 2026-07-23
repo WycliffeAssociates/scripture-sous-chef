@@ -253,9 +253,9 @@ pub enum MutationEffect {
 /// entry's length-prefixed key bytes then text bytes, so distinct sequences
 /// cannot collapse through concatenation (and each key carries its own
 /// book/chapter/verse token, so a chapter-boundary rearrangement changes the
-/// hash). This is the one hashing primitive; `cache::book_hash` delegates
-/// here, and [`Corpus`]'s owned book/chapter hashes use it too, so a hash is
-/// byte-identical whether computed at construction or over a `BookGroup`.
+/// hash). This is the one verse-level hashing primitive; [`Corpus`]'s owned
+/// **chapter** hashes use it directly, and the owned **book** hash folds those
+/// chapter hashes (see [`fold_book_hash`]).
 pub(crate) fn content_hash(keys: &[String], texts: &[String]) -> u128 {
     let mut hasher = Xxh3::new();
     for (key, text) in keys.iter().zip(texts.iter()) {
@@ -263,6 +263,27 @@ pub(crate) fn content_hash(keys: &[String], texts: &[String]) -> u128 {
         hasher.update(key.as_bytes());
         hasher.update(&(text.len() as u32).to_le_bytes());
         hasher.update(text.as_bytes());
+    }
+    hasher.digest128()
+}
+
+/// Fold a book's ordered chapter layouts into its content hash (plan §4): a
+/// count prefix, then per chapter the length-prefixed opaque token bytes
+/// followed by that chapter's 16-byte content hash, in presented order. It is
+/// order-sensitive and length-delimited, so neither a chapter reorder nor a
+/// token/hash concatenation can collide, and it **composes from the
+/// already-owned chapter hashes** rather than re-reading every verse (Entry 4
+/// adjudication). Two books with identical ordered chapter content therefore
+/// fold to the identical hash, and any chapter-token, chapter-order, or
+/// chapter-content change moves it — so provenance/cache equality behaves
+/// exactly as the former flat hash did, only over a cheaper composition.
+fn fold_book_hash(chapters: &[ChapterLayout]) -> u128 {
+    let mut hasher = Xxh3::new();
+    hasher.update(&(chapters.len() as u32).to_le_bytes());
+    for c in chapters {
+        hasher.update(&(c.chapter.len() as u32).to_le_bytes());
+        hasher.update(c.chapter.as_bytes());
+        hasher.update(&c.hash.to_le_bytes());
     }
     hasher.digest128()
 }
@@ -278,11 +299,11 @@ pub(crate) struct ChapterLayout {
 }
 
 /// One book's owned layout: slug, its global verse range, its ordered chapter
-/// layouts, and a content hash of the whole book. The book hash is the flat
-/// content hash over the book's verses (byte-identical to `cache::book_hash`),
-/// which already distinguishes chapter boundaries because every hashed key
-/// carries its chapter token — the derived proof the analysis path reads
-/// instead of re-hashing per call.
+/// layouts, and a content hash of the whole book. The book hash is the ordered,
+/// length-delimited fold of its `(chapter token, chapter hash)` pairs (see
+/// [`fold_book_hash`], plan §4) — the derived proof the analysis path reads
+/// instead of re-hashing per call. It composes from the owned chapter hashes,
+/// so distinguishing chapter boundaries and order costs no verse re-read.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct BookLayout {
     pub(crate) slug: Box<str>,
@@ -327,7 +348,7 @@ fn build_layout(keys: &[String], texts: &[String]) -> Vec<BookLayout> {
         let range = book_start..i;
         books.push(BookLayout {
             slug: Box::from(slug),
-            hash: content_hash(&keys[range.clone()], &texts[range.clone()]),
+            hash: fold_book_hash(&chapters),
             range,
             chapters,
         });
@@ -632,15 +653,17 @@ impl Corpus {
         Ok(MutationEffect::Changed)
     }
 
-    /// Does an existing same-slug book byte-equal `block`? Fast-paths on the
-    /// owned book hash but confirms ordered semantic equality — a hash match
-    /// alone is not proof for untrusted replacement bytes (plan §16 footgun).
+    /// Does an existing same-slug book byte-equal `block`? The owned book hash
+    /// is now a chapter-hash fold ([`fold_book_hash`]), not a flat hash of the
+    /// block's verses, so it is not a cheap pre-filter against raw block bytes;
+    /// the real proof — and it always was, a hash match alone never proves it
+    /// for untrusted replacement bytes (plan §16 footgun) — is the ordered
+    /// length + semantic comparison, which early-exits on the first difference.
     fn book_matches(&self, block: &BookBlock) -> bool {
         let Some(book) = self.layout.iter().find(|b| *b.slug == *block.slug) else {
             return false;
         };
         book.range.len() == block.keys.len()
-            && book.hash == content_hash(&block.keys, &block.texts)
             && self.keys[book.range.clone()] == block.keys[..]
             && self.texts[book.range.clone()] == block.texts[..]
     }
@@ -1011,9 +1034,9 @@ mod tests {
     }
 
     /// The owned layout records presented-order books and their contiguous
-    /// chapter runs with correct global ranges, and each book/chapter hash is
-    /// the flat content hash of its own verse slice — the book hash being
-    /// byte-identical to `cache::book_hash` over the same `BookGroup`.
+    /// chapter runs with correct global ranges; each chapter hash is the flat
+    /// content hash of its own verse slice, and the book hash is the ordered
+    /// fold of its `(chapter token, chapter hash)` pairs (plan §4).
     #[test]
     fn owned_layout_ranges_and_hashes_are_correct() {
         let c = Corpus::try_from_parts(
@@ -1035,13 +1058,19 @@ mod tests {
         assert_eq!(&*layout[1].slug, "EXO");
         assert_eq!(layout[1].range, 3..4);
 
-        // Book hash == the flat content hash of its verse slice.
+        // Book hash == the ordered fold of its (chapter token, chapter hash)
+        // pairs (plan §4), NOT the flat content hash of its verse slice.
         let groups = by_book(&c);
         for (book, group) in layout.iter().zip(groups.iter()) {
             assert_eq!(
                 book.hash,
+                fold_book_hash(&book.chapters),
+                "book hash is the chapter-hash fold"
+            );
+            assert_ne!(
+                book.hash,
                 content_hash(group.keys, group.texts),
-                "book hash is the flat content hash of its verses"
+                "book hash is no longer the flat verse hash"
             );
         }
         // Chapter hash == the content hash of just that chapter's verses.
@@ -1073,6 +1102,73 @@ mod tests {
         c.remove_book("EXO");
         let expect = Corpus::try_from_parts(c.keys().to_vec(), c.texts().to_vec()).unwrap();
         assert_eq!(c.layout, expect.layout, "layout current after remove_book");
+    }
+
+    // ── Book-hash fold (plan §4; Entry 4 adjudication) ───────────────────────
+
+    /// The folded book hash is sensitive to chapter ORDER: two books with the
+    /// identical set of chapters presented in a different order fold to
+    /// different hashes (the fold hashes chapters in presented order).
+    #[test]
+    fn folded_book_hash_is_chapter_order_sensitive() {
+        // Chapter tokens presented "1","2" vs "2","1" — each contiguous and
+        // non-reopening, so both are legal Corpora (Corpus never numerically
+        // orders tokens); only their order differs.
+        let forward =
+            Corpus::try_from_parts(keys(&["GEN 1:1", "GEN 2:1"]), keys(&["a", "b"])).unwrap();
+        let reversed =
+            Corpus::try_from_parts(keys(&["GEN 2:1", "GEN 1:1"]), keys(&["b", "a"])).unwrap();
+        assert_ne!(
+            forward.book_layout()[0].hash,
+            reversed.book_layout()[0].hash,
+            "reordering chapters moves the folded book hash"
+        );
+    }
+
+    /// The folded book hash is sensitive to the chapter TOKEN: the same verse
+    /// content under a different chapter token folds to a different hash.
+    #[test]
+    fn folded_book_hash_is_chapter_token_sensitive() {
+        let a = Corpus::try_from_parts(keys(&["GEN 1:1"]), keys(&["x"])).unwrap();
+        let b = Corpus::try_from_parts(keys(&["GEN 2:1"]), keys(&["x"])).unwrap();
+        assert_ne!(
+            a.book_layout()[0].hash,
+            b.book_layout()[0].hash,
+            "a different chapter token moves the folded book hash"
+        );
+    }
+
+    /// Identical final content folds to the identical book hash regardless of
+    /// how it was reached — direct construction, `replace_books`, or
+    /// `replace_chapter` — so provenance/cache equality is path-independent.
+    #[test]
+    fn folded_book_hash_identical_across_construction_and_mutation() {
+        let direct = Corpus::try_from_parts(
+            keys(&["GEN 1:1", "GEN 1:2", "GEN 2:1"]),
+            keys(&["a", "b", "c"]),
+        )
+        .unwrap();
+        let target = direct.book_layout()[0].hash;
+
+        // Reach the same content via a whole-book replacement.
+        let mut m1 = Corpus::try_from_parts(keys(&["GEN 1:1"]), keys(&["z"])).unwrap();
+        m1.replace_books(vec![block(
+            "GEN",
+            &["GEN 1:1", "GEN 1:2", "GEN 2:1"],
+            &["a", "b", "c"],
+        )])
+        .unwrap();
+        assert_eq!(m1.book_layout()[0].hash, target, "replace_books folds identically");
+
+        // Reach the same content via a single-chapter replacement.
+        let mut m2 = Corpus::try_from_parts(
+            keys(&["GEN 1:1", "GEN 1:2", "GEN 2:1"]),
+            keys(&["A", "B", "c"]),
+        )
+        .unwrap();
+        m2.replace_chapter(chapter_block("GEN", "1", &["GEN 1:1", "GEN 1:2"], &["a", "b"]))
+            .unwrap();
+        assert_eq!(m2.book_layout()[0].hash, target, "replace_chapter folds identically");
     }
 
     fn chapter_block(slug: &str, chapter: &str, ks: &[&str], txt: &[&str]) -> ChapterBlock {
