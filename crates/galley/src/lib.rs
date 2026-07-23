@@ -16,8 +16,8 @@
 
 use rustc_hash::FxHashSet;
 use ssc_core::{
-    BookBlock, CensusOptions, ChapterBlock, Config, Corpus, CorpusError, Finding, Inventory,
-    MutationEffect, PrepCache, Stats, analyze_stateful, census,
+    AnalysisId, BookBlock, CensusOptions, ChapterBlock, Config, Corpus, CorpusError, Finding,
+    Inventory, MutationEffect, PrepCache, Stats, TargetContextId, analyze_stateful, census,
 };
 
 /// The resident analysis handle. Owns everything that persists between calls;
@@ -159,6 +159,31 @@ impl Galley {
         );
         self.prior = Some(stats);
         findings
+    }
+
+    /// The content-derived identity of the current resident inputs
+    /// (target + reference presence/content + config + engine stamp). Pure:
+    /// it folds the corpus's owned book hashes (O(book count), no verse walk)
+    /// and needs no analysis — it is available before the first
+    /// [`analyze`](Galley::analyze) and while the handle is dirty. Phase A-W
+    /// writes it into each packed buffer's header; it does not authorize reuse
+    /// by itself.
+    pub fn expected_analysis_id(&self) -> AnalysisId {
+        AnalysisId::compute(&self.corpus, self.source.as_ref(), &self.config)
+    }
+
+    /// The target-only content identity (target + config + engine stamp,
+    /// excluding the reference). Same lifecycle/complexity as
+    /// [`expected_analysis_id`](Galley::expected_analysis_id); its only use is
+    /// the reference-present → reference-absent persisted-findings salvage.
+    pub fn expected_target_context_id(&self) -> TargetContextId {
+        TargetContextId::compute(&self.corpus, &self.config)
+    }
+
+    /// Whether a reference (source) corpus is currently resident — the
+    /// canonical presence bit for persistence validation.
+    pub fn has_reference(&self) -> bool {
+        self.source.is_some()
     }
 
     /// Pure census (absolute inventory) over the resident corpus. Ignores the
@@ -657,6 +682,57 @@ mod tests {
         // remove_books: absent slug → 0; present → 1.
         assert_eq!(g.remove_books(&["NOPE"]), 0);
         assert_eq!(g.remove_books(&["GEN"]), 1);
+    }
+
+    /// The resident identity accessors are available before analyze, stable
+    /// across a semantic no-op, and move on a real target/reference/config
+    /// edit; `expected_target_context_id` is insensitive to the reference,
+    /// and `has_reference` tracks the resident source (§12.1).
+    #[test]
+    fn identity_accessors_track_inputs() {
+        let cfg = Config::all();
+        let c0 = corpus_of(vec![keyed("GEN", &["a  b", "one"]), keyed("EXO", &["x\ty", "two"])]);
+        let src = corpus_of(vec![keyed("GEN", &["s"])]);
+        let mut g = Galley::new(c0.clone(), Some(src), cfg.clone());
+
+        // Available before any analyze.
+        let id0 = g.expected_analysis_id();
+        let tcid0 = g.expected_target_context_id();
+        assert!(g.has_reference());
+
+        // Stable across analyze and a byte-identical (semantic no-op) update.
+        g.analyze();
+        assert_eq!(g.expected_analysis_id(), id0, "id stable across analyze");
+        assert_eq!(
+            g.update_book(book("GEN", &["a  b", "one"])).unwrap(),
+            MutationEffect::Unchanged
+        );
+        assert_eq!(g.expected_analysis_id(), id0, "id stable across a semantic no-op");
+
+        // A real target edit moves the id (and the target-context id).
+        g.update_book(book("GEN", &["a  b edited", "one"])).unwrap();
+        assert_ne!(g.expected_analysis_id(), id0);
+        assert_ne!(g.expected_target_context_id(), tcid0);
+
+        // Swapping the reference moves the analysis id but NOT the
+        // target-context id.
+        let tcid1 = g.expected_target_context_id();
+        let id1 = g.expected_analysis_id();
+        g.replace_source(Some(corpus_of(vec![keyed("GEN", &["different source"])])));
+        assert_ne!(g.expected_analysis_id(), id1, "reference change moves the analysis id");
+        assert_eq!(
+            g.expected_target_context_id(),
+            tcid1,
+            "reference change does not move the target-context id"
+        );
+
+        // Clearing the reference flips has_reference and again moves the id.
+        g.replace_source(None);
+        assert!(!g.has_reference());
+
+        // A config change moves both ids.
+        g.update_config(Config::v1_defaults());
+        assert_ne!(g.expected_target_context_id(), tcid1, "config change moves the target-context id");
     }
 
     /// `census` is a pure read of the resident corpus, independent of prior.

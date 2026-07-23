@@ -49,6 +49,13 @@ impl KeyIdx {
             .map(KeyIdx)
             .map_err(|_| CorpusError::CorpusTooLarge { len: v })
     }
+
+    /// The raw global index. The mechanical accessor the packed-findings wire
+    /// (`ssc-wire`, Phase A-W) writes into each record; ordinary callers
+    /// resolve a `KeyIdx` through [`Corpus::key`]/[`Corpus::text`] instead.
+    pub fn get(self) -> u32 {
+        self.0
+    }
 }
 
 /// Position within one [`BookGroup`]. Stable for an unchanged book across
@@ -1028,10 +1035,9 @@ mod tests {
         assert_eq!(&*layout[1].slug, "EXO");
         assert_eq!(layout[1].range, 3..4);
 
-        // Book hash == the flat content hash of its slice == cache::book_hash.
+        // Book hash == the flat content hash of its verse slice.
         let groups = by_book(&c);
         for (book, group) in layout.iter().zip(groups.iter()) {
-            assert_eq!(book.hash, crate::cache::book_hash(group));
             assert_eq!(
                 book.hash,
                 content_hash(group.keys, group.texts),

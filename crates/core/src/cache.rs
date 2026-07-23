@@ -9,7 +9,7 @@ use rustc_hash::FxHashMap;
 use xxhash_rust::xxh3::xxh3_64;
 
 use crate::config::Config;
-use crate::corpus::{BookGroup, KeyIdx, LocalKeyIdx, SiteAddr, rebase, unrebase};
+use crate::corpus::{KeyIdx, LocalKeyIdx, SiteAddr, rebase, unrebase};
 use crate::diagnostics::{Finding, RuleId, Severity};
 use crate::signals::{
     bracket_balance, casing, lexical, mixed_normalization, punctuation, script_mixing,
@@ -348,14 +348,6 @@ pub(crate) struct CachedWalk {
     pub(crate) tokens: Option<Vec<(LocalKeyIdx, Vec<Token>)>>,
 }
 
-/// Hash a book's ordered keys and text, including length prefixes so
-/// distinct verse sequences cannot collapse through concatenation. Delegates
-/// to the one hashing primitive [`crate::corpus::content_hash`], so a book's
-/// cache hash is byte-identical to the same book's owned `BookLayout` hash.
-pub(crate) fn book_hash(group: &BookGroup<'_>) -> u128 {
-    crate::corpus::content_hash(group.keys, group.texts)
-}
-
 fn config_fingerprint(config: &Config) -> u64 {
     let debug = format!("{config:?}");
     let mut input = CACHE_SCHEMA.to_le_bytes().to_vec();
@@ -367,35 +359,21 @@ fn config_fingerprint(config: &Config) -> u64 {
 mod tests {
     use super::*;
 
-    /// A one-book `BookGroup` built directly from key/text slices — `book_hash`
-    /// only reads `keys`/`texts`, so this skips a full `Corpus` for isolated
-    /// hashing tests.
-    fn group<'a>(keys: &'a [String], texts: &'a [String]) -> BookGroup<'a> {
-        BookGroup {
-            slug: "GEN",
-            base: KeyIdx::from_usize(0),
-            keys,
-            texts,
-        }
-    }
-
+    /// The content hash (the one hashing primitive `book_hash` used to wrap)
+    /// distinguishes keys differing only in their chapter/verse components,
+    /// because each key is length-prefixed and hashed whole.
     #[test]
-    fn book_hash_keeps_u16_address_components() {
+    fn content_hash_keeps_u16_address_components() {
+        use crate::corpus::content_hash;
         let empty: Vec<String> = Vec::new();
-        assert_ne!(book_hash(&group(&empty, &empty)), 0);
+        assert_ne!(content_hash(&empty, &empty), 0);
 
         let k1 = vec!["GEN 1:1".to_string()];
         let k2 = vec!["GEN 257:1".to_string()];
         let k3 = vec!["GEN 1:257".to_string()];
         let same_text = vec!["same".to_string()];
-        assert_ne!(
-            book_hash(&group(&k1, &same_text)),
-            book_hash(&group(&k2, &same_text))
-        );
-        assert_ne!(
-            book_hash(&group(&k1, &same_text)),
-            book_hash(&group(&k3, &same_text))
-        );
+        assert_ne!(content_hash(&k1, &same_text), content_hash(&k2, &same_text));
+        assert_ne!(content_hash(&k1, &same_text), content_hash(&k3, &same_text));
     }
 
     #[test]

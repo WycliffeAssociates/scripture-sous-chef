@@ -91,6 +91,62 @@ impl std::fmt::Display for RuleId {
     }
 }
 
+/// The closed, output-level classification of a rule's semantic inputs, used
+/// by content identity and persisted-findings validation (plan §5.2). It
+/// describes which inputs may affect a rule's *findings* — never its substrate
+/// or cache implementation. Rules never inspect it; the closed registry and
+/// the generated wire schema do. It is an enum, not a bool, so a future
+/// non-silent absence behavior or new input kind forces an explicit
+/// exhaustive decision rather than silently entering the reference-removal
+/// salvage path.
+///
+/// The generated JS schema spells these `"target-only"` and
+/// `"target-and-reference-silent-when-absent"`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "kebab-case"))]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+pub enum InputDependency {
+    TargetOnly,
+    TargetAndReferenceSilentWhenAbsent,
+}
+
+impl RuleId {
+    /// This rule's output-level [`InputDependency`]. An exhaustive match (no
+    /// `_` arm), so a new rule cannot land without an explicit classification.
+    /// Only `prop.length-ratio` reads the reference (source) corpus, and it
+    /// emits nothing at all when no reference is present.
+    pub fn input_dependency(self) -> InputDependency {
+        match self {
+            RuleId::ProjectLengthRatio => InputDependency::TargetAndReferenceSilentWhenAbsent,
+            RuleId::ExcessHWhitespace
+            | RuleId::TabInBody
+            | RuleId::ControlChars
+            | RuleId::ZeroWidthMisuse
+            | RuleId::EmptyVerse
+            | RuleId::InvalidCodepoint
+            | RuleId::ReplacementRun
+            | RuleId::SourceMarkerLeftover
+            | RuleId::MergeConflictMarker
+            | RuleId::PunctuationAdjacencyAnomaly
+            | RuleId::DuplicateWord
+            | RuleId::PunctOnlyToken
+            | RuleId::CombiningMarkWithoutBase
+            | RuleId::RedundantZeroWidthSpace
+            | RuleId::MixedScriptInToken
+            | RuleId::RepeatedCharacterRun
+            | RuleId::MixedNumeralSystems
+            | RuleId::BracketBalance
+            | RuleId::PunctuationSpacingAnomaly
+            | RuleId::SentenceInitialLowercase
+            | RuleId::InconsistentWordCasing
+            | RuleId::RareGlyph
+            | RuleId::MixedCaseWord
+            | RuleId::MixedNormalization => InputDependency::TargetOnly,
+        }
+    }
+}
+
 /// How loud a finding is. Maps 1:1 to the editor's annotation severity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]

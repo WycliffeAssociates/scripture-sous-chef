@@ -21,6 +21,7 @@ pub mod corpus;
 pub mod diagnostics;
 mod evidence;
 pub mod grapheme;
+pub mod identity;
 pub mod key;
 pub mod rule;
 pub mod script;
@@ -45,9 +46,10 @@ pub use config::{
 };
 pub use corpus::{BookBlock, ChapterBlock, Corpus, CorpusError, KeyIdx, MutationEffect};
 pub use diagnostics::{
-    BracketMeasure, DelimObservation, DelimRole, Finding, FindingArgs, LengthRatioScope, RuleId,
-    Severity,
+    BracketMeasure, DelimObservation, DelimRole, Finding, FindingArgs, InputDependency,
+    LengthRatioScope, RuleId, Severity,
 };
+pub use identity::{ANALYSIS_ENGINE_STAMP, AnalysisId, TargetContextId};
 pub use span::{GraphemeSpan, Span, Utf16Span};
 pub use stats::{RuleStats, SOURCE_NONE, Stats, Tally};
 
@@ -195,18 +197,21 @@ pub fn analyze_stateful(
     if let Some(cache) = cache.as_deref_mut() {
         cache.ensure_fingerprint(config);
     }
-    // Every supplied book's content hash, on EVERY call (~0.5–1 ms serial on a
-    // full Bible): the counting decision is proven from these hashes against the
-    // prior's per-book provenance, so there is no zero-hash path — fresh tallies
-    // must be stamped even on a cold, cache-less call.
-    let hashes: Vec<u128> = books.iter().map(cache::book_hash).collect();
-    // Source book hashes by slug, for per-book source provenance. A target book
-    // pairs only with the same-slug source book (its keys parse to its slug), so
-    // that is the only source text its counts depend on.
+    // Every supplied book's content hash, read from the corpus's OWNED layout
+    // rather than re-hashed per call: `Corpus` computes these at construction
+    // and every mutation, so a stateless construction is still fresh proof and
+    // the analysis path no longer walks verse text to hash it. `books` is
+    // `by_book(target)`, which reads the same layout, so it is index-aligned
+    // with the layout's presented order.
+    let hashes: Vec<u128> = target.book_layout().iter().map(|b| b.hash).collect();
+    // Source book hashes by slug, for per-book source provenance, read from the
+    // reference corpus's owned layout. A target book pairs only with the
+    // same-slug source book (its keys parse to its slug), so that is the only
+    // source text its counts depend on.
     let source_hashes: Option<BTreeMap<&str, u128>> = source.map(|s| {
-        corpus::by_book(s)
+        s.book_layout()
             .iter()
-            .map(|g| (g.slug, cache::book_hash(g)))
+            .map(|b| (&*b.slug, b.hash))
             .collect()
     });
     // Fingerprint of the enabled counting-rule set: records which rules'
@@ -801,6 +806,57 @@ mod tests {
     /// collection order; under the serial default it pins the contract. The
     /// cross-*build* equality (feature-on findings == feature-off findings) is
     /// asserted in CI by running the suite under both feature sets.
+    /// The closed `InputDependency` registry classifies every `RuleId` exactly
+    /// once (the exhaustive match is compiler-enforced; this proves the total
+    /// call is panic-free over `RuleId::ALL`), and exactly one rule —
+    /// `prop.length-ratio` — reads the reference.
+    #[test]
+    fn input_dependency_covers_every_rule() {
+        let ref_dependent: Vec<RuleId> = RuleId::ALL
+            .iter()
+            .copied()
+            .filter(|r| {
+                r.input_dependency() == InputDependency::TargetAndReferenceSilentWhenAbsent
+            })
+            .collect();
+        assert_eq!(ref_dependent, vec![RuleId::ProjectLengthRatio]);
+        // Every other rule is TargetOnly (total coverage, no panic).
+        for &r in RuleId::ALL {
+            let dep = r.input_dependency();
+            if r != RuleId::ProjectLengthRatio {
+                assert_eq!(dep, InputDependency::TargetOnly, "{r:?}");
+            }
+        }
+    }
+
+    /// Every rule classified `TargetAndReferenceSilentWhenAbsent` emits no
+    /// findings at all when no reference is present — the contract the
+    /// reference-removal persisted-findings salvage relies on (§5.2 / §A.5).
+    #[test]
+    fn reference_silent_rules_emit_nothing_without_reference() {
+        // A rich, long-enough target so proportionality's min-verse floor is
+        // cleared and it *would* fire were a reference present.
+        let mut verses: Vec<String> = (0..60)
+            .map(|i| format!("verse number {i} with some words to vary the length a bit"))
+            .collect();
+        verses[0] = "x".to_string(); // a wildly short verse, a ratio outlier
+        let target = mks("GEN", &verses);
+
+        for &rule in RuleId::ALL {
+            if rule.input_dependency() != InputDependency::TargetAndReferenceSilentWhenAbsent {
+                continue;
+            }
+            let mut cfg = Config::all();
+            cfg.rules.insert(rule, true);
+            // No reference supplied.
+            let findings = analyze_with_config(&target, None, &cfg);
+            assert!(
+                findings.iter().all(|f| f.code != rule),
+                "{rule:?} must emit nothing with no reference"
+            );
+        }
+    }
+
     #[test]
     fn findings_are_sorted_and_deterministic() {
         // A multi-verse, multi-book corpus that trips several default rules.
