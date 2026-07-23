@@ -3,13 +3,13 @@
 //!
 //! Mirrors `warm_ladder_profile.rs`'s scenario exactly: load WA-en-ulb via
 //! `spike_bench::vref_io::load_corpus`, build `Config::v1_defaults()` or the
-//! "all rules on" config, seed a resident `PrepCache` + prior `Stats` with a
-//! cold `analyze_stateful` call, then repeatedly warm-re-analyze with the
-//! 3JN book edited (alternating two text variants so the content hash misses
-//! every call, same as the samply harness). The only difference: this binary
-//! doesn't profile with samply, it profiles with `dhat`'s allocator wrapper,
-//! to see whether dhat itself survives this workload (it's documented as
-//! liable to crash, hang, or misbehave on some configurations).
+//! "all rules on" config, seed a resident `Galley` with a cold `analyze` call,
+//! then repeatedly warm-re-analyze with the 3JN book edited via `update_book`
+//! (alternating two text variants so the content hash misses every call, same
+//! as the samply harness). The only difference: this binary doesn't profile
+//! with samply, it profiles with `dhat`'s allocator wrapper, to see whether
+//! dhat itself survives this workload (it's documented as liable to crash,
+//! hang, or misbehave on some configurations).
 //!
 //! Usage:
 //!   dhat_probe <testing|profile> <default|all>
@@ -28,7 +28,8 @@ static ALLOC: dhat::Alloc = dhat::Alloc;
 
 use std::path::PathBuf;
 
-use ssc_core::{Config, Corpus, PrepCache, RuleId, analyze_stateful};
+use ssc_core::{BookBlock, Config, Corpus, RuleId};
+use ssc_galley::Galley;
 
 const CORPUS_PATH: &str = "../corpora/vref/WA-en-ulb.txt";
 const BOOK_CODE: &str = "3JN";
@@ -59,26 +60,33 @@ fn main() {
     let bible = spike_bench::vref_io::load_corpus(&path);
     eprintln!("loaded {} verses from {}", bible.len(), path.display());
 
-    let edit_pos = bible
-        .keys()
+    let books = ssc_core::corpus::by_book(&bible);
+    let bg = books
         .iter()
-        .position(|k| ssc_core::key::parse_key(k).expect("vref key").book == BOOK_CODE)
+        .find(|g| g.slug == BOOK_CODE)
         .unwrap_or_else(|| panic!("book {BOOK_CODE} not present in corpus"));
+    let base_keys: Vec<String> = bg.keys.iter().map(|k| k.to_string()).collect();
+    let base_texts: Vec<String> = bg.texts.iter().map(|t| t.to_string()).collect();
+    drop(books);
 
-    let variant = |suffix: &str| {
-        let mut texts = bible.texts().to_vec();
-        texts[edit_pos].push_str(suffix);
-        Corpus::try_from_parts(bible.keys().to_vec(), texts).unwrap()
+    let make_block = |suffix: &str| {
+        let mut texts = base_texts.clone();
+        texts[0].push_str(suffix);
+        BookBlock {
+            slug: BOOK_CODE.into(),
+            keys: base_keys.clone(),
+            texts,
+        }
     };
-    let variant_a = variant(" edited");
-    let variant_b = variant(" edited twice");
+    let block_a = make_block(" edited");
+    let block_b = make_block(" edited twice");
 
     let cfg = build_config(config_name);
     eprintln!("config: {config_name}, mode: {mode}");
 
     match mode {
-        "testing" => run_testing(&bible, &cfg, &variant_a, &variant_b),
-        "profile" => run_profile(&bible, &cfg, &variant_a, &variant_b),
+        "testing" => run_testing(&bible, &cfg, block_a, block_b),
+        "profile" => run_profile(&bible, &cfg, block_a, block_b),
         other => {
             eprintln!("unknown mode {other:?} (want testing|profile)");
             std::process::exit(2);
@@ -86,12 +94,12 @@ fn main() {
     }
 }
 
-fn run_testing(bible: &Corpus, cfg: &Config, variant_a: &Corpus, variant_b: &Corpus) {
+fn run_testing(bible: &Corpus, cfg: &Config, block_a: BookBlock, block_b: BookBlock) {
     let _profiler = dhat::Profiler::builder().testing().build();
 
-    let mut cache = PrepCache::new();
+    let mut galley = Galley::new(bible.clone(), None, cfg.clone());
     let seed_start = std::time::Instant::now();
-    let (_, seed_stats) = analyze_stateful(bible, None, cfg, None, Some(&mut cache));
+    let _ = galley.analyze();
     eprintln!("cold seed: {:?}", seed_start.elapsed());
 
     let seed_heap = dhat::HeapStats::get();
@@ -105,18 +113,19 @@ fn run_testing(bible: &Corpus, cfg: &Config, variant_a: &Corpus, variant_b: &Cor
         seed_heap.max_bytes,
     );
 
-    let mut prior = Some(seed_stats);
     let mut flip = false;
     let mut prev = seed_heap;
 
     for i in 0..WARM_ITERS {
-        let target = if flip { variant_a } else { variant_b };
+        let block = if flip { block_a.clone() } else { block_b.clone() };
         flip = !flip;
 
         let iter_start = std::time::Instant::now();
-        let (findings, stats) = analyze_stateful(target, None, cfg, prior.take(), Some(&mut cache));
+        galley
+            .update_book(block)
+            .expect("valid complete-book replacement");
+        let findings = galley.analyze();
         let elapsed = iter_start.elapsed();
-        prior = Some(stats);
 
         let now = dhat::HeapStats::get();
         eprintln!(
@@ -133,15 +142,14 @@ fn run_testing(bible: &Corpus, cfg: &Config, variant_a: &Corpus, variant_b: &Cor
     }
 }
 
-fn run_profile(bible: &Corpus, cfg: &Config, variant_a: &Corpus, variant_b: &Corpus) {
+fn run_profile(bible: &Corpus, cfg: &Config, block_a: BookBlock, block_b: BookBlock) {
     let _profiler = dhat::Profiler::new_heap();
 
-    let mut cache = PrepCache::new();
+    let mut galley = Galley::new(bible.clone(), None, cfg.clone());
     let seed_start = std::time::Instant::now();
-    let (_, seed_stats) = analyze_stateful(bible, None, cfg, None, Some(&mut cache));
+    let _ = galley.analyze();
     eprintln!("cold seed: {:?}", seed_start.elapsed());
 
-    let mut prior = Some(seed_stats);
     let mut flip = false;
     // Small iteration count deliberately — dhat's per-allocation backtrace
     // capture is much slower than the plain allocator, and this is a
@@ -149,11 +157,12 @@ fn run_profile(bible: &Corpus, cfg: &Config, variant_a: &Corpus, variant_b: &Cor
     const PROFILE_ITERS: usize = 5;
     let loop_start = std::time::Instant::now();
     for _ in 0..PROFILE_ITERS {
-        let target = if flip { variant_a } else { variant_b };
+        let block = if flip { block_a.clone() } else { block_b.clone() };
         flip = !flip;
-        let (findings, stats) = analyze_stateful(target, None, cfg, prior.take(), Some(&mut cache));
-        prior = Some(stats);
-        std::hint::black_box(findings.len());
+        galley
+            .update_book(block)
+            .expect("valid complete-book replacement");
+        std::hint::black_box(galley.analyze().len());
     }
     let elapsed = loop_start.elapsed();
     eprintln!(

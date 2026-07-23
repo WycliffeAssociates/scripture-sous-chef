@@ -26,9 +26,9 @@
 //!   # fleet survey → self-contained HTML report (all rules, floors zeroed,
 //!   # every corpus in the directory; out defaults to target/fleet-report.html):
 //!   cargo run --release -p ssc-core --example calibrate -- --fleet corpora/vref [out.html]
-//!   # incremental oracle with the cross-call analysis cache enabled:
+//!   # incremental oracle: resident-Galley complete-snapshot mutation transcript
 //!   cargo run --release -p ssc-core --example calibrate -- \
-//!       --dump-incremental-cached corpora/vref /tmp/incremental.tsv default
+//!       --dump-incremental corpora/vref /tmp/incremental.tsv default
 //!   # fast inner-loop oracle: WA subset only (~251 corpora, ~6x quicker) —
 //!   # trailing `wa` scopes any dump command; omit (or `full`) for the whole
 //!   # fleet. A `wa` dump only ever diffs against another `wa` dump.
@@ -288,29 +288,17 @@ fn main() {
             );
             return;
         }
-        // Incremental oracle: for each corpus, mutate one verse, then run the
-        // complete-snapshot call (whole corpus + prior; the edited book
-        // re-tallies by content hash) and dump its findings + a split stats
-        // digest. Pins the prior/merge/provenance path across the port.
-        // Trailing `wa`|`full` scopes the fleet as above.
+        // Incremental oracle: a resident-`Galley` complete-snapshot mutation
+        // transcript. For each corpus, seed a Galley over the complete corpus,
+        // apply the fixed edit to the first book (a complete-book replacement —
+        // no echo), analyze, and dump the post-mutation findings. Pins the
+        // resident mutate+re-analyze path (the editor's steady state) across
+        // the port. Trailing `wa`|`full` scopes the fleet as above.
         [flag, path, out, cfg_name, rest @ ..] if flag == "--dump-incremental" => {
             dump_incremental(
                 Path::new(path),
                 Path::new(out),
                 cfg_name,
-                false,
-                OracleScope::parse(rest),
-            );
-            return;
-        }
-        // Same incremental oracle with the cross-call cache enabled. The
-        // output must remain byte-identical to --dump-incremental (same scope).
-        [flag, path, out, cfg_name, rest @ ..] if flag == "--dump-incremental-cached" => {
-            dump_incremental(
-                Path::new(path),
-                Path::new(out),
-                cfg_name,
-                true,
                 OracleScope::parse(rest),
             );
             return;

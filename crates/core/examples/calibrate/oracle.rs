@@ -13,7 +13,8 @@ use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use rayon::prelude::*;
-use ssc_core::{Config, Corpus, Finding, PrepCache, RuleId, analyze_with_config};
+use ssc_core::{BookBlock, Config, Corpus, Finding, RuleId, analyze_with_config};
+use ssc_galley::Galley;
 
 use crate::vref_io::load_corpus;
 
@@ -202,67 +203,35 @@ pub fn dump_findings(path: &Path, out_path: &Path, cfg_name: &str, scope: Oracle
     );
 }
 
-/// FNV-1a 64 over a string — a dependency-free stats digest.
-pub fn fnv64(s: &str) -> u64 {
-    let mut h: u64 = 0xcbf29ce484222325;
-    for b in s.as_bytes() {
-        h ^= u64::from(*b);
-        h = h.wrapping_mul(0x100000001b3);
-    }
-    h
-}
-
-/// One stats-digest line for the incremental oracle:
-/// `stats<TAB>id<TAB>mode<TAB>rules_len<TAB>rules_fnv<TAB>prov_fnv`. The `stats`
-/// sentinel is column 1 so every digest line is mechanically separable from
-/// finding lines (which start with the corpus id). `rules_len`/`rules_fnv`
-/// digest the per-rule sections alone; `prov_fnv` digests the provenance map
-/// alone — split so the gate can prove a wire change touched only provenance.
-///
-/// The rules view (`{"rules":…}`) is byte-identical to the whole-`Stats`
-/// serialization before provenance existed, so `rules_fnv` stays pinned across
-/// the provenance addition; only `prov_fnv` moves.
-pub fn write_stats_digest(out: &mut impl Write, id: &str, mode: &str, stats: &ssc_core::Stats) {
-    #[derive(serde::Serialize)]
-    struct RulesView<'a> {
-        rules: &'a std::collections::BTreeMap<ssc_core::RuleId, ssc_core::RuleStats>,
-    }
-    let rules = serde_json::to_string(&RulesView {
-        rules: stats.oracle_rules(),
-    })
-    .unwrap();
-    let prov = serde_json::to_string(&stats.tallied).unwrap();
-    writeln!(
-        out,
-        "stats\t{id}\t{mode}\t{}\t{:016x}\t{:016x}",
-        rules.len(),
-        fnv64(&rules),
-        fnv64(&prov),
-    )
-    .unwrap();
-}
-
 /// A fixed, multi-rule-provoking edit applied to the last verse of the first
 /// book: doubles punctuation, excess whitespace, a rare glyph, a mixed-case
 /// word, a spaced comma, an unbalanced paren.
 const EDIT_TEXT: &str = "He fell ,, the  gate stood.. qQx deJésus (broken";
 
-/// Same parallel-render-then-sequential-write shape as `dump_findings` (see
-/// its doc comment) — each corpus's three `analyze_stateful` calls run
-/// independently in parallel, `collect()` preserves file order for the
-/// gate-critical write.
-pub fn dump_incremental(
-    path: &Path,
-    out_path: &Path,
-    cfg_name: &str,
-    cached: bool,
-    scope: OracleScope,
-) {
+/// The incremental oracle — a resident-`Galley` complete-snapshot mutation
+/// transcript (granularity-spine Phase A step 5; the echo/serialized-`Stats`
+/// oracle it replaces was retired with echo semantics, plan §2.3/§12.5).
+///
+/// Per corpus, exactly what the editor's resident steady state does: seed a
+/// `Galley` over the **complete** corpus (a cold analyze warming its resident
+/// prior + prep), apply the fixed `EDIT_TEXT` mutation to the first book as a
+/// complete-book replacement (`update_book` — never an echo subset), analyze
+/// again, and dump the post-mutation findings for the whole corpus. The mutated
+/// book re-tallies by content hash; clean siblings carry. No stats/provenance
+/// digest is written: the serialized `Stats` wire it digested no longer exists,
+/// and per-book provenance is now a private engine detail, not a gate contract.
+///
+/// Same parallel-render-then-sequential-write shape as `dump_findings` (see its
+/// doc comment): each corpus's own resident `Galley` is independent, so the
+/// `par_iter().map(..).collect()` preserves file order regardless of completion
+/// order — byte-stable across runs and thread counts. Keeps the `wa|full`
+/// scope token and the stderr scope print.
+pub fn dump_incremental(path: &Path, out_path: &Path, cfg_name: &str, scope: OracleScope) {
     let cfg = oracle_config(cfg_name);
     let corpora = load_corpora(path, scope);
     let source = resolve_source(path, &corpora);
     // Every 8th corpus (plus the first): the incremental gate needs breadth,
-    // not the whole fleet, and this dump runs three analyses per corpus. The
+    // not the whole fleet, and this dump runs two analyses per corpus. The
     // WA subset is subsampled the same way (~32 corpora) after scope filtering.
     let corpora: Vec<_> = corpora.into_iter().step_by(8).collect();
     let total = corpora.len();
@@ -278,50 +247,34 @@ pub fn dump_incremental(
                 }
                 return buf;
             }
-            let mut cache = cached.then(PrepCache::new);
-            let (_, prior) =
-                ssc_core::analyze_stateful(&target, source.as_ref(), &cfg, None, cache.as_mut());
-            // The edit: last verse of the first book. `Books` from `by_book` is
-            // in presented order, so the first group always starts at position 0
-            // — no need to resolve its global `KeyIdx` base (which this example,
-            // a separate compilation unit, cannot do; `KeyIdx`'s constructor is
-            // crate-private).
-            let first_books = ssc_core::corpus::by_book(&target);
-            let first_group = first_books.first().unwrap();
-            let first_len = first_group.keys.len();
+
+            // Seed a resident Galley over the complete corpus (cold analyze
+            // warms its prior + prep), then mutate + re-analyze.
+            let mut galley = Galley::new(target.clone(), source.clone(), cfg.clone());
+            let _ = galley.analyze();
+
+            // The edit: last verse of the first book, as a complete-book
+            // replacement. `by_book` is in presented order, so the first book
+            // occupies positions `0..first_len` of the corpus.
+            let first_books = ssc_core::corpus::by_book(target);
+            let first = first_books.first().unwrap();
+            let first_len = first.keys.len();
+            let first_slug = first.slug.to_string();
             drop(first_books);
+            let keys: Vec<String> = target.keys()[..first_len].to_vec();
+            let mut texts: Vec<String> = target.texts()[..first_len].to_vec();
+            texts[first_len - 1] = EDIT_TEXT.to_string();
+            galley
+                .update_book(BookBlock {
+                    slug: first_slug.into(),
+                    keys,
+                    texts,
+                })
+                .expect("first-book replacement is a valid complete-book update");
 
-            let mut edited_texts = target.texts().to_vec();
-            edited_texts[first_len - 1] = EDIT_TEXT.to_string();
-            let edited = Corpus::try_from_parts(target.keys().to_vec(), edited_texts).unwrap();
+            let findings = galley.analyze();
+            write_findings(&mut buf, id, "snap", galley.corpus(), &findings);
 
-            // Local echo: edited book only + prior.
-            let echo = Corpus::try_from_parts(
-                edited.keys()[..first_len].to_vec(),
-                edited.texts()[..first_len].to_vec(),
-            )
-            .unwrap();
-            let (echo_findings, echo_stats) = ssc_core::analyze_stateful(
-                &echo,
-                source.as_ref(),
-                &cfg,
-                Some(prior.clone()),
-                cache.as_mut(),
-            );
-            write_findings(&mut buf, &id, "echo", &echo, &echo_findings);
-            write_stats_digest(&mut buf, &id, "echo", &echo_stats);
-
-            // Complete snapshot: whole corpus + prior. The edited book re-tallies by
-            // content hash; clean siblings carry — no changed hint.
-            let (snap, stats) = ssc_core::analyze_stateful(
-                &edited,
-                source.as_ref(),
-                &cfg,
-                Some(prior),
-                cache.as_mut(),
-            );
-            write_findings(&mut buf, &id, "snap", &edited, &snap);
-            write_stats_digest(&mut buf, &id, "snap", &stats);
             let n = done.fetch_add(1, Ordering::Relaxed) + 1;
             if n % 20 == 0 {
                 eprintln!("{n}/{total}");

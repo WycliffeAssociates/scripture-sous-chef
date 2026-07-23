@@ -21,6 +21,10 @@ publish = false
 
 [dependencies]
 ssc-core = { path = "../crates/core" }
+# The resident shell — the warm-ladder / dhat harnesses drive the editor's
+# real resident mutate+re-analyze path through `Galley` (granularity-spine
+# Phase A step 5), not the raw `analyze_stateful` prior/cache threading.
+ssc-galley = { path = "../crates/galley" }
 rustc-hash = "2"
 unicode-segmentation = "1.12"
 dhat = "0.3"

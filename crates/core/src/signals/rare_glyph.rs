@@ -142,7 +142,6 @@ fn rarity(count: u64, k: f64) -> f64 {
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default))]
-#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 struct WordInfo {
     tokens: u32,
     titlecase: bool,
@@ -154,22 +153,15 @@ struct WordInfo {
 #[derive(Debug, Clone, Default, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default))]
-#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub(crate) struct BookGlyphs {
     /// Every scalar in the book (ADR 0053 census substrate).
-    #[cfg_attr(feature = "wasm", tsify(type = "Record<string, number>"))]
     pub(crate) inventory: BTreeMap<char, u32>,
     /// `glyph → word → eligible occurrences of the glyph in that word`, for
     /// letter glyphs whose per-book eligible count is ≤ [`RARE_CAP`]. "Eligible"
     /// = inside a single-script letter token (mixed-script tokens are owned by
     /// `uni.mixed-script-in-token`).
-    #[cfg_attr(
-        feature = "wasm",
-        tsify(type = "Record<string, Record<string, number>>")
-    )]
     rare: BTreeMap<char, BTreeMap<String, u32>>,
     /// The container words referenced by `rare`: book-local token count + shape.
-    #[cfg_attr(feature = "wasm", tsify(type = "Record<string, WordInfo>"))]
     words: BTreeMap<String, WordInfo>,
 }
 
@@ -178,9 +170,7 @@ pub(crate) struct BookGlyphs {
 /// Doubles as the future glyph-census accumulator (ADR 0053).
 #[derive(Debug, Clone, Default, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct RareGlyphStats {
-    #[cfg_attr(feature = "wasm", tsify(type = "Record<string, BookGlyphs>"))]
     pub(crate) per_book: BTreeMap<Box<str>, BookGlyphs>,
 }
 
@@ -945,21 +935,6 @@ mod tests {
         assert!(
             run(&map, &rule(cfg)).is_empty(),
             "9 > RARE_CAP, pruned, not a candidate"
-        );
-    }
-
-    #[cfg(feature = "serde")]
-    #[test]
-    fn stats_round_trip_through_serde() {
-        let r = default_rule();
-        let map = corpus("GEN", &[(500, "qami mele")]);
-        let stats = r.reduce(&by_book(&map), None, None).0;
-        let back: RuleStats =
-            serde_json::from_str(&serde_json::to_string(&stats).unwrap()).unwrap();
-        assert_eq!(stats, back);
-        assert_eq!(
-            r.judge(&stats, &by_book(&map), None, None),
-            r.judge(&back, &by_book(&map), None, None)
         );
     }
 }

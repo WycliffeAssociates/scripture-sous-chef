@@ -1,14 +1,18 @@
-//! Corpus statistics — what `analyze_stateful` returns and the shell
-//! threads back to enable incremental re-analysis (ADR 0017).
+//! Corpus statistics — the engine-internal aggregate `analyze_stateful` returns
+//! and the resident shell (`Galley`) threads back to enable incremental
+//! re-analysis (ADR 0017). It is **never** caller-owned, serialized, or sent
+//! across the wasm boundary (the serialized `Stats` wire was retired in
+//! granularity-spine Phase A step 5 — plan §1.1/§5).
 //!
 //! A stateful rule **observes** the corpus into `Stats` (its judging
 //! aggregate *plus* the cached candidate observations), then **judges**
 //! from that alone — so re-judging the whole corpus after an edit is
 //! `O(candidates)` with no re-scan. The shell holds `Stats` as a value and
-//! supplies it back as `prior` alongside the corpus it holds — the whole
-//! corpus, or a subset — and each supplied book **supersedes** its prior entry
-//! at book granularity while books it does not supply carry forward. Core stays
-//! pure (ADR 0010): it holds no state between calls.
+//! supplies it back as `prior` alongside the **complete** corpus it owns, and
+//! each supplied book **supersedes** its prior entry at book granularity. There
+//! is no echo carry-forward: a complete target answers for exactly its books, so
+//! any prior book absent from it is dropped. Core stays pure (ADR 0010): it
+//! holds no state between calls.
 
 use std::collections::BTreeMap;
 
@@ -35,8 +39,6 @@ use crate::signals::script_mixing::MixedScriptStats;
 /// deterministically by `uni.redundant-zero-width-space` (ADR 0027), which needs
 /// no corpus statistics.
 #[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum RuleStats {
     Casing(CasingStats),
     Proportionality(ProportionalityStats),
@@ -133,82 +135,49 @@ pub const SOURCE_NONE: u128 = 0;
 /// recorded in [`Stats::tallied`] — staleness is proven from content, never
 /// declared by the caller.
 ///
-/// The hash fields serialize as fixed-width lowercase hex strings (32 chars for
-/// each u128, 16 for the u64) so the wire stays JSON-safe and deterministic and
-/// never emits a JS `number` for a value past 2⁵³.
+/// The hash fields are raw integers: this is an engine-internal container, not
+/// a serialized wire (the caller-owned/serialized/TS-typed `Stats` surface was
+/// retired in granularity-spine Phase A step 5 — plan §1.1/§5).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct Tally {
     /// `book_hash` of the target text these counts were tallied from.
-    #[cfg_attr(feature = "serde", serde(with = "hex_u128"))]
-    #[cfg_attr(feature = "wasm", tsify(type = "string"))]
     pub text: u128,
     /// `book_hash` of the same-slug source book at tally time, or [`SOURCE_NONE`]
     /// when no source (or no such book) existed. A target book's keys all parse
     /// to its own slug and proportionality pairs by key, so a book's counts
     /// depend on exactly one source book — its own slug.
-    #[cfg_attr(feature = "serde", serde(with = "hex_u128"))]
-    #[cfg_attr(feature = "wasm", tsify(type = "string"))]
     pub source: u128,
     /// `rules_fp` of the enabled counting-rule set at tally time — records WHICH
     /// rules' contributions exist for this book. Text hashes alone cannot: a
     /// prior built with a rule disabled has no counts for it even though every
     /// text hash matches.
-    #[cfg_attr(feature = "serde", serde(with = "hex_u64"))]
-    #[cfg_attr(feature = "wasm", tsify(type = "string"))]
     pub rules: u64,
 }
 
-/// Serialize a `u128` as a fixed 32-char lowercase hex string.
-#[cfg(feature = "serde")]
-mod hex_u128 {
-    pub fn serialize<S: serde::Serializer>(v: &u128, s: S) -> Result<S::Ok, S::Error> {
-        s.serialize_str(&format!("{v:032x}"))
-    }
-    pub fn deserialize<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u128, D::Error> {
-        use serde::Deserialize;
-        let s = String::deserialize(d)?;
-        u128::from_str_radix(&s, 16).map_err(serde::de::Error::custom)
-    }
-}
-
-/// Serialize a `u64` as a fixed 16-char lowercase hex string.
-#[cfg(feature = "serde")]
-mod hex_u64 {
-    pub fn serialize<S: serde::Serializer>(v: &u64, s: S) -> Result<S::Ok, S::Error> {
-        s.serialize_str(&format!("{v:016x}"))
-    }
-    pub fn deserialize<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u64, D::Error> {
-        use serde::Deserialize;
-        let s = String::deserialize(d)?;
-        u64::from_str_radix(&s, 16).map_err(serde::de::Error::custom)
-    }
-}
-
-/// What `analyze_stateful` returns and the shell threads back. It is a
-/// strongly-typed value across the wasm boundary, but **treated as opaque**:
-/// the caller holds and round-trips it and should not depend on its shape.
+/// The engine-internal resident aggregate `analyze_stateful` returns and the
+/// shell (`Galley`) threads back as `prior` — held **entirely inside the
+/// engine**, never crossing the wasm boundary. The caller-owned, serialized,
+/// TS-typed `Stats` wire (and its `analyze_vref_stateful` caller) was deleted in
+/// granularity-spine Phase A step 5 (plan §1.1/§5): a complete target snapshot
+/// answers for exactly its books, so no caller needs to hold or round-trip this.
+/// It stays a typed container of per-substrate aggregates plus per-book
+/// provenance.
+///
 /// To drop a book (e.g. it was deleted from the project), call
-/// [`Stats::remove_book`] and omit those verses from the next `map` —
-/// supersede only *replaces* the books you supply, it never removes.
+/// [`Stats::remove_book`] and omit those verses from the next call — supersede
+/// only *replaces* the books you supply, and a complete snapshot drops any prior
+/// book absent from it.
 #[derive(Debug, Clone, Default, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
-#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
 pub struct Stats {
     // A *partial* record, not every `RuleId`: a rule gains an entry once it has
     // been tallied, and that entry is retained even while the rule is disabled —
     // so a disable→re-enable round trip keeps the rule's contribution instead of
-    // dropping it. Hence `Partial<Record<...>>` on the wire.
-    #[cfg_attr(feature = "wasm", tsify(type = "Partial<Record<RuleId, RuleStats>>"))]
+    // dropping it.
     rules: BTreeMap<RuleId, RuleStats>,
     /// Per-book provenance ([`Tally`]): what text, which same-slug source book,
     /// and which enabled counting-rule set each book's counts came from. A book
     /// re-tallies iff its current `Tally` differs from this record — staleness
-    /// is proven from content, never declared. Serialized with the stats wire
-    /// in deterministic (`BTreeMap`) order.
-    #[cfg_attr(feature = "wasm", tsify(type = "Record<string, Tally>"))]
+    /// is proven from content, never declared.
     pub tallied: BTreeMap<Box<str>, Tally>,
 }
 
@@ -222,15 +191,6 @@ impl Stats {
             stats.remove_book(slug);
         }
         self.tallied.remove(slug);
-    }
-
-    /// The per-rule sections, for the oracle's rules-only digest gate. Exposed
-    /// for the calibrate harness only (so it can digest rules and provenance
-    /// separately and prove a wire change touched only provenance); ordinary
-    /// callers treat `Stats` as opaque and round-trip it whole.
-    #[doc(hidden)]
-    pub fn oracle_rules(&self) -> &BTreeMap<RuleId, RuleStats> {
-        &self.rules
     }
 
     pub(crate) fn take(&mut self, id: RuleId) -> Option<RuleStats> {

@@ -300,7 +300,6 @@ pub const PUNCT_ONLY_TOKEN: RuleId = RuleId::PunctOnlyToken;
 /// candidate counts, keyed by the exact chunk text.
 #[derive(Debug, Clone, Default, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub(crate) struct BookPunctOnlyToken {
     lexical_units: u64,
     chunks: BTreeMap<String, u64>,
@@ -310,9 +309,7 @@ pub(crate) struct BookPunctOnlyToken {
 /// analysis can supersede one book without retaining occurrence sites.
 #[derive(Debug, Clone, Default, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct PunctOnlyTokenStats {
-    #[cfg_attr(feature = "wasm", tsify(type = "Record<string, BookPunctOnlyToken>"))]
     pub(crate) per_book: BTreeMap<Box<str>, BookPunctOnlyToken>,
 }
 
@@ -630,7 +627,6 @@ pub const REPEATED_CHARACTER_RUN: RuleId = RuleId::RepeatedCharacterRun;
 /// word convention as `eee` without storing general word frequencies.
 #[derive(Debug, Clone, Default, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub(crate) struct BookRepeatedCharacterRun {
     lexical_units: u64,
     cluster_runs: BTreeMap<String, u64>,
@@ -641,12 +637,7 @@ pub(crate) struct BookRepeatedCharacterRun {
 /// can supersede one book without retaining occurrence sites.
 #[derive(Debug, Clone, Default, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct RepeatedCharacterRunStats {
-    #[cfg_attr(
-        feature = "wasm",
-        tsify(type = "Record<string, BookRepeatedCharacterRun>")
-    )]
     pub(crate) per_book: BTreeMap<Box<str>, BookRepeatedCharacterRun>,
 }
 
@@ -1507,25 +1498,6 @@ mod tests {
         .score
         .unwrap();
         assert!(after < before);
-    }
-
-    #[cfg(feature = "serde")]
-    #[test]
-    fn repeated_run_stats_round_trip_through_serde() {
-        let rule = repeat_rule(RepeatedCharacterRunConfig {
-            emit_score_min: 0.0,
-            ..Default::default()
-        });
-        let corpus = repeat_corpus("GEN", &["word joyfullly".to_string()]);
-        let books = crate::corpus::by_book(&corpus);
-        let stats = rule.reduce(&books, None, None).0;
-        let back: RuleStats =
-            serde_json::from_str(&serde_json::to_string(&stats).unwrap()).unwrap();
-        assert_eq!(stats, back);
-        assert_eq!(
-            rule.judge(&stats, &books, None, None),
-            rule.judge(&back, &books, None, None)
-        );
     }
 
     #[test]

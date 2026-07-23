@@ -47,7 +47,6 @@ pub const PUNCTUATION_ADJACENCY_ANOMALY: RuleId = RuleId::PunctuationAdjacencyAn
 /// (`",,"`, `"?!?"`, `"፤፤"`), so `??`/`???`/`????` stay distinct.
 #[derive(Debug, Clone, Default, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub(crate) struct BookPunctuationAdjacency {
     lead_opportunities: BTreeMap<char, u64>,
     pattern_counts: BTreeMap<String, u64>,
@@ -58,12 +57,7 @@ pub(crate) struct BookPunctuationAdjacency {
 /// books, derived at `judge`.
 #[derive(Debug, Clone, Default, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct PunctuationAdjacencyStats {
-    #[cfg_attr(
-        feature = "wasm",
-        tsify(type = "Record<string, BookPunctuationAdjacency>")
-    )]
     pub(crate) per_book: BTreeMap<Box<str>, BookPunctuationAdjacency>,
 }
 
@@ -598,9 +592,7 @@ const fn cell_index(side: Side, class: PoolClass, form: SideForm) -> usize {
 /// this stays a few dozen bytes per mark even corpus-wide.
 #[derive(Debug, Clone, Default, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub(crate) struct BookPunctuationSpacing {
-    #[cfg_attr(feature = "wasm", tsify(type = "Record<string, number[]>"))]
     pub(crate) per_mark: BTreeMap<char, [u64; SIDE_CELLS]>,
 }
 
@@ -608,12 +600,7 @@ pub(crate) struct BookPunctuationSpacing {
 /// book. Corpus-wide counts are the sums over books, derived at `judge`.
 #[derive(Debug, Clone, Default, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct PunctuationSpacingStats {
-    #[cfg_attr(
-        feature = "wasm",
-        tsify(type = "Record<string, BookPunctuationSpacing>")
-    )]
     pub(crate) per_book: BTreeMap<Box<str>, BookPunctuationSpacing>,
 }
 
@@ -1859,27 +1846,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "serde")]
-    #[test]
-    fn aggregate_stats_round_trip_through_serde() {
-        // The cached aggregates (char/String counts, no sites) survive the
-        // wasm-boundary serde round-trip and re-judge identically.
-        let r = default_rule();
-        let vm = build_books(&[
-            ("GEN", periods_and_commas_entries(10, 3)),
-            ("EXO", vec![(1u16, "a?!? b".to_string())]),
-        ]);
-        let books = by_book(&vm);
-        let stats = r.reduce(&books, None, None).0;
-        let back: RuleStats =
-            serde_json::from_str(&serde_json::to_string(&stats).unwrap()).unwrap();
-        assert_eq!(stats, back);
-        assert_eq!(
-            r.judge(&stats, &books, None, None),
-            r.judge(&back, &books, None, None)
-        );
-    }
-
     #[test]
     fn invalid_config_produces_finite_scores_not_nan() {
         let vm = periods_and_commas(50, 5);
@@ -2615,21 +2581,5 @@ mod tests {
             let s = f.score.unwrap();
             assert!(s.is_finite() && (0.0..=1.0).contains(&s), "score {s}");
         }
-    }
-
-    #[cfg(feature = "serde")]
-    #[test]
-    fn spacing_stats_round_trip_through_serde() {
-        let r = sp_default();
-        let vm = commas(100, 3);
-        let books = by_book(&vm);
-        let stats = r.reduce(&books, None, None).0;
-        let back: RuleStats =
-            serde_json::from_str(&serde_json::to_string(&stats).unwrap()).unwrap();
-        assert_eq!(stats, back);
-        assert_eq!(
-            r.judge(&stats, &books, None, None),
-            r.judge(&back, &books, None, None)
-        );
     }
 }

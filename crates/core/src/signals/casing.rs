@@ -169,13 +169,10 @@ impl PosClass {
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default))]
-#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 struct ForcedTally {
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "is_zero"))]
-    #[cfg_attr(feature = "wasm", tsify(optional))]
     upper: u32,
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "is_zero"))]
-    #[cfg_attr(feature = "wasm", tsify(optional))]
     lower: u32,
 }
 
@@ -220,28 +217,16 @@ impl ForcedTally {
 #[derive(Debug, Clone, Default, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default))]
-#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 struct WordStats {
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "is_zero"))]
-    #[cfg_attr(feature = "wasm", tsify(optional))]
     mid_upper: u32,
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "is_zero"))]
-    #[cfg_attr(feature = "wasm", tsify(optional))]
     mid_lower: u32,
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "is_default_tally"))]
-    #[cfg_attr(feature = "wasm", tsify(optional))]
     book_initial: ForcedTally,
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "is_empty_map"))]
-    #[cfg_attr(
-        feature = "wasm",
-        tsify(optional, type = "Record<string, ForcedTally>")
-    )]
     after_glyph: BTreeMap<char, ForcedTally>,
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "is_empty_map"))]
-    #[cfg_attr(
-        feature = "wasm",
-        tsify(optional, type = "Record<string, ForcedTally>")
-    )]
     after_quote: BTreeMap<char, ForcedTally>,
 }
 
@@ -361,15 +346,12 @@ impl WordStats {
 /// is excluded from [`PartialEq`] and the oracle wire alike.
 #[derive(Debug, Clone, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct CasingStats {
-    #[cfg_attr(feature = "wasm", tsify(type = "Record<string, BookCasing>"))]
     pub(crate) per_book: BTreeMap<Box<str>, BookCasing>,
     /// Content fingerprint (XOR of per-book digests), `None` until computed.
     /// `#[serde(skip)]` keeps it off the wire — a deserialized value is `None`
     /// and [`fingerprint`](Self::fingerprint) recomputes it on demand.
     #[cfg_attr(feature = "serde", serde(skip))]
-    #[cfg_attr(feature = "wasm", tsify(skip))]
     fp: Option<u128>,
 }
 
@@ -416,9 +398,7 @@ fn book_fp(slug: &str, bc: &BookCasing) -> u128 {
 /// count that drives the emergent gate.
 #[derive(Debug, Clone, Default, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub(crate) struct BookCasing {
-    #[cfg_attr(feature = "wasm", tsify(type = "Record<string, WordStats>"))]
     words: BTreeMap<String, WordStats>,
     /// Cased word-start observations in the book — the emergent gate input,
     /// counted before pruning.

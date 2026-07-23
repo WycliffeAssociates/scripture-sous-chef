@@ -2,15 +2,16 @@
 //! ("5.2–18.9 ms warm whole-corpus re-analyze", the `cached_edit_*` criterion
 //! benches) so samply can show what those milliseconds actually are.
 //!
-//! Mirrors `crates/core/benches/analyze.rs`'s `cached_edit_{3JN,PSA}` shape:
-//! whole-corpus `analyze_stateful` with `Config::v1_defaults()`, a prior, and
-//! a warm `PrepCache`. Differences from the bench, both deliberate:
-//! - prior + cache are CHAINED across iterations (the real resident-Galley
-//!   steady state) instead of re-cloned per iteration, and
+//! Mirrors `crates/core/benches/analyze.rs`'s `galley_warm_edit_*` shape:
+//! a resident `Galley` (`Config::v1_defaults()` or all-on) driven through its
+//! real steady state — `update_book` + `analyze` on a warm handle. Two
+//! deliberate points:
+//! - the resident `Galley` chains its prior + prep cache across iterations
+//!   automatically (that IS its steady state), and
 //! - the edited book's text alternates between two variants, so every
-//!   iteration's content hash genuinely mismatches the prior/cache entry and
-//!   the edited book re-walks + re-tallies for real (PrepCache holds one hash
-//!   per slug, so the "other" variant is never a stale hit).
+//!   iteration's content hash genuinely mismatches the cached entry and the
+//!   edited book re-walks + re-tallies for real (the cache holds one hash per
+//!   slug, so the "other" variant is never a stale hit).
 //!
 //! Usage:
 //!   warm_ladder_profile <vref-file> <book-slug> [--config default|all] [--profile <iters>]
@@ -27,8 +28,8 @@
 use std::path::PathBuf;
 
 use spike_bench::{profile_loop, time_trials, variance_note};
-use ssc_core::key::parse_key;
-use ssc_core::{Config, Corpus, PrepCache, RuleId, analyze_stateful};
+use ssc_core::{BookBlock, Config, RuleId};
+use ssc_galley::Galley;
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -50,22 +51,30 @@ fn main() {
     let bible = spike_bench::vref_io::load_corpus(&path);
     eprintln!("loaded {} verses from {}", bible.len(), path.display());
 
-    let edit_pos = bible
-        .keys()
+    // The edited book's own keys/texts (its contiguous run in the corpus).
+    let books = ssc_core::corpus::by_book(&bible);
+    let bg = books
         .iter()
-        .position(|k| parse_key(k).expect("vref key").book == *code)
+        .find(|g| g.slug == *code)
         .unwrap_or_else(|| panic!("book {code} not present in corpus"));
+    let base_keys: Vec<String> = bg.keys.iter().map(|k| k.to_string()).collect();
+    let base_texts: Vec<String> = bg.texts.iter().map(|t| t.to_string()).collect();
+    drop(books);
 
-    // Two whole-corpus snapshots differing only in the edited book's first
-    // verse — same edit shape as the bench (`push_str` on one verse), two
-    // variants so alternating them forces a fresh content hash every call.
-    let variant = |suffix: &str| {
-        let mut texts = bible.texts().to_vec();
-        texts[edit_pos].push_str(suffix);
-        Corpus::try_from_parts(bible.keys().to_vec(), texts).unwrap()
+    // Two complete-book replacements differing only in the first verse — same
+    // edit shape as the bench (`push_str` on one verse), two variants so
+    // alternating them forces a fresh content hash every call.
+    let make_block = |suffix: &str| {
+        let mut texts = base_texts.clone();
+        texts[0].push_str(suffix);
+        BookBlock {
+            slug: code.as_str().into(),
+            keys: base_keys.clone(),
+            texts,
+        }
     };
-    let variant_a = variant(" edited");
-    let variant_b = variant(" edited twice");
+    let block_a = make_block(" edited");
+    let block_b = make_block(" edited twice");
 
     // Same construction as the calibrate oracle's configs (`oracle_config` in
     // crates/core/examples/calibrate/oracle.rs): "all" = v1 defaults with
@@ -82,22 +91,21 @@ fn main() {
         other => panic!("unknown config {other:?} (want default|all)"),
     };
     eprintln!("config: {config_name}");
-    let mut cache = PrepCache::new();
-    // Cold seed: builds the prior and warms both cache lanes for every book.
-    // Excluded from the profiled/timed loop.
+    // Cold seed: the resident Galley's first analyze warms the prior + both
+    // cache lanes for every book. Excluded from the profiled/timed loop.
+    let mut galley = Galley::new(bible.clone(), None, cfg.clone());
     let seed_start = std::time::Instant::now();
-    let (_, seed_stats) = analyze_stateful(&bible, None, &cfg, None, Some(&mut cache));
+    let _ = galley.analyze();
     eprintln!("cold seed: {:?}", seed_start.elapsed());
 
-    let mut prior = Some(seed_stats);
     let mut flip = false;
     let do_work = || {
         flip = !flip;
-        let target = if flip { &variant_a } else { &variant_b };
-        let (findings, stats) =
-            analyze_stateful(target, None, &cfg, prior.take(), Some(&mut cache));
-        prior = Some(stats);
-        findings.len()
+        let block = if flip { block_a.clone() } else { block_b.clone() };
+        galley
+            .update_book(block)
+            .expect("valid complete-book replacement");
+        galley.analyze().len()
     };
 
     if let Some(iters) = profile_iters {

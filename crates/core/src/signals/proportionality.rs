@@ -47,9 +47,7 @@ const MAD_TO_SIGMA: f64 = 0.6745;
 /// `BookGroup::base`. `f32` ratio, `u32` byte length for the finding range.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub(crate) struct RatioObs {
-    #[cfg_attr(feature = "wasm", tsify(type = "number"))]
     local_idx: LocalKeyIdx,
     ratio: f32,
     len: u32,
@@ -59,9 +57,7 @@ pub(crate) struct RatioObs {
 /// an edit supersedes only its book and the median/MAD is derived at `judge`.
 #[derive(Debug, Clone, Default, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct ProportionalityStats {
-    #[cfg_attr(feature = "wasm", tsify(type = "Record<string, RatioObs[]>"))]
     pub(crate) per_book: BTreeMap<Box<str>, Vec<RatioObs>>,
 }
 

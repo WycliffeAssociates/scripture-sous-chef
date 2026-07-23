@@ -109,7 +109,6 @@ pub struct MixedScriptSite {
 /// dominant-script denominator's raw material). **No sites.**
 #[derive(Debug, Clone, Default, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub(crate) struct BookMixedScript {
     signature_counts: BTreeMap<String, u64>,
     script_tokens: BTreeMap<String, u64>,
@@ -119,9 +118,7 @@ pub(crate) struct BookMixedScript {
 /// book. Corpus-wide counts are the sums over books, derived at `judge`.
 #[derive(Debug, Clone, Default, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct MixedScriptStats {
-    #[cfg_attr(feature = "wasm", tsify(type = "Record<string, BookMixedScript>"))]
     pub(crate) per_book: BTreeMap<Box<str>, BookMixedScript>,
 }
 
@@ -613,25 +610,5 @@ mod tests {
             let s = f.score.unwrap();
             assert!(s.is_finite() && (0.0..=1.0).contains(&s), "score {s}");
         }
-    }
-
-    #[cfg(feature = "serde")]
-    #[test]
-    fn aggregate_stats_round_trip_through_serde() {
-        let r = default_rule();
-        let mut keys: Vec<String> = (1..=10).map(|i| key("GEN", i)).collect();
-        let mut texts: Vec<String> = (1..=10).map(|_| "the word here".to_string()).collect();
-        keys.push(key("GEN", 900));
-        texts.push("c\u{0430}t here".to_string());
-        let c = corpus(keys, texts);
-        let books = by_book(&c);
-        let stats = r.reduce(&books, None, None).0;
-        let back: RuleStats =
-            serde_json::from_str(&serde_json::to_string(&stats).unwrap()).unwrap();
-        assert_eq!(stats, back);
-        assert_eq!(
-            r.judge(&stats, &books, None, None),
-            r.judge(&back, &books, None, None)
-        );
     }
 }

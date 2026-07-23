@@ -116,30 +116,29 @@ pub fn analyze_with_config(
 /// Analyze, returning the corpus [`Stats`] so a caller can cache it and feed
 /// it back as `prior` for incremental re-analysis (ADR 0017).
 ///
-/// `target` is the verses provided **this call**. With `prior = None` it is
-/// the whole corpus; with `prior = Some`, the books present in `target`
-/// **supersede** their prior entries (book granularity) and all other books
-/// carry forward — so an edit re-supplies only its book.
+/// `target` is the **complete** corpus this call answers for. With
+/// `prior = Some`, each book present in `target` **supersedes** its prior entry
+/// (book granularity) and any prior book **absent** from `target` is dropped —
+/// there is no echo carry-forward (granularity-spine Phase A step 5, plan §1
+/// owner decision 1 / §3.3). A resident `Galley` always supplies its complete
+/// corpus, so `prior` is purely an incremental-reuse aid: unchanged books skip
+/// re-reduction, they are never a way to answer for a subset.
 ///
-/// **All returned findings cover exactly `target`'s verses** — a single
-/// coherent scope the caller replaces wholesale for those sids. Stateful
-/// rules judge against the *whole* merged corpus (so `target`'s verdicts
-/// reflect corpus-wide statistics) but emit only for `target`; a pooled
-/// statistic shifting a verdict in an untouched book surfaces when that book
-/// is next supplied. (This also keeps every finding projectable: the caller
-/// need only hand in the text for the verses it asked about.)
+/// **All returned findings cover exactly `target`'s verses.** Stateful rules
+/// judge against the merged corpus stats — which now describe exactly
+/// `target`'s books — and emit for `target`. (This keeps every finding
+/// projectable: the caller hands in the text for the verses it asked about.)
 ///
 /// **Counting is proof-driven, never declared (supersedes ADR 0043's
 /// `changed`).** With a `prior`, each supplied book is re-reduced iff its
 /// current provenance — content hash, same-slug source hash, and enabled-rule
 /// fingerprint — differs from the [`Tally`] the prior recorded for that slug;
-/// every matching book carries its prior counts, and books absent this call
-/// carry untouched (echo semantics). Judging and emission still cover all of
-/// `target`, so a convention an edit tips re-emits across every supplied book
-/// in one call. There is no `changed` parameter: the ~1 ms of hashing the
-/// supplied books each call buys a correctness no promise could — the caller
-/// cannot under-declare an edit. Without a `prior` there is nothing to carry,
-/// so every supplied book counts.
+/// every matching book carries its prior counts. Judging and emission cover all
+/// of `target`, so a convention an edit tips re-emits across every book in one
+/// call. There is no `changed` parameter: the ~1 ms of hashing the supplied
+/// books each call buys a correctness no promise could — the caller cannot
+/// under-declare an edit. Without a `prior` there is nothing to carry, so every
+/// supplied book counts.
 pub fn analyze_stateful(
     target: &Corpus,
     source: Option<&Corpus>,
@@ -628,6 +627,28 @@ pub fn analyze_stateful(
     // parity-to-slightly-worse (see ADR 0042's rejected alternatives). The
     // counting itself now happens once, fused, above.
     let mut stats = prior.unwrap_or_default();
+
+    // Complete-snapshot semantics (plan §1 owner decision 1; §3.3): a target
+    // answers for EXACTLY its books. Any prior book absent from this target is
+    // dropped before merge/judge — there is no echo carry-forward of
+    // old-not-current contributions. Every resident caller (`Galley`) supplies
+    // its complete corpus and drops deleted books explicitly, so this only ever
+    // prunes a genuinely deleted book; the merged corpus, findings, and
+    // provenance for present books are unchanged (the byte-identical oracle
+    // gate confirms). `tallied` is authoritative for a prior book's presence:
+    // every counted book is stamped there, so pruning by it also clears that
+    // book from each rule's per-book aggregate.
+    let present: std::collections::BTreeSet<&str> = books.iter().map(|g| g.slug).collect();
+    let absent: Vec<Box<str>> = stats
+        .tallied
+        .keys()
+        .filter(|slug| !present.contains(slug.as_ref()))
+        .cloned()
+        .collect();
+    for slug in &absent {
+        stats.remove_book(slug);
+    }
+
     for r in &stateful {
         let id = r.id();
         let sites_slot;
@@ -699,9 +720,9 @@ pub fn analyze_stateful(
 
     // Stamp per-book provenance for every supplied book: a freshly-counted book
     // gets its new Tally; a non-stale supplied book gets the identical value it
-    // already carried (a no-op by construction). Books in the prior but not
-    // supplied this call keep their own Tally untouched — nothing global is
-    // updated over their heads (echo semantics).
+    // already carried (a no-op by construction). Prior books absent from
+    // `target` were already dropped above — the returned `tallied` describes
+    // exactly this target's books, nothing more.
     for (i, group) in books.iter().enumerate() {
         stats.tallied.insert(Box::from(group.slug), current[i]);
     }
@@ -1226,29 +1247,6 @@ mod tests {
     }
 
     #[test]
-    fn echo_subset_keeps_sibling_cache_entries_and_matches_cold_echo() {
-        let full = corpus_of(vec![
-            keyed("GEN", &["a  b", "one"]),
-            keyed("EXO", &["x\ty", "two"]),
-        ]);
-        let cfg = Config::v1_defaults();
-        let mut cache = PrepCache::new();
-        let (_, prior) = analyze_stateful(&full, None, &cfg, None, Some(&mut cache));
-        let gen_hash = cache.entry_hash("GEN").unwrap();
-        let exo_hash = cache.entry_hash("EXO").unwrap();
-        let echo = mk("EXO", &["x\ty", "two"]);
-
-        let (cached_findings, cached_stats) =
-            analyze_stateful(&echo, None, &cfg, Some(prior.clone()), Some(&mut cache));
-        let (cold_findings, cold_stats) = analyze_stateful(&echo, None, &cfg, Some(prior), None);
-
-        assert_eq!(cached_findings, cold_findings);
-        assert_eq!(cached_stats, cold_stats);
-        assert_eq!(cache.entry_hash("GEN"), Some(gen_hash));
-        assert_eq!(cache.entry_hash("EXO"), Some(exo_hash));
-    }
-
-    #[test]
     fn analyze_flags_double_space() {
         let target = map(&[("v1", "a  b")]);
         let findings = analyze(&target, None);
@@ -1416,11 +1414,11 @@ mod tests {
         );
     }
 
-    /// `Stats` survives a strongly-typed serde round-trip (the wasm-boundary
-    /// contract, ADR 0017), and re-supplying the same books as `prior`
-    /// supersedes them — yielding identical findings.
+    /// Re-supplying the same complete corpus as `prior` supersedes each book
+    /// and yields identical findings — the incremental-reuse path is
+    /// observationally equal to a cold analyze.
     #[test]
-    fn stateful_stats_round_trip_and_supersede() {
+    fn stateful_supersede_matches_cold() {
         let cfg = casing_on(0.5, 0.0);
         let target = mks("GEN", &casing_fire(40));
 
@@ -1430,41 +1428,33 @@ mod tests {
                 .any(|f| f.code == RuleId::SentenceInitialLowercase)
         );
 
-        let json = serde_json::to_string(&stats).unwrap();
-        let back: Stats = serde_json::from_str(&json).unwrap();
-
-        let (f2, _) = analyze_stateful(&target, None, &cfg, Some(back), None);
+        let (f2, _) = analyze_stateful(&target, None, &cfg, Some(stats), None);
         assert_eq!(f1, f2);
     }
 
-    /// All returned findings cover exactly `target` (ADR 0017). An
-    /// incremental call for one book never returns another book's findings —
-    /// the wasm boundary can then always project them (no out-of-bounds slice
-    /// against an empty/absent verse).
+    /// Complete-snapshot semantics — no echo (granularity-spine Phase A step 5,
+    /// plan §1 owner decision 1 / §3.3): a target that omits a prior book
+    /// answers for EXACTLY its books. The absent book is dropped from the
+    /// returned stats, and the result equals a cold analyze of just the supplied
+    /// books — never the union with the carried prior.
     #[test]
-    fn incremental_findings_are_scoped_to_target() {
-        let cfg = casing_on(0.5, 0.0);
-        let anomalous = casing_fire(40);
-        let full = corpus_of(vec![keyed("GEN", &anomalous), keyed("EXO", &anomalous)]);
+    fn complete_snapshot_drops_prior_books_absent_from_target() {
+        let cfg = Config::all();
+        let full = corpus_of(vec![
+            keyed("GEN", &["a  b", "one"]),
+            keyed("EXO", &["x\ty", "two"]),
+        ]);
+        let (_, prior) = analyze_stateful(&full, None, &cfg, None, None);
 
-        let (f_full, stats) = analyze_stateful(&full, None, &cfg, None, None);
-        assert!(f_full.iter().any(|f| {
-            crate::key::parse_key(full.key(f.key_idx)).unwrap().book == "GEN"
-                && f.code == RuleId::SentenceInitialLowercase
-        }));
-        assert!(f_full.iter().any(|f| {
-            crate::key::parse_key(full.key(f.key_idx)).unwrap().book == "EXO"
-                && f.code == RuleId::SentenceInitialLowercase
-        }));
+        // Supply only GEN, with the full prior: EXO must be dropped, not echoed.
+        let gen_only = mk("GEN", &["a  b", "one"]);
+        let (f_inc, s_inc) = analyze_stateful(&gen_only, None, &cfg, Some(prior), None);
+        assert!(!s_inc.tallied.contains_key("EXO"), "absent EXO is dropped (no echo)");
+        assert!(s_inc.tallied.contains_key("GEN"), "the supplied book is answered for");
 
-        let exo_only = mks("EXO", &anomalous);
-        let (f_inc, _) = analyze_stateful(&exo_only, None, &cfg, Some(stats), None);
-        assert!(!f_inc.is_empty());
-        assert!(
-            f_inc
-                .iter()
-                .all(|f| { crate::key::parse_key(exo_only.key(f.key_idx)).unwrap().book == "EXO" })
-        ); // nothing from GEN
+        let (f_cold, s_cold) = analyze_stateful(&gen_only, None, &cfg, None, None);
+        assert_eq!(f_inc, f_cold, "answers for exactly the supplied books");
+        assert_eq!(s_inc, s_cold, "and its stats equal a cold GEN-only analyze");
     }
 
     /// A whole-corpus incremental call — prior supplied, only the edited book
@@ -1757,18 +1747,6 @@ mod tests {
         assert_eq!(s_inc, s_cold);
     }
 
-    /// An echo subset carries an unsupplied book's `Tally` untouched.
-    #[test]
-    fn tally_echo_subset_carries_book_and_its_tally() {
-        let cfg = Config::all();
-        let full = corpus_of(vec![keyed("GEN", &["a  b", "one"]), keyed("EXO", &["x\ty", "two"])]);
-        let (_, prior) = analyze_stateful(&full, None, &cfg, None, None);
-        let echo = mk("EXO", &["x\ty", "two"]);
-        let (_, stats) = analyze_stateful(&echo, None, &cfg, Some(prior.clone()), None);
-        assert_eq!(stats.tallied["GEN"], prior.tallied["GEN"], "unsupplied GEN carries its Tally");
-        assert_eq!(stats.tallied["EXO"], prior.tallied["EXO"], "unchanged EXO matches");
-    }
-
     /// A supplied book absent from the prior's `tallied` is stale by
     /// definition (a missing entry is a mismatch) and is tallied fresh.
     #[test]
@@ -1783,53 +1761,6 @@ mod tests {
         let (f_cold, s_cold) = analyze_stateful(&two, None, &cfg, None, None);
         assert_eq!(f_inc, f_cold);
         assert_eq!(s_inc, s_cold);
-    }
-
-    /// The serialized `Stats` round-trips with `tallied`, whose hash fields
-    /// are fixed-width lowercase hex strings (never a JS number).
-    #[test]
-    fn tally_wire_round_trips_with_hex_fields() {
-        let cfg = Config::all();
-        let target = corpus_of(vec![keyed("GEN", &["a  b", "one"]), keyed("EXO", &["x\ty", "two"])]);
-        let (_, stats) = analyze_stateful(&target, None, &cfg, None, None);
-        assert!(!stats.tallied.is_empty());
-        let json = serde_json::to_string(&stats).unwrap();
-        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
-        let (_, tally) = v["tallied"].as_object().unwrap().iter().next().unwrap();
-        assert_eq!(tally["text"].as_str().unwrap().len(), 32, "u128 text ⇒ 32 hex chars");
-        assert_eq!(tally["source"].as_str().unwrap().len(), 32, "u128 source ⇒ 32 hex chars");
-        assert_eq!(tally["rules"].as_str().unwrap().len(), 16, "u64 rules ⇒ 16 hex chars");
-        let back: Stats = serde_json::from_str(&json).unwrap();
-        assert_eq!(stats, back, "Stats round-trips through serde");
-    }
-
-    /// The source partial-echo regression — echo one book under a new
-    /// source, then a full call; the un-echoed book re-tallies from its OWN
-    /// `Tally.source`, so no global field falsely certifies its stale counts.
-    #[test]
-    fn tally_source_partial_echo_regression() {
-        let cfg = Config::all();
-        let target = corpus_of(vec![
-            keyed("GEN", &["aa bb", "cc dd"]),
-            keyed("EXO", &["ee ff", "gg hh"]),
-        ]);
-        let source_x = corpus_of(vec![
-            keyed("GEN", &["x1 x2", "x3 x4"]),
-            keyed("EXO", &["x5 x6", "x7 x8"]),
-        ]);
-        let source_y = corpus_of(vec![
-            keyed("GEN", &["y1 y2", "y3 y4"]),
-            keyed("EXO", &["y5 y6", "y7 y8"]),
-        ]);
-        let (_, prior_x) = analyze_stateful(&target, Some(&source_x), &cfg, None, None);
-        let gen_only = mk("GEN", &["aa bb", "cc dd"]);
-        let (_, after_echo) =
-            analyze_stateful(&gen_only, Some(&source_y), &cfg, Some(prior_x), None);
-        let (f_full, s_full) =
-            analyze_stateful(&target, Some(&source_y), &cfg, Some(after_echo), None);
-        let (f_cold, s_cold) = analyze_stateful(&target, Some(&source_y), &cfg, None, None);
-        assert_eq!(f_full, f_cold, "un-echoed EXO re-tallies under source Y");
-        assert_eq!(s_full, s_cold);
     }
 
     /// The enabled-set regression — a prior built with rule R disabled,
@@ -1873,40 +1804,27 @@ mod tests {
         assert_eq!(f_inc, f_cold, "findings track the new knobs (judging moved, counting didn't)");
     }
 
-    /// The disable→re-enable round trip (the disabled-rule retention invariant) —
-    /// a book carried while its rule was disabled keeps that rule's contribution,
-    /// so re-enabling reproduces cold-with-R. Then the same with the echoed book
-    /// edited while disabled: it re-tallies, the carried book still contributes.
+    /// The disable→re-enable retention invariant on complete snapshots: a
+    /// complete corpus analyzed with rule R disabled, then re-analyzed with R
+    /// enabled (text unchanged), reproduces cold-with-R — the carried per-book
+    /// aggregates rejudge correctly once R is back on.
     #[test]
-    fn tally_disable_reenable_round_trip_retains_contribution() {
+    fn tally_disable_reenable_matches_cold() {
         let cfg_on = casing_on(0.5, 0.0);
         let mut cfg_off = cfg_on.clone();
         cfg_off.rules.insert(RuleId::SentenceInitialLowercase, false);
         let a = casing_fire(40);
         let b = casing_fire(40);
         let full = corpus_of(vec![keyed("GEN", &a), keyed("EXO", &b)]);
-        let (_, prior_on) = analyze_stateful(&full, None, &cfg_on, None, None);
 
-        // Disable R, echo GEN only; re-enable R, analyze GEN+EXO.
-        let gen_only = mks("GEN", &a);
-        let (_, after_disable) =
-            analyze_stateful(&gen_only, None, &cfg_off, Some(prior_on.clone()), None);
-        let (f_re, s_re) = analyze_stateful(&full, None, &cfg_on, Some(after_disable), None);
+        // Analyze the complete corpus with R off, then re-supply the complete
+        // corpus with R on — no echo subset; the whole corpus is answered each
+        // call.
+        let (_, prior_off) = analyze_stateful(&full, None, &cfg_off, None, None);
+        let (f_re, s_re) = analyze_stateful(&full, None, &cfg_on, Some(prior_off), None);
         let (f_cold, s_cold) = analyze_stateful(&full, None, &cfg_on, None, None);
-        assert_eq!(f_re, f_cold, "EXO's carried R contribution survives the disable");
+        assert_eq!(f_re, f_cold, "re-enabling R rebuilds its contribution for every book");
         assert_eq!(s_re, s_cold);
-
-        // Now GEN edited while R was disabled: GEN re-tallies, EXO still carries.
-        let mut a2 = casing_fire(40);
-        a2.push("He fell. the extra one.".to_string());
-        let full2 = corpus_of(vec![keyed("GEN", &a2), keyed("EXO", &b)]);
-        let gen_only2 = mks("GEN", &a2);
-        let (_, after_disable2) =
-            analyze_stateful(&gen_only2, None, &cfg_off, Some(prior_on), None);
-        let (f_re2, s_re2) = analyze_stateful(&full2, None, &cfg_on, Some(after_disable2), None);
-        let (f_cold2, s_cold2) = analyze_stateful(&full2, None, &cfg_on, None, None);
-        assert_eq!(f_re2, f_cold2);
-        assert_eq!(s_re2, s_cold2);
     }
 
     /// `Stats::remove_book` drops the slug from `tallied` as

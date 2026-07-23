@@ -10,12 +10,13 @@
 //! gitignored):
 //! - `analyze/full_bible`   — en_ulb, ~31k verses, `Config::v1_defaults()`
 //! - `analyze/nt`           — en_ulb NT subset, ~7.9k verses
-//! - `analyze/snapshot_edit_{3JN,MAT,PSA}` — the complete-snapshot call:
-//!   whole corpus + prior; every supplied book is hashed, the edited book
-//!   re-counts by content-hash mismatch, clean books carry, emission is global.
-//!   This is where the always-hash cost lands: all books hash, one re-tallies
-//! - `analyze/cached_edit_{3JN,PSA}` — the same complete-snapshot call with
-//!   `PrepCache` warmed in setup; clean books reuse both cache lanes
+//! - `analyze/galley_warm_edit_{3JN,MAT,PSA}` — the editor's steady state: a
+//!   warm resident `Galley` (seeded by one analyze in setup), then
+//!   `update_book` + `analyze` — a complete-book edit + whole-corpus warm
+//!   re-analyze. All books hash, the edited one re-counts, clean books reuse
+//!   both cache lanes, emission is global. (Replaced the former
+//!   `snapshot_edit_*`/`cached_edit_*` `analyze_stateful` benches at
+//!   granularity-spine Phase A step 5; §13 warm ladder is the referee.)
 //! - `analyze/full_devanagari`— hi_ulb, the expensive-script case
 //! - `proportionality/nt_vs_bible` — bem_reg vs en_ulb through the rule
 //!
@@ -40,7 +41,8 @@ use ssc_core::key::parse_key;
 use ssc_core::rule::StatefulRule;
 use ssc_core::script::is_nt_book;
 use ssc_core::signals::proportionality::ProjectLengthRatio;
-use ssc_core::{PrepCache, Config, Corpus, analyze, analyze_stateful};
+use ssc_core::{BookBlock, Config, Corpus, analyze};
+use ssc_galley::Galley;
 
 #[path = "../dev/vref_io.rs"]
 mod vref_io;
@@ -88,80 +90,60 @@ fn bench_analyze(c: &mut Criterion) {
         g.throughput(Throughput::Elements(nt.len() as u64));
         g.bench_function("nt", |b| b.iter(|| analyze(black_box(&nt), None)));
 
-        // The editor's shipped steady state (ADR 0062): a resident `Galley`
-        // holds the whole corpus + prior + warm prep cache, and every edit runs
-        // the *complete* whole-corpus call — never a book-scoped "echo". The
-        // cache is what makes that affordable (see `cached_edit_*`, ~5-19 ms):
-        // once whole-corpus warm re-analyze is keystroke-fast, there is no
-        // reason to trade completeness for the old book-only echo (ADR 0043),
-        // which never surfaced cross-book flips. So the benches below model the
-        // two whole-corpus shapes a `Galley` actually pays: cold cache
-        // (`snapshot_edit_*`) and warm cache (`cached_edit_*`, the true
-        // steady state). The book spread bounds the range: 3JN (~15 verses,
-        // floor), MAT (large), PSA (~2.5k verses, worst case).
+        // The editor's shipped steady state (ADR 0062; granularity-spine Phase A
+        // step 5): a resident `Galley` holds the whole corpus + prior + warm
+        // prep cache, and every edit runs the *complete* whole-corpus call —
+        // there is no book-scoped "echo" any more. So the bench models exactly
+        // that: a warm `Galley` (seeded by one analyze in setup, excluded from
+        // the measurement), then `update_book` + `analyze` — the real keystroke
+        // path. The book spread bounds the range: 3JN (~15 verses, floor), MAT
+        // (large), PSA (~2.5k verses, worst case).
+        //
+        // NOTE (criterion baseline continuity): this replaces the former
+        // `analyze_stateful`-based `snapshot_edit_*`/`cached_edit_*` benches
+        // with the resident `Galley` API. The `pre-spine` criterion baselines
+        // for those names no longer compare; the plan §13 warm ladder
+        // (spike-bench `warm_ladder_profile`) is the cross-packet referee.
         let cfg = Config::v1_defaults();
-        let (_, cached) = analyze_stateful(&bible, None, &cfg, None, None);
+        let books = ssc_core::corpus::by_book(&bible);
         for code in ["3JN", "MAT", "PSA"] {
-            let Some(edit_pos) = bible
-                .keys()
-                .iter()
-                .position(|k| parse_key(k).expect("vref key").book == code)
-            else {
+            let Some(bg) = books.iter().find(|g| g.slug == code) else {
                 eprintln!("{code} not present in en_ulb — skipping its bench");
                 continue;
             };
+            // The edited replacement book: its first verse gets a suffix (the
+            // same one-verse edit shape the old benches used), supplied as a
+            // complete-book `update_book` — the resident mutation verb.
+            let keys: Vec<String> = bg.keys.iter().map(|k| k.to_string()).collect();
+            let mut texts: Vec<String> = bg.texts.iter().map(|t| t.to_string()).collect();
+            texts[0].push_str(" edited");
+            let edited_block = BookBlock {
+                slug: code.into(),
+                keys,
+                texts,
+            };
 
-            // The complete-snapshot call: the whole corpus is supplied with the
-            // prior — every supplied book is hashed (no caller-declared changed
-            // set exists any more; ADR 0062), the edited book re-counts on its
-            // content-hash mismatch, clean books carry, and findings cover
-            // everything (a tipped convention re-emits in every book, this same
-            // call). The payoff vs `full_bible` is the counting saved.
-            let mut edited_texts = bible.texts().to_vec();
-            edited_texts[edit_pos].push_str(" edited");
-            let edited = Corpus::try_from_parts(bible.keys().to_vec(), edited_texts).unwrap();
-            g.throughput(Throughput::Elements(edited.len() as u64));
-            g.bench_function(format!("snapshot_edit_{code}"), |b| {
-                b.iter_batched(
-                    || cached.clone(),
-                    |prior| {
-                        analyze_stateful(
-                            black_box(&edited),
-                            None,
-                            black_box(&cfg),
-                            Some(prior),
-                            None,
-                        )
-                    },
-                    BatchSize::LargeInput,
-                )
-            });
-
-            // The same complete-snapshot shape with both cache lanes warmed.
-            // Setup is deliberately inside `iter_batched`: Criterion excludes
-            // cache construction from the measured steady-state call while
-            // still proving that every iteration starts from a real warm cache.
-            g.bench_function(format!("cached_edit_{code}"), |b| {
+            g.throughput(Throughput::Elements(bible.len() as u64));
+            g.bench_function(format!("galley_warm_edit_{code}"), |b| {
                 b.iter_batched(
                     || {
-                        let mut cache = PrepCache::new();
-                        let (_, prior) =
-                            analyze_stateful(&bible, None, &cfg, None, Some(&mut cache));
-                        (prior, cache)
+                        // A warm resident Galley: one cold analyze warms both
+                        // cache lanes + the prior. Excluded from the measurement.
+                        let mut galley = Galley::new(bible.clone(), None, cfg.clone());
+                        let _ = galley.analyze();
+                        galley
                     },
-                    |(prior, mut cache)| {
-                        analyze_stateful(
-                            black_box(&edited),
-                            None,
-                            black_box(&cfg),
-                            Some(prior),
-                            Some(&mut cache),
-                        )
+                    |mut galley| {
+                        galley
+                            .update_book(black_box(edited_block.clone()))
+                            .expect("valid complete-book replacement");
+                        black_box(galley.analyze())
                     },
                     BatchSize::LargeInput,
                 )
             });
         }
+        drop(books);
     }
 
     if let Some(dev) = corpus("WA-hi-ulb") {

@@ -543,7 +543,15 @@ pub(crate) fn casing_size(dir: &Path) {
             let map = load_corpus(path);
             let books = ssc_core::corpus::by_book(&map);
             let (stats, _) = rule.reduce(&books, None, None);
-            let bytes = serde_json::to_string(&stats).map(|s| s.len()).unwrap_or(0);
+            // The monolithic serialized `Stats` wire was retired (granularity-
+            // spine Phase A step 5); this size survey measures the inner
+            // `CasingStats` aggregate directly, which still derives serde.
+            let bytes = match &stats {
+                ssc_core::RuleStats::Casing(cs) => {
+                    serde_json::to_string(cs).map(|s| s.len()).unwrap_or(0)
+                }
+                _ => 0,
+            };
             (id, bytes)
         })
         .collect();

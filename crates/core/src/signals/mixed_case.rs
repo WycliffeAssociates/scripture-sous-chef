@@ -120,19 +120,14 @@ fn is_zero(n: &u32) -> bool {
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default))]
-#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub(crate) struct ShapeProfile {
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "is_zero"))]
-    #[cfg_attr(feature = "wasm", tsify(optional))]
     pub(crate) lower: u32,
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "is_zero"))]
-    #[cfg_attr(feature = "wasm", tsify(optional))]
     pub(crate) title: u32,
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "is_zero"))]
-    #[cfg_attr(feature = "wasm", tsify(optional))]
     pub(crate) allcaps: u32,
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "is_zero"))]
-    #[cfg_attr(feature = "wasm", tsify(optional))]
     pub(crate) other: u32,
 }
 
@@ -171,9 +166,7 @@ impl ShapeProfile {
 #[derive(Debug, Clone, Default, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default))]
-#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub(crate) struct BookMixedCase {
-    #[cfg_attr(feature = "wasm", tsify(type = "Record<string, ShapeProfile>"))]
     pub(crate) words: BTreeMap<String, ShapeProfile>,
 }
 
@@ -181,9 +174,7 @@ pub(crate) struct BookMixedCase {
 /// book. Corpus-wide profiles are the sums over books, derived at `judge`.
 #[derive(Debug, Clone, Default, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct MixedCaseStats {
-    #[cfg_attr(feature = "wasm", tsify(type = "Record<string, BookMixedCase>"))]
     pub(crate) per_book: BTreeMap<Box<str>, BookMixedCase>,
 }
 
@@ -710,23 +701,5 @@ mod tests {
         stats.remove_book("GEN");
         let after = RuleStats::MixedCase(stats);
         assert!(r.judge(&after, &exo_books, None, None).is_empty());
-    }
-
-    #[cfg(feature = "serde")]
-    #[test]
-    fn stats_round_trip_through_serde() {
-        let r = rule(cfg(0.5, 32.0, 0.0));
-        let mut cb = cycle("GEN", &["we praise Dios today"], 40);
-        cb.push("GEN", 500, "we praise DIos today");
-        let corpus = cb.build();
-        let books = by_book(&corpus);
-        let stats = r.reduce(&books, None, None).0;
-        let back: RuleStats =
-            serde_json::from_str(&serde_json::to_string(&stats).unwrap()).unwrap();
-        assert_eq!(stats, back);
-        assert_eq!(
-            r.judge(&stats, &books, None, None),
-            r.judge(&back, &books, None, None)
-        );
     }
 }
