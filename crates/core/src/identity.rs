@@ -1,4 +1,4 @@
-//! Content-derived analysis identity (plan §3.1 / Appendix A §A.1.1).
+//! Content-derived analysis identity.
 //!
 //! Two opaque `u64` newtypes prove *what* an analysis result describes, so a
 //! persisted packed-findings buffer can be validated against the current

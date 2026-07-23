@@ -119,8 +119,7 @@ pub fn analyze_with_config(
 /// `target` is the **complete** corpus this call answers for. With
 /// `prior = Some`, each book present in `target` **supersedes** its prior entry
 /// (book granularity) and any prior book **absent** from `target` is dropped —
-/// there is no echo carry-forward (granularity-spine Phase A step 5, plan §1
-/// owner decision 1 / §3.3). A resident `Galley` always supplies its complete
+/// there is no echo carry-forward. A resident `Galley` always supplies its complete
 /// corpus, so `prior` is purely an incremental-reuse aid: unchanged books skip
 /// re-reduction, they are never a way to answer for a subset.
 ///
@@ -135,10 +134,11 @@ pub fn analyze_with_config(
 /// fingerprint — differs from the [`Tally`] the prior recorded for that slug;
 /// every matching book carries its prior counts. Judging and emission cover all
 /// of `target`, so a convention an edit tips re-emits across every book in one
-/// call. There is no `changed` parameter: the ~1 ms of hashing the supplied
-/// books each call buys a correctness no promise could — the caller cannot
-/// under-declare an edit. Without a `prior` there is nothing to carry, so every
-/// supplied book counts.
+/// call. There is no `changed` parameter: each book's content hash — owned by
+/// `Corpus` and maintained at construction/mutation, so reading it here costs
+/// no re-hash — is compared every call, buying a correctness no promise could:
+/// the caller cannot under-declare an edit. Without a `prior` there is nothing
+/// to carry, so every supplied book counts.
 pub fn analyze_stateful(
     target: &Corpus,
     source: Option<&Corpus>,
@@ -316,7 +316,7 @@ pub fn analyze_stateful(
     let counted: Option<&[&str]> = stale.as_deref();
 
     // A walk-product hit is safe only for a clean book in the complete
-    // snapshot shape. Echo and cold calls must walk every supplied book so
+    // snapshot shape. Cold calls (no prior) must walk every supplied book so
     // their counting and emission semantics remain exactly unchanged.
     //
     // `fused` ends up index-aligned with `books` (its presented order): a
@@ -628,8 +628,7 @@ pub fn analyze_stateful(
     // counting itself now happens once, fused, above.
     let mut stats = prior.unwrap_or_default();
 
-    // Complete-snapshot semantics (plan §1 owner decision 1; §3.3): a target
-    // answers for EXACTLY its books. Any prior book absent from this target is
+    // Complete-snapshot semantics: a target answers for EXACTLY its books. Any prior book absent from this target is
     // dropped before merge/judge — there is no echo carry-forward of
     // old-not-current contributions. Every resident caller (`Galley`) supplies
     // its complete corpus and drops deleted books explicitly, so this only ever
@@ -1432,8 +1431,7 @@ mod tests {
         assert_eq!(f1, f2);
     }
 
-    /// Complete-snapshot semantics — no echo (granularity-spine Phase A step 5,
-    /// plan §1 owner decision 1 / §3.3): a target that omits a prior book
+    /// Complete-snapshot semantics — no echo: a target that omits a prior book
     /// answers for EXACTLY its books. The absent book is dropped from the
     /// returned stats, and the result equals a cold analyze of just the supplied
     /// books — never the union with the carried prior.

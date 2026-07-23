@@ -267,7 +267,7 @@ pub(crate) fn content_hash(keys: &[String], texts: &[String]) -> u128 {
     hasher.digest128()
 }
 
-/// Fold a book's ordered chapter layouts into its content hash (plan §4): a
+/// Fold a book's ordered chapter layouts into its content hash: a
 /// count prefix, then per chapter the length-prefixed opaque token bytes
 /// followed by that chapter's 16-byte content hash, in presented order. It is
 /// order-sensitive and length-delimited, so neither a chapter reorder nor a
@@ -301,7 +301,7 @@ pub(crate) struct ChapterLayout {
 /// One book's owned layout: slug, its global verse range, its ordered chapter
 /// layouts, and a content hash of the whole book. The book hash is the ordered,
 /// length-delimited fold of its `(chapter token, chapter hash)` pairs (see
-/// [`fold_book_hash`], plan §4) — the derived proof the analysis path reads
+/// [`fold_book_hash`]) — the derived proof the analysis path reads
 /// instead of re-hashing per call. It composes from the owned chapter hashes,
 /// so distinguishing chapter boundaries and order costs no verse re-read.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -657,8 +657,8 @@ impl Corpus {
     /// is now a chapter-hash fold ([`fold_book_hash`]), not a flat hash of the
     /// block's verses, so it is not a cheap pre-filter against raw block bytes;
     /// the real proof — and it always was, a hash match alone never proves it
-    /// for untrusted replacement bytes (plan §16 footgun) — is the ordered
-    /// length + semantic comparison, which early-exits on the first difference.
+    /// for untrusted replacement bytes — is the ordered length + semantic
+    /// comparison, which early-exits on the first difference.
     fn book_matches(&self, block: &BookBlock) -> bool {
         let Some(book) = self.layout.iter().find(|b| *b.slug == *block.slug) else {
             return false;
@@ -1036,7 +1036,7 @@ mod tests {
     /// The owned layout records presented-order books and their contiguous
     /// chapter runs with correct global ranges; each chapter hash is the flat
     /// content hash of its own verse slice, and the book hash is the ordered
-    /// fold of its `(chapter token, chapter hash)` pairs (plan §4).
+    /// fold of its `(chapter token, chapter hash)` pairs.
     #[test]
     fn owned_layout_ranges_and_hashes_are_correct() {
         let c = Corpus::try_from_parts(
@@ -1059,7 +1059,7 @@ mod tests {
         assert_eq!(layout[1].range, 3..4);
 
         // Book hash == the ordered fold of its (chapter token, chapter hash)
-        // pairs (plan §4), NOT the flat content hash of its verse slice.
+        // pairs, NOT the flat content hash of its verse slice.
         let groups = by_book(&c);
         for (book, group) in layout.iter().zip(groups.iter()) {
             assert_eq!(
@@ -1104,7 +1104,7 @@ mod tests {
         assert_eq!(c.layout, expect.layout, "layout current after remove_book");
     }
 
-    // ── Book-hash fold (plan §4; Entry 4 adjudication) ───────────────────────
+    // ── Book-hash fold ───────────────────────────────────────────────────────
 
     /// The folded book hash is sensitive to chapter ORDER: two books with the
     /// identical set of chapters presented in a different order fold to

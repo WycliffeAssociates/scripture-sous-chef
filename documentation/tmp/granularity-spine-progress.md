@@ -816,3 +816,35 @@ WP2a complete and gated. Next stop-safe step is **Phase A step 6** (route
 one-shot and resident analysis through one core transition; add the explicit
 clean/dirty/publication lifecycle) — the next packet. Phase A-W must not begin
 until the folded hash is in (it is).
+
+---
+
+## Entry 6 — Owner review of WP2a: performance accounting corrected; advisories
+
+- **Date:** 2026-07-23
+- **WP2a verdict (owner):** commits accepted. One required correction and two
+  advisories, recorded here.
+- **Required correction — performance accounting (supersedes Entry 5's
+  framing):** the ported Galley ladder is the *better* benchmark because it
+  measures the real editor lifecycle (`update_book` + `analyze`). The ~3.7 ms
+  it added on 3JN/default is therefore **real product cost, not a harness
+  artifact**: both `update_book` and `update_chapter` currently end in a
+  whole-corpus `build_layout` (reparse + rehash of every chapter). Entry 5's
+  claim that Phase C/D make this incremental is wrong — neither phase contains
+  such work. **Scheduling (owner):** keep the honest ladder; if Phase A steps
+  6–7 do not bring the honest 3JN/default update+analyze number to the ≤2 ms
+  gate, localized per-book/per-chapter layout+hash maintenance is explicit
+  Phase A step 8 work. It must not hide behind later phases.
+- **Advisory — dev-only `ssc-core` → `ssc-galley` dev-dependency cycle:**
+  tolerated temporarily, not architectural precedent. **Phase A closeout
+  item:** after step 6 stabilizes the shared core transition, move the resident
+  transcript oracle driver and Galley criterion benches so the dependency
+  direction is restored (into `ssc-galley` or the external harness).
+- **Advisory — retained leaf serde derives:** accepted as-is (internal-only;
+  the aggregate `Stats` wire and TS surface are genuinely gone); revisit during
+  Phase B's cache restructuring, not before.
+- **Comment debt cleared (this commit):** stale claims removed — per-analyze
+  hashing cost (now layout-read), "Echo and cold calls", `Stats::remove_book`
+  caller obligation (complete snapshots prune automatically) — and spine-era
+  production comments no longer cite plan sections; they state the invariants
+  directly.

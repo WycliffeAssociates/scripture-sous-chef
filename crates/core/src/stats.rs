@@ -1,8 +1,8 @@
 //! Corpus statistics — the engine-internal aggregate `analyze_stateful` returns
 //! and the resident shell (`Galley`) threads back to enable incremental
 //! re-analysis (ADR 0017). It is **never** caller-owned, serialized, or sent
-//! across the wasm boundary (the serialized `Stats` wire was retired in
-//! granularity-spine Phase A step 5 — plan §1.1/§5).
+//! across the wasm boundary: a complete target snapshot answers for exactly
+//! its books, so nothing outside the engine needs to hold or round-trip it.
 //!
 //! A stateful rule **observes** the corpus into `Stats` (its judging
 //! aggregate *plus* the cached candidate observations), then **judges**
@@ -135,9 +135,8 @@ pub const SOURCE_NONE: u128 = 0;
 /// recorded in [`Stats::tallied`] — staleness is proven from content, never
 /// declared by the caller.
 ///
-/// The hash fields are raw integers: this is an engine-internal container, not
-/// a serialized wire (the caller-owned/serialized/TS-typed `Stats` surface was
-/// retired in granularity-spine Phase A step 5 — plan §1.1/§5).
+/// The hash fields are raw integers: this is an engine-internal container,
+/// never a serialized wire.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Tally {
     /// `book_hash` of the target text these counts were tallied from.
@@ -156,17 +155,14 @@ pub struct Tally {
 
 /// The engine-internal resident aggregate `analyze_stateful` returns and the
 /// shell (`Galley`) threads back as `prior` — held **entirely inside the
-/// engine**, never crossing the wasm boundary. The caller-owned, serialized,
-/// TS-typed `Stats` wire (and its `analyze_vref_stateful` caller) was deleted in
-/// granularity-spine Phase A step 5 (plan §1.1/§5): a complete target snapshot
-/// answers for exactly its books, so no caller needs to hold or round-trip this.
-/// It stays a typed container of per-substrate aggregates plus per-book
-/// provenance.
+/// engine**, never crossing the wasm boundary. A complete target snapshot
+/// answers for exactly its books, so nothing outside the engine needs to hold
+/// or round-trip this. It stays a typed container of per-substrate aggregates
+/// plus per-book provenance.
 ///
-/// To drop a book (e.g. it was deleted from the project), call
-/// [`Stats::remove_book`] and omit those verses from the next call — supersede
-/// only *replaces* the books you supply, and a complete snapshot drops any prior
-/// book absent from it.
+/// A prior book absent from the complete snapshot is pruned automatically on
+/// the next analyze; [`Stats::remove_book`] is the shell's explicit whole-book
+/// removal verb, not a caller obligation.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Stats {
     // A *partial* record, not every `RuleId`: a rule gains an entry once it has

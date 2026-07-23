@@ -92,7 +92,7 @@ impl std::fmt::Display for RuleId {
 }
 
 /// The closed, output-level classification of a rule's semantic inputs, used
-/// by content identity and persisted-findings validation (plan §5.2). It
+/// by content identity and persisted-findings validation. It
 /// describes which inputs may affect a rule's *findings* — never its substrate
 /// or cache implementation. Rules never inspect it; the closed registry and
 /// the generated wire schema do. It is an enum, not a bool, so a future
