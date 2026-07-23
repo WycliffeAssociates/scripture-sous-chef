@@ -36,207 +36,9 @@ export interface VrefCorpus {
 }
 
 /**
- * Cached casing statistics, keyed by book so an edit supersedes only its book.
- */
-export interface CasingStats {
-    per_book: Record<string, BookCasing>;
-}
-
-/**
- * Cached mixed-case statistics, keyed by book so an edit supersedes only its
- * book. Corpus-wide profiles are the sums over books, derived at `judge`.
- */
-export interface MixedCaseStats {
-    per_book: Record<string, BookMixedCase>;
-}
-
-/**
- * Cached mixed-script aggregates, keyed by book so an edit supersedes only its
- * book. Corpus-wide counts are the sums over books, derived at `judge`.
- */
-export interface MixedScriptStats {
-    per_book: Record<string, BookMixedScript>;
-}
-
-/**
- * Cached proportionality statistics: the raw ratios keyed by book, so
- * an edit supersedes only its book and the median/MAD is derived at `judge`.
- */
-export interface ProportionalityStats {
-    per_book: Record<string, RatioObs[]>;
-}
-
-/**
- * Cached punct-only-token aggregates, partitioned by book so incremental
- * analysis can supersede one book without retaining occurrence sites.
- */
-export interface PunctOnlyTokenStats {
-    per_book: Record<string, BookPunctOnlyToken>;
-}
-
-/**
- * Cached punctuation-adjacency aggregates, keyed by book code so an edit
- * supersedes only its book. Corpus-wide `k` and `N_start` are the sums over
- * books, derived at `judge`.
- */
-export interface PunctuationAdjacencyStats {
-    per_book: Record<string, BookPunctuationAdjacency>;
-}
-
-/**
- * Cached rare-glyph statistics, keyed by book so an edit supersedes only its
- * book. Corpus-wide quantities are the sums over books, derived at `judge`.
- * Doubles as the future glyph-census accumulator (ADR 0053).
- */
-export interface RareGlyphStats {
-    per_book: Record<string, BookGlyphs>;
-}
-
-/**
- * Cached repeated-run aggregates, partitioned by book so incremental analysis
- * can supersede one book without retaining occurrence sites.
- */
-export interface RepeatedCharacterRunStats {
-    per_book: Record<string, BookRepeatedCharacterRun>;
-}
-
-/**
- * Cached spacing aggregates, keyed by book code so an edit supersedes only its
- * book. Corpus-wide counts are the sums over books, derived at `judge`.
- */
-export interface PunctuationSpacingStats {
-    per_book: Record<string, BookPunctuationSpacing>;
-}
-
-/**
- * Forced-position first-letter tallies after one key. Raw and mergeable.
- */
-export interface ForcedTally {
-    upper?: number;
-    lower?: number;
-}
-
-/**
  * How loud a finding is. Maps 1:1 to the editor\'s annotation severity.
  */
 export type Severity = "error" | "warning" | "info";
-
-/**
- * One book\'s aggregate contribution. Raw-text run counts include candidates
- * outside UAX #29 tokens; the word map includes only token types whose folded
- * form contains a run. Folding before that gate lets `Eee` establish the same
- * word convention as `eee` without storing general word frequencies.
- */
-export interface BookRepeatedCharacterRun {
-    lexical_units: number;
-    cluster_runs: Record<string, number>;
-    run_words: Record<string, number>;
-}
-
-/**
- * One book\'s aggregate contribution: per-lead-glyph run-start opportunity
- * counts and per-exact-pattern occurrence counts. **No sites** — spans are
- * re-derived from the text at `judge`, so this stays a few KB even on a
- * ZWSP-/punctuation-pervasive corpus. Patterns keyed by their exact run string
- * (`\",,\"`, `\"?!?\"`, `\"፤፤\"`), so `??`/`???`/`????` stay distinct.
- */
-export interface BookPunctuationAdjacency {
-    lead_opportunities: Record<string, number>;
-    pattern_counts: Record<string, number>;
-}
-
-/**
- * One book\'s aggregate contribution: per-signature mixed-token counts and
- * per-script token counts (how many tokens contain each script at all — the
- * dominant-script denominator\'s raw material). **No sites.**
- */
-export interface BookMixedScript {
-    signature_counts: Record<string, number>;
-    script_tokens: Record<string, number>;
-}
-
-/**
- * One book\'s aggregate contribution: whitespace-unit count and per-chunk
- * candidate counts, keyed by the exact chunk text.
- */
-export interface BookPunctOnlyToken {
-    lexical_units: number;
-    chunks: Record<string, number>;
-}
-
-/**
- * One book\'s contribution: the full scalar inventory (census substrate) plus
- * word-level detail confined to locally-rare letter glyphs.
- */
-export interface BookGlyphs {
-    /**
-     * Every scalar in the book (ADR 0053 census substrate).
-     */
-    inventory?: Record<string, number>;
-    /**
-     * `glyph → word → eligible occurrences of the glyph in that word`, for
-     * letter glyphs whose per-book eligible count is ≤ [`RARE_CAP`]. \"Eligible\
-     * = inside a single-script letter token (mixed-script tokens are owned by
-     * `uni.mixed-script-in-token`).
-     */
-    rare?: Record<string, Record<string, number>>;
-    /**
-     * The container words referenced by `rare`: book-local token count + shape.
-     */
-    words?: Record<string, WordInfo>;
-}
-
-/**
- * One book\'s contribution: the per-word shape table.
- */
-export interface BookMixedCase {
-    words?: Record<string, ShapeProfile>;
-}
-
-/**
- * One book\'s contribution: the pruned word table plus the cased-word-start
- * count that drives the emergent gate.
- */
-export interface BookCasing {
-    words: Record<string, WordStats>;
-    /**
-     * Cased word-start observations in the book — the emergent gate input,
-     * counted before pruning.
-     */
-    cased_starts: number;
-}
-
-/**
- * One book\'s per-mark **per-side per-class tallies**: the twelve counters
- * above, one set per mark (ADR 0054 2nd amendment, replacing the `[u64; 4]`
- * per-side table). **No sites** — spans re-derive from the text at `judge`, so
- * this stays a few dozen bytes per mark even corpus-wide.
- */
-export interface BookPunctuationSpacing {
-    per_mark: Record<string, number[]>;
-}
-
-/**
- * One case-folded word type\'s raw shape counts within one book. Raw and
- * mergeable — no dominance, no censoring — so book-supersede holds.
- */
-export interface ShapeProfile {
-    lower?: number;
-    title?: number;
-    allcaps?: number;
-    other?: number;
-}
-
-/**
- * One container word\'s book-local facts: token count, and the titlecase /
- * forced shape of its (last-seen) occurrence. Only consulted for hapax
- * containers, which occur once, so last-seen is unambiguous there.
- */
-export interface WordInfo {
-    tokens?: number;
-    titlecase?: boolean;
-    forced?: boolean;
-}
 
 /**
  * One delimiter seen inside a `punct.bracket-balance` window: which verse
@@ -253,6 +55,18 @@ export interface DelimObservation {
     glyph: string;
     role: DelimRole;
     matched: boolean;
+}
+
+/**
+ * One existing-chapter-run replacement from JS. TS: `{ slug, chapter, keys,
+ * texts }`. Every key must parse to `slug` and `chapter`; the run must already
+ * exist. Whole-chapter insertion/removal/reorder is a whole-book update.
+ */
+export interface ChapterUpdateIn {
+    slug: string;
+    chapter: string;
+    keys: string[];
+    texts: string[];
 }
 
 /**
@@ -273,19 +87,6 @@ export interface RuleCard {
      * Corpus-relative rules carry scores and honour the sensitivity dial.
      */
     verdict: string;
-}
-
-/**
- * One verse\'s target/reference ratio, retained so `judge` can derive the
- * distribution and emit findings without the text. `local_idx` is
- * book-local (the per-book map already carries the slug); rebased to a
- * global `KeyIdx` only at `judge` time, against the current call\'s
- * `BookGroup::base`. `f32` ratio, `u32` byte length for the finding range.
- */
-export interface RatioObs {
-    local_idx: number;
-    ratio: number;
-    len: number;
 }
 
 /**
@@ -313,21 +114,6 @@ export interface BookUpdateIn {
     slug: string;
     keys: string[];
     texts: string[];
-}
-
-/**
- * One word\'s raw case tallies within one book. Mid-flow upper/lower (the
- * intrinsic profile), forced upper/lower split by the *bare* terminal glyph
- * (`after_glyph`) and by the *quote-context* glyph (`after_quote`, the `.\"`
- * classes ADR 0051 discarded to mid-flow), and book-initial. All raw — no
- * censoring, no trust — so book-supersede holds.
- */
-export interface WordStats {
-    mid_upper?: number;
-    mid_lower?: number;
-    book_initial?: ForcedTally;
-    after_glyph?: Record<string, ForcedTally>;
-    after_quote?: Record<string, ForcedTally>;
 }
 
 /**
@@ -436,55 +222,6 @@ export interface CasingOverrides {
 }
 
 /**
- * Per-book provenance for a rule-count set: the hashes of the target text,
- * the same-slug source book, and the enabled counting-rule set the counts were
- * tallied from. A book re-tallies iff its current `Tally` differs from the one
- * recorded in [`Stats::tallied`] — staleness is proven from content, never
- * declared by the caller.
- *
- * The hash fields serialize as fixed-width lowercase hex strings (32 chars for
- * each u128, 16 for the u64) so the wire stays JSON-safe and deterministic and
- * never emits a JS `number` for a value past 2⁵³.
- */
-export interface Tally {
-    /**
-     * `book_hash` of the target text these counts were tallied from.
-     */
-    text: string;
-    /**
-     * `book_hash` of the same-slug source book at tally time, or [`SOURCE_NONE`]
-     * when no source (or no such book) existed. A target book\'s keys all parse
-     * to its own slug and proportionality pairs by key, so a book\'s counts
-     * depend on exactly one source book — its own slug.
-     */
-    source: string;
-    /**
-     * `rules_fp` of the enabled counting-rule set at tally time — records WHICH
-     * rules\' contributions exist for this book. Text hashes alone cannot: a
-     * prior built with a rule disabled has no counts for it even though every
-     * text hash matches.
-     */
-    rules: string;
-}
-
-/**
- * Per-rule cached statistics — a **closed** union like `FindingArgs`, one
- * variant per stateful rule. The orchestration treats it opaquely; each
- * rule reduces into / judges from its own variant.
- *
- * What each variant caches varies: proportionality\'s per-verse ratios are
- * sparse; punctuation adjacency and repeated-character-run cache only
- * **aggregate counts** (never per-occurrence sites — those re-derive from the
- * text at `judge`). Casing (ADR 0051) caches a per-book **word case table** —
- * larger, but raw and mergeable, with the lexicon and per-glyph habit derived
- * at `judge`; both casing rules share it and it round-trips like the others.
- * Zero-width space carries no variant here: it is judged per-verse and
- * deterministically by `uni.redundant-zero-width-space` (ADR 0027), which needs
- * no corpus statistics.
- */
-export type RuleStats = { Casing: CasingStats } | { Proportionality: ProportionalityStats } | { PunctuationAdjacency: PunctuationAdjacencyStats } | { PunctuationSpacing: PunctuationSpacingStats } | { RepeatedCharacterRun: RepeatedCharacterRunStats } | { PunctOnlyToken: PunctOnlyTokenStats } | { MixedScript: MixedScriptStats } | { GlyphInventory: RareGlyphStats } | { MixedCase: MixedCaseStats };
-
-/**
  * Stable, machine-readable rule identity — a **closed set**.
  * Internally a cheap enum discriminant (zero per-finding
  * allocation); each variant serialises to its dotted code string
@@ -519,29 +256,32 @@ export interface RuleCatalog {
 }
 
 /**
+ * The closed, output-level classification of a rule\'s semantic inputs, used
+ * by content identity and persisted-findings validation (plan §5.2). It
+ * describes which inputs may affect a rule\'s *findings* — never its substrate
+ * or cache implementation. Rules never inspect it; the closed registry and
+ * the generated wire schema do. It is an enum, not a bool, so a future
+ * non-silent absence behavior or new input kind forces an explicit
+ * exhaustive decision rather than silently entering the reference-removal
+ * salvage path.
+ *
+ * The generated JS schema spells these `\"target-only\"` and
+ * `\"target-and-reference-silent-when-absent\"`.
+ */
+export type InputDependency = "target-only" | "target-and-reference-silent-when-absent";
+
+/**
+ * The result of a resident mutation, as a JS string union `\"unchanged\" |
+ * \"changed\"` (generated by Tsify). Mirrors `ssc_core::MutationEffect`; the
+ * wrapper uses it to stale its published lazy-args lookup on `\"changed\"`
+ * without re-deriving equality. TS: `MutationEffect`.
+ */
+export type MutationEffect = "unchanged" | "changed";
+
+/**
  * The return type. TS: `Finding[]`.
  */
 export type Findings = Finding[];
-
-/**
- * What `analyze_stateful` returns and the shell threads back. It is a
- * strongly-typed value across the wasm boundary, but **treated as opaque**:
- * the caller holds and round-trips it and should not depend on its shape.
- * To drop a book (e.g. it was deleted from the project), call
- * [`Stats::remove_book`] and omit those verses from the next `map` —
- * supersede only *replaces* the books you supply, it never removes.
- */
-export interface Stats {
-    rules: Partial<Record<RuleId, RuleStats>>;
-    /**
-     * Per-book provenance ([`Tally`]): what text, which same-slug source book,
-     * and which enabled counting-rule set each book\'s counts came from. A book
-     * re-tallies iff its current `Tally` differs from this record — staleness
-     * is proven from content, never declared. Serialized with the stats wire
-     * in deterministic (`BTreeMap`) order.
-     */
-    tallied: Record<string, Tally>;
-}
 
 /**
  * Whether an observed delimiter opens or closes.
@@ -623,31 +363,42 @@ export class Galley {
      */
     constructor(target: VrefCorpus, source?: VrefCorpus | null, config?: SousConfig | null);
     /**
-     * Remove books by slug. Unknown slugs are no-ops; returns the number removed.
+     * Remove books by slug. Unknown slugs are no-ops; returns the number
+     * removed (`0` means unchanged).
      */
     remove_books(slugs: string[]): number;
     /**
      * Reseed the whole corpus (project switch, git pull). Books absent from the
-     * new corpus leave the prior and cache before it is adopted.
+     * new corpus leave the prior and cache before it is adopted. Returns the
+     * `MutationEffect` — `"unchanged"` when the new corpus equals the current.
      */
-    replace_corpus(target: VrefCorpus): void;
+    replace_corpus(target: VrefCorpus): MutationEffect;
     /**
-     * Batch replace/insert whole books. Atomic (all-or-nothing): a rejected
-     * batch leaves the handle unchanged. Does not analyze.
+     * Replace the optional reference (source) corpus. The prior is retained;
+     * provenance stales the same-slug target books whose source changed on the
+     * next analyze. Returns the `MutationEffect`.
      */
-    update_books(batch: BookUpdateIn[]): void;
+    replace_source(source?: VrefCorpus | null): MutationEffect;
+    /**
+     * Replace one complete book in place, or append it if its slug is new.
+     * Atomic (all-or-nothing): a rejected block leaves the handle unchanged.
+     * Returns the `MutationEffect` — `"unchanged"` for a byte-identical no-op.
+     * Does not analyze.
+     */
+    update_book(block: BookUpdateIn): MutationEffect;
+    /**
+     * Replace exactly one existing `(slug, chapter)` run. Atomic; a rejected
+     * block leaves the handle unchanged. Returns the `MutationEffect`. Does
+     * not analyze.
+     */
+    update_chapter(block: ChapterUpdateIn): MutationEffect;
     /**
      * Swap the config. Required (not optional): a config change is explicit,
-     * never an accidental reset to defaults. Equal config ⇒ no-op; otherwise
-     * the prep cache clears and the prior is retained (provenance decides what
-     * re-tallies).
+     * never an accidental reset to defaults. Equal config ⇒ `"unchanged"`;
+     * otherwise the prep cache clears and the prior is retained (provenance
+     * decides what re-tallies).
      */
-    update_config(config: SousConfig): void;
-    /**
-     * Swap the source corpus. The prior is retained; provenance stales the
-     * same-slug target books whose source changed on the next analyze.
-     */
-    update_source(source?: VrefCorpus | null): void;
+    update_config(config: SousConfig): MutationEffect;
 }
 
 /**

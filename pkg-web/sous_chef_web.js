@@ -68,7 +68,8 @@ export class Galley {
         return this;
     }
     /**
-     * Remove books by slug. Unknown slugs are no-ops; returns the number removed.
+     * Remove books by slug. Unknown slugs are no-ops; returns the number
+     * removed (`0` means unchanged).
      * @param {string[]} slugs
      * @returns {number}
      */
@@ -80,51 +81,72 @@ export class Galley {
     }
     /**
      * Reseed the whole corpus (project switch, git pull). Books absent from the
-     * new corpus leave the prior and cache before it is adopted.
+     * new corpus leave the prior and cache before it is adopted. Returns the
+     * `MutationEffect` — `"unchanged"` when the new corpus equals the current.
      * @param {VrefCorpus} target
+     * @returns {MutationEffect}
      */
     replace_corpus(target) {
         const ret = wasm.galley_replace_corpus(this.__wbg_ptr, target);
-        if (ret[1]) {
-            throw takeFromExternrefTable0(ret[0]);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
         }
+        return takeFromExternrefTable0(ret[0]);
     }
     /**
-     * Batch replace/insert whole books. Atomic (all-or-nothing): a rejected
-     * batch leaves the handle unchanged. Does not analyze.
-     * @param {BookUpdateIn[]} batch
+     * Replace the optional reference (source) corpus. The prior is retained;
+     * provenance stales the same-slug target books whose source changed on the
+     * next analyze. Returns the `MutationEffect`.
+     * @param {VrefCorpus | null} [source]
+     * @returns {MutationEffect}
      */
-    update_books(batch) {
-        const ptr0 = passArrayJsValueToWasm0(batch, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.galley_update_books(this.__wbg_ptr, ptr0, len0);
-        if (ret[1]) {
-            throw takeFromExternrefTable0(ret[0]);
+    replace_source(source) {
+        const ret = wasm.galley_replace_source(this.__wbg_ptr, isLikeNone(source) ? 0 : addToExternrefTable0(source));
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
         }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * Replace one complete book in place, or append it if its slug is new.
+     * Atomic (all-or-nothing): a rejected block leaves the handle unchanged.
+     * Returns the `MutationEffect` — `"unchanged"` for a byte-identical no-op.
+     * Does not analyze.
+     * @param {BookUpdateIn} block
+     * @returns {MutationEffect}
+     */
+    update_book(block) {
+        const ret = wasm.galley_update_book(this.__wbg_ptr, block);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * Replace exactly one existing `(slug, chapter)` run. Atomic; a rejected
+     * block leaves the handle unchanged. Returns the `MutationEffect`. Does
+     * not analyze.
+     * @param {ChapterUpdateIn} block
+     * @returns {MutationEffect}
+     */
+    update_chapter(block) {
+        const ret = wasm.galley_update_chapter(this.__wbg_ptr, block);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
     }
     /**
      * Swap the config. Required (not optional): a config change is explicit,
-     * never an accidental reset to defaults. Equal config ⇒ no-op; otherwise
-     * the prep cache clears and the prior is retained (provenance decides what
-     * re-tallies).
+     * never an accidental reset to defaults. Equal config ⇒ `"unchanged"`;
+     * otherwise the prep cache clears and the prior is retained (provenance
+     * decides what re-tallies).
      * @param {SousConfig} config
+     * @returns {MutationEffect}
      */
     update_config(config) {
         const ret = wasm.galley_update_config(this.__wbg_ptr, config);
-        if (ret[1]) {
-            throw takeFromExternrefTable0(ret[0]);
-        }
-    }
-    /**
-     * Swap the source corpus. The prior is retained; provenance stales the
-     * same-slug target books whose source changed on the next analyze.
-     * @param {VrefCorpus | null} [source]
-     */
-    update_source(source) {
-        const ret = wasm.galley_update_source(this.__wbg_ptr, isLikeNone(source) ? 0 : addToExternrefTable0(source));
-        if (ret[1]) {
-            throw takeFromExternrefTable0(ret[0]);
-        }
+        return ret;
     }
 }
 if (Symbol.dispose) Galley.prototype[Symbol.dispose] = Galley.prototype.free;
