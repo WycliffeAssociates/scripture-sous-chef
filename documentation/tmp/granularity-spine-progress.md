@@ -654,3 +654,165 @@ echo.
   needed for this switch **provided no Phase A-W artifact or persisted id is
   published between these commits**. Phase A-W must not begin until the folded
   hash is in.
+
+---
+
+## Entry 5 — Work Packet 2a: Phase A step 5 + book-hash fold switch
+
+- **Date:** 2026-07-23
+- **Branch:** `granularity-spine` (main tree). Base for this packet: `9ad0918`.
+- **Scope:** plan §8 Phase A **step 5** (remove echo semantics; retire the
+  serialized `Stats` surface; replace the incremental oracle) + the Entry 4
+  adjudicated **book-hash fold switch**. Steps 6–8 are the next packet.
+- **Discipline:** per-commit WA findings oracle (byte-identical) + full
+  `cargo test --workspace` + `cargo check -p ssc-wasm --target
+  wasm32-unknown-unknown`. New incremental transcript oracle pinned WA + full
+  (new contract's birth). Full-fleet findings bookend remains Phase F.
+
+### Commits (in order)
+
+| unit | commit | what landed |
+| --- | --- | --- |
+| 1 | `d1584eb` | Phase A step 5: echo removal in `analyze_stateful`; serde+tsify stripped from `Stats`/`RuleStats`/`Tally` (+ hex modules, `oracle_rules`) and tsify from every per-rule aggregate; incremental oracle rewritten as a resident-Galley transcript; echo/serde tests deleted + no-echo test added; collateral ported to `Galley`. |
+| 1b | `24a531a` | `pkg: regenerate wasm packages` — drops the orphan Stats-wire TS interfaces (Stats/RuleStats/Tally + all `*Stats`/`Book*`). |
+| 2 | `1b82742` | Book content hash → ordered `(chapter token, chapter hash)` fold (`fold_book_hash`); flat-hash comments/tests updated; fold pins added. No `ANALYSIS_ENGINE_STAMP` bump (Entry 4 constraint; no Phase A-W artifact/persisted id published between these commits). |
+| final | (this entry) | progress log. |
+
+### WA oracle base pin (this packet's per-commit referee)
+
+Pinned at HEAD `9ad0918`, `/tmp/oracle/spine/wp2a.base.wa.*.tsv`, scope=wa.
+Findings shasums are byte-identical to the WP1 base (Entry 3), confirming the
+standing behavior contract:
+
+| file | sha256 |
+| --- | --- |
+| `wp2a.base.wa.findings.default.tsv` | `38a0ceadcc792a6656905c7a0f9e2e4c2720c86f47f41f94c66e7a8ad1a9702c` |
+| `wp2a.base.wa.findings.all.tsv` | `128fdd933dc71cda0a4a6d9d9971ceb5648a5703f8b22ee798d30b09d2c15660` |
+| `wp2a.base.wa.inc.default.tsv` (OLD echo oracle, retired) | `0fc53080df7bea224d84a8a5592473ca6c97c76dbe4de41b730cefabdafbf365` |
+| `wp2a.base.wa.inc.all.tsv` (OLD echo oracle, retired) | `462a0e69239d69332e1e3ad388d612aa5a15654bb16f3b207f03ba812e53c62d` |
+
+**Findings gate held byte-identical at BOTH commits** (step 5 and the fold):
+`diff -q` clean vs the base, default+all. Echo removal is a no-op for every
+surviving caller (they supply the complete corpus, so `prior ⊆ target`), and
+the fold preserves re-tally/cache equality — only hash *values* change.
+
+### New incremental transcript oracle — pinned (new contract's birth)
+
+The old `--dump-incremental` (echo + snapshot + serialized-`Stats` digest) was
+retired *by design* with echo semantics. Replaced with a resident-`Galley`
+complete-snapshot mutation transcript. Pinned WA **and** full:
+
+| file | sha256 |
+| --- | --- |
+| `wp2a.new-inc.wa.default.tsv` | `7b19caa79b284bfa16a56f300f5660591ffc58ffa183888451daf82778676dca` |
+| `wp2a.new-inc.wa.all.tsv` | `c951a758823629c6b6d2e1d558e92c59c1873ed17856b328a60c7ebdc4cee74f` |
+| `wp2a.new-inc.full.default.tsv` | `ab9b0f966a3b310dc0b37f5832a7f6f1c0dcd2618205f3343519f09b3848090b` |
+| `wp2a.new-inc.full.all.tsv` | `c8a1be69a9b88f13d299d06fd916a370395efe9f9261e1d26c25d645912128c9` |
+
+Byte-stable across re-runs and across thread counts (`RAYON_NUM_THREADS=1` vs
+default) — verified. The fold switch (Unit 2) left it **byte-identical** (no
+re-pin): the transcript dumps findings only, embedding no hash value in any
+row, so the Entry-4 hash-value re-pin authorization was not needed.
+
+### Old vs new incremental oracle (three sentences)
+
+The old oracle exercised the echo path: it analyzed the edited *book only* plus
+a caller-held `prior`, dumped both an "echo" and a "snap" finding set, and
+appended an FNV digest of the serialized `Stats` (rules + provenance). Step 5
+deletes echo semantics and the serialized `Stats`, so that oracle cannot
+survive. The new oracle *is* the editor's steady state: seed a resident
+`Galley` over the complete corpus, apply the fixed `EDIT_TEXT` to the first
+book via `update_book` (a complete-book replacement, no echo), analyze, and
+dump the post-mutation findings for the whole corpus — deterministic,
+thread-stable, rayon-parallel, `wa|full` scoped, no stats digest (the wire it
+digested is gone; per-book provenance is now a private engine detail).
+
+### What was deleted / added
+
+**Deleted:** echo carry-forward of prior books absent from the target;
+`Stats`/`RuleStats`/`Tally` serde+tsify+wasm_abi derives + the `hex_u128`/
+`hex_u64` serde modules + `Stats::oracle_rules`; tsify derives + tsify field
+attrs on every per-rule aggregate (`CasingStats`/`Book*`/`RatioObs`/… — serde
+retained, now internal-only); `oracle.rs` `write_stats_digest`/`fnv64`; the
+`--dump-incremental-cached` CLI variant; six `*_round_trip_through_serde` signal
+tests; the echo-subset / serialized-wire lib unit tests. (`analyze_vref_stateful`
+was already gone — `f9dbea4`.)
+**Added:** absent-book prune in `analyze_stateful` (complete-snapshot
+semantics); `complete_snapshot_drops_prior_books_absent_from_target` test;
+`fold_book_hash` + three fold pins; `ssc-galley` dev-dep on `ssc-core` (dev-only
+cycle) and dep on `spike-bench`; regenerated wasm packages.
+
+### Ported collateral (to the resident `Galley` API)
+
+- `crates/core/benches/analyze.rs`: `snapshot_edit_*`/`cached_edit_*` →
+  `galley_warm_edit_{3JN,MAT,PSA}` (warm Galley seeded in setup, then
+  `update_book` + `analyze`).
+- `spike-bench/src/bin/warm_ladder_profile.rs` and `dhat_probe.rs` → resident
+  `Galley` (`update_book` + `analyze`, prior/prep chained internally).
+
+**Criterion baseline continuity note:** the `pre-spine` criterion baselines for
+`snapshot_edit_*`/`cached_edit_*` no longer compare — those benches are renamed
+and now drive the `Galley` API. The plan §13 warm ladder (spike-bench
+`warm_ladder_profile`) is the cross-packet referee for warm-path perf.
+
+### Warm ladder (packet end) vs Entry 3
+
+`spike-bench/warm_ladder_profile` over `corpora/vref/WA-en-ulb.txt`, 200
+trials, warm median/call (loaded machine — high spread; mins are the honest
+floor). **NOTE the harness changed this packet:** it now drives the real
+resident `Galley` (`update_book` + `analyze`), whereas Entry 3's harness called
+`analyze_stateful` on corpora pre-built *outside* the timed loop. The new loop
+therefore *includes* `update_book`'s whole-corpus `build_layout` rebuild
+(~31k key parses/edit) that the old harness excluded — this is the editor's
+true per-edit cost and the source of the deltas below, **not** an engine
+`analyze` regression (findings byte-identical proves `analyze` unchanged; the
+fold actually makes `build_layout` cheaper by not re-reading verses for the book
+hash). The whole-corpus `build_layout` on every mutation is a known Phase-A
+floor cost that Phase C/D makes incremental.
+
+| book/cfg | Entry 3 median (analyze-only harness) | this packet median (Galley harness) | this packet min |
+| --- | ---: | ---: | ---: |
+| 3JN default | 2.96 ms | 6.69 ms | 6.16 ms |
+| MAT default | 12.32 ms | 14.61 ms | 13.87 ms |
+| PSA default | 18.95 ms | 20.97 ms | 19.92 ms |
+| 3JN all | 37.3–37.8 ms | 34.00 ms | 32.18 ms |
+| MAT all | 53.9–55.7 ms | 53.04 ms | 50.89 ms |
+| PSA all | 67.5 ms | 67.53 ms | 62.50 ms |
+
+The all-config numbers are flat-to-slightly-better (the fold trims the book
+hash); the default numbers rise by the layout-rebuild term the harness now
+includes. Per-phase map/reduce/judge/pack timers still do not exist (owed to a
+later phase, plan §2 item 5).
+
+### Deviations / notes for the owner (clearly marked)
+
+1. **`analyze_vref_stateful` was already deleted** (`f9dbea4`, an ancestor of
+   this packet's base), along with `stats_remove_book` and the `Analysis`
+   struct, and the packages were regenerated then. This packet's UNIT 1 task
+   line to "DELETE `analyze_vref_stateful`" was therefore already satisfied on
+   the wasm side; step 5's remaining work was entirely core-side (echo + the
+   serialized `Stats` surface, which still emitted orphan TS interfaces into the
+   tracked pkgs).
+2. **Component serde retained (Option B).** `Stats`/`RuleStats`/`Tally` lose
+   serde+tsify (the monolithic serialized surface is gone); the per-rule
+   aggregate types lose **tsify** (killing the orphan TS interfaces — the
+   explicit wasm-surface deliverable) but **keep serde** as harmless
+   internal-only derives. Full serde removal would have churned serde field
+   attrs + helper fns (`is_zero`/`is_empty_map`/`is_default_tally`) across three
+   files for no behavioral gain; the plan's "serialized `Stats` wire" is fully
+   dead (nothing can round-trip `Stats`/`RuleStats`). Flagged in case the owner
+   wants the leaf serde derives removed too (trivial follow-up).
+3. **`book_matches` dropped its hash pre-filter.** The folded book hash is not
+   comparable to a flat block hash, and folding the block would re-read every
+   verse (defeating the fold's composition benefit). The ordered length +
+   semantic comparison — always the real proof — remains and early-exits.
+4. **Oracle + benches use a dev-only dependency cycle** (`ssc-core` dev-deps
+   `ssc-galley`). Cargo permits it (confined to examples/benches; never enters
+   the library build); verified building the example and the benches.
+
+### Stop-safe next step
+
+WP2a complete and gated. Next stop-safe step is **Phase A step 6** (route
+one-shot and resident analysis through one core transition; add the explicit
+clean/dirty/publication lifecycle) — the next packet. Phase A-W must not begin
+until the folded hash is in (it is).
