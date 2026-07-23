@@ -1,0 +1,122 @@
+//! Warm incremental analyze profile — decomposes the ADR 0062 warm ladder
+//! ("5.2–18.9 ms warm whole-corpus re-analyze", the `cached_edit_*` criterion
+//! benches) so samply can show what those milliseconds actually are.
+//!
+//! Mirrors `crates/core/benches/analyze.rs`'s `cached_edit_{3JN,PSA}` shape:
+//! whole-corpus `analyze_stateful` with `Config::v1_defaults()`, a prior, and
+//! a warm `PrepCache`. Differences from the bench, both deliberate:
+//! - prior + cache are CHAINED across iterations (the real resident-Galley
+//!   steady state) instead of re-cloned per iteration, and
+//! - the edited book's text alternates between two variants, so every
+//!   iteration's content hash genuinely mismatches the prior/cache entry and
+//!   the edited book re-walks + re-tallies for real (PrepCache holds one hash
+//!   per slug, so the "other" variant is never a stale hit).
+//!
+//! Usage:
+//!   warm_ladder_profile <vref-file> <book-slug> [--config default|all] [--profile <iters>]
+//!
+//! `--config all` enables every rule (same construction as the calibrate
+//! oracle's `all` config: `v1_defaults` + insert true for every `RuleId`);
+//! default is `Config::v1_defaults()`.
+//!
+//! Wall-clock mode runs 200 trials and prints median per-call time (should
+//! land on the ADR 0062 ladder: ~5.2 ms for 3JN, ~18.9 ms for PSA). Profile
+//! mode runs the same closure `iters` times for samply to attach to — plain
+//! CLI args, no env vars (see spike-bench/README.md for why).
+
+use std::path::PathBuf;
+
+use spike_bench::{profile_loop, time_trials, variance_note};
+use ssc_core::key::parse_key;
+use ssc_core::{Config, Corpus, PrepCache, RuleId, analyze_stateful};
+
+fn main() {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let (Some(path), Some(code)) = (args.first().map(PathBuf::from), args.get(1)) else {
+        eprintln!("usage: warm_ladder_profile <vref-file> <book-slug> [--profile <iters>]");
+        std::process::exit(2);
+    };
+    let profile_iters: Option<usize> = args
+        .iter()
+        .position(|a| a == "--profile")
+        .and_then(|i| args.get(i + 1))
+        .and_then(|s| s.parse().ok());
+    let config_name = args
+        .iter()
+        .position(|a| a == "--config")
+        .and_then(|i| args.get(i + 1))
+        .map_or("default", String::as_str);
+
+    let bible = spike_bench::vref_io::load_corpus(&path);
+    eprintln!("loaded {} verses from {}", bible.len(), path.display());
+
+    let edit_pos = bible
+        .keys()
+        .iter()
+        .position(|k| parse_key(k).expect("vref key").book == *code)
+        .unwrap_or_else(|| panic!("book {code} not present in corpus"));
+
+    // Two whole-corpus snapshots differing only in the edited book's first
+    // verse — same edit shape as the bench (`push_str` on one verse), two
+    // variants so alternating them forces a fresh content hash every call.
+    let variant = |suffix: &str| {
+        let mut texts = bible.texts().to_vec();
+        texts[edit_pos].push_str(suffix);
+        Corpus::try_from_parts(bible.keys().to_vec(), texts).unwrap()
+    };
+    let variant_a = variant(" edited");
+    let variant_b = variant(" edited twice");
+
+    // Same construction as the calibrate oracle's configs (`oracle_config` in
+    // crates/core/examples/calibrate/oracle.rs): "all" = v1 defaults with
+    // every rule switched on.
+    let cfg = match config_name {
+        "default" => Config::v1_defaults(),
+        "all" => {
+            let mut cfg = Config::v1_defaults();
+            for &id in RuleId::ALL {
+                cfg.rules.insert(id, true);
+            }
+            cfg
+        }
+        other => panic!("unknown config {other:?} (want default|all)"),
+    };
+    eprintln!("config: {config_name}");
+    let mut cache = PrepCache::new();
+    // Cold seed: builds the prior and warms both cache lanes for every book.
+    // Excluded from the profiled/timed loop.
+    let seed_start = std::time::Instant::now();
+    let (_, seed_stats) = analyze_stateful(&bible, None, &cfg, None, Some(&mut cache));
+    eprintln!("cold seed: {:?}", seed_start.elapsed());
+
+    let mut prior = Some(seed_stats);
+    let mut flip = false;
+    let do_work = || {
+        flip = !flip;
+        let target = if flip { &variant_a } else { &variant_b };
+        let (findings, stats) =
+            analyze_stateful(target, None, &cfg, prior.take(), Some(&mut cache));
+        prior = Some(stats);
+        findings.len()
+    };
+
+    if let Some(iters) = profile_iters {
+        eprintln!("profile mode: {iters} warm iterations of edited book {code} (attach samply)");
+        let loop_start = std::time::Instant::now();
+        profile_loop(iters, do_work);
+        let elapsed = loop_start.elapsed();
+        eprintln!(
+            "loop wall time: {elapsed:?} ({:?}/iter over {iters} iters)",
+            elapsed / iters as u32
+        );
+        return;
+    }
+
+    let (durations, findings) = time_trials(200, do_work);
+    let mut sorted = durations.clone();
+    println!(
+        "warm whole-corpus re-analyze, edited book {code}: median {:?}/call ({}), {findings} findings",
+        spike_bench::median(&mut sorted),
+        variance_note(&durations),
+    );
+}

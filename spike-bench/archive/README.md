@@ -17,3 +17,12 @@ need to re-run one, copy it into `src/bin/` and fix it up there.
 - `2026-07-18-wire-format-benches/` — findings wire-format marshal /
   postMessage cost. Write-up:
   `documentation/calibration/2026-07-18-findings-wire-format-survey.md`.
+- `2026-07-21-warm-path-profile/` — raw samply captures behind the warm
+  resident-path decomposition (v1 defaults + all-rules). The captures
+  themselves are gitignored (`*.profile.json`); the live harness that
+  regenerates them is `src/bin/warm_ladder_profile.rs`. Write-up:
+  `documentation/calibration/2026-07-21-warm-path-profile.md`.
+- `2026-07-21-wire-live-confirmation/` — Node worker bench confirming the
+  packed findings buffer's live end-to-end win on the real wasm surface.
+  Results feed the packed-findings wire spec (granularity-spine plan,
+  Appendix A).

@@ -1,0 +1,40 @@
+[
+  {
+    "corpus": "WA-bds-reg",
+    "mode": "object",
+    "verses": 7956,
+    "findingCount": 275,
+    "bufferBytes": null,
+    "analyze": {
+      "median": 295.03041650000023,
+      "min": 288.742084,
+      "max": 306.74604199999976
+    },
+    "postMessage": {
+      "median": 0.29170849999991333,
+      "min": 0.2675829999998314,
+      "max": 0.5668329999998605
+    },
+    "decode": null,
+    "decodeInnerIters": null
+  },
+  {
+    "corpus": "WA-as-ulb",
+    "mode": "object",
+    "verses": 31083,
+    "findingCount": 5099,
+    "bufferBytes": null,
+    "analyze": {
+      "median": 1065.0338329999995,
+      "min": 1036.487333000001,
+      "max": 1218.4578340000007
+    },
+    "postMessage": {
+      "median": 3.3049169999994774,
+      "min": 3.008750000000873,
+      "max": 3.6795420000016748
+    },
+    "decode": null,
+    "decodeInnerIters": null
+  }
+]

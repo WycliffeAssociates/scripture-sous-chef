@@ -1,0 +1,48 @@
+[
+  {
+    "corpus": "WA-bds-reg",
+    "mode": "packed",
+    "verses": 7956,
+    "findingCount": 275,
+    "bufferBytes": 4416,
+    "analyze": {
+      "median": 296.7670830000002,
+      "min": 282.7126250000001,
+      "max": 318.8924999999999
+    },
+    "postMessage": {
+      "median": 0.020250000000032742,
+      "min": 0.012708000000202446,
+      "max": 0.06741700000020501
+    },
+    "decode": {
+      "median": 0.001643283356258884,
+      "min": 0.0015272228335625323,
+      "max": 0.003902052269601182
+    },
+    "decodeInnerIters": 727
+  },
+  {
+    "corpus": "WA-as-ulb",
+    "mode": "packed",
+    "verses": 31083,
+    "findingCount": 5099,
+    "bufferBytes": 81600,
+    "analyze": {
+      "median": 1053.612083,
+      "min": 1034.432417,
+      "max": 1134.354292
+    },
+    "postMessage": {
+      "median": 0.011728999999832013,
+      "min": 0.009750000001076842,
+      "max": 0.04987500000061118
+    },
+    "decode": {
+      "median": 0.031180025641030323,
+      "min": 0.02296046153843725,
+      "max": 0.05000641025645354
+    },
+    "decodeInnerIters": 39
+  }
+]
