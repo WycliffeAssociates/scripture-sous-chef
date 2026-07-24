@@ -2822,3 +2822,30 @@ Next stop-safe step is **Phase D step 1** (generic `SubstrateCache<S>` chapter
 observations/reduced results plus the §5.4 ordered reduction-to-convergence
 driver), with deviation 1 above folded in as a sub-item — a new packet. Do not
 begin it here.
+
+---
+
+## Entry 21 — Work Packet 6a: Phase D step 1 (the ordered reduction-to-convergence driver + substrate seam adoption)
+
+- **Date:** 2026-07-24
+- **Branch:** `granularity-spine` (main tree). Base for this packet: `188bc53`
+  (Entry 20, Phase C closed).
+- **Scope:** plan §8 Phase D **step 1** — the §5.4 ordered
+  reduction-to-convergence driver over `SubstrateCache<S>`, with Entry 20's
+  deviation 1 (substrate chapter maps adopt the WP5b parallel seam) folded in.
+  **Step 2 (`DuplicateWord`) did NOT land: its stop clause fired** — see the
+  finding below. Phase D steps 3–4 are a later packet.
+
+### WA oracle base pin (this packet's per-commit referee)
+
+Pinned at HEAD `188bc53`, `/tmp/oracle/spine/wp6a.base.wa.*.tsv`, scope=**wa**
+(`oracle-blobs/wa.blob`; 251 corpora findings / 32 corpora transcript),
+`RAYON_NUM_THREADS=4`. Byte-identical to the standing WP1…WP5b contract —
+**recorded here before any edit**:
+
+| file | sha256 |
+| --- | --- |
+| `wp6a.base.wa.findings.default.tsv` | `38a0ceadcc792a6656905c7a0f9e2e4c2720c86f47f41f94c66e7a8ad1a9702c` |
+| `wp6a.base.wa.findings.all.tsv` | `128fdd933dc71cda0a4a6d9d9971ceb5648a5703f8b22ee798d30b09d2c15660` |
+| `wp6a.base.wa.inc.default.tsv` | `7b19caa79b284bfa16a56f300f5660591ffc58ffa183888451daf82778676dca` |
+| `wp6a.base.wa.inc.all.tsv` | `c951a758823629c6b6d2e1d558e92c59c1873ed17856b328a60c7ebdc4cee74f` |
