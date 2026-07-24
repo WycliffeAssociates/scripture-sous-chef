@@ -285,6 +285,15 @@ pub struct CacheProbe {
     pub walk_hits: usize,
     pub walk_misses: usize,
     pub retallied: usize,
+    /// Spacing substrate work on the most recent analyze: chapters mapped,
+    /// chapters reduced, and keys (marks) judged. A judging-knob change leaves
+    /// `spacing_mapped`/`spacing_reduced` at zero (observations + reductions
+    /// reused) while `spacing_judged` reflects the re-judge; a content edit maps
+    /// only the changed chapters and reduces only the owning book; an edit while
+    /// spacing is disabled leaves all three at zero.
+    pub spacing_mapped: usize,
+    pub spacing_reduced: usize,
+    pub spacing_judged: usize,
 }
 
 impl Default for AnalysisCache {
@@ -302,10 +311,15 @@ impl AnalysisCache {
         }
     }
 
-    /// Snapshot the shared-prep observability counters (`test-probes` feature).
+    /// Snapshot the shared-prep and substrate observability counters
+    /// (`test-probes` feature).
     #[cfg(any(test, feature = "test-probes"))]
     pub fn probe(&self) -> CacheProbe {
-        self.prep.probe()
+        let mut p = self.prep.probe();
+        p.spacing_mapped = self.substrates.spacing.mapped;
+        p.spacing_reduced = self.substrates.spacing.reduced;
+        p.spacing_judged = self.substrates.spacing.judged;
+        p
     }
 
     /// Drop all sections. The next analysis call establishes a new configuration
@@ -440,6 +454,10 @@ impl PrepSection {
             walk_hits: self.walk_hits,
             walk_misses: self.walk_misses,
             retallied: self.retallied,
+            // Filled by `AnalysisCache::probe` from the substrate section.
+            spacing_mapped: 0,
+            spacing_reduced: 0,
+            spacing_judged: 0,
         }
     }
 

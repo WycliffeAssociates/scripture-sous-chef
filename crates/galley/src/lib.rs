@@ -196,7 +196,13 @@ impl Galley {
         if config == self.config {
             return MutationEffect::Unchanged;
         }
-        self.cache.clear();
+        // Do NOT clear the cache here. Validity is stamp-derived and settled at
+        // the next analyze from the FINAL config: the shared-prep section
+        // re-establishes its whole-config fingerprint (re-walking only if it
+        // changed), and each typed substrate self-validates by its own stamps —
+        // so a judging-knob change reuses every substrate observation/reduction
+        // (maps/reduces nothing) and only re-judges. Clearing here would force a
+        // cold rebuild and defeat that isolation.
         self.config = config;
         self.note_effect(MutationEffect::Changed)
     }
@@ -543,9 +549,11 @@ mod tests {
 
     /// A knob-only config change re-analyzes to the cold result under the new
     /// knobs and — proven by the counting probe (actual accumulator runs, not
-    /// the decision flag) — the retained prior means zero books re-tally, even
-    /// though a knob change clears the cache and re-walks for sites. `Config::all` so
-    /// a site-free counting rule backs the probe.
+    /// the decision flag) — the retained prior means zero books re-tally. The
+    /// prep lane still re-walks (its validity is the whole-config fingerprint),
+    /// but the spacing substrate maps/reduces nothing: its stamps carry no
+    /// judging knob, so `update_config` (which no longer clears the cache)
+    /// leaves it entirely valid. `Config::all` so both lanes are live.
     #[test]
     fn update_config_knob_only_change_retallies_nothing() {
         let cfg1 = Config::all();
@@ -559,8 +567,104 @@ mod tests {
         g.analyze();
         g.update_config(cfg2.clone());
         let findings = g.analyze();
-        assert_eq!(g.cache.probe().retallied, 0, "knob-only change did no counting work");
+        let probe = g.cache.probe();
+        assert_eq!(probe.retallied, 0, "knob-only change did no counting work");
+        assert_eq!(
+            (probe.spacing_mapped, probe.spacing_reduced),
+            (0, 0),
+            "the spacing substrate maps/reduces nothing on a knob-only change"
+        );
         assert_eq!(findings, cold(&corpus, &cfg2), "findings track the new knobs");
+    }
+
+    /// A SPACING judging-knob change maps and reduces ZERO chapters (its
+    /// observation stamps carry no knob), only re-judges, and leaves every
+    /// unrelated rule's findings byte-identical — the plan §8 Phase C step-3
+    /// isolation, on the resident lifecycle.
+    #[test]
+    fn spacing_knob_change_is_substrate_local() {
+        let cfg1 = Config::all();
+        let mut cfg2 = Config::all();
+        cfg2.punctuation_spacing.emit_score_min = 0.99; // spacing knob only
+        let corpus = corpus_of(vec![
+            keyed("GEN", &["a, b, c, d, e, f", "g, h, i, j, k, l"]),
+            keyed("EXO", &["m, n, o, p, q, r", "s, t,u"]),
+        ]);
+        let mut g = Galley::new(corpus.clone(), None, cfg1.clone());
+        let before = g.analyze();
+        let non_spacing_before: Vec<_> = before
+            .iter()
+            .filter(|f| f.code != RuleId::PunctuationSpacingAnomaly)
+            .cloned()
+            .collect();
+
+        g.update_config(cfg2.clone());
+        let after = g.analyze();
+        let probe = g.cache.probe();
+        assert_eq!(probe.spacing_mapped, 0, "spacing knob maps zero chapters");
+        assert_eq!(probe.spacing_reduced, 0, "spacing knob reduces zero chapters");
+        assert!(probe.spacing_judged >= 1, "spacing is re-judged");
+
+        let non_spacing_after: Vec<_> = after
+            .iter()
+            .filter(|f| f.code != RuleId::PunctuationSpacingAnomaly)
+            .cloned()
+            .collect();
+        assert_eq!(
+            non_spacing_before, non_spacing_after,
+            "unrelated rules' findings are byte-identical across a spacing knob change"
+        );
+        assert_eq!(after, cold(&corpus, &cfg2), "resident == cold under the new knob");
+    }
+
+    /// Toggling spacing off drops its substrate (edits while off do no spacing
+    /// work and no spacing findings appear), while every unrelated rule is
+    /// untouched; re-enabling rebuilds only the spacing substrate to the cold
+    /// result (plan §7.2 rule toggles / §12.4).
+    #[test]
+    fn spacing_toggle_off_and_on_is_substrate_local() {
+        let on = Config::all();
+        let mut off = Config::all();
+        off.rules.insert(RuleId::PunctuationSpacingAnomaly, false);
+        let corpus = corpus_of(vec![
+            keyed("GEN", &["a, b, c, d, e, f", "g, h, i, j, k, l"]),
+            keyed("EXO", &["m, n, o, p, q, r", "s, t,u"]),
+        ]);
+        let mut g = Galley::new(corpus.clone(), None, on.clone());
+        let with_spacing = g.analyze();
+        assert!(
+            with_spacing.iter().any(|f| f.code == RuleId::PunctuationSpacingAnomaly),
+            "spacing fires while enabled"
+        );
+
+        // Disable spacing: no spacing findings, unrelated rules unchanged, and an
+        // edit while disabled does no spacing work.
+        g.update_config(off.clone());
+        let disabled = g.analyze();
+        assert!(
+            disabled.iter().all(|f| f.code != RuleId::PunctuationSpacingAnomaly),
+            "disabled spacing emits nothing"
+        );
+        assert_eq!(disabled, cold(&corpus, &off), "resident == cold with spacing off");
+        g.update_book(book("GEN", &["a, b, c, d, e, f", "g, h,edited"]))
+            .unwrap();
+        let edited = corpus_of(vec![
+            keyed("GEN", &["a, b, c, d, e, f", "g, h,edited"]),
+            keyed("EXO", &["m, n, o, p, q, r", "s, t,u"]),
+        ]);
+        let after_edit = g.analyze();
+        let probe = g.cache.probe();
+        assert_eq!(
+            (probe.spacing_mapped, probe.spacing_reduced, probe.spacing_judged),
+            (0, 0, 0),
+            "an edit while spacing is disabled does no spacing work"
+        );
+        assert_eq!(after_edit, cold(&edited, &off));
+
+        // Re-enable: rebuild only the spacing substrate to the cold result.
+        g.update_config(on.clone());
+        let reenabled = g.analyze();
+        assert_eq!(reenabled, cold(&edited, &on), "re-enabling rebuilds to cold");
     }
 
     // ── uni.mixed-normalization through the resident Galley (ADR 0063) ──────

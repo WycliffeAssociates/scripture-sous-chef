@@ -1576,12 +1576,14 @@ pub(crate) fn drive_spacing(
     out: &mut Vec<Finding>,
 ) {
     use crate::substrate::{ChapterView, ObservationInputStamp, ObservationSubstrate};
+    // Reset the per-analyze work probes up front so a disabled substrate reads as
+    // zero work (not a stale count from a prior active analyze).
+    #[cfg(any(test, feature = "test-probes"))]
+    cache.reset_probes();
     if !active {
         cache.clear();
         return;
     }
-    #[cfg(any(test, feature = "test-probes"))]
-    cache.reset_probes();
     let texts = corpus.texts();
     for book in corpus.book_layout() {
         let chapters: Vec<(Box<str>, ObservationInputStamp)> = book
@@ -3042,6 +3044,105 @@ mod tests {
             spacing_findings(&corpus, &cfg),
             "after book removal"
         );
+    }
+
+    /// The substrate work probes show exactly the intended map/reduce/judge work
+    /// (plan §8 Phase C gate): cold maps+reduces every chapter; a judging-knob
+    /// change maps/reduces ZERO chapters and only re-judges; a content edit maps
+    /// only the changed chapter and re-reduces only its owning book; an unchanged
+    /// re-analyze (edit-then-undo) does no map/reduce.
+    #[test]
+    fn spacing_substrate_work_probes_show_exact_work() {
+        use crate::corpus::ChapterBlock;
+        use crate::substrate::SubstrateCache;
+        let mut corpus = multi(&[
+            ("GEN 1:1", "In the beginning, God created,the heavens."),
+            ("GEN 1:2", "The earth was formless, and void, and dark,"),
+            ("GEN 2:1", ", and God said, Let there be light,"),
+            ("EXO 1:1", "Now these are the names, of the sons,"),
+        ]); // GEN: chapters 1 (2 verses) + 2 (1 verse); EXO: chapter 1 — 3 chapters
+        let cfg = sp_no_floor();
+        let mut cache: SubstrateCache<SpacingSubstrate> = SubstrateCache::new();
+
+        // Cold: every chapter mapped and reduced.
+        let mut out = Vec::new();
+        drive_spacing(true, &mut cache, &corpus, &cfg, &mut out);
+        assert_eq!(cache.mapped, 3, "cold maps every chapter");
+        assert_eq!(cache.reduced, 3, "cold reduces every chapter");
+        assert!(cache.judged >= 1, "cold judges the marks present");
+
+        // Judging-knob change (same corpus, different floor): zero map/reduce.
+        let mut out2 = Vec::new();
+        drive_spacing(true, &mut cache, &corpus, &sp_default(), &mut out2);
+        assert_eq!(cache.mapped, 0, "a knob change maps zero chapters");
+        assert_eq!(cache.reduced, 0, "a knob change reduces zero chapters");
+        assert!(cache.judged >= 1, "a knob change still re-judges spacing");
+
+        // Edit-then-undo before analyze: the final corpus equals the cached one,
+        // so re-analyze maps/reduces nothing.
+        let mut out3 = Vec::new();
+        drive_spacing(true, &mut cache, &corpus, &cfg, &mut out3);
+        assert_eq!(cache.mapped, 0, "an unchanged re-analyze maps zero chapters");
+        assert_eq!(cache.reduced, 0, "an unchanged re-analyze reduces zero chapters");
+
+        // Content edit to GEN chapter 2: maps ONLY that chapter, re-reduces ONLY
+        // GEN's chapters (its owning book); EXO is untouched.
+        corpus
+            .replace_chapter(ChapterBlock {
+                slug: "GEN".into(),
+                chapter: "2".into(),
+                keys: vec!["GEN 2:1".into()],
+                texts: vec![", and God saw the light,that it was good,".into()],
+            })
+            .unwrap();
+        let mut out4 = Vec::new();
+        drive_spacing(true, &mut cache, &corpus, &cfg, &mut out4);
+        assert_eq!(cache.mapped, 1, "a one-chapter edit maps exactly that chapter");
+        assert_eq!(
+            cache.reduced, 2,
+            "it re-reduces only the owning book's chapters (GEN has 2), not EXO"
+        );
+    }
+
+    /// Toggle isolation: disabling spacing drops the substrate's products, and an
+    /// edit while disabled does no spacing work; re-enabling cold-builds only the
+    /// spacing substrate (plan §7.2 rule toggles / §12.4).
+    #[test]
+    fn spacing_substrate_toggle_drops_and_rebuilds() {
+        use crate::substrate::SubstrateCache;
+        let corpus = multi(&[
+            ("GEN 1:1", "In the beginning, God created,the heavens."),
+            ("GEN 2:1", ", and God said, Let there be light,"),
+        ]);
+        let cfg = sp_no_floor();
+        let mut cache: SubstrateCache<SpacingSubstrate> = SubstrateCache::new();
+        let mut out = Vec::new();
+        drive_spacing(true, &mut cache, &corpus, &cfg, &mut out);
+        assert_eq!(cache.mapped, 2, "cold builds every chapter");
+        assert!(cache.book_contribution("GEN").is_some());
+
+        // Disable: the substrate drops its products.
+        let mut off = Vec::new();
+        drive_spacing(false, &mut cache, &corpus, &cfg, &mut off);
+        assert!(off.is_empty(), "disabled substrate emits nothing");
+        assert!(
+            cache.book_contribution("GEN").is_none(),
+            "disabling drops the substrate's cached products"
+        );
+        // Edit while disabled: still no spacing work.
+        let mut off2 = Vec::new();
+        drive_spacing(false, &mut cache, &corpus, &cfg, &mut off2);
+        assert_eq!(
+            (cache.mapped, cache.reduced, cache.judged),
+            (0, 0, 0),
+            "an edit while spacing is disabled does no spacing work"
+        );
+
+        // Re-enable: a cold rebuild of the substrate.
+        let mut on = Vec::new();
+        drive_spacing(true, &mut cache, &corpus, &cfg, &mut on);
+        assert_eq!(cache.mapped, 2, "re-enabling rebuilds the substrate");
+        assert_eq!(on, spacing_findings(&corpus, &cfg), "rebuild equals cold");
     }
 
     /// The carry is load-bearing: a verse-leading mark at a chapter's start reads
