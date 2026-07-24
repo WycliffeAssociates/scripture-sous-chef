@@ -2164,4 +2164,155 @@ mod tests {
         let (_, s_cold) = analyze_stateful(&exo, None, &cfg, None, None);
         assert_eq!(s_after, s_cold, "no GEN contribution survives in any rule");
     }
+
+    // ── Resident finding partitions: the atomic finding boundary (§3.3) ──────
+
+    /// The returned findings come ONLY from the resident partition lane:
+    /// assembling the committed partitions (chapter-local, rebased to global)
+    /// reproduces the returned findings exactly, over a multi-book,
+    /// multi-chapter corpus with a duplicate key. The oracle gate proves the
+    /// same over the fleet (including the adjacency/spacing/duplicate-word tie
+    /// cases); this is the focused in-crate witness that assembly reads the lane.
+    #[test]
+    fn returned_findings_come_only_from_the_partition_lane() {
+        let cfg = Config::all();
+        let target = Corpus::try_from_parts(
+            vec![
+                "GEN 1:1".into(),
+                "GEN 1:2".into(),
+                "GEN 2:1".into(),
+                "EXO 1:1".into(),
+                "EXO 1:1".into(), // a duplicate key, both independently addressed
+            ],
+            vec![
+                "a  b, joyfullly".into(),
+                "word word here".into(),
+                "one) two".into(),
+                "x\ty".into(),
+                "A1 α qQx".into(),
+            ],
+        )
+        .unwrap();
+        let mut cache = AnalysisCache::new();
+        let (findings, _) = analyze_resident(&target, None, &cfg, None, &mut cache).unwrap();
+        assert!(!findings.is_empty(), "the corpus fires several rules");
+        assert_eq!(
+            cache.partition_findings(&target),
+            findings,
+            "assembly reads only the resident partition lane, chapter-local round-trip exact"
+        );
+    }
+
+    /// A fault at any of map/reduce/judge leaves the PREVIOUS partitions intact
+    /// and current — they still describe the last successful analyze, not a
+    /// half-built candidate — and a retry with no further mutation rebuilds them
+    /// to the cold result. Proves no partial finding layer is ever exposed as
+    /// current (plan §3.3 / §16).
+    #[test]
+    fn fault_leaves_previous_partitions_intact_and_current() {
+        use fault::Phase;
+        let cfg = Config::all();
+        let a = corpus_of(vec![
+            keyed("GEN", &["a  b, joyfullly", "word word here"]),
+            keyed("EXO", &["x\ty", "one) two"]),
+        ]);
+        // Edit GEN's first verse so B's findings differ from A's.
+        let b = corpus_of(vec![
+            keyed("GEN", &["clean and tidy text", "word word here"]),
+            keyed("EXO", &["x\ty", "one) two"]),
+        ]);
+        let cold_b = analyze_with_config(&b, None, &cfg);
+
+        for phase in [Phase::Map, Phase::Reduce, Phase::Judge] {
+            let mut cache = AnalysisCache::new();
+            let (findings_a, prior) = analyze_resident(&a, None, &cfg, None, &mut cache).unwrap();
+            assert_eq!(cache.partition_findings(&a), findings_a);
+
+            // A faulted analyze of B publishes no partitions.
+            let outcome = {
+                let _guard = fault::arm(phase);
+                analyze_resident(&b, None, &cfg, Some(prior), &mut cache)
+            };
+            let prior = match outcome {
+                Err((_, p)) => p,
+                Ok(_) => panic!("{phase:?} fault did not fire"),
+            };
+            assert_eq!(
+                cache.partition_findings(&a),
+                findings_a,
+                "a {phase:?} fault leaves the previous partitions intact and current (still A)"
+            );
+
+            // Retry, no further mutation: reaches the cold result, assembled from
+            // the now-rebuilt partitions.
+            let (findings_b, _) = analyze_resident(&b, None, &cfg, prior, &mut cache).unwrap();
+            assert_eq!(findings_b, cold_b, "retry after a {phase:?} fault equals cold");
+            assert_eq!(
+                cache.partition_findings(&b),
+                findings_b,
+                "the partitions now describe B"
+            );
+        }
+    }
+
+    /// An empty corpus (and a finding-free analyze) is valid: it yields empty
+    /// findings and an empty partition lane, and assembly agrees.
+    #[test]
+    fn empty_corpus_and_zero_findings_are_valid() {
+        let cfg = Config::all();
+        let empty = Corpus::try_from_parts(Vec::new(), Vec::new()).unwrap();
+        let mut cache = AnalysisCache::new();
+        let (findings, _) = analyze_resident(&empty, None, &cfg, None, &mut cache).unwrap();
+        assert!(findings.is_empty(), "empty corpus yields no findings");
+        assert!(
+            cache.partition_findings(&empty).is_empty(),
+            "empty corpus yields an empty partition lane"
+        );
+
+        // A clean verse: whatever it fires, assembly still equals the return.
+        let clean = mk("GEN", &["clean and tidy text"]);
+        let (f2, _) = analyze_resident(&clean, None, &cfg, None, &mut cache).unwrap();
+        assert_eq!(cache.partition_findings(&clean), f2);
+    }
+
+    /// Removing a book drops its partition records from the finding lane, so a
+    /// removal cannot resurrect a partition: even assembled against a corpus
+    /// that still contains the book, the lane holds none of its records.
+    #[test]
+    fn removal_drops_partition_records_and_cannot_resurrect() {
+        let cfg = Config::all();
+        let ab = corpus_of(vec![
+            keyed("GEN", &["a  b, joyfullly"]),
+            keyed("EXO", &["x\ty word word"]),
+        ]);
+        let mut cache = AnalysisCache::new();
+        analyze_resident(&ab, None, &cfg, None, &mut cache).unwrap();
+        assert!(
+            cache
+                .partition_findings(&ab)
+                .iter()
+                .any(|f| ab.key(f.key_idx).starts_with("EXO")),
+            "EXO fired and is in the lane"
+        );
+
+        // Drop EXO via the finding-lane removal entry point.
+        cache.remove_book("EXO");
+
+        // The corpus still contains EXO, but the lane holds no EXO records —
+        // a removal cannot resurrect a partition.
+        assert!(
+            cache
+                .partition_findings(&ab)
+                .iter()
+                .all(|f| !ab.key(f.key_idx).starts_with("EXO")),
+            "removed book's partition records are gone from the lane"
+        );
+        assert!(
+            cache
+                .partition_findings(&ab)
+                .iter()
+                .any(|f| ab.key(f.key_idx).starts_with("GEN")),
+            "the sibling book's partition survives"
+        );
+    }
 }

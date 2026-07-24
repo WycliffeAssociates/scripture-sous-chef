@@ -331,6 +331,18 @@ impl AnalysisCache {
         self.prep.retallied = n;
     }
 
+    /// Assemble the findings the resident partitions currently describe, in the
+    /// returned order — a witness for the atomic finding boundary. Assembling
+    /// only from the lane (never the working `out`) is exactly what a failed
+    /// analyze must leave intact and current, and what a removal must not let
+    /// resurrect.
+    #[cfg(test)]
+    pub(crate) fn partition_findings(&self, corpus: &crate::corpus::Corpus) -> Vec<Finding> {
+        let mut out = self.findings.assemble(corpus);
+        out.sort_by_key(|f| (f.key_idx, f.range.start, f.code));
+        out
+    }
+
     // ── Test-only prep accessors ────────────────────────────────────────────
 
     #[cfg(test)]

@@ -1406,13 +1406,25 @@ mod tests {
         );
 
         // Retry: no fault armed. The inner handle is already CleanPublished with
-        // a warm cache, so this re-analyze is zero-work; the pack now succeeds
-        // and publishes the current snapshot.
+        // a warm cache, so this re-analyze does zero new map (no re-walk); the
+        // pack now succeeds and publishes the current snapshot.
         let bytes = g.analyze_packed().expect("retry packs the current snapshot");
         let id1 = ssc_wire::decode(&bytes).unwrap().analysis_id;
         assert_ne!(id1, id0, "the edited snapshot has a new id");
         assert_eq!(g.last_analysis_id, Some(id1), "the retry publishes");
         assert!(g.finding_args_core(id1, 0).is_ok(), "args available after retry");
+
+        // The pack-retry reaches the cold result: its packed bytes are identical
+        // to a fresh cold analyze of the same edited inputs — the partition lane
+        // assembles the same snapshot whether reached cold or via a pack-fault
+        // retry.
+        let mut cold = new_galley(
+            &[("GEN 1:1", "the the word extra"), ("GEN 1:2", "a  b")],
+            None,
+            Some(all_rules()),
+        );
+        let cold_bytes = cold.analyze_packed().expect("cold analyze packs");
+        assert_eq!(bytes, cold_bytes, "pack-retry is byte-identical to the cold result");
     }
 
     /// The wasm-boundary equivalence bookend: every packed record decodes to the
