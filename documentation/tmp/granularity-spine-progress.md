@@ -2283,3 +2283,24 @@ and its knob/toggle isolation is proven by work probes. Next stop-safe step is
 products, patch only the replaced chapter's direct-rule partitions) then **step
 5** (the order-preserving native chapter-map seam) — the NEXT packet. Do not
 begin it here.
+
+---
+
+## Entry 17 addendum — post-reboot ladder (WP5a close-out measurement)
+
+- **Date:** 2026-07-24, freshly rebooted machine, load 10–17 (1-min) and
+  falling; all-config spreads still wide (50–142%), so these are honest-but-
+  informal numbers, not a §13 alternating run.
+- **Warm ladder (update+analyze medians of batch 0):** default 3JN/MAT/PSA =
+  0.648 / 8.14 / 14.21 ms; all-config = 23.97 / 43.20 / 56.11 ms. Decomposition:
+  default MAT/PSA are map-dominated (7.4/13.3 ms — the edited book's own
+  re-walk, Phase D's target); all-config judge ≈ 22.9–25.1 ms in every cell
+  (the parked casing emit loop, Phase D/E's target).
+- **Verdict:** every cell flat-to-better vs the Entry 12-era baselines
+  (5.1/13.1/19.3 default; 32.5/51.5/65.0 all). No §13 regression signal from
+  Phase B or Phase C, so the formal alternating protocol is not invoked. The
+  `drive_spacing` per-analyze chapter-views allocation the WP5a report flagged
+  shows only as all-config reduce ticking ~0.42→0.5–0.65 ms — recorded as a
+  Phase D follow-up, no action now.
+- 3JN/default at 0.648 ms independently reconfirms the Phase A floor gate on
+  a third build of the tree.
