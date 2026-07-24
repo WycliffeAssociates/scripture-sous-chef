@@ -1,12 +1,21 @@
 # ADR 0061: Finding addresses become an ordered `Corpus` + `KeyIdx`/`LocalKeyIdx` (retires `Sid`/`BookId`/`VerseMap`)
 
 - **Date:** 2026-07-14
-- **Status:** Accepted
+- **Status:** Accepted — **except** the wasm **output**-contract clause (the
+  Decision/Consequences prose "the **output** shape is unchanged:
+  `Finding.sid: string`…" / "wasm **output** is unchanged"), which is
+  **superseded by [ADR 0065](0065-packed-findings-wire.md)**: `analyze`/
+  `analyze_vref` now return a packed binary `Uint8Array`, not a `Finding[]`
+  object array. The addressing model (`Corpus` + `KeyIdx`/`LocalKeyIdx`), the
+  input shape (`VrefCorpus`), and everything else here stand — ADR 0065 rides
+  on this `KeyIdx` addressing (it is the record's `key_idx` field).
 - **Relates to:** [ADR 0010](0010-pure-analyzer-contract-v1-reset.md) (amended
   below — its `VerseMap`/`Sid` wording is superseded), [ADR 0040](0040-vref-corpus-format-onion-builder.md)
   (amended below — its `VrefMap`/`Sid::parse` wording is superseded),
   [ADR 0060](0060-cross-call-analysis-caches.md) (the per-book cache products
-  this ADR's `LocalKeyIdx`/rebasing design now backs).
+  this ADR's `LocalKeyIdx`/rebasing design now backs),
+  [ADR 0065](0065-packed-findings-wire.md) (supersedes the output-contract
+  clause; the packed wire that carries `key_idx`).
 - **Plan:** `documentation/plans/completed/2026-07-14-finding-address-representation-plan.md`.
 - **Idea doc:** the finding-address-representation idea (deleted 2026-07-20
   per the ideas lifecycle; its open census site-cap thread was extracted to
