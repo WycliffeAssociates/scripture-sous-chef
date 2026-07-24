@@ -366,20 +366,46 @@ export class Galley {
      */
     census(example_cap?: number | null): string;
     /**
+     * The content-derived identity of the current resident inputs (target +
+     * reference presence/content + config + engine stamp), as a JS `bigint`.
+     * Pure and analysis-free — it folds the corpus's owned per-book hashes
+     * (O(book count), no verse walk), so it is callable **before the first
+     * `analyze`** and while the handle is dirty. This is the id a persisted
+     * buffer must carry to be reused for the current inputs
+     * (`decodePersistedFindings`'s `ExpectedAnalysisIdentity.analysisId`). It
+     * tracks the current inputs, so it diverges from the last published header
+     * id the moment a mutation changes an input.
+     */
+    expectedAnalysisId(): bigint;
+    /**
+     * The target-only content identity (target + config + engine stamp,
+     * excluding the reference), as a JS `bigint`. Same pure/analysis-free
+     * lifecycle as [`expected_analysis_id`](Galley::expected_analysis_id); its
+     * only use is the reference-present -> reference-absent persisted-findings
+     * salvage (`ExpectedAnalysisIdentity.targetContextId`).
+     */
+    expectedTargetContextId(): bigint;
+    /**
      * The lazy args of one finding from the last successful [`analyze`](Galley::analyze),
      * addressed by that analyze's `analysis_id` (the header value) and the
      * record `index`. `null` for a no-interpolation rule. Throws if no analyze
      * has succeeded, `analysis_id` is not the current publication's, or `index`
      * is out of range (§A.3.3). The `analysis_id` marshals as a JS `bigint`.
      */
-    finding_args(analysis_id: bigint, index: number): FindingArgsOut;
+    findingArgs(analysis_id: bigint, index: number): FindingArgsOut;
     /**
      * Batch form of [`finding_args`](Galley::finding_args): the lazy args for
      * `indices`, positionally parallel (duplicates and `null`s preserved). The
      * **whole batch** is validated before anything is cloned — one bad index
      * rejects the entire request (§A.3.3).
      */
-    findings_args(analysis_id: bigint, indices: Uint32Array): FindingsArgsOut;
+    findingsArgs(analysis_id: bigint, indices: Uint32Array): FindingsArgsOut;
+    /**
+     * Whether a reference (source) corpus is currently resident — the
+     * canonical presence bit for persistence validation
+     * (`ExpectedAnalysisIdentity.hasReference`). Analysis-free.
+     */
+    hasReference(): boolean;
     /**
      * Seed the handle from a single typed args object (`{ target, source?,
      * config? }`; `config` omitted ⇒ `Config::v1_defaults()`, exactly like
@@ -391,39 +417,39 @@ export class Galley {
      * removed (`0` means unchanged). A positive count stales the wire
      * publication (§3.1).
      */
-    remove_books(slugs: string[]): number;
+    removeBooks(slugs: string[]): number;
     /**
      * Reseed the whole corpus (project switch, git pull). Books absent from the
      * new corpus leave the prior and cache before it is adopted. Returns the
      * `MutationEffect` — `"unchanged"` when the new corpus equals the current.
      */
-    replace_corpus(target: VrefCorpus): MutationEffect;
+    replaceCorpus(target: VrefCorpus): MutationEffect;
     /**
      * Replace the optional reference (source) corpus. The prior is retained;
      * provenance stales the same-slug target books whose source changed on the
      * next analyze. Returns the `MutationEffect`.
      */
-    replace_source(source?: VrefCorpus | null): MutationEffect;
+    replaceSource(source?: VrefCorpus | null): MutationEffect;
     /**
      * Replace one complete book in place, or append it if its slug is new.
      * Atomic (all-or-nothing): a rejected block leaves the handle unchanged.
      * Returns the `MutationEffect` — `"unchanged"` for a byte-identical no-op.
      * Does not analyze.
      */
-    update_book(block: BookUpdateIn): MutationEffect;
+    updateBook(block: BookUpdateIn): MutationEffect;
     /**
      * Replace exactly one existing `(slug, chapter)` run. Atomic; a rejected
      * block leaves the handle unchanged. Returns the `MutationEffect`. Does
      * not analyze.
      */
-    update_chapter(block: ChapterUpdateIn): MutationEffect;
+    updateChapter(block: ChapterUpdateIn): MutationEffect;
     /**
      * Swap the config. Required (not optional): a config change is explicit,
      * never an accidental reset to defaults. Equal config ⇒ `"unchanged"`;
      * otherwise the prep cache clears and the prior is retained (provenance
      * decides what re-tallies).
      */
-    update_config(config: SousConfig): MutationEffect;
+    updateConfig(config: SousConfig): MutationEffect;
 }
 
 /**
@@ -474,15 +500,18 @@ export interface InitOutput {
     readonly census: (a: any, b: number) => [number, number, number, number];
     readonly galley_analyze: (a: number) => [number, number, number, number];
     readonly galley_census: (a: number, b: number) => [number, number];
-    readonly galley_finding_args: (a: number, b: bigint, c: number) => [number, number, number];
-    readonly galley_findings_args: (a: number, b: bigint, c: number, d: number) => [number, number, number];
+    readonly galley_expectedAnalysisId: (a: number) => bigint;
+    readonly galley_expectedTargetContextId: (a: number) => bigint;
+    readonly galley_findingArgs: (a: number, b: bigint, c: number) => [number, number, number];
+    readonly galley_findingsArgs: (a: number, b: bigint, c: number, d: number) => [number, number, number];
+    readonly galley_hasReference: (a: number) => number;
     readonly galley_new: (a: any) => [number, number, number];
-    readonly galley_remove_books: (a: number, b: number, c: number) => number;
-    readonly galley_replace_corpus: (a: number, b: any) => [number, number, number];
-    readonly galley_replace_source: (a: number, b: number) => [number, number, number];
-    readonly galley_update_book: (a: number, b: any) => [number, number, number];
-    readonly galley_update_chapter: (a: number, b: any) => [number, number, number];
-    readonly galley_update_config: (a: number, b: any) => any;
+    readonly galley_removeBooks: (a: number, b: number, c: number) => number;
+    readonly galley_replaceCorpus: (a: number, b: any) => [number, number, number];
+    readonly galley_replaceSource: (a: number, b: number) => [number, number, number];
+    readonly galley_updateBook: (a: number, b: any) => [number, number, number];
+    readonly galley_updateChapter: (a: number, b: any) => [number, number, number];
+    readonly galley_updateConfig: (a: number, b: any) => any;
     readonly rule_catalog: () => any;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;

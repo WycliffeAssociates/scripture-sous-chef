@@ -61,6 +61,34 @@ export class Galley {
         }
     }
     /**
+     * The content-derived identity of the current resident inputs (target +
+     * reference presence/content + config + engine stamp), as a JS `bigint`.
+     * Pure and analysis-free — it folds the corpus's owned per-book hashes
+     * (O(book count), no verse walk), so it is callable **before the first
+     * `analyze`** and while the handle is dirty. This is the id a persisted
+     * buffer must carry to be reused for the current inputs
+     * (`decodePersistedFindings`'s `ExpectedAnalysisIdentity.analysisId`). It
+     * tracks the current inputs, so it diverges from the last published header
+     * id the moment a mutation changes an input.
+     * @returns {bigint}
+     */
+    expectedAnalysisId() {
+        const ret = wasm.galley_expectedAnalysisId(this.__wbg_ptr);
+        return BigInt.asUintN(64, ret);
+    }
+    /**
+     * The target-only content identity (target + config + engine stamp,
+     * excluding the reference), as a JS `bigint`. Same pure/analysis-free
+     * lifecycle as [`expected_analysis_id`](Galley::expected_analysis_id); its
+     * only use is the reference-present -> reference-absent persisted-findings
+     * salvage (`ExpectedAnalysisIdentity.targetContextId`).
+     * @returns {bigint}
+     */
+    expectedTargetContextId() {
+        const ret = wasm.galley_expectedTargetContextId(this.__wbg_ptr);
+        return BigInt.asUintN(64, ret);
+    }
+    /**
      * The lazy args of one finding from the last successful [`analyze`](Galley::analyze),
      * addressed by that analyze's `analysis_id` (the header value) and the
      * record `index`. `null` for a no-interpolation rule. Throws if no analyze
@@ -70,8 +98,8 @@ export class Galley {
      * @param {number} index
      * @returns {FindingArgsOut}
      */
-    finding_args(analysis_id, index) {
-        const ret = wasm.galley_finding_args(this.__wbg_ptr, analysis_id, index);
+    findingArgs(analysis_id, index) {
+        const ret = wasm.galley_findingArgs(this.__wbg_ptr, analysis_id, index);
         if (ret[2]) {
             throw takeFromExternrefTable0(ret[1]);
         }
@@ -86,14 +114,24 @@ export class Galley {
      * @param {Uint32Array} indices
      * @returns {FindingsArgsOut}
      */
-    findings_args(analysis_id, indices) {
+    findingsArgs(analysis_id, indices) {
         const ptr0 = passArray32ToWasm0(indices, wasm.__wbindgen_malloc);
         const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.galley_findings_args(this.__wbg_ptr, analysis_id, ptr0, len0);
+        const ret = wasm.galley_findingsArgs(this.__wbg_ptr, analysis_id, ptr0, len0);
         if (ret[2]) {
             throw takeFromExternrefTable0(ret[1]);
         }
         return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * Whether a reference (source) corpus is currently resident — the
+     * canonical presence bit for persistence validation
+     * (`ExpectedAnalysisIdentity.hasReference`). Analysis-free.
+     * @returns {boolean}
+     */
+    hasReference() {
+        const ret = wasm.galley_hasReference(this.__wbg_ptr);
+        return ret !== 0;
     }
     /**
      * Seed the handle from a single typed args object (`{ target, source?,
@@ -117,10 +155,10 @@ export class Galley {
      * @param {string[]} slugs
      * @returns {number}
      */
-    remove_books(slugs) {
+    removeBooks(slugs) {
         const ptr0 = passArrayJsValueToWasm0(slugs, wasm.__wbindgen_malloc);
         const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.galley_remove_books(this.__wbg_ptr, ptr0, len0);
+        const ret = wasm.galley_removeBooks(this.__wbg_ptr, ptr0, len0);
         return ret >>> 0;
     }
     /**
@@ -130,8 +168,8 @@ export class Galley {
      * @param {VrefCorpus} target
      * @returns {MutationEffect}
      */
-    replace_corpus(target) {
-        const ret = wasm.galley_replace_corpus(this.__wbg_ptr, target);
+    replaceCorpus(target) {
+        const ret = wasm.galley_replaceCorpus(this.__wbg_ptr, target);
         if (ret[2]) {
             throw takeFromExternrefTable0(ret[1]);
         }
@@ -144,8 +182,8 @@ export class Galley {
      * @param {VrefCorpus | null} [source]
      * @returns {MutationEffect}
      */
-    replace_source(source) {
-        const ret = wasm.galley_replace_source(this.__wbg_ptr, isLikeNone(source) ? 0 : addToExternrefTable0(source));
+    replaceSource(source) {
+        const ret = wasm.galley_replaceSource(this.__wbg_ptr, isLikeNone(source) ? 0 : addToExternrefTable0(source));
         if (ret[2]) {
             throw takeFromExternrefTable0(ret[1]);
         }
@@ -159,8 +197,8 @@ export class Galley {
      * @param {BookUpdateIn} block
      * @returns {MutationEffect}
      */
-    update_book(block) {
-        const ret = wasm.galley_update_book(this.__wbg_ptr, block);
+    updateBook(block) {
+        const ret = wasm.galley_updateBook(this.__wbg_ptr, block);
         if (ret[2]) {
             throw takeFromExternrefTable0(ret[1]);
         }
@@ -173,8 +211,8 @@ export class Galley {
      * @param {ChapterUpdateIn} block
      * @returns {MutationEffect}
      */
-    update_chapter(block) {
-        const ret = wasm.galley_update_chapter(this.__wbg_ptr, block);
+    updateChapter(block) {
+        const ret = wasm.galley_updateChapter(this.__wbg_ptr, block);
         if (ret[2]) {
             throw takeFromExternrefTable0(ret[1]);
         }
@@ -188,8 +226,8 @@ export class Galley {
      * @param {SousConfig} config
      * @returns {MutationEffect}
      */
-    update_config(config) {
-        const ret = wasm.galley_update_config(this.__wbg_ptr, config);
+    updateConfig(config) {
+        const ret = wasm.galley_updateConfig(this.__wbg_ptr, config);
         return ret;
     }
 }
