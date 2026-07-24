@@ -73,6 +73,19 @@ byte-identical across thread counts. Output order is still deterministic
 completion order; only stderr progress-print *order* is now
 completion-order rather than file-order, which is cosmetic — never diffed).
 
+## The remote quiet-box lane
+
+`scripts/bench-remote.sh` runs dumps/benches on a quiet Linux box over ssh
+(subcommands: `sync`, `sync-corpora`, `blobs`, `oracle <tag>`, `oracle-diff
+<a> <b>`, `ladder`, `exec '<cmd>'`). Use it for full-fleet dumps when the
+local machine is loaded, and as the §13 tie-breaker for ambiguous perf calls.
+THE RULE THAT MAKES IT SOUND: baseline and candidate always run on the same
+box — the remote is its own oracle series (pin there, diff there); never diff
+a remote dump against a local macOS pin, because scores flow through libm and
+float formatting that may differ across platforms. Remote pins live outside
+the synced repo dir so `sync --delete` can't eat them. Perf absolutes are
+per-box series too; ratios transfer, milliseconds don't.
+
 ## Corpus blobs — skip re-parsing 1,504 files every run
 
 `corpora/vref/` is 1,504 individual files (~3.2GB total) that never change
