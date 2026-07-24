@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/core", "crates/galley", "crates/wasm", "xtask"]
+members = ["crates/core", "crates/galley", "crates/wire", "crates/wasm", "xtask"]
 
 
 [workspace.package]
@@ -18,6 +18,7 @@ disallowed_types = "deny"
 [workspace.dependencies]
 ssc-core = { path = "crates/core" }
 ssc-galley = { path = "crates/galley" }
+ssc-wire = { path = "crates/wire" }
 unicode-segmentation = "1.12"
 unicode-script = "0.5"
 unicode-properties = "0.1"

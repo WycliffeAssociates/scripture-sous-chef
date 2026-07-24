@@ -1,0 +1,20 @@
+# `ssc-wire` — the packed-findings binary contract (granularity-spine Appendix A).
+#
+# The single source of truth for the wire: header/record constants, the stable
+# rule discriminants, the per-code digest assignments, the encoder, a fallible
+# test-only decoder, and a machine-readable schema the `cargo xtask wire-js`
+# generator renders into the official JS surface. It depends on `ssc-core`;
+# neither `ssc-core` nor `ssc-galley` depends on it. `crates/wasm` calls this
+# crate — it never carries a second layout, discriminant table, or digest match.
+[package]
+name = "ssc-wire"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+ssc-core = { workspace = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[lints]
+workspace = true
