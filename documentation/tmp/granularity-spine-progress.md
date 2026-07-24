@@ -1025,3 +1025,191 @@ clean-book `cloned_walk` consumption with borrowed/read-only cached product
 views) — the next packet — followed by step 8 (the honest-ladder `<=2 ms`
 localized layout/hash maintenance). Phase A-W must not begin until Phase B; the
 folded book hash is already in (Entry 5).
+
+---
+
+## Entry 8 — Work Packet 2c: Phase A steps 7 + 8 (floor diet + gate close)
+
+- **Date:** 2026-07-24
+- **Branch:** `granularity-spine` (main tree). Base for this packet: `5b907cb`.
+- **Scope:** plan §8 Phase A **step 7** (borrow clean-book walk products) +
+  **step 8** (measure; localized layout/hash maintenance to close the warm
+  floor). This closes Phase A's compute work. Phase A-W / Phase B not started.
+- **Discipline:** per-commit **WA** oracle (four dumps: findings + transcript ×
+  default + all, against `oracle-blobs/wa.blob`) byte-identical + full
+  `cargo test --workspace` serial and `--features parallel` +
+  `cargo check -p ssc-wasm --target wasm32-unknown-unknown`. Full-fleet findings
+  bookend remains Phase F.
+
+### Commits (in order)
+
+| unit | commit | what landed |
+| --- | --- | --- |
+| 1 | `6657d41` | Step 7: `RuleSites<'a>`/`TokenCache<'a>` borrowed views (`Cow` per-book sites, `&[Token]` cache); `transition` splits each book into `BookProducts::{Walked, Clean}`; `cloned_walk`/`CachedWalk` deleted, replaced by `walk_lanes_ready` (bool, clones nothing) + `walk_entry` (borrow); `assemble_token_cache` folded into `transition` as a borrowing build. |
+| 2a | `19c59e0` | Step 8 (measure): `ssc_core::bench` (bench-probes-gated thread-local map/reduce/judge split); `warm_ladder_profile` times `update_book`/`analyze` separately + `--batches`/`--trials`; spike-bench enables `ssc-core/bench-probes`. Feature-gated, absent from oracle/release builds. |
+| 2b | `446a7c4` | Step 8 (diet): localized layout/hash maintenance — `update_book`/`update_chapter`/`remove_book` rebuild only the changed book's layout and integer-rebase later books; `build_book_at`/`shift_book` primitives; `replace_books` reads book boundaries from the owned layout (no whole-corpus re-parse). Full `build_layout` kept for construction/`replace_corpus`. |
+| final | (this entry) | progress log. |
+
+### WA oracle base pin + per-commit gate
+
+Pinned at HEAD `5b907cb`, `/tmp/oracle/spine/wp2c.base.wa.*.tsv`, scope=wa.
+Byte-identical to the WP1/WP2a/WP2b standing contract (findings) and WP2b
+(transcript):
+
+| file | sha256 |
+| --- | --- |
+| `wp2c.base.wa.findings.default.tsv` | `38a0ceadcc792a6656905c7a0f9e2e4c2720c86f47f41f94c66e7a8ad1a9702c` |
+| `wp2c.base.wa.findings.all.tsv` | `128fdd933dc71cda0a4a6d9d9971ceb5648a5703f8b22ee798d30b09d2c15660` |
+| `wp2c.base.wa.inc.default.tsv` | `7b19caa79b284bfa16a56f300f5660591ffc58ffa183888451daf82778676dca` |
+| `wp2c.base.wa.inc.all.tsv` | `c951a758823629c6b6d2e1d558e92c59c1873ed17856b328a60c7ebdc4cee74f` |
+
+**Every commit re-dumped all four and diffed byte-identical to this base.**
+Step 7 (`wp2c.u1.wa.*`), step-8 layout (`wp2c.u2.wa.*`), and the step-2
+boundary-derivation follow-up (`wp2c.u2b.wa.*`) each matched exactly; the
+final `u2b` shasums equal the base shasums above. The resident-Galley
+transcript (which exercises the clean-book borrow: seed complete corpus, edit
+one book, re-analyze → 65 clean cache hits borrowed) is byte-identical and
+thread-stable (`RAYON_NUM_THREADS=1` == default). Workspace tests green serial
+and `--features parallel` (core 415→421, galley 22, wasm 7); wasm32 check clean.
+
+### Unit 1 — the borrow-split design + type-level immutability guarantee
+
+`transition` splits each supplied book into `BookProducts::{Walked(BookOut),
+Clean(&BookEntry)}`. A **walked** book owns its fresh `BookOut`; its per-book
+*stats* are moved out for the supersede merge (fresh owned accumulators) and
+its sites become `Cow::Owned`. A **clean** cache-hit book contributes **no**
+stats (its counts carry from the prior) and its sites/tokens as **borrowed
+views** into the resident `PrepCache` `BookEntry` — `Cow::Borrowed` in the
+`RuleSites<'a>` maps and `&[Token]` in the `TokenCache<'a>`. The clean-book
+per-book clone (`cloned_walk` → `CachedWalk`) is gone: the cache holds the one
+owned copy and the judge reads a view.
+
+**Type-level guarantee achieved:** the resident cache is reborrowed **shared**
+(`let cache: &PrepCache = cache;`) immediately after the last `&mut` write
+(`store_walk`), and that shared borrow is held across the entire reduce+judge
+phase (every `Cow::Borrowed`/`&[Token]` view lives inside it). Because the
+function compiles with the cache behind a shared `&` for the whole judge phase,
+**no judge can mutate a cached product** — the compiler carries the proof; no
+targeted runtime test is needed for it. (The two `reduce`-fed test call sites
+pass an owned `RuleSites<'static>` by `&`, which coerces to `&RuleSites<'_>`.)
+
+### Unit 2 — measurement, then localized layout maintenance
+
+**Phase decomposition (candidate, warm `update_book`+`analyze`, 200 trials, the
+`bench-probes` map/reduce/judge split). Edited book = the named book; whole
+corpus (66 books) re-analyzed. Machine under heavy load (see §13); analyze
+phases are stable, map scales with the *edited* book's size.**
+
+| scenario | total | update_book | analyze (map / reduce / judge) | cold seed | findings |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 3JN default | 0.65 ms | 0.085 ms | 0.57 ms (0.10 / 0.42 / 0.04) | 265 ms | 37 |
+| 3JN all | 22.8 ms | 0.094 ms | 22.7 ms (0.46 / 0.49 / 21.7) | 667 ms | 77 |
+| MAT default | 8.5 ms | 0.21 ms | 8.3 ms (7.76 / 0.44 / 0.06) | 260 ms | 37 |
+| MAT all | 41.4 ms | 0.23 ms | 41.1 ms (17.8 / 0.61 / 22.7) | 734 ms | 77 |
+| PSA default | 14.7 ms | 0.37 ms | 14.4 ms (13.8 / 0.44 / 0.06) | 257 ms | 37 |
+| PSA all | 54.7 ms | 0.38 ms | 54.3 ms (30.6 / 0.66 / 22.9) | 683 ms | 77 |
+
+The gate scenario is 3JN (small edited book): pre-step-8, `update_book`'s
+whole-corpus `build_layout` was ~2.7 ms of a ~3.4 ms total. After localized
+maintenance `update_book` is negligible everywhere (0.085–0.38 ms; it scales
+with the edited book, not the corpus). The residual default cost on MAT/PSA is
+the *edited book's own re-walk* (map 7.8/13.8 ms) — inherent to editing a large
+book, not a layout cost; all-config cost is the judge phase (~22 ms fixed, the
+mixed-case/rare-glyph re-scans). Neither is a step-8 concern.
+
+**§13 gate protocol — 3JN default, alternating baseline(`5b907cb`,
+pre-step-7)/candidate(HEAD, post-step-8), same machine/session, 5 batches ×
+250 warm iters, `uptime` beside each. Baseline binary built from a `5b907cb`
+git worktree; candidate is the packet HEAD.**
+
+| batch | baseline median (load) | candidate median (load) |
+| --- | ---: | ---: |
+| 1 | 4.955 ms (11.78) | 0.659 ms (11.78) |
+| 2 | 4.999 ms (12.60) | 0.691 ms (12.60) |
+| 3 | 5.027 ms (12.60) | 0.645 ms (12.60) |
+| 4 | 5.022 ms (12.60) | 0.649 ms (12.60) |
+| 5 | 5.169 ms (11.75) | 0.648 ms (11.75) |
+| **median-of-medians** | **5.022 ms** | **0.649 ms** |
+
+Machine was heavily loaded (1-min load ~11–13) the whole session, but both
+series are tight (candidate 0.645–0.691 ms; baseline 4.96–5.17 ms), so the
+verdict is robust to load — this is not a §13 near-miss/ambiguous case.
+
+**dhat evidence (load-immune per-warm-iteration allocations, `dhat_probe
+testing`, 3JN edited). Prior baseline-of-record (Entry 5, db5fd7a): ~33,100
+blocks / 11.8 MB default. This packet's before = `5b907cb`, after = HEAD:**
+
+| config | before (`5b907cb`) d_blocks / d_bytes | after (HEAD) d_blocks / d_bytes | collapse |
+| --- | ---: | ---: | ---: |
+| default | 34,572 / 13.48 MB | 1,878 / 4.97 MB | ~18.4× blocks / 2.7× bytes |
+| all | 124,027 / 59.23 MB | 7,472 / 29.15 MB | ~16.6× blocks / 2.0× bytes |
+
+A large collapse as the plan predicted: step 7 removed the 65-clean-book
+per-lane clones + the token-cache clone, and step 8 removed the whole-corpus
+`build_layout` allocations. (Allocation counts are deterministic; measured
+under the same load with byte-identical output.)
+
+### GATE VERDICT: **PASS**
+
+Warm 3JN default floor = **0.649 ms median-of-medians**, well under the plan
+§8 / §13 `<=2 ms` Phase A floor target (a ~3× margin below target, ~7.7×
+faster than the `5b907cb` baseline). No second assembled `TokenCache` was
+added (plan step 8 note honored). Correctness gate (byte-identical WA
+findings + transcript, both configs) dominates and held at every commit.
+
+### Phase A status summary (steps 1–8)
+
+| step | status | landed |
+| --- | --- | --- |
+| 1 no-reopened-chapter validation | ✅ | WP1 `c7c78ec` |
+| 2 Corpus-owned book/chapter layout+hashes | ✅ | WP1 `71d3ce4` |
+| 3 `ChapterBlock`/`update_chapter` + `MutationEffect` | ✅ | WP1 `0cb9ce3` |
+| 4 hashing→Corpus; `AnalysisId`/`TargetContextId`/`InputDependency`/`KeyIdx::get` | ✅ | WP1 `fde6bd5` |
+| 5 remove echo; retire serialized `Stats`; new transcript oracle | ✅ | WP2a `d1584eb`; fold `1b82742` |
+| 6 one core transition; clean/dirty/publication lifecycle; retry-safety | ✅ | WP2b `1a422c1`; dep-restore `f6487e2` |
+| 7 borrow clean-book walk products (drop the clone) | ✅ | WP2c `6657d41` |
+| 8 measure + localized layout/hash maintenance; gate | ✅ PASS | WP2c `19c59e0`, `446a7c4` |
+
+**Phase A compute work is COMPLETE and gated.** Remaining Phase A **closeout**
+items carried by earlier entries, none blocking:
+- The Entry-6 advisory dep-direction restore is DONE (WP2b). No open advisories
+  from WP2a/WP2b remain.
+- Full-fleet findings + transcript bookend is deferred to Phase F (as every WP);
+  this packet's changes are refactors proven byte-identical on the WA slice, and
+  the changed paths are directly exercised (findings dump = one-shot map;
+  transcript dump = resident clean-book borrow).
+- `ANALYSIS_ENGINE_STAMP` is still a hand-bumped `1`; Phase F folds per-rule
+  stamps (unchanged this packet — no semantic change).
+
+### Deviations / notes for the owner (clearly marked)
+
+1. **Scope of the clone removal (step 7).** The plan text says "sites/tokens";
+   this packet borrows BOTH — `RuleSites<'a>` (`Cow` sites) and `TokenCache<'a>`
+   (`&[Token]`). For `default`, `collect_tokens` is on (repeated-run +
+   mixed-script), so the token borrow is on the gate path; doing it was
+   necessary to fully retire `cloned_walk`, not a half-measure. No plan
+   deviation.
+2. **Extra step-8 micro-lever (same commit `446a7c4`).** Beyond item 4's
+   book-layout splice, `replace_books` now derives book boundaries from the
+   owned layout instead of re-parsing every key in step 2. That re-parse was
+   the residual ~0.76 ms of `update_book` after the splice; removing it dropped
+   `update_book` from ~0.85 ms to ~0.085 ms on 3JN. It is layout-maintenance in
+   spirit (no key parse the owned layout already knows) and is covered by the
+   same from-scratch-equivalence test + oracle. Flagged in case the owner wants
+   it as its own commit; it is byte-identical and low-risk.
+3. **No second `TokenCache`** (plan step 8 note): not added; the gate passed
+   without it.
+4. **Machine load.** All wall-clock numbers were taken under heavy sustained
+   load (~12). The gate margin (0.65 vs 2 ms target) and the load-immune dhat
+   collapse make the PASS unambiguous, so no quiet-box rerun is requested. If
+   the owner wants a quiet-box confirmation of the *absolute* warm numbers
+   (not the verdict), the `warm_ladder_profile --batches 5 --trials 250` command
+   is ready.
+
+### Stop-safe next step
+
+WP2c complete and gated; **Phase A compute work is done**. Next stop-safe step
+is **Phase A-W** (packed findings wire + JS reconciliation, Appendix A) — but
+per the plan, Phase A-W consumes the Phase A identity/registry primitives and
+must not begin until the folded book hash is in (it is, Entry 5). Alternatively
+the owner may direct Phase B. Do not begin either within this packet.
