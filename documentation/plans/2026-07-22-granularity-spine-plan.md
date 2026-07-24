@@ -981,9 +981,18 @@ partition.
    slots, active-substrate computation, schema stamps, and registry
    completeness tests. No `dyn Any`, runtime downcast, or string dependency
    list.
-2. Migrate `PunctuationSpacing` as the first simple keyed substrate. Its
-   chapter observation, reduced result, book/corpus stats, keyed sites, delta
-   keys, and `EntryOutcome` must reproduce the existing rule exactly.
+2. Migrate `PunctuationSpacing` as the first keyed substrate. Its extraction
+   walk carries genuine cross-chapter seam state — the previous non-empty
+   verse's trailing-edge content class plus a pending trailing candidate mark
+   whose right neighbour lives in the next verse/chapter — so its boundary
+   state is that pair, not `()` (owner adjudication 2026-07-24; the pericope-
+   adulterae period at JHN 7:53 resolving against 8:1 is the canonical case).
+   Phase C reduces conservatively: a content edit remaps the changed chapter
+   and re-reduces the owning book's cached observations whole-book, left to
+   right; the §5.4 replay-to-convergence driver still arrives in Phase D.
+   Knob-only changes still map/reduce zero chapters. Its chapter observation,
+   reduced result, book/corpus stats, keyed sites, delta keys, and
+   `EntryOutcome` must reproduce the existing rule exactly.
 3. Make knob-only spacing config changes map/reduce zero chapters and rejudge
    only spacing. Toggle isolation tests prove every unrelated substrate and
    partition remains byte-identical/no-work.
@@ -1258,7 +1267,7 @@ commit and recorded in progress.
 | rule(s) | current shape | target substrate/lane | initial key | boundary state | phase |
 | --- | --- | --- | --- | --- | --- |
 | excess whitespace; tab; controls; zero-width misuse; empty verse; invalid codepoint; replacement run; combining mark; mixed numerals; redundant ZWSP; source marker; merge conflict | per-verse direct | chapter-local direct partitions over shared prep | verse/site | `()` | C |
-| spacing anomaly | stateful | `SpacingSubstrate` | mark/attachment class | `()` unless code proves carry | C |
+| spacing anomaly | stateful | `SpacingSubstrate` | mark/attachment class | previous trailing-edge class + pending seam mark (code-proven carry) | C |
 | duplicate word | project token | `DuplicateWordSubstrate` | normalized adjacent word pair/site | previous relevant word | D |
 | sentence-initial lowercase; inconsistent word casing | shared stateful counts | `CasingSubstrate`, two judges | word + position class as required | complete pending sentence/position state | D |
 | mixed-case word | stateful dense re-scan | `MixedCaseSubstrate` | normalized word | `()` | E |

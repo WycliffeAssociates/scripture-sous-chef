@@ -1991,3 +1991,30 @@ new packet. Do not begin it here.
   section by construction before Phase C populates the lane.
 - **Gate:** all four WA dumps byte-identical to the wp4 base; 426 core tests
   (witness included), all workspace suites green.
+
+---
+
+## Entry 16 — Owner adjudication: spacing migrates in Phase C with its honest boundary state (option C)
+
+- **Date:** 2026-07-24
+- **Trigger:** WP5a's Step-2 stop clause fired before any code — the spacing
+  extraction walk provably carries state across every verse seam including
+  `\c`: `left_cross` (previous non-empty verse's trailing-edge class) and
+  `pending` (a trailing candidate mark resolved against the NEXT non-empty
+  verse). Both feed the per-mark tallies the corpus-wide verdict sums, so a
+  `()`-boundary migration would change findings and diff the all-config
+  dumps. Canonical case: the period at JHN 7:53 resolving against 8:1
+  (pericope adulterae).
+- **Decision (owner):** option (C) — spacing stays the Phase C exemplar with
+  boundary state `(previous trailing-edge class, pending seam mark)`. Map
+  stays predecessor-free; the observation carries its edge classes and
+  unresolved seam marks; reduction is a left-to-right carry fold (leaving
+  state emitted, entering state consumed — never a peek at the next chapter,
+  which would break Phase D's convergence comparison). Phase C re-reduces the
+  owning book whole-book from cached observations on a content edit; the
+  §5.4 replay-to-convergence driver still lands in Phase D. Plan §8 Phase C
+  step 2 and the §11 spacing ledger row amended accordingly.
+- **Also recorded:** all four `PunctuationSpacingConfig` fields are judging
+  knobs (read only in judge); spacing has zero extraction-config fields, so
+  Step 3's extraction-config sub-test is N/A for spacing and lands generically
+  with a later substrate that has one.
