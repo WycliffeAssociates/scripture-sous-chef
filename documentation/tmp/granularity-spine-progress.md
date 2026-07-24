@@ -2508,3 +2508,317 @@ before any edit** so a cleared `/tmp` cannot cost the gate:
 | `wp5b.base.wa.findings.all.tsv` | `128fdd933dc71cda0a4a6d9d9971ceb5648a5703f8b22ee798d30b09d2c15660` |
 | `wp5b.base.wa.inc.default.tsv` | `7b19caa79b284bfa16a56f300f5660591ffc58ffa183888451daf82778676dca` |
 | `wp5b.base.wa.inc.all.tsv` | `c951a758823629c6b6d2e1d558e92c59c1873ed17856b328a60c7ebdc4cee74f` |
+
+Every commit re-dumped all four and diffed **byte-identical** to this base
+(`diff -q` against the pinned files, same WA scope), including the final HEAD.
+Dumps were run with `RAYON_NUM_THREADS=4`; output is thread-count-independent by
+construction and this packet adds a test for exactly that.
+
+### Per-step commits
+
+| step | commit | what landed |
+| --- | --- | --- |
+| 4 | `d0856de` | The direct per-verse lane goes chapter-local: per-chapter cached products keyed by `(slug, opaque token)` + chapter content hash, records chapter-local at production as well as at rest, and the direct rules' finding partitions patched per chapter. Probes re-based on the lane's real unit. |
+| 5 | `7421e44` | One order-preserving native chapter-map seam beside `map_books`, with the §6.1 routing table, the non-nesting guard, and the calibrated `PARALLEL_MIN_CHAPTER_MAP_BYTES`. |
+| rider | `cac903f` | The P1 seam-ownership assertion moved onto the reduced `SpacingBookContribution`, ahead of any judging (owner-requested hardening). |
+| perf fix | `1c3ccd1` | Keep the chapter-grained planning pass off the fixed per-analyze cost (the ladder caught a +68% 3JN regression in step 4 — see below). |
+| final | (this entry) | progress log. |
+
+Test counts at HEAD: core **446** serial / **447** `--features parallel` (the
+thread-count-independence test is parallel-only), galley **25**, ssc-wire 25,
+ssc-wasm 14, xtask 1; node **19**. Green serial, `--features parallel`, and
+`--features parallel` under `RAYON_NUM_THREADS=1`. wasm32 target check clean (no
+wasm surface or execution-model change). clippy clean — only the 3 documented
+pre-existing `ssc-core` lib warnings (casing.rs:459, token.rs:544, lib.rs
+`BookProducts` size); this packet adds none. `git diff --check` clean.
+
+### The dirty-accounting design (what is chapter-patched vs re-walked)
+
+Phase C leaves the engine with **three map lanes at two granularities**, and the
+progress entry has to be exact about which is which:
+
+| lane | unit | why | one-chapter edit does |
+| --- | --- | --- | --- |
+| direct (per-verse rules) | **chapter** | a per-verse rule reads one verse and nothing else | maps 1 chapter, reuses the rest |
+| spacing substrate | **chapter** (map) / book (reduce) | `map_chapter` is predecessor-free by contract; Phase C re-reduces the owning book | maps 1 chapter, re-reduces its book |
+| fused walk (every other stateful/project rule) | **book** | its listeners carry discourse state across every verse seam in the book — a chapter is not a reusable unit for them | re-walks the whole edited book |
+
+So a one-chapter edit in a 5-chapter/2-book corpus (the
+`one_chapter_edit_maps_and_patches_exactly_that_chapter` witness) does exactly:
+
+| probe | cold | after a one-chapter edit |
+| --- | ---: | ---: |
+| `direct_misses` (chapters mapped) | 5 | **1** |
+| `direct_hits` (chapters reused) | 0 | **4** |
+| `direct_chapters_patched` | 5 | **1** |
+| `retallied` (books re-walked + counted) | 2 | **1** |
+| `walk_hits` (books reusing walk products) | 0 | **1** |
+
+The fused walk's book-grained re-walk is the honest remaining cost, and it is
+Phase D/E's target, not this packet's: it shrinks as each listener becomes an
+observation substrate with a predecessor-free chapter map.
+
+**Two stamps, not one.** The direct lane's dirty set is the *union* of two
+independently-derived sets:
+
+```text
+map set    = chapters whose cached prep product != this chapter's content hash
+patch set  = map set  ∪  chapters whose COMMITTED partition stamp != that hash
+```
+
+`FindingSection` carries its own per-chapter stamp for exactly this reason. A
+failed attempt maps chapters and warms prep but never reaches the commit (the
+atomic finding boundary sits past the judge fault seam), so on the retry prep
+reports every chapter clean while the partitions still describe the *previous*
+input. Inferring the patch set from prep's warm state would silently publish
+stale records. `retry_after_a_faulted_attempt_patches_without_remapping` is the
+witness — 0 chapters mapped, 2 chapters patched, result equal to cold — and it
+fails without the second stamp. (This was found by the existing
+`fault_leaves_previous_partitions_intact_and_current` test during step 4, before
+any of it shipped.)
+
+**Removal invalidation, without a per-analyze whole-corpus cost.** Every chapter
+the corpus presents is resident in both lanes by the time the patch runs, so a
+resident chapter count *above* the corpus's chapter count is exactly the signal
+that a chapter has left (a whole-book replacement dropping one). Both lanes
+maintain that count, and the whole-corpus `(slug, chapter)` set is built only
+when that O(1) comparison says something stale is retained. `patch_direct` also
+takes an `all_dirty` path — on a cold call or after a config change every present
+chapter is rewritten, so the direct partitions are replaced outright rather than
+re-scanning each partition's growing chapter list once per chapter.
+
+**Reuse is by opaque token, not position.** The direct lane looks a chapter up by
+its token, so inserting a chapter earlier in a book does not invalidate its
+siblings. (The spacing substrate's `update_book` still matches positionally —
+an existing WP5a conservatism, unchanged here and noted as a Phase D/E item.)
+
+### §16 footguns, checked
+
+- **No global `KeyIdx` in any cross-call product.** `chapter_verse_records` never
+  computes one; a record is `(chapter-local verse index, verse-local span)` from
+  production to assembly. `unrebase` is deleted — nothing is book-local any more.
+- **Chapter existence is not containment** (the Entry-15 pattern): assembly's
+  `chapter_range` + local-index check is untouched and now actually guards
+  retained records, which is what it was armed for. `shrunk_chapter_trips_the_
+  rebase_containment_check` still passes.
+- **No emitted order from unordered iteration.** The planning pass walks
+  `Corpus::book_layout` in caller order; the hash maps are only ever *looked up*,
+  never iterated for order. Every route writes results back into caller-order
+  slots. The `present` set is used for membership only.
+- **One Rayon grain, never nested** — see below.
+- **The threshold is a route only** — see below.
+
+### Step 5: the routing table and its proofs
+
+| dirty map scope | route |
+| --- | --- |
+| more than one dirty book | `Books` — book fan-out, each worker maps its own book's dirty chapters serially |
+| exactly one dirty book, several dirty chapters, ≥ threshold | `Chapters` — indexed `par_iter().map(..).collect()` over caller-order chapter views |
+| one dirty chapter, or below threshold | `Serial` |
+| serial build (no `parallel` feature) | `Serial`, always |
+
+`map_route` is called **once** per map call by the caller, which records it in the
+work probes and hands it to the seam; the seam executes that one decision. The
+tests are ordered so a multi-book scope takes the book grain *before* the chapter
+threshold is consulted, so the two parallel grains cannot both apply.
+
+- **Non-nesting** (`nesting_a_fan_out_inside_the_chapter_seam_is_rejected`): a
+  thread-local guard, entered at both seams. Rayon injects work from a non-pool
+  caller and does **not** run it on the calling thread, so the flag has to travel
+  with each fanned-out task — it does, and a seam entered from inside another one
+  panics. Verified in both the serial and parallel builds. (Test/probe builds
+  only; release carries no guard.)
+- **Caller-order slots** (`every_route_collects_into_caller_order_slots`): all
+  four scopes, order-revealing closure, output index-aligned with the input.
+- **Thread-count independence**
+  (`mapper_output_is_identical_regardless_of_thread_count`): a 40-chapter
+  one-book corpus analyzed inside dedicated rayon pools of 1/2/3/7/16 threads,
+  every result equal to the reference. The whole suite also runs green under
+  `RAYON_NUM_THREADS=1` and at the default.
+- **Engine-level routing** (`the_direct_lane_routes_by_dirty_map_scope`): the
+  `direct_map_route` probe reads `chapters` for a cold 40-chapter one-book corpus,
+  `books` for a cold three-book corpus, and `serial` for a warm one-chapter edit.
+  The routing table is genuinely reached, not just unit-tested in isolation.
+
+### Threshold calibration — `PARALLEL_MIN_CHAPTER_MAP_BYTES = 32 KiB`
+
+Harness: `spike-bench/src/bin/chapter_map_threshold.rs` (new). One-book **cold**
+analyses (fresh transient cache per iteration ⇒ every chapter dirty), the route
+forced both ways in one alternating run via the `bench-probes`-only threshold
+override, 5 batches × 25 iterations per point, median of batch medians. The
+harness asserts the two routes produce identical findings on every scenario, so
+a route can never look faster by doing less. **Local (Apple Silicon, 10 cores),
+load 2.5–5.5** — the editor-representative target.
+
+`direct` = per-verse rules only (the seam's own work, isolated from the fused
+walk); `default` = the shipped v1 config (what actually ships).
+
+| scenario | chapters | bytes | direct: serial → chapters | default: serial → chapters |
+| --- | ---: | ---: | --- | --- |
+| 3JN | 1 | 1,603 | 14.5 → 13.8µs (1.05x)¹ | 117 → 128µs (0.91x)¹ |
+| PSA/2 | 2 | 1,691 | 25.8 → 63.4µs (**0.41x**) | 115 → 128µs (0.90x) |
+| PSA/5 | 5 | 4,342 | 43.5 → 63.1µs (**0.69x**) | 269 → 291µs (0.92x) |
+| PSA/10 | 10 | 11,320 | 70.0 → 63.3µs (1.11x) | 700 → 767µs (**0.91x**) |
+| PSA/12 | 12 | 12,806 | 78.9 → 59.2µs (1.33x) | 789 → 831µs (0.95x) |
+| PSA/15 | 15 | 14,723 | 91.3 → 60.4µs (1.51x) | 909 → 951µs (0.96x) |
+| PSA/18 | 18 | 21,781 | 131.9 → 100.3µs (1.31x) | 1.384 → 1.469ms (0.94x) |
+| PSA/20 | 20 | 23,968 | 145.1 → 81.3µs (1.78x) | 1.502 → 1.493ms (1.01x) |
+| **PSA/25** | 25 | **31,251** | 187.1 → 94.0µs (1.99x) | 1.933 → 1.905ms (1.01x) |
+| PSA/30 | 30 | 36,642 | 219.7 → 93.4µs (2.35x) | 2.262 → 2.207ms (1.03x) |
+| PSA/50 | 50 | 70,218 | 426.1 → 151.0µs (2.82x) | 4.330 → 4.115ms (1.05x) |
+| MAT | 28 | 121,470 | 686.3 → 204.4µs (3.36x) | 7.542 → 7.076ms (**1.07x**) |
+| PSA | 150 | 217,056 | 1.288ms → 347.1µs (3.71x) | 13.491 → 12.517ms (**1.08x**) |
+
+¹ a single-chapter scope is routed `Serial` by `work_len > 1` regardless of
+bytes; the row is the forced-route measurement, not a reachable production state.
+
+**Reading it honestly.** The direct lane's own crossover is around 8–11 KB, but a
+whole default-config analyze still loses up to **8%** there — fanning out one lane
+while every other phase is serial costs more than the lane saves — and only stops
+regressing at ~22–24 KB. **32 KiB** keeps a margin over that neutral point (so a
+loaded or slower machine, or a config where the direct lane is a smaller share,
+cannot tip into regression) while every book big enough for the fan-out to matter
+clears it comfortably. Above the threshold: **2.4–3.7x on the direct lane,
+1.03–1.08x on a whole cold one-book default analyze.** The end-to-end number is
+modest because a one-book cold map is dominated by the book-serial fused walk;
+that ceiling lifts as Phase D/E migrates those listeners to substrates.
+
+The sweep was re-run after the perf fix and the verdict was unchanged (table
+above is the post-fix run).
+
+**Remote quiet box: not used, deliberately.** The briefing allows
+`scripts/bench-remote.sh` as a tie-breaker when local load makes a call
+ambiguous. It did not: the crossover is monotone in bytes and reproduced across
+three independent local runs (two `direct`, two `default`) at loads 2.5–5.5, and
+the shipped value would be the local Apple Silicon calibration in any case. No
+remote number is recorded because none was needed to decide.
+
+### Ladder (§13) — five alternating batches per cell vs `db7858a`
+
+`spike-bench/warm_ladder_profile` over `corpora/vref/WA-en-ulb.txt`, baseline
+built in a throwaway worktree at `db7858a`, alternating BASE/CAND per batch
+(3JN 250 trials, MAT 150/100, PSA 100/60). Median of the five batch medians.
+Load 2.5–11.4 across the run; batch-to-batch spread was tight (e.g. 3JN default
+CAND 650–665µs), so the verdicts are robust to it.
+
+| scenario | BASE total | CAND total | Δ | Δ% | BASE map | CAND map | map Δ |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 3JN default | 644.3µs | 656.4µs | +12.1µs | **+1.9%** | 101.6µs | 117.0µs | +15.4µs |
+| MAT default | 8.186ms | 7.517ms | −0.669ms | **−8.2%** | 7.477ms | 6.822ms | −0.655ms |
+| PSA default | 14.251ms | 13.011ms | −1.240ms | **−8.7%** | 13.353ms | 12.140ms | −1.213ms |
+| 3JN all | 22.738ms | 22.731ms | −0.007ms | −0.0% | 421.2µs | 445.0µs | +23.8µs |
+| MAT all | 39.824ms | 39.151ms | −0.673ms | −1.7% | 16.153ms | 15.530ms | −0.623ms |
+| PSA all | 52.252ms | 50.898ms | −1.354ms | −2.6% | 27.828ms | 26.607ms | −1.221ms |
+
+§13 regression rule (candidate both >5% AND >0.25 ms slower in ≥3/5 batches):
+**not tripped by any scenario.** The only positive delta is 3JN default at +1.9%
+/ +12µs — the chapter-grained planning pass itself, ~12ns per chapter over the
+~1,189 chapters of a whole Bible, which is the honest price of deciding dirtiness
+per chapter instead of per book. 3JN/default at 656µs also reconfirms the Phase A
+`<= 2 ms` floor gate.
+
+**Step 4 earns its keep on the warm path** (the packet's honest headline): the
+ladder's edit is a whole-book replacement changing one verse, so 27 of MAT's 28
+chapters and 149 of PSA's 150 now reuse their per-verse findings instead of
+re-deriving them — −8.2% / −8.7% on the default warm path, essentially all of it
+in `map`. **Step 5 does not appear in this table at all**: one dirty chapter
+routes `Serial`, so the warm single-chapter path is untouched by design (which is
+also the "must not regress the single-chapter warm path" half of the gate). Step
+5's win is the cold one-book map, in the calibration table above.
+
+### The regression the ladder caught (worth recording)
+
+Step 4 as first written shipped three whole-corpus costs into *every* analyze,
+however small the edit: a `BTreeSet<(&str, &str)>` of all ~1,189 chapters built
+to prune the direct lane, a retain over every cached chapter to apply it, and a
+per-chapter slug hash in both stamp lookups. 3JN default went **644µs → 1.093ms
+(+68%)** — a clear §13 failure on the packet's own floor scenario, invisible to
+every correctness gate (all four dumps were byte-identical throughout). The fix
+is `1c3ccd1` (O(1) staleness detection, per-book map hoisting, and the `all_dirty`
+patch path, which also removed a quadratic-in-chapters cost from the cold path
+the oracle dumps take). Recorded because it is the exact failure mode §13 exists
+to catch: a granularity change that is correct, and pays for itself on big books,
+while quietly taxing the small-edit floor.
+
+### Property / gate tests added
+
+- `direct_partitions_equal_a_full_rebuild_under_randomized_edits` — 40 steps of
+  a deterministic pseudo-random mutation script (chapter replacement, whole-book
+  replacement reshaping the chapter set, book removal with the shell's cache
+  drop, book re-insertion) over a 3-book/6-chapter synthetic corpus. After every
+  step: resident findings == a cold complete analysis, **and** the returned answer
+  comes only from the partition lane. This is the plan's Phase C gate for the
+  direct lane ("direct-rule partitions equal full batch rebuild under randomized
+  synthetic edits").
+- `one_chapter_edit_maps_and_patches_exactly_that_chapter` — the probe table
+  above.
+- `retry_after_a_faulted_attempt_patches_without_remapping` — the two-stamp
+  witness.
+- `chapter_update_re_derives_only_that_chapter` (galley) — the same property
+  driven through the shell's real `update_chapter` → `analyze` path, asserting
+  the edited book's *other* chapters reuse their records too.
+- `direct_lane_validity_is_per_chapter`, `retain_direct_drops_absent_chapters`,
+  `remove_book_reports_presence_and_clears_entry` (both prep lanes),
+  `fingerprint_change_clears_entries`, `content_replacement_drops_a_stale_walk_lane`
+  — the lane's own unit tests.
+- `one_grain_is_selected_per_dirty_map_scope`,
+  `every_route_collects_into_caller_order_slots`,
+  `nesting_a_fan_out_inside_the_chapter_seam_is_rejected`,
+  `mapper_output_is_identical_regardless_of_thread_count`,
+  `the_direct_lane_routes_by_dirty_map_scope` — the §12.3 seam tests.
+
+### Deviations / notes for the owner (clearly marked)
+
+1. **Step 5's seam is wired to the direct lane only, not to the spacing
+   substrate's chapter map.** The plan's step-5 wording names `map_books` (the
+   direct lane's fan-out) and step 4 is what made a chapter that lane's map unit,
+   so this is the scoped reading; and the briefing was explicit that the freshly
+   reviewed spacing substrate must not be disturbed. Adopting the seam there
+   means restructuring `SubstrateCache::update_book`'s serial `map` callback into
+   a batch pre-pass — which Phase D restructures anyway for the
+   replay-to-convergence driver. **Proposal: fold substrate-map adoption into
+   Phase D step 1**, where the driver rewrite already touches that code. Also
+   note `drive_spacing` loops books serially, so a per-book seam call there would
+   not see a multi-book scope; the routing story wants the substrate driver to
+   plan across books first, which is again Phase D's shape.
+2. **A fourth commit beyond the two steps.** `1c3ccd1` is a perf fix to step 4,
+   not new surface; it is separate because steps 4 and 5 were already gated and
+   committed when the packet-end ladder exposed the regression. The alternative
+   (amending a gated commit) would have discarded a passed gate.
+3. **`CacheProbe.direct_map_route` is a `&'static str`**, not the internal
+   `MapRoute` enum, to keep `MapRoute` crate-private — `CacheProbe` is public
+   under `test-probes`, and permanently exposing a routing enum for a test probe
+   seemed the worse trade. Values are `"serial"` / `"books"` / `"chapters"`.
+4. **`PARALLEL_MIN_CHAPTER_MAP_BYTES` and `set_chapter_map_min_bytes` are
+   re-exported from `ssc_core::bench`**, which is `bench-probes`-gated — so the
+   override exists only in measurement builds. The constant is `pub` in a private
+   module, so without that feature nothing outside the crate can see either.
+5. **`spike-bench` gained a `parallel` feature** (off by default, so the warm
+   ladder still measures the editor-representative serial path) because the
+   threshold calibration must exercise a parallel route.
+6. **The probe rename is a behavioural rename, not an alias.** `lane1_hits` /
+   `lane1_misses` became `direct_hits` / `direct_misses` and now count
+   **chapters**; there is no compatibility shim. The one downstream consumer
+   (galley's `reanalyze_without_edits_does_no_work`) was updated.
+7. **Full-fleet bookend deferred to Phase F**, as every WP. This packet's changes
+   are proven byte-identical on the WA slice in both configs, cold (findings dump
+   = the one-shot partition round-trip) and incremental (transcript dump =
+   resident patch + assemble). A full-fleet findings confirmation was not repeated
+   here because, unlike WP5a, no rule's semantics or extraction moved — only the
+   granularity at which identical products are cached and committed.
+8. **`unrebase` deleted.** With no book-local retained product left, it had no
+   caller; removed rather than kept for symmetry.
+
+### Stop-safe next step
+
+**Phase C is complete.** All five steps are in: the `ObservationSubstrate`
+contract, `PunctuationSpacing` migrated with its honest seam boundary state,
+knob-only substrate isolation, the direct per-verse lane chapter-local with
+per-chapter partition patching, and the ordered chapter-parallel map seam with a
+calibrated threshold. Zero unadjudicated behavioural movement across the whole
+phase.
+
+Next stop-safe step is **Phase D step 1** (generic `SubstrateCache<S>` chapter
+observations/reduced results plus the §5.4 ordered reduction-to-convergence
+driver), with deviation 1 above folded in as a sub-item — a new packet. Do not
+begin it here.
