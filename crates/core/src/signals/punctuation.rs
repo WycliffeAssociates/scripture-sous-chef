@@ -3337,6 +3337,43 @@ mod tests {
             ("GEN 2:2", "   "),
             ("GEN 3:1", "Then the next chapter opens, with words,"),
         ]);
+        // Ownership asserted on the REDUCED contribution, before any judging —
+        // deliberately independent of scoring. The judged-finding checks below
+        // are conditional (a mark the judge does not emit for has no finding to
+        // inspect), so a future scoring change could quietly make them vacuous;
+        // this one cannot. The period's site must sit in chapter `1` at
+        // chapter-local verse index 1, with a resolved right side: the resolution
+        // travelled across the all-empty GEN 2 and folded into GEN 1's reduced
+        // result, its owner.
+        let contribution = contribution_of(
+            "GEN",
+            &[
+                (
+                    "1",
+                    &[
+                        "many words, and more words, and yet more,",
+                        "the sentence ends here .",
+                    ],
+                ),
+                ("2", &["", "   "]),
+                ("3", &["Then the next chapter opens, with words,"]),
+            ],
+        );
+        let period_sites: Vec<(&str, u16, bool)> = contribution
+            .chapters
+            .iter()
+            .flat_map(|(token, sites)| {
+                sites
+                    .iter()
+                    .filter(|s| s.mark == '.')
+                    .map(move |s| (&**token, s.local_idx.get(), s.right.is_some()))
+            })
+            .collect();
+        assert_eq!(
+            period_sites,
+            vec![("1", 1u16, true)],
+            "the period's site must be owned by GEN 1 at chapter-local verse 1, right side resolved"
+        );
         let cfg = sp_no_floor();
         let got = spacing_findings(&corpus, &cfg);
         // Whatever the verdicts, every emitted finding must address a verse whose

@@ -493,6 +493,9 @@ mod tests {
     /// The routing table, exhaustively: one grain per dirty map scope, and the
     /// two parallel grains are mutually exclusive by construction — a multi-book
     /// scope takes the book grain before the chapter threshold is even consulted.
+    // A one-element run array is exactly the one-dirty-book case under test, not a
+    // mistyped slice index.
+    #[allow(clippy::single_range_in_vec_init)]
     #[test]
     fn one_grain_is_selected_per_dirty_map_scope() {
         let expect_parallel = |route: MapRoute| {
@@ -526,6 +529,9 @@ mod tests {
     /// from, so the mapped output is index-aligned with `work` regardless of the
     /// route, the feature, or the thread count. The whole reason a route may be
     /// chosen for wall-clock alone.
+    // A one-element run array is exactly the one-dirty-book case under test, not a
+    // mistyped slice index.
+    #[allow(clippy::single_range_in_vec_init)]
     #[test]
     fn every_route_collects_into_caller_order_slots() {
         // Work items are just their own index; `f` is order-revealing.
@@ -556,6 +562,9 @@ mod tests {
     /// another one trips the thread-local guard. Rayon runs part of a `par_iter`
     /// on the calling thread, so the inner seam is reached here even in a
     /// parallel build.
+    // A one-element run array is exactly the one-dirty-book case under test, not a
+    // mistyped slice index.
+    #[allow(clippy::single_range_in_vec_init)]
     #[test]
     #[should_panic(expected = "nested fan-out")]
     fn nesting_a_fan_out_inside_the_chapter_seam_is_rejected() {
