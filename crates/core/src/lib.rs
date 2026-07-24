@@ -190,7 +190,9 @@ pub mod fault {
         Map,
         /// After reduce (fresh substrate stats folded), before judging.
         Reduce,
-        /// At the reduce→judge seam, before the resident prior is consumed.
+        /// After the stateful judge loop and provenance stamping — the deepest
+        /// semantic boundary. Judging ran and the working stats were fully
+        /// built; the fault proves none of it escapes as a published result.
         Judge,
     }
 
@@ -239,7 +241,7 @@ pub mod fault {
 ///   [`BookOut`](stream::BookOut) (fresh stats + sites), consumed this call.
 /// - [`Clean`](BookProducts::Clean): a clean cache-hit book — borrows its
 ///   resident [`BookEntry`](cache::BookEntry) read-only. Its walk products are
-///   never copied out of the cache (Phase A step 7); the judge reads a view.
+///   never copied out of the cache; the judge reads a view.
 ///
 /// The two variants differ only in the site lanes' shape — a walked book still
 /// carries the fresh per-book *stats* half beside its sites, while the cache
@@ -454,7 +456,7 @@ fn transition(
     // clean only when it is outside the counted (stale) set AND its cache entry
     // already holds every lane this plan needs. A clean book is reused by
     // BORROWING its resident `BookEntry` into the judge phase — the old
-    // `cloned_walk` per-book copy is gone (Phase A step 7): the cache keeps the
+    // `cloned_walk` per-book copy is gone: the cache keeps the
     // single owned copy of a clean book's products, and the judge reads a view.
     let mut books_to_walk: corpus::Books<'_> = Vec::new();
     let mut walk_positions: Vec<usize> = Vec::new();
@@ -512,7 +514,7 @@ fn transition(
 
     // The cache is now read-only for the rest of the call. Reborrow it shared so
     // each clean book's products can be handed to reduce/judge as read-only
-    // views (Phase A step 7). This shared borrow is held across the entire
+    // views. This shared borrow is held across the entire
     // reduce+judge phase below; that it compiles is the proof no judge mutates a
     // cached product — every cached lane a judge sees is behind a `&`.
     let cache: &PrepCache = cache;
@@ -759,7 +761,7 @@ fn transition(
     // The shared token cache is assembled by BORROWING each book's per-verse
     // token slices — a walked book's owned `BookOut`, a clean book's resident
     // `BookEntry` — and rebasing the local index to this call's global `KeyIdx`.
-    // Nothing is copied out of the cache (Phase A step 7): the cache holds
+    // Nothing is copied out of the cache: the cache holds
     // `&[Token]` views. Built after site extraction so it can share `slots`.
     let token_cache: Option<rule::TokenCache> = plan.collect_tokens.then(|| {
         let mut tc = rule::TokenCache::default();
@@ -830,16 +832,9 @@ fn transition(
         return Err((AnalyzeError { phase: "reduce" }, prior));
     }
 
-    // JUDGE boundary. The reduce→judge seam, immediately before the resident
-    // `prior` is consumed into the working stats. Injecting here proves the
-    // deepest failure still commits no partial semantic state: `prior` has not
-    // been merged, so it hands back exactly as it arrived.
-    #[cfg(any(test, feature = "test-probes"))]
-    if fault::fires(fault::Phase::Judge) {
-        return Err((AnalyzeError { phase: "judge" }, prior));
-    }
-
     // JUDGE boundary reached: `judge` runs from here through the stateful loop.
+    // (The judge fault fires AFTER the loop and provenance stamping — the
+    // rollback copy taken below is what makes that deep injection safe.)
     #[cfg(feature = "bench-probes")]
     let bench_judge_start = std::time::Instant::now();
 
@@ -850,6 +845,13 @@ fn transition(
     // into two rule×book task pools was tried (2026-07-07) and measured at
     // parity-to-slightly-worse (see ADR 0042's rejected alternatives). The
     // counting itself now happens once, fused, above.
+    // Test-only rollback copy: the judge fault fires AFTER judging and
+    // provenance stamping, by which point `prior` is long consumed into the
+    // working stats. The clone exists only under test cfgs — release builds
+    // carry no copy and no judge failure path.
+    #[cfg(any(test, feature = "test-probes"))]
+    let fault_rollback = prior.clone();
+
     let mut stats = prior.unwrap_or_default();
 
     // Complete-snapshot semantics: a target answers for EXACTLY its books. Any prior book absent from this target is
@@ -948,6 +950,18 @@ fn transition(
     // exactly this target's books, nothing more.
     for (i, group) in books.iter().enumerate() {
         stats.tallied.insert(Box::from(group.slug), current[i]);
+    }
+
+    // JUDGE boundary. Fires AFTER the stateful judge loop and provenance
+    // stamping — the deepest semantic failure point: judging ran and the
+    // working stats were fully built, and none of it may escape. The rollback
+    // copy (taken before `prior` was consumed) hands back exactly what
+    // arrived; the working stats and findings drop right here. The prep cache
+    // may stay warm — it is self-validating — but no correctness state was
+    // consumed and nothing was published.
+    #[cfg(any(test, feature = "test-probes"))]
+    if fault::fires(fault::Phase::Judge) {
+        return Err((AnalyzeError { phase: "judge" }, fault_rollback));
     }
 
     // JUDGE done: record the coarse phase split for the warm-path harness.
