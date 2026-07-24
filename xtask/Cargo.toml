@@ -8,6 +8,7 @@ publish = false
 
 [dependencies]
 ssc-core = { workspace = true }
+ssc-wire = { workspace = true }
 unicode-properties = { workspace = true }
 unicode-script = { workspace = true }
 unicode-segmentation = { workspace = true }

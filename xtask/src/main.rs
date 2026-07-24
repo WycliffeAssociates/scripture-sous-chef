@@ -14,6 +14,8 @@ use std::process::ExitCode;
 
 mod gen_charclass_table;
 mod survey_diff;
+mod wire_js;
+mod wire_vectors;
 
 fn main() -> ExitCode {
     let task = std::env::args().nth(1);
@@ -34,16 +36,38 @@ fn main() -> ExitCode {
             survey_diff::run(Path::new(baseline), &current);
             ExitCode::SUCCESS
         }
+        Some("wire-js") => {
+            let dir = wasm_js_dir();
+            let changed = wire_js::run(&dir);
+            println!("wire-js: {changed} file(s) changed");
+            ExitCode::SUCCESS
+        }
+        Some("wire-vectors") => {
+            let args: Vec<String> = std::env::args().skip(2).collect();
+            let out = args
+                .first()
+                .map(PathBuf::from)
+                .unwrap_or_else(|| wasm_js_dir().join("__vectors__.json"));
+            wire_vectors::run(&out);
+            println!("wire-vectors: wrote {}", out.display());
+            ExitCode::SUCCESS
+        }
         other => {
             if let Some(t) = other {
                 eprintln!("unknown task: {t}\n");
             }
             eprintln!(
-                "usage: cargo xtask <task>\n\ntasks:\n  gen-charclass-table                        regenerate crates/core/src/charclass_table.rs\n  survey-diff <baseline> [current]           diff two playground survey caches"
+                "usage: cargo xtask <task>\n\ntasks:\n  gen-charclass-table                        regenerate crates/core/src/charclass_table.rs\n  survey-diff <baseline> [current]           diff two playground survey caches\n  wire-js                                    regenerate crates/wasm/js/findings.generated.{{js,d.ts}} + findings.d.ts\n  wire-vectors [out.json]                     emit cross-language wire test vectors (default crates/wasm/js/__vectors__.json)"
             );
             ExitCode::FAILURE
         }
     }
+}
+
+/// The `crates/wasm/js` directory (the official JS wire surface), resolved from
+/// this crate's location so the task works regardless of the shell's cwd.
+fn wasm_js_dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../crates/wasm/js")
 }
 
 /// The `ssc-core` crate directory, resolved from this crate's location so the

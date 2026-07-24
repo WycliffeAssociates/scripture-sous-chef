@@ -22,6 +22,10 @@
     "./web": {
       "types": "./pkg-web/sous_chef_web.d.ts",
       "default": "./pkg-web/sous_chef_web.js"
+    },
+    "./findings": {
+      "types": "./pkg-bundler/findings.d.ts",
+      "default": "./pkg-bundler/findings.js"
     }
   },
   "types": "./pkg-bundler/sous_chef_web.d.ts",
