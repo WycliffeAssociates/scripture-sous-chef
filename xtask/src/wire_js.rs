@@ -225,7 +225,7 @@ fn render_public_dts() -> String {
  * LOAD — a fresh session, where the cache's provenance must be re-proven:
  *
  *     app loads project text/config
- *         -> new Galley(target, source?, config)      // validates + hashes; no analysis
+ *         -> new Galley({ target, source?, config })  // validates + hashes; no analysis
  *         -> expected = { analysisId:      galley.expectedAnalysisId(),
  *                         targetContextId: galley.expectedTargetContextId(),
  *                         hasReference:    galley.hasReference() }

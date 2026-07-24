@@ -1,0 +1,349 @@
+// The official packed-findings decoder and reconciler (granularity-spine
+// Appendix A §A.4). Hand-written and reviewed; it imports the generated schema
+// (constants, code/digest/dependency tables) and copies NO numeric constant,
+// code table, digest table, or wire union of its own.
+//
+// The wire is a 32-byte header plus fixed 16-byte records, little-endian
+// throughout (§A.1). This module never talks to wasm: it decodes a `Uint8Array`
+// and reconciles snapshots at the JS ownership boundary. Lazy `args` are fetched
+// from the resident Galley (a separate, snapshot-bound accessor) and are not
+// part of visible list identity.
+
+import {
+  HEADER,
+  SEVERITIES,
+  CODE_TO_RULE,
+  CODE_TO_DIGEST,
+  CODE_TO_INPUT_DEPENDENCY,
+} from "./findings.generated.js";
+
+const { MAGIC, VERSION, RECORD_LEN, HEADER_LEN, OFFSETS, FLAGS } = HEADER;
+
+const MAGIC_BYTES = [...MAGIC].map((c) => c.charCodeAt(0));
+
+class WireError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "WireError";
+  }
+}
+
+// ---- raw decode + full validation (§A.1) ---------------------------------
+
+// Decode and validate a buffer into { analysisId, targetContextId,
+// hasReference, records }, where each record is a plain decoded object plus its
+// physical index. Throws (never partially decodes) on any malformed buffer.
+function decodeRaw(bytes) {
+  if (!(bytes instanceof Uint8Array)) {
+    throw new WireError("expected a Uint8Array");
+  }
+  if (bytes.byteLength < HEADER_LEN) {
+    throw new WireError(`buffer shorter than the ${HEADER_LEN}-byte header`);
+  }
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+
+  for (let i = 0; i < MAGIC_BYTES.length; i++) {
+    if (view.getUint8(i) !== MAGIC_BYTES[i]) throw new WireError("bad magic");
+  }
+  if (view.getUint8(4) !== VERSION) {
+    throw new WireError(`unsupported version ${view.getUint8(4)}`);
+  }
+  if (view.getUint8(5) !== RECORD_LEN) {
+    throw new WireError(`bad record_len ${view.getUint8(5)}`);
+  }
+  if (view.getUint8(6) !== HEADER_LEN) {
+    throw new WireError(`bad header_len ${view.getUint8(6)}`);
+  }
+  const headerFlags = view.getUint8(OFFSETS.headerFlags);
+  if ((headerFlags & ~FLAGS.headerHasReference & 0xff) !== 0) {
+    throw new WireError("reserved header flag bit set");
+  }
+  const hasReference = (headerFlags & FLAGS.headerHasReference) !== 0;
+  const count = view.getUint32(OFFSETS.count, true);
+  if (view.getUint32(OFFSETS.reserved, true) !== 0) {
+    throw new WireError("reserved header u32 is non-zero");
+  }
+  const targetContextId = view.getBigUint64(OFFSETS.targetContextId, true);
+  const analysisId = view.getBigUint64(OFFSETS.analysisId, true);
+
+  // 32 + count*16 must be arithmetically valid and equal the exact length.
+  const expected = HEADER_LEN + count * RECORD_LEN;
+  if (!Number.isSafeInteger(expected) || expected !== bytes.byteLength) {
+    throw new WireError("count does not match buffer length");
+  }
+
+  const records = [];
+  for (let i = 0; i < count; i++) {
+    const base = HEADER_LEN + i * RECORD_LEN;
+    const code = view.getUint8(base + OFFSETS.recordCode);
+    const flags = view.getUint8(base + OFFSETS.recordFlags);
+    if ((flags & FLAGS.recordReservedMask) !== 0) {
+      throw new WireError("reserved record flag bit set");
+    }
+    const sevIndex = flags & FLAGS.severityMask;
+    const severity = SEVERITIES[sevIndex];
+    if (severity === undefined) {
+      throw new WireError(`unknown severity ${sevIndex}`);
+    }
+    const rule = CODE_TO_RULE[code];
+    if (rule === undefined) {
+      throw new WireError(`unknown wire code ${code}`);
+    }
+    const hasScore = (flags & FLAGS.hasScore) !== 0;
+    const hasArgs = (flags & FLAGS.hasArgs) !== 0;
+    const saturated = (flags & FLAGS.payloadSaturated) !== 0;
+    const keyIdx = view.getUint32(base + OFFSETS.recordKeyIdx, true);
+    const start = view.getUint16(base + OFFSETS.recordStart, true);
+    const end = view.getUint16(base + OFFSETS.recordEnd, true);
+    const scoreRaw = view.getUint16(base + OFFSETS.recordScore, true);
+    let score;
+    if (hasScore) {
+      score = scoreRaw / 65535;
+    } else {
+      if (scoreRaw !== 0) throw new WireError("score lane non-zero without has_score");
+      score = null;
+    }
+    const digest = decodeDigest(view, base, code, saturated);
+
+    records.push({
+      index: i,
+      code,
+      rule,
+      severity,
+      keyIdx,
+      start,
+      end,
+      score,
+      hasArgs,
+      digest,
+      inputDependency: CODE_TO_INPUT_DEPENDENCY[code],
+    });
+  }
+
+  return { analysisId, targetContextId, hasReference, records };
+}
+
+function decodeDigest(view, base, code, saturated) {
+  const shape = CODE_TO_DIGEST[code];
+  const off = base + OFFSETS.recordPayload;
+  switch (shape) {
+    case "count-pair":
+      return {
+        shape: "count-pair",
+        a: view.getUint16(off, true),
+        b: view.getUint16(off + 2, true),
+        saturated,
+      };
+    case "u32":
+      return { shape: "u32", value: view.getUint32(off, true) };
+    default:
+      return { shape: "none" };
+  }
+}
+
+// ---- identity (§A.4) ------------------------------------------------------
+
+// For each key_idx, its occurrence ordinal among equal key STRINGS in `keys`
+// (so a duplicate verse's two findings stay distinct even though their sid
+// strings are equal). Precomputed once per keys[] array.
+function keyOrdinals(keys) {
+  const seen = new Map();
+  const ordinals = new Array(keys.length);
+  for (let i = 0; i < keys.length; i++) {
+    const k = keys[i];
+    const n = seen.get(k) ?? 0;
+    ordinals[i] = n;
+    seen.set(k, n + 1);
+  }
+  return ordinals;
+}
+
+// Semantic identity string: resolved key + duplicate-key ordinal + code + span.
+// NUL-separated so no field can bleed into the next.
+function identityOf(sid, keyOrdinal, code, start, end) {
+  return `${sid}\u0000${keyOrdinal}\u0000${code}\u0000${start}\u0000${end}`;
+}
+
+// Turn raw records into public DecodedFinding objects, resolving sid through
+// keys[] and computing the parallel identity list. `sid` is the address; the
+// ephemeral wire key_idx is deliberately not exposed.
+function materialize(records, keys) {
+  const ordinals = keyOrdinals(keys);
+  const findings = new Array(records.length);
+  const identities = new Array(records.length);
+  for (let i = 0; i < records.length; i++) {
+    const r = records[i];
+    if (r.keyIdx >= keys.length) {
+      throw new WireError(`key_idx ${r.keyIdx} out of range for ${keys.length} keys`);
+    }
+    const sid = keys[r.keyIdx];
+    findings[i] = {
+      sid,
+      code: r.rule,
+      severity: r.severity,
+      start: r.start,
+      end: r.end,
+      score: r.score,
+      hasArgs: r.hasArgs,
+      digest: r.digest,
+      inputDependency: r.inputDependency,
+    };
+    identities[i] = identityOf(sid, ordinals[r.keyIdx], r.code, r.start, r.end);
+  }
+  return { findings, identities };
+}
+
+// Build the FindingSnapshot. `_identities` (parallel to findings) is retained
+// for a later reconcile that uses this as the previous snapshot; findings[i]
+// resolves lazy args as (analysisId, i). Both are non-enumerable so the public
+// shape stays clean.
+function makeSnapshot({ analysisId, targetContextId, hasReference, provenance, findings, identities }) {
+  const snap = { analysisId, targetContextId, hasReference, provenance, findings };
+  Object.defineProperty(snap, "_identities", { value: identities, enumerable: false });
+  return snap;
+}
+
+// ---- visible equality (reuse-vs-replace) ---------------------------------
+
+function digestEqual(a, b) {
+  if (a.shape !== b.shape) return false;
+  if (a.shape === "count-pair") return a.a === b.a && a.b === b.b && a.saturated === b.saturated;
+  if (a.shape === "u32") return a.value === b.value;
+  return true;
+}
+
+// Compares only the NON-identity visible fields (severity, score, flags,
+// digest). code/sid/start/end are the identity and are equal by construction
+// when two findings share an identity. key_idx is not visible (rebased on edit).
+function visibleEqual(a, b) {
+  return (
+    a.severity === b.severity &&
+    a.score === b.score &&
+    a.hasArgs === b.hasArgs &&
+    digestEqual(a.digest, b.digest)
+  );
+}
+
+// ---- public API -----------------------------------------------------------
+
+export function decodeFindings(bytes, keys) {
+  const raw = decodeRaw(bytes);
+  const { findings, identities } = materialize(raw.records, keys);
+  return makeSnapshot({
+    analysisId: raw.analysisId,
+    targetContextId: raw.targetContextId,
+    hasReference: raw.hasReference,
+    provenance: "live",
+    findings,
+    identities,
+  });
+}
+
+export function decodePersistedFindings(bytes, keys, expectedIdentity) {
+  const raw = decodeRaw(bytes);
+  const exactMatch =
+    raw.analysisId === expectedIdentity.analysisId &&
+    raw.targetContextId === expectedIdentity.targetContextId &&
+    raw.hasReference === expectedIdentity.hasReference;
+
+  if (exactMatch) {
+    const { findings, identities } = materialize(raw.records, keys);
+    return makeSnapshot({
+      analysisId: raw.analysisId,
+      targetContextId: raw.targetContextId,
+      hasReference: raw.hasReference,
+      provenance: "live",
+      findings,
+      identities,
+    });
+  }
+
+  // The single salvage: saved-reference-present -> current-reference-absent,
+  // same target-context id. Filter reference-silent rows, dense-reindex, and
+  // adopt the CURRENT expected no-reference analysis id.
+  const salvageable =
+    raw.hasReference === true &&
+    expectedIdentity.hasReference === false &&
+    raw.targetContextId === expectedIdentity.targetContextId;
+
+  if (!salvageable) {
+    throw new WireError("persisted findings do not match the current analysis identity");
+  }
+
+  const kept = raw.records.filter(
+    (r) => r.inputDependency !== "target-and-reference-silent-when-absent",
+  );
+  const { findings, identities } = materialize(kept, keys);
+  return makeSnapshot({
+    analysisId: expectedIdentity.analysisId,
+    targetContextId: expectedIdentity.targetContextId,
+    hasReference: false,
+    provenance: "reference-removed",
+    findings,
+    identities,
+  });
+}
+
+export function reconcileFindings(previousSnapshot, bytes, keys) {
+  const raw = decodeRaw(bytes);
+  const { findings: next, identities: nextIds } = materialize(raw.records, keys);
+
+  const prev = previousSnapshot.findings;
+  const prevIds = previousSnapshot._identities ?? [];
+
+  // Fast path: the visible snapshot and order are unchanged -> return the EXACT
+  // prior array (a new snapshot wrapper carrying the new id and locators).
+  let identical = prev.length === next.length;
+  if (identical) {
+    for (let i = 0; i < next.length; i++) {
+      if (prevIds[i] !== nextIds[i] || !visibleEqual(prev[i], next[i])) {
+        identical = false;
+        break;
+      }
+    }
+  }
+  if (identical) {
+    return makeSnapshot({
+      analysisId: raw.analysisId,
+      targetContextId: raw.targetContextId,
+      hasReference: raw.hasReference,
+      provenance: "live",
+      findings: prev,
+      identities: nextIds,
+    });
+  }
+
+  // General path: pair by identity as a multiset, preserving new record order;
+  // reuse the exact prior object when the visible fields are equal.
+  const byIdentity = new Map();
+  for (let i = 0; i < prev.length; i++) {
+    const id = prevIds[i];
+    let q = byIdentity.get(id);
+    if (q === undefined) {
+      q = [];
+      byIdentity.set(id, q);
+    }
+    q.push(prev[i]);
+  }
+
+  const result = new Array(next.length);
+  for (let i = 0; i < next.length; i++) {
+    const id = nextIds[i];
+    const q = byIdentity.get(id);
+    let reused = null;
+    if (q && q.length) {
+      const candidate = q.shift();
+      if (visibleEqual(candidate, next[i])) reused = candidate;
+    }
+    result[i] = reused ?? next[i];
+  }
+
+  return makeSnapshot({
+    analysisId: raw.analysisId,
+    targetContextId: raw.targetContextId,
+    hasReference: raw.hasReference,
+    provenance: "live",
+    findings: result,
+    identities: nextIds,
+  });
+}

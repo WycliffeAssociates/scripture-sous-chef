@@ -24,13 +24,25 @@ export class Galley {
         wasm.__wbg_galley_free(ptr, 0);
     }
     /**
-     * Analyze the resident corpus; findings carry UTF-16 ranges, the same wire
-     * shape as the stateless [`analyze_vref`].
-     * @returns {Findings}
+     * Analyze the resident corpus and return the packed findings buffer
+     * (§A.1), the same wire shape as the stateless [`analyze_vref`] — a
+     * 32-byte header plus one 16-byte record per finding, crossing wasm→JS as
+     * one `Uint8Array` (transfer it worker→main with
+     * `postMessage(bytes, [bytes.buffer])`). Decode with `decodeFindings(bytes,
+     * keys)`; open a finding's full detail with [`finding_args`](Galley::finding_args)
+     * under the header's `analysis_id`. Publishes the new `(analysis_id, args
+     * table)` only after the pack succeeds; a pack failure leaves the previous
+     * publication untouched (§3.3 `EngineCurrentWireStale`).
+     * @returns {Uint8Array}
      */
     analyze() {
         const ret = wasm.galley_analyze(this.__wbg_ptr);
-        return ret;
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+        return v1;
     }
     /**
      * Census (absolute inventory) over the resident corpus, serialized to the
@@ -51,15 +63,48 @@ export class Galley {
         }
     }
     /**
-     * Seed the handle. `source` is an optional parallel corpus; `config`
-     * omitted ⇒ `Config::v1_defaults()`, exactly like the stateless exports.
-     * The first `analyze` is a full cold pass.
-     * @param {VrefCorpus} target
-     * @param {VrefCorpus | null} [source]
-     * @param {SousConfig | null} [config]
+     * The lazy args of one finding from the last successful [`analyze`](Galley::analyze),
+     * addressed by that analyze's `analysis_id` (the header value) and the
+     * record `index`. `null` for a no-interpolation rule. Throws if no analyze
+     * has succeeded, `analysis_id` is not the current publication's, or `index`
+     * is out of range (§A.3.3). The `analysis_id` marshals as a JS `bigint`.
+     * @param {bigint} analysis_id
+     * @param {number} index
+     * @returns {FindingArgsOut}
      */
-    constructor(target, source, config) {
-        const ret = wasm.galley_new(target, isLikeNone(source) ? 0 : addToExternrefTable0(source), isLikeNone(config) ? 0 : addToExternrefTable0(config));
+    finding_args(analysis_id, index) {
+        const ret = wasm.galley_finding_args(this.__wbg_ptr, analysis_id, index);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * Batch form of [`finding_args`](Galley::finding_args): the lazy args for
+     * `indices`, positionally parallel (duplicates and `null`s preserved). The
+     * **whole batch** is validated before anything is cloned — one bad index
+     * rejects the entire request (§A.3.3).
+     * @param {bigint} analysis_id
+     * @param {Uint32Array} indices
+     * @returns {FindingsArgsOut}
+     */
+    findings_args(analysis_id, indices) {
+        const ptr0 = passArray32ToWasm0(indices, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.galley_findings_args(this.__wbg_ptr, analysis_id, ptr0, len0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * Seed the handle from a single typed args object (`{ target, source?,
+     * config? }`; `config` omitted ⇒ `Config::v1_defaults()`, exactly like
+     * the stateless exports). The first `analyze` is a full cold pass.
+     * @param {GalleyArgs} args
+     */
+    constructor(args) {
+        const ret = wasm.galley_new(args);
         if (ret[2]) {
             throw takeFromExternrefTable0(ret[1]);
         }
@@ -69,7 +114,8 @@ export class Galley {
     }
     /**
      * Remove books by slug. Unknown slugs are no-ops; returns the number
-     * removed (`0` means unchanged).
+     * removed (`0` means unchanged). A positive count stales the wire
+     * publication (§3.1).
      * @param {string[]} slugs
      * @returns {number}
      */
@@ -152,21 +198,29 @@ export class Galley {
 if (Symbol.dispose) Galley.prototype[Symbol.dispose] = Galley.prototype.free;
 
 /**
- * Analyze a vref corpus. `source` is an optional parallel corpus; `config`
- * overrides the shipped defaults (omitted ⇒ `Config::v1_defaults()`:
- * language-agnostic rules on, convention-dependent rules off). Returns
- * findings with UTF-16 ranges.
- * @param {VrefCorpus} target
- * @param {VrefCorpus | null} [source]
- * @param {SousConfig | null} [config]
- * @returns {Findings}
+ * Analyze a vref corpus and return the packed findings buffer (§A.1): a
+ * 32-byte header plus one fixed 16-byte record per finding, ready to cross
+ * wasm→JS as one `Uint8Array` and worker→main as a transferred
+ * `ArrayBuffer`. The header carries the same content-derived `analysis_id`
+ * a resident [`Galley`] would mint for the same target + optional reference
+ * + config (this one-shot path hashes both supplied corpora fresh).
+ *
+ * This is the compact one-shot surface: list-row summaries come from the
+ * per-code digest packed in each record, but full `FindingArgs` are **not**
+ * reachable — there is no args accessor without a resident handle. A
+ * consumer needing detailed messages uses [`Galley`]. Decode with the
+ * official `decodeFindings(bytes, target.keys)`.
+ * @param {GalleyArgs} args
+ * @returns {Uint8Array}
  */
-export function analyze_vref(target, source, config) {
-    const ret = wasm.analyze_vref(target, isLikeNone(source) ? 0 : addToExternrefTable0(source), isLikeNone(config) ? 0 : addToExternrefTable0(config));
-    if (ret[2]) {
-        throw takeFromExternrefTable0(ret[1]);
+export function analyze_vref(args) {
+    const ret = wasm.analyze_vref(args);
+    if (ret[3]) {
+        throw takeFromExternrefTable0(ret[2]);
     }
-    return takeFromExternrefTable0(ret[0]);
+    var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+    wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+    return v1;
 }
 
 /**
@@ -271,6 +325,11 @@ function addToExternrefTable0(obj) {
     return idx;
 }
 
+function getArrayU8FromWasm0(ptr, len) {
+    ptr = ptr >>> 0;
+    return getUint8ArrayMemory0().subarray(ptr / 1, ptr / 1 + len);
+}
+
 let cachedDataViewMemory0 = null;
 function getDataViewMemory0() {
     if (cachedDataViewMemory0 === null || cachedDataViewMemory0.buffer.detached === true || (cachedDataViewMemory0.buffer.detached === undefined && cachedDataViewMemory0.buffer !== wasm.memory.buffer)) {
@@ -281,6 +340,14 @@ function getDataViewMemory0() {
 
 function getStringFromWasm0(ptr, len) {
     return decodeText(ptr >>> 0, len);
+}
+
+let cachedUint32ArrayMemory0 = null;
+function getUint32ArrayMemory0() {
+    if (cachedUint32ArrayMemory0 === null || cachedUint32ArrayMemory0.byteLength === 0) {
+        cachedUint32ArrayMemory0 = new Uint32Array(wasm.memory.buffer);
+    }
+    return cachedUint32ArrayMemory0;
 }
 
 let cachedUint8ArrayMemory0 = null;
@@ -302,6 +369,13 @@ function handleError(f, args) {
 
 function isLikeNone(x) {
     return x === undefined || x === null;
+}
+
+function passArray32ToWasm0(arg, malloc) {
+    const ptr = malloc(arg.length * 4, 4) >>> 0;
+    getUint32ArrayMemory0().set(arg, ptr / 4);
+    WASM_VECTOR_LEN = arg.length;
+    return ptr;
 }
 
 function passArrayJsValueToWasm0(array, malloc) {
@@ -392,6 +466,7 @@ function __wbg_finalize_init(instance, module) {
     wasm = instance.exports;
     wasmModule = module;
     cachedDataViewMemory0 = null;
+    cachedUint32ArrayMemory0 = null;
     cachedUint8ArrayMemory0 = null;
     wasm.__wbindgen_start();
     return wasm;
