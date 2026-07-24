@@ -1535,29 +1535,53 @@ impl crate::substrate::ObservationSubstrate for SpacingSubstrate {
         old: Option<&SpacingBookContribution>,
         new: Option<&SpacingBookContribution>,
     ) -> Vec<char> {
-        let mut changed: std::collections::BTreeSet<char> = std::collections::BTreeSet::new();
+        // EXACT stats-delta keys: a mark is returned only when its FINAL corpus
+        // aggregate differs from the value it had before this replacement. A book
+        // whose sites merely moved — same per-mark cells — yields an EMPTY stats
+        // delta even though its site delta is dirty; the two are unioned into the
+        // judge-dirty set by the caller, so site movement is never inferred from
+        // (equal) counts and equal counts never force a needless re-judge.
+        const EMPTY: [u64; SIDE_CELLS] = [0u64; SIDE_CELLS];
+        let candidates: std::collections::BTreeSet<char> = old
+            .into_iter()
+            .flat_map(|c| c.cells.keys().copied())
+            .chain(new.into_iter().flat_map(|c| c.cells.keys().copied()))
+            .collect();
+        // Snapshot each candidate's aggregate before mutating.
+        let before: Vec<(char, [u64; SIDE_CELLS])> = candidates
+            .iter()
+            .map(|&mark| (mark, *stats.totals.get(&mark).unwrap_or(&EMPTY)))
+            .collect();
+
         if let Some(old) = old {
             for (&mark, counts) in &old.cells {
-                let e = stats.totals.entry(mark).or_insert([0u64; SIDE_CELLS]);
+                let e = stats.totals.entry(mark).or_insert(EMPTY);
                 for (x, y) in e.iter_mut().zip(counts) {
                     *x -= y;
-                }
-                changed.insert(mark);
-                if e.iter().all(|&c| c == 0) {
-                    stats.totals.remove(&mark);
                 }
             }
         }
         if let Some(new) = new {
             for (&mark, counts) in &new.cells {
-                let e = stats.totals.entry(mark).or_insert([0u64; SIDE_CELLS]);
+                let e = stats.totals.entry(mark).or_insert(EMPTY);
                 for (x, y) in e.iter_mut().zip(counts) {
                     *x += y;
                 }
-                changed.insert(mark);
             }
         }
-        changed.into_iter().collect()
+        // Drop marks whose aggregate fell to all-zero, so an absent mark and a
+        // zeroed mark are the same state (`judge` reads a missing key as EMPTY).
+        for &mark in &candidates {
+            if stats.totals.get(&mark).is_some_and(|c| *c == EMPTY) {
+                stats.totals.remove(&mark);
+            }
+        }
+
+        before
+            .into_iter()
+            .filter(|&(mark, prev)| *stats.totals.get(&mark).unwrap_or(&EMPTY) != prev)
+            .map(|(mark, _)| mark)
+            .collect()
     }
 
     fn judge(
@@ -2964,6 +2988,50 @@ mod tests {
         Corpus::try_from_parts(keys, texts).unwrap()
     }
 
+    /// Fold one book's spacing contribution straight from `(chapter token,
+    /// verse texts)` specs — map each chapter, carry-reduce left to right, fold —
+    /// so a test can compare contributions without going through a `Corpus`.
+    fn contribution_of(
+        _slug: &str,
+        chapters: &[(&str, &[&str])],
+    ) -> SpacingBookContribution {
+        use crate::substrate::{ChapterView, ObservationSubstrate};
+        let obs: Vec<SpacingChapterObs> = chapters
+            .iter()
+            .map(|(token, verses)| {
+                let texts: Vec<String> = verses.iter().map(|t| t.to_string()).collect();
+                SpacingSubstrate::map_chapter(
+                    &ChapterView {
+                        chapter: token,
+                        texts: &texts,
+                    },
+                    &(),
+                )
+            })
+            .collect();
+        let mut reduced: Vec<SpacingReduced> = Vec::new();
+        let mut carry = SpacingBoundary::default();
+        for o in &obs {
+            let owner = SpacingSubstrate::pending_owner(&carry)
+                .and_then(|tok| reduced.iter().position(|r| *r.token == *tok));
+            let (this, leaving) = match owner {
+                Some(k) => SpacingSubstrate::reduce_chapter(o, &carry, &mut reduced[k]),
+                None => {
+                    let mut sink = SpacingReduced::default();
+                    SpacingSubstrate::reduce_chapter(o, &carry, &mut sink)
+                }
+            };
+            reduced.push(this);
+            carry = leaving;
+        }
+        if let Some(owner) = SpacingSubstrate::pending_owner(&carry)
+            .and_then(|tok| reduced.iter().position(|r| *r.token == *tok))
+        {
+            SpacingSubstrate::finish_book(&carry, &mut reduced[owner]);
+        }
+        SpacingSubstrate::fold_book(&reduced)
+    }
+
     /// Corpus per-mark cells from the INDEPENDENT whole-book batch walk
     /// (`for_each_spacing_opportunity`, which pre-computes every verse's edges
     /// and resolves seams by scanning book neighbours). The substrate's
@@ -3185,6 +3253,68 @@ mod tests {
         drive_spacing(true, &mut cache, &corpus, &cfg, &mut on);
         assert_eq!(cache.mapped, 2, "re-enabling rebuilds the substrate");
         assert_eq!(on, spacing_findings(&corpus, &cfg), "rebuild equals cold");
+    }
+
+    /// `replace_book_in_corpus_stats` returns EXACT stats-delta keys: replacing a
+    /// book whose sites MOVED but whose per-mark cells are unchanged yields an
+    /// EMPTY stats delta, while the site delta is dirty (the sites really did
+    /// move). Phase D consumes this as the exact set, so an over-broad delta
+    /// would silently re-judge everything; the site half is why equal counts may
+    /// never be read as equal sites (plan §6.2, from the other side).
+    #[test]
+    fn spacing_stats_delta_is_exact_when_sites_move_but_counts_do_not() {
+        use crate::substrate::ObservationSubstrate;
+        let mut stats = SpacingCorpusStats::default();
+
+        // Two books. GEN's text is rearranged so the same marks occur with the
+        // same per-side/per-class reads — identical cells, different sites.
+        let before = contribution_of("GEN", &[("1", &["alpha, beta,", "gamma, delta,"])]);
+        let after = contribution_of("GEN", &[("1", &["gamma, delta,", "alpha, beta,"])]);
+        assert_eq!(
+            before.cells, after.cells,
+            "fixture precondition: the rearrangement leaves per-mark cells equal"
+        );
+        assert!(
+            before.chapters != after.chapters,
+            "fixture precondition: the SITES really did move"
+        );
+
+        // Seed, then replace with the moved-site version.
+        let seeded =
+            SpacingSubstrate::replace_book_in_corpus_stats(&mut stats, "GEN", None, Some(&before));
+        assert!(
+            !seeded.is_empty(),
+            "the initial contribution changes the aggregate"
+        );
+        let moved = SpacingSubstrate::replace_book_in_corpus_stats(
+            &mut stats,
+            "GEN",
+            Some(&before),
+            Some(&after),
+        );
+        assert!(
+            moved.is_empty(),
+            "moved sites with equal per-mark counts produce an EMPTY stats delta, got {moved:?}"
+        );
+
+        // A genuine count change DOES report — and reports only the marks that moved.
+        let extra = contribution_of("GEN", &[("1", &["gamma, delta,", "alpha, beta, more,"])]);
+        let grew = SpacingSubstrate::replace_book_in_corpus_stats(
+            &mut stats,
+            "GEN",
+            Some(&after),
+            Some(&extra),
+        );
+        assert_eq!(grew, vec![','], "only the comma's aggregate moved");
+
+        // Full removal returns to empty and reports the marks that vanished.
+        let removed =
+            SpacingSubstrate::replace_book_in_corpus_stats(&mut stats, "GEN", Some(&extra), None);
+        assert_eq!(removed, vec![',']);
+        assert!(
+            stats.totals.is_empty(),
+            "a fully removed book leaves no zeroed residue"
+        );
     }
 
     /// A pending seam mark that crosses an ALL-EMPTY chapter keeps its original
