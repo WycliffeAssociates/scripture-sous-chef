@@ -779,6 +779,7 @@ impl Galley {
     /// Atomic (all-or-nothing): a rejected block leaves the handle unchanged.
     /// Returns the `MutationEffect` — `"unchanged"` for a byte-identical no-op.
     /// Does not analyze.
+    #[wasm_bindgen(js_name = updateBook)]
     pub fn update_book(&mut self, block: BookUpdateIn) -> Result<MutationEffect, JsError> {
         let effect = self
             .inner
@@ -791,6 +792,7 @@ impl Galley {
     /// Replace exactly one existing `(slug, chapter)` run. Atomic; a rejected
     /// block leaves the handle unchanged. Returns the `MutationEffect`. Does
     /// not analyze.
+    #[wasm_bindgen(js_name = updateChapter)]
     pub fn update_chapter(&mut self, block: ChapterUpdateIn) -> Result<MutationEffect, JsError> {
         let effect = self
             .inner
@@ -803,6 +805,7 @@ impl Galley {
     /// Remove books by slug. Unknown slugs are no-ops; returns the number
     /// removed (`0` means unchanged). A positive count stales the wire
     /// publication (§3.1).
+    #[wasm_bindgen(js_name = removeBooks)]
     pub fn remove_books(&mut self, slugs: Vec<String>) -> u32 {
         let refs: Vec<&str> = slugs.iter().map(String::as_str).collect();
         let removed = self.inner.remove_books(&refs);
@@ -816,6 +819,7 @@ impl Galley {
     /// Reseed the whole corpus (project switch, git pull). Books absent from the
     /// new corpus leave the prior and cache before it is adopted. Returns the
     /// `MutationEffect` — `"unchanged"` when the new corpus equals the current.
+    #[wasm_bindgen(js_name = replaceCorpus)]
     pub fn replace_corpus(&mut self, target: VrefCorpus) -> Result<MutationEffect, JsError> {
         let corpus = to_corpus_or_reject(target)?;
         let effect = self.inner.replace_corpus(corpus);
@@ -826,6 +830,7 @@ impl Galley {
     /// Replace the optional reference (source) corpus. The prior is retained;
     /// provenance stales the same-slug target books whose source changed on the
     /// next analyze. Returns the `MutationEffect`.
+    #[wasm_bindgen(js_name = replaceSource)]
     pub fn replace_source(&mut self, source: Option<VrefCorpus>) -> Result<MutationEffect, JsError> {
         let source = source.map(to_corpus_or_reject).transpose()?;
         let effect = self.inner.replace_source(source);
@@ -837,6 +842,7 @@ impl Galley {
     /// never an accidental reset to defaults. Equal config ⇒ `"unchanged"`;
     /// otherwise the prep cache clears and the prior is retained (provenance
     /// decides what re-tallies).
+    #[wasm_bindgen(js_name = updateConfig)]
     pub fn update_config(&mut self, config: SousConfig) -> MutationEffect {
         let effect = self.inner.update_config(build_config(Some(config)));
         self.invalidate_publication_on(effect);
@@ -861,6 +867,7 @@ impl Galley {
     /// record `index`. `null` for a no-interpolation rule. Throws if no analyze
     /// has succeeded, `analysis_id` is not the current publication's, or `index`
     /// is out of range (§A.3.3). The `analysis_id` marshals as a JS `bigint`.
+    #[wasm_bindgen(js_name = findingArgs)]
     pub fn finding_args(&self, analysis_id: u64, index: u32) -> Result<FindingArgsOut, JsError> {
         self.finding_args_core(analysis_id, index)
             .map(FindingArgsOut)
@@ -871,6 +878,7 @@ impl Galley {
     /// `indices`, positionally parallel (duplicates and `null`s preserved). The
     /// **whole batch** is validated before anything is cloned — one bad index
     /// rejects the entire request (§A.3.3).
+    #[wasm_bindgen(js_name = findingsArgs)]
     pub fn findings_args(
         &self,
         analysis_id: u64,
@@ -879,6 +887,38 @@ impl Galley {
         self.findings_args_core(analysis_id, &indices)
             .map(FindingsArgsOut)
             .map_err(|e| JsError::new(&e.to_string()))
+    }
+
+    /// The content-derived identity of the current resident inputs (target +
+    /// reference presence/content + config + engine stamp), as a JS `bigint`.
+    /// Pure and analysis-free — it folds the corpus's owned per-book hashes
+    /// (O(book count), no verse walk), so it is callable **before the first
+    /// `analyze`** and while the handle is dirty. This is the id a persisted
+    /// buffer must carry to be reused for the current inputs
+    /// (`decodePersistedFindings`'s `ExpectedAnalysisIdentity.analysisId`). It
+    /// tracks the current inputs, so it diverges from the last published header
+    /// id the moment a mutation changes an input.
+    #[wasm_bindgen(js_name = expectedAnalysisId)]
+    pub fn expected_analysis_id(&self) -> u64 {
+        self.inner.expected_analysis_id().get()
+    }
+
+    /// The target-only content identity (target + config + engine stamp,
+    /// excluding the reference), as a JS `bigint`. Same pure/analysis-free
+    /// lifecycle as [`expected_analysis_id`](Galley::expected_analysis_id); its
+    /// only use is the reference-present -> reference-absent persisted-findings
+    /// salvage (`ExpectedAnalysisIdentity.targetContextId`).
+    #[wasm_bindgen(js_name = expectedTargetContextId)]
+    pub fn expected_target_context_id(&self) -> u64 {
+        self.inner.expected_target_context_id().get()
+    }
+
+    /// Whether a reference (source) corpus is currently resident — the
+    /// canonical presence bit for persistence validation
+    /// (`ExpectedAnalysisIdentity.hasReference`). Analysis-free.
+    #[wasm_bindgen(js_name = hasReference)]
+    pub fn has_reference(&self) -> bool {
+        self.inner.has_reference()
     }
 
     /// Census (absolute inventory) over the resident corpus, serialized to the

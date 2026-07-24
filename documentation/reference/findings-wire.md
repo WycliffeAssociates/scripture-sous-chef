@@ -213,8 +213,8 @@ self.onmessage = ({ data }) => {
 
 Detailed, localized messages use the resident `Galley`'s lazy args path:
 
-- `galley.finding_args(analysisId, index)` -> `FindingArgs | null`
-- `galley.findings_args(analysisId, indices)` -> `(FindingArgs | null)[]`
+- `galley.findingArgs(analysisId, index)` -> `FindingArgs | null`
+- `galley.findingsArgs(analysisId, indices)` -> `(FindingArgs | null)[]`
 
 `analysisId` is the **header value of the analyze that produced the record**
 (a JS `bigint`). Both accessors accept a requested id **iff it equals the id
