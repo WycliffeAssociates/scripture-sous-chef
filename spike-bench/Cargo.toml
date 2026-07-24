@@ -20,7 +20,9 @@ publish = false
 # that cold-start cost independently before this crate existed.
 
 [dependencies]
-ssc-core = { path = "../crates/core" }
+# `bench-probes` exposes `ssc_core::bench` — the map/reduce/judge phase split
+# the warm ladder reads. Feature-gated, so it never enters a release/CI build.
+ssc-core = { path = "../crates/core", features = ["bench-probes"] }
 # The resident shell — the warm-ladder / dhat harnesses drive the editor's
 # real resident mutate+re-analyze path through `Galley` (granularity-spine
 # Phase A step 5), not the raw `analyze_stateful` prior/cache threading.

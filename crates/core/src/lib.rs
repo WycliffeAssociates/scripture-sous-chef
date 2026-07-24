@@ -36,6 +36,47 @@ pub mod unicode;
 pub use cache::PrepCache;
 #[cfg(any(test, feature = "test-probes"))]
 pub use cache::CacheProbe;
+
+/// Coarse map/reduce/judge phase timings for the warm-path measurement
+/// harness (the `bench-probes` feature only — never compiled into a release
+/// build, so there are no unconditional production timers). `transition`
+/// records the most recent call's phase split into a thread-local; a serial
+/// bench (the warm ladder) reads it right after `analyze`.
+#[cfg(feature = "bench-probes")]
+pub mod bench {
+    use std::cell::Cell;
+    use std::time::Duration;
+
+    /// One analyze call's coarse phase split. `map` covers the per-verse lane
+    /// plus the fused walk and slotting; `reduce` covers stats/site assembly,
+    /// the token cache, and project emission; `judge` covers the stateful
+    /// judge loop. Pack/reconcile do not exist until Phase A-W.
+    #[derive(Clone, Copy, Default, Debug)]
+    pub struct PhaseTimings {
+        pub map: Duration,
+        pub reduce: Duration,
+        pub judge: Duration,
+    }
+
+    thread_local! {
+        static LAST: Cell<PhaseTimings> = const {
+            Cell::new(PhaseTimings {
+                map: Duration::ZERO,
+                reduce: Duration::ZERO,
+                judge: Duration::ZERO,
+            })
+        };
+    }
+
+    pub(crate) fn record(t: PhaseTimings) {
+        LAST.with(|c| c.set(t));
+    }
+
+    /// The phase split of the most recent `transition` on this thread.
+    pub fn last() -> PhaseTimings {
+        LAST.with(Cell::get)
+    }
+}
 #[cfg(feature = "bench-probes")]
 pub use stream::{FloorNeeds, walk_floor};
 pub use catalog::{RuleCard, SENSITIVITY_STOPS, Verdict, rule_cards};
@@ -321,6 +362,11 @@ fn transition(
     // contributions a book's counts include, so toggling any rule re-tallies.
     let rules_fp = rules_fp(&stateful);
 
+    // Coarse phase decomposition for the warm-path harness (`bench-probes`
+    // only — no release timers). `map` runs from here through the MAP boundary.
+    #[cfg(feature = "bench-probes")]
+    let bench_map_start = std::time::Instant::now();
+
     // The per-verse phase is embarrassingly parallel — each verse is judged
     // from its own text by `Sync` rules. Under the `parallel` feature it fans
     // out over rayon (ADR 0018); otherwise it stays serial. Output is the same
@@ -459,6 +505,10 @@ fn transition(
     if fault::fires(fault::Phase::Map) {
         return Err((AnalyzeError { phase: "map" }, prior));
     }
+
+    // MAP boundary reached: `reduce` runs from here through the JUDGE boundary.
+    #[cfg(feature = "bench-probes")]
+    let bench_reduce_start = std::time::Instant::now();
 
     // The cache is now read-only for the rest of the call. Reborrow it shared so
     // each clean book's products can be handed to reduce/judge as read-only
@@ -789,6 +839,10 @@ fn transition(
         return Err((AnalyzeError { phase: "judge" }, prior));
     }
 
+    // JUDGE boundary reached: `judge` runs from here through the stateful loop.
+    #[cfg(feature = "bench-probes")]
+    let bench_judge_start = std::time::Instant::now();
+
     // Stateful rules: supersede the prior cache at book granularity, judge the
     // whole merged corpus from the cache.
     //
@@ -895,6 +949,14 @@ fn transition(
     for (i, group) in books.iter().enumerate() {
         stats.tallied.insert(Box::from(group.slug), current[i]);
     }
+
+    // JUDGE done: record the coarse phase split for the warm-path harness.
+    #[cfg(feature = "bench-probes")]
+    bench::record(bench::PhaseTimings {
+        map: bench_reduce_start - bench_map_start,
+        reduce: bench_judge_start - bench_reduce_start,
+        judge: std::time::Instant::now() - bench_judge_start,
+    });
 
     // Deterministic order, independent of the `parallel` feature (ADR 0018):
     // the parallel per-verse phase collects in nondeterministic order, so sort

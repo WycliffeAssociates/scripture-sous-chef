@@ -27,7 +27,7 @@
 
 use std::path::PathBuf;
 
-use spike_bench::{profile_loop, time_trials, variance_note};
+use spike_bench::{profile_loop, variance_note};
 use ssc_core::{BookBlock, Config, RuleId};
 use ssc_galley::Galley;
 
@@ -120,11 +120,71 @@ fn main() {
         return;
     }
 
-    let (durations, findings) = time_trials(200, do_work);
-    let mut sorted = durations.clone();
-    println!(
-        "warm whole-corpus re-analyze, edited book {code}: median {:?}/call ({}), {findings} findings",
-        spike_bench::median(&mut sorted),
-        variance_note(&durations),
-    );
+    // Batch count for the §13 protocol (default 1; the gate script passes 5).
+    let batches: usize = args
+        .iter()
+        .position(|a| a == "--batches")
+        .and_then(|i| args.get(i + 1))
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1);
+    let trials: usize = args
+        .iter()
+        .position(|a| a == "--trials")
+        .and_then(|i| args.get(i + 1))
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(200);
+
+    // Decompose each warm iteration into update_book (whole-corpus layout
+    // rebuild + prior/prep bookkeeping) and analyze, and analyze further into
+    // the map/reduce/judge phase split (`ssc_core::bench`, bench-probes only).
+    let mut flip2 = false;
+    let mut batch_totals: Vec<std::time::Duration> = Vec::new();
+    for b in 0..batches {
+        let mut total = Vec::with_capacity(trials);
+        let mut upd = Vec::with_capacity(trials);
+        let mut ana = Vec::with_capacity(trials);
+        let mut map = Vec::with_capacity(trials);
+        let mut red = Vec::with_capacity(trials);
+        let mut jud = Vec::with_capacity(trials);
+        let mut findings = 0usize;
+        for _ in 0..trials {
+            flip2 = !flip2;
+            let block = if flip2 { block_a.clone() } else { block_b.clone() };
+            let t0 = std::time::Instant::now();
+            galley
+                .update_book(block)
+                .expect("valid complete-book replacement");
+            let t1 = std::time::Instant::now();
+            findings = galley.analyze().len();
+            let t2 = std::time::Instant::now();
+            let ph = ssc_core::bench::last();
+            total.push(t2 - t0);
+            upd.push(t1 - t0);
+            ana.push(t2 - t1);
+            map.push(ph.map);
+            red.push(ph.reduce);
+            jud.push(ph.judge);
+        }
+        let med = |v: &mut Vec<std::time::Duration>| spike_bench::median(v);
+        let bt = med(&mut total);
+        batch_totals.push(bt);
+        println!(
+            "batch {b}/{batches} {code} {config_name}: total {:?} | update_book {:?} | analyze {:?} \
+             (map {:?} reduce {:?} judge {:?}) | {findings} findings ({})",
+            bt,
+            med(&mut upd),
+            med(&mut ana),
+            med(&mut map),
+            med(&mut red),
+            med(&mut jud),
+            variance_note(&total),
+        );
+    }
+    if batches > 1 {
+        batch_totals.sort();
+        println!(
+            "median-of-medians {code} {config_name} over {batches} batches: {:?}",
+            batch_totals[batches / 2]
+        );
+    }
 }
