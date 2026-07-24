@@ -512,12 +512,18 @@ fn transition(
     #[cfg(feature = "bench-probes")]
     let bench_reduce_start = std::time::Instant::now();
 
-    // The cache is now read-only for the rest of the call. Reborrow it shared so
-    // each clean book's products can be handed to reduce/judge as read-only
-    // views. This shared borrow is held across the entire
-    // reduce+judge phase below; that it compiles is the proof no judge mutates a
-    // cached product — every cached lane a judge sees is behind a `&`.
-    let cache: &AnalysisCache = cache;
+    // The prep section is now read-only for the rest of the call. Split the
+    // cache into its independently-borrowable sections: `prep` stays shared for
+    // the whole reduce+judge phase (that it compiles is the proof no judge
+    // mutates a cached map product — every cached lane a judge sees is behind a
+    // `&`), while `finding_lane` stays mutable so the new partitions can be
+    // committed AFTER judge succeeds (the atomic finding boundary). They are
+    // disjoint fields, so the shared prep borrow and the mutable finding borrow
+    // coexist.
+    let cache::AnalysisCache {
+        prep, findings: finding_lane, ..
+    } = &mut *cache;
+    let prep: &cache::PrepSection = prep;
 
     // Slot every book's products in presented order: a freshly walked book owns
     // its `BookOut`; a clean book borrows its resident `BookEntry`.
@@ -526,7 +532,7 @@ fn transition(
         slots[pos] = Some(BookProducts::Walked(output));
     }
     for &pos in &clean_positions {
-        slots[pos] = Some(BookProducts::Clean(cache.walk_entry(books[pos].slug)));
+        slots[pos] = Some(BookProducts::Clean(prep.walk_entry(books[pos].slug)));
     }
     let mut slots: Vec<BookProducts<'_>> = slots
         .into_iter()
@@ -972,10 +978,25 @@ fn transition(
         judge: std::time::Instant::now() - bench_judge_start,
     });
 
-    // Deterministic order, independent of the `parallel` feature (ADR 0018):
-    // the parallel per-verse phase collects in nondeterministic order, so sort
-    // by (key_idx, range start, rule) to make feature-on output byte-identical
-    // to serial. Cheap against the analysis: one O(n log n) over the findings.
+    // Commit the complete semantic candidate: the freshly-computed findings are
+    // the resident home for the answer, so decompose them into each rule's
+    // chapter-local partition and commit. This runs only after map/reduce/judge
+    // have all succeeded (past every fault seam above), so a failed analyze
+    // leaves the PREVIOUS partitions intact and current — no partial commit.
+    finding_lane.rebuild(&out, target);
+
+    // Assemble the returned findings ONLY from the resident partitions, rebasing
+    // each chapter-local record to a global `KeyIdx` against the current corpus.
+    // A partition stores no global index — the rebase happens here, once — and
+    // the round-trip through partitions is exact, so this is byte-identical to
+    // returning `out` directly.
+    let mut out = finding_lane.assemble(target);
+
+    // Deterministic order, independent of the `parallel` feature (ADR 0018) and
+    // of partition/chapter iteration order. Findings that tie on
+    // `(key_idx, range.start, code)` are always one rule at one site; assembly
+    // preserved that rule's within-chapter emission order, and this stable sort
+    // preserves it among the ties. Cheap against the analysis: one O(n log n).
     out.sort_by_key(|f| (f.key_idx, f.range.start, f.code));
 
     Ok((out, stats))

@@ -819,6 +819,41 @@ impl Corpus {
         Ok(MutationEffect::Changed)
     }
 
+    /// Decompose a global index into its chapter-local address — book slug,
+    /// opaque chapter token, and the verse's index within that chapter's
+    /// contiguous run — from the owned layout. Books and chapters are
+    /// range-contiguous and ascending, so each level is a binary search. Every
+    /// `KeyIdx` a finding carries this call is valid against this same `Corpus`,
+    /// so it always resolves. This is the decompose half of the resident
+    /// finding partition's chapter-local addressing: a partition stores this
+    /// address, never a global `KeyIdx`, so an earlier insertion cannot
+    /// invalidate a later record (the rebase happens once at assembly).
+    pub(crate) fn locate(&self, idx: KeyIdx) -> ChapterAddr<'_> {
+        let g = idx.0 as usize;
+        let bi = self.layout.partition_point(|b| b.range.end <= g);
+        let book = &self.layout[bi];
+        let ci = book.chapters.partition_point(|c| c.range.end <= g);
+        let chapter = &book.chapters[ci];
+        ChapterAddr {
+            slug: &book.slug,
+            chapter: &chapter.chapter,
+            local: LocalKeyIdx::from_usize(g - chapter.range.start),
+        }
+    }
+
+    /// The global base index of a chapter run (its start), by book slug + opaque
+    /// chapter token — the rebase half of chapter-local addressing: a partition
+    /// record's `(slug, chapter, local)` resolves to `chapter_base + local`.
+    /// `None` when the chapter is absent (e.g. after a book/chapter removal), so
+    /// a stale cross-call record is dropped rather than mis-rebased.
+    pub(crate) fn chapter_base(&self, slug: &str, chapter: &str) -> Option<KeyIdx> {
+        self.layout
+            .iter()
+            .find(|b| *b.slug == *slug)
+            .and_then(|b| b.chapters.iter().find(|c| *c.chapter == *chapter))
+            .map(|c| KeyIdx::from_usize(c.range.start))
+    }
+
     /// Remove `slug`'s contiguous block entirely. Returns `false` when the slug
     /// is absent (a no-op). Removing the last book leaves a valid empty corpus.
     pub fn remove_book(&mut self, slug: &str) -> bool {
@@ -855,6 +890,16 @@ impl Corpus {
         }
         false
     }
+}
+
+/// A verse's chapter-local address: book slug, opaque chapter token, and the
+/// verse's index within that chapter run. Produced by [`Corpus::locate`] and
+/// stored (as owned slug/token) in a resident finding partition; rebased back
+/// to a global [`KeyIdx`] via [`Corpus::chapter_base`] + [`rebase`].
+pub(crate) struct ChapterAddr<'a> {
+    pub(crate) slug: &'a str,
+    pub(crate) chapter: &'a str,
+    pub(crate) local: LocalKeyIdx,
 }
 
 /// One contiguous book block's borrowed slices, plus its global base

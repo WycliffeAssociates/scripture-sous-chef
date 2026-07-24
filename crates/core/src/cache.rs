@@ -56,7 +56,7 @@ pub struct AnalysisCache {
     /// Empty placeholder until Phase C fills it.
     substrates: SubstrateSection,
     /// Resident-finding section: per-rule chapter-local finding partitions.
-    findings: FindingSection,
+    pub(crate) findings: FindingSection,
 }
 
 /// Shared-prep section: per-book map products keyed by a content hash of the
@@ -99,24 +99,146 @@ impl SubstrateSection {
     fn clear(&mut self) {}
 }
 
-/// Resident-finding section: per-rule chapter-local finding partitions. The
-/// resident home findings live in. Introduced here as the third section
-/// boundary; the partition data model and wiring land in a later step, so it
-/// holds no state yet and its invalidation entry point is a no-op.
-pub(crate) struct FindingSection;
+/// One chapter-local finding record in a rule's resident partition. It stores a
+/// **chapter-local** address — the verse's index within its chapter plus the
+/// verse-local span — never a global `KeyIdx`. A partition is a cross-call
+/// product, and a global index would be silently invalidated by any earlier
+/// insertion; the rebase to a global `KeyIdx` happens once at assembly. The
+/// owning [`ChapterFindings`] carries the slug + opaque chapter token.
+#[derive(Clone)]
+pub(crate) struct LocalFinding {
+    local: LocalKeyIdx,
+    range: Span,
+    severity: Severity,
+    score: Option<f32>,
+    args: Option<crate::diagnostics::FindingArgs>,
+}
+
+/// One rule's findings within a single chapter, in the rule's emission order —
+/// the within-rule equal-key order the final stable sort preserves.
+pub(crate) struct ChapterFindings {
+    slug: Box<str>,
+    chapter: Box<str>,
+    records: Vec<LocalFinding>,
+}
+
+/// One rule's resident finding partition: its chapter-local findings grouped by
+/// chapter, in first-seen chapter order; within each chapter, in emission order.
+/// Cross-chapter order never affects output — findings in different chapters
+/// occupy disjoint `key_idx` ranges and so never tie on the final sort key — but
+/// first-seen order keeps assembly deterministic.
+#[derive(Default)]
+pub(crate) struct FindingPartition {
+    chapters: Vec<ChapterFindings>,
+}
+
+impl FindingPartition {
+    /// Append one record to its chapter group, preserving emission order. The
+    /// last-group fast path handles the common chapter-contiguous case; a linear
+    /// search handles interleaving; a new (slug, chapter) starts a group in
+    /// first-seen order.
+    fn push(&mut self, addr: &crate::corpus::ChapterAddr<'_>, rec: LocalFinding) {
+        if let Some(last) = self.chapters.last_mut()
+            && *last.slug == *addr.slug
+            && *last.chapter == *addr.chapter
+        {
+            last.records.push(rec);
+            return;
+        }
+        if let Some(existing) = self
+            .chapters
+            .iter_mut()
+            .find(|c| *c.slug == *addr.slug && *c.chapter == *addr.chapter)
+        {
+            existing.records.push(rec);
+            return;
+        }
+        self.chapters.push(ChapterFindings {
+            slug: Box::from(addr.slug),
+            chapter: Box::from(addr.chapter),
+            records: vec![rec],
+        });
+    }
+}
+
+/// Resident-finding section: per-rule chapter-local finding partitions — the
+/// resident home findings live in from now on (the "stateful findings never
+/// cached" doctrine). Assembly reads only from here. In Phase B every rule fully
+/// rebuilds its own partition each analyze; the chapter-local addressing is what
+/// later phases patch per changed chapter.
+pub(crate) struct FindingSection {
+    partitions: std::collections::BTreeMap<RuleId, FindingPartition>,
+}
 
 impl FindingSection {
     fn new() -> Self {
-        FindingSection
+        FindingSection {
+            partitions: std::collections::BTreeMap::new(),
+        }
     }
 
-    /// Invalidation entry point for the finding lane.
-    fn clear(&mut self) {}
+    /// Invalidation entry point for the finding lane: drop every partition.
+    fn clear(&mut self) {
+        self.partitions.clear();
+    }
 
-    /// Drop a book's resident finding records. No-op until the partition data
-    /// model lands; wired now so whole-book removal has a finding-lane entry
-    /// point distinct from the prep section's.
-    fn remove_book(&mut self, _slug: &str) {}
+    /// Drop a book's resident finding records from every partition — the
+    /// finding-lane whole-book removal entry point, so a removed book cannot
+    /// resurrect a partition record.
+    fn remove_book(&mut self, slug: &str) {
+        for partition in self.partitions.values_mut() {
+            partition.chapters.retain(|c| *c.slug != *slug);
+        }
+    }
+
+    /// Fully rebuild every partition from the freshly-computed global findings
+    /// (Phase B batch behavior). Each finding is decomposed into its rule's
+    /// partition as a chapter-local record, preserving emission order within
+    /// each (rule, chapter) — the stable-sort tie contract. Called only after
+    /// map/reduce/judge succeed, so a failed analyze leaves the previous
+    /// partitions intact and current.
+    pub(crate) fn rebuild(&mut self, findings: &[Finding], corpus: &crate::corpus::Corpus) {
+        self.partitions.clear();
+        for f in findings {
+            let addr = corpus.locate(f.key_idx);
+            self.partitions.entry(f.code).or_default().push(
+                &addr,
+                LocalFinding {
+                    local: addr.local,
+                    range: f.range,
+                    severity: f.severity,
+                    score: f.score,
+                    args: f.args.clone(),
+                },
+            );
+        }
+    }
+
+    /// Assemble the complete global finding set from the resident partitions,
+    /// rebasing each chapter-local record to a global `KeyIdx` against the
+    /// current corpus. The caller applies the final stable sort. A chapter that
+    /// no longer exists is dropped (its base is `None`) rather than mis-rebased.
+    pub(crate) fn assemble(&self, corpus: &crate::corpus::Corpus) -> Vec<Finding> {
+        let mut out = Vec::new();
+        for (&code, partition) in &self.partitions {
+            for chapter in &partition.chapters {
+                let Some(base) = corpus.chapter_base(&chapter.slug, &chapter.chapter) else {
+                    continue;
+                };
+                for rec in &chapter.records {
+                    out.push(Finding {
+                        key_idx: rebase(base, rec.local),
+                        code,
+                        severity: rec.severity,
+                        range: rec.range,
+                        score: rec.score,
+                        args: rec.args.clone(),
+                    });
+                }
+            }
+        }
+        out
+    }
 }
 
 /// A snapshot of [`PrepSection`]'s observability counters (the `test-probes`
@@ -197,10 +319,6 @@ impl AnalysisCache {
 
     pub(crate) fn walk_lanes_ready(&mut self, slug: &str, hash: u128, plan: &WalkPlan) -> bool {
         self.prep.walk_lanes_ready(slug, hash, plan)
-    }
-
-    pub(crate) fn walk_entry(&self, slug: &str) -> &BookEntry {
-        self.prep.walk_entry(slug)
     }
 
     pub(crate) fn store_walk(&mut self, slug: &str, hash: u128, output: &BookOut) {
@@ -366,7 +484,7 @@ impl PrepSection {
     /// must have established the entry is a clean hit
     /// ([`walk_lanes_ready`](Self::walk_lanes_ready)); an absent entry panics
     /// rather than silently reusing the wrong book.
-    fn walk_entry(&self, slug: &str) -> &BookEntry {
+    pub(crate) fn walk_entry(&self, slug: &str) -> &BookEntry {
         self.books
             .get(slug)
             .expect("walk_entry called for a book proven clean by walk_lanes_ready")
