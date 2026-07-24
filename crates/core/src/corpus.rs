@@ -351,18 +351,22 @@ fn build_book_at(keys: &[String], texts: &[String], start: usize) -> BookLayout 
     }
 }
 
-/// Integer-rebase a book's global ranges (its own and every chapter's) by a
-/// signed `delta`. Used to maintain the layout locally after a length-changing
-/// splice: the books *after* the changed one only shift position — their text,
-/// chapter boundaries, and hashes are unchanged, so they are rebased rather
-/// than re-parsed/re-hashed (Phase A step 8).
-fn shift_book(book: &mut BookLayout, delta: isize) {
-    let shift = |r: &Range<usize>| {
-        ((r.start as isize + delta) as usize)..((r.end as isize + delta) as usize)
+/// Rebase a book's global ranges (its own and every chapter's) so the book
+/// starts at `new_start`, preserving every relative offset. Used to maintain
+/// the layout locally after a length-changing splice: the books *after* the
+/// changed one only shift position — their text, chapter boundaries, and
+/// hashes are unchanged, so they are rebased rather than re-parsed/re-hashed.
+/// All arithmetic is unsigned and relative (chapter ranges always sit at or
+/// after their book's start), so it cannot wrap — signed deltas would, on
+/// targets where `isize` is narrower than the address space the domain admits.
+fn shift_book(book: &mut BookLayout, new_start: usize) {
+    let old_start = book.range.start;
+    let rebase = |r: &Range<usize>| {
+        (new_start + (r.start - old_start))..(new_start + (r.end - old_start))
     };
-    book.range = shift(&book.range);
+    book.range = rebase(&book.range);
     for c in &mut book.chapters {
-        c.range = shift(&c.range);
+        c.range = rebase(&c.range);
     }
 }
 
@@ -638,7 +642,7 @@ impl Corpus {
 
         // 4. Splice: existing books (replaced or carried) in order, then the
         //    new-slug blocks appended in batch order. Everything moves. The
-        //    owned layout is maintained LOCALLY (Phase A step 8): a replaced or
+        //    owned layout is maintained LOCALLY: a replaced or
         //    appended book is rebuilt from its spliced text; a carried book
         //    reuses its existing `BookLayout` — unchanged chapter boundaries and
         //    hashes — integer-rebased to its new global position. No
@@ -669,8 +673,7 @@ impl Corpus {
                 }
                 // Carried unchanged book: reuse its layout, rebased to `cursor`.
                 let mut bl = old_bl;
-                let delta = cursor as isize - bl.range.start as isize;
-                shift_book(&mut bl, delta);
+                shift_book(&mut bl, cursor);
                 new_layout.push(bl);
             }
         }
@@ -793,12 +796,12 @@ impl Corpus {
         }
 
         // 5. Splice the run in place (preserves surrounding chapters, order,
-        //    and duplicates) and maintain the owned layout LOCALLY (Phase A
-        //    step 8): rebuild only the affected book's chapter layouts/hashes
-        //    and integer-rebase the later books' global ranges. The book's own
-        //    start is unchanged (in-place chapter splice), so only its length
-        //    (and thus everything after it) shifts by `delta`.
-        let delta = block.keys.len() as isize - range.len() as isize;
+        //    and duplicates) and maintain the owned layout LOCALLY: rebuild
+        //    only the affected book's chapter layouts/hashes and rebase the
+        //    later books' global ranges. The book's own start is unchanged
+        //    (in-place chapter splice), so the later books simply re-tile from
+        //    its new end — books are contiguous, so each starts exactly where
+        //    the previous one ends.
         let book_idx = self
             .layout
             .iter()
@@ -808,8 +811,10 @@ impl Corpus {
         self.keys.splice(range.clone(), block.keys);
         self.texts.splice(range, block.texts);
         self.layout[book_idx] = build_book_at(&self.keys, &self.texts, book_start);
+        let mut cursor = self.layout[book_idx].range.end;
         for b in &mut self.layout[book_idx + 1..] {
-            shift_book(b, delta);
+            shift_book(b, cursor);
+            cursor = b.range.end;
         }
         Ok(MutationEffect::Changed)
     }
@@ -829,18 +834,20 @@ impl Corpus {
             if book == slug {
                 self.keys.drain(start..end);
                 self.texts.drain(start..end);
-                // Maintain the owned layout LOCALLY (Phase A step 8): drop this
-                // book's layout and integer-rebase every later book back by the
-                // removed length — no whole-corpus re-parse.
+                // Maintain the owned layout LOCALLY: drop this book's layout
+                // and re-tile every later book from the removed run's start —
+                // no whole-corpus re-parse. Books are contiguous, so each
+                // starts exactly where the previous one ends.
                 let book_idx = self
                     .layout
                     .iter()
                     .position(|b| *b.slug == *slug)
                     .expect("book located in the same walk above");
                 self.layout.remove(book_idx);
-                let delta = -((end - start) as isize);
+                let mut cursor = start;
                 for b in &mut self.layout[book_idx..] {
-                    shift_book(b, delta);
+                    shift_book(b, cursor);
+                    cursor = b.range.end;
                 }
                 return true;
             }
@@ -1240,7 +1247,7 @@ mod tests {
         }
     }
 
-    /// Phase A step 8: every length-narrowing mutation maintains the owned
+    /// Every length-narrowing mutation maintains the owned
     /// layout LOCALLY (rebuild the changed book, rebase later books) instead of
     /// re-parsing the whole corpus. This pins the equivalence the perf win rests
     /// on: after every mutation shape in §12.1's menu, the locally-maintained
