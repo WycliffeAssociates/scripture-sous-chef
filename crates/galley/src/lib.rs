@@ -836,7 +836,7 @@ mod tests {
         assert_eq!(from_galley, pure);
     }
 
-    // ── Phase A step 6: one core transition + clean/dirty lifecycle ──────────
+    // ── One core transition + clean/dirty lifecycle ──────────────────────────
 
     /// The one-shot core path (`analyze_stateful` with no prior/cache) and the
     /// resident path (`Galley::analyze`) run the SAME core transition, so for

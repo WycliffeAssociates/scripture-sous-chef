@@ -48,7 +48,7 @@ use crate::token::Token;
 /// resident `PrepCache` entry (a clean cache-hit book), and the cache is a
 /// read-only view over them for this analyze. Nothing here owns or clones the
 /// tokens — assembling the cache is a rebase-and-borrow, so a clean book's
-/// tokens are never copied out of the resident cache (Phase A step 7).
+/// tokens are never copied out of the resident cache.
 pub type TokenCache<'a> = FxHashMap<KeyIdx, &'a [Token]>;
 
 /// The hot, stateless majority. `check` reads the verse's prebuilt scalar tape
@@ -109,7 +109,7 @@ pub trait ProjectTokenRule: Sync {
 /// fused walk hands its sites straight in, moved not cloned) and **borrowed**
 /// for a clean cache-hit book (a read-only view into the resident `PrepCache`
 /// entry). A clean book's sites are therefore never cloned out of the cache to
-/// be judged — the judge consumes the view directly (Phase A step 7). The
+/// be judged — the judge consumes the view directly. The
 /// lifetime is that of the resident cache borrow held across the judge phase;
 /// `reduce` (calibration/tests) produces a fully-owned `RuleSites<'static>`.
 pub enum RuleSites<'a> {

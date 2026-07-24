@@ -1213,3 +1213,31 @@ is **Phase A-W** (packed findings wire + JS reconciliation, Appendix A) — but
 per the plan, Phase A-W consumes the Phase A identity/registry primitives and
 must not begin until the folded book hash is in (it is, Entry 5). Alternatively
 the owner may direct Phase B. Do not begin either within this packet.
+
+---
+
+## Entry 9 — Owner review of WP2c: accepted; three corrections landed
+
+- **Date:** 2026-07-24
+- **WP2c verdict (owner):** accepted, including the extra `replace_books`
+  owned-layout boundary optimization (follows the owned-metadata-as-proof
+  design). Floor gate PASS stands (0.649 ms vs ≤2 ms), supported by both the
+  §13 timing tables and the load-immune allocation collapse.
+- **ERRATUM for Entry 7's "Stop-safe next step":** it says "Phase A-W must not
+  begin until Phase B" — that reverses the plan's ordering. Correct order:
+  **Phase A → Phase A-W → Phase B**; Phase A-W must COMPLETE before Phase B
+  begins (plan §8, Appendix A preamble).
+- **Correction 1 — judge fault now fires after judging (owner-required):** the
+  Judge fault hook previously fired at the reduce→judge seam, before the
+  stateful judge loop — testing the same boundary as Reduce and leaving the
+  deepest commit point unexercised. Now: a test-cfg-only rollback clone of
+  `prior` is taken before consumption; the hook fires AFTER the judge loop and
+  provenance stamping and hands back the rollback copy. Zero release overhead
+  (clone and hook are `cfg(any(test, feature = "test-probes"))`).
+- **Correction 2 — `shift_book` is unsigned:** signed `usize→isize→usize`
+  rebase replaced by re-tiling from an unsigned `new_start` with preserved
+  relative offsets (books are contiguous, so each starts where the previous
+  ends); cannot wrap on any admitted input, including wasm32's narrower
+  `isize`.
+- **Correction 3 — production comments de-cited:** all "(Phase A step N)"
+  citations in crates/ replaced with the invariant they stood for.

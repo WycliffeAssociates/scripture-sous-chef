@@ -190,7 +190,7 @@ impl PrepCache {
     ///
     /// Unlike the retired `cloned_walk`, this **clones nothing**. A clean
     /// cache-hit book's products stay owned by their `BookEntry`; the analyze
-    /// path borrows read-only views of them for reduce/judge (Phase A step 7).
+    /// path borrows read-only views of them for reduce/judge.
     /// The cache therefore holds the single owned copy of a clean book's walk
     /// products, and the judge consumes a `&`-view — never a copy.
     pub(crate) fn walk_lanes_ready(&mut self, slug: &str, hash: u128, plan: &WalkPlan) -> bool {
