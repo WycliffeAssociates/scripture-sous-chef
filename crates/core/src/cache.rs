@@ -63,6 +63,13 @@ pub(crate) struct DirectChapter {
     records: Vec<CachedPerVerseFinding>,
 }
 
+impl DirectChapter {
+    /// Whether this product was derived from exactly this chapter content.
+    pub(crate) fn matches(&self, hash: u128) -> bool {
+        self.hash == hash
+    }
+}
+
 /// The resident cross-call cache, sectioned into shared prep, substrate chapter
 /// products, and resident finding partitions (see the module docs). `Galley`
 /// owns one on the resident path; the one-shot path builds a transient one, runs
@@ -88,6 +95,10 @@ pub(crate) struct PrepSection {
     /// replaced wholesale when the book hash moves, which would throw away every
     /// unedited chapter's records on any edit to the book.
     direct: FxHashMap<Box<str>, FxHashMap<Box<str>, DirectChapter>>,
+    /// Total chapters cached in `direct`, maintained on every write. Compared
+    /// against the corpus's chapter count so the planning pass can tell in O(1)
+    /// whether any cached chapter has left the corpus.
+    direct_chapters: usize,
     // Observability counters (the `test-probes` feature, or this crate's own
     // tests). Exposed downstream via `probe()` so the shell can assert its
     // no-work invariants across the crate boundary; zero-cost when off.
@@ -257,14 +268,19 @@ impl FindingSection {
         self.direct_stamps.remove(slug);
     }
 
-    /// Whether this section's committed records for `(slug, chapter)` were built
-    /// from exactly this chapter content. A `false` means the chapter's
-    /// direct-rule records must be replaced, whatever the prep lane thinks.
-    pub(crate) fn direct_stamp_matches(&self, slug: &str, chapter: &str, hash: u128) -> bool {
-        self.direct_stamps
-            .get(slug)
-            .and_then(|book| book.get(chapter))
-            == Some(&hash)
+    /// One book's committed direct-lane stamps, hoisted out of the per-chapter
+    /// loop: the planning pass walks every chapter of every book, so a per-chapter
+    /// slug lookup would be one wasted hash of the slug per chapter.
+    pub(crate) fn direct_stamps_for(&self, slug: &str) -> Option<&FxHashMap<Box<str>, u128>> {
+        self.direct_stamps.get(slug)
+    }
+
+    /// Total chapters carrying a committed stamp. Compared against the corpus's
+    /// chapter count to decide, in O(1), whether anything stale is retained at
+    /// all — the planning pass must not pay a whole-corpus set build per analyze
+    /// just to discover that nothing was removed.
+    pub(crate) fn direct_stamp_count(&self) -> usize {
+        self.direct_stamps.values().map(FxHashMap::len).sum()
     }
 
     /// Fully rebuild the **batch-lane** partitions from the freshly-computed
@@ -320,33 +336,50 @@ impl FindingSection {
     /// `prep` is the authority for a chapter's records, and every chapter in
     /// `dirty` is resident there — it was either just mapped or proven clean.
     ///
-    /// A chapter absent from `present` is pruned first, so a chapter dropped by a
-    /// whole-book replacement or a book removal cannot survive as a partition
-    /// record.
+    /// `all_dirty` says every present chapter is in `dirty` (a cold call, or one
+    /// after a configuration change): the partitions are then replaced outright
+    /// rather than group-by-group, which keeps the cold path linear instead of
+    /// re-scanning a partition's growing chapter list once per chapter.
+    ///
+    /// `present` is supplied only when a chapter has left the corpus; stale groups
+    /// and stamps are pruned first, so a chapter dropped by a whole-book
+    /// replacement or a book removal cannot survive as a partition record.
     pub(crate) fn patch_direct(
         &mut self,
         direct_ids: &[RuleId],
         prep: &PrepSection,
-        present: &std::collections::BTreeSet<(&str, &str)>,
         dirty: &[(Box<str>, Box<str>, u128)],
+        all_dirty: bool,
+        present: Option<&std::collections::BTreeSet<(&str, &str)>>,
     ) {
-        for id in direct_ids {
-            if let Some(partition) = self.partitions.get_mut(id) {
-                partition
-                    .chapters
-                    .retain(|c| present.contains(&(&*c.slug, &*c.chapter)));
+        if all_dirty {
+            // Everything present is being rewritten, so nothing retained can
+            // survive — which also subsumes any pruning.
+            for id in direct_ids {
+                self.partitions.remove(id);
             }
-        }
-        self.direct_stamps.retain(|slug, chapters| {
-            chapters.retain(|chapter, _| present.contains(&(&**slug, &**chapter)));
-            !chapters.is_empty()
-        });
-        for (slug, chapter, hash) in dirty {
+            self.direct_stamps.clear();
+        } else if let Some(present) = present {
             for id in direct_ids {
                 if let Some(partition) = self.partitions.get_mut(id) {
                     partition
                         .chapters
-                        .retain(|c| !(*c.slug == **slug && *c.chapter == **chapter));
+                        .retain(|c| present.contains(&(&*c.slug, &*c.chapter)));
+                }
+            }
+            self.direct_stamps.retain(|slug, chapters| {
+                chapters.retain(|chapter, _| present.contains(&(&**slug, &**chapter)));
+                !chapters.is_empty()
+            });
+        }
+        for (slug, chapter, hash) in dirty {
+            if !all_dirty {
+                for id in direct_ids {
+                    if let Some(partition) = self.partitions.get_mut(id) {
+                        partition
+                            .chapters
+                            .retain(|c| !(*c.slug == **slug && *c.chapter == **chapter));
+                    }
                 }
             }
             for rec in prep.direct_records(slug, chapter) {
@@ -502,8 +535,14 @@ impl AnalysisCache {
         self.prep.ensure_fingerprint(config);
     }
 
-    pub(crate) fn direct_chapter_valid(&mut self, slug: &str, chapter: &str, hash: u128) -> bool {
-        self.prep.direct_chapter_valid(slug, chapter, hash)
+    /// Whether `(slug, chapter)`'s cached product came from this exact content —
+    /// the planning pass's decision, spelled out for the lane's own unit tests.
+    #[cfg(test)]
+    pub(crate) fn direct_chapter_valid(&self, slug: &str, chapter: &str, hash: u128) -> bool {
+        self.prep
+            .direct_book(slug)
+            .and_then(|book| book.get(chapter))
+            .is_some_and(|c| c.hash == hash)
     }
 
     pub(crate) fn store_direct_chapter(
@@ -518,6 +557,12 @@ impl AnalysisCache {
 
     pub(crate) fn retain_direct(&mut self, keep: impl Fn(&str, &str) -> bool) {
         self.prep.retain_direct(keep);
+    }
+
+    /// Record the direct lane's per-chapter hit/miss counts for this call.
+    #[cfg(any(test, feature = "test-probes"))]
+    pub(crate) fn note_direct(&mut self, hits: usize, misses: usize) {
+        self.prep.note_direct(hits, misses);
     }
 
     pub(crate) fn walk_lanes_ready(&mut self, slug: &str, hash: u128, plan: &WalkPlan) -> bool {
@@ -596,6 +641,7 @@ impl PrepSection {
             fingerprint: None,
             books: FxHashMap::default(),
             direct: FxHashMap::default(),
+            direct_chapters: 0,
             #[cfg(any(test, feature = "test-probes"))]
             direct_hits: 0,
             #[cfg(any(test, feature = "test-probes"))]
@@ -632,11 +678,18 @@ impl PrepSection {
         self.fingerprint = None;
         self.books.clear();
         self.direct.clear();
+        self.direct_chapters = 0;
     }
 
     fn remove_book(&mut self, slug: &str) -> bool {
         let walk = self.books.remove(slug).is_some();
-        let direct = self.direct.remove(slug).is_some();
+        let direct = match self.direct.remove(slug) {
+            Some(chapters) => {
+                self.direct_chapters -= chapters.len();
+                true
+            }
+            None => false,
+        };
         walk || direct
     }
 
@@ -648,36 +701,36 @@ impl PrepSection {
         }
     }
 
-    /// Whether `(slug, chapter)`'s cached direct-lane product was derived from
-    /// this exact chapter content. Records the per-chapter hit/miss probe: the
-    /// direct lane's work unit is a chapter, so these count chapters, not books.
-    /// Reuse is decided by opaque token, never by position — inserting a chapter
-    /// earlier in the book does not invalidate its siblings.
-    fn direct_chapter_valid(&mut self, slug: &str, chapter: &str, hash: u128) -> bool {
-        let valid = self
-            .direct
-            .get(slug)
-            .and_then(|book| book.get(chapter))
-            .is_some_and(|c| c.hash == hash);
-        #[cfg(any(test, feature = "test-probes"))]
-        if valid {
-            self.direct_hits += 1;
-        } else {
-            self.direct_misses += 1;
-        }
-        valid
+    /// One book's cached direct-lane chapters, hoisted out of the per-chapter
+    /// planning loop. Reuse is decided by opaque token, never by position —
+    /// inserting a chapter earlier in the book does not invalidate its siblings.
+    pub(crate) fn direct_book(&self, slug: &str) -> Option<&FxHashMap<Box<str>, DirectChapter>> {
+        self.direct.get(slug)
+    }
+
+    /// Total chapters cached in the direct lane.
+    pub(crate) fn direct_chapter_count(&self) -> usize {
+        self.direct_chapters
+    }
+
+    /// Record the planning pass's per-chapter hit/miss counts. The direct lane's
+    /// work unit is a chapter, so these count chapters, not books.
+    #[cfg(any(test, feature = "test-probes"))]
+    fn note_direct(&mut self, hits: usize, misses: usize) {
+        self.direct_hits += hits;
+        self.direct_misses += misses;
     }
 
     /// One chapter's cached direct-lane records. The caller must have established
     /// the chapter is present (it either matched
-    /// [`direct_chapter_valid`](Self::direct_chapter_valid) or was just stored);
+    /// planning pass proved it clean, or it was just stored);
     /// an absent chapter panics rather than silently returning no findings.
     pub(crate) fn direct_records(&self, slug: &str, chapter: &str) -> &[CachedPerVerseFinding] {
         &self
             .direct
             .get(slug)
             .and_then(|book| book.get(chapter))
-            .expect("direct-lane chapter proven present by direct_chapter_valid or a fresh store")
+            .expect("direct-lane chapter proven clean by the planning pass, or freshly stored")
             .records
     }
 
@@ -688,20 +741,28 @@ impl PrepSection {
         hash: u128,
         records: Vec<CachedPerVerseFinding>,
     ) {
-        self.direct
+        if self
+            .direct
             .entry(Box::from(slug))
             .or_default()
-            .insert(Box::from(chapter), DirectChapter { hash, records });
+            .insert(Box::from(chapter), DirectChapter { hash, records })
+            .is_none()
+        {
+            self.direct_chapters += 1;
+        }
     }
 
     /// Drop every cached direct-lane chapter `keep` rejects — the lane's own
     /// removal invalidation, so a chapter dropped by a whole-book replacement
     /// cannot linger and later be patched back into a partition.
     fn retain_direct(&mut self, keep: impl Fn(&str, &str) -> bool) {
+        let mut kept = 0;
         self.direct.retain(|slug, chapters| {
             chapters.retain(|chapter, _| keep(slug, chapter));
+            kept += chapters.len();
             !chapters.is_empty()
         });
+        self.direct_chapters = kept;
     }
 
     /// Whether the cached entry for `slug` is a clean, reusable walk under this

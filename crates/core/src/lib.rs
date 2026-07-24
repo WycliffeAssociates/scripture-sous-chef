@@ -428,6 +428,11 @@ fn transition(
     // a failed attempt can leave behind after warming prep (§3.3 retry safety).
     // Mapping is therefore never inferred from the partition stamp, nor patching
     // from prep's warm state.
+    //
+    // The pass visits every chapter of every book, so it must stay cheap per
+    // chapter: both lanes' per-book maps are hoisted out of the inner loop (one
+    // slug hash per book, not per chapter), and nothing whole-corpus is built
+    // unless the O(1) count check below proves something stale is retained.
     let target_texts = target.texts();
     let mut direct_work: Vec<DirectWork<'_>> = Vec::new();
     let mut direct_book_runs: Vec<std::ops::Range<usize>> = Vec::new();
@@ -436,28 +441,35 @@ fn transition(
     // already-known string lengths, so it costs one integer add per dirty verse
     // and reads no text.
     let mut direct_bytes = 0usize;
+    let mut chapter_count = 0usize;
+    #[cfg(any(test, feature = "test-probes"))]
+    let mut direct_hits = 0usize;
     for book in target.book_layout() {
         let run_start = direct_work.len();
+        let cached = cache.prep.direct_book(&book.slug);
+        let stamps = cache.findings.direct_stamps_for(&book.slug);
         for chapter in &book.chapters {
-            let map_needed =
-                !cache.direct_chapter_valid(&book.slug, &chapter.chapter, chapter.hash);
+            chapter_count += 1;
+            let map_needed = cached
+                .and_then(|book| book.get(&*chapter.chapter))
+                .is_none_or(|c| !c.matches(chapter.hash));
             if map_needed {
-                direct_bytes += target_texts[chapter.range.clone()]
-                    .iter()
-                    .map(String::len)
-                    .sum::<usize>();
+                let texts = &target_texts[chapter.range.clone()];
+                direct_bytes += texts.iter().map(String::len).sum::<usize>();
                 direct_work.push(DirectWork {
                     slug: &book.slug,
                     chapter: &chapter.chapter,
                     hash: chapter.hash,
-                    texts: &target_texts[chapter.range.clone()],
+                    texts,
                 });
+            } else {
+                #[cfg(any(test, feature = "test-probes"))]
+                {
+                    direct_hits += 1;
+                }
             }
-            if map_needed
-                || !cache
-                    .findings
-                    .direct_stamp_matches(&book.slug, &chapter.chapter, chapter.hash)
-            {
+            let committed = stamps.and_then(|book| book.get(&*chapter.chapter));
+            if map_needed || committed != Some(&chapter.hash) {
                 direct_dirty.push((
                     Box::from(&*book.slug),
                     Box::from(&*chapter.chapter),
@@ -469,6 +481,8 @@ fn transition(
             direct_book_runs.push(run_start..direct_work.len());
         }
     }
+    #[cfg(any(test, feature = "test-probes"))]
+    cache.note_direct(direct_hits, direct_work.len());
     // Map the dirty chapters (one Rayon grain — see `map_chapter_work`) and warm
     // each product into the lane. The records are chapter-local, so they are
     // stored exactly as produced; nothing is rebased here.
@@ -481,16 +495,25 @@ fn transition(
     for (w, records) in direct_work.iter().zip(fresh) {
         cache.store_direct_chapter(w.slug, w.chapter, w.hash, records);
     }
-    // The complete current chapter set: the direct lane's removal invalidation.
-    // A chapter a whole-book replacement dropped must leave both the cached
-    // product and the partition records, or a later analyze would patch a
-    // vanished chapter back in.
-    let direct_present: std::collections::BTreeSet<(&str, &str)> = target
-        .book_layout()
-        .iter()
-        .flat_map(|b| b.chapters.iter().map(|c| (&*b.slug, &*c.chapter)))
-        .collect();
-    cache.retain_direct(|slug, chapter| direct_present.contains(&(slug, chapter)));
+    // Removal invalidation, entered only when it can possibly apply. Every
+    // chapter the corpus presents is now resident in both lanes, so a resident
+    // count above the corpus's chapter count is exactly the signal that a chapter
+    // left the corpus (a whole-book replacement dropping one) and stale products,
+    // records and stamps must go. Equal counts prove there is nothing stale, in
+    // O(1) — a whole-corpus chapter set built every analyze would be a fixed cost
+    // on every edit, however small.
+    let direct_stale = cache.prep.direct_chapter_count() > chapter_count
+        || cache.findings.direct_stamp_count() > chapter_count;
+    let direct_present: Option<std::collections::BTreeSet<(&str, &str)>> = direct_stale.then(|| {
+        target
+            .book_layout()
+            .iter()
+            .flat_map(|b| b.chapters.iter().map(|c| (&*b.slug, &*c.chapter)))
+            .collect()
+    });
+    if let Some(present) = direct_present.as_ref() {
+        cache.retain_direct(|slug, chapter| present.contains(&(slug, chapter)));
+    }
 
     // The direct lane's findings never enter this working buffer: they live in
     // their rules' partitions, patched per chapter below. `out` collects only the
@@ -1055,7 +1078,13 @@ fn transition(
     // records of exactly the chapters it re-derived and leaves every other
     // chapter's alone.
     finding_lane.rebuild_batch(&out, target, &direct_ids);
-    finding_lane.patch_direct(&direct_ids, prep, &direct_present, &direct_dirty);
+    finding_lane.patch_direct(
+        &direct_ids,
+        prep,
+        &direct_dirty,
+        direct_dirty.len() == chapter_count,
+        direct_present.as_ref(),
+    );
 
     // Assemble the returned findings ONLY from the resident partitions, rebasing
     // each chapter-local record to a global `KeyIdx` against the current corpus.
