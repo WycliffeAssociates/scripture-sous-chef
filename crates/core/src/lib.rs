@@ -29,6 +29,7 @@ pub mod signals;
 pub mod span;
 pub mod stats;
 mod stream;
+mod substrate;
 mod tape;
 pub mod token;
 pub mod unicode;

@@ -29,6 +29,7 @@ use crate::signals::{
 };
 use crate::span::Span;
 use crate::stream::{BookOut, WalkPlan};
+use crate::substrate::SubstrateCache;
 use crate::token::Token;
 
 const CACHE_SCHEMA: u32 = 1;
@@ -83,27 +84,37 @@ pub(crate) struct PrepSection {
     retallied: usize,
 }
 
-/// Substrate-chapter-products section (Phase C). Typed per-substrate chapter
-/// observations and ordered-reduction results will live here. Nothing is built
-/// yet — this is the section boundary, not the machinery, so it holds no state
-/// and its invalidation entry point ([`SubstrateSection::clear`]) is a no-op.
-pub(crate) struct SubstrateSection;
+/// Substrate-chapter-products section (plan §5, Phase C). One explicit typed
+/// slot per migrated substrate — `SubstrateCache<S>` fields, never a
+/// `Box<dyn …>` or a string-keyed map, so the compiler proves the judge/
+/// substrate pairing. A new substrate is a compile error here until it has a
+/// slot. Each slot self-validates by the substrate's own stamps (schema +
+/// chapter content hash + extraction-only config), independent of the shared-
+/// prep fingerprint — which is exactly why a judging-knob change reuses every
+/// slot (maps/reduces nothing).
+pub(crate) struct SubstrateSection {
+    /// `punct.spacing-anomaly`'s substrate (plan §11 ledger row, Phase C).
+    pub(crate) spacing: SubstrateCache<punctuation::SpacingSubstrate>,
+}
 
 impl SubstrateSection {
     fn new() -> Self {
-        SubstrateSection
+        SubstrateSection {
+            spacing: SubstrateCache::new(),
+        }
     }
 
-    /// Invalidation entry point for the substrate lane. Nothing is cached here
-    /// yet, so there is nothing to drop.
-    fn clear(&mut self) {}
+    /// Invalidation entry point for the substrate lane: drop every substrate's
+    /// cached chapter products and corpus aggregate.
+    fn clear(&mut self) {
+        self.spacing.clear();
+    }
 
-    /// Deletion-invalidation entry point for the substrate lane. Nothing is
-    /// cached here yet, so this is a no-op — it exists so
-    /// `AnalysisCache::remove_book` already spans every section, and the lane
-    /// cannot gain per-book products without this hook staring back at its
-    /// implementer.
-    fn remove_book(&mut self, _slug: &str) {}
+    /// Deletion-invalidation entry point: drop a book across every substrate so a
+    /// removed book cannot keep contributing to any corpus aggregate.
+    fn remove_book(&mut self, slug: &str) {
+        self.spacing.remove_book(slug);
+    }
 }
 
 /// One chapter-local finding record in a rule's resident partition. It stores a

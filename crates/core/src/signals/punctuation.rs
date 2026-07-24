@@ -703,104 +703,41 @@ impl StatefulRule for PunctuationSpacingAnomaly {
             Some(rule::RuleSites::PunctuationSpacing(m)) => Some(m),
             _ => None,
         };
-        let score = |key_idx: KeyIdx,
-                     mark: char,
-                     left: Option<SideRead>,
-                     right: Option<SideRead>,
-                     left_span: Span,
-                     right_span: Span,
-                     found: &mut Vec<Finding>| {
-            let Some(v) = verdicts.get(&mark) else {
-                return;
-            };
-            // Score each judged side by ITS CLASS POOL ONLY (no fallback, user
-            // ruling): the side is anomalous only when its pool holds a
-            // Wilson-dominant convention AND this form's composed score clears
-            // the floor. A pool without a convention, or a side that abstained
-            // (a book edge with no neighbour), is silent. An occurrence
-            // violating both sides is ONE finding carrying both.
-            let hit = |sv: &SideVerdict, r: Option<SideRead>| -> Option<PoolHit> {
-                let r = r?;
-                let pv = &sv.pools[r.class.index()];
-                if !pv.holds {
-                    return None;
-                }
-                let s = pv.scores[r.form.index()];
-                (s >= floor).then(|| PoolHit {
-                    score: s,
-                    class: r.class,
-                    form: r.form,
-                    count: pv.counts[r.form.index()],
-                    n: pv.n,
-                })
-            };
-            let lh = hit(&v.left, left);
-            let rh = hit(&v.right, right);
-            if lh.is_none() && rh.is_none() {
-                return;
-            }
-            let side_arg = |h: &PoolHit| SpacingSide {
-                form: h.form.label().to_string(),
-                class: h.class.label().to_string(),
-                count: h.count.min(u64::from(u32::MAX)) as u32,
-                total: h.n.min(u64::from(u32::MAX)) as u32,
-            };
-            let left_arg = lh.as_ref().map(side_arg);
-            let right_arg = rh.as_ref().map(side_arg);
-            // Highlight the violated side's neighbourhood — the crossed
-            // whitespace / attached neighbour where the anomaly sits — union
-            // when both sides fire.
-            let range = match (lh.is_some(), rh.is_some()) {
-                (true, true) => Span {
-                    start: left_span.start,
-                    end: right_span.end,
-                },
-                (true, false) => left_span,
-                (false, true) => right_span,
-                (false, false) => unreachable!("guarded above"),
-            };
-            let sc = lh
-                .as_ref()
-                .map_or(0.0, |h| h.score)
-                .max(rh.as_ref().map_or(0.0, |h| h.score));
-            found.push(Finding {
-                key_idx,
-                code: PUNCTUATION_SPACING_ANOMALY,
-                severity: Severity::Info,
-                range,
-                score: Some(sc as f32),
-                args: Some(FindingArgs::SpacingConvention {
-                    mark,
-                    left: left_arg,
-                    right: right_arg,
-                }),
-            });
-        };
         let mut out: Vec<Finding> = rule::map_books(books, |group| {
             let mut found = Vec::new();
             if let Some(book_sites) = forwarded.and_then(|m| m.get(group.slug)) {
                 for s in book_sites.iter() {
-                    score(
-                        rebase(group.base, s.local_idx),
-                        s.mark,
-                        s.left,
-                        s.right,
-                        s.left_span,
-                        s.right_span,
-                        &mut found,
-                    );
+                    if let Some(v) = verdicts.get(&s.mark)
+                        && let Some(f) = spacing_finding_for_site(
+                            v,
+                            floor,
+                            rebase(group.base, s.local_idx),
+                            s.mark,
+                            s.left,
+                            s.right,
+                            s.left_span,
+                            s.right_span,
+                        )
+                    {
+                        found.push(f);
+                    }
                 }
             } else {
                 for_each_spacing_opportunity(group, |local, opp| {
-                    score(
-                        rebase(group.base, local),
-                        opp.mark,
-                        opp.left,
-                        opp.right,
-                        opp.left_span,
-                        opp.right_span,
-                        &mut found,
-                    );
+                    if let Some(v) = verdicts.get(&opp.mark)
+                        && let Some(f) = spacing_finding_for_site(
+                            v,
+                            floor,
+                            rebase(group.base, local),
+                            opp.mark,
+                            opp.left,
+                            opp.right,
+                            opp.left_span,
+                            opp.right_span,
+                        )
+                    {
+                        found.push(f);
+                    }
                 });
             }
             found
@@ -813,10 +750,88 @@ impl StatefulRule for PunctuationSpacingAnomaly {
     }
 }
 
+/// Score one spacing occurrence against its mark's corpus verdict, returning the
+/// finding it produces (or `None` when neither side is anomalous). Extracted so
+/// the aggregate-only `judge` and the [`SpacingSubstrate`] materializer share
+/// one scoring body and cannot drift.
+///
+/// Each judged side is scored by ITS CLASS POOL ONLY (no fallback, user ruling):
+/// a side is anomalous only when its pool holds a Wilson-dominant convention AND
+/// this form's composed score clears the floor. A pool without a convention, or
+/// a side that abstained (a book edge with no neighbour), is silent. An
+/// occurrence violating both sides is ONE finding carrying both.
+#[allow(clippy::too_many_arguments)]
+fn spacing_finding_for_site(
+    v: &MarkVerdict,
+    floor: f64,
+    key_idx: KeyIdx,
+    mark: char,
+    left: Option<SideRead>,
+    right: Option<SideRead>,
+    left_span: Span,
+    right_span: Span,
+) -> Option<Finding> {
+    let hit = |sv: &SideVerdict, r: Option<SideRead>| -> Option<PoolHit> {
+        let r = r?;
+        let pv = &sv.pools[r.class.index()];
+        if !pv.holds {
+            return None;
+        }
+        let s = pv.scores[r.form.index()];
+        (s >= floor).then(|| PoolHit {
+            score: s,
+            class: r.class,
+            form: r.form,
+            count: pv.counts[r.form.index()],
+            n: pv.n,
+        })
+    };
+    let lh = hit(&v.left, left);
+    let rh = hit(&v.right, right);
+    if lh.is_none() && rh.is_none() {
+        return None;
+    }
+    let side_arg = |h: &PoolHit| SpacingSide {
+        form: h.form.label().to_string(),
+        class: h.class.label().to_string(),
+        count: h.count.min(u64::from(u32::MAX)) as u32,
+        total: h.n.min(u64::from(u32::MAX)) as u32,
+    };
+    let left_arg = lh.as_ref().map(side_arg);
+    let right_arg = rh.as_ref().map(side_arg);
+    // Highlight the violated side's neighbourhood — the crossed whitespace /
+    // attached neighbour where the anomaly sits — union when both sides fire.
+    let range = match (lh.is_some(), rh.is_some()) {
+        (true, true) => Span {
+            start: left_span.start,
+            end: right_span.end,
+        },
+        (true, false) => left_span,
+        (false, true) => right_span,
+        (false, false) => unreachable!("guarded above"),
+    };
+    let sc = lh
+        .as_ref()
+        .map_or(0.0, |h| h.score)
+        .max(rh.as_ref().map_or(0.0, |h| h.score));
+    Some(Finding {
+        key_idx,
+        code: PUNCTUATION_SPACING_ANOMALY,
+        severity: Severity::Info,
+        range,
+        score: Some(sc as f32),
+        args: Some(FindingArgs::SpacingConvention {
+            mark,
+            left: left_arg,
+            right: right_arg,
+        }),
+    })
+}
+
 /// One `(side, class)` pool's two-factor verdict: whether the pool holds a
 /// Wilson-dominant convention (the no-fallback gate), its judged occupancy
 /// `N_pool`, its `[attached, spaced]` counts, and each form's composed score.
-struct PoolVerdict {
+pub(crate) struct PoolVerdict {
     /// Whether the pool's majority is Wilson-dominant at the floor — the
     /// "the other convention genuinely holds the field" gate. A pool that does
     /// not hold is **silent** (no top-level fallback; user ruling).
@@ -831,20 +846,20 @@ struct PoolVerdict {
 
 /// One side's three class pools (`Letter`, `Number`, `Punct`), indexed by
 /// [`PoolClass::index`].
-struct SideVerdict {
+pub(crate) struct SideVerdict {
     pools: [PoolVerdict; CLASS_COUNT],
 }
 
 /// A mark's corpus verdict: an independent [`SideVerdict`] per side (ADR 0054
 /// 2nd amendment — pooled class-conditioned model).
-struct MarkVerdict {
+pub(crate) struct MarkVerdict {
     left: SideVerdict,
     right: SideVerdict,
 }
 
 /// A flagged side's resolved verdict pieces, carried from the pool-gated hit
 /// test to the finding args.
-struct PoolHit {
+pub(crate) struct PoolHit {
     score: f64,
     class: PoolClass,
     form: SideForm,
@@ -965,7 +980,7 @@ struct SpacingOpportunity {
 /// (ADR 0044). Carries everything judge's verdict needs, so the site path
 /// never touches text. The native product may also live in the content-keyed
 /// analysis cache between calls.
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct SpacingSite {
     pub(crate) local_idx: LocalKeyIdx,
     pub(crate) mark: char,
@@ -1076,7 +1091,8 @@ fn spacing_opportunities(
 /// non-empty verse arrives. At most one raw opportunity per verse can be
 /// `right: Seam`, and it is necessarily the verse's last (anything after the
 /// mark is whitespace, so no later mark exists).
-struct RawOpportunity {
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct RawOpportunity {
     mark: char,
     left: Option<SideRead>,
     right: RightState,
@@ -1084,7 +1100,8 @@ struct RawOpportunity {
     right_span: Span,
 }
 
-enum RightState {
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) enum RightState {
     /// Resolved within the verse (or an in-verse abstain can't happen — a
     /// non-seam right always has a neighbour).
     Resolved(Option<SideRead>),
@@ -1237,7 +1254,8 @@ pub(crate) struct SpacingAcc {
 }
 
 /// A buffered right-seam opportunity: everything but the right read is known.
-struct PendingSeam {
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct PendingSeam {
     local_idx: LocalKeyIdx,
     mark: char,
     left: Option<SideRead>,
@@ -1354,6 +1372,373 @@ impl SpacingAcc {
             },
             self.sites,
         )
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Spacing observation substrate (plan §5.2, Phase C)
+// ─────────────────────────────────────────────────────────────────────
+
+/// The `punct.spacing-anomaly` observation substrate. Its map is the per-verse
+/// spacing extraction with the ONE cross-verse dependency deferred (a
+/// verse-leading mark's left neighbour reads the previous non-empty verse's
+/// trailing edge — carried in reduction, never baked into the observation), so a
+/// chapter's observation is identical wherever the chapter sits. Its boundary
+/// state is the code-proven seam carry: the previous trailing-edge class plus a
+/// pending trailing candidate mark whose right neighbour lives in the next
+/// verse/chapter (owner adjudication 2026-07-24; JHN 7:53 → 8:1 is the canonical
+/// case). Reduction threads that pair left to right exactly as the streaming
+/// walk threads `left_cross`/`pending` across verse seams — a chapter boundary
+/// is not a discourse reset (repo `CLAUDE.md`).
+pub(crate) struct SpacingSubstrate;
+
+/// One verse's input-independent spacing observation: its extracted
+/// opportunities (with the left-seam dependency deferred — a verse-leading
+/// mark's `left` is `None` here and resolved against the entering carry in
+/// reduction) and its edge classes (the seam neighbours a mark reaches across).
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct SpacingVerseObs {
+    opps: Vec<RawOpportunity>,
+    first_edge: Option<PoolClass>,
+    last_edge: Option<PoolClass>,
+}
+
+/// One chapter's spacing observation: its opaque token (the carry owner tag) and
+/// its verses' observations in presented order.
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct SpacingChapterObs {
+    token: Box<str>,
+    verses: Vec<SpacingVerseObs>,
+}
+
+/// The spacing boundary state carried across chapters (plan §5.2): the previous
+/// non-empty verse's trailing-edge class (a verse-leading mark's left seam read)
+/// and a pending trailing candidate mark whose right neighbour awaits the next
+/// non-empty verse — tagged with the opaque token of the chapter that owns it,
+/// so a resolution folds into the right chapter even across an all-empty one.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub(crate) struct SpacingBoundary {
+    left_cross: Option<PoolClass>,
+    pending: Option<(Box<str>, PendingSeam)>,
+}
+
+/// One chapter's reduced spacing result: the per-mark cell contributions it
+/// resolved (its own marks, plus any cross-seam mark it owns once its far
+/// neighbour resolved) and its keyed sites, chapter-local, in scan order.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub(crate) struct SpacingReduced {
+    token: Box<str>,
+    cells: BTreeMap<char, [u64; SIDE_CELLS]>,
+    sites: Vec<SpacingSite>,
+}
+
+/// A book's folded spacing contribution: its per-mark cells (the corpus
+/// aggregate's addends) and its keyed sites grouped by owning chapter token, in
+/// book order — the materializer rebases each site via its chapter's current
+/// base.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub(crate) struct SpacingBookContribution {
+    cells: BTreeMap<char, [u64; SIDE_CELLS]>,
+    chapters: Vec<(Box<str>, Vec<SpacingSite>)>,
+}
+
+/// The spacing corpus aggregate: per-mark cells summed over books — the sole
+/// input to the per-mark verdict.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub(crate) struct SpacingCorpusStats {
+    totals: BTreeMap<char, [u64; SIDE_CELLS]>,
+}
+
+/// Reconstruct a mark's left read from its observation: `None` in the
+/// observation means the mark was verse-leading (its left seam was deferred),
+/// so it reads the entering `left_cross`; a `Some` was resolved within the verse
+/// and is independent of the carry.
+#[allow(dead_code)] // wired into the transition in Phase C step 2
+fn resolve_left(raw_left: Option<SideRead>, left_cross: Option<PoolClass>) -> Option<SideRead> {
+    match raw_left {
+        Some(sr) => Some(sr),
+        None => left_cross.map(|class| SideRead {
+            class,
+            form: SideForm::Spaced,
+        }),
+    }
+}
+
+/// Add one occurrence's per-side cells + site into a reduced chapter (the shared
+/// body behind both a within-verse record and a resolved pending).
+#[allow(dead_code)] // wired into the transition in Phase C step 2
+fn record_into(
+    dest: &mut SpacingReduced,
+    local_idx: LocalKeyIdx,
+    mark: char,
+    left: Option<SideRead>,
+    right: Option<SideRead>,
+    left_span: Span,
+    right_span: Span,
+) {
+    let cell = dest.cells.entry(mark).or_insert([0u64; SIDE_CELLS]);
+    if let Some(r) = left {
+        cell[cell_index(Side::Left, r.class, r.form)] += 1;
+    }
+    if let Some(r) = right {
+        cell[cell_index(Side::Right, r.class, r.form)] += 1;
+    }
+    dest.sites.push(SpacingSite {
+        local_idx,
+        mark,
+        left,
+        right,
+        left_span,
+        right_span,
+    });
+}
+
+impl crate::substrate::ObservationSubstrate for SpacingSubstrate {
+    const ID: crate::substrate::SubstrateId = crate::substrate::SubstrateId::Spacing;
+    // Bump on any observation/reduction schema change.
+    const SCHEMA_STAMP: u64 = 1;
+
+    type Key = char;
+    type BoundaryState = SpacingBoundary;
+    type ChapterObservation = SpacingChapterObs;
+    type ReducedChapter = SpacingReduced;
+    type BookContribution = SpacingBookContribution;
+    type CorpusStats = SpacingCorpusStats;
+    // Spacing has NO extraction knobs — every config field is a judging knob, so
+    // the extractor config is `()` and its fingerprint is a constant.
+    type ExtractorConfig = ();
+    type JudgeConfig = PunctuationSpacingConfig;
+    type EntryOutcome = MarkVerdict;
+
+    fn extractor_fp(_extractor: &()) -> u64 {
+        0
+    }
+
+    fn map_chapter(chapter: &crate::substrate::ChapterView<'_>, _extractor: &()) -> SpacingChapterObs {
+        let mut verses = Vec::with_capacity(chapter.texts.len());
+        for text in chapter.texts {
+            let mut g = Vec::new();
+            grapheme::segment(text, &mut g);
+            let (first_edge, last_edge) = verse_edge_classes(text, &g);
+            // Predecessor-free: pass `left_cross = None`, so a verse-leading
+            // mark's left reads `None` (deferred to reduction). Every other side
+            // is resolved within the verse and independent of any carry.
+            let opps = walk_opportunities(text, &g, None);
+            verses.push(SpacingVerseObs {
+                opps,
+                first_edge,
+                last_edge,
+            });
+        }
+        SpacingChapterObs {
+            token: Box::from(chapter.chapter),
+            verses,
+        }
+    }
+
+    fn pending_owner(state: &SpacingBoundary) -> Option<&str> {
+        state.pending.as_ref().map(|(tok, _)| &**tok)
+    }
+
+    fn reduce_chapter(
+        observation: &SpacingChapterObs,
+        entering: &SpacingBoundary,
+        carry_out: &mut SpacingReduced,
+    ) -> (SpacingReduced, SpacingBoundary) {
+        let mut this = SpacingReduced {
+            token: observation.token.clone(),
+            cells: BTreeMap::new(),
+            sites: Vec::new(),
+        };
+        let mut left_cross = entering.left_cross;
+        // The pending buffer: `foreign` marks the entering pending (owned by an
+        // earlier chapter → resolve into `carry_out`); a pending buffered from
+        // this chapter's own verse is local (→ `this`). Its site order matches
+        // the streaming walk: a resolved pending records just before the
+        // resolving verse's own marks.
+        let mut pending: Option<(bool, PendingSeam)> =
+            entering.pending.as_ref().map(|(_, ps)| (true, ps.clone()));
+
+        for (vi, v) in observation.verses.iter().enumerate() {
+            let li = LocalKeyIdx::from_usize(vi);
+            // A non-empty verse resolves the buffered pending (foreign → the
+            // owner via `carry_out`, local → `this`), before its own marks.
+            if v.first_edge.is_some()
+                && let Some((foreign, seam)) = pending.take()
+            {
+                let right = v.first_edge.map(|class| SideRead {
+                    class,
+                    form: SideForm::Spaced,
+                });
+                let dest = if foreign { &mut *carry_out } else { &mut this };
+                record_into(
+                    dest,
+                    seam.local_idx,
+                    seam.mark,
+                    seam.left,
+                    right,
+                    seam.left_span,
+                    seam.right_span,
+                );
+            }
+            for raw in &v.opps {
+                let left = resolve_left(raw.left, left_cross);
+                match &raw.right {
+                    RightState::Resolved(right) => {
+                        record_into(
+                            &mut this,
+                            li,
+                            raw.mark,
+                            left,
+                            *right,
+                            raw.left_span,
+                            raw.right_span,
+                        );
+                    }
+                    RightState::Seam => {
+                        // Buffer this chapter's own trailing seam mark; its right
+                        // awaits the next non-empty verse (this chapter or the
+                        // next). At most one per verse (its verse-last mark).
+                        pending = Some((
+                            false,
+                            PendingSeam {
+                                local_idx: li,
+                                mark: raw.mark,
+                                left,
+                                left_span: raw.left_span,
+                                right_span: raw.right_span,
+                            },
+                        ));
+                    }
+                }
+            }
+            if v.last_edge.is_some() {
+                left_cross = v.last_edge;
+            }
+        }
+
+        let leaving = SpacingBoundary {
+            left_cross,
+            pending: pending.map(|(_, seam)| (observation.token.clone(), seam)),
+        };
+        (this, leaving)
+    }
+
+    fn finish_book(leaving: &SpacingBoundary, carry_out: &mut SpacingReduced) {
+        // Book edge: no neighbour across the final seam — the pending's right
+        // side abstains (its right read is `None`), folded into its owner.
+        if let Some((_, seam)) = &leaving.pending {
+            record_into(
+                carry_out,
+                seam.local_idx,
+                seam.mark,
+                seam.left,
+                None,
+                seam.left_span,
+                seam.right_span,
+            );
+        }
+    }
+
+    fn fold_book(reduced: &[SpacingReduced]) -> SpacingBookContribution {
+        let mut cells: BTreeMap<char, [u64; SIDE_CELLS]> = BTreeMap::new();
+        let mut chapters = Vec::with_capacity(reduced.len());
+        for r in reduced {
+            for (&mark, counts) in &r.cells {
+                let e = cells.entry(mark).or_insert([0u64; SIDE_CELLS]);
+                for (x, y) in e.iter_mut().zip(counts) {
+                    *x += y;
+                }
+            }
+            chapters.push((r.token.clone(), r.sites.clone()));
+        }
+        SpacingBookContribution { cells, chapters }
+    }
+
+    fn replace_book_in_corpus_stats(
+        stats: &mut SpacingCorpusStats,
+        _slug: &str,
+        old: Option<&SpacingBookContribution>,
+        new: Option<&SpacingBookContribution>,
+    ) -> Vec<char> {
+        let mut changed: std::collections::BTreeSet<char> = std::collections::BTreeSet::new();
+        if let Some(old) = old {
+            for (&mark, counts) in &old.cells {
+                let e = stats.totals.entry(mark).or_insert([0u64; SIDE_CELLS]);
+                for (x, y) in e.iter_mut().zip(counts) {
+                    *x -= y;
+                }
+                changed.insert(mark);
+                if e.iter().all(|&c| c == 0) {
+                    stats.totals.remove(&mark);
+                }
+            }
+        }
+        if let Some(new) = new {
+            for (&mark, counts) in &new.cells {
+                let e = stats.totals.entry(mark).or_insert([0u64; SIDE_CELLS]);
+                for (x, y) in e.iter_mut().zip(counts) {
+                    *x += y;
+                }
+                changed.insert(mark);
+            }
+        }
+        changed.into_iter().collect()
+    }
+
+    fn judge(
+        cfg: &PunctuationSpacingConfig,
+        key: &char,
+        stats: &SpacingCorpusStats,
+    ) -> MarkVerdict {
+        let z = clamp_z(cfg.confidence_z);
+        let minority_k = clamp_count(cfg.minority_recurrence_k);
+        let minority_rate = clamp_count(cfg.minority_rate_per_10k);
+        let floor = f64::from(clamp_unit(cfg.emit_score_min));
+        let empty = [0u64; SIDE_CELLS];
+        let counts = stats.totals.get(key).unwrap_or(&empty);
+        mark_verdict(counts, z, minority_k, minority_rate, floor)
+    }
+}
+
+impl SpacingBookContribution {
+    /// Materialize this book's spacing findings from its keyed sites and the
+    /// judged per-mark verdicts, rebasing each chapter-local site to a global
+    /// `KeyIdx` via its chapter's current base. Sites are visited in book order
+    /// (the streaming-walk order), so the identical-span tie the final stable
+    /// sort preserves is reproduced. Shares [`spacing_finding_for_site`] with the
+    /// aggregate-only path, so the two cannot drift.
+    #[allow(dead_code)] // wired into the transition in Phase C step 2
+    pub(crate) fn materialize(
+        &self,
+        slug: &str,
+        corpus: &Corpus,
+        verdicts: &BTreeMap<char, MarkVerdict>,
+        floor: f64,
+        out: &mut Vec<Finding>,
+    ) {
+        for (token, sites) in &self.chapters {
+            let Some(range) = corpus.chapter_range(slug, token) else {
+                continue;
+            };
+            let base = KeyIdx::from_usize(range.start);
+            for s in sites {
+                if let Some(v) = verdicts.get(&s.mark)
+                    && let Some(f) = spacing_finding_for_site(
+                        v,
+                        floor,
+                        rebase(base, s.local_idx),
+                        s.mark,
+                        s.left,
+                        s.right,
+                        s.left_span,
+                        s.right_span,
+                    )
+                {
+                    out.push(f);
+                }
+            }
+        }
     }
 }
 
@@ -2577,5 +2962,190 @@ mod tests {
             let s = f.score.unwrap();
             assert!(s.is_finite() && (0.0..=1.0).contains(&s), "score {s}");
         }
+    }
+
+    // ── Spacing observation substrate byte-identity (Phase C step 1) ─────────
+
+    /// Build a multi-book / multi-chapter corpus from explicit `(key, text)`
+    /// rows — the substrate byte-identity fixtures need real chapter tokens.
+    fn multi(rows: &[(&str, &str)]) -> Corpus {
+        let keys = rows.iter().map(|(k, _)| k.to_string()).collect();
+        let texts = rows.iter().map(|(_, t)| t.to_string()).collect();
+        Corpus::try_from_parts(keys, texts).unwrap()
+    }
+
+    /// Drive the full spacing SUBSTRATE pipeline (map every chapter → whole-book
+    /// left-to-right carry reduce → fold → judge → materialize) over a corpus and
+    /// return `(findings, corpus per-mark cells)` — the Phase C step 2 flow,
+    /// exercised here to pin byte-identity against the shipped rule BEFORE it is
+    /// wired into the transition (step 2 deletes the old path).
+    fn substrate_run(
+        corpus: &Corpus,
+        cfg: &PunctuationSpacingConfig,
+    ) -> (Vec<Finding>, BTreeMap<char, [u64; SIDE_CELLS]>) {
+        use crate::substrate::{
+            ChapterView, ObservationInputStamp, ObservationSubstrate, SubstrateCache,
+        };
+        let mut cache: SubstrateCache<SpacingSubstrate> = SubstrateCache::new();
+        let texts = corpus.texts();
+        for book in corpus.book_layout() {
+            let chapters: Vec<(Box<str>, ObservationInputStamp)> = book
+                .chapters
+                .iter()
+                .map(|c| {
+                    (
+                        c.chapter.clone(),
+                        ObservationInputStamp {
+                            schema_stamp: SpacingSubstrate::SCHEMA_STAMP,
+                            chapter_hash: c.hash,
+                            extractor_fp: SpacingSubstrate::extractor_fp(&()),
+                        },
+                    )
+                })
+                .collect();
+            let views: Vec<ChapterView> = book
+                .chapters
+                .iter()
+                .map(|c| ChapterView {
+                    slug: &book.slug,
+                    chapter: &c.chapter,
+                    texts: &texts[c.range.clone()],
+                })
+                .collect();
+            cache.update_book(&book.slug, &chapters, |i| {
+                SpacingSubstrate::map_chapter(&views[i], &())
+            });
+        }
+        let floor = f64::from(clamp_unit(cfg.emit_score_min));
+        let stats = cache.corpus_stats();
+        let cells = stats.totals.clone();
+        let verdicts: BTreeMap<char, MarkVerdict> = cells
+            .keys()
+            .copied()
+            .map(|m| (m, SpacingSubstrate::judge(cfg, &m, stats)))
+            .collect();
+        let mut out = Vec::new();
+        for book in corpus.book_layout() {
+            if let Some(contrib) = cache.book_contribution(&book.slug) {
+                contrib.materialize(&book.slug, corpus, &verdicts, floor, &mut out);
+            }
+        }
+        out.sort_by_key(|f| (f.key_idx, f.range.start, f.range.end));
+        (out, cells)
+    }
+
+    /// The shipped rule's corpus per-mark cells — the whole-book reference the
+    /// substrate must reproduce (cells are config-independent).
+    fn rule_cells(corpus: &Corpus) -> BTreeMap<char, [u64; SIDE_CELLS]> {
+        let books = by_book(corpus);
+        let RuleStats::PunctuationSpacing(stats) = sp_default().reduce(&books, None, None).0 else {
+            panic!("spacing reduce yields spacing stats");
+        };
+        let mut totals: BTreeMap<char, [u64; SIDE_CELLS]> = BTreeMap::new();
+        for b in stats.per_book.values() {
+            for (&m, c) in &b.per_mark {
+                let e = totals.entry(m).or_insert([0u64; SIDE_CELLS]);
+                for (x, y) in e.iter_mut().zip(c) {
+                    *x += y;
+                }
+            }
+        }
+        totals
+    }
+
+    /// The spacing substrate — chapter map + whole-book carry reduce + fold +
+    /// judge + materialize — reproduces the shipped whole-book rule exactly, in
+    /// both cells and findings, across a battery covering cross-chapter carry,
+    /// empty/whitespace verses between chapters, verse-leading/trailing marks at
+    /// chapter edges, duplicate keys, and out-of-order verse tokens. This is the
+    /// byte-identity that Phase C step 2 wires into the transition.
+    #[test]
+    fn spacing_substrate_matches_the_shipped_rule() {
+        let corpora: Vec<Corpus> = vec![
+            // Single book, two chapters; a comma convention spanning the seam.
+            multi(&[
+                ("GEN 1:1", "In the beginning, God created the heavens."),
+                ("GEN 1:2", "The earth was formless, and void, and dark."),
+                ("GEN 1:3", "God said, Let there be light, and light"),
+                ("GEN 2:1", ", thus the heavens and the earth were finished."),
+                ("GEN 2:2", "On the seventh day God ended,his work."),
+                ("GEN 2:3", "And he rested, and blessed, and hallowed it."),
+            ]),
+            // Pericope-adulterae shape: a trailing mark at a chapter's last verse
+            // resolving against the next chapter's leading edge (JHN 7:53 → 8:1),
+            // with an empty verse between (pending skips empty verses).
+            multi(&[
+                ("JHN 7:52", "They answered, Art thou also of Galilee?"),
+                ("JHN 7:53", "And every man went unto his own house."),
+                ("JHN 8:1", "Jesus went unto the mount of Olives,"),
+                ("JHN 8:2", ""),
+                ("JHN 8:3", "and the scribes brought a woman, taken."),
+            ]),
+            // Two books, out-of-order and duplicate verse tokens, cross-chapter
+            // trailing/leading marks, whitespace-only verse between chapters.
+            multi(&[
+                ("MRK 1:1", "The beginning of the gospel,of Jesus Christ."),
+                ("MRK 1:3", "The voice of one crying, Prepare ye,"),
+                ("MRK 1:2", "As it is written, Behold, I send,"),
+                ("MRK 1:2", "my messenger,before thy face, who shall"),
+                ("MRK 2:1", "   "),
+                ("MRK 2:2", ",And again he entered, into Capernaum."),
+                ("LUK 1:1", "Forasmuch as many, have taken in hand,"),
+                ("LUK 1:2", "even as they delivered,them unto us,"),
+            ]),
+            // Every verse a lone mark or empty — pathological seam threading.
+            multi(&[
+                ("PSA 1:1", "."),
+                ("PSA 1:2", ""),
+                ("PSA 1:3", ","),
+                ("PSA 2:1", "!"),
+                ("PSA 2:2", "   "),
+                ("PSA 2:3", "-"),
+            ]),
+        ];
+        for corpus in &corpora {
+            // Cells are config-independent and directly witness the carry.
+            let (_, sub_cells) = substrate_run(corpus, &PunctuationSpacingConfig::default());
+            assert_eq!(
+                sub_cells,
+                rule_cells(corpus),
+                "substrate corpus cells diverge from the whole-book rule"
+            );
+            // Findings must be byte-identical at the shipped floor and at no floor
+            // (which surfaces every holding pool's minority — the widest set).
+            for cfg in [PunctuationSpacingConfig::default(), sp_no_floor()] {
+                assert_eq!(
+                    substrate_run(corpus, &cfg).0,
+                    sp_run(corpus, &sp_rule(cfg)),
+                    "substrate findings diverge from the shipped rule"
+                );
+            }
+        }
+    }
+
+    /// The carry is load-bearing: a verse-leading mark at a chapter's start reads
+    /// its left neighbour ACROSS the chapter seam (the previous chapter's last
+    /// verse), so its Left cell is populated — a `()`-boundary migration that
+    /// dropped the carry would leave it empty and diff the fleet. Witnessed
+    /// directly on the cells, independent of any emission threshold.
+    #[test]
+    fn spacing_substrate_carry_populates_the_cross_chapter_left_cell() {
+        // GEN 1:2 ends with a letter ("light"); GEN 2:1 begins with a comma whose
+        // left neighbour is that letter, read across the chapter seam as spaced.
+        let corpus = multi(&[
+            ("GEN 1:1", "the beginning"),
+            ("GEN 1:2", "and there was light"),
+            ("GEN 2:1", ", thus it was"),
+        ]);
+        let (_, cells) = substrate_run(&corpus, &PunctuationSpacingConfig::default());
+        let comma = cells.get(&',').expect("the comma has cells");
+        let left_letter_spaced = comma[cell_index(Side::Left, PoolClass::Letter, SideForm::Spaced)];
+        assert_eq!(
+            left_letter_spaced, 1,
+            "the chapter-leading comma's left must read the previous chapter's \
+             trailing letter across the seam (the code-proven carry)"
+        );
+        // And it still matches the whole-book rule exactly.
+        assert_eq!(cells, rule_cells(&corpus));
     }
 }
