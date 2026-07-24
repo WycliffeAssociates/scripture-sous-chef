@@ -97,6 +97,13 @@ impl SubstrateSection {
     /// Invalidation entry point for the substrate lane. Nothing is cached here
     /// yet, so there is nothing to drop.
     fn clear(&mut self) {}
+
+    /// Deletion-invalidation entry point for the substrate lane. Nothing is
+    /// cached here yet, so this is a no-op — it exists so
+    /// `AnalysisCache::remove_book` already spans every section, and the lane
+    /// cannot gain per-book products without this hook staring back at its
+    /// implementer.
+    fn remove_book(&mut self, _slug: &str) {}
 }
 
 /// One chapter-local finding record in a rule's resident partition. It stores a
@@ -217,15 +224,29 @@ impl FindingSection {
     /// Assemble the complete global finding set from the resident partitions,
     /// rebasing each chapter-local record to a global `KeyIdx` against the
     /// current corpus. The caller applies the final stable sort. A chapter that
-    /// no longer exists is dropped (its base is `None`) rather than mis-rebased.
+    /// no longer exists is dropped (its range is `None`) rather than
+    /// mis-rebased. A record whose local index falls outside its chapter's
+    /// *current* range fails loud: chapter existence is not containment proof —
+    /// after a chapter shrinks, an unchecked `base + local` would rebase
+    /// globally in-bounds but silently address the next chapter or book. A
+    /// stale record is an engine bug, never valid output.
     pub(crate) fn assemble(&self, corpus: &crate::corpus::Corpus) -> Vec<Finding> {
         let mut out = Vec::new();
         for (&code, partition) in &self.partitions {
             for chapter in &partition.chapters {
-                let Some(base) = corpus.chapter_base(&chapter.slug, &chapter.chapter) else {
+                let Some(range) = corpus.chapter_range(&chapter.slug, &chapter.chapter) else {
                     continue;
                 };
+                let base = KeyIdx::from_usize(range.start);
                 for rec in &chapter.records {
+                    assert!(
+                        usize::from(rec.local.get()) < range.len(),
+                        "stale partition record: {code:?} {}/{} local {} outside current chapter len {}",
+                        chapter.slug,
+                        chapter.chapter,
+                        rec.local.get(),
+                        range.len(),
+                    );
                     out.push(Finding {
                         key_idx: rebase(base, rec.local),
                         code,
@@ -289,6 +310,7 @@ impl AnalysisCache {
     /// (a separate crate) owns the corpus↔cache lifecycle.
     pub fn remove_book(&mut self, slug: &str) -> bool {
         self.findings.remove_book(slug);
+        self.substrates.remove_book(slug);
         self.prep.remove_book(slug)
     }
 

@@ -846,12 +846,18 @@ impl Corpus {
     /// record's `(slug, chapter, local)` resolves to `chapter_base + local`.
     /// `None` when the chapter is absent (e.g. after a book/chapter removal), so
     /// a stale cross-call record is dropped rather than mis-rebased.
-    pub(crate) fn chapter_base(&self, slug: &str, chapter: &str) -> Option<KeyIdx> {
+    /// The current global verse range of `(slug, chapter)`, or `None` when that
+    /// chapter no longer exists. Existence alone is NOT containment proof for a
+    /// retained chapter-local record: a shrunk chapter leaves a stale local
+    /// index globally in-bounds but pointing into the next chapter/book, so the
+    /// caller must also check the local index against this range's length
+    /// before rebasing.
+    pub(crate) fn chapter_range(&self, slug: &str, chapter: &str) -> Option<Range<usize>> {
         self.layout
             .iter()
             .find(|b| *b.slug == *slug)
             .and_then(|b| b.chapters.iter().find(|c| *c.chapter == *chapter))
-            .map(|c| KeyIdx::from_usize(c.range.start))
+            .map(|c| c.range.clone())
     }
 
     /// Remove `slug`'s contiguous block entirely. Returns `false` when the slug

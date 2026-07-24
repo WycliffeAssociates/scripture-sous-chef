@@ -1967,3 +1967,27 @@ byte movement and perf-neutral. Next stop-safe step is **Phase C step 1** (the
 compile-time `ObservationSubstrate` generic, typed cache slots,
 active-substrate computation, schema stamps, registry completeness tests) — a
 new packet. Do not begin it here.
+
+---
+
+## Entry 15 — Owner review of WP4: accepted; two hardenings landed pre-Phase-C
+
+- **Date:** 2026-07-24
+- **WP4 verdict (owner):** Phase B architecture accepted (atomic boundaries
+  real; assembly reads only partitions; order contract reproduced; no global
+  KeyIdx in cross-call products; pack retry cold-equal; serde strip scoped;
+  perf-neutral). Two hardenings required before Phase C retains partitions:
+- **Checked chapter-local rebase (required):** `chapter_range` replaces
+  `chapter_base` — existence is not containment. Assembly now checks each
+  record's local index against the chapter's *current* length and fails loud
+  ("stale partition record: …") instead of silently rebasing into the next
+  chapter after a shrink. Shrink witness test:
+  `shrunk_chapter_trips_the_rebase_containment_check` (should_panic) —
+  analyze, shrink the chapter via `replace_chapter` without re-analyzing,
+  assemble, trip. Unreachable on the Phase-B full-rebuild path by design;
+  armed for Phase C's retained/patched records.
+- **SubstrateSection::remove_book (advisory):** no-op hook added and delegated
+  from `AnalysisCache::remove_book`, so deletion invalidation spans every
+  section by construction before Phase C populates the lane.
+- **Gate:** all four WA dumps byte-identical to the wp4 base; 426 core tests
+  (witness included), all workspace suites green.

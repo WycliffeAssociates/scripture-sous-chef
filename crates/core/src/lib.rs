@@ -2255,6 +2255,50 @@ mod tests {
         }
     }
 
+    /// Shrink witness: a retained partition record whose chapter has since
+    /// shrunk must fail loud at assembly, never rebase silently into the next
+    /// chapter. Chapter *existence* is not containment proof — after the
+    /// shrink, `base + local` for the stale record is globally in-bounds but
+    /// addresses the following chapter's verses. The full-rebuild batch path
+    /// re-partitions on every analyze and can never hit this; the check is
+    /// the tripwire armed for retained/partially-patched partitions.
+    #[test]
+    #[should_panic(expected = "stale partition record")]
+    fn shrunk_chapter_trips_the_rebase_containment_check() {
+        let cfg = Config::all();
+        let mut corpus = Corpus::try_from_parts(
+            vec![
+                "GEN 1:1".to_string(),
+                "GEN 1:2".to_string(),
+                "GEN 1:3".to_string(),
+            ],
+            vec![
+                "clean text".to_string(),
+                "clean text".to_string(),
+                "a\tb".to_string(),
+            ],
+        )
+        .unwrap();
+        let mut cache = AnalysisCache::new();
+        let (findings, _) = analyze_resident(&corpus, None, &cfg, None, &mut cache).unwrap();
+        assert!(
+            findings.iter().any(|f| corpus.key(f.key_idx) == "GEN 1:3"),
+            "witness finding sits at local index 2 of the chapter"
+        );
+
+        // Shrink the chapter under the retained partitions, without the
+        // analyze that would rebuild them.
+        corpus
+            .replace_chapter(crate::corpus::ChapterBlock {
+                slug: "GEN".into(),
+                chapter: "1".into(),
+                keys: vec!["GEN 1:1".to_string()],
+                texts: vec!["clean text".to_string()],
+            })
+            .unwrap();
+        let _ = cache.partition_findings(&corpus);
+    }
+
     /// An empty corpus (and a finding-free analyze) is valid: it yields empty
     /// findings and an empty partition lane, and assembly agrees.
     #[test]
