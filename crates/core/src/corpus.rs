@@ -312,46 +312,72 @@ pub(crate) struct BookLayout {
     pub(crate) hash: u128,
 }
 
+/// Build one book's layout from its contiguous run starting at global index
+/// `start` in an already-validated `(keys, texts)` pair. Chapter and book
+/// ranges are **global** (absolute indices into `keys`/`texts`), so the result
+/// drops straight into [`Corpus::layout`]; `book.range.end` is the next book's
+/// start. The run is assumed validated (every mutation validates grammar and
+/// contiguity before building), so the parses cannot fail.
+fn build_book_at(keys: &[String], texts: &[String], start: usize) -> BookLayout {
+    let n = keys.len();
+    let slug = parse_key(&keys[start]).expect("Corpus validated keys").book;
+    let mut chapters: Vec<ChapterLayout> = Vec::new();
+    let mut i = start;
+    loop {
+        let chap_start = i;
+        let chapter = parse_key(&keys[i]).expect("Corpus validated keys").chapter;
+        i += 1;
+        while i < n {
+            let p = parse_key(&keys[i]).expect("Corpus validated keys");
+            if p.book != slug || p.chapter != chapter {
+                break;
+            }
+            i += 1;
+        }
+        chapters.push(ChapterLayout {
+            chapter: Box::from(chapter),
+            range: chap_start..i,
+            hash: content_hash(&keys[chap_start..i], &texts[chap_start..i]),
+        });
+        if i >= n || parse_key(&keys[i]).expect("Corpus validated keys").book != slug {
+            break;
+        }
+    }
+    BookLayout {
+        slug: Box::from(slug),
+        hash: fold_book_hash(&chapters),
+        range: start..i,
+        chapters,
+    }
+}
+
+/// Integer-rebase a book's global ranges (its own and every chapter's) by a
+/// signed `delta`. Used to maintain the layout locally after a length-changing
+/// splice: the books *after* the changed one only shift position — their text,
+/// chapter boundaries, and hashes are unchanged, so they are rebased rather
+/// than re-parsed/re-hashed (Phase A step 8).
+fn shift_book(book: &mut BookLayout, delta: isize) {
+    let shift = |r: &Range<usize>| {
+        ((r.start as isize + delta) as usize)..((r.end as isize + delta) as usize)
+    };
+    book.range = shift(&book.range);
+    for c in &mut book.chapters {
+        c.range = shift(&c.range);
+    }
+}
+
 /// Build the derived book/chapter layout for an already-validated
-/// `(keys, texts)` pair (`try_from_parts` and every mutation validate the
-/// contiguity/grammar invariants first, so the parses here cannot fail). One
-/// pass in presented order; each book/chapter run is hashed once from its
-/// verse slices.
+/// `(keys, texts)` pair (`try_from_parts` and `replace_corpus` use this;
+/// length-narrowing mutations maintain the layout locally instead). One pass in
+/// presented order; each book's run is laid out by [`build_book_at`].
 fn build_layout(keys: &[String], texts: &[String]) -> Vec<BookLayout> {
     let n = keys.len();
     let mut books: Vec<BookLayout> = Vec::new();
     let mut i = 0usize;
     while i < n {
-        let book_start = i;
-        let slug = parse_key(&keys[i]).expect("Corpus validated keys").book;
-        let mut chapters: Vec<ChapterLayout> = Vec::new();
-        loop {
-            let chap_start = i;
-            let chapter = parse_key(&keys[i]).expect("Corpus validated keys").chapter;
-            i += 1;
-            while i < n {
-                let p = parse_key(&keys[i]).expect("Corpus validated keys");
-                if p.book != slug || p.chapter != chapter {
-                    break;
-                }
-                i += 1;
-            }
-            chapters.push(ChapterLayout {
-                chapter: Box::from(chapter),
-                range: chap_start..i,
-                hash: content_hash(&keys[chap_start..i], &texts[chap_start..i]),
-            });
-            if i >= n || parse_key(&keys[i]).expect("Corpus validated keys").book != slug {
-                break;
-            }
-        }
-        let range = book_start..i;
-        books.push(BookLayout {
-            slug: Box::from(slug),
-            hash: fold_book_hash(&chapters),
-            range,
-            chapters,
-        });
+        let book = build_book_at(keys, texts, i);
+        i = book.range.end;
+        books.push(book);
     }
     books
 }
@@ -583,20 +609,14 @@ impl Corpus {
             .map(|(i, b)| (b.as_ref().expect("slot just filled").slug.clone(), i))
             .collect();
 
-        // (start, end, Some(slot) if this existing book is being replaced).
-        let mut layout: Vec<(usize, usize, Option<usize>)> = Vec::new();
-        let mut start = 0usize;
-        while start < self.keys.len() {
-            let slug = parse_key(&self.keys[start]).expect("Corpus validated keys").book;
-            let mut end = start + 1;
-            while end < self.keys.len()
-                && parse_key(&self.keys[end]).expect("Corpus validated keys").book == slug
-            {
-                end += 1;
-            }
-            layout.push((start, end, slug_to_slot.get(slug).copied()));
-            start = end;
-        }
+        // (start, end, Some(slot) if this existing book is being replaced),
+        // read from the owned layout — no whole-corpus key re-parse (Phase A
+        // step 8); the layout already knows every book's boundaries and slug.
+        let layout: Vec<(usize, usize, Option<usize>)> = self
+            .layout
+            .iter()
+            .map(|b| (b.range.start, b.range.end, slug_to_slot.get(&*b.slug).copied()))
+            .collect();
 
         // 3. The resulting corpus must stay addressable (Corpus's own invariant,
         //    checked before any mutation so the batch is still all-or-nothing).
@@ -617,13 +637,22 @@ impl Corpus {
         KeyIdx::try_from_usize(final_len)?;
 
         // 4. Splice: existing books (replaced or carried) in order, then the
-        //    new-slug blocks appended in batch order. Everything moves.
+        //    new-slug blocks appended in batch order. Everything moves. The
+        //    owned layout is maintained LOCALLY (Phase A step 8): a replaced or
+        //    appended book is rebuilt from its spliced text; a carried book
+        //    reuses its existing `BookLayout` — unchanged chapter boundaries and
+        //    hashes — integer-rebased to its new global position. No
+        //    whole-corpus re-parse; `build_layout` stays for construction.
+        //    `layout` walks existing books in order, matching `old_layout`.
+        let old_layout = std::mem::take(&mut self.layout);
         let mut old_keys = std::mem::take(&mut self.keys).into_iter();
         let mut old_texts = std::mem::take(&mut self.texts).into_iter();
         let mut new_keys: Vec<String> = Vec::with_capacity(final_len);
         let mut new_texts: Vec<String> = Vec::with_capacity(final_len);
-        for (s, e, replaced) in layout {
+        let mut new_layout: Vec<BookLayout> = Vec::with_capacity(old_layout.len() + slots.len());
+        for ((s, e, replaced), old_bl) in layout.into_iter().zip(old_layout) {
             let n = e - s;
+            let cursor = new_keys.len();
             if let Some(i) = replaced {
                 for _ in 0..n {
                     old_keys.next();
@@ -632,24 +661,30 @@ impl Corpus {
                 let block = slots[i].take().expect("replacement slot present");
                 new_keys.extend(block.keys);
                 new_texts.extend(block.texts);
+                new_layout.push(build_book_at(&new_keys, &new_texts, cursor));
             } else {
                 for _ in 0..n {
                     new_keys.push(old_keys.next().expect("layout bounded by corpus length"));
                     new_texts.push(old_texts.next().expect("layout bounded by corpus length"));
                 }
+                // Carried unchanged book: reuse its layout, rebased to `cursor`.
+                let mut bl = old_bl;
+                let delta = cursor as isize - bl.range.start as isize;
+                shift_book(&mut bl, delta);
+                new_layout.push(bl);
             }
         }
         for slot in &mut slots {
             if let Some(block) = slot.take() {
+                let cursor = new_keys.len();
                 new_keys.extend(block.keys);
                 new_texts.extend(block.texts);
+                new_layout.push(build_book_at(&new_keys, &new_texts, cursor));
             }
         }
         self.keys = new_keys;
         self.texts = new_texts;
-        // Rebuild the owned layout atomically with the spliced vectors, so the
-        // derived hashes can never lag the text they describe.
-        self.layout = build_layout(&self.keys, &self.texts);
+        self.layout = new_layout;
         Ok(MutationEffect::Changed)
     }
 
@@ -758,10 +793,24 @@ impl Corpus {
         }
 
         // 5. Splice the run in place (preserves surrounding chapters, order,
-        //    and duplicates) and rebuild the owned layout atomically.
+        //    and duplicates) and maintain the owned layout LOCALLY (Phase A
+        //    step 8): rebuild only the affected book's chapter layouts/hashes
+        //    and integer-rebase the later books' global ranges. The book's own
+        //    start is unchanged (in-place chapter splice), so only its length
+        //    (and thus everything after it) shifts by `delta`.
+        let delta = block.keys.len() as isize - range.len() as isize;
+        let book_idx = self
+            .layout
+            .iter()
+            .position(|b| *b.slug == *block.slug)
+            .expect("book located above");
+        let book_start = self.layout[book_idx].range.start;
         self.keys.splice(range.clone(), block.keys);
         self.texts.splice(range, block.texts);
-        self.layout = build_layout(&self.keys, &self.texts);
+        self.layout[book_idx] = build_book_at(&self.keys, &self.texts, book_start);
+        for b in &mut self.layout[book_idx + 1..] {
+            shift_book(b, delta);
+        }
         Ok(MutationEffect::Changed)
     }
 
@@ -780,8 +829,19 @@ impl Corpus {
             if book == slug {
                 self.keys.drain(start..end);
                 self.texts.drain(start..end);
-                // Rebuild the owned layout atomically with the drained vectors.
-                self.layout = build_layout(&self.keys, &self.texts);
+                // Maintain the owned layout LOCALLY (Phase A step 8): drop this
+                // book's layout and integer-rebase every later book back by the
+                // removed length — no whole-corpus re-parse.
+                let book_idx = self
+                    .layout
+                    .iter()
+                    .position(|b| *b.slug == *slug)
+                    .expect("book located in the same walk above");
+                self.layout.remove(book_idx);
+                let delta = -((end - start) as isize);
+                for b in &mut self.layout[book_idx..] {
+                    shift_book(b, delta);
+                }
                 return true;
             }
             start = end;
@@ -1178,6 +1238,77 @@ mod tests {
             keys: keys(ks),
             texts: keys(txt),
         }
+    }
+
+    /// Phase A step 8: every length-narrowing mutation maintains the owned
+    /// layout LOCALLY (rebuild the changed book, rebase later books) instead of
+    /// re-parsing the whole corpus. This pins the equivalence the perf win rests
+    /// on: after every mutation shape in §12.1's menu, the locally-maintained
+    /// layout must be byte-for-byte what a from-scratch `build_layout` produces.
+    #[test]
+    fn local_layout_maintenance_equals_from_scratch_every_mutation_shape() {
+        let assert_layout = |c: &Corpus, shape: &str| {
+            assert_eq!(
+                c.layout,
+                build_layout(c.keys(), c.texts()),
+                "spliced layout diverged from a from-scratch build after {shape}"
+            );
+        };
+
+        // A multi-book, multi-chapter corpus with a duplicate and out-of-order
+        // verse tokens (all legal), so the rebased suffix is non-trivial.
+        let mut c = Corpus::try_from_parts(
+            keys(&[
+                "GEN 1:1", "GEN 1:3", "GEN 1:2", "GEN 2:1", "EXO 1:1", "EXO 1:1", "LEV 1:1",
+                "LEV 1:2",
+            ]),
+            texts(8),
+        )
+        .unwrap();
+        assert_layout(&c, "construction");
+
+        // replace-in-place, changing the book's length (2 GEN ch1 verses -> 3),
+        // so every later book must rebase.
+        c.replace_books(vec![block(
+            "GEN",
+            &["GEN 1:1", "GEN 1:2", "GEN 1:3", "GEN 2:1"],
+            &["a", "b", "c", "d"],
+        )])
+        .unwrap();
+        assert_layout(&c, "replace-in-place (length change)");
+
+        // append-new book at the end.
+        c.replace_books(vec![block("NUM", &["NUM 1:1", "NUM 1:2"], &["n1", "n2"])])
+            .unwrap();
+        assert_layout(&c, "append-new");
+
+        // chapter replace, changing the run length (EXO ch1: 1 verse -> 2).
+        c.replace_chapter(chapter_block("EXO", "1", &["EXO 1:1", "EXO 1:2"], &["x", "y"]))
+            .unwrap();
+        assert_layout(&c, "chapter replace (length change)");
+
+        // no-op chapter replace (byte-identical) leaves the layout untouched.
+        c.replace_chapter(chapter_block("EXO", "1", &["EXO 1:1", "EXO 1:2"], &["x", "y"]))
+            .unwrap();
+        assert_layout(&c, "chapter replace no-op");
+
+        // no-op book replace (byte-identical) leaves the layout untouched.
+        c.replace_books(vec![block("NUM", &["NUM 1:1", "NUM 1:2"], &["n1", "n2"])])
+            .unwrap();
+        assert_layout(&c, "book replace no-op");
+
+        // remove a middle book, rebasing the books after it back.
+        c.remove_book("EXO");
+        assert_layout(&c, "remove middle book");
+
+        // remove the first book, rebasing everything back to 0.
+        c.remove_book("GEN");
+        assert_layout(&c, "remove first book");
+
+        // remove the last remaining books down to empty.
+        c.remove_book("LEV");
+        c.remove_book("NUM");
+        assert_layout(&c, "remove to empty");
     }
 
     /// Replacing an existing chapter run splices it in place (surrounding
