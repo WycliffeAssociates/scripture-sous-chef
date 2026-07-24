@@ -2304,3 +2304,30 @@ begin it here.
   Phase D follow-up, no action now.
 - 3JN/default at 0.648 ms independently reconfirms the Phase A floor gate on
   a third build of the tree.
+
+---
+
+## Entry 18 — Owner review of WP5a: two correctness fixes ordered; step-3 wording adjudicated
+
+- **Date:** 2026-07-24
+- **Verdict (owner):** architecture accepted; performance/oracle evidence
+  convincing; NOT green until two fixes land.
+- **P1 (correctness blocker):** `reduce_chapter` drops the pending seam's
+  owner token when importing carry, then retags unresolved carry with the
+  CURRENT chapter — so a pending mark crossing an all-empty chapter gets
+  re-owned by the empty chapter and later rebased against the wrong chapter's
+  range. The fleet cannot expose this (no all-empty intervening chapters);
+  synthetic regression tests must. Fix: preserve the original owner token
+  until the pending seam resolves or is replaced; pin resolve-later-across-
+  empty-chapter and book-edge cases.
+- **P2 (future-load-bearing):** `replace_book_in_corpus_stats` returns every
+  old/new mark, not exact delta keys — harmless while Phase C judges every
+  mark, wrong for Phase D's incremental judging. Fix: compare each candidate
+  key's final aggregate before vs after; return only changed keys. Test:
+  moved sites with equal aggregates ⇒ empty stats delta, dirty site delta.
+- **Adjudication — §8 Phase C step 3 softened** (plan amended this commit):
+  the Phase C contract is substrate-lane map/reduce isolation; complete
+  judge/partition/prep isolation lands per rule as each migrates (D/E). No
+  premature invalidation planner.
+- **P3:** trailing whitespace in survey/signatures.rs; `git diff --check`
+  must pass.

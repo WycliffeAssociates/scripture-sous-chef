@@ -993,9 +993,14 @@ partition.
    Knob-only changes still map/reduce zero chapters. Its chapter observation,
    reduced result, book/corpus stats, keyed sites, delta keys, and
    `EntryOutcome` must reproduce the existing rule exactly.
-3. Make knob-only spacing config changes map/reduce zero chapters and rejudge
-   only spacing. Toggle isolation tests prove every unrelated substrate and
-   partition remains byte-identical/no-work.
+3. Make knob-only spacing config changes map/reduce zero chapters for the
+   spacing substrate, with probe-asserted substrate map/reduce isolation
+   (owner adjudication 2026-07-24: **substrate-lane isolation is the Phase C
+   contract**). Complete judge/partition isolation — unrelated rules not
+   rewalking/rejudging, `FindingSection` not rebuilding, the shared-prep
+   fingerprint not clearing on a config change — lands per rule as each
+   migrates in Phases D/E; do not build a premature invalidation planner to
+   satisfy the stronger wording while most rules remain on the batch lane.
 4. Convert the direct per-verse lane to chapter-local cached products and patch
    only the replaced chapter's direct-rule partitions.
 5. Add one order-preserving native chapter-map seam beside `map_books`. Route
