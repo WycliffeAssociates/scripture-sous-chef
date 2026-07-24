@@ -19,7 +19,9 @@ import {
   HEADER,
   SEVERITIES,
   RULE_TO_CODE,
+  CODE_TO_RULE,
   CODE_TO_DIGEST,
+  CODE_TO_INPUT_DEPENDENCY,
 } from "./findings.generated.js";
 
 const { RECORD_LEN, HEADER_LEN, OFFSETS, FLAGS } = HEADER;
@@ -77,6 +79,48 @@ function hexToBytes(hex) {
 const VECTORS = JSON.parse(
   readFileSync(fileURLToPath(new URL("./__vectors__.json", import.meta.url)), "utf8"),
 );
+
+// ---- generated-schema conformance pin (§A.2 / §A.1.1) --------------------
+
+// The normative discriminant table, pinned independently on the consumer side.
+// The generated tables (rendered from ssc-wire) must equal these exact pairs.
+const PIN = [
+  [0, "lex.excess-h-whitespace", "none", "target-only"],
+  [1, "hyg.tab-in-body", "none", "target-only"],
+  [2, "hyg.control-chars", "none", "target-only"],
+  [3, "hyg.zero-width-misuse", "none", "target-only"],
+  [4, "hyg.empty-verse", "none", "target-only"],
+  [5, "hyg.invalid-codepoint", "none", "target-only"],
+  [6, "hyg.replacement-run", "none", "target-only"],
+  [7, "prop.length-ratio", "count-pair", "target-and-reference-silent-when-absent"],
+  [8, "struct.source-marker-leftover", "none", "target-only"],
+  [9, "struct.merge-conflict-marker", "none", "target-only"],
+  [10, "punct.adjacency-anomaly", "count-pair", "target-only"],
+  [11, "lex.duplicate-word", "none", "target-only"],
+  [12, "lex.punct-only-token", "count-pair", "target-only"],
+  [13, "uni.combining-mark-without-base", "none", "target-only"],
+  [14, "uni.redundant-zero-width-space", "none", "target-only"],
+  [15, "uni.mixed-script-in-token", "count-pair", "target-only"],
+  [16, "lex.repeated-character-run", "u32", "target-only"],
+  [17, "uni.mixed-numeral-systems", "none", "target-only"],
+  [18, "punct.bracket-balance", "count-pair", "target-only"],
+  [19, "punct.spacing-anomaly", "count-pair", "target-only"],
+  [20, "case.sentence-initial-lowercase", "count-pair", "target-only"],
+  [21, "case.inconsistent-word-casing", "count-pair", "target-only"],
+  [22, "uni.rare-glyph", "u32", "target-only"],
+  [23, "case.mixed-case-word", "count-pair", "target-only"],
+  [24, "uni.mixed-normalization", "u32", "target-only"],
+];
+
+test("generated schema tables equal the pinned §A.2/§A.1.1 mapping", () => {
+  assert.equal(Object.keys(CODE_TO_RULE).length, PIN.length, "one-to-one coverage");
+  for (const [code, rule, digest, dep] of PIN) {
+    assert.equal(CODE_TO_RULE[code], rule, `CODE_TO_RULE[${code}]`);
+    assert.equal(RULE_TO_CODE[rule], code, `RULE_TO_CODE[${rule}]`);
+    assert.equal(CODE_TO_DIGEST[code], digest, `CODE_TO_DIGEST[${code}]`);
+    assert.equal(CODE_TO_INPUT_DEPENDENCY[code], dep, `CODE_TO_INPUT_DEPENDENCY[${code}]`);
+  }
+});
 
 // ---- cross-language parity (Rust encoder -> JS decoder) -------------------
 

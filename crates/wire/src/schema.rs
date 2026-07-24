@@ -289,4 +289,66 @@ mod tests {
     fn schema_json_is_deterministic() {
         assert_eq!(schema_json(), schema_json());
     }
+
+    /// The normative §A.2 discriminant table + §A.1.1 digest shapes + §5.2
+    /// dependency spellings, pinned exactly. A new rule extends this table with
+    /// an unused number; an existing `(code, string)` pair never changes or is
+    /// reused (that would be a versioned layout change). This is the pin the
+    /// plan's §A.6.3 requires; it also proves one-to-one `RuleId::ALL` coverage.
+    #[test]
+    fn discriminant_pins_are_exact() {
+        // (wire code, RuleId code string, digest shape, input dependency)
+        let pins: &[(u8, &str, &str, &str)] = &[
+            (0, "lex.excess-h-whitespace", "none", "target-only"),
+            (1, "hyg.tab-in-body", "none", "target-only"),
+            (2, "hyg.control-chars", "none", "target-only"),
+            (3, "hyg.zero-width-misuse", "none", "target-only"),
+            (4, "hyg.empty-verse", "none", "target-only"),
+            (5, "hyg.invalid-codepoint", "none", "target-only"),
+            (6, "hyg.replacement-run", "none", "target-only"),
+            (
+                7,
+                "prop.length-ratio",
+                "count-pair",
+                "target-and-reference-silent-when-absent",
+            ),
+            (8, "struct.source-marker-leftover", "none", "target-only"),
+            (9, "struct.merge-conflict-marker", "none", "target-only"),
+            (10, "punct.adjacency-anomaly", "count-pair", "target-only"),
+            (11, "lex.duplicate-word", "none", "target-only"),
+            (12, "lex.punct-only-token", "count-pair", "target-only"),
+            (13, "uni.combining-mark-without-base", "none", "target-only"),
+            (14, "uni.redundant-zero-width-space", "none", "target-only"),
+            (15, "uni.mixed-script-in-token", "count-pair", "target-only"),
+            (16, "lex.repeated-character-run", "u32", "target-only"),
+            (17, "uni.mixed-numeral-systems", "none", "target-only"),
+            (18, "punct.bracket-balance", "count-pair", "target-only"),
+            (19, "punct.spacing-anomaly", "count-pair", "target-only"),
+            (20, "case.sentence-initial-lowercase", "count-pair", "target-only"),
+            (21, "case.inconsistent-word-casing", "count-pair", "target-only"),
+            (22, "uni.rare-glyph", "u32", "target-only"),
+            (23, "case.mixed-case-word", "count-pair", "target-only"),
+            (24, "uni.mixed-normalization", "u32", "target-only"),
+        ];
+
+        // The pin covers RuleId::ALL exactly once, no more, no fewer.
+        assert_eq!(pins.len(), RuleId::ALL.len(), "pin count == RuleId::ALL");
+
+        for &(code, rule_str, digest, dep) in pins {
+            let rule = RuleId::ALL
+                .iter()
+                .copied()
+                .find(|r| r.code() == rule_str)
+                .unwrap_or_else(|| panic!("no RuleId with code string {rule_str}"));
+            assert_eq!(wire_code(rule), code, "code for {rule_str}");
+            assert_eq!(digest_shape(rule).as_str(), digest, "digest for {rule_str}");
+            assert_eq!(
+                input_dependency_str(rule.input_dependency()),
+                dep,
+                "dependency for {rule_str}"
+            );
+            // reverse lookup lands on the same rule
+            assert_eq!(rule_for_code(code), Some(rule), "reverse for code {code}");
+        }
+    }
 }

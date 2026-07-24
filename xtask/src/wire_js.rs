@@ -175,6 +175,33 @@ fn render_generated_dts(s: &WireSchema) -> String {
     out
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn js_dir() -> std::path::PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../crates/wasm/js")
+    }
+
+    /// Generated-JS conformance (§A.5.6 / §A.6.3): the committed generated files
+    /// equal what the current `ssc-wire` schema renders. Together with the
+    /// `ssc-wire` discriminant pins, this proves the consumer receives exactly
+    /// the schema's mapping — regenerate with `cargo xtask wire-js` if stale.
+    #[test]
+    fn committed_generated_files_match_render() {
+        let s = schema();
+        for (name, content) in [
+            ("findings.generated.js", render_generated_js(&s)),
+            ("findings.generated.d.ts", render_generated_dts(&s)),
+            ("findings.d.ts", render_public_dts()),
+        ] {
+            let committed = fs::read_to_string(js_dir().join(name))
+                .unwrap_or_else(|e| panic!("read {name}: {e}"));
+            assert_eq!(committed, content, "{name} is stale — run `cargo xtask wire-js`");
+        }
+    }
+}
+
 fn render_public_dts() -> String {
     let mut out = String::new();
     out.push_str(BANNER);
