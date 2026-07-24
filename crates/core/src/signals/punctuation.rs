@@ -1404,26 +1404,39 @@ impl crate::substrate::ObservationSubstrate for SpacingSubstrate {
             sites: Vec::new(),
         };
         let mut left_cross = entering.left_cross;
-        // The pending buffer: `foreign` marks the entering pending (owned by an
-        // earlier chapter → resolve into `carry_out`); a pending buffered from
-        // this chapter's own verse is local (→ `this`). Its site order matches
-        // the streaming walk: a resolved pending records just before the
-        // resolving verse's own marks.
-        let mut pending: Option<(bool, PendingSeam)> =
-            entering.pending.as_ref().map(|(_, ps)| (true, ps.clone()));
+        // The pending buffer carries its OWNER: `Some(token)` is a seam mark
+        // owned by an earlier chapter (resolve into `carry_out`, whose reduced
+        // result the driver selected by that same token), `None` is one buffered
+        // from this chapter's own verse (resolve into `this`). The owner travels
+        // with the seam until it resolves or a new local seam replaces it — a
+        // pending mark may cross an all-empty chapter, and its `local_idx` is an
+        // index into its OWNER's chapter, so re-owning it to whatever chapter
+        // happens to be passing would rebase the site against the wrong range.
+        // Site order matches the streaming walk: a resolved pending records just
+        // before the resolving verse's own marks.
+        let mut pending: Option<(Option<Box<str>>, PendingSeam)> = entering
+            .pending
+            .as_ref()
+            .map(|(owner, ps)| (Some(owner.clone()), ps.clone()));
 
         for (vi, v) in observation.verses.iter().enumerate() {
             let li = LocalKeyIdx::from_usize(vi);
             // A non-empty verse resolves the buffered pending (foreign → the
             // owner via `carry_out`, local → `this`), before its own marks.
             if v.first_edge.is_some()
-                && let Some((foreign, seam)) = pending.take()
+                && let Some((owner, seam)) = pending.take()
             {
                 let right = v.first_edge.map(|class| SideRead {
                     class,
                     form: SideForm::Spaced,
                 });
-                let dest = if foreign { &mut *carry_out } else { &mut this };
+                // An owned (foreign) seam materializes into its OWNER's reduced
+                // result — never the resolving chapter's.
+                let dest = if owner.is_some() {
+                    &mut *carry_out
+                } else {
+                    &mut this
+                };
                 record_into(
                     dest,
                     seam.local_idx,
@@ -1449,11 +1462,16 @@ impl crate::substrate::ObservationSubstrate for SpacingSubstrate {
                         );
                     }
                     RightState::Seam => {
-                        // Buffer this chapter's own trailing seam mark; its right
-                        // awaits the next non-empty verse (this chapter or the
-                        // next). At most one per verse (its verse-last mark).
+                        // Buffer this chapter's own trailing seam mark (owner
+                        // `None` = local); its right awaits the next non-empty
+                        // verse (this chapter or a later one). At most one per
+                        // verse (its verse-last mark). This REPLACES any carried
+                        // seam — the same single-slot semantics as the streaming
+                        // walk. (Unreachable in practice: a verse holding a mark
+                        // has non-whitespace content, so it resolves the carried
+                        // seam above before buffering its own.)
                         pending = Some((
-                            false,
+                            None,
                             PendingSeam {
                                 local_idx: li,
                                 mark: raw.mark,
@@ -1472,7 +1490,10 @@ impl crate::substrate::ObservationSubstrate for SpacingSubstrate {
 
         let leaving = SpacingBoundary {
             left_cross,
-            pending: pending.map(|(_, seam)| (observation.token.clone(), seam)),
+            // Keep the carried seam's ORIGINAL owner; only a seam buffered here
+            // (owner `None`) takes this chapter's token.
+            pending: pending
+                .map(|(owner, seam)| (owner.unwrap_or_else(|| observation.token.clone()), seam)),
         };
         (this, leaving)
     }
@@ -2943,6 +2964,27 @@ mod tests {
         Corpus::try_from_parts(keys, texts).unwrap()
     }
 
+    /// Corpus per-mark cells from the INDEPENDENT whole-book batch walk
+    /// (`for_each_spacing_opportunity`, which pre-computes every verse's edges
+    /// and resolves seams by scanning book neighbours). The substrate's
+    /// chapter-map + carry-reduce must reproduce this exactly — it is the
+    /// reference the retired rule was built on.
+    fn batch_corpus_cells(corpus: &Corpus) -> BTreeMap<char, [u64; SIDE_CELLS]> {
+        let mut totals: BTreeMap<char, [u64; SIDE_CELLS]> = BTreeMap::new();
+        for group in by_book(corpus) {
+            for_each_spacing_opportunity(&group, |_local, opp| {
+                let cell = totals.entry(opp.mark).or_insert([0u64; SIDE_CELLS]);
+                if let Some(r) = opp.left {
+                    cell[cell_index(Side::Left, r.class, r.form)] += 1;
+                }
+                if let Some(r) = opp.right {
+                    cell[cell_index(Side::Right, r.class, r.form)] += 1;
+                }
+            });
+        }
+        totals
+    }
+
     /// Resident-substrate findings for a corpus on a persisted cache — the
     /// incremental path the transition drives (map only changed chapters,
     /// whole-book carry-reduce only a changed book), in final stable order.
@@ -3143,6 +3185,102 @@ mod tests {
         drive_spacing(true, &mut cache, &corpus, &cfg, &mut on);
         assert_eq!(cache.mapped, 2, "re-enabling rebuilds the substrate");
         assert_eq!(on, spacing_findings(&corpus, &cfg), "rebuild equals cold");
+    }
+
+    /// A pending seam mark that crosses an ALL-EMPTY chapter keeps its original
+    /// owner: it resolves against the next chapter that has content, but its
+    /// site materializes into the chapter it actually lives in and rebases
+    /// against THAT chapter's range. Regression for the owner-retag bug, where
+    /// the carried seam was re-owned by whatever chapter it passed through — the
+    /// site then rebased against the wrong chapter (silently wrong verse when
+    /// in range, containment panic when not). The fleet has no all-empty
+    /// intervening chapters, so only a synthetic case can catch it.
+    #[test]
+    fn spacing_pending_seam_keeps_its_owner_across_an_empty_chapter() {
+        // GEN 1:2 ends with a trailing period whose right neighbour is the next
+        // non-empty verse — GEN 3:1, two chapters later (GEN 2 is all-empty).
+        // The finding must belong to GEN 1 verse 2 (`GEN 1:2`).
+        let corpus = multi(&[
+            ("GEN 1:1", "many words, and more words, and yet more,"),
+            ("GEN 1:2", "the sentence ends here ."),
+            ("GEN 2:1", ""),
+            ("GEN 2:2", "   "),
+            ("GEN 3:1", "Then the next chapter opens, with words,"),
+        ]);
+        let cfg = sp_no_floor();
+        let got = spacing_findings(&corpus, &cfg);
+        // Whatever the verdicts, every emitted finding must address a verse whose
+        // text actually contains its mark — the direct witness that no site was
+        // rebased into the wrong chapter.
+        for f in &got {
+            let text = corpus.text(f.key_idx);
+            let FindingArgs::SpacingConvention { mark, .. } =
+                f.args.as_ref().expect("spacing carries args")
+            else {
+                panic!("spacing emits SpacingConvention args");
+            };
+            assert!(
+                text.contains(*mark),
+                "finding at {} claims mark {mark:?} but that verse reads {text:?} \
+                 — the site rebased against the wrong chapter",
+                corpus.key(f.key_idx)
+            );
+            assert!(
+                f.range.end as usize <= text.len(),
+                "span {:?} out of bounds for {} ({:?})",
+                f.range,
+                corpus.key(f.key_idx),
+                text
+            );
+        }
+        // The period's own occurrence is owned by GEN 1:2 (not GEN 2:x / GEN 3:1).
+        if let Some(f) = got.iter().find(|f| {
+            matches!(
+                f.args.as_ref(),
+                Some(FindingArgs::SpacingConvention { mark: '.', .. })
+            )
+        }) {
+            assert_eq!(
+                corpus.key(f.key_idx),
+                "GEN 1:2",
+                "the trailing period belongs to the chapter it lives in"
+            );
+        }
+        // And the cells match the whole-book batch walk: the seam-crossing
+        // period's right side reads GEN 3:1's leading letter, exactly as the
+        // batch walk's `find_map` skips the empty verses.
+        assert_eq!(
+            spacing_corpus_cells(&corpus),
+            batch_corpus_cells(&corpus),
+            "substrate cells diverge from the batch walk across an empty chapter"
+        );
+    }
+
+    /// A pending seam at the book's LAST chapter never resolves — the book edge
+    /// has no neighbour across the seam, so that side abstains — matching the
+    /// batch walk's book-end semantics exactly, with the site owned by its own
+    /// chapter.
+    #[test]
+    fn spacing_pending_seam_at_book_edge_abstains_like_the_batch_walk() {
+        let corpus = multi(&[
+            ("GEN 1:1", "many words, and more words, and yet more,"),
+            ("GEN 2:1", "a trailing mark closes the book ."),
+            ("GEN 2:2", ""),
+        ]);
+        assert_eq!(
+            spacing_corpus_cells(&corpus),
+            batch_corpus_cells(&corpus),
+            "book-edge abstain must match the batch walk"
+        );
+        for f in &spacing_findings(&corpus, &sp_no_floor()) {
+            let text = corpus.text(f.key_idx);
+            let FindingArgs::SpacingConvention { mark, .. } =
+                f.args.as_ref().expect("spacing carries args")
+            else {
+                panic!("spacing emits SpacingConvention args")
+            };
+            assert!(text.contains(*mark), "site rebased into the wrong chapter");
+        }
     }
 
     /// The carry is load-bearing: a verse-leading mark at a chapter's start reads

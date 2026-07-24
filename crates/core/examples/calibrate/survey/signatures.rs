@@ -628,7 +628,7 @@ fn signature_regression(id: &str) {
         println!("  {id}: (no corpus file)");
         return;
     }
-    
+
     // Live rule at shipped defaults, floor 0 — every scored minority site, so we
     // can split by the shipped floor ourselves.
     let live_cfg = PunctuationSpacingConfig {
