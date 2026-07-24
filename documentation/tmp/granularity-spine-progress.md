@@ -1749,3 +1749,221 @@ clean.
    camelCase adjudication was scoped to method/API names; renaming Rust params
    to camelCase would be un-idiomatic and inconsistent with the existing
    `census` free function.
+
+---
+
+## Entry 14 — Work Packet 4: Phase B (`AnalysisCache` + resident finding partitions)
+
+- **Date:** 2026-07-24
+- **Branch:** `granularity-spine` (main tree). Base for this packet: `d5a0bb8`.
+- **Scope:** plan §8 Phase B **steps 1–4** (rename + sections; chapter-local
+  resident partitions; assemble/pack only from partitions; the two atomic
+  boundaries) + the owner-pre-approved leaf-serde-strip cleanup. Phase C is
+  NOT in this packet (no `ObservationSubstrate` trait, no rule migrations, no
+  chapter-parallel seam).
+- **Discipline:** per-commit **WA** oracle (four dumps: findings + transcript ×
+  default + all, against `oracle-blobs/wa.blob`) byte-identical + full
+  `cargo test --workspace` serial AND `--features parallel` +
+  `cargo check -p ssc-wasm --target wasm32-unknown-unknown` + all three node
+  suites + clippy. Full-fleet bookend remains Phase F.
+
+### WA oracle base pin (this packet's per-commit referee)
+
+Pinned at HEAD `d5a0bb8`, `/tmp/oracle/spine/wp4.base.wa.*.tsv`, scope=wa.
+Byte-identical to the standing WP1/2a/2b/2c/3a/3b contract:
+
+| file | sha256 |
+| --- | --- |
+| `wp4.base.wa.findings.default.tsv` | `38a0ceadcc792a6656905c7a0f9e2e4c2720c86f47f41f94c66e7a8ad1a9702c` |
+| `wp4.base.wa.findings.all.tsv` | `128fdd933dc71cda0a4a6d9d9971ceb5648a5703f8b22ee798d30b09d2c15660` |
+| `wp4.base.wa.inc.default.tsv` | `7b19caa79b284bfa16a56f300f5660591ffc58ffa183888451daf82778676dca` |
+| `wp4.base.wa.inc.all.tsv` | `c951a758823629c6b6d2e1d558e92c59c1873ed17856b328a60c7ebdc4cee74f` |
+
+**Every commit re-dumped all four and diffed byte-identical to this base.**
+The final HEAD (`b8befe1`) dumps equal the base shasums exactly. Workspace
+tests green at every commit serial and `--features parallel` (core
+421→425, galley 22, ssc-wire 25, ssc-wasm 14, xtask 1); wasm32 target check
+clean; node 19; clippy clean (the 3 pre-existing `ssc-core` warnings —
+casing.rs:459, token.rs:544, lib.rs:251 `BookProducts` size — untouched, out
+of scope; this packet added none).
+
+### Per-step commits
+
+| step | commit | what landed |
+| --- | --- | --- |
+| 1 | `3f09524` | Rename `PrepCache` → `AnalysisCache` with three sections (`PrepSection`, placeholder `SubstrateSection`, `FindingSection`), each with its own invalidation entry points; delegating methods keep the map phase unchanged; Galley field `prep` → `cache`. No behavior change, no compat alias. |
+| 2+3 | `a4f1ef8` | Chapter-local resident partitions populated + assembled ONLY from the lane. `Corpus::locate`/`chapter_base` for the decompose/rebase; `transition` field-splits the cache (shared prep + mutable finding lane), commits partitions after the judge seam, and returns findings assembled from the lane. |
+| 4 | `20febbc` | Prove the atomic finding boundaries at all four seams: core map/reduce/judge injection tests (previous partitions intact + current, retry == cold, assembled only from the lane), empty-corpus/zero-findings, removal-cannot-resurrect; wasm pack-retry strengthened to equal the cold result byte-for-byte. |
+| cleanup | `b8befe1` | Strip orphaned serde derives from the non-casing per-rule aggregates. |
+| final | (this entry) | progress log + ladder. |
+
+Steps 2 and 3 landed together (recorded): populating the finding lane without
+also switching assembly to read it leaves it written-but-never-read
+(dead-code), and the only honest first reader is the assembler.
+
+### Partition data model (§4/§6.4)
+
+- **Three cache sections** (`AnalysisCache`): `PrepSection` (today's
+  content-keyed per-book map products — per-verse findings + fused-walk sites);
+  `SubstrateSection` (empty Phase C placeholder — no substrate machinery
+  invented; constructed + `clear`ed so it is not dead); `FindingSection` (the
+  resident per-rule finding partitions). `clear()` invalidates all three;
+  `remove_book()` drops a book across the prep and finding lanes; the map phase
+  drives prep through delegating methods, then `transition` field-splits the
+  cache into a shared `&PrepSection` (held across judge — the compile-proof no
+  judge mutates a map product) and a mutable `&mut FindingSection` (disjoint
+  field, for the post-judge commit).
+- **Per-rule partition shape:** `FindingSection { partitions: BTreeMap<RuleId,
+  FindingPartition> }`; `FindingPartition { chapters: Vec<ChapterFindings> }`
+  in first-seen chapter order; `ChapterFindings { slug, chapter,
+  records: Vec<LocalFinding> }` in emission order.
+- **Chapter-local address form:** `LocalFinding { local: LocalKeyIdx, range:
+  Span, severity, score, args }` — the owning `ChapterFindings` carries the
+  `(slug, opaque chapter token)`. **No global `KeyIdx` is ever stored** in a
+  cross-call product (§16). `Corpus::locate(KeyIdx)` decomposes a global index
+  to `(slug, chapter, chapter-local index)` by binary search over the owned
+  contiguous layout; `Corpus::chapter_base(slug, chapter)` rebases back once,
+  at assembly (`chapter_base + local`). `chapter_base` returns `None` for an
+  absent chapter, so a stale record is dropped rather than mis-rebased.
+- **Ordinal mechanism:** the "ordinal" is positional — records are appended to
+  their `(rule, chapter)` group in emission order and iterated in that order at
+  assembly; the final `sort_by_key((key_idx, range.start, code))` is stable, so
+  it preserves that order among ties. No explicit numeric ordinal is stored;
+  emission-order position IS the ordinal (plan §6.4 "retain a local
+  scan-order/duplicate ordinal only where required").
+- **Lifecycle:** Phase B fully rebuilds every partition each analyze (batch
+  behavior, resident storage) — `FindingSection::rebuild` clears + repopulates
+  from the freshly-computed findings; C/D will patch per changed chapter.
+
+### Order reproduction — the three Entry-1 collision cases
+
+Byte-identity holds because a collision on `(key_idx, range.start, code)` is
+always one rule at one verse ⇒ one chapter ⇒ one `ChapterFindings` group, whose
+records keep emission order; cross-rule and cross-chapter ties are impossible
+(distinct `code` / disjoint `key_idx` ranges), so partition/chapter iteration
+order never affects output. Each Entry-1 case:
+
+- **`punct.adjacency-anomaly`** (43 rows): overlapping candidates sharing a
+  start (`..` before `..,`). The judge pre-sorts by `(key_idx, start, end)`, so
+  the two are pushed to `out` end-ascending; decompose preserves that order
+  within the (rule, chapter) group; the stable final sort preserves it.
+- **`punct.spacing-anomaly`** (27 rows): two marks at an identical span (mark
+  `:` before `-`). Same key_idx ⇒ same chapter group; the sequential
+  left-to-right `SpacingSite` scan order that produced them in `out` is the
+  in-group emission order, preserved through the round-trip.
+- **`lex.duplicate-word`** (1 row): a cross-verse then a same-verse hit at the
+  same verse start (LUK 13:34). Same key_idx ⇒ same chapter (LUK 13) group;
+  `check_book` scan order preserved.
+
+The oracle gate (WA fleet, both configs, findings + transcript) exercises all
+three and held byte-identical at every commit; the in-crate
+`returned_findings_come_only_from_the_partition_lane` test is the focused
+witness that assembly reads only the lane.
+
+### Fault matrix (§3.3, plan §16 — no partial layer exposed as current)
+
+A `#[cfg(test)] AnalysisCache::partition_findings(corpus)` accessor assembles
+the resident lane so a test can observe what the partitions currently describe.
+
+| seam | injected by | outcome |
+| --- | --- | --- |
+| map | `fault::Phase::Map` | Err before rebuild; previous partitions intact + current (assemble == A); retry (no mutation) rebuilds to cold(B) |
+| reduce | `fault::Phase::Reduce` | same — Err before rebuild; partitions still A; retry == cold(B) |
+| judge | `fault::Phase::Judge` (after judge loop + provenance) | Err before rebuild (rebuild sits past the judge seam); partitions still A; retry == cold(B) |
+| pack | wasm `pack_fault` seam | publication untouched (`last_analysis_id == None`), inner `CleanPublished`; retry re-packs the current snapshot with zero re-walk, byte-identical to a fresh cold analyze |
+
+Also proven: empty corpus / zero findings valid (empty findings + empty lane);
+removal drops a book's records from the lane so even assembled against a corpus
+that still contains the book, none of its records survive (no resurrection).
+The core commit sits AFTER the judge fault seam, so any fault leaves the
+PREVIOUS partitions intact and current — not just the prior `Stats`.
+
+### Ladder vs Entry 8/12 baselines (§13 protocol) — PERF-NEUTRAL
+
+`spike-bench/warm_ladder_profile` over `corpora/vref/WA-en-ulb.txt`, alternating
+**baseline** (`d5a0bb8`, built in a throwaway worktree) vs **candidate**
+(HEAD). Machine under sustained load the whole session (1-min load ~5–13;
+`uptime` at close: `load averages: 5.04 10.14 16.22`); batch-to-batch spread
+was tight (baseline 3JN batches 675–689µs, candidate 690–703µs), so the verdict
+is robust to load.
+
+| scenario | baseline (mom) | candidate (mom) | Δ | Δ% | batches×trials |
+| --- | ---: | ---: | ---: | ---: | --- |
+| 3JN default | 677.958µs | 691.0µs | +13.0µs | +1.9% | 5×250 |
+| 3JN all | 23.758ms | 23.669ms | −0.089ms | −0.4% | 3×200 |
+| MAT default | 8.642ms | 8.644ms | +0.002ms | +0.02% | 2–3×150+ |
+| MAT all | 43.279ms | 42.744ms | −0.535ms | −1.2% | 3×200 |
+| PSA default | 15.093ms | 15.118ms | +0.025ms | +0.16% | 3×200 |
+| PSA all | 57.123ms | 57.266ms | +0.143ms | +0.25% | 2×120 |
+
+§13 regression rule (candidate both >5% AND >0.25 ms slower in ≥3/5 batches):
+**not tripped by any scenario** — max delta is +1.9% / +13µs (3JN default), max
+absolute is +0.143ms / +0.25% (PSA all); three scenarios are actually faster
+(noise). The tiny 3JN/default term is the partition round-trip (decompose +
+assemble of 37 findings, ~2 extra `args` clones + a binary-search `locate` per
+finding), landing entirely inside the `analyze` phase (587→603µs) with
+map/reduce/judge flat. **Ladder gate PASS — Phase B is perf-neutral.**
+
+### Serde-strip disposition (owner pre-approved cleanup)
+
+Stripped the now-orphaned serde derives (and mixed_case's now-dead `is_zero`
+skip helper) from the per-rule aggregates nothing serializes:
+`PunctuationAdjacencyStats`, `PunctuationSpacingStats`, `PunctOnlyTokenStats`,
+`RepeatedCharacterRunStats`, `MixedCaseStats`, `RareGlyphStats`,
+`MixedScriptStats`, `ProportionalityStats`, and their per-book/sub-types (31
+lines removed across 6 files).
+
+**Left load-bearing serde in place, per the cleanup's escape clause:**
+
+- **`CasingStats` + its sub-types** — NOT orphaned: still serialized directly
+  by the casing aggregate-size survey (`examples/calibrate/survey/casing.rs`,
+  which carries an in-code comment documenting exactly this post-WP2a purpose),
+  and the gate-critical `calibrate` example builds it. Its whole serde block
+  (14 `cfg_attr` sites + the `is_zero`/`is_default_tally`/`is_empty_map`
+  helpers) is retained.
+- **`FindingArgs`** (the oracle dump `write_findings`, gate-critical; plus a
+  `mixed_normalization` test), **`RuleId`/`Severity`/`AnalysisId`**, and the
+  **census `Inventory`** — all still serialized by live consumers.
+- **`corpus_blob`'s `BlobEntry`** serde — its own example type, not an
+  aggregate.
+
+The one advisory: the aggregate-serde surface is now asymmetric (only
+`CasingStats` is serde among the per-rule aggregates). That is a faithful
+consequence of "strip the orphaned, keep the load-bearing" — a future
+aggregate-size survey wanting another aggregate would re-add serde to that one.
+
+### Deviations / notes for the owner (clearly marked)
+
+1. **Steps 2 and 3 combined into one commit** (`a4f1ef8`), recorded above:
+   populate-without-read is dead-code; the assembler is the only honest first
+   reader. The core atomic commit-after-judge placement therefore landed with
+   this commit, and step 4 (`20febbc`) is its injection witnesses (all four
+   seams) + the removal/empty guarantees + the wasm pack-retry strengthening.
+2. **"Partitioned by chapter" realized as chapter-grouped records** (not a flat
+   chapter-addressed list): each `FindingPartition` groups records into
+   `ChapterFindings` by `(slug, chapter)`, which literally satisfies the plan's
+   "direct per-verse findings are partitioned by chapter" and sets up the C/D
+   per-chapter patch granularity cleanly. Cross-chapter order is first-seen and
+   never affects output (disjoint key_idx ranges).
+3. **No wasm surface change** (Phase B should not change it, and did not): the
+   packed output, `analyze`/`analyze_vref`, and the args/id publication are
+   untouched; the only wasm edit is a test strengthening (pack-retry == cold).
+   Node suites run green against the committed pkg (no pkg regeneration owed).
+4. **`SubstrateSection` is a documented empty placeholder** (Phase C), with
+   `new`/`clear` invoked so it is not dead code; no substrate machinery was
+   invented.
+5. **Full-fleet bookend deferred to Phase F** (as every WP). This packet's
+   changes are core-heavy refactors proven byte-identical on the WA slice (a
+   faithful per-corpus slice), and both changed paths are directly exercised —
+   findings dump = one-shot partition round-trip; transcript dump = resident
+   partition rebuild/assemble.
+
+### Stop-safe next step
+
+WP4 complete and gated. Phase B is done: `AnalysisCache` is sectioned, findings
+live resident in per-rule chapter-local partitions, assembly reads only the
+lane, and the atomic boundaries are witnessed at all four seams — all with zero
+byte movement and perf-neutral. Next stop-safe step is **Phase C step 1** (the
+compile-time `ObservationSubstrate` generic, typed cache slots,
+active-substrate computation, schema stamps, registry completeness tests) — a
+new packet. Do not begin it here.
