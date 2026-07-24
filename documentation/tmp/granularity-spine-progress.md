@@ -1634,3 +1634,118 @@ Phase A-W is complete and gated. Per the plan ordering (Entry 9 erratum: Phase
 A → Phase A-W → **Phase B**), the next stop-safe step is **Phase B** (rename
 `PrepCache` -> `AnalysisCache`; resident finding partitions; the two atomic
 boundaries assembled from partitions). Do not begin it within this packet.
+
+---
+
+## Entry 13 — Owner review of WP3b: P1 fix (identity accessors) + camelCase JS surface
+
+- **Date:** 2026-07-24
+- **Branch:** `granularity-spine` (main tree). Base for this fixup: `ef1a3a2`
+  (WP3b Entry 12 HEAD).
+- **Trigger:** owner review found one **P1 blocker** plus a naming cleanup.
+  No `crates/core`/`crates/galley` source touched (the inner accessors already
+  existed), so the WA oracle gate was not triggered; standing contract stands.
+
+### P1 — the persistence identity accessors were not exported to JS
+
+`Galley::expected_analysis_id` / `expected_target_context_id` /
+`has_reference` existed inner-side (Phase A) and were used by the wasm
+`analyze_packed` internally, but were **never exposed on the `#[wasm_bindgen]
+Galley`**. The shipped `findings-wire.md` and the generated `findings.d.ts`
+lifecycle prose both require a JS consumer to call these **before the first
+analyze** to build the `ExpectedAnalysisIdentity` that `decodePersistedFindings`
+needs — so the persistence load path was undeliverable from JS. Fixed by
+exposing all three as read-only pass-throughs (the two ids marshal `u64` -> JS
+`bigint`; `has_reference` -> `boolean`). They fold the corpus's owned per-book
+hashes (O(book count), no verse walk), so they are callable before analyze and
+while dirty.
+
+**Why the smoke missed it:** `package.test.mjs` only imports the pure JS
+`./findings` surface; it never instantiated the real wasm `Galley`, so a
+missing class export was invisible. Closed by the new real-wasm test below.
+
+### Naming — camelCase Galley JS surface (owner-adjudicated, PO-confirmed)
+
+The Galley JS API is now camelCase API-wide via `#[wasm_bindgen(js_name =
+...)]`, matching the plan §3.1 table, `findings-wire.md`, and the generated
+lifecycle prose exactly: `updateBook`, `updateChapter`, `removeBooks`,
+`replaceCorpus`, `replaceSource`, `updateConfig`, `findingArgs`,
+`findingsArgs`, `expectedAnalysisId`, `expectedTargetContextId`,
+`hasReference` (plus `analyze`/`census`, already single-word). Rust method
+names stay snake_case, so all native Rust tests are unchanged. The only
+residual snake_case doc references (`galley.finding_args`/`findings_args` in
+`findings-wire.md`) were corrected to camelCase; the generated `findings.d.ts`
+lifecycle prose was already camelCase and needed no change (verified). Free
+functions (`analyze_vref`, `census`) keep the plan §3.1 snake_case spelling.
+
+### Commits (in order)
+
+| unit | commit | what landed |
+| --- | --- | --- |
+| 1 | `f431e85` | `wasm: camelCase Galley JS surface + export the three identity accessors` — the P1 fix + `js_name` camelCase on every Galley method + the `findings-wire.md` findingArgs/findingsArgs doc fix. |
+| 2 | `aefbed8` | `pkg: regenerate wasm packages (camelCase surface + identity accessors)` — `npm run build:wasm`; both `.d.ts` show the camelCase surface + three accessors; adds `crates/wasm/js/galley.test.mjs` (real-wasm regression test). |
+| 3 | (this entry) | progress log. |
+
+### New test — real-wasm identity flow (records: pkg-web committed pattern)
+
+`crates/wasm/js/galley.test.mjs` (committed, `node --test`), chosen over a
+throwaway pkg-node because it is durable and in-tree. It loads the **built
+pkg-web** wasm (initialized in Node with the wasm bytes, the bench-wasm
+pattern), then, in order: (1) constructs a real `Galley` from a hand-built
+corpus; (2) reads `expectedAnalysisId`/`expectedTargetContextId`/`hasReference`
+**before any analyze**; (3) feeds them to `decodePersistedFindings` with a
+previously-persisted buffer -> `provenance: "live"` acceptance; (4) runs
+`analyze()` and asserts the decoded header's `analysisId`/`targetContextId`/
+`hasReference` equal the pre-analyze expected values; (5) `updateBook`s changed
+text and asserts `expectedAnalysisId()` moved off both its pre-edit value and
+the last published header id, while the published buffer's header id stays
+frozen — the divergence that motivates the "expected" name. Also asserts all
+three accessors + the eight camelCase verbs are `typeof === "function"` on the
+instance (the direct P1 guard).
+
+### §A.5.6-style gate evidence (built `pkg-bundler/sous_chef_web.d.ts`)
+
+```
+analyze(): Uint8Array;
+expectedAnalysisId(): bigint;
+expectedTargetContextId(): bigint;
+hasReference(): boolean;
+findingArgs(analysis_id: bigint, index: number): FindingArgsOut;
+findingsArgs(analysis_id: bigint, indices: Uint32Array): FindingsArgsOut;
+constructor(args: GalleyArgs);
+removeBooks(slugs: string[]): number;
+replaceCorpus(target: VrefCorpus): MutationEffect;
+replaceSource(source?: VrefCorpus | null): MutationEffect;
+updateBook(block: BookUpdateIn): MutationEffect;
+updateChapter(block: ChapterUpdateIn): MutationEffect;
+updateConfig(config: SousConfig): MutationEffect;
+```
+
+No method **signature** is snake_case. (Residual snake_case appears only in
+`///`-doc intra-doc links like `[`finding_args`](Galley::finding_args)` — Rust
+rustdoc links that render as inert JSDoc text — and in wasm-bindgen-preserved
+**parameter** names `analysis_id`/`example_cap`, consistent with the
+pre-existing `census(example_cap?...)`; neither is a JS method name and the
+owner's list was method names.)
+
+### Full gate (rerun at fixup HEAD)
+
+Workspace tests: core 421, ssc-wire 25, galley 22, **ssc-wasm 14**, xtask 1 —
+all ok, no failures. `cargo check -p ssc-wasm --target wasm32-unknown-unknown`
+clean. **node 19** (findings 15 + package 2 + galley 2). `cargo xtask wire-js`
+is a no-op (0 files changed). Clippy clean on the changed crates (the 3
+pre-existing `ssc-core` warnings untouched, out of scope). `git diff --check`
+clean.
+
+### Deviations / notes for the owner (clearly marked)
+
+1. **Real-wasm test committed against pkg-web, not a throwaway pkg-node.** The
+   task offered either; the committed pkg-web pattern is a durable regression
+   guard for exactly the seam that leaked (and needs no build/delete dance). It
+   runs against whatever pkg-web is committed, so it must be kept current by the
+   pkg-regen step of any future surface change — the same property `bench-wasm.mjs`
+   already has.
+2. **Parameter names and Rust intra-doc links stay snake_case** (above) — the
+   camelCase adjudication was scoped to method/API names; renaming Rust params
+   to camelCase would be un-idiomatic and inconsistent with the existing
+   `census` free function.
