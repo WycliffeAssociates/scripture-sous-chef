@@ -210,6 +210,37 @@ pub(crate) fn map_books<T: Send>(
     }
 }
 
+/// Run `f` over every dirty **chapter** work item and collect the outputs **in
+/// caller order** (index-aligned with `work`, which the caller built by walking
+/// the corpus layout). `book_runs` are `work`'s contiguous per-book runs, in
+/// caller order — the corpus layout supplies those ordinals; nothing here derives
+/// an order from a slug or an opaque chapter token.
+///
+/// Under the `parallel` feature a multi-book dirty set fans out by book (ADR
+/// 0042) and each worker maps its own book's chapters serially. Exactly one Rayon
+/// grain per call: the per-book closure calls `f` directly and never re-enters a
+/// fan-out. The output is identical either way — an indexed collect preserves
+/// input order, and chapter work items are disjoint — so the feature can never
+/// change results, only wall-clock.
+pub(crate) fn map_chapter_work<W: Sync, T: Send>(
+    work: &[W],
+    book_runs: &[std::ops::Range<usize>],
+    f: impl Fn(&W) -> T + Sync,
+) -> Vec<T> {
+    #[cfg(feature = "parallel")]
+    if book_runs.len() > 1 {
+        use rayon::prelude::*;
+        let per_book: Vec<Vec<T>> = book_runs
+            .par_iter()
+            .map(|run| work[run.clone()].iter().map(&f).collect())
+            .collect();
+        return per_book.into_iter().flatten().collect();
+    }
+    #[cfg(not(feature = "parallel"))]
+    let _ = book_runs;
+    work.iter().map(&f).collect()
+}
+
 /// Every per-verse rule wired in. The registry is complete — including
 /// rules `Config::v1_defaults` disables by default — so an explicit
 /// enable in config is all it takes to run one.

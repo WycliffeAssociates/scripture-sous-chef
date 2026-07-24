@@ -105,14 +105,6 @@ pub(crate) fn rebase(base: KeyIdx, local: LocalKeyIdx) -> KeyIdx {
     )
 }
 
-/// The inverse of [`rebase`]: narrow a global index freshly computed this
-/// call back to book-local, for storage in a retained cache product. Only
-/// ever applied to a `KeyIdx` this same call derived from `base`, so the
-/// subtraction and narrowing cannot fail.
-pub(crate) fn unrebase(base: KeyIdx, global: KeyIdx) -> LocalKeyIdx {
-    LocalKeyIdx(u16::try_from(global.0 - base.0).expect("global was rebased from this call's base"))
-}
-
 /// A packed, location-only site: 6 bytes (align 2, no padding). Verse-
 /// relative byte offsets; the book is implicit in the owning [`BookGroup`].
 /// For the high-volume pure-location site vecs only — richer site structs

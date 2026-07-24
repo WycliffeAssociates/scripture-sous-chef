@@ -311,6 +311,19 @@ mod tests {
         )
     }
 
+    /// A multi-chapter book block.
+    fn chaptered(book: &str, chapters: &[(&str, Vec<&str>)]) -> (Vec<String>, Vec<String>) {
+        let mut keys = Vec::new();
+        let mut texts = Vec::new();
+        for (chapter, verses) in chapters {
+            for (i, text) in verses.iter().enumerate() {
+                keys.push(format!("{book} {chapter}:{}", i + 1));
+                texts.push((*text).to_string());
+            }
+        }
+        (keys, texts)
+    }
+
     fn corpus_of(parts: Vec<(Vec<String>, Vec<String>)>) -> Corpus {
         let mut keys = Vec::new();
         let mut texts = Vec::new();
@@ -435,9 +448,59 @@ mod tests {
         assert_eq!(after.walk_hits - before.walk_hits, 2, "both books reuse their walk products");
         assert_eq!(after.walk_misses, before.walk_misses, "no re-walk");
         assert_eq!(
-            after.lane1_hits - before.lane1_hits,
+            after.direct_hits - before.direct_hits,
             2,
-            "both books reuse their per-verse findings"
+            "both books' chapters reuse their per-verse findings"
+        );
+    }
+
+    /// `update_chapter` → `analyze` re-derives the per-verse findings of exactly
+    /// the replaced chapter: every sibling chapter — in the edited book too —
+    /// reuses its cached chapter-local records. The shell's own witness that the
+    /// direct lane's work unit really is a chapter, not a book.
+    #[test]
+    fn chapter_update_re_derives_only_that_chapter() {
+        let cfg = Config::all();
+        let c0 = corpus_of(vec![
+            chaptered(
+                "GEN",
+                &[
+                    ("1", vec!["a  b", "one"]),
+                    ("2", vec!["x\ty"]),
+                    ("3", vec!["two"]),
+                ],
+            ),
+            chaptered("EXO", &[("1", vec!["three"])]),
+        ]);
+        let mut g = Galley::new(c0, None, cfg.clone());
+        g.analyze();
+        let before = g.cache.probe();
+
+        g.update_chapter(ChapterBlock {
+            slug: "GEN".into(),
+            chapter: "2".into(),
+            keys: vec!["GEN 2:1".to_string()],
+            texts: vec!["p\tq".to_string()],
+        })
+        .unwrap();
+        let findings = g.analyze();
+        let after = g.cache.probe();
+
+        assert_eq!(
+            after.direct_misses - before.direct_misses,
+            1,
+            "one chapter replaced, one chapter's per-verse findings re-derived"
+        );
+        assert_eq!(
+            after.direct_hits - before.direct_hits,
+            3,
+            "the edited book's other chapters reuse their records too"
+        );
+        assert_eq!(after.direct_chapters_patched, 1);
+        assert_eq!(
+            findings,
+            ssc_core::analyze_with_config(g.corpus(), None, &cfg),
+            "resident equals cold"
         );
     }
 

@@ -2484,3 +2484,27 @@ WP5a is complete with the review fixes in. Next stop-safe step remains **Phase C
 step 4** (direct per-verse lane → chapter-local cached products, patching only
 the replaced chapter's direct-rule partitions), then **step 5** (the
 order-preserving native chapter-map seam) — the next packet.
+
+---
+
+## Entry 20 — Work Packet 5b: Phase C steps 4–5 (direct per-verse lane → chapter-local; the ordered chapter-parallel map seam)
+
+- **Date:** 2026-07-24
+- **Branch:** `granularity-spine` (main tree). Base for this packet: `db7858a`
+  (Entry 19, the WP5a review fixes).
+- **Scope:** plan §8 Phase C **steps 4–5**, closing Phase C. Phase D (the
+  reduction-to-convergence driver, rule migrations) is NOT in this packet.
+
+### WA oracle base pin (this packet's per-commit referee)
+
+Pinned at HEAD `db7858a`, `/tmp/oracle/spine/wp5b.base.wa.*.tsv`, scope=**wa**
+(blob-scoped: `oracle-blobs/wa.blob`, 251 corpora findings / 32 corpora
+transcript). Byte-identical to the standing WP1…WP5a contract — **recorded here
+before any edit** so a cleared `/tmp` cannot cost the gate:
+
+| file | sha256 |
+| --- | --- |
+| `wp5b.base.wa.findings.default.tsv` | `38a0ceadcc792a6656905c7a0f9e2e4c2720c86f47f41f94c66e7a8ad1a9702c` |
+| `wp5b.base.wa.findings.all.tsv` | `128fdd933dc71cda0a4a6d9d9971ceb5648a5703f8b22ee798d30b09d2c15660` |
+| `wp5b.base.wa.inc.default.tsv` | `7b19caa79b284bfa16a56f300f5660591ffc58ffa183888451daf82778676dca` |
+| `wp5b.base.wa.inc.all.tsv` | `c951a758823629c6b6d2e1d558e92c59c1873ed17856b328a60c7ebdc4cee74f` |

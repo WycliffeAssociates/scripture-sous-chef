@@ -108,37 +108,53 @@ pub fn analyze(target: &Corpus, source: Option<&Corpus>) -> Vec<Finding> {
     analyze_with_config(target, source, &Config::v1_defaults())
 }
 
-/// All findings for one verse from the per-verse rules. The verse's scalar
-/// tape (ADR 0045) is built once into the caller's reused `tape` buffer and
-/// shared by every per-verse rule.
-fn verse_findings(
-    key_idx: KeyIdx,
-    text: &str,
-    tape: &[tape::TapeEntry],
-    mask: tape::Mask,
+/// One chapter's direct (per-verse) rule records, addressed **chapter-locally**
+/// — the verse's index within this chapter plus the verse-local span. No global
+/// index is computed, so the product is position-independent: it stays valid and
+/// correctly addressed wherever the chapter later sits in the corpus.
+///
+/// Each verse's scalar tape (ADR 0045) is built once into the reused `tape`
+/// buffer and shared by every per-verse rule. Records come out in emission order:
+/// verse ascending, then per-verse registry order within a verse — the order the
+/// stable final sort must preserve among equal keys.
+fn chapter_verse_records(
+    texts: &[String],
     per_verse: &[Box<dyn rule::PerVerseRule>],
-) -> Vec<Finding> {
+) -> Vec<cache::CachedPerVerseFinding> {
     let mut out = Vec::new();
-    for r in per_verse {
-        // Skip the clean majority: a rule runs only when the verse's dirty-bits
-        // mask opens its gate (ADR 0046). The gate is a safe superset of the
-        // fire set, so this never drops a finding.
-        if !mask.opens(r.gate()) {
-            continue;
-        }
-        let (code, severity) = (r.id(), r.severity());
-        for range in r.check(text, tape) {
-            out.push(Finding {
-                key_idx,
-                code,
-                severity,
-                range,
-                score: None,
-                args: None,
-            });
+    let mut tape = Vec::new();
+    for (vi, text) in texts.iter().enumerate() {
+        let local_idx = LocalKeyIdx::from_usize(vi);
+        let mask = tape::build_masked(text, &mut tape);
+        for r in per_verse {
+            // Skip the clean majority: a rule runs only when the verse's
+            // dirty-bits mask opens its gate (ADR 0046). The gate is a safe
+            // superset of the fire set, so this never drops a finding.
+            if !mask.opens(r.gate()) {
+                continue;
+            }
+            let (code, severity) = (r.id(), r.severity());
+            for range in r.check(text, &tape) {
+                out.push(cache::CachedPerVerseFinding {
+                    local_idx,
+                    code,
+                    severity,
+                    range,
+                });
+            }
         }
     }
     out
+}
+
+/// One dirty chapter's direct-lane map work: its identity, its validity hash, and
+/// the verse texts to map. It carries no book position and no global base —
+/// mapping a chapter cannot depend on where the chapter sits.
+struct DirectWork<'a> {
+    slug: &'a str,
+    chapter: &'a str,
+    hash: u128,
+    texts: &'a [String],
 }
 
 /// Analyze a corpus, running only the rules `config` enables.
@@ -299,7 +315,12 @@ fn transition(
     use std::borrow::Cow;
     use std::collections::BTreeMap;
 
-    let per_verse: Vec<_> = rule::per_verse_rules()
+    let all_per_verse = rule::per_verse_rules();
+    // Every direct-lane rule id, enabled or not: the complete set of partitions
+    // the direct lane owns. Taken from the registry (not a hand-kept list) so a
+    // new per-verse rule cannot silently fall between the two partition lanes.
+    let direct_ids: Vec<RuleId> = all_per_verse.iter().map(|r| r.id()).collect();
+    let per_verse: Vec<_> = all_per_verse
         .into_iter()
         .filter(|r| config.is_enabled(r.id()))
         .collect();
@@ -387,35 +408,76 @@ fn transition(
     // The one core transition always maps through the cache — the one-shot path
     // hands in a fresh empty one (plan §1 decision 16), so it is all misses and
     // maps every book exactly as a no-cache walk would, then drops the cache.
-    let mut out: Vec<Finding> = {
-        let mut out = Vec::new();
-        let mut misses: corpus::Books<'_> = Vec::new();
-        let mut miss_hashes: Vec<u128> = Vec::new();
-        for (group, &hash) in books.iter().zip(hashes.iter()) {
-            if let Some(findings) = cache.per_verse_hit(group.slug, hash, group.base) {
-                out.extend(findings);
-            } else {
-                misses.push(*group);
-                miss_hashes.push(hash);
+    // The direct (per-verse) lane's planning pass. A per-verse rule reads one
+    // verse and nothing else, so its map unit is the smallest thing a mutation
+    // replaces: a chapter. A chapter is dirty iff its cached product was not
+    // derived from this exact chapter content — stamp-derived, never a caller
+    // dirty hint, because `Corpus` owns the chapter hashes and maintains them at
+    // every mutation. A cold call finds nothing cached and so marks every
+    // chapter dirty; a one-chapter edit marks exactly that chapter.
+    // Two independent stamps, two dirty sets, unioned: a chapter is *mapped* when
+    // its cached product does not match this chapter's content, and its committed
+    // records are *patched* when the partition lane's own stamp does not — which
+    // a failed attempt can leave behind after warming prep (§3.3 retry safety).
+    // Mapping is therefore never inferred from the partition stamp, nor patching
+    // from prep's warm state.
+    let target_texts = target.texts();
+    let mut direct_work: Vec<DirectWork<'_>> = Vec::new();
+    let mut direct_book_runs: Vec<std::ops::Range<usize>> = Vec::new();
+    let mut direct_dirty: Vec<(Box<str>, Box<str>, u128)> = Vec::new();
+    for book in target.book_layout() {
+        let run_start = direct_work.len();
+        for chapter in &book.chapters {
+            let map_needed =
+                !cache.direct_chapter_valid(&book.slug, &chapter.chapter, chapter.hash);
+            if map_needed {
+                direct_work.push(DirectWork {
+                    slug: &book.slug,
+                    chapter: &chapter.chapter,
+                    hash: chapter.hash,
+                    texts: &target_texts[chapter.range.clone()],
+                });
+            }
+            if map_needed
+                || !cache
+                    .findings
+                    .direct_stamp_matches(&book.slug, &chapter.chapter, chapter.hash)
+            {
+                direct_dirty.push((
+                    Box::from(&*book.slug),
+                    Box::from(&*chapter.chapter),
+                    chapter.hash,
+                ));
             }
         }
+        if direct_work.len() > run_start {
+            direct_book_runs.push(run_start..direct_work.len());
+        }
+    }
+    // Map the dirty chapters (one Rayon grain — see `map_chapter_work`) and warm
+    // each product into the lane. The records are chapter-local, so they are
+    // stored exactly as produced; nothing is rebased here.
+    let fresh = rule::map_chapter_work(&direct_work, &direct_book_runs, |w| {
+        chapter_verse_records(w.texts, &per_verse)
+    });
+    for (w, records) in direct_work.iter().zip(fresh) {
+        cache.store_direct_chapter(w.slug, w.chapter, w.hash, records);
+    }
+    // The complete current chapter set: the direct lane's removal invalidation.
+    // A chapter a whole-book replacement dropped must leave both the cached
+    // product and the partition records, or a later analyze would patch a
+    // vanished chapter back in.
+    let direct_present: std::collections::BTreeSet<(&str, &str)> = target
+        .book_layout()
+        .iter()
+        .flat_map(|b| b.chapters.iter().map(|c| (&*b.slug, &*c.chapter)))
+        .collect();
+    cache.retain_direct(|slug, chapter| direct_present.contains(&(slug, chapter)));
 
-        let fresh = rule::map_books(&misses, |group| {
-            let mut findings = Vec::new();
-            let mut tape_buf = Vec::new();
-            for (vi, text) in group.texts.iter().enumerate() {
-                let key_idx = corpus::rebase(group.base, LocalKeyIdx::from_usize(vi));
-                let mask = tape::build_masked(text, &mut tape_buf);
-                findings.extend(verse_findings(key_idx, text, &tape_buf, mask, &per_verse));
-            }
-            findings
-        });
-        for ((group, hash), findings) in misses.iter().zip(miss_hashes.iter()).zip(fresh) {
-            cache.store_per_verse(group.slug, *hash, group.base, &findings);
-            out.extend(findings);
-        }
-        out
-    };
+    // The direct lane's findings never enter this working buffer: they live in
+    // their rules' partitions, patched per chapter below. `out` collects only the
+    // batch-lane rules' findings.
+    let mut out: Vec<Finding> = Vec::new();
 
     // The by-book view, computed once and shared by the project and stateful
     // phases — the book is the corpus-scoped unit (supersede granularity,
@@ -967,12 +1029,15 @@ fn transition(
         judge: std::time::Instant::now() - bench_judge_start,
     });
 
-    // Commit the complete semantic candidate: the freshly-computed findings are
-    // the resident home for the answer, so decompose them into each rule's
-    // chapter-local partition and commit. This runs only after map/reduce/judge
-    // have all succeeded (past every fault seam above), so a failed analyze
-    // leaves the PREVIOUS partitions intact and current — no partial commit.
-    finding_lane.rebuild(&out, target);
+    // Commit the complete semantic candidate. Both partition lanes commit here,
+    // only after map/reduce/judge have all succeeded (past every fault seam
+    // above), so a failed analyze leaves the PREVIOUS partitions intact and
+    // current — no partial commit. The batch lane decomposes this call's freshly
+    // judged findings into chapter-local records; the direct lane replaces the
+    // records of exactly the chapters it re-derived and leaves every other
+    // chapter's alone.
+    finding_lane.rebuild_batch(&out, target, &direct_ids);
+    finding_lane.patch_direct(&direct_ids, prep, &direct_present, &direct_dirty);
 
     // Assemble the returned findings ONLY from the resident partitions, rebasing
     // each chapter-local record to a global `KeyIdx` against the current corpus.
@@ -1271,7 +1336,7 @@ mod tests {
 
         let (cold_findings, cold_stats) =
             analyze_stateful(&target, None, &cfg, None, Some(&mut cache));
-        let misses_after_cold = cache.lane1_miss_count();
+        let misses_after_cold = cache.direct_miss_count();
         let (warm_findings, warm_stats) =
             analyze_stateful(&target, None, &cfg, None, Some(&mut cache));
 
@@ -1279,10 +1344,10 @@ mod tests {
         assert_eq!(cold_stats, warm_stats);
         assert_eq!(
             misses_after_cold, 2,
-            "one lane-1 miss per book on cold call"
+            "one direct-lane miss per chapter on cold call (one chapter per book here)"
         );
         assert_eq!(
-            cache.lane1_hit_count(),
+            cache.direct_hit_count(),
             2,
             "warm call should hit both books"
         );
@@ -1305,7 +1370,7 @@ mod tests {
 
         // A config change clears the old products, so the first call under the
         // new fingerprint warms both books instead of reading either lane.
-        assert_eq!(cache.lane1_hit_count(), 0);
+        assert_eq!(cache.direct_hit_count(), 0);
         assert_eq!(cache.walk_hit_count(), 0);
 
         // Content and enabled set are unchanged since the rewarm, so nothing is
@@ -1317,7 +1382,7 @@ mod tests {
             Some(changed_prior),
             Some(&mut cache),
         );
-        assert_eq!(cache.lane1_hit_count(), 2);
+        assert_eq!(cache.direct_hit_count(), 2);
         assert_eq!(
             cache.walk_hit_count(),
             2,
@@ -1505,7 +1570,7 @@ mod tests {
         let (_, _) = analyze_stateful(&caseless, None, &cfg, None, Some(&mut cache));
         let (_, _) = analyze_stateful(&caseless, None, &cfg, None, Some(&mut cache));
         assert_eq!(
-            cache.lane1_hit_count(),
+            cache.direct_hit_count(),
             1,
             "prior-none calls still reuse pure findings"
         );
@@ -2295,6 +2360,266 @@ mod tests {
             })
             .unwrap();
         let _ = cache.partition_findings(&corpus);
+    }
+
+    /// A multi-chapter book with `verses` verses per chapter, verse text supplied
+    /// per (chapter, verse) so a test can edit one chapter in isolation.
+    fn chaptered(book: &str, chapters: &[(&str, Vec<&str>)]) -> (Vec<String>, Vec<String>) {
+        let mut keys = Vec::new();
+        let mut texts = Vec::new();
+        for (chapter, verses) in chapters {
+            for (i, text) in verses.iter().enumerate() {
+                keys.push(format!("{book} {chapter}:{}", i + 1));
+                texts.push((*text).to_string());
+            }
+        }
+        (keys, texts)
+    }
+
+    /// The direct (per-verse) lane's granularity, witnessed by the work probes: a
+    /// one-chapter edit re-derives that chapter's per-verse findings and nothing
+    /// else, and replaces exactly that chapter's direct-rule partition records.
+    ///
+    /// The fused walk is a separate lane at a separate granularity and honestly
+    /// re-walks the whole edited book — its listeners carry discourse state across
+    /// every verse seam in the book, so a chapter is not a reusable unit for them
+    /// until they become observation substrates.
+    #[test]
+    fn one_chapter_edit_maps_and_patches_exactly_that_chapter() {
+        let cfg = Config::all();
+        let target = corpus_of(vec![
+            chaptered(
+                "GEN",
+                &[
+                    ("1", vec!["a  b, joyfullly", "word word here"]),
+                    ("2", vec!["x\ty", "one) two"]),
+                    ("3", vec!["He said. the gate", "clean text"]),
+                ],
+            ),
+            chaptered("EXO", &[("1", vec!["A1 α qQx"]), ("2", vec!["b  c"])]),
+        ]);
+        let mut cache = AnalysisCache::new();
+        let (_, prior) = analyze_resident(&target, None, &cfg, None, &mut cache).unwrap();
+        let cold = cache.probe();
+        assert_eq!(cold.direct_misses, 5, "a cold call maps every chapter");
+        assert_eq!(cold.direct_hits, 0);
+        assert_eq!(cold.direct_chapters_patched, 5);
+
+        // Edit GEN 2 only.
+        let mut edited = target.clone();
+        edited
+            .replace_chapter(crate::corpus::ChapterBlock {
+                slug: "GEN".into(),
+                chapter: "2".into(),
+                keys: vec!["GEN 2:1".to_string(), "GEN 2:2".to_string()],
+                texts: vec!["p  q, sadlyy".to_string(), "one) two".to_string()],
+            })
+            .unwrap();
+
+        let before = cache.probe();
+        let (findings, _) = analyze_resident(&edited, None, &cfg, Some(prior), &mut cache).unwrap();
+        let after = cache.probe();
+
+        assert_eq!(
+            after.direct_misses - before.direct_misses,
+            1,
+            "exactly one chapter re-derives its per-verse findings"
+        );
+        assert_eq!(
+            after.direct_hits - before.direct_hits,
+            4,
+            "every other chapter's records are reused, not recomputed"
+        );
+        assert_eq!(
+            after.direct_chapters_patched, 1,
+            "exactly one chapter's direct-rule partition records are replaced"
+        );
+        assert_eq!(
+            after.retallied, 1,
+            "the fused walk is book-grained: the edited book — and only it — re-walks"
+        );
+        assert_eq!(
+            after.walk_hits - before.walk_hits,
+            1,
+            "the untouched book reuses its walk products"
+        );
+        assert_eq!(
+            findings,
+            analyze_with_config(&edited, None, &cfg),
+            "the patched result equals a cold complete analysis"
+        );
+    }
+
+    /// The two lanes' stamps are independent, and that is what makes a retry
+    /// safe: a faulted attempt maps chapters and warms prep without ever
+    /// committing partitions, so the retry maps *nothing* and yet must still
+    /// replace every chapter's records. Deriving the patch set from prep's warm
+    /// state would publish the previous input's findings.
+    #[test]
+    fn retry_after_a_faulted_attempt_patches_without_remapping() {
+        let cfg = Config::all();
+        let a = corpus_of(vec![chaptered(
+            "GEN",
+            &[("1", vec!["a  b, joyfullly"]), ("2", vec!["x\ty"])],
+        )]);
+        let b = corpus_of(vec![chaptered(
+            "GEN",
+            &[("1", vec!["clean and tidy"]), ("2", vec!["one) two"])],
+        )]);
+        let mut cache = AnalysisCache::new();
+        let (_, prior) = analyze_resident(&a, None, &cfg, None, &mut cache).unwrap();
+
+        let prior = {
+            let _guard = fault::arm(fault::Phase::Judge);
+            match analyze_resident(&b, None, &cfg, Some(prior), &mut cache) {
+                Err((_, p)) => p,
+                Ok(_) => panic!("the judge fault did not fire"),
+            }
+        };
+        let before = cache.probe();
+        let (findings, _) = analyze_resident(&b, None, &cfg, prior, &mut cache).unwrap();
+        let after = cache.probe();
+
+        assert_eq!(
+            after.direct_misses - before.direct_misses,
+            0,
+            "the faulted attempt already warmed both chapters' products"
+        );
+        assert_eq!(
+            after.direct_chapters_patched, 2,
+            "both chapters' records are still the previous input's, so both are patched"
+        );
+        assert_eq!(findings, analyze_with_config(&b, None, &cfg));
+    }
+
+    /// The Phase C gate for the direct lane: under a randomized sequence of
+    /// chapter replacements, whole-book replacements, book removals and
+    /// re-insertions, the incrementally patched direct partitions equal a full
+    /// batch rebuild (a cold complete analysis) at **every** step.
+    #[test]
+    fn direct_partitions_equal_a_full_rebuild_under_randomized_edits() {
+        let cfg = Config::all();
+        // A small deterministic LCG: readable, reproducible, no dev-dependency.
+        let mut seed = 0x2545_F491_4F6C_DD1Du64;
+        let mut next = move |n: usize| {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            ((seed >> 33) as usize) % n
+        };
+        let bodies = [
+            "a  b, joyfullly",
+            "word word here",
+            "x\ty",
+            "one) two",
+            "He said. the gate",
+            "clean text",
+            "A1 α qQx",
+            "",
+        ];
+
+        let mut corpus = corpus_of(vec![
+            chaptered(
+                "GEN",
+                &[
+                    ("1", vec![bodies[0], bodies[1]]),
+                    ("2", vec![bodies[2]]),
+                    ("3", vec![bodies[4], bodies[5]]),
+                ],
+            ),
+            chaptered("EXO", &[("1", vec![bodies[3]]), ("2", vec![bodies[6]])]),
+            chaptered("LEV", &[("1", vec![bodies[7], bodies[0]])]),
+        ]);
+        let mut cache = AnalysisCache::new();
+        let mut prior = None;
+        for step in 0..40 {
+            match next(4) {
+                // Replace one existing chapter with a fresh verse count/text.
+                0 => {
+                    let books = corpus::by_book(&corpus);
+                    let g = books[next(books.len())];
+                    let slug = g.slug.to_string();
+                    let chapter = corpus
+                        .locate(g.base)
+                        .chapter
+                        .to_string();
+                    let n = 1 + next(3);
+                    let keys: Vec<String> =
+                        (1..=n).map(|v| format!("{slug} {chapter}:{v}")).collect();
+                    let texts: Vec<String> =
+                        (0..n).map(|_| bodies[next(bodies.len())].to_string()).collect();
+                    corpus
+                        .replace_chapter(crate::corpus::ChapterBlock {
+                            slug: slug.clone().into(),
+                            chapter: chapter.into(),
+                            keys,
+                            texts,
+                        })
+                        .unwrap();
+                }
+                // Replace a whole book, reshaping its chapter set.
+                1 => {
+                    let books = corpus::by_book(&corpus);
+                    let slug = books[next(books.len())].slug.to_string();
+                    let chapters = 1 + next(3);
+                    let mut keys = Vec::new();
+                    let mut texts = Vec::new();
+                    for c in 1..=chapters {
+                        for v in 1..=(1 + next(2)) {
+                            keys.push(format!("{slug} {c}:{v}"));
+                            texts.push(bodies[next(bodies.len())].to_string());
+                        }
+                    }
+                    corpus
+                        .replace_books(vec![crate::corpus::BookBlock {
+                            slug: slug.clone().into(),
+                            keys,
+                            texts,
+                        }])
+                        .unwrap();
+                }
+                // Remove a book (and drop it from the cache, as the shell does).
+                2 => {
+                    let books = corpus::by_book(&corpus);
+                    if books.len() > 1 {
+                        let slug = books[next(books.len())].slug.to_string();
+                        assert!(corpus.remove_book(&slug));
+                        cache.remove_book(&slug);
+                        if let Some(p) = prior.as_mut() {
+                            let p: &mut Stats = p;
+                            p.remove_book(&slug);
+                        }
+                    }
+                }
+                // Append a book back (or reshape the last one if it is present).
+                _ => {
+                    let slug = ["GEN", "EXO", "LEV", "NUM"][next(4)];
+                    let mut keys = Vec::new();
+                    let mut texts = Vec::new();
+                    for v in 1..=(1 + next(3)) {
+                        keys.push(format!("{slug} 1:{v}"));
+                        texts.push(bodies[next(bodies.len())].to_string());
+                    }
+                    let _ = corpus.replace_books(vec![crate::corpus::BookBlock {
+                        slug: slug.into(),
+                        keys,
+                        texts,
+                    }]);
+                }
+            }
+
+            let (findings, next_prior) =
+                analyze_resident(&corpus, None, &cfg, prior, &mut cache).unwrap();
+            prior = Some(next_prior);
+            assert_eq!(
+                findings,
+                analyze_with_config(&corpus, None, &cfg),
+                "step {step}: patched partitions must equal a full batch rebuild"
+            );
+            assert_eq!(
+                cache.partition_findings(&corpus),
+                findings,
+                "step {step}: the returned answer comes only from the partition lane"
+            );
+        }
     }
 
     /// An empty corpus (and a finding-free analyze) is valid: it yields empty
