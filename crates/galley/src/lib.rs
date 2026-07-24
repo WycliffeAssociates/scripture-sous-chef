@@ -1,7 +1,7 @@
 //! `ssc-galley` — the resident shell over the pure `ssc-core` analyzer.
 //!
 //! A [`Galley`] owns the inputs a repeated re-analyze would otherwise re-ship
-//! every call: the corpus, an optional source corpus, the config, the prep
+//! every call: the corpus, an optional source corpus, the config, the analysis
 //! cache, and the prior [`Stats`]. Its external contract is deliberately small
 //! — update the corpus/source/config, then ask for findings or an inventory.
 //! The caller never sees or returns a prior, stats, cache, or "changed" set:
@@ -16,8 +16,9 @@
 
 use rustc_hash::FxHashSet;
 use ssc_core::{
-    AnalysisId, AnalyzeError, BookBlock, CensusOptions, ChapterBlock, Config, Corpus, CorpusError,
-    Finding, Inventory, MutationEffect, PrepCache, Stats, TargetContextId, analyze_resident, census,
+    AnalysisCache, AnalysisId, AnalyzeError, BookBlock, CensusOptions, ChapterBlock, Config, Corpus,
+    CorpusError, Finding, Inventory, MutationEffect, Stats, TargetContextId, analyze_resident,
+    census,
 };
 
 /// The resident analysis lifecycle (plan §3.3, the semantic half).
@@ -50,20 +51,20 @@ pub struct Galley {
     corpus: Corpus,
     source: Option<Corpus>,
     config: Config,
-    prep: PrepCache,
+    cache: AnalysisCache,
     prior: Option<Stats>,
     state: Lifecycle,
 }
 
 impl Galley {
     /// Seed a handle. The first [`analyze`](Galley::analyze) is a full cold
-    /// pass; later calls reuse the prep cache and prior.
+    /// pass; later calls reuse the analysis cache and prior.
     pub fn new(corpus: Corpus, source: Option<Corpus>, config: Config) -> Galley {
         Galley {
             corpus,
             source,
             config,
-            prep: PrepCache::new(),
+            cache: AnalysisCache::new(),
             prior: None,
             // Nothing published yet — a fresh handle is dirty until its first
             // successful analyze.
@@ -119,7 +120,7 @@ impl Galley {
     }
 
     /// Remove books by slug. Unknown slugs are no-ops, excluded from the count.
-    /// A removed book leaves the prior and the prep cache immediately, so a
+    /// A removed book leaves the prior and the analysis cache immediately, so a
     /// later analyze cannot resurrect its contribution. Returns the number
     /// actually removed.
     pub fn remove_books(&mut self, slugs: &[&str]) -> usize {
@@ -130,7 +131,7 @@ impl Galley {
                 if let Some(prior) = self.prior.as_mut() {
                     prior.remove_book(slug);
                 }
-                self.prep.remove_book(slug);
+                self.cache.remove_book(slug);
             }
         }
         if removed > 0 {
@@ -143,7 +144,7 @@ impl Galley {
     /// **complete** new corpus. A corpus equal to the current resident target
     /// is a proven [`MutationEffect::Unchanged`] no-op that retains everything.
     /// Otherwise, before adopting it, every slug present in the old corpus but
-    /// absent from the new one is dropped from the prior and the prep cache —
+    /// absent from the new one is dropped from the prior and the analysis cache —
     /// deletion reconciliation, not changed-book hinting. After it, per-book
     /// `Tally` comparison on the next analyze re-tallies exactly the books whose
     /// content differs; unchanged books carry.
@@ -165,7 +166,7 @@ impl Galley {
             if let Some(prior) = self.prior.as_mut() {
                 prior.remove_book(slug);
             }
-            self.prep.remove_book(slug);
+            self.cache.remove_book(slug);
         }
         self.corpus = corpus;
         self.note_effect(MutationEffect::Changed)
@@ -185,7 +186,7 @@ impl Galley {
     }
 
     /// Swap the config. An equal config (plain [`Config`] equality, not the
-    /// crate-private cache fingerprint) is a no-op. Otherwise the prep cache is
+    /// crate-private cache fingerprint) is a no-op. Otherwise the analysis cache is
     /// cleared (its fingerprint is whole-`Config`) and the **prior is retained**:
     /// provenance decides what re-tallies — an enabled-set change mismatches
     /// every `Tally.rules` and re-tallies naturally, while a knob-only change
@@ -195,7 +196,7 @@ impl Galley {
         if config == self.config {
             return MutationEffect::Unchanged;
         }
-        self.prep.clear();
+        self.cache.clear();
         self.config = config;
         self.note_effect(MutationEffect::Changed)
     }
@@ -234,7 +235,7 @@ impl Galley {
             self.source.as_ref(),
             &self.config,
             prior,
-            &mut self.prep,
+            &mut self.cache,
         ) {
             Ok((findings, stats)) => {
                 self.prior = Some(stats);
@@ -243,7 +244,7 @@ impl Galley {
             }
             Err((err, prior)) => {
                 // Restore the resident prior exactly as it arrived (no partial
-                // merge), leave the warm prep in place, and stay Dirty.
+                // merge), leave the warm cache in place, and stay Dirty.
                 self.prior = prior;
                 Err(err)
             }
@@ -390,7 +391,7 @@ mod tests {
         assert_eq!(g.analyze(), cold(&c3, &cfg), "after replace_corpus");
     }
 
-    /// A failed update leaves the whole handle (corpus, prior, prep) untouched —
+    /// A failed update leaves the whole handle (corpus, prior, cache) untouched —
     /// a re-analyze after the failed attempt is identical.
     #[test]
     fn failed_update_book_leaves_the_galley_untouched() {
@@ -413,16 +414,16 @@ mod tests {
 
     /// A re-analyze with no edits does no work: identical findings, and — what
     /// output equality alone cannot witness — zero books re-tallied and every
-    /// prep entry reused (via the `test-probes` counters).
+    /// cache entry reused (via the `test-probes` counters).
     #[test]
     fn reanalyze_without_edits_does_no_work() {
         let cfg = Config::all();
         let c0 = corpus_of(vec![keyed("GEN", &["a  b", "one"]), keyed("EXO", &["x\ty", "two"])]);
         let mut g = Galley::new(c0, None, cfg);
         let a = g.analyze();
-        let before = g.prep.probe();
+        let before = g.cache.probe();
         let b = g.analyze();
-        let after = g.prep.probe();
+        let after = g.cache.probe();
         assert_eq!(a, b, "identical findings");
         assert_eq!(after.retallied, 0, "the no-edit re-analyze re-tallies nothing");
         assert_eq!(after.walk_hits - before.walk_hits, 2, "both books reuse their walk products");
@@ -435,7 +436,7 @@ mod tests {
     }
 
     /// After remove → analyze, the removed slug is gone everywhere: no finding
-    /// addresses it, the prior's provenance drops it, the prep entry is gone,
+    /// addresses it, the prior's provenance drops it, the cache entry is gone,
     /// and the result equals a corpus that never held it. Exhaustive per-rule
     /// removal is core's `Stats::remove_book` contract (proven in ssc-core);
     /// `remove_books` composes on it, and this test verifies the shell drives it
@@ -459,7 +460,7 @@ mod tests {
             !g.prior.as_ref().unwrap().tallied.contains_key("GEN"),
             "prior provenance drops the removed book"
         );
-        assert!(!g.prep.remove_book("GEN"), "prep entry is already gone");
+        assert!(!g.cache.remove_book("GEN"), "cache entry is already gone");
 
         let expected = corpus_of(vec![keyed("EXO", &["x\ty"])]);
         assert_eq!(findings, cold(&expected, &cfg), "equals a corpus without GEN");
@@ -485,23 +486,23 @@ mod tests {
         );
     }
 
-    /// Re-supplying the same config is a true no-op: it clears neither prep nor
+    /// Re-supplying the same config is a true no-op: it clears neither cache nor
     /// prior. Proven not by identical findings (a clear-then-cold-analyze would
     /// also produce those) but by the next analyze re-tallying nothing and
-    /// reusing every prep entry.
+    /// reusing every cache entry.
     #[test]
-    fn update_config_identical_preserves_prior_and_prep() {
+    fn update_config_identical_preserves_prior_and_cache() {
         let cfg = Config::all();
         let corpus = corpus_of(vec![keyed("GEN", &["a  b", "one"]), keyed("EXO", &["x\ty", "two"])]);
         let mut g = Galley::new(corpus, None, cfg.clone());
         let a = g.analyze();
         g.update_config(cfg);
-        let before = g.prep.probe();
+        let before = g.cache.probe();
         let b = g.analyze();
-        let after = g.prep.probe();
+        let after = g.cache.probe();
         assert_eq!(a, b, "identical findings");
         assert_eq!(after.retallied, 0, "prior survived: nothing stale");
-        assert_eq!(after.walk_hits - before.walk_hits, 2, "prep survived: both books reused");
+        assert_eq!(after.walk_hits - before.walk_hits, 2, "cache survived: both books reused");
         assert_eq!(after.walk_misses, before.walk_misses, "no re-walk");
     }
 
@@ -543,7 +544,7 @@ mod tests {
     /// A knob-only config change re-analyzes to the cold result under the new
     /// knobs and — proven by the counting probe (actual accumulator runs, not
     /// the decision flag) — the retained prior means zero books re-tally, even
-    /// though a knob change clears prep and re-walks for sites. `Config::all` so
+    /// though a knob change clears the cache and re-walks for sites. `Config::all` so
     /// a site-free counting rule backs the probe.
     #[test]
     fn update_config_knob_only_change_retallies_nothing() {
@@ -558,7 +559,7 @@ mod tests {
         g.analyze();
         g.update_config(cfg2.clone());
         let findings = g.analyze();
-        assert_eq!(g.prep.probe().retallied, 0, "knob-only change did no counting work");
+        assert_eq!(g.cache.probe().retallied, 0, "knob-only change did no counting work");
         assert_eq!(findings, cold(&corpus, &cfg2), "findings track the new knobs");
     }
 
@@ -595,9 +596,9 @@ mod tests {
 
         // No-edit rewarm: same output, and the walk products were actually
         // reused (not just re-derived to the same answer).
-        let before = g.prep.probe();
+        let before = g.cache.probe();
         let warm = g.analyze();
-        let after = g.prep.probe();
+        let after = g.cache.probe();
         assert_eq!(warm, cold_pass, "no-edit rewarm matches the cold pass");
         assert_eq!(after.walk_hits - before.walk_hits, 2, "both books reuse their walk");
         assert_eq!(after.walk_misses, before.walk_misses, "no re-walk");
@@ -952,7 +953,7 @@ mod tests {
             let c0 = full_target_0();
             let source = source_0();
             let mut g = Galley::new(c0.clone(), Some(source.clone()), cfg.clone());
-            g.analyze(); // a warm resident prior + prep worth protecting
+            g.analyze(); // a warm resident prior + cache worth protecting
             assert_eq!(g.state(), Lifecycle::CleanPublished);
 
             // A real edit dirties GEN (bracket/casing carry across its seams).

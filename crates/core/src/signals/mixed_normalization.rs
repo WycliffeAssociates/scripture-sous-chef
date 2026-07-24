@@ -732,7 +732,7 @@ mod tests {
             ("GEN", &[(1, "clean text")][..]),
             ("EXO", &[(1, "caf\u{00E9}"), (2, "cafe\u{0301}")][..]),
         ]);
-        let mut cache = crate::PrepCache::new();
+        let mut cache = crate::AnalysisCache::new();
         let (cold_cached, cold_cached_stats) =
             crate::analyze_stateful(&original, None, &cfg, None, Some(&mut cache));
         let hit = cold_cached

@@ -45,7 +45,7 @@ use crate::token::Token;
 ///
 /// The value is a **borrowed** token slice, not an owned `Vec`: the tokens
 /// live in the fused walk's per-book output (a freshly walked book) or in the
-/// resident `PrepCache` entry (a clean cache-hit book), and the cache is a
+/// resident `AnalysisCache` entry (a clean cache-hit book), and the cache is a
 /// read-only view over them for this analyze. Nothing here owns or clones the
 /// tokens — assembling the cache is a rebase-and-borrow, so a clean book's
 /// tokens are never copied out of the resident cache.
@@ -107,7 +107,7 @@ pub trait ProjectTokenRule: Sync {
 ///
 /// Each per-book value is a [`Cow`]: **owned** for a freshly walked book (the
 /// fused walk hands its sites straight in, moved not cloned) and **borrowed**
-/// for a clean cache-hit book (a read-only view into the resident `PrepCache`
+/// for a clean cache-hit book (a read-only view into the resident `AnalysisCache`
 /// entry). A clean book's sites are therefore never cloned out of the cache to
 /// be judged — the judge consumes the view directly. The
 /// lifetime is that of the resident cache borrow held across the judge phase;
