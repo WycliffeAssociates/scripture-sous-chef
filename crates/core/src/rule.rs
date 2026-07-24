@@ -199,10 +199,19 @@ pub(crate) fn map_books<T: Send>(
     books: &Books<'_>,
     f: impl Fn(&BookGroup<'_>) -> T + Sync,
 ) -> Vec<T> {
+    #[cfg(any(test, feature = "test-probes"))]
+    let _guard = fanout::Guard::enter("map_books");
     #[cfg(feature = "parallel")]
     {
         use rayon::prelude::*;
-        books.par_iter().map(&f).collect()
+        books
+            .par_iter()
+            .map(|group| {
+                #[cfg(any(test, feature = "test-probes"))]
+                let _worker = fanout::Guard::worker();
+                f(group)
+            })
+            .collect()
     }
     #[cfg(not(feature = "parallel"))]
     {
@@ -210,35 +219,195 @@ pub(crate) fn map_books<T: Send>(
     }
 }
 
+/// The minimum dirty-chapter map work — measured as bytes of verse text, the
+/// cheapest honest proxy available before the work runs — below which fanning out
+/// by chapter costs more in scheduling than it saves.
+///
+/// It is a **performance route only**: every route produces byte-identical
+/// output, so this value can never affect a finding. Calibrated on one-book cold
+/// maps (3JN / MAT / PSA and a ladder of PSA prefixes), 10 cores: the direct
+/// lane's own crossover sits near 8–11 KB, but a whole default-config analyze
+/// still loses up to 8% at that size — fanning out one lane while every other
+/// phase is serial costs more than the lane saves — and only stops regressing
+/// around 22–24 KB. 32 KB keeps a margin over that neutral point, so no config
+/// regresses, while every book large enough for the fan-out to matter (MAT
+/// ~121 KB, PSA ~217 KB) clears it comfortably.
+pub const PARALLEL_MIN_CHAPTER_MAP_BYTES: usize = 32 * 1024;
+
+/// The threshold in force. A `bench-probes` build lets the calibration harness
+/// move it so serial and chapter-parallel routes can be timed against each other
+/// in one alternating run; every other build reads the calibrated constant.
+#[cfg(feature = "bench-probes")]
+static CHAPTER_MAP_MIN_BYTES: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(PARALLEL_MIN_CHAPTER_MAP_BYTES);
+
+/// Override the chapter fan-out threshold (`bench-probes` builds only — the
+/// calibration harness). Not public API.
+#[cfg(feature = "bench-probes")]
+pub fn set_chapter_map_min_bytes(bytes: usize) {
+    CHAPTER_MAP_MIN_BYTES.store(bytes, std::sync::atomic::Ordering::Relaxed);
+}
+
+fn chapter_map_min_bytes() -> usize {
+    #[cfg(feature = "bench-probes")]
+    {
+        CHAPTER_MAP_MIN_BYTES.load(std::sync::atomic::Ordering::Relaxed)
+    }
+    #[cfg(not(feature = "bench-probes"))]
+    {
+        PARALLEL_MIN_CHAPTER_MAP_BYTES
+    }
+}
+
+/// The single Rayon grain one chapter-map call uses. Exactly one is selected per
+/// call from the dirty map scope, and the two parallel grains are never nested.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MapRoute {
+    /// One map task worth doing, or too little work to schedule: map in place.
+    Serial,
+    /// More than one dirty book: fan out by book, each worker mapping its own
+    /// book's dirty chapters serially. The established grain (ADR 0042).
+    Books,
+    /// Exactly one dirty book with several dirty chapters and enough work: fan
+    /// out by chapter within that book.
+    Chapters,
+}
+
+impl MapRoute {
+    /// A stable label for the work probes.
+    #[cfg(any(test, feature = "test-probes"))]
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            MapRoute::Serial => "serial",
+            MapRoute::Books => "books",
+            MapRoute::Chapters => "chapters",
+        }
+    }
+}
+
+/// Choose the grain from the dirty map scope alone — called once per map call by
+/// the caller, which records it and hands it to the seam, so exactly one decision
+/// exists. Serial builds have no grain to choose. Note the ordering of the tests:
+/// a multi-book scope takes the book grain *before* the chapter threshold is
+/// consulted, so the two can never both apply.
+pub(crate) fn map_route(
+    book_runs: &[std::ops::Range<usize>],
+    work_len: usize,
+    work_bytes: usize,
+) -> MapRoute {
+    if !cfg!(feature = "parallel") {
+        return MapRoute::Serial;
+    }
+    if book_runs.len() > 1 {
+        MapRoute::Books
+    } else if work_len > 1 && work_bytes >= chapter_map_min_bytes() {
+        MapRoute::Chapters
+    } else {
+        MapRoute::Serial
+    }
+}
+
+/// Guards against nesting the two fan-out grains: a seam entered while this
+/// thread is already inside one is a nested fan-out. Rayon runs part of a
+/// `par_iter` on the calling thread, so an inner seam reached from a fanned-out
+/// closure lands here. Test/probe builds only.
+#[cfg(any(test, feature = "test-probes"))]
+mod fanout {
+    use std::cell::Cell;
+
+    thread_local! {
+        static IN_FANOUT: Cell<bool> = const { Cell::new(false) };
+    }
+
+    pub(super) struct Guard(bool);
+
+    impl Guard {
+        pub(super) fn enter(seam: &str) -> Self {
+            let nested = IN_FANOUT.with(Cell::get);
+            assert!(
+                !nested,
+                "nested fan-out: {seam} entered from inside another map fan-out — exactly one \
+                 Rayon grain is selected per map call"
+            );
+            IN_FANOUT.with(|c| c.set(true));
+            Guard(nested)
+        }
+
+        /// Mark a fanned-out worker's thread as inside the fan-out. Rayon injects
+        /// work from a non-pool caller and does not run it on the calling thread,
+        /// so the flag has to travel with the task or a nested seam on a worker
+        /// would look like a fresh top-level call.
+        #[cfg(feature = "parallel")]
+        pub(super) fn worker() -> Self {
+            let previous = IN_FANOUT.with(Cell::get);
+            IN_FANOUT.with(|c| c.set(true));
+            Guard(previous)
+        }
+    }
+
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            IN_FANOUT.with(|c| c.set(self.0));
+        }
+    }
+}
+
 /// Run `f` over every dirty **chapter** work item and collect the outputs **in
 /// caller order** (index-aligned with `work`, which the caller built by walking
 /// the corpus layout). `book_runs` are `work`'s contiguous per-book runs, in
-/// caller order — the corpus layout supplies those ordinals; nothing here derives
-/// an order from a slug or an opaque chapter token.
+/// caller order. `route` is the single grain decision ([`map_route`]).
 ///
-/// Under the `parallel` feature a multi-book dirty set fans out by book (ADR
-/// 0042) and each worker maps its own book's chapters serially. Exactly one Rayon
-/// grain per call: the per-book closure calls `f` directly and never re-enters a
-/// fan-out. The output is identical either way — an indexed collect preserves
-/// input order, and chapter work items are disjoint — so the feature can never
-/// change results, only wall-clock.
+/// The corpus layout supplies every ordinal here: nothing derives an order from a
+/// slug or an opaque chapter token, and each route writes its results back into
+/// the caller-order slot they came from (an indexed `collect` preserves input
+/// order regardless of completion order). So serial and parallel builds — and any
+/// thread count — produce byte-identical output; the route is a wall-clock
+/// decision only.
+///
+/// One grain per call, never nested: the book route's workers map their chapters
+/// serially and the chapter route's workers map exactly one chapter each, and in
+/// both cases the closure they call is `f` itself.
 pub(crate) fn map_chapter_work<W: Sync, T: Send>(
     work: &[W],
     book_runs: &[std::ops::Range<usize>],
+    route: MapRoute,
     f: impl Fn(&W) -> T + Sync,
 ) -> Vec<T> {
-    #[cfg(feature = "parallel")]
-    if book_runs.len() > 1 {
-        use rayon::prelude::*;
-        let per_book: Vec<Vec<T>> = book_runs
-            .par_iter()
-            .map(|run| work[run.clone()].iter().map(&f).collect())
-            .collect();
-        return per_book.into_iter().flatten().collect();
-    }
+    #[cfg(any(test, feature = "test-probes"))]
+    let _guard = fanout::Guard::enter("map_chapter_work");
+    // Only the book route reads the runs; a serial build has no book route.
     #[cfg(not(feature = "parallel"))]
     let _ = book_runs;
-    work.iter().map(&f).collect()
+    match route {
+        MapRoute::Serial => work.iter().map(&f).collect(),
+        #[cfg(feature = "parallel")]
+        MapRoute::Books => {
+            use rayon::prelude::*;
+            let per_book: Vec<Vec<T>> = book_runs
+                .par_iter()
+                .map(|run| {
+                    #[cfg(any(test, feature = "test-probes"))]
+                    let _worker = fanout::Guard::worker();
+                    work[run.clone()].iter().map(&f).collect()
+                })
+                .collect();
+            per_book.into_iter().flatten().collect()
+        }
+        #[cfg(feature = "parallel")]
+        MapRoute::Chapters => {
+            use rayon::prelude::*;
+            work.par_iter()
+                .map(|w| {
+                    #[cfg(any(test, feature = "test-probes"))]
+                    let _worker = fanout::Guard::worker();
+                    f(w)
+                })
+                .collect()
+        }
+        // A serial build never selects a parallel grain.
+        #[cfg(not(feature = "parallel"))]
+        MapRoute::Books | MapRoute::Chapters => unreachable!("serial builds route Serial"),
+    }
 }
 
 /// Every per-verse rule wired in. The registry is complete — including
@@ -315,6 +484,90 @@ pub fn stateful_rules(config: &Config) -> Vec<Box<dyn StatefulRule>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Enough bytes to clear the chapter-fan-out threshold.
+    fn over_threshold() -> usize {
+        PARALLEL_MIN_CHAPTER_MAP_BYTES
+    }
+
+    /// The routing table, exhaustively: one grain per dirty map scope, and the
+    /// two parallel grains are mutually exclusive by construction — a multi-book
+    /// scope takes the book grain before the chapter threshold is even consulted.
+    #[test]
+    fn one_grain_is_selected_per_dirty_map_scope() {
+        let expect_parallel = |route: MapRoute| {
+            if cfg!(feature = "parallel") {
+                route
+            } else {
+                MapRoute::Serial
+            }
+        };
+
+        // Several dirty books: fan out by book, whatever the byte count.
+        assert_eq!(
+            map_route(&[0..3, 3..7], 7, over_threshold()),
+            expect_parallel(MapRoute::Books)
+        );
+        assert_eq!(map_route(&[0..1, 1..2], 2, 1), expect_parallel(MapRoute::Books));
+        // One dirty book, several dirty chapters, enough work: fan out by chapter.
+        assert_eq!(
+            map_route(&[0..12], 12, over_threshold()),
+            expect_parallel(MapRoute::Chapters)
+        );
+        // One dirty chapter: there is only one useful map task.
+        assert_eq!(map_route(&[0..1], 1, over_threshold()), MapRoute::Serial);
+        // Several dirty chapters but too little work to schedule.
+        assert_eq!(map_route(&[0..12], 12, over_threshold() - 1), MapRoute::Serial);
+        // Nothing dirty at all.
+        assert_eq!(map_route(&[], 0, 0), MapRoute::Serial);
+    }
+
+    /// Every route writes its results back into the caller-order slot they came
+    /// from, so the mapped output is index-aligned with `work` regardless of the
+    /// route, the feature, or the thread count. The whole reason a route may be
+    /// chosen for wall-clock alone.
+    #[test]
+    fn every_route_collects_into_caller_order_slots() {
+        // Work items are just their own index; `f` is order-revealing.
+        let work: Vec<usize> = (0..12).collect();
+        let expected: Vec<usize> = work.iter().map(|i| i * 7).collect();
+
+        // one dirty chapter (serial), one book many chapters (chapter route),
+        // several books (book route) — and a below-threshold multi-chapter scope.
+        let scopes: Vec<(Vec<std::ops::Range<usize>>, usize)> = vec![
+            (vec![0..12], over_threshold()),
+            (vec![0..12], 0),
+            (vec![0..3, 3..5, 5..12], over_threshold()),
+            (vec![0..4, 4..8, 8..9, 9..10, 10..11, 11..12], 1),
+        ];
+        for (runs, bytes) in scopes {
+            let route = map_route(&runs, work.len(), bytes);
+            let got = map_chapter_work(&work, &runs, route, |w| w * 7);
+            assert_eq!(got, expected, "route {route:?} reordered results");
+        }
+        // The single-item scope, too.
+        assert_eq!(
+            map_chapter_work(&work[0..1], &[0..1], MapRoute::Serial, |w| w * 7),
+            vec![0]
+        );
+    }
+
+    /// Neither route nests the two Rayon grains: a fan-out entered from inside
+    /// another one trips the thread-local guard. Rayon runs part of a `par_iter`
+    /// on the calling thread, so the inner seam is reached here even in a
+    /// parallel build.
+    #[test]
+    #[should_panic(expected = "nested fan-out")]
+    fn nesting_a_fan_out_inside_the_chapter_seam_is_rejected() {
+        let work: Vec<usize> = (0..12).collect();
+        let inner: Vec<usize> = (0..4).collect();
+        let outer = map_route(&[0..12], work.len(), over_threshold());
+        let _ = map_chapter_work(&work, &[0..12], outer, |w| {
+            map_chapter_work(&inner, &[0..4], MapRoute::Serial, |x| x + w)
+                .into_iter()
+                .sum::<usize>()
+        });
+    }
 
     /// The safety property the whole prefilter rests on (ADR 0046, ported from
     /// the spike's corpus-wide assertion): every per-verse rule's gate is a

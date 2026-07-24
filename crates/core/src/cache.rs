@@ -99,6 +99,9 @@ pub(crate) struct PrepSection {
     walk_hits: usize,
     #[cfg(any(test, feature = "test-probes"))]
     walk_misses: usize,
+    /// The direct lane's map grain on the most recent call.
+    #[cfg(any(test, feature = "test-probes"))]
+    direct_route: &'static str,
     /// Books re-tallied (entered the counting scope) on the most recent call —
     /// the counting-side probe, distinct from walk reuse: a knob-only change
     /// clears prep (so every book re-walks for sites) yet re-tallies nothing.
@@ -433,6 +436,10 @@ pub struct CacheProbe {
     /// recent analyze. A chapter whose cached product was reused keeps its
     /// records untouched, so this equals that call's direct-lane miss count.
     pub direct_chapters_patched: usize,
+    /// Which single map grain the direct lane used on the most recent analyze —
+    /// `"serial"`, `"books"`, or `"chapters"`. A route is a wall-clock decision
+    /// only: every route produces byte-identical output.
+    pub direct_map_route: &'static str,
     /// Spacing substrate work on the most recent analyze: chapters mapped,
     /// chapters reduced, and keys (marks) judged. A judging-knob change leaves
     /// `spacing_mapped`/`spacing_reduced` at zero (observations + reductions
@@ -468,6 +475,7 @@ impl AnalysisCache {
         p.spacing_reduced = self.substrates.spacing.reduced;
         p.spacing_judged = self.substrates.spacing.judged;
         p.direct_chapters_patched = self.findings.chapters_patched;
+        p.direct_map_route = self.prep.direct_route;
         p
     }
 
@@ -518,6 +526,12 @@ impl AnalysisCache {
 
     pub(crate) fn store_walk(&mut self, slug: &str, hash: u128, output: &BookOut) {
         self.prep.store_walk(slug, hash, output);
+    }
+
+    /// Record the direct lane's map grain for this call.
+    #[cfg(any(test, feature = "test-probes"))]
+    pub(crate) fn note_direct_route(&mut self, route: crate::rule::MapRoute) {
+        self.prep.direct_route = route.label();
     }
 
     /// Record how many books were re-tallied (the counting scope) this call.
@@ -587,6 +601,8 @@ impl PrepSection {
             #[cfg(any(test, feature = "test-probes"))]
             direct_misses: 0,
             #[cfg(any(test, feature = "test-probes"))]
+            direct_route: "serial",
+            #[cfg(any(test, feature = "test-probes"))]
             walk_hits: 0,
             #[cfg(any(test, feature = "test-probes"))]
             walk_misses: 0,
@@ -604,6 +620,7 @@ impl PrepSection {
             walk_misses: self.walk_misses,
             retallied: self.retallied,
             direct_chapters_patched: 0,
+            direct_map_route: "serial",
             // Filled by `AnalysisCache::probe` from the substrate section.
             spacing_mapped: 0,
             spacing_reduced: 0,

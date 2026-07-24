@@ -77,6 +77,13 @@ pub mod bench {
     pub fn last() -> PhaseTimings {
         LAST.with(Cell::get)
     }
+
+    /// The shipped chapter-fan-out work threshold, and the override the
+    /// serial-vs-chapter-parallel calibration uses to time both routes in one
+    /// alternating run. A route is a wall-clock decision only — moving this
+    /// cannot change a finding — which is why an override is safe to expose to a
+    /// measurement build and to nothing else.
+    pub use crate::rule::{PARALLEL_MIN_CHAPTER_MAP_BYTES, set_chapter_map_min_bytes};
 }
 #[cfg(feature = "bench-probes")]
 pub use stream::{FloorNeeds, walk_floor};
@@ -425,12 +432,20 @@ fn transition(
     let mut direct_work: Vec<DirectWork<'_>> = Vec::new();
     let mut direct_book_runs: Vec<std::ops::Range<usize>> = Vec::new();
     let mut direct_dirty: Vec<(Box<str>, Box<str>, u128)> = Vec::new();
+    // The dirty work's size, for the map seam's route decision only. Summing
+    // already-known string lengths, so it costs one integer add per dirty verse
+    // and reads no text.
+    let mut direct_bytes = 0usize;
     for book in target.book_layout() {
         let run_start = direct_work.len();
         for chapter in &book.chapters {
             let map_needed =
                 !cache.direct_chapter_valid(&book.slug, &chapter.chapter, chapter.hash);
             if map_needed {
+                direct_bytes += target_texts[chapter.range.clone()]
+                    .iter()
+                    .map(String::len)
+                    .sum::<usize>();
                 direct_work.push(DirectWork {
                     slug: &book.slug,
                     chapter: &chapter.chapter,
@@ -457,7 +472,10 @@ fn transition(
     // Map the dirty chapters (one Rayon grain — see `map_chapter_work`) and warm
     // each product into the lane. The records are chapter-local, so they are
     // stored exactly as produced; nothing is rebased here.
-    let fresh = rule::map_chapter_work(&direct_work, &direct_book_runs, |w| {
+    let direct_route = rule::map_route(&direct_book_runs, direct_work.len(), direct_bytes);
+    #[cfg(any(test, feature = "test-probes"))]
+    cache.note_direct_route(direct_route);
+    let fresh = rule::map_chapter_work(&direct_work, &direct_book_runs, direct_route, |w| {
         chapter_verse_records(w.texts, &per_verse)
     });
     for (w, records) in direct_work.iter().zip(fresh) {
@@ -2448,6 +2466,89 @@ mod tests {
             analyze_with_config(&edited, None, &cfg),
             "the patched result equals a cold complete analysis"
         );
+    }
+
+    /// A one-book corpus of `chapters` chapters × `verses` verses, each verse
+    /// padded to `pad` bytes so a test can put the map seam above or below its
+    /// work threshold deliberately.
+    fn wide_book(slug: &str, chapters: usize, verses: usize, pad: usize) -> Corpus {
+        let mut keys = Vec::new();
+        let mut texts = Vec::new();
+        for c in 1..=chapters {
+            for v in 1..=verses {
+                keys.push(format!("{slug} {c}:{v}"));
+                // Deliberately dirty text (double space, stray bracket) so the
+                // per-verse rules actually fire, then padding for bulk.
+                texts.push(format!("a  b) {}", "word ".repeat(pad / 5)));
+            }
+        }
+        Corpus::try_from_parts(keys, texts).unwrap()
+    }
+
+    /// One dirty book with many dirty chapters takes the chapter grain; several
+    /// dirty books take the book grain; one dirty chapter stays serial. The
+    /// engine-level witness that the routing table is actually reached (the
+    /// routing decision itself is unit-tested in `rule`).
+    #[test]
+    fn the_direct_lane_routes_by_dirty_map_scope() {
+        let cfg = Config::v1_defaults();
+        fn expect(route: &'static str) -> &'static str {
+            if cfg!(feature = "parallel") { route } else { "serial" }
+        }
+
+        // Cold, one book, 40 chapters, well over the byte threshold.
+        let one_book = wide_book("PSA", 40, 6, 400);
+        let mut cache = AnalysisCache::new();
+        analyze_resident(&one_book, None, &cfg, None, &mut cache).unwrap();
+        assert_eq!(cache.probe().direct_map_route, expect("chapters"));
+
+        // Cold, several books.
+        let mut keys = Vec::new();
+        let mut texts = Vec::new();
+        for slug in ["GEN", "EXO", "LEV"] {
+            let b = wide_book(slug, 10, 6, 400);
+            keys.extend(b.keys().to_vec());
+            texts.extend(b.texts().to_vec());
+        }
+        let many_books = Corpus::try_from_parts(keys, texts).unwrap();
+        let mut cache = AnalysisCache::new();
+        analyze_resident(&many_books, None, &cfg, None, &mut cache).unwrap();
+        assert_eq!(cache.probe().direct_map_route, expect("books"));
+
+        // Warm, one chapter edited: one map task, so nothing to fan out.
+        let mut cache = AnalysisCache::new();
+        let (_, prior) = analyze_resident(&one_book, None, &cfg, None, &mut cache).unwrap();
+        let mut edited = one_book.clone();
+        edited
+            .replace_chapter(crate::corpus::ChapterBlock {
+                slug: "PSA".into(),
+                chapter: "7".into(),
+                keys: (1..=6).map(|v| format!("PSA 7:{v}")).collect(),
+                texts: (1..=6).map(|_| "edited  text)".to_string()).collect(),
+            })
+            .unwrap();
+        analyze_resident(&edited, None, &cfg, Some(prior), &mut cache).unwrap();
+        assert_eq!(cache.probe().direct_map_route, "serial");
+    }
+
+    /// Mapper output is identical regardless of thread count. The chapter route
+    /// writes each result back into the caller-order slot it came from, so
+    /// completion order cannot reach the answer.
+    #[cfg(feature = "parallel")]
+    #[test]
+    fn mapper_output_is_identical_regardless_of_thread_count() {
+        let cfg = Config::all();
+        let one_book = wide_book("PSA", 40, 6, 400);
+        let reference = analyze_with_config(&one_book, None, &cfg);
+        assert!(!reference.is_empty(), "the fixture fires rules");
+        for threads in [1usize, 2, 3, 7, 16] {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .unwrap();
+            let got = pool.install(|| analyze_with_config(&one_book, None, &cfg));
+            assert_eq!(got, reference, "{threads} threads changed the answer");
+        }
     }
 
     /// The two lanes' stamps are independent, and that is what makes a retry

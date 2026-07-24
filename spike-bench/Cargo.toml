@@ -30,6 +30,7 @@ ssc-galley = { path = "../crates/galley" }
 rustc-hash = "2"
 unicode-segmentation = "1.12"
 dhat = "0.3"
+rayon = { version = "1", optional = true }
 
 [features]
 # Nightly-only: gates the M4b portable-`std::simd` variant in
@@ -39,6 +40,10 @@ dhat = "0.3"
 # worktree runs it). Without this feature the crate builds on stable as
 # normal; nothing else depends on it.
 nightly-simd = []
+# Turns on ssc-core's native fan-out, for the spikes that measure a parallel
+# route (`chapter_map_threshold`). Off by default: the warm-ladder harness
+# measures the editor-representative serial path.
+parallel = ["ssc-core/parallel", "dep:rayon"]
 
 [profile.release]
 opt-level = 3
