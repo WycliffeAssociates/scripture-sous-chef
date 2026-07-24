@@ -140,8 +140,6 @@ fn rarity(count: u64, k: f64) -> f64 {
 /// forced shape of its (last-seen) occurrence. Only consulted for hapax
 /// containers, which occur once, so last-seen is unambiguous there.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(default))]
 struct WordInfo {
     tokens: u32,
     titlecase: bool,
@@ -151,8 +149,6 @@ struct WordInfo {
 /// One book's contribution: the full scalar inventory (census substrate) plus
 /// word-level detail confined to locally-rare letter glyphs.
 #[derive(Debug, Clone, Default, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(default))]
 pub(crate) struct BookGlyphs {
     /// Every scalar in the book (ADR 0053 census substrate).
     pub(crate) inventory: BTreeMap<char, u32>,
@@ -169,7 +165,6 @@ pub(crate) struct BookGlyphs {
 /// book. Corpus-wide quantities are the sums over books, derived at `judge`.
 /// Doubles as the future glyph-census accumulator (ADR 0053).
 #[derive(Debug, Clone, Default, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct RareGlyphStats {
     pub(crate) per_book: BTreeMap<Box<str>, BookGlyphs>,
 }

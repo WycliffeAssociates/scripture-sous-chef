@@ -46,7 +46,6 @@ pub const PUNCTUATION_ADJACENCY_ANOMALY: RuleId = RuleId::PunctuationAdjacencyAn
 /// ZWSP-/punctuation-pervasive corpus. Patterns keyed by their exact run string
 /// (`",,"`, `"?!?"`, `"፤፤"`), so `??`/`???`/`????` stay distinct.
 #[derive(Debug, Clone, Default, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub(crate) struct BookPunctuationAdjacency {
     lead_opportunities: BTreeMap<char, u64>,
     pattern_counts: BTreeMap<String, u64>,
@@ -56,7 +55,6 @@ pub(crate) struct BookPunctuationAdjacency {
 /// supersedes only its book. Corpus-wide `k` and `N_start` are the sums over
 /// books, derived at `judge`.
 #[derive(Debug, Clone, Default, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct PunctuationAdjacencyStats {
     pub(crate) per_book: BTreeMap<Box<str>, BookPunctuationAdjacency>,
 }
@@ -591,7 +589,6 @@ const fn cell_index(side: Side, class: PoolClass, form: SideForm) -> usize {
 /// per-side table). **No sites** — spans re-derive from the text at `judge`, so
 /// this stays a few dozen bytes per mark even corpus-wide.
 #[derive(Debug, Clone, Default, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub(crate) struct BookPunctuationSpacing {
     pub(crate) per_mark: BTreeMap<char, [u64; SIDE_CELLS]>,
 }
@@ -599,7 +596,6 @@ pub(crate) struct BookPunctuationSpacing {
 /// Cached spacing aggregates, keyed by book code so an edit supersedes only its
 /// book. Corpus-wide counts are the sums over books, derived at `judge`.
 #[derive(Debug, Clone, Default, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct PunctuationSpacingStats {
     pub(crate) per_book: BTreeMap<Box<str>, BookPunctuationSpacing>,
 }

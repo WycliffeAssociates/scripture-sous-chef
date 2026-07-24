@@ -110,24 +110,13 @@ pub(crate) fn is_letter_token(word: &str) -> bool {
     has_letter
 }
 
-#[cfg(feature = "serde")]
-fn is_zero(n: &u32) -> bool {
-    *n == 0
-}
-
 /// One case-folded word type's raw shape counts within one book. Raw and
 /// mergeable — no dominance, no censoring — so book-supersede holds.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(default))]
 pub(crate) struct ShapeProfile {
-    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "is_zero"))]
     pub(crate) lower: u32,
-    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "is_zero"))]
     pub(crate) title: u32,
-    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "is_zero"))]
     pub(crate) allcaps: u32,
-    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "is_zero"))]
     pub(crate) other: u32,
 }
 
@@ -164,8 +153,6 @@ impl ShapeProfile {
 
 /// One book's contribution: the per-word shape table.
 #[derive(Debug, Clone, Default, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(default))]
 pub(crate) struct BookMixedCase {
     pub(crate) words: BTreeMap<String, ShapeProfile>,
 }
@@ -173,7 +160,6 @@ pub(crate) struct BookMixedCase {
 /// Cached mixed-case statistics, keyed by book so an edit supersedes only its
 /// book. Corpus-wide profiles are the sums over books, derived at `judge`.
 #[derive(Debug, Clone, Default, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct MixedCaseStats {
     pub(crate) per_book: BTreeMap<Box<str>, BookMixedCase>,
 }

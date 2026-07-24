@@ -108,7 +108,6 @@ pub struct MixedScriptSite {
 /// per-script token counts (how many tokens contain each script at all — the
 /// dominant-script denominator's raw material). **No sites.**
 #[derive(Debug, Clone, Default, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub(crate) struct BookMixedScript {
     signature_counts: BTreeMap<String, u64>,
     script_tokens: BTreeMap<String, u64>,
@@ -117,7 +116,6 @@ pub(crate) struct BookMixedScript {
 /// Cached mixed-script aggregates, keyed by book so an edit supersedes only its
 /// book. Corpus-wide counts are the sums over books, derived at `judge`.
 #[derive(Debug, Clone, Default, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct MixedScriptStats {
     pub(crate) per_book: BTreeMap<Box<str>, BookMixedScript>,
 }

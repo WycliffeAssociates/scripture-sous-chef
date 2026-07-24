@@ -46,7 +46,6 @@ const MAD_TO_SIGMA: f64 = 0.6745;
 /// global `KeyIdx` only at `judge` time, against the current call's
 /// `BookGroup::base`. `f32` ratio, `u32` byte length for the finding range.
 #[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub(crate) struct RatioObs {
     local_idx: LocalKeyIdx,
     ratio: f32,
@@ -56,7 +55,6 @@ pub(crate) struct RatioObs {
 /// Cached proportionality statistics: the raw ratios keyed by book, so
 /// an edit supersedes only its book and the median/MAD is derived at `judge`.
 #[derive(Debug, Clone, Default, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ProportionalityStats {
     pub(crate) per_book: BTreeMap<Box<str>, Vec<RatioObs>>,
 }

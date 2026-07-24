@@ -299,7 +299,6 @@ pub const PUNCT_ONLY_TOKEN: RuleId = RuleId::PunctOnlyToken;
 /// One book's aggregate contribution: whitespace-unit count and per-chunk
 /// candidate counts, keyed by the exact chunk text.
 #[derive(Debug, Clone, Default, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub(crate) struct BookPunctOnlyToken {
     lexical_units: u64,
     chunks: BTreeMap<String, u64>,
@@ -308,7 +307,6 @@ pub(crate) struct BookPunctOnlyToken {
 /// Cached punct-only-token aggregates, partitioned by book so incremental
 /// analysis can supersede one book without retaining occurrence sites.
 #[derive(Debug, Clone, Default, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct PunctOnlyTokenStats {
     pub(crate) per_book: BTreeMap<Box<str>, BookPunctOnlyToken>,
 }
@@ -626,7 +624,6 @@ pub const REPEATED_CHARACTER_RUN: RuleId = RuleId::RepeatedCharacterRun;
 /// form contains a run. Folding before that gate lets `Eee` establish the same
 /// word convention as `eee` without storing general word frequencies.
 #[derive(Debug, Clone, Default, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub(crate) struct BookRepeatedCharacterRun {
     lexical_units: u64,
     cluster_runs: BTreeMap<String, u64>,
@@ -636,7 +633,6 @@ pub(crate) struct BookRepeatedCharacterRun {
 /// Cached repeated-run aggregates, partitioned by book so incremental analysis
 /// can supersede one book without retaining occurrence sites.
 #[derive(Debug, Clone, Default, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct RepeatedCharacterRunStats {
     pub(crate) per_book: BTreeMap<Box<str>, BookRepeatedCharacterRun>,
 }
