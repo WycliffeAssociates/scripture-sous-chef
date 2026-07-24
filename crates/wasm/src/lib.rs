@@ -10,7 +10,9 @@
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
-use ssc_core::{analyze_with_config, Config, Corpus, FindingArgs, RuleId, Severity};
+use ssc_core::{
+    analyze_with_config, AnalysisId, Config, Corpus, FindingArgs, RuleId, TargetContextId,
+};
 use tsify::Tsify;
 use wasm_bindgen::prelude::*;
 
@@ -251,152 +253,39 @@ pub struct SousConfig {
     pub mixed_case: Option<MixedCaseOverrides>,
 }
 
-/// A finding as the editor sees it: UTF-16 ranges; `code`/`severity` are
-/// the closed `RuleId`/`Severity` string unions (a new rule shows up as a
-/// new union member, so exhaustive consumer maps fail to typecheck until
-/// they handle it).
+/// The analysis-input set every entry point takes as one typed object:
+/// the complete target corpus, an optional parallel reference, and an
+/// optional config (omitted ⇒ `Config::v1_defaults()`). A single typed
+/// object rather than positional args because the shape exceeds
+/// `(required, optional?)` — an optional before another optional is a
+/// footgun positionally (owner decision, progress Entry 11). Shared by the
+/// `Galley` constructor and stateless [`analyze_vref`]: one wire shape.
+/// TS: `{ target: VrefCorpus, source?: VrefCorpus, config?: SousConfig }`.
+#[derive(Deserialize, Tsify)]
+#[tsify(from_wasm_abi)]
+pub struct GalleyArgs {
+    pub target: VrefCorpus,
+    #[serde(default)]
+    #[tsify(optional)]
+    pub source: Option<VrefCorpus>,
+    #[serde(default)]
+    #[tsify(optional)]
+    pub config: Option<SousConfig>,
+}
+
+/// The lazy args of one finding, cloned out of the resident `Galley` on the
+/// low-volume detail path (§A.3.3). Absence (a no-interpolation rule) is
+/// `null`, matching the record's cleared `has_args` bit. TS: `FindingArgs |
+/// null`.
 #[derive(Serialize, Tsify)]
 #[tsify(into_wasm_abi)]
-pub struct Finding {
-    pub sid: String,
-    pub code: RuleId,
-    pub severity: Severity,
-    /// UTF-16 code-unit offsets into the verse text.
-    pub start: u32,
-    pub end: u32,
-    pub score: Option<f32>,
-    /// Structured args for the consumer's interpolated message (the
-    /// `FindingArgs` closed union); `None` for no-interpolation rules.
-    pub args: Option<FindingArgs>,
-}
+pub struct FindingArgsOut(pub Option<FindingArgs>);
 
-/// The return type. TS: `Finding[]`.
+/// A positional batch of lazy args, parallel to the requested indices
+/// (duplicates and `null`s preserved in order). TS: `(FindingArgs | null)[]`.
 #[derive(Serialize, Tsify)]
 #[tsify(into_wasm_abi)]
-pub struct Findings(pub Vec<Finding>);
-
-/// Bench-only (`bench-probes` feature): synthesizes one realistic `Finding`
-/// at cycle position `i`, picking from a handful of real `RuleId` variants
-/// — some with the `args` payload the real rule carries, some without, one
-/// scored, one not — with a verse-ref-shaped `sid` that advances
-/// deterministically. Used by [`bench_synthetic_findings`] to build a
-/// `Findings` set that looks like real `analyze_vref` output without
-/// invoking any corpus construction or rule compute, so a timing harness
-/// measures only the marshaling step.
-#[cfg(feature = "bench-probes")]
-fn synthetic_finding(i: u32) -> Finding {
-    const BOOKS: [&str; 5] = ["MAT", "MRK", "LUK", "JHN", "ACT"];
-    let book = BOOKS[(i as usize / 20) % BOOKS.len()];
-    let chapter = (i / 20) % 28 + 1;
-    let verse = (i % 20) + 1;
-    let sid = format!("{book} {chapter}:{verse}");
-    let start = i % 50;
-    let end = start + 5;
-    match i % 5 {
-        0 => Finding {
-            sid,
-            code: RuleId::ExcessHWhitespace,
-            severity: Severity::Warning,
-            start,
-            end,
-            score: None,
-            args: None,
-        },
-        1 => Finding {
-            sid,
-            code: RuleId::DuplicateWord,
-            severity: Severity::Warning,
-            start,
-            end,
-            score: None,
-            args: Some(FindingArgs::DuplicateWord {
-                first_sid: format!("{book} {chapter}:{}", verse.max(1)),
-            }),
-        },
-        2 => Finding {
-            sid,
-            code: RuleId::PunctuationAdjacencyAnomaly,
-            severity: Severity::Warning,
-            start,
-            end,
-            score: Some(0.82),
-            args: Some(FindingArgs::AdjacencyEvidence {
-                pattern: "..".to_string(),
-                k: 3,
-                lead_n: 120,
-                books: 4,
-                corpus: 66,
-            }),
-        },
-        3 => Finding {
-            sid,
-            code: RuleId::RareGlyph,
-            severity: Severity::Info,
-            start,
-            end,
-            score: Some(0.61),
-            args: Some(FindingArgs::RareGlyph {
-                glyph: 'ẃ',
-                count: 7,
-            }),
-        },
-        _ => Finding {
-            sid,
-            code: RuleId::MixedCaseWord,
-            severity: Severity::Warning,
-            start,
-            end,
-            score: Some(0.95),
-            args: Some(FindingArgs::MixedCaseWord {
-                word: "dios".to_string(),
-                other: 1,
-                total: 41,
-            }),
-        },
-    }
-}
-
-/// Bench-only (`bench-probes` feature): `count` synthetic-but-realistic
-/// `Finding`s, returned through the exact same marshaling path `analyze_vref`
-/// uses (`Findings` → `tsify::into_wasm_abi`). Isolates wasm→JS marshaling
-/// cost from compute cost — building `count` synthetic findings natively is
-/// cheap and roughly known from the separate Rust-allocation-cost
-/// measurement, so whatever this costs beyond that is the marshaling step.
-/// Not part of the crate's real public API — no downstream consumer (the
-/// editor) enables `bench-probes`.
-#[cfg(feature = "bench-probes")]
-#[wasm_bindgen]
-pub fn bench_synthetic_findings(count: u32) -> Findings {
-    Findings((0..count).map(synthetic_finding).collect())
-}
-
-/// Bench-only (`bench-probes` feature): the packed-buffer alternative to
-/// [`bench_synthetic_findings`] — `count` conceptually-equivalent findings,
-/// packed into a flat `count * 16`-byte layout (1 byte rule-id slot, 2 bytes
-/// key_idx, 2 bytes span start, 2 bytes span end, 9 bytes unused/zero; the
-/// exact bit layout isn't load-bearing, only a realistic per-record size),
-/// returned as raw bytes (`Vec<u8>` marshals to a JS `Uint8Array`). Isolates
-/// wasm→JS marshaling cost for the competing packed-buffer design, against
-/// the same synthetic cycle used above. Not part of the crate's real public
-/// API — no downstream consumer (the editor) enables `bench-probes`.
-#[cfg(feature = "bench-probes")]
-#[wasm_bindgen]
-pub fn bench_synthetic_findings_packed(count: u32) -> Vec<u8> {
-    const RECORD_LEN: usize = 16;
-    let mut buf = vec![0u8; count as usize * RECORD_LEN];
-    for i in 0..count {
-        let rec = &mut buf[(i as usize) * RECORD_LEN..(i as usize + 1) * RECORD_LEN];
-        rec[0] = (i % 5) as u8; // rule id slot, mirrors the 5-variant cycle above
-        let key_idx = (i % 5_000) as u16; // realistic small-corpus verse index
-        let start = (i % 50) as u16;
-        let end = start + 5;
-        rec[1..3].copy_from_slice(&key_idx.to_le_bytes());
-        rec[3..5].copy_from_slice(&start.to_le_bytes());
-        rec[5..7].copy_from_slice(&end.to_le_bytes());
-        // remaining 9 bytes stay zero — unused in this bench layout.
-    }
-    buf
-}
+pub struct FindingsArgsOut(pub Vec<Option<FindingArgs>>);
 
 /// Build core's `Config` from the shipped defaults (P2 rules off) plus the
 /// caller's explicit per-rule entries and knob overrides.
@@ -524,42 +413,30 @@ fn build_config(config: Option<SousConfig>) -> Config {
     cfg
 }
 
-/// Project core findings (byte ranges) to the editor's UTF-16 ranges,
-/// resolving each `key_idx` against its verse text.
-fn project(target: &Corpus, findings: &[ssc_core::Finding]) -> Vec<Finding> {
-    findings
-        .iter()
-        .map(|f| {
-            let text = target.text(f.key_idx);
-            let u16 = f.range.to_utf16(text);
-            Finding {
-                sid: target.key(f.key_idx).to_string(),
-                code: f.code,
-                severity: f.severity,
-                start: u16.start,
-                end: u16.end,
-                score: f.score,
-                args: f.args.clone(),
-            }
-        })
-        .collect()
-}
-
-/// Analyze a vref corpus. `source` is an optional parallel corpus; `config`
-/// overrides the shipped defaults (omitted ⇒ `Config::v1_defaults()`:
-/// language-agnostic rules on, convention-dependent rules off). Returns
-/// findings with UTF-16 ranges.
+/// Analyze a vref corpus and return the packed findings buffer (§A.1): a
+/// 32-byte header plus one fixed 16-byte record per finding, ready to cross
+/// wasm→JS as one `Uint8Array` and worker→main as a transferred
+/// `ArrayBuffer`. The header carries the same content-derived `analysis_id`
+/// a resident [`Galley`] would mint for the same target + optional reference
+/// + config (this one-shot path hashes both supplied corpora fresh).
+///
+/// This is the compact one-shot surface: list-row summaries come from the
+/// per-code digest packed in each record, but full `FindingArgs` are **not**
+/// reachable — there is no args accessor without a resident handle. A
+/// consumer needing detailed messages uses [`Galley`]. Decode with the
+/// official `decodeFindings(bytes, target.keys)`.
 #[wasm_bindgen]
-pub fn analyze_vref(
-    target: VrefCorpus,
-    source: Option<VrefCorpus>,
-    config: Option<SousConfig>,
-) -> Result<Findings, JsError> {
-    let target = to_corpus_or_reject(target)?;
-    let source = source.map(to_corpus_or_reject).transpose()?;
-    let cfg = build_config(config);
+pub fn analyze_vref(args: GalleyArgs) -> Result<Vec<u8>, JsError> {
+    let target = to_corpus_or_reject(args.target)?;
+    let source = args.source.map(to_corpus_or_reject).transpose()?;
+    let cfg = build_config(args.config);
     let findings = analyze_with_config(&target, source.as_ref(), &cfg);
-    Ok(Findings(project(&target, &findings)))
+    // Same content-derived identity as the resident path; the stateless path
+    // hashes the freshly built corpora (negligible on this one-shot call).
+    let tcid = TargetContextId::compute(&target, &cfg);
+    let aid = AnalysisId::compute(&target, source.as_ref(), &cfg);
+    ssc_wire::pack(&findings, &target, tcid, aid, source.is_some())
+        .map_err(|e| JsError::new(&e.to_string()))
 }
 
 /// One rule's human-facing card (ADR 0038): plain-language title, what a
@@ -732,24 +609,169 @@ impl From<ssc_core::MutationEffect> for MutationEffect {
 #[wasm_bindgen]
 pub struct Galley {
     inner: ssc_galley::Galley,
+    /// The `analysis_id` of the last successful [`analyze`](Galley::analyze)
+    /// pack — the resident wire publication, and the only id the lazy args
+    /// accessors accept. `None` before the first successful pack and after any
+    /// `Changed`/positive-removal mutation stales it. Not the whole
+    /// `Vec<Finding>` (§A.3.2): only the id and the args table are retained.
+    last_analysis_id: Option<u64>,
+    /// The published lazy-args table, positionally parallel to the last
+    /// successful analyze's records (§A.3.3). Moved out of the findings after a
+    /// successful pack; kept in lockstep with `last_analysis_id`.
+    last_args: Vec<Option<FindingArgs>>,
+}
+
+/// Why a lazy args request is refused (§A.3.3). `Display` names the category
+/// and the relevant values so the thrown `JsError` is diagnosable.
+#[derive(Debug)]
+enum ArgsError {
+    /// No analyze has succeeded yet, so there is no published id/args table.
+    NoAnalysis,
+    /// The requested id is not the current publication's (a stale snapshot;
+    /// the caller must reconcile against the newest analyze).
+    StaleId { requested: u64, current: u64 },
+    /// A requested record index is beyond the published record count.
+    IndexOutOfRange { index: u32, count: usize },
+}
+
+impl std::fmt::Display for ArgsError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ArgsError::NoAnalysis => {
+                write!(f, "no successful analysis: call analyze() before requesting args")
+            }
+            ArgsError::StaleId { requested, current } => write!(
+                f,
+                "stale analysis id {requested}: the current publication is {current}"
+            ),
+            ArgsError::IndexOutOfRange { index, count } => {
+                write!(f, "record index {index} out of range (current record count {count})")
+            }
+        }
+    }
+}
+
+/// Test-only pack-failure injection (§A.3.2 / §3.3 `EngineCurrentWireStale`).
+/// A fire-once thread-local armed by a test to force the next pack to fail so
+/// the retry/publication-preservation path is exercised — the real engine
+/// never emits a finding `ssc_wire::pack` rejects, so this is the only way to
+/// reach that boundary. Compiles to nothing off `test`.
+#[cfg(test)]
+mod pack_fault {
+    use std::cell::Cell;
+    thread_local!(static ARMED: Cell<bool> = const { Cell::new(false) });
+    /// Arm the next pack to fail once.
+    pub fn arm() {
+        ARMED.with(|a| a.set(true));
+    }
+    /// Consume the armed flag (fire-once): true at most once per `arm`.
+    pub fn take() -> bool {
+        ARMED.with(|a| a.replace(false))
+    }
+}
+
+impl Galley {
+    /// The native-testable analyze core: analyze the inner resident handle,
+    /// derive the content-derived ids and reference presence through the inner
+    /// read-only accessors (they fold authoritative hashes; they never re-hash
+    /// verse text), pack **while borrowing** the findings, and publish the new
+    /// `(analysis_id, args table)` **only after** the pack succeeds. A pack
+    /// failure returns `Err` before any publication write, so the previous
+    /// publication is left untouched — the `EngineCurrentWireStale` state of
+    /// §3.3. Because a failed pack leaves the inner handle `CleanPublished`
+    /// with a warm cache, a retry's `inner.analyze()` reuses every cache entry
+    /// (zero map/reduce/judge, per the ssc-galley no-work re-analyze) and packs
+    /// the same current semantic snapshot.
+    fn analyze_packed(&mut self) -> Result<Vec<u8>, ssc_wire::PackError> {
+        let findings = self.inner.analyze();
+        let tcid = self.inner.expected_target_context_id();
+        let aid = self.inner.expected_analysis_id();
+        let has_reference = self.inner.has_reference();
+        #[cfg(test)]
+        if pack_fault::take() {
+            // Simulate a post-analysis pack failure without any publication write.
+            return Err(ssc_wire::PackError::TooManyRecords {
+                count: findings.len(),
+            });
+        }
+        let bytes = ssc_wire::pack(&findings, self.inner.corpus(), tcid, aid, has_reference)?;
+        // Pack succeeded: publish. Move each finding's args into the table
+        // (never the whole finding), then stamp the id in lockstep.
+        self.last_args = findings.into_iter().map(|f| f.args).collect();
+        self.last_analysis_id = Some(aid.get());
+        Ok(bytes)
+    }
+
+    /// Stale the wire publication when a mutation actually changed the resident
+    /// input (§3.1): drop the id/args table so the args accessors reject until
+    /// the next successful analyze. A proven no-op leaves it intact.
+    fn invalidate_publication_on(&mut self, effect: ssc_core::MutationEffect) {
+        if effect == ssc_core::MutationEffect::Changed {
+            self.last_analysis_id = None;
+            self.last_args.clear();
+        }
+    }
+
+    fn check_current_id(&self, analysis_id: u64) -> Result<(), ArgsError> {
+        match self.last_analysis_id {
+            None => Err(ArgsError::NoAnalysis),
+            Some(current) if current != analysis_id => Err(ArgsError::StaleId {
+                requested: analysis_id,
+                current,
+            }),
+            Some(_) => Ok(()),
+        }
+    }
+
+    fn finding_args_core(&self, analysis_id: u64, index: u32) -> Result<Option<FindingArgs>, ArgsError> {
+        self.check_current_id(analysis_id)?;
+        let i = index as usize;
+        if i >= self.last_args.len() {
+            return Err(ArgsError::IndexOutOfRange {
+                index,
+                count: self.last_args.len(),
+            });
+        }
+        Ok(self.last_args[i].clone())
+    }
+
+    fn findings_args_core(
+        &self,
+        analysis_id: u64,
+        indices: &[u32],
+    ) -> Result<Vec<Option<FindingArgs>>, ArgsError> {
+        self.check_current_id(analysis_id)?;
+        // Validate the WHOLE batch before cloning anything: one bad index
+        // rejects the whole request (§A.3.3).
+        for &index in indices {
+            if index as usize >= self.last_args.len() {
+                return Err(ArgsError::IndexOutOfRange {
+                    index,
+                    count: self.last_args.len(),
+                });
+            }
+        }
+        Ok(indices
+            .iter()
+            .map(|&index| self.last_args[index as usize].clone())
+            .collect())
+    }
 }
 
 #[wasm_bindgen]
 impl Galley {
-    /// Seed the handle. `source` is an optional parallel corpus; `config`
-    /// omitted ⇒ `Config::v1_defaults()`, exactly like the stateless exports.
-    /// The first `analyze` is a full cold pass.
+    /// Seed the handle from a single typed args object (`{ target, source?,
+    /// config? }`; `config` omitted ⇒ `Config::v1_defaults()`, exactly like
+    /// the stateless exports). The first `analyze` is a full cold pass.
     #[wasm_bindgen(constructor)]
-    pub fn new(
-        target: VrefCorpus,
-        source: Option<VrefCorpus>,
-        config: Option<SousConfig>,
-    ) -> Result<Galley, JsError> {
-        let target = to_corpus_or_reject(target)?;
-        let source = source.map(to_corpus_or_reject).transpose()?;
-        let cfg = build_config(config);
+    pub fn new(args: GalleyArgs) -> Result<Galley, JsError> {
+        let target = to_corpus_or_reject(args.target)?;
+        let source = args.source.map(to_corpus_or_reject).transpose()?;
+        let cfg = build_config(args.config);
         Ok(Galley {
             inner: ssc_galley::Galley::new(target, source, cfg),
+            last_analysis_id: None,
+            last_args: Vec::new(),
         })
     }
 
@@ -758,27 +780,37 @@ impl Galley {
     /// Returns the `MutationEffect` — `"unchanged"` for a byte-identical no-op.
     /// Does not analyze.
     pub fn update_book(&mut self, block: BookUpdateIn) -> Result<MutationEffect, JsError> {
-        self.inner
+        let effect = self
+            .inner
             .update_book(block.into())
-            .map(MutationEffect::from)
-            .map_err(|e| JsError::new(&e.to_string()))
+            .map_err(|e| JsError::new(&e.to_string()))?;
+        self.invalidate_publication_on(effect);
+        Ok(effect.into())
     }
 
     /// Replace exactly one existing `(slug, chapter)` run. Atomic; a rejected
     /// block leaves the handle unchanged. Returns the `MutationEffect`. Does
     /// not analyze.
     pub fn update_chapter(&mut self, block: ChapterUpdateIn) -> Result<MutationEffect, JsError> {
-        self.inner
+        let effect = self
+            .inner
             .update_chapter(block.into())
-            .map(MutationEffect::from)
-            .map_err(|e| JsError::new(&e.to_string()))
+            .map_err(|e| JsError::new(&e.to_string()))?;
+        self.invalidate_publication_on(effect);
+        Ok(effect.into())
     }
 
     /// Remove books by slug. Unknown slugs are no-ops; returns the number
-    /// removed (`0` means unchanged).
+    /// removed (`0` means unchanged). A positive count stales the wire
+    /// publication (§3.1).
     pub fn remove_books(&mut self, slugs: Vec<String>) -> u32 {
         let refs: Vec<&str> = slugs.iter().map(String::as_str).collect();
-        self.inner.remove_books(&refs) as u32
+        let removed = self.inner.remove_books(&refs);
+        if removed > 0 {
+            self.last_analysis_id = None;
+            self.last_args.clear();
+        }
+        removed as u32
     }
 
     /// Reseed the whole corpus (project switch, git pull). Books absent from the
@@ -786,7 +818,9 @@ impl Galley {
     /// `MutationEffect` — `"unchanged"` when the new corpus equals the current.
     pub fn replace_corpus(&mut self, target: VrefCorpus) -> Result<MutationEffect, JsError> {
         let corpus = to_corpus_or_reject(target)?;
-        Ok(self.inner.replace_corpus(corpus).into())
+        let effect = self.inner.replace_corpus(corpus);
+        self.invalidate_publication_on(effect);
+        Ok(effect.into())
     }
 
     /// Replace the optional reference (source) corpus. The prior is retained;
@@ -794,7 +828,9 @@ impl Galley {
     /// next analyze. Returns the `MutationEffect`.
     pub fn replace_source(&mut self, source: Option<VrefCorpus>) -> Result<MutationEffect, JsError> {
         let source = source.map(to_corpus_or_reject).transpose()?;
-        Ok(self.inner.replace_source(source).into())
+        let effect = self.inner.replace_source(source);
+        self.invalidate_publication_on(effect);
+        Ok(effect.into())
     }
 
     /// Swap the config. Required (not optional): a config change is explicit,
@@ -802,14 +838,47 @@ impl Galley {
     /// otherwise the prep cache clears and the prior is retained (provenance
     /// decides what re-tallies).
     pub fn update_config(&mut self, config: SousConfig) -> MutationEffect {
-        self.inner.update_config(build_config(Some(config))).into()
+        let effect = self.inner.update_config(build_config(Some(config)));
+        self.invalidate_publication_on(effect);
+        effect.into()
     }
 
-    /// Analyze the resident corpus; findings carry UTF-16 ranges, the same wire
-    /// shape as the stateless [`analyze_vref`].
-    pub fn analyze(&mut self) -> Findings {
-        let findings = self.inner.analyze();
-        Findings(project(self.inner.corpus(), &findings))
+    /// Analyze the resident corpus and return the packed findings buffer
+    /// (§A.1), the same wire shape as the stateless [`analyze_vref`] — a
+    /// 32-byte header plus one 16-byte record per finding, crossing wasm→JS as
+    /// one `Uint8Array` (transfer it worker→main with
+    /// `postMessage(bytes, [bytes.buffer])`). Decode with `decodeFindings(bytes,
+    /// keys)`; open a finding's full detail with [`finding_args`](Galley::finding_args)
+    /// under the header's `analysis_id`. Publishes the new `(analysis_id, args
+    /// table)` only after the pack succeeds; a pack failure leaves the previous
+    /// publication untouched (§3.3 `EngineCurrentWireStale`).
+    pub fn analyze(&mut self) -> Result<Vec<u8>, JsError> {
+        self.analyze_packed().map_err(|e| JsError::new(&e.to_string()))
+    }
+
+    /// The lazy args of one finding from the last successful [`analyze`](Galley::analyze),
+    /// addressed by that analyze's `analysis_id` (the header value) and the
+    /// record `index`. `null` for a no-interpolation rule. Throws if no analyze
+    /// has succeeded, `analysis_id` is not the current publication's, or `index`
+    /// is out of range (§A.3.3). The `analysis_id` marshals as a JS `bigint`.
+    pub fn finding_args(&self, analysis_id: u64, index: u32) -> Result<FindingArgsOut, JsError> {
+        self.finding_args_core(analysis_id, index)
+            .map(FindingArgsOut)
+            .map_err(|e| JsError::new(&e.to_string()))
+    }
+
+    /// Batch form of [`finding_args`](Galley::finding_args): the lazy args for
+    /// `indices`, positionally parallel (duplicates and `null`s preserved). The
+    /// **whole batch** is validated before anything is cloned — one bad index
+    /// rejects the entire request (§A.3.3).
+    pub fn findings_args(
+        &self,
+        analysis_id: u64,
+        indices: Vec<u32>,
+    ) -> Result<FindingsArgsOut, JsError> {
+        self.findings_args_core(analysis_id, &indices)
+            .map(FindingsArgsOut)
+            .map_err(|e| JsError::new(&e.to_string()))
     }
 
     /// Census (absolute inventory) over the resident corpus, serialized to the
@@ -942,17 +1011,19 @@ mod tests {
             keys: vec!["GEN 1:1".to_string(), "GEN 1:1".to_string()],
             texts: vec!["a  b".to_string(), "c  d".to_string()],
         };
-        let findings = analyze_vref(dup, None, None).unwrap();
-        let hits: Vec<_> = findings
-            .0
+        let bytes = analyze_vref(GalleyArgs {
+            target: dup,
+            source: None,
+            config: None,
+        })
+        .unwrap();
+        let snap = ssc_wire::decode(&bytes).unwrap();
+        let hits = snap
+            .records
             .iter()
-            .filter(|f| f.code == RuleId::ExcessHWhitespace)
-            .collect();
-        assert_eq!(
-            hits.len(),
-            2,
-            "both duplicate entries are analyzed independently"
-        );
+            .filter(|r| r.rule == RuleId::ExcessHWhitespace)
+            .count();
+        assert_eq!(hits, 2, "both duplicate entries are analyzed independently");
     }
 
     /// A mismatched-length `VrefCorpus` (the wasm wire shape's equivalent of
@@ -1004,12 +1075,13 @@ mod tests {
         assert!(cfg.is_enabled(RuleId::MixedNormalization));
     }
 
-    /// The wasm projection of a `uni.mixed-normalization` finding: `severity`
-    /// serializes as `"warning"` and `args` carries the `{ kind:
-    /// "normalization", affected, example }` shape, exactly like the native
-    /// wire contract (plan §8.4).
+    /// The packed record of a `uni.mixed-normalization` finding: warning
+    /// severity, `has_args` set, and the u32 `affected` digest (§A.1.1). The
+    /// full `{ kind: "normalization", affected, example }` args stay lazy — the
+    /// resident-Galley args path is exercised in `finding_args_*`; here the
+    /// stateless one-shot proves the record's severity + digest.
     #[test]
-    fn mixed_normalization_projects_warning_severity_and_args() {
+    fn mixed_normalization_packs_warning_severity_and_affected_digest() {
         let corpus = VrefCorpus {
             keys: vec!["GEN 1:1".to_string(), "GEN 1:2".to_string()],
             texts: vec!["caf\u{00E9}".to_string(), "cafe\u{0301}".to_string()],
@@ -1019,45 +1091,327 @@ mod tests {
             rules: Some([(RuleId::MixedNormalization, true)].into_iter().collect()),
             ..Default::default()
         });
-        let findings = analyze_vref(corpus, None, config).unwrap();
-        let hit = findings
-            .0
+        let bytes = analyze_vref(GalleyArgs {
+            target: corpus,
+            source: None,
+            config,
+        })
+        .unwrap();
+        let snap = ssc_wire::decode(&bytes).unwrap();
+        let rec = snap
+            .records
             .iter()
-            .find(|f| f.code == RuleId::MixedNormalization)
+            .find(|r| r.rule == RuleId::MixedNormalization)
             .expect("the mix fires once explicitly enabled");
-        let json = serde_json::to_string(hit).unwrap();
-        assert!(json.contains(r#""severity":"warning""#), "{json}");
-        assert!(json.contains(r#""kind":"normalization""#), "{json}");
-        assert!(json.contains(r#""affected":1"#), "{json}");
+        assert_eq!(rec.severity, ssc_core::Severity::Warning);
+        assert!(rec.has_args);
+        assert_eq!(rec.digest(), ssc_wire::DecodedDigest::U32(1));
     }
 
     /// The wasm `Galley` boundary: construct → edit a book → analyze twice. The
-    /// wrapper projects UTF-16 findings and delegates idempotently (the second
-    /// analyze matches the first), and the edited book's finding surfaces.
+    /// wrapper returns the packed buffer and re-analyze is byte-identical (warm,
+    /// idempotent), and the edited book's finding surfaces in a decoded record.
     #[test]
     fn galley_boundary_construct_edit_analyze_twice() {
-        let mut g = Galley::new(
-            VrefCorpus {
-                keys: vec!["GEN 1:1".to_string(), "GEN 1:2".to_string()],
-                texts: vec!["a  b".to_string(), "one".to_string()],
-            },
+        let mut g = new_galley(
+            &[("GEN 1:1", "a  b"), ("GEN 1:2", "one")],
             None,
             None,
-        )
-        .unwrap();
-        let _ = g.analyze();
+        );
+        let _ = g.analyze_packed().unwrap();
         g.update_book(BookUpdateIn {
             slug: "GEN".to_string(),
             keys: vec!["GEN 1:1".to_string(), "GEN 1:2".to_string()],
             texts: vec!["a  b edited".to_string(), "one".to_string()],
         })
         .unwrap();
-        let a = serde_json::to_string(&g.analyze()).unwrap();
-        let b = serde_json::to_string(&g.analyze()).unwrap();
-        assert_eq!(a, b, "analyze is idempotent through the wasm wrapper");
+        let a = g.analyze_packed().unwrap();
+        let b = g.analyze_packed().unwrap();
+        assert_eq!(a, b, "warm re-analyze is byte-identical through the wrapper");
+        let snap = ssc_wire::decode(&a).unwrap();
         assert!(
-            a.contains("lex.excess-h-whitespace"),
+            snap.records
+                .iter()
+                .any(|r| r.rule == RuleId::ExcessHWhitespace),
             "the edited double-space surfaces"
         );
+    }
+
+    // ── Step 5 (§A.5.3): args accessors, content-derived id, and the
+    //    EngineCurrentWireStale pack-failure path, all at the wasm boundary.
+    //    These drive the native cores (`analyze_packed`/`*_args_core`) because
+    //    `JsError` construction only works under a real wasm runtime; the thin
+    //    `#[wasm_bindgen]` wrappers just map the same result to `JsError`.
+
+    fn vref(pairs: &[(&str, &str)]) -> VrefCorpus {
+        VrefCorpus {
+            keys: pairs.iter().map(|(k, _)| k.to_string()).collect(),
+            texts: pairs.iter().map(|(_, t)| t.to_string()).collect(),
+        }
+    }
+
+    fn new_galley(
+        target: &[(&str, &str)],
+        source: Option<&[(&str, &str)]>,
+        config: Option<SousConfig>,
+    ) -> Galley {
+        Galley::new(GalleyArgs {
+            target: vref(target),
+            source: source.map(vref),
+            config,
+        })
+        .unwrap()
+    }
+
+    fn all_rules() -> SousConfig {
+        // Enable every rule so a corpus exercises args-bearing + scored records.
+        SousConfig {
+            rules: Some(RuleId::ALL.iter().map(|&r| (r, true)).collect()),
+            ..Default::default()
+        }
+    }
+
+    /// The stateless `analyze_vref` and a resident `Galley::analyze` mint the
+    /// **same** content-derived id and byte-identical buffers for the same
+    /// target + reference + config (§A.5.3 / §A.5.4 "stateless id == resident
+    /// id and byte-identical records").
+    #[test]
+    fn stateless_and_resident_are_byte_identical() {
+        let target = [
+            ("GEN 1:1", "the the word here"),
+            ("GEN 1:2", "a  b, joyfullly"),
+        ];
+        for source in [None, Some(&[("GEN 1:1", "x"), ("GEN 1:2", "y")][..])] {
+            let stateless = analyze_vref(GalleyArgs {
+                target: vref(&target),
+                source: source.map(vref),
+                config: Some(all_rules()),
+            })
+            .unwrap();
+            let resident = new_galley(&target, source, Some(all_rules()))
+                .analyze_packed()
+                .unwrap();
+            assert_eq!(stateless, resident, "stateless == resident (source={source:?})");
+            // The header id is content-derived and identical across the two paths.
+            assert_eq!(
+                ssc_wire::decode(&stateless).unwrap().analysis_id,
+                ssc_wire::decode(&resident).unwrap().analysis_id
+            );
+        }
+    }
+
+    /// `finding_args` returns the exact core `FindingArgs` for an args-bearing
+    /// record, `null` for a no-args record; batch order/duplicates/nulls are
+    /// exact; and whole-batch validation rejects on one bad index (§A.3.3). The
+    /// cross-verse duplicate "work" carries `DuplicateWord { first_sid }` args;
+    /// the double space carries none.
+    #[test]
+    fn args_accessors_index_null_batch_and_validation() {
+        let mut g = new_galley(
+            &[("GEN 1:1", "a  b work"), ("GEN 1:2", "work here")],
+            None,
+            Some(all_rules()),
+        );
+        let bytes = g.analyze_packed().unwrap();
+        let snap = ssc_wire::decode(&bytes).unwrap();
+        let id = snap.analysis_id;
+        // Select by the record's own has_args bit so the test never hard-codes a
+        // rule's args policy.
+        let args_i = snap.records.iter().position(|r| r.has_args).expect("an args-bearing record") as u32;
+        let none_i = snap.records.iter().position(|r| !r.has_args).expect("a no-args record") as u32;
+
+        // index -> Some for an args-bearing record; None for a no-args record.
+        assert!(g.finding_args_core(id, args_i).unwrap().is_some());
+        assert!(g.finding_args_core(id, none_i).unwrap().is_none());
+        // the args-bearing record here is the cross-verse duplicate word.
+        assert!(matches!(
+            g.finding_args_core(id, args_i).unwrap(),
+            Some(FindingArgs::DuplicateWord { .. })
+        ));
+
+        // batch: order + duplicates + nulls preserved positionally.
+        let batch = g.findings_args_core(id, &[none_i, args_i, args_i]).unwrap();
+        assert_eq!(batch.len(), 3);
+        assert!(batch[0].is_none());
+        assert!(batch[1].is_some());
+        assert!(batch[2].is_some());
+
+        // one out-of-range index rejects the whole batch; a single bad index too.
+        let n = snap.records.len() as u32;
+        assert!(matches!(
+            g.findings_args_core(id, &[args_i, n]),
+            Err(ArgsError::IndexOutOfRange { .. })
+        ));
+        assert!(matches!(
+            g.finding_args_core(id, n),
+            Err(ArgsError::IndexOutOfRange { .. })
+        ));
+    }
+
+    /// Before any analyze the args accessors reject; a stale (non-current) id
+    /// rejects; an **edit** changes the id and rejects the old one; an
+    /// **edit-then-undo** recurs the id and revalidates it (§A.5.3).
+    #[test]
+    fn args_reject_no_analysis_stale_id_and_edit_undo_recurs() {
+        let base = [("GEN 1:1", "the the word"), ("GEN 1:2", "a  b")];
+        let mut g = new_galley(&base, None, Some(all_rules()));
+
+        // no analyze yet -> reject.
+        assert!(matches!(g.finding_args_core(0, 0), Err(ArgsError::NoAnalysis)));
+
+        let id0 = ssc_wire::decode(&g.analyze_packed().unwrap()).unwrap().analysis_id;
+        // a wrong id rejects.
+        assert!(matches!(
+            g.finding_args_core(id0.wrapping_add(1), 0),
+            Err(ArgsError::StaleId { .. })
+        ));
+
+        // an edit stales the publication (invalidated on Changed) and changes id.
+        g.update_book(BookUpdateIn {
+            slug: "GEN".to_string(),
+            keys: vec!["GEN 1:1".into(), "GEN 1:2".into()],
+            texts: vec!["the the word now".into(), "a  b".into()],
+        })
+        .unwrap();
+        // the old id is rejected even before re-analyze (publication was staled).
+        assert!(matches!(g.finding_args_core(id0, 0), Err(ArgsError::NoAnalysis)));
+        let id1 = ssc_wire::decode(&g.analyze_packed().unwrap()).unwrap().analysis_id;
+        assert_ne!(id1, id0, "an edit changes the content-derived id");
+        assert!(matches!(g.finding_args_core(id0, 0), Err(ArgsError::StaleId { .. })));
+
+        // edit back to the original: the id recurs (content-addressed).
+        g.update_book(BookUpdateIn {
+            slug: "GEN".to_string(),
+            keys: vec!["GEN 1:1".into(), "GEN 1:2".into()],
+            texts: vec!["the the word".into(), "a  b".into()],
+        })
+        .unwrap();
+        let id2 = ssc_wire::decode(&g.analyze_packed().unwrap()).unwrap().analysis_id;
+        assert_eq!(id2, id0, "edit-then-undo recurs the id");
+        assert!(g.finding_args_core(id0, 0).is_ok(), "the recurred id revalidates");
+    }
+
+    /// A reference-only change moves the analysis id and stales the prior args
+    /// (§A.5.3 "changing only the reference changes the id and stales the prior
+    /// args").
+    #[test]
+    fn reference_only_change_moves_id_and_stales_args() {
+        let target = [("GEN 1:1", "the the word"), ("GEN 1:2", "a  b")];
+        let mut g = new_galley(&target, None, Some(all_rules()));
+        let id0 = ssc_wire::decode(&g.analyze_packed().unwrap()).unwrap().analysis_id;
+
+        g.replace_source(Some(vref(&[("GEN 1:1", "s"), ("GEN 1:2", "t")])))
+            .unwrap();
+        // publication staled by the Changed source replacement.
+        assert!(matches!(g.finding_args_core(id0, 0), Err(ArgsError::NoAnalysis)));
+        let id1 = ssc_wire::decode(&g.analyze_packed().unwrap()).unwrap().analysis_id;
+        assert_ne!(id1, id0, "a reference change moves the analysis id");
+    }
+
+    /// A fresh `Galley` instance accepts a prior instance's buffer id after its
+    /// own first analyze — the id is content-addressed, not instance-scoped
+    /// (§A.5.3 / §A.5.4).
+    #[test]
+    fn fresh_instance_accepts_prior_instances_id() {
+        let target = [("GEN 1:1", "the the word"), ("GEN 1:2", "a  b")];
+        let mut a = new_galley(&target, None, Some(all_rules()));
+        let id_a = ssc_wire::decode(&a.analyze_packed().unwrap()).unwrap().analysis_id;
+
+        let mut b = new_galley(&target, None, Some(all_rules()));
+        let id_b = ssc_wire::decode(&b.analyze_packed().unwrap()).unwrap().analysis_id;
+        assert_eq!(id_a, id_b, "same inputs -> same id across instances");
+        // b's accessor accepts the id a minted (they are the same value).
+        assert!(b.finding_args_core(id_a, 0).is_ok());
+    }
+
+    /// EngineCurrentWireStale (§3.3 wasm half): a post-analysis pack failure
+    /// leaves the previous publication (id + args table) untouched, and a retry
+    /// packs the current semantic snapshot with zero new map/reduce/judge —
+    /// the inner handle stays CleanPublished across the failed pack, so the
+    /// retry's `inner.analyze()` reuses the warm cache. Injected via the
+    /// test-only `pack_fault` seam (documented there); the real engine never
+    /// emits a finding `pack` rejects.
+    #[test]
+    fn pack_failure_preserves_publication_and_retry_repacks() {
+        use ssc_galley::Lifecycle;
+        let mut g = new_galley(
+            &[("GEN 1:1", "the the word"), ("GEN 1:2", "a  b")],
+            None,
+            Some(all_rules()),
+        );
+        // A first successful analyze establishes a publication.
+        let id0 = ssc_wire::decode(&g.analyze_packed().unwrap()).unwrap().analysis_id;
+        assert_eq!(g.last_analysis_id, Some(id0));
+
+        // A real edit stales the publication, then dirties the handle.
+        g.update_book(BookUpdateIn {
+            slug: "GEN".to_string(),
+            keys: vec!["GEN 1:1".into(), "GEN 1:2".into()],
+            texts: vec!["the the word extra".into(), "a  b".into()],
+        })
+        .unwrap();
+        assert_eq!(g.last_analysis_id, None, "a Changed edit stales the publication");
+        assert!(g.inner.is_dirty());
+
+        // Arm a pack failure: core succeeds (map/reduce/judge run once, handle
+        // becomes CleanPublished), but the pack fails -> no publication written.
+        pack_fault::arm();
+        assert!(g.analyze_packed().is_err(), "the armed pack fails");
+        assert_eq!(g.last_analysis_id, None, "no id published on pack failure");
+        assert!(g.last_args.is_empty(), "no args published on pack failure");
+        assert_eq!(
+            g.inner.state(),
+            Lifecycle::CleanPublished,
+            "the semantic snapshot is current (EngineCurrentWireStale)"
+        );
+
+        // Retry: no fault armed. The inner handle is already CleanPublished with
+        // a warm cache, so this re-analyze is zero-work; the pack now succeeds
+        // and publishes the current snapshot.
+        let bytes = g.analyze_packed().expect("retry packs the current snapshot");
+        let id1 = ssc_wire::decode(&bytes).unwrap().analysis_id;
+        assert_ne!(id1, id0, "the edited snapshot has a new id");
+        assert_eq!(g.last_analysis_id, Some(id1), "the retry publishes");
+        assert!(g.finding_args_core(id1, 0).is_ok(), "args available after retry");
+    }
+
+    /// The wasm-boundary equivalence bookend: every packed record decodes to the
+    /// same key string, code, severity, and quantized score the core `analyze`
+    /// produced (the ssc-wire `equivalence_pack_decode_matches_analyze` proves
+    /// the codec; this proves the wasm `analyze_vref` feeds it faithfully).
+    #[test]
+    fn analyze_vref_records_match_core_analyze() {
+        let target = vref(&[
+            ("GEN 1:1", "the the word here"),
+            ("GEN 1:2", "a  b, joyfullly"),
+        ]);
+        let cfg = build_config(Some(all_rules()));
+        let corpus = to_corpus(vref(&[
+            ("GEN 1:1", "the the word here"),
+            ("GEN 1:2", "a  b, joyfullly"),
+        ]))
+        .unwrap();
+        let core = analyze_with_config(&corpus, None, &cfg);
+
+        let bytes = analyze_vref(GalleyArgs {
+            target,
+            source: None,
+            config: Some(all_rules()),
+        })
+        .unwrap();
+        let snap = ssc_wire::decode(&bytes).unwrap();
+        assert_eq!(snap.records.len(), core.len());
+        for (rec, f) in snap.records.iter().zip(core.iter()) {
+            assert_eq!(rec.key_idx, f.key_idx.get(), "record resolves to the same key");
+            assert_eq!(rec.rule, f.code);
+            assert_eq!(rec.severity, f.severity);
+            match f.score {
+                None => assert!(rec.score.is_none()),
+                Some(s) => {
+                    let want = (s * 65535.0).round() / 65535.0;
+                    assert_eq!(rec.score.unwrap(), want);
+                }
+            }
+        }
     }
 }

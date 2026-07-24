@@ -16,30 +16,38 @@ import { readFileSync } from "node:fs";
 const corpus = process.argv[2] ?? "WA-bem-reg";
 
 // Read the vref file directly (ADR 0040: `REF\ttext` per line) into the
-// `{ "GEN 1:1": text, … }` map `analyze_vref` wants — no USFM, no subprocess.
+// ordered `{ keys, texts }` `VrefCorpus` `analyze_vref` wants — no USFM, no
+// subprocess. `analyze_vref` takes one typed args object (Entry 11) and
+// returns the packed findings buffer (§A.1); decode it to count findings.
 const path = new URL(`../corpora/vref/${corpus}.txt`, import.meta.url);
-const target = {};
+const keys = [];
+const texts = [];
 for (const line of readFileSync(path, "utf8").split("\n")) {
   const tab = line.indexOf("\t");
-  if (tab > 0) target[line.slice(0, tab)] = line.slice(tab + 1);
+  if (tab > 0) {
+    keys.push(line.slice(0, tab));
+    texts.push(line.slice(tab + 1));
+  }
 }
-const verses = Object.keys(target).length;
+const target = { keys, texts };
+const verses = keys.length;
 
 const mod = await import("../pkg-web/sous_chef_web.js");
 const wasmBytes = readFileSync(new URL("../pkg-web/sous_chef_web_bg.wasm", import.meta.url));
 await mod.default({ module_or_path: wasmBytes });
+const { decodeFindings } = await import("../pkg-web/findings.js");
 
 // Warm-up, then measure.
 const WARMUP = 2;
 const RUNS = 10;
 let findings = 0;
-for (let i = 0; i < WARMUP; i++) mod.analyze_vref(target, undefined, undefined);
+for (let i = 0; i < WARMUP; i++) mod.analyze_vref({ target });
 const times = [];
 for (let i = 0; i < RUNS; i++) {
   const t0 = performance.now();
-  const out = mod.analyze_vref(target, undefined, undefined);
+  const bytes = mod.analyze_vref({ target });
   times.push(performance.now() - t0);
-  findings = out.length;
+  findings = decodeFindings(bytes, keys).findings.length;
 }
 times.sort((a, b) => a - b);
 const median = times[Math.floor(times.length / 2)];
