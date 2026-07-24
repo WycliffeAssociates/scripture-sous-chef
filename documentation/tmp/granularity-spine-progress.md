@@ -2331,3 +2331,156 @@ begin it here.
   premature invalidation planner.
 - **P3:** trailing whitespace in survey/signatures.rs; `git diff --check`
   must pass.
+
+---
+
+## Entry 19 — WP5a review fixes: pending-seam ownership (P1), exact stats-delta keys (P2), hygiene (P3)
+
+- **Date:** 2026-07-24
+- **Branch:** `granularity-spine` (main tree). Base for this fixup: `01b52cb`
+  (Entry 18, the review verdict + step-3 scope adjudication).
+- **Scope:** the two correctness fixes and the hygiene item Entry 18 ordered.
+  No new Phase C surface; steps 4–5 remain the next packet.
+
+### Commits
+
+| item | commit | what landed |
+| --- | --- | --- |
+| P1 (+P3) | `e6bb57d` | The pending seam carries its OWNER through `reduce_chapter`; trailing whitespace stripped at `survey/signatures.rs:631`. |
+| P2 | `6b364ae` | `replace_book_in_corpus_stats` returns exact stats-delta keys. |
+| final | (this entry) | progress log. |
+
+### P1 — how the owner travels
+
+`SpacingBoundary.pending` was already `(Box<str> owner, PendingSeam)`, but
+`reduce_chapter` discarded the owner on import (`.map(|(_, ps)| (true, ps))`,
+keeping only a `foreign: bool`) and then re-tagged the leaving carry with the
+CURRENT observation's token unconditionally. So an unresolved seam crossing an
+all-empty chapter was re-owned by that chapter, and its resolution materialized
+into the wrong chapter's reduced result with a `local_idx` belonging to the
+original chapter — a containment panic when out of range (Entry 15's check), a
+SILENT wrong verse when in range.
+
+The fix makes the in-flight buffer carry ownership explicitly:
+
+```rust
+let mut pending: Option<(Option<Box<str>>, PendingSeam)> = entering.pending
+    .as_ref().map(|(owner, ps)| (Some(owner.clone()), ps.clone()));
+// ... resolution: `owner.is_some()` ⇒ record into `carry_out` (the OWNER's
+//     reduced result, which the driver selected by that same token);
+//     `None` ⇒ record into `this`.
+// ... a locally buffered seam is `(None, …)` and REPLACES any carried seam
+//     (the streaming walk's single-slot semantics).
+let leaving = SpacingBoundary {
+    left_cross,
+    pending: pending.map(|(owner, seam)|
+        (owner.unwrap_or_else(|| observation.token.clone()), seam)),
+};
+```
+
+So the owner token is preserved across any number of intervening chapters and
+only a seam buffered *here* takes this chapter's token. `finish_book` needed no
+change: the driver routes it through `pending_owner`, which now reads the
+original owner.
+
+Noted while fixing: local-replaces-carried is unreachable in practice — a verse
+holding a candidate mark has non-whitespace content, so `first_edge.is_some()`
+resolves the carried seam before that verse can buffer its own. The replacement
+branch is kept (and commented) because it is the streaming walk's semantics, not
+because a corpus can reach it.
+
+### P1 tests (synthetic — the fleet cannot expose this)
+
+- `spacing_pending_seam_keeps_its_owner_across_an_empty_chapter` — trailing
+  period at `GEN 1:2`, an ALL-EMPTY `GEN 2` (one empty + one whitespace-only
+  verse), resolution at `GEN 3:1`. Asserts (a) every emitted finding's verse
+  text actually contains its own mark, (b) every span is in bounds for its
+  verse, (c) the period is owned by `GEN 1:2`, and (d) corpus cells equal the
+  independent batch walk.
+- `spacing_pending_seam_at_book_edge_abstains_like_the_batch_walk` — a pending
+  seam in the book's last chapter never resolves; cells equal the batch walk.
+- `batch_corpus_cells` — new helper; the independent whole-book
+  `for_each_spacing_opportunity` reference (the walk the retired rule was built
+  on), so the substrate is compared against something that shares no code with
+  it.
+- The existing pericope test (JHN 7:53 → 8:1) stays green.
+
+**Mutation-verified:** re-introducing the retag (`|(_owner, seam)| (observation
+.token.clone(), seam)`) makes the new test FAIL with
+`finding at GEN 2:2 claims mark '.' but that verse reads "   "` — i.e. it
+reproduces exactly the silent wrong-verse rebase, then passes again once
+reverted. The book-edge test passes either way (its pending never crosses a
+chapter), which is correct: it pins book-end semantics, not ownership.
+
+### P2 — exact stats-delta keys
+
+`replace_book_in_corpus_stats` now snapshots each candidate mark's aggregate
+before the subtract-old/add-new mutation and returns only marks whose FINAL
+aggregate differs. Marks that fall to all-zero are removed from `totals`, so an
+absent mark and a zeroed mark are one state (`judge` reads a missing key as
+empty) and a fully removed book leaves no residue.
+
+`spacing_stats_delta_is_exact_when_sites_move_but_counts_do_not` asserts both
+fixture preconditions (cells equal, `chapters`/sites different), then: moved
+sites ⇒ **empty** stats delta; a genuine count change ⇒ exactly `[',']`; full
+removal ⇒ `[',']` and empty `totals`. **Mutation-verified:** the pre-fix
+`candidates.into_iter().collect()` fails it with `got [',']`. This is plan §6.2's
+"never infer site equality from equal counts" exercised from the other side — the
+stats delta is silent while the site delta is dirty, and the caller unions them.
+
+New `contribution_of` test helper folds a book contribution directly from
+`(chapter token, verse texts)` specs (map → carry-reduce → finish → fold), so a
+test can compare contributions without building a `Corpus`.
+
+### Gate (per commit)
+
+Both commits: all four WA dumps byte-identical to the standing contract, verified
+by sha256 (the `/tmp` scratch pins were lost to the session reboot, so the gate
+compares against the shasums recorded in Entry 17 — an equivalent check; the
+`oracle-blobs/` WA blob survived, so scope is unchanged):
+
+| dump | sha256 |
+| --- | --- |
+| `wa.findings.default` | `38a0ceadcc792a6656905c7a0f9e2e4c2720c86f47f41f94c66e7a8ad1a9702c` |
+| `wa.findings.all` | `128fdd933dc71cda0a4a6d9d9971ceb5648a5703f8b22ee798d30b09d2c15660` |
+| `wa.inc.default` | `7b19caa79b284bfa16a56f300f5660591ffc58ffa183888451daf82778676dca` |
+| `wa.inc.all` | `c951a758823629c6b6d2e1d558e92c59c1873ed17856b328a60c7ebdc4cee74f` |
+
+Both fixes are **fleet-invisible by construction** — P1 needs an all-empty
+intervening chapter (absent fleet-wide, the reason the review flagged it as
+synthetic-only), and P2 changes a delta set no Phase C caller consumes (Phase C
+judges every mark). That is precisely why the synthetic regression tests, each
+mutation-verified against its pre-fix code, carry the proof rather than the
+dumps.
+
+Also per commit: `cargo test --workspace` green serial AND `--features parallel`
+(core **436** after P1, **437** after P2; galley 24, wire 25, wasm 14, xtask 1);
+`cargo check -p ssc-wasm --target wasm32-unknown-unknown` clean; node **19**;
+clippy clean (only the 3 documented pre-existing `ssc-core` lib warnings —
+casing.rs:459, token.rs:544, lib.rs:252 — none added, none in punctuation.rs);
+`git diff --check` clean (P3).
+
+Oracle dumps were run with `RAYON_NUM_THREADS=4` (memory-constrained machine);
+output is thread-count-independent by construction (indexed collect preserves
+input order) and the shasums confirm it.
+
+### Deviations / notes for the owner (clearly marked)
+
+1. **Gate compared by shasum, not `diff -q`.** The session reboot cleared
+   `/tmp/oracle/spine`, taking the WP5a base pin files with it. Rather than
+   re-pin from a now-fixed tree (which would prove nothing), both commits are
+   gated against the shasums recorded in Entry 17 — the standing contract
+   unchanged since WP1. The WA blob itself survived, so dump scope is identical.
+2. **No `Debug` derive added to `SpacingSite`** for the P2 precondition assert;
+   used `assert!(a != b)` instead of `assert_ne!` to keep the production type's
+   derives unchanged.
+3. **Step-3 scope**: this fixup does not revisit step 3 — Entry 18 adjudicated
+   substrate-lane isolation as the Phase C contract, which the landed probes
+   already satisfy.
+
+### Stop-safe next step
+
+WP5a is complete with the review fixes in. Next stop-safe step remains **Phase C
+step 4** (direct per-verse lane → chapter-local cached products, patching only
+the replaced chapter's direct-rule partitions), then **step 5** (the
+order-preserving native chapter-map seam) — the next packet.
