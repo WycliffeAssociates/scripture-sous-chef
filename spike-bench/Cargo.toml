@@ -31,6 +31,15 @@ rustc-hash = "2"
 unicode-segmentation = "1.12"
 dhat = "0.3"
 
+[features]
+# Nightly-only: gates the M4b portable-`std::simd` variant in
+# `charclass_spike.rs` behind `cargo +nightly build --release --features
+# nightly-simd` (a locally-installed nightly toolchain; not pinned via a
+# committed rust-toolchain.toml — the opt-in stays local to whichever
+# worktree runs it). Without this feature the crate builds on stable as
+# normal; nothing else depends on it.
+nightly-simd = []
+
 [profile.release]
 opt-level = 3
 debug = 1
