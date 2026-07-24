@@ -8,6 +8,42 @@ import type {
   Digest,
 } from "./findings.generated.js";
 
+/**
+ * # Findings lifecycle — which decode call, and when
+ *
+ * SAVE — there is no export method; `galley.analyze()`'s return IS the artifact:
+ *
+ *     galley.analyze() -> packed bytes (the header already carries the ids)
+ *         -> app writes those bytes to its own cache (disk / IndexedDB / OPFS)
+ *
+ * LOAD — a fresh session, where the cache's provenance must be re-proven:
+ *
+ *     app loads project text/config
+ *         -> new Galley(target, source?, config)      // validates + hashes; no analysis
+ *         -> expected = { analysisId:      galley.expectedAnalysisId(),
+ *                         targetContextId: galley.expectedTargetContextId(),
+ *                         hasReference:    galley.hasReference() }
+ *         -> bytes = app cache read (e.g. "sous-findings.bin")
+ *         -> decodePersistedFindings(bytes, target.keys, expected)
+ *                ok    -> render immediately (engine-verified exact for current inputs)
+ *                throw -> discard the cache entry; continue below
+ *         -> fresh = galley.analyze()                  // the cold pass persistence skipped
+ *         -> reconcileFindings(persisted, fresh, target.keys) -> render
+ *         -> app may overwrite its cache entry with `fresh`
+ *
+ * LIVE LOOP — same session, buffers minted by the Galley you're holding:
+ *
+ *     galley.updateBook(...) / updateChapter(...) -> galley.analyze() -> bytes
+ *         -> decodeFindings(bytes, keys)               // one-shot / storage-free consumers
+ *         -> reconcileFindings(prev, bytes, keys)      // resident UI: unchanged objects reused
+ *
+ * Rule of thumb: bytes you just watched THIS Galley produce -> `decodeFindings`
+ * (provenance is the call itself). Bytes that ever sat in storage ->
+ * `decodePersistedFindings` (provenance was laundered away; the identity check
+ * restores it). `keys` must always be the exact ordered, duplicate-preserving
+ * key array used to construct the Galley that minted/validated the buffer.
+ */
+
 /** One decoded finding. Addressed by `sid` (the resolved key string), never by
  * the ephemeral wire `key_idx`, so an object survives address rebasing. */
 export interface DecodedFinding {
@@ -34,6 +70,17 @@ export interface FindingSnapshot {
   findings: DecodedFinding[];
 }
 
+/** The identity a persisted buffer must prove it carries.
+ *
+ * "Expected" (not "current") because two ids can exist at once: the id of the
+ * Galley's *last publication*, and the id *implied by the inputs it holds
+ * right now*. They diverge on any mutation, and the second exists even before
+ * the first analyze (which is exactly when the load recipe runs). The
+ * `expected*` accessors return the second: "any buffer claiming to describe
+ * my current inputs must carry this id." The values are engine-minted content
+ * hashes (ordered per-book hashes + complete config + engine stamp; the
+ * analysis id additionally folds reference presence/content) — the app never
+ * computes or interprets them. */
 export interface ExpectedAnalysisIdentity {
   analysisId: bigint;
   targetContextId: bigint;
@@ -41,16 +88,28 @@ export interface ExpectedAnalysisIdentity {
 }
 
 /** Decode a packed buffer, resolving each record's `key_idx` through `keys`.
- * Throws on any malformed/unsupported buffer or out-of-range key index. */
+ * Throws on any malformed/unsupported buffer or out-of-range key index.
+ *
+ * Use for bytes whose provenance you hold: the buffer this session's
+ * `galley.analyze()` just returned. For bytes read back from storage, use
+ * {@link decodePersistedFindings} — shape validation alone cannot prove a
+ * stored buffer describes today's text/config/engine. */
 export declare function decodeFindings(
   bytes: Uint8Array,
   keys: string[],
 ): FindingSnapshot;
 
-/** Fail-closed application-cache decode. Accepts an exact identity triple
- * match, or the single saved-reference-present -> current-reference-absent
- * salvage (matching target-context id) that filters
- * `target-and-reference-silent-when-absent` rows with dense reindexing. */
+/** Fail-closed application-cache decode: full wire validation PLUS the
+ * identity proof. Accepts an exact identity-triple match, or the single
+ * saved-reference-present -> current-reference-absent salvage (matching
+ * target-context id) that filters `target-and-reference-silent-when-absent`
+ * rows with dense reindexing. Every other mismatch throws.
+ *
+ * Use for bytes that ever sat in storage. On success the findings are exact —
+ * not stale — for the constructing Galley's current inputs, so they may render
+ * immediately while the real analyze re-warms in the background (see the
+ * module-level lifecycle). Lazy args stay unavailable until that analyze
+ * succeeds. */
 export declare function decodePersistedFindings(
   bytes: Uint8Array,
   keys: string[],
