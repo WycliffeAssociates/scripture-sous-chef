@@ -1447,3 +1447,190 @@ Phase A → Phase A-W → Phase B).
 - **Execution:** lands in WP3b (the no-compat wasm cutover packet); the
   resident JS surface has no consumers yet (editor is frozen on stateless
   v0.0.1), so no migration cost.
+
+---
+
+## Entry 12 — Work Packet 3b: Phase A-W §A.6 steps 4–7 (atomic wasm cutover, verification, docs, ADR)
+
+- **Date:** 2026-07-24
+- **Branch:** `granularity-spine` (main tree). Base for this packet: `af752ff`.
+- **Scope:** Appendix A §A.6 **steps 4–7** — the atomic wasm cutover + package
+  regeneration, the §A.5 verification suite, `findings-wire.md`, and the ADR.
+  **This completes Phase A-W.** Only `crates/wasm`, `xtask`, `scripts`, `pkg-*`,
+  and docs changed; **no `crates/core`/`crates/galley` source was touched** (the
+  Phase A identity/registry/accessor primitives WP3a/Phase A landed were
+  consumed as-is).
+- **Discipline:** per §A.5 there is **no finding-oracle re-dump for pure wire
+  work**. The WA base was pinned at HEAD as cheap insurance and is
+  byte-identical to the standing WP1/2a/2b/2c/3a contract. Every commit ran
+  full `cargo test --workspace`, `cargo check -p ssc-wasm --target
+  wasm32-unknown-unknown`, `node --test` (findings + package), and clippy on the
+  changed crates.
+
+### Commits (in order)
+
+| step | commit | what landed |
+| --- | --- | --- |
+| 4 | `d88aafb` | `wasm: atomic packed-findings cutover` — `ssc-wire` dep; `analyze`/`analyze_vref` -> packed `Uint8Array`; `last_analysis_id`/`last_args` publication (never the whole `Vec<Finding>`); `finding_args`/`findings_args` (whole-batch validation, `bigint` id); `GalleyArgs` single-object constructor + `analyze_vref` (Entry 11); deleted `Finding`/`Findings`/`project()` + both object-array bench probes + the `bench-probes` feature; publication invalidated from the engine's `MutationEffect`; +11 native wasm tests; `bench-wasm.mjs` ported. |
+| 4 | `d1b2e84` | `pkg: regenerate wasm packages` — `npm run build:wasm`; both `pkg-*` dirs now carry `findings*.js`/`.d.ts` (closes the WP3a dangling-export state) + the new packed `.d.ts` surface; regenerated `findings.d.ts` for the Entry-11 constructor; committed `package.test.mjs` (`./findings` by-name resolution + both dirs). |
+| 5 | (landed with 4) | §A.5 verification — see the inventory below. |
+| 6 | `5288c6b` | `docs(reference): findings-wire.md` — the durable consumer reference. |
+| 7 | `28b9a0f` | `docs(adr): ADR 0065` — packed wire contract; supersedes ADR 0061's output-contract clause (0061 status text updated in place; README index bumped). |
+| final | (this entry) | progress log. |
+
+Workspace test counts at HEAD: core 421, ssc-wire 25, galley 22, **ssc-wasm 14**
+(was 7 — 3 rewritten for the packed surface + 8 new §A.5.3 tests), xtask 1;
+**node 17** (15 in `findings.test.mjs` + 2 in the new `package.test.mjs`).
+
+### WA oracle base pin (byte-identical to the standing contract)
+
+Pinned at HEAD `af752ff`, `/tmp/oracle/spine/wp3b.base.wa.*.tsv`, scope=wa.
+Not re-dumped per-commit because no core/galley source was touched; shasums
+equal the WP1/2a/2b/2c/3a standing contract:
+
+| file | sha256 |
+| --- | --- |
+| `wp3b.base.wa.findings.default.tsv` | `38a0ceadcc792a6656905c7a0f9e2e4c2720c86f47f41f94c66e7a8ad1a9702c` |
+| `wp3b.base.wa.findings.all.tsv` | `128fdd933dc71cda0a4a6d9d9971ceb5648a5703f8b22ee798d30b09d2c15660` |
+| `wp3b.base.wa.inc.default.tsv` | `7b19caa79b284bfa16a56f300f5660591ffc58ffa183888451daf82778676dca` |
+| `wp3b.base.wa.inc.all.tsv` | `c951a758823629c6b6d2e1d558e92c59c1873ed17856b328a60c7ebdc4cee74f` |
+
+### The cutover design (publication lifecycle / EngineCurrentWireStale / GalleyArgs)
+
+The wasm `Galley` retains only `last_analysis_id: Option<u64>` + `last_args:
+Vec<Option<FindingArgs>>` — never the finding vector. `analyze` calls
+`inner.analyze()`, derives the two ids + reference presence through the
+read-only inner accessors (which fold authoritative hashes, never re-hash),
+packs **while borrowing** the findings, and publishes `(id, args table)`
+**only after** the pack succeeds (`analyze_packed` `?`-returns before any
+publication write). A post-analysis pack failure therefore leaves the previous
+publication untouched — the **EngineCurrentWireStale** condition; because the
+inner handle is left `CleanPublished` with a warm cache, a retry's
+`inner.analyze()` reuses every cache entry (zero map/reduce/judge, the
+ssc-galley no-work re-analyze) and re-packs the current semantic snapshot.
+Every `Changed` mutation (or positive removal) stales the publication via the
+engine's adjudicated `MutationEffect`, never by rehashing JS inputs. Per Entry
+11 the constructor and `analyze_vref` take one typed `GalleyArgs`
+(`{ target, source?, config? }`) — the shape exceeds `(required, optional?)`.
+
+**Pack-failure test mechanism (documented):** the real engine never emits a
+finding `ssc_wire::pack` rejects, so the pack boundary is unreachable through
+the production surface. A test-only fire-once thread-local `pack_fault` seam
+(`#[cfg(test)]`, compiles to nothing in release) forces the next pack to fail;
+`pack_failure_preserves_publication_and_retry_repacks` arms it, asserts the
+publication is untouched (`last_analysis_id == None`, `last_args` empty) while
+`inner.state() == CleanPublished`, then retries unfaulted and asserts the
+retry publishes a new id and args become available. The native `analyze_packed`
+/ `*_args_core` cores return `PackError`/`ArgsError` so the tests run without a
+wasm runtime (`JsError::new` needs one); the thin `#[wasm_bindgen]` wrappers
+just map the same result to `JsError`.
+
+### Verification inventory (§A.5)
+
+- **§A.5.1 core identity + ssc-wire codec** (25 ssc-wire tests + core registry
+  + galley identity tests): landed WP3a/Phase A, unchanged, green.
+- **§A.5.2 equivalence bookend:** ssc-wire `equivalence_pack_decode_matches_analyze`
+  (pack→decode vs. independently computed key/UTF-16/code/severity/score/digest,
+  replacing `project()`) + wasm `analyze_vref_records_match_core_analyze`.
+- **§A.5.3 args / content-id (8 new wasm tests):** `stateless_and_resident_are_byte_identical`;
+  `args_accessors_index_null_batch_and_validation` (index/null/batch order+dupes,
+  one-bad-index rejects the whole batch, single OOB rejects);
+  `args_reject_no_analysis_stale_id_and_edit_undo_recurs` (no-analyze reject,
+  stale id reject, edit changes+rejects old id, edit-then-undo **recurs** the id
+  and revalidates); `reference_only_change_moves_id_and_stales_args`;
+  `fresh_instance_accepts_prior_instances_id`; plus the pack-failure test above.
+- **§A.5.4 cross-language + Node smoke:** `findings.test.mjs` Rust-encoder↔JS
+  vectors; and a **throwaway `pkg-node`** real-wasm run (deleted after) — decoded
+  `analyze_vref` output with the official decoder, asserted stateless==resident
+  byte-identity + same id, a typed args lookup (`duplicate-word first_sid`),
+  not-current-id rejection after an edit, and a worker `postMessage(bytes,
+  [bytes.buffer])` transfer: **sender detached** (`byteLength 0`), receiver read
+  count=2 + `analysis_id` via `getBigUint64` from the 32-byte header, bytes=64.
+  The returned `Uint8Array` owns an **exact-size** transferable backing
+  `ArrayBuffer` (`byteOffset 0`, `buffer.byteLength == byteLength`) — the >1 MB
+  flatness stop clause was not triggered.
+- **§A.5.5 reconciliation / persistence** (`findings.test.mjs`): exact-array
+  fast path, reuse-vs-replace, key_idx-rebase no-churn, duplicate-key ordinal,
+  insert/delete/reorder vs. a slow oracle, persistence exact-match accept,
+  reference-removal salvage == fresh no-ref decode, every non-salvageable
+  mismatch rejects.
+- **§A.5.6 generated/package gate:** `cargo xtask wire-js` run twice — second is
+  a no-op; committed generated files match render (`committed_generated_files_match_render`);
+  built `pkg-bundler/sous_chef_web.d.ts` inspected and confirmed: `analyze():
+  Uint8Array`, `analyze_vref(args: GalleyArgs): Uint8Array`, `finding_args(analysis_id:
+  bigint, index: number): FindingArgsOut`, `findings_args(...: Uint32Array):
+  FindingsArgsOut`, `FindingArgsOut = FindingArgs | null`, `FindingsArgsOut =
+  (FindingArgs | null)[]`, `GalleyArgs` interface, `constructor(args: GalleyArgs)`,
+  the `FindingArgs` union preserved, the old `Finding`/`Findings` object types
+  gone; `./findings` export resolves by name (`scripture-sous-chef-web/findings`)
+  and from both pkg dirs; `cargo test -p ssc-wire`/`-p ssc-wasm`/workspace green;
+  `git diff --check` clean.
+
+**"absence is null" confirmed:** the generated wrapper renders
+`FindingArgsOut = FindingArgs | null` (matching today's wire), so no null/undefined
+deviation.
+
+### §13 wire row — 1,000 findings JS reconcile (node-side)
+
+Measured with the source `reconcileFindings` (each call includes decode of the
+incoming buffer, which dominates):
+
+| case | time | allocation | reuse |
+| --- | ---: | --- | --- |
+| 1,000 unchanged | ~191 µs/call | 0 new finding objects (exact prior array returned) | array reused wholesale |
+| 1,000 one changed | ~348 µs/call | 1 new array + 1 replacement object | 999/1000 objects reused |
+
+### pkg regeneration proof
+
+Both `pkg-web` and `pkg-bundler` now contain `findings.js`,
+`findings.generated.js`, `findings.generated.d.ts`, `findings.d.ts` (were
+absent after WP3a); `sous_chef_web.d.ts`/`_bg.wasm` rebuilt for the packed
+surface. `package.test.mjs` imports `scripture-sous-chef-web/findings` by name
+(exercising the `./findings` export map) and decodes a committed Rust-encoder
+vector — green.
+
+### Deviations / notes for the owner (clearly marked)
+
+1. **`analyze_vref` also took the single-object `GalleyArgs`.** Entry 11 names
+   the constructor explicitly; its general rule ("anything beyond `(required,
+   optional?)` takes a single typed options object") applies equally to
+   `analyze_vref` (target + optional source + optional config). Both share the
+   one `GalleyArgs` type — one wire shape, honoring the named type. The plan
+   §10.1 example still shows positional `new Galley(target, source, config)`;
+   that predates Entry 11 and is superseded by it (the generated `findings.d.ts`
+   lifecycle prose was updated to the object form).
+2. **`bench-probes` feature + both bench probes deleted.** The object-array
+   `bench_synthetic_findings` is obsolete (§A.3.5); the packed
+   `bench_synthetic_findings_packed` used a **private** layout, not the
+   production `ssc_wire::pack`, so §A.3.5 ("keep a packed probe only if it uses
+   the production constants") required deleting it too. The archived
+   `spike-bench/archive/2026-07-18-.../bench-marshaling.mjs` still names them but
+   is historical and points at a defunct worktree path (not built).
+3. **No stop clause triggered.** No >1 MB buffer (max observed here 64 bytes;
+   the survey validated to ~87 KB); no production `Finding` violates the [0,1]
+   score contract (the equivalence bookend + real-engine smoke pass); no args
+   variant mismatch vs. the assigned digest (WP3a verified all 12 rows against
+   the real `FindingArgs`); TS generation needs no new dependency or handwritten
+   union; the wasm `Uint8Array` owns an exact-size transferable buffer.
+4. **Full-fleet bookend** remains Phase F (as every WP); this packet changes
+   representation, not rule behavior, so per §A.5 no oracle re-dump is owed, and
+   the base pin confirms the standing contract byte-for-byte.
+
+### Phase A-W status: COMPLETE
+
+| §A.6 step | status | landed |
+| --- | --- | --- |
+| 1 `ssc-wire` crate + codec + tests | ✅ | WP3a `b7b371f` |
+| 2 `cargo xtask wire-js` + generated JS + `./findings` export | ✅ | WP3a `0a221d8` |
+| 3 discriminant pins + generated-JS conformance | ✅ | WP3a `2080c72` |
+| 4 atomic wasm cutover + pkg regen | ✅ | WP3b `d88aafb`, `d1b2e84` |
+| 5 equivalence/cross-language/reconciliation/smoke | ✅ | WP3b (with 4) + throwaway pkg-node run |
+| 6 `findings-wire.md` | ✅ | WP3b `5288c6b` |
+| 7 ADR 0065 (+ 0061 supersession) | ✅ | WP3b `28b9a0f` |
+
+### Stop-safe next step
+
+Phase A-W is complete and gated. Per the plan ordering (Entry 9 erratum: Phase
+A → Phase A-W → **Phase B**), the next stop-safe step is **Phase B** (rename
+`PrepCache` -> `AnalysisCache`; resident finding partitions; the two atomic
+boundaries assembled from partitions). Do not begin it within this packet.
