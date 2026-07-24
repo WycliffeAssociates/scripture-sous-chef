@@ -1430,3 +1430,20 @@ pin confirmed byte-identical to the standing contract). Next stop-safe step is
 (cross-language/reconciliation/smoke tests that need the cutover, findings-wire.md,
 the ADR). Phase B must not begin until Phase A-W completes (Entry 9 erratum:
 Phase A → Phase A-W → Phase B).
+
+---
+
+## Entry 11 — Owner decision: JS surface takes typed single-object args
+
+- **Date:** 2026-07-24
+- **Decision (owner):** the wasm/JS `Galley` constructor becomes
+  `new Galley({ target, source?, config })` with a generated `GalleyArgs`
+  type, replacing positional `(target, source?, config)`. General rule for
+  the JS surface: positional args are fine up to `(required, optional?)`;
+  anything beyond that — especially an optional parameter before a required
+  one — takes a single typed options object. Rationale: type safety and
+  autocomplete beat the one-allocation-per-call overhead, which on the
+  constructor is once per project load.
+- **Execution:** lands in WP3b (the no-compat wasm cutover packet); the
+  resident JS surface has no consumers yet (editor is frozen on stateless
+  v0.0.1), so no migration cost.
