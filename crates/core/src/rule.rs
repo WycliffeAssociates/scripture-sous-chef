@@ -17,6 +17,7 @@
 //! execution cadence (every keystroke vs on save) is the orchestrator's.
 //! There is deliberately no hot/cold tier in the type system.
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 use rustc_hash::FxHashMap;
@@ -41,7 +42,14 @@ use crate::token::Token;
 /// FxHashMap: internal-only (never serialized, never crosses the wasm
 /// boundary), fast non-cryptographic hashing on the hot per-book walk (ADR
 /// 0057 allocation-diet follow-up).
-pub type TokenCache = FxHashMap<KeyIdx, Vec<Token>>;
+///
+/// The value is a **borrowed** token slice, not an owned `Vec`: the tokens
+/// live in the fused walk's per-book output (a freshly walked book) or in the
+/// resident `PrepCache` entry (a clean cache-hit book), and the cache is a
+/// read-only view over them for this analyze. Nothing here owns or clones the
+/// tokens — assembling the cache is a rebase-and-borrow, so a clean book's
+/// tokens are never copied out of the resident cache (Phase A step 7).
+pub type TokenCache<'a> = FxHashMap<KeyIdx, &'a [Token]>;
 
 /// The hot, stateless majority. `check` reads the verse's prebuilt scalar tape
 /// (ADR 0045) — one shared decode+classify pass the runner does per verse —
@@ -80,7 +88,7 @@ pub trait ProjectTokenRule: Sync {
         &self,
         books: &Books<'_>,
         source: Option<&Corpus>,
-        tokens: Option<&TokenCache>,
+        tokens: Option<&TokenCache<'_>>,
     ) -> Vec<Finding>;
 }
 
@@ -96,14 +104,22 @@ pub trait ProjectTokenRule: Sync {
 /// an *absent* book was carried from the prior and judge must re-scan it for
 /// spans. Proportionality carries no sites: its judge emits from cached
 /// ratios and never scans.
-pub enum RuleSites {
-    Casing(BTreeMap<Box<str>, signals::casing::CasingSites>),
+///
+/// Each per-book value is a [`Cow`]: **owned** for a freshly walked book (the
+/// fused walk hands its sites straight in, moved not cloned) and **borrowed**
+/// for a clean cache-hit book (a read-only view into the resident `PrepCache`
+/// entry). A clean book's sites are therefore never cloned out of the cache to
+/// be judged — the judge consumes the view directly (Phase A step 7). The
+/// lifetime is that of the resident cache borrow held across the judge phase;
+/// `reduce` (calibration/tests) produces a fully-owned `RuleSites<'static>`.
+pub enum RuleSites<'a> {
+    Casing(BTreeMap<Box<str>, Cow<'a, signals::casing::CasingSites>>),
     Proportionality,
-    PunctuationAdjacency(BTreeMap<Box<str>, Vec<SiteAddr>>),
-    PunctuationSpacing(BTreeMap<Box<str>, Vec<signals::punctuation::SpacingSite>>),
-    RepeatedCharacterRun(BTreeMap<Box<str>, Vec<SiteAddr>>),
-    PunctOnlyToken(BTreeMap<Box<str>, Vec<SiteAddr>>),
-    MixedScript(BTreeMap<Box<str>, Vec<signals::script_mixing::MixedScriptSite>>),
+    PunctuationAdjacency(BTreeMap<Box<str>, Cow<'a, [SiteAddr]>>),
+    PunctuationSpacing(BTreeMap<Box<str>, Cow<'a, [signals::punctuation::SpacingSite]>>),
+    RepeatedCharacterRun(BTreeMap<Box<str>, Cow<'a, [SiteAddr]>>),
+    PunctOnlyToken(BTreeMap<Box<str>, Cow<'a, [SiteAddr]>>),
+    MixedScript(BTreeMap<Box<str>, Cow<'a, [signals::script_mixing::MixedScriptSite]>>),
     /// `uni.rare-glyph` carries no sites: surviving candidates are ultra-rare, so
     /// its judge re-scans the supplied books (the `sites`-free path) rather than
     /// forward every letter occurrence (ADR 0044, ADR 0053).
@@ -153,8 +169,8 @@ pub trait StatefulRule: Sync {
         &self,
         books: &Books<'_>,
         source: Option<&Corpus>,
-        tokens: Option<&TokenCache>,
-    ) -> (RuleStats, RuleSites);
+        tokens: Option<&TokenCache<'_>>,
+    ) -> (RuleStats, RuleSites<'static>);
     /// Emit findings from the merged corpus `stats`. `books` holds the verses
     /// of the current call — a rule whose observations are *sparse* ignores it
     /// and emits from cached sites (proportionality); a rule with a *dense*
@@ -168,8 +184,8 @@ pub trait StatefulRule: Sync {
         &self,
         stats: &RuleStats,
         books: &Books<'_>,
-        tokens: Option<&TokenCache>,
-        sites: Option<&RuleSites>,
+        tokens: Option<&TokenCache<'_>>,
+        sites: Option<&RuleSites<'_>>,
     ) -> Vec<Finding>;
 }
 

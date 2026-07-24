@@ -88,8 +88,8 @@ impl StatefulRule for PunctuationAdjacencyAnomaly {
         &self,
         books: &Books<'_>,
         _source: Option<&Corpus>,
-        _tokens: Option<&TokenCache>,
-    ) -> (RuleStats, rule::RuleSites) {
+        _tokens: Option<&TokenCache<'_>>,
+    ) -> (RuleStats, rule::RuleSites<'static>) {
         // Thin driver over the shared listener (the fused walk feeds the same
         // `AdjacencyAcc`); kept for calibration/tests — `analyze_stateful`
         // walks all rules fused.
@@ -112,7 +112,7 @@ impl StatefulRule for PunctuationAdjacencyAnomaly {
         }
         (
             RuleStats::PunctuationAdjacency(PunctuationAdjacencyStats { per_book }),
-            rule::RuleSites::PunctuationAdjacency(sites),
+            rule::RuleSites::PunctuationAdjacency(sites.into_iter().map(|(k, v)| (k, std::borrow::Cow::Owned(v))).collect()),
         )
     }
 
@@ -120,8 +120,8 @@ impl StatefulRule for PunctuationAdjacencyAnomaly {
         &self,
         stats: &RuleStats,
         books: &Books<'_>,
-        _tokens: Option<&TokenCache>,
-        sites: Option<&rule::RuleSites>,
+        _tokens: Option<&TokenCache<'_>>,
+        sites: Option<&rule::RuleSites<'_>>,
     ) -> Vec<Finding> {
         let RuleStats::PunctuationAdjacency(stats) = stats else {
             return Vec::new();
@@ -631,8 +631,8 @@ impl StatefulRule for PunctuationSpacingAnomaly {
         &self,
         books: &Books<'_>,
         _source: Option<&Corpus>,
-        _tokens: Option<&TokenCache>,
-    ) -> (RuleStats, rule::RuleSites) {
+        _tokens: Option<&TokenCache<'_>>,
+    ) -> (RuleStats, rule::RuleSites<'static>) {
         // Thin driver over the shared listener (the fused walk feeds the same
         // `SpacingAcc`); kept for calibration/tests.
         let mut per_book = BTreeMap::new();
@@ -654,7 +654,7 @@ impl StatefulRule for PunctuationSpacingAnomaly {
         }
         (
             RuleStats::PunctuationSpacing(PunctuationSpacingStats { per_book }),
-            rule::RuleSites::PunctuationSpacing(sites),
+            rule::RuleSites::PunctuationSpacing(sites.into_iter().map(|(k, v)| (k, std::borrow::Cow::Owned(v))).collect()),
         )
     }
 
@@ -662,8 +662,8 @@ impl StatefulRule for PunctuationSpacingAnomaly {
         &self,
         stats: &RuleStats,
         books: &Books<'_>,
-        _tokens: Option<&TokenCache>,
-        sites: Option<&rule::RuleSites>,
+        _tokens: Option<&TokenCache<'_>>,
+        sites: Option<&rule::RuleSites<'_>>,
     ) -> Vec<Finding> {
         let RuleStats::PunctuationSpacing(stats) = stats else {
             return Vec::new();
@@ -783,7 +783,7 @@ impl StatefulRule for PunctuationSpacingAnomaly {
         let mut out: Vec<Finding> = rule::map_books(books, |group| {
             let mut found = Vec::new();
             if let Some(book_sites) = forwarded.and_then(|m| m.get(group.slug)) {
-                for s in book_sites {
+                for s in book_sites.iter() {
                     score(
                         rebase(group.base, s.local_idx),
                         s.mark,

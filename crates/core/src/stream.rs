@@ -36,7 +36,7 @@ use std::borrow::Cow;
 use crate::charclass::class_of;
 use crate::corpus::{BookGroup, Books, Corpus, LocalKeyIdx};
 use crate::grapheme::{self, GSpan};
-use crate::rule::{self, TokenCache};
+use crate::rule::{self};
 use crate::signals::{
     bracket_balance, casing, lexical, mixed_case, mixed_normalization, proportionality,
     punctuation, rare_glyph, script_mixing,
@@ -474,22 +474,6 @@ fn walk_book(
         normalization: normalization_acc.map(mixed_normalization::NormalizationAcc::finish),
         tokens: cache,
     }
-}
-
-/// Assemble the shared [`TokenCache`] from the fused walk's per-book slices,
-/// rebasing each book-local token entry to this call's global `KeyIdx`.
-/// `out` must be index-aligned with `books` (both `walk_fused`'s output
-/// contract).
-pub(crate) fn assemble_token_cache(out: &mut [BookOut], books: &Books<'_>) -> TokenCache {
-    let mut cache = TokenCache::default();
-    for (group, book) in books.iter().zip(out.iter_mut()) {
-        if let Some(vs) = book.tokens.take() {
-            for (local, toks) in vs {
-                cache.insert(crate::corpus::rebase(group.base, local), toks);
-            }
-        }
-    }
-    cache
 }
 
 /// Drive one listener over one book — the shared body behind each rule's

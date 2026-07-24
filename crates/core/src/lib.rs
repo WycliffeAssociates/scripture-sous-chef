@@ -193,6 +193,23 @@ pub mod fault {
     }
 }
 
+/// One book's fused-walk products for this analysis, sourced two ways:
+/// - [`Walked`](BookProducts::Walked): a freshly walked book — owns its
+///   [`BookOut`](stream::BookOut) (fresh stats + sites), consumed this call.
+/// - [`Clean`](BookProducts::Clean): a clean cache-hit book — borrows its
+///   resident [`BookEntry`](cache::BookEntry) read-only. Its walk products are
+///   never copied out of the cache (Phase A step 7); the judge reads a view.
+///
+/// The two variants differ only in the site lanes' shape — a walked book still
+/// carries the fresh per-book *stats* half beside its sites, while the cache
+/// stores sites alone — so stats/site extraction matches per variant. The
+/// project lanes (bracket / duplicate / normalization / tokens) share one type
+/// across both and are read uniformly by reference.
+enum BookProducts<'c> {
+    Walked(stream::BookOut),
+    Clean(&'c cache::BookEntry),
+}
+
 /// The one core map/reduce/judge transition. Both the one-shot path
 /// ([`analyze_stateful`], which hands it a fresh transient cache) and the
 /// resident path ([`analyze_resident`], which hands it `Galley`'s owned cache
@@ -235,6 +252,7 @@ fn transition(
     prior: Option<Stats>,
     cache: &mut PrepCache,
 ) -> Result<(Vec<Finding>, Stats), (AnalyzeError, Option<Stats>)> {
+    use std::borrow::Cow;
     use std::collections::BTreeMap;
 
     let per_verse: Vec<_> = rule::per_verse_rules()
@@ -386,162 +404,82 @@ fn transition(
     // cache-hit book is synthesized directly into that position. Never
     // reassembled by book identity — `walk_fused`'s output is aligned only
     // to whatever subset of `books` it was given.
-    let mut fused: Vec<stream::BookOut> = {
-        let mut books_to_walk: corpus::Books<'_> = Vec::new();
-        let mut walk_positions: Vec<usize> = Vec::new();
-        let mut cached_walks: Vec<(usize, cache::CachedWalk)> = Vec::new();
-        for (i, group) in books.iter().enumerate() {
-            if counted.is_some_and(|list| !list.contains(&group.slug))
-                && let Some(cached) = cache.cloned_walk(group.slug, hashes[i], &plan)
-            {
-                cached_walks.push((i, cached));
-            } else {
-                books_to_walk.push(*group);
-                walk_positions.push(i);
-            }
-        }
-
-        // ONE walk per verse per book (the event-stream engine): tape,
-        // graphemes and tokens are each built once per verse and every
-        // enabled listener is fed in-pass. Fan-out per book under `parallel`
-        // (ADR 0042).
-        let walked = stream::walk_fused(&books_to_walk, counted, source, &plan);
-
-        // Write every walked book before cached books are synthesized in.
-        for ((&i, group), output) in walk_positions
-            .iter()
-            .zip(books_to_walk.iter())
-            .zip(walked.iter())
+    // Decide per book: reuse a clean resident walk, or walk it fresh. A book is
+    // clean only when it is outside the counted (stale) set AND its cache entry
+    // already holds every lane this plan needs. A clean book is reused by
+    // BORROWING its resident `BookEntry` into the judge phase — the old
+    // `cloned_walk` per-book copy is gone (Phase A step 7): the cache keeps the
+    // single owned copy of a clean book's products, and the judge reads a view.
+    let mut books_to_walk: corpus::Books<'_> = Vec::new();
+    let mut walk_positions: Vec<usize> = Vec::new();
+    let mut clean_positions: Vec<usize> = Vec::new();
+    for (i, group) in books.iter().enumerate() {
+        if counted.is_some_and(|list| !list.contains(&group.slug))
+            && cache.walk_lanes_ready(group.slug, hashes[i], &plan)
         {
-            cache.store_walk(group.slug, hashes[i], output);
+            clean_positions.push(i);
+        } else {
+            books_to_walk.push(*group);
+            walk_positions.push(i);
         }
+    }
 
-        let mut slots: Vec<Option<stream::BookOut>> = (0..books.len()).map(|_| None).collect();
-        for (i, output) in walk_positions.into_iter().zip(walked) {
-            slots[i] = Some(output);
-        }
-        for (i, cached) in cached_walks {
-            slots[i] = Some(stream::BookOut {
-                counted: false,
-                // A cache-hit book is clean: it did no counting work.
-                #[cfg(any(test, feature = "test-probes"))]
-                counting_accs_ran: false,
-                casing: plan
-                    .casing
-                    .then(|| (Default::default(), cached.casing.expect("casing lane hit"))),
-                adjacency: plan.adjacency.then(|| {
-                    (
-                        Default::default(),
-                        cached.adjacency.expect("adjacency lane hit"),
-                    )
-                }),
-                spacing: plan.spacing.then(|| {
-                    (
-                        Default::default(),
-                        cached.spacing.expect("spacing lane hit"),
-                    )
-                }),
-                repeated_run: plan.repeated_run.then(|| {
-                    (
-                        Default::default(),
-                        cached.repeated_run.expect("repeated-run lane hit"),
-                    )
-                }),
-                punct_only: plan.punct_only.then(|| {
-                    (
-                        Default::default(),
-                        cached.punct_only.expect("punct-only lane hit"),
-                    )
-                }),
-                mixed_script: plan.mixed_script.then(|| {
-                    (
-                        Default::default(),
-                        cached.mixed_script.expect("mixed-script lane hit"),
-                    )
-                }),
-                rare_glyph: None,
-                mixed_case: None,
-                proportionality: None,
-                bracket: plan
-                    .bracket
-                    .then(|| cached.bracket.expect("bracket lane hit")),
-                duplicate: plan
-                    .duplicate
-                    .then(|| cached.duplicate.expect("duplicate lane hit")),
-                normalization: plan
-                    .normalization
-                    .then(|| cached.normalization.expect("normalization lane hit")),
-                tokens: plan
-                    .collect_tokens
-                    .then(|| cached.tokens.expect("token lane hit")),
-            });
-        }
-        slots
-            .into_iter()
-            .map(|s| s.expect("every book walked or cache-hit"))
-            .collect()
-    };
+    // ONE walk per verse per book (the event-stream engine): tape, graphemes
+    // and tokens are each built once per verse and every enabled listener is
+    // fed in-pass. Fan-out per book under `parallel` (ADR 0042).
+    let walked = stream::walk_fused(&books_to_walk, counted, source, &plan);
+
+    // Warm each freshly walked book into the (self-validating) cache BEFORE any
+    // clean book is borrowed out of it: after this loop the cache is read-only
+    // for the rest of the call, so the clean-book borrows below cannot alias a
+    // pending write.
+    for ((&i, group), output) in walk_positions
+        .iter()
+        .zip(books_to_walk.iter())
+        .zip(walked.iter())
+    {
+        cache.store_walk(group.slug, hashes[i], output);
+    }
+
+    // Counting-side probe: count the books whose site-free counting
+    // accumulators actually ran (`counting_accs_ran`), observed from the
+    // accumulators — not from the `counted` decision flag. Only a freshly
+    // walked book can count; a clean cache-hit book did no counting work.
+    // Recorded before the shared cache reborrow below (the last `&mut cache`).
+    #[cfg(any(test, feature = "test-probes"))]
+    cache.note_retallied(walked.iter().filter(|o| o.counting_accs_ran).count());
 
     // MAP boundary. Mapping is complete: per-verse findings plus every book's
-    // fused walk products, some now warmed into the (self-validating) cache. No
-    // reduce/judge has run, and `prior` is untouched — a test-injected fault
-    // here hands `prior` straight back so the resident caller restores it and a
-    // retry reuses the warmed entries. Compiles to nothing off `test-probes`.
+    // fused walk products — freshly walked books owned in `walked`, clean books
+    // resident in the cache, all warmed. No reduce/judge has run, and `prior` is
+    // untouched — a test-injected fault here hands `prior` straight back so the
+    // resident caller restores it and a retry reuses the warmed entries.
+    // Compiles to nothing off `test-probes`.
     #[cfg(any(test, feature = "test-probes"))]
     if fault::fires(fault::Phase::Map) {
         return Err((AnalyzeError { phase: "map" }, prior));
     }
 
-    // Counting-side probe: count the books whose site-free counting
-    // accumulators actually ran (`counting_accs_ran`), observed from the
-    // accumulators — not from the `counted` decision flag. A listener that
-    // counted an anchor-mode book (ignoring the stale set) would set this true
-    // while `counted` stayed false, so the probe would catch it. Meaningful
-    // when at least one site-free counting rule (rare-glyph / mixed-case /
-    // proportionality) is enabled.
-    #[cfg(any(test, feature = "test-probes"))]
-    cache.note_retallied(fused.iter().filter(|o| o.counting_accs_ran).count());
+    // The cache is now read-only for the rest of the call. Reborrow it shared so
+    // each clean book's products can be handed to reduce/judge as read-only
+    // views (Phase A step 7). This shared borrow is held across the entire
+    // reduce+judge phase below; that it compiles is the proof no judge mutates a
+    // cached product — every cached lane a judge sees is behind a `&`.
+    let cache: &PrepCache = cache;
 
-    let token_cache: Option<rule::TokenCache> = plan
-        .collect_tokens
-        .then(|| stream::assemble_token_cache(&mut fused, &books));
-
-    // Project findings, from the fused listeners' per-book outputs.
-    if plan.bracket {
-        let matches: Vec<_> = fused
-            .iter_mut()
-            .map(|b| {
-                b.bracket
-                    .take()
-                    .expect("bracket listener ran on every book")
-            })
-            .collect();
-        out.extend(signals::bracket_balance::emit(
-            &books,
-            &matches,
-            &config.bracket_balance,
-        ));
+    // Slot every book's products in presented order: a freshly walked book owns
+    // its `BookOut`; a clean book borrows its resident `BookEntry`.
+    let mut slots: Vec<Option<BookProducts<'_>>> = (0..books.len()).map(|_| None).collect();
+    for (&pos, output) in walk_positions.iter().zip(walked) {
+        slots[pos] = Some(BookProducts::Walked(output));
     }
-    if plan.duplicate {
-        for (group, b) in books.iter().zip(fused.iter_mut()) {
-            let hits = b
-                .duplicate
-                .take()
-                .expect("duplicate listener ran on every book");
-            out.extend(signals::lexical::emit(group, hits));
-        }
+    for &pos in &clean_positions {
+        slots[pos] = Some(BookProducts::Clean(cache.walk_entry(books[pos].slug)));
     }
-    if plan.normalization {
-        let summaries: Vec<_> = fused
-            .iter_mut()
-            .map(|b| {
-                b.normalization
-                    .take()
-                    .expect("normalization listener ran on every book")
-            })
-            .collect();
-        out.extend(signals::mixed_normalization::emit(&books, &summaries));
-    }
+    let mut slots: Vec<BookProducts<'_>> = slots
+        .into_iter()
+        .map(|s| s.expect("every book walked or clean-reused"))
+        .collect();
 
     // Assemble each rule's fresh stats + forwarded sites (ADR 0044) from the
     // fused per-book outputs. A rule enabled this call always gets an entry —
@@ -551,14 +489,33 @@ fn transition(
     // so the judge phase is site-driven for every supplied book and never
     // re-scans — except the deliberately site-free rules (proportionality
     // never scans; rare-glyph / mixed-case re-scan by design, ADR 0053/0055).
+    // A walked book contributes fresh stats (moved out, owned) and its fresh
+    // sites (`Cow::Owned`); a clean book contributes NO stats (its counts carry
+    // from the prior through the supersede merge) and its sites as a
+    // `Cow::Borrowed` view into the resident cache — never copied (Phase A
+    // step 7). Site-free rules (rare-glyph / mixed-case / proportionality) only
+    // ever count on walked books, so a clean book contributes nothing to them.
+    // A book outside the `counted` scope contributes sites only, so the judge
+    // phase stays site-driven for every supplied book (ADR 0044).
     let casing_fresh = plan.casing.then(|| {
-        let (mut pb, mut st) = (BTreeMap::new(), BTreeMap::new());
-        for (group, o) in books.iter().zip(fused.iter_mut()) {
-            if let Some((bc, s)) = o.casing.take() {
-                if o.counted {
-                    pb.insert(Box::from(group.slug), bc);
+        let mut pb = BTreeMap::new();
+        let mut st: BTreeMap<Box<str>, Cow<'_, signals::casing::CasingSites>> = BTreeMap::new();
+        for (group, slot) in books.iter().zip(slots.iter_mut()) {
+            match slot {
+                BookProducts::Walked(o) => {
+                    if let Some((bc, s)) = o.casing.take() {
+                        if o.counted {
+                            pb.insert(Box::from(group.slug), bc);
+                        }
+                        st.insert(Box::from(group.slug), Cow::Owned(s));
+                    }
                 }
-                st.insert(Box::from(group.slug), s);
+                BookProducts::Clean(e) => {
+                    let e: &cache::BookEntry = e;
+                    if let Some(s) = e.casing.as_ref() {
+                        st.insert(Box::from(group.slug), Cow::Borrowed(s));
+                    }
+                }
             }
         }
         (
@@ -567,13 +524,24 @@ fn transition(
         )
     });
     let mut adjacency_fresh = plan.adjacency.then(|| {
-        let (mut pb, mut st) = (BTreeMap::new(), BTreeMap::new());
-        for (group, o) in books.iter().zip(fused.iter_mut()) {
-            if let Some((bc, s)) = o.adjacency.take() {
-                if o.counted {
-                    pb.insert(Box::from(group.slug), bc);
+        let mut pb = BTreeMap::new();
+        let mut st: BTreeMap<Box<str>, Cow<'_, [corpus::SiteAddr]>> = BTreeMap::new();
+        for (group, slot) in books.iter().zip(slots.iter_mut()) {
+            match slot {
+                BookProducts::Walked(o) => {
+                    if let Some((bc, s)) = o.adjacency.take() {
+                        if o.counted {
+                            pb.insert(Box::from(group.slug), bc);
+                        }
+                        st.insert(Box::from(group.slug), Cow::Owned(s));
+                    }
                 }
-                st.insert(Box::from(group.slug), s);
+                BookProducts::Clean(e) => {
+                    let e: &cache::BookEntry = e;
+                    if let Some(s) = e.adjacency.as_ref() {
+                        st.insert(Box::from(group.slug), Cow::Borrowed(s.as_slice()));
+                    }
+                }
             }
         }
         (
@@ -584,13 +552,25 @@ fn transition(
         )
     });
     let mut spacing_fresh = plan.spacing.then(|| {
-        let (mut pb, mut st) = (BTreeMap::new(), BTreeMap::new());
-        for (group, o) in books.iter().zip(fused.iter_mut()) {
-            if let Some((bc, s)) = o.spacing.take() {
-                if o.counted {
-                    pb.insert(Box::from(group.slug), bc);
+        let mut pb = BTreeMap::new();
+        let mut st: BTreeMap<Box<str>, Cow<'_, [signals::punctuation::SpacingSite]>> =
+            BTreeMap::new();
+        for (group, slot) in books.iter().zip(slots.iter_mut()) {
+            match slot {
+                BookProducts::Walked(o) => {
+                    if let Some((bc, s)) = o.spacing.take() {
+                        if o.counted {
+                            pb.insert(Box::from(group.slug), bc);
+                        }
+                        st.insert(Box::from(group.slug), Cow::Owned(s));
+                    }
                 }
-                st.insert(Box::from(group.slug), s);
+                BookProducts::Clean(e) => {
+                    let e: &cache::BookEntry = e;
+                    if let Some(s) = e.spacing.as_ref() {
+                        st.insert(Box::from(group.slug), Cow::Borrowed(s.as_slice()));
+                    }
+                }
             }
         }
         (
@@ -601,13 +581,24 @@ fn transition(
         )
     });
     let mut repeated_fresh = plan.repeated_run.then(|| {
-        let (mut pb, mut st) = (BTreeMap::new(), BTreeMap::new());
-        for (group, o) in books.iter().zip(fused.iter_mut()) {
-            if let Some((bc, s)) = o.repeated_run.take() {
-                if o.counted {
-                    pb.insert(Box::from(group.slug), bc);
+        let mut pb = BTreeMap::new();
+        let mut st: BTreeMap<Box<str>, Cow<'_, [corpus::SiteAddr]>> = BTreeMap::new();
+        for (group, slot) in books.iter().zip(slots.iter_mut()) {
+            match slot {
+                BookProducts::Walked(o) => {
+                    if let Some((bc, s)) = o.repeated_run.take() {
+                        if o.counted {
+                            pb.insert(Box::from(group.slug), bc);
+                        }
+                        st.insert(Box::from(group.slug), Cow::Owned(s));
+                    }
                 }
-                st.insert(Box::from(group.slug), s);
+                BookProducts::Clean(e) => {
+                    let e: &cache::BookEntry = e;
+                    if let Some(s) = e.repeated_run.as_ref() {
+                        st.insert(Box::from(group.slug), Cow::Borrowed(s.as_slice()));
+                    }
+                }
             }
         }
         (
@@ -618,13 +609,24 @@ fn transition(
         )
     });
     let mut punct_only_fresh = plan.punct_only.then(|| {
-        let (mut pb, mut st) = (BTreeMap::new(), BTreeMap::new());
-        for (group, o) in books.iter().zip(fused.iter_mut()) {
-            if let Some((bc, s)) = o.punct_only.take() {
-                if o.counted {
-                    pb.insert(Box::from(group.slug), bc);
+        let mut pb = BTreeMap::new();
+        let mut st: BTreeMap<Box<str>, Cow<'_, [corpus::SiteAddr]>> = BTreeMap::new();
+        for (group, slot) in books.iter().zip(slots.iter_mut()) {
+            match slot {
+                BookProducts::Walked(o) => {
+                    if let Some((bc, s)) = o.punct_only.take() {
+                        if o.counted {
+                            pb.insert(Box::from(group.slug), bc);
+                        }
+                        st.insert(Box::from(group.slug), Cow::Owned(s));
+                    }
                 }
-                st.insert(Box::from(group.slug), s);
+                BookProducts::Clean(e) => {
+                    let e: &cache::BookEntry = e;
+                    if let Some(s) = e.punct_only.as_ref() {
+                        st.insert(Box::from(group.slug), Cow::Borrowed(s.as_slice()));
+                    }
+                }
             }
         }
         (
@@ -633,13 +635,25 @@ fn transition(
         )
     });
     let mut mixed_script_fresh = plan.mixed_script.then(|| {
-        let (mut pb, mut st) = (BTreeMap::new(), BTreeMap::new());
-        for (group, o) in books.iter().zip(fused.iter_mut()) {
-            if let Some((bc, s)) = o.mixed_script.take() {
-                if o.counted {
-                    pb.insert(Box::from(group.slug), bc);
+        let mut pb = BTreeMap::new();
+        let mut st: BTreeMap<Box<str>, Cow<'_, [signals::script_mixing::MixedScriptSite]>> =
+            BTreeMap::new();
+        for (group, slot) in books.iter().zip(slots.iter_mut()) {
+            match slot {
+                BookProducts::Walked(o) => {
+                    if let Some((bc, s)) = o.mixed_script.take() {
+                        if o.counted {
+                            pb.insert(Box::from(group.slug), bc);
+                        }
+                        st.insert(Box::from(group.slug), Cow::Owned(s));
+                    }
                 }
-                st.insert(Box::from(group.slug), s);
+                BookProducts::Clean(e) => {
+                    let e: &cache::BookEntry = e;
+                    if let Some(s) = e.mixed_script.as_ref() {
+                        st.insert(Box::from(group.slug), Cow::Borrowed(s.as_slice()));
+                    }
+                }
             }
         }
         (
@@ -649,8 +663,10 @@ fn transition(
     });
     let mut rare_glyph_fresh = plan.rare_glyph.then(|| {
         let mut pb = BTreeMap::new();
-        for (group, o) in books.iter().zip(fused.iter_mut()) {
-            if let Some(bg) = o.rare_glyph.take() {
+        for (group, slot) in books.iter().zip(slots.iter_mut()) {
+            if let BookProducts::Walked(o) = slot
+                && let Some(bg) = o.rare_glyph.take()
+            {
                 pb.insert(Box::from(group.slug), bg);
             }
         }
@@ -661,8 +677,10 @@ fn transition(
     });
     let mut mixed_case_fresh = plan.mixed_case.then(|| {
         let mut pb = BTreeMap::new();
-        for (group, o) in books.iter().zip(fused.iter_mut()) {
-            if let Some(bmc) = o.mixed_case.take() {
+        for (group, slot) in books.iter().zip(slots.iter_mut()) {
+            if let BookProducts::Walked(o) = slot
+                && let Some(bmc) = o.mixed_case.take()
+            {
                 pb.insert(Box::from(group.slug), bmc);
             }
         }
@@ -673,8 +691,10 @@ fn transition(
     });
     let mut proportionality_fresh = plan.proportionality.then(|| {
         let mut pb = BTreeMap::new();
-        for (group, o) in books.iter().zip(fused.iter_mut()) {
-            if let Some(bucket) = o.proportionality.take() {
+        for (group, slot) in books.iter().zip(slots.iter_mut()) {
+            if let BookProducts::Walked(o) = slot
+                && let Some(bucket) = o.proportionality.take()
+            {
                 pb.insert(Box::from(group.slug), bucket);
             }
         }
@@ -685,7 +705,71 @@ fn transition(
             rule::RuleSites::Proportionality,
         )
     });
-    drop(fused);
+
+    // The shared token cache is assembled by BORROWING each book's per-verse
+    // token slices — a walked book's owned `BookOut`, a clean book's resident
+    // `BookEntry` — and rebasing the local index to this call's global `KeyIdx`.
+    // Nothing is copied out of the cache (Phase A step 7): the cache holds
+    // `&[Token]` views. Built after site extraction so it can share `slots`.
+    let token_cache: Option<rule::TokenCache> = plan.collect_tokens.then(|| {
+        let mut tc = rule::TokenCache::default();
+        for (group, slot) in books.iter().zip(slots.iter()) {
+            let toks = match slot {
+                BookProducts::Walked(o) => o.tokens.as_ref(),
+                BookProducts::Clean(e) => e.tokens.as_ref(),
+            };
+            if let Some(vs) = toks {
+                for (local, t) in vs {
+                    tc.insert(corpus::rebase(group.base, *local), t.as_slice());
+                }
+            }
+        }
+        tc
+    });
+
+    // Project findings, read by reference from each book's products (walked or
+    // clean). `out` is sorted before return, so appending these before the
+    // stateful judges below does not affect the final order.
+    if plan.bracket {
+        let matches: Vec<&signals::bracket_balance::BookMatch> = slots
+            .iter()
+            .map(|slot| {
+                match slot {
+                    BookProducts::Walked(o) => o.bracket.as_ref(),
+                    BookProducts::Clean(e) => e.bracket.as_ref(),
+                }
+                .expect("bracket listener ran on every book")
+            })
+            .collect();
+        out.extend(signals::bracket_balance::emit(
+            &books,
+            &matches,
+            &config.bracket_balance,
+        ));
+    }
+    if plan.duplicate {
+        for (group, slot) in books.iter().zip(slots.iter()) {
+            let hits = match slot {
+                BookProducts::Walked(o) => o.duplicate.as_ref(),
+                BookProducts::Clean(e) => e.duplicate.as_ref(),
+            }
+            .expect("duplicate listener ran on every book");
+            out.extend(signals::lexical::emit(group, hits));
+        }
+    }
+    if plan.normalization {
+        let summaries: Vec<&signals::mixed_normalization::BookNormalization> = slots
+            .iter()
+            .map(|slot| {
+                match slot {
+                    BookProducts::Walked(o) => o.normalization.as_ref(),
+                    BookProducts::Clean(e) => e.normalization.as_ref(),
+                }
+                .expect("normalization listener ran on every book")
+            })
+            .collect();
+        out.extend(signals::mixed_normalization::emit(&books, &summaries));
+    }
 
     // REDUCE boundary. Every substrate's fresh book/corpus stats are folded and
     // the project findings are emitted into the local `out`; nothing resident is
@@ -741,7 +825,7 @@ fn transition(
         // 0044). Both casing rules share the one word-table walk: each takes a
         // clone of the stats (the wire shape keeps one entry per rule id, as
         // before) and judges from the same site list.
-        let (fresh, sites_ref): (RuleStats, &rule::RuleSites) = match id {
+        let (fresh, sites_ref): (RuleStats, &rule::RuleSites<'_>) = match id {
             RuleId::SentenceInitialLowercase | RuleId::InconsistentWordCasing => {
                 let (cs, ss) = casing_fresh
                     .as_ref()

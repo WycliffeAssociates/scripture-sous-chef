@@ -77,8 +77,8 @@ struct Tail<'a> {
 
 /// Rebase one book's duplicate hits to `Finding`s, resolving the
 /// cross-verse `first_local_idx` to its key string only now, at emission.
-pub(crate) fn emit(group: &BookGroup<'_>, hits: Vec<DuplicateHit>) -> Vec<Finding> {
-    hits.into_iter()
+pub(crate) fn emit(group: &BookGroup<'_>, hits: &[DuplicateHit]) -> Vec<Finding> {
+    hits.iter()
         .map(|h| Finding {
             key_idx: rebase(group.base, h.anchor_local_idx),
             code: DUPLICATE_WORD,
@@ -102,14 +102,14 @@ impl ProjectTokenRule for DuplicateWord {
         &self,
         books: &Books<'_>,
         _source: Option<&Corpus>,
-        tokens: Option<&TokenCache>,
+        tokens: Option<&TokenCache<'_>>,
     ) -> Vec<Finding> {
         // Books are independent (the tail carry never crosses a book), so
         // the walk fans out per book under `parallel` (ADR 0042).
         rule::map_books(books, |group| {
             let mut hits = Vec::new();
             check_book(group, tokens, &mut hits);
-            emit(group, hits)
+            emit(group, &hits)
         })
         .into_iter()
         .flatten()
@@ -174,7 +174,7 @@ impl<'t> DuplicateWordAcc<'t> {
     }
 }
 
-fn check_book(group: &BookGroup<'_>, cache: Option<&TokenCache>, out: &mut Vec<DuplicateHit>) {
+fn check_book(group: &BookGroup<'_>, cache: Option<&TokenCache<'_>>, out: &mut Vec<DuplicateHit>) {
     let mut tail: Option<Tail> = None;
     for (vi, (key, text)) in group.keys.iter().zip(group.texts.iter()).enumerate() {
         let local_idx = LocalKeyIdx::from_usize(vi);
@@ -185,7 +185,7 @@ fn check_book(group: &BookGroup<'_>, cache: Option<&TokenCache>, out: &mut Vec<D
         let tokens: &[Token] = match cache {
             Some(c) => c
                 .get(&rebase(group.base, local_idx))
-                .map(Vec::as_slice)
+                .copied()
                 .unwrap_or(&[]),
             None => {
                 owned = tokenize(text);
@@ -339,8 +339,8 @@ impl StatefulRule for PunctOnlyToken {
         &self,
         books: &Books<'_>,
         _source: Option<&Corpus>,
-        _tokens: Option<&TokenCache>,
-    ) -> (RuleStats, rule::RuleSites) {
+        _tokens: Option<&TokenCache<'_>>,
+    ) -> (RuleStats, rule::RuleSites<'static>) {
         // Thin driver over the shared listener (the fused walk feeds the same
         // `PunctOnlyAcc`); kept for calibration/tests.
         let mut per_book = BTreeMap::new();
@@ -362,7 +362,7 @@ impl StatefulRule for PunctOnlyToken {
         }
         (
             RuleStats::PunctOnlyToken(PunctOnlyTokenStats { per_book }),
-            rule::RuleSites::PunctOnlyToken(sites),
+            rule::RuleSites::PunctOnlyToken(sites.into_iter().map(|(k, v)| (k, std::borrow::Cow::Owned(v))).collect()),
         )
     }
 
@@ -370,8 +370,8 @@ impl StatefulRule for PunctOnlyToken {
         &self,
         stats: &RuleStats,
         books: &Books<'_>,
-        _tokens: Option<&TokenCache>,
-        sites: Option<&rule::RuleSites>,
+        _tokens: Option<&TokenCache<'_>>,
+        sites: Option<&rule::RuleSites<'_>>,
     ) -> Vec<Finding> {
         let RuleStats::PunctOnlyToken(stats) = stats else {
             return Vec::new();
@@ -667,8 +667,8 @@ impl StatefulRule for RepeatedCharacterRun {
         &self,
         books: &Books<'_>,
         _source: Option<&Corpus>,
-        tokens: Option<&TokenCache>,
-    ) -> (RuleStats, rule::RuleSites) {
+        tokens: Option<&TokenCache<'_>>,
+    ) -> (RuleStats, rule::RuleSites<'static>) {
         // Thin driver over the shared listener (the fused walk feeds the same
         // `RepeatedRunAcc`); kept for calibration/tests. The shared per-analyze
         // token cache is ignored — the driver tokenizes each verse once, which
@@ -694,7 +694,7 @@ impl StatefulRule for RepeatedCharacterRun {
         }
         (
             RuleStats::RepeatedCharacterRun(RepeatedCharacterRunStats { per_book }),
-            rule::RuleSites::RepeatedCharacterRun(sites),
+            rule::RuleSites::RepeatedCharacterRun(sites.into_iter().map(|(k, v)| (k, std::borrow::Cow::Owned(v))).collect()),
         )
     }
 
@@ -702,8 +702,8 @@ impl StatefulRule for RepeatedCharacterRun {
         &self,
         stats: &RuleStats,
         books: &Books<'_>,
-        tokens: Option<&TokenCache>,
-        sites: Option<&rule::RuleSites>,
+        tokens: Option<&TokenCache<'_>>,
+        sites: Option<&rule::RuleSites<'_>>,
     ) -> Vec<Finding> {
         let RuleStats::RepeatedCharacterRun(stats) = stats else {
             return Vec::new();
@@ -791,7 +791,7 @@ impl StatefulRule for RepeatedCharacterRun {
                 let mut memo: Option<(LocalKeyIdx, Vec<Token>)> = None;
                 rule::for_each_site_text(group, book_sites, |local, text, span| {
                     let key_idx = rebase(group.base, local);
-                    let owned_ref: &[Token] = match tokens.and_then(|c| c.get(&key_idx)) {
+                    let owned_ref: &[Token] = match tokens.and_then(|c| c.get(&key_idx)).copied() {
                         Some(t) => t,
                         None => {
                             if memo.as_ref().map(|(l, _)| *l) != Some(local) {
@@ -809,7 +809,7 @@ impl StatefulRule for RepeatedCharacterRun {
                     let local = LocalKeyIdx::from_usize(vi);
                     let key_idx = rebase(group.base, local);
                     let owned: Vec<Token>;
-                    let verse_tokens: &[Token] = match tokens.and_then(|c| c.get(&key_idx)) {
+                    let verse_tokens: &[Token] = match tokens.and_then(|c| c.get(&key_idx)).copied() {
                         Some(t) => t,
                         None => {
                             owned = tokenize(text);

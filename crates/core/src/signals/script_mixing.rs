@@ -149,8 +149,8 @@ impl StatefulRule for MixedScriptInToken {
         &self,
         books: &Books<'_>,
         _source: Option<&Corpus>,
-        tokens: Option<&TokenCache>,
-    ) -> (RuleStats, rule::RuleSites) {
+        tokens: Option<&TokenCache<'_>>,
+    ) -> (RuleStats, rule::RuleSites<'static>) {
         // Thin driver over the shared listener (the fused walk feeds the same
         // `MixedScriptAcc`); kept for calibration/tests. The shared token
         // cache is ignored — the driver tokenizes each verse once, which is
@@ -175,7 +175,7 @@ impl StatefulRule for MixedScriptInToken {
         }
         (
             RuleStats::MixedScript(MixedScriptStats { per_book }),
-            rule::RuleSites::MixedScript(sites),
+            rule::RuleSites::MixedScript(sites.into_iter().map(|(k, v)| (k, std::borrow::Cow::Owned(v))).collect()),
         )
     }
 
@@ -183,8 +183,8 @@ impl StatefulRule for MixedScriptInToken {
         &self,
         stats: &RuleStats,
         books: &Books<'_>,
-        tokens: Option<&TokenCache>,
-        sites: Option<&rule::RuleSites>,
+        tokens: Option<&TokenCache<'_>>,
+        sites: Option<&rule::RuleSites<'_>>,
     ) -> Vec<Finding> {
         let RuleStats::MixedScript(stats) = stats else {
             return Vec::new();
@@ -283,7 +283,7 @@ impl StatefulRule for MixedScriptInToken {
         let mut out: Vec<Finding> = rule::map_books(books, |group| {
             let mut found = Vec::new();
             if let Some(book_sites) = forwarded.and_then(|m| m.get(group.slug)) {
-                for s in book_sites {
+                for s in book_sites.iter() {
                     score(rebase(group.base, s.local_idx), &s.sig, s.span, &mut found);
                 }
             } else {
@@ -311,9 +311,9 @@ impl StatefulRule for MixedScriptInToken {
 fn verse_tokens<'a>(
     key_idx: KeyIdx,
     text: &str,
-    cache: Option<&'a TokenCache>,
+    cache: Option<&'a TokenCache<'a>>,
 ) -> std::borrow::Cow<'a, [Token]> {
-    match cache.and_then(|c| c.get(&key_idx)) {
+    match cache.and_then(|c| c.get(&key_idx)).copied() {
         Some(t) => std::borrow::Cow::Borrowed(t),
         None => std::borrow::Cow::Owned(tokenize(text)),
     }

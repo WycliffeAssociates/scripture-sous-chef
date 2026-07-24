@@ -101,6 +101,7 @@ impl ProjectRule for BracketBalance {
         // `parallel`, ADR 0042). The fused walk feeds the same `BracketAcc`;
         // this driver is kept for direct callers.
         let matches: Vec<BookMatch> = rule::map_books(books, match_book);
+        let matches: Vec<&BookMatch> = matches.iter().collect();
         emit(books, &matches, &self.cfg)
     }
 }
@@ -112,7 +113,7 @@ impl ProjectRule for BracketBalance {
 /// contract, matching `walk_fused`'s output).
 pub(crate) fn emit(
     groups: &Books<'_>,
-    books: &[BookMatch],
+    books: &[&BookMatch],
     cfg: &BracketBalanceConfig,
 ) -> Vec<Finding> {
     {
@@ -122,6 +123,7 @@ pub(crate) fn emit(
 
         let mut families: BTreeMap<char, FamilyTally> = BTreeMap::new();
         for b in books {
+            let b: &BookMatch = b;
             for (i, e) in b.events.iter().enumerate() {
                 let t = families.entry(e.family).or_default();
                 t.events += 1;
@@ -154,6 +156,7 @@ pub(crate) fn emit(
         // pairs by short-span dominance, anchored at the opener.
         let mut out = Vec::new();
         for (group, b) in groups.iter().zip(books) {
+            let b: &BookMatch = b;
             for &oi in &b.orphans {
                 let e = &b.events[oi];
                 let score = pairing.get(&e.family).copied().unwrap_or(0.0);

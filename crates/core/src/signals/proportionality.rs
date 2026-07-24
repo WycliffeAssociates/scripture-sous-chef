@@ -153,8 +153,8 @@ impl StatefulRule for ProjectLengthRatio {
         &self,
         books: &Books<'_>,
         source: Option<&Corpus>,
-        _tokens: Option<&TokenCache>,
-    ) -> (RuleStats, rule::RuleSites) {
+        _tokens: Option<&TokenCache<'_>>,
+    ) -> (RuleStats, rule::RuleSites<'static>) {
         // Ratios for target ∩ source, grouped by book ("length" is grapheme
         // count — vision §12.5; empty sides carry no signal and would divide
         // by zero). Every book present gets a (possibly empty) bucket, so on
@@ -187,8 +187,8 @@ impl StatefulRule for ProjectLengthRatio {
         &self,
         stats: &RuleStats,
         books: &Books<'_>,
-        _tokens: Option<&TokenCache>,
-        _sites: Option<&rule::RuleSites>,
+        _tokens: Option<&TokenCache<'_>>,
+        _sites: Option<&rule::RuleSites<'_>>,
     ) -> Vec<Finding> {
         // Proportionality caches its per-verse ratios (a sparse sufficient
         // statistic), so it emits from them directly — no re-scan of `target`.

@@ -1334,7 +1334,7 @@ fn any_cased(stats: &CasingStats) -> bool {
 fn judge_casing<V: Clone + Sync + Send>(
     stats: &RuleStats,
     books: &Books<'_>,
-    sites: Option<&rule::RuleSites>,
+    sites: Option<&rule::RuleSites<'_>>,
     cfg: &CasingConfig,
     verdict: impl Fn(&str, PosClass, &Model) -> Option<V> + Sync,
     materialize: impl Fn(&LowerSite, &str, &V, crate::corpus::KeyIdx) -> Finding + Sync,
@@ -1413,18 +1413,18 @@ impl StatefulRule for SentenceInitialLowercase {
         &self,
         books: &Books<'_>,
         _source: Option<&Corpus>,
-        _tokens: Option<&TokenCache>,
-    ) -> (RuleStats, rule::RuleSites) {
+        _tokens: Option<&TokenCache<'_>>,
+    ) -> (RuleStats, rule::RuleSites<'static>) {
         let (stats, sites) = reduce_casing(books);
-        (RuleStats::Casing(stats), rule::RuleSites::Casing(sites))
+        (RuleStats::Casing(stats), rule::RuleSites::Casing(sites.into_iter().map(|(k, v)| (k, std::borrow::Cow::Owned(v))).collect()))
     }
 
     fn judge(
         &self,
         stats: &RuleStats,
         books: &Books<'_>,
-        _tokens: Option<&TokenCache>,
-        sites: Option<&rule::RuleSites>,
+        _tokens: Option<&TokenCache<'_>>,
+        sites: Option<&rule::RuleSites<'_>>,
     ) -> Vec<Finding> {
         let k = clamp_count(self.cfg.recurrence_k);
         let floor = f64::from(clamp_unit(self.cfg.emit_score_min));
@@ -1482,18 +1482,18 @@ impl StatefulRule for InconsistentWordCasing {
         &self,
         books: &Books<'_>,
         _source: Option<&Corpus>,
-        _tokens: Option<&TokenCache>,
-    ) -> (RuleStats, rule::RuleSites) {
+        _tokens: Option<&TokenCache<'_>>,
+    ) -> (RuleStats, rule::RuleSites<'static>) {
         let (stats, sites) = reduce_casing(books);
-        (RuleStats::Casing(stats), rule::RuleSites::Casing(sites))
+        (RuleStats::Casing(stats), rule::RuleSites::Casing(sites.into_iter().map(|(k, v)| (k, std::borrow::Cow::Owned(v))).collect()))
     }
 
     fn judge(
         &self,
         stats: &RuleStats,
         books: &Books<'_>,
-        _tokens: Option<&TokenCache>,
-        sites: Option<&rule::RuleSites>,
+        _tokens: Option<&TokenCache<'_>>,
+        sites: Option<&rule::RuleSites<'_>>,
     ) -> Vec<Finding> {
         let k = clamp_count(self.cfg.recurrence_k);
         let floor = f64::from(clamp_unit(self.cfg.emit_score_min));

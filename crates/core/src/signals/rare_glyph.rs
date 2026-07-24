@@ -202,8 +202,8 @@ impl StatefulRule for RareGlyph {
         &self,
         books: &Books<'_>,
         _source: Option<&Corpus>,
-        tokens: Option<&TokenCache>,
-    ) -> (RuleStats, rule::RuleSites) {
+        tokens: Option<&TokenCache<'_>>,
+    ) -> (RuleStats, rule::RuleSites<'static>) {
         // Thin driver over the shared listener (the fused walk feeds the same
         // `RareGlyphAcc`); kept for calibration/tests. The shared token cache
         // is ignored — the driver tokenizes each verse once, which is exactly
@@ -239,8 +239,8 @@ impl StatefulRule for RareGlyph {
         &self,
         stats: &RuleStats,
         books: &Books<'_>,
-        tokens: Option<&TokenCache>,
-        _sites: Option<&rule::RuleSites>,
+        tokens: Option<&TokenCache<'_>>,
+        _sites: Option<&rule::RuleSites<'_>>,
     ) -> Vec<Finding> {
         let RuleStats::GlyphInventory(stats) = stats else {
             return Vec::new();
@@ -368,7 +368,7 @@ impl StatefulRule for RareGlyph {
 fn emit_verse(
     key_idx: KeyIdx,
     text: &str,
-    tokens: Option<&TokenCache>,
+    tokens: Option<&TokenCache<'_>>,
     surviving: &BTreeMap<char, (f32, u32)>,
     out: &mut Vec<Finding>,
 ) {
@@ -402,9 +402,9 @@ fn emit_verse(
 fn verse_tokens<'a>(
     key_idx: KeyIdx,
     text: &str,
-    cache: Option<&'a TokenCache>,
+    cache: Option<&'a TokenCache<'a>>,
 ) -> std::borrow::Cow<'a, [Token]> {
-    match cache.and_then(|c| c.get(&key_idx)) {
+    match cache.and_then(|c| c.get(&key_idx)).copied() {
         Some(t) => std::borrow::Cow::Borrowed(t),
         None => std::borrow::Cow::Owned(tokenize(text)),
     }

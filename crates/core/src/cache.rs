@@ -184,36 +184,39 @@ impl PrepCache {
         self.entry_for_write(slug, hash).per_verse = Some(cached);
     }
 
-    pub(crate) fn cloned_walk(
-        &mut self,
-        slug: &str,
-        hash: u128,
-        plan: &WalkPlan,
-    ) -> Option<CachedWalk> {
-        let hit = self
+    /// Whether the cached entry for `slug` is a clean, reusable walk under this
+    /// plan: content hash matches and every lane the plan needs is present.
+    /// Records the walk hit/miss probe.
+    ///
+    /// Unlike the retired `cloned_walk`, this **clones nothing**. A clean
+    /// cache-hit book's products stay owned by their `BookEntry`; the analyze
+    /// path borrows read-only views of them for reduce/judge (Phase A step 7).
+    /// The cache therefore holds the single owned copy of a clean book's walk
+    /// products, and the judge consumes a `&`-view — never a copy.
+    pub(crate) fn walk_lanes_ready(&mut self, slug: &str, hash: u128, plan: &WalkPlan) -> bool {
+        let ready = self
             .books
             .get(slug)
             .filter(|entry| entry.hash == hash)
-            .filter(|entry| entry.has_walk_lanes(plan))
-            .map(|entry| CachedWalk {
-                casing: entry.casing.clone(),
-                adjacency: entry.adjacency.clone(),
-                spacing: entry.spacing.clone(),
-                repeated_run: entry.repeated_run.clone(),
-                punct_only: entry.punct_only.clone(),
-                mixed_script: entry.mixed_script.clone(),
-                bracket: entry.bracket.clone(),
-                duplicate: entry.duplicate.clone(),
-                normalization: entry.normalization.clone(),
-                tokens: entry.tokens.clone(),
-            });
+            .is_some_and(|entry| entry.has_walk_lanes(plan));
         #[cfg(any(test, feature = "test-probes"))]
-        if hit.is_some() {
+        if ready {
             self.walk_hits += 1;
         } else {
             self.walk_misses += 1;
         }
-        hit
+        ready
+    }
+
+    /// Borrow a clean cache-hit book's walk products for judging. Returns the
+    /// owning [`BookEntry`] so the analyze path can hand `&`-views of its lanes
+    /// to the judges without copying. The caller must have established the
+    /// entry is a clean hit ([`walk_lanes_ready`](Self::walk_lanes_ready)); an
+    /// absent entry panics rather than silently reusing the wrong book.
+    pub(crate) fn walk_entry(&self, slug: &str) -> &BookEntry {
+        self.books
+            .get(slug)
+            .expect("walk_entry called for a book proven clean by walk_lanes_ready")
     }
 
     pub(crate) fn store_walk(&mut self, slug: &str, hash: u128, output: &BookOut) {
@@ -333,19 +336,6 @@ impl BookEntry {
             && (!plan.normalization || self.normalization.is_some())
             && (!plan.collect_tokens || self.tokens.is_some())
     }
-}
-
-pub(crate) struct CachedWalk {
-    pub(crate) casing: Option<casing::CasingSites>,
-    pub(crate) adjacency: Option<Vec<SiteAddr>>,
-    pub(crate) spacing: Option<Vec<punctuation::SpacingSite>>,
-    pub(crate) repeated_run: Option<Vec<SiteAddr>>,
-    pub(crate) punct_only: Option<Vec<SiteAddr>>,
-    pub(crate) mixed_script: Option<Vec<script_mixing::MixedScriptSite>>,
-    pub(crate) bracket: Option<bracket_balance::BookMatch>,
-    pub(crate) duplicate: Option<Vec<lexical::DuplicateHit>>,
-    pub(crate) normalization: Option<mixed_normalization::BookNormalization>,
-    pub(crate) tokens: Option<Vec<(LocalKeyIdx, Vec<Token>)>>,
 }
 
 fn config_fingerprint(config: &Config) -> u64 {

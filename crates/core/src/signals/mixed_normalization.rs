@@ -174,6 +174,7 @@ impl ProjectRule for MixedNormalization {
     // the reference is irrelevant.
     fn check(&self, books: &Books<'_>, _source: Option<&Corpus>) -> Vec<Finding> {
         let summaries: Vec<BookNormalization> = rule::map_books(books, summarize_book);
+        let summaries: Vec<&BookNormalization> = summaries.iter().collect();
         emit(books, &summaries)
     }
 }
@@ -216,9 +217,10 @@ impl MergedForm {
 /// summed over all of them. Shared by [`ProjectRule::check`] and the fused
 /// walk. `groups` and `summaries` must be index-aligned (`walk_fused`'s
 /// output contract, like bracket-balance's `emit`).
-pub(crate) fn emit(groups: &Books<'_>, summaries: &[BookNormalization]) -> Vec<Finding> {
+pub(crate) fn emit(groups: &Books<'_>, summaries: &[&BookNormalization]) -> Vec<Finding> {
     let mut merged: FxHashMap<Box<str>, FxHashMap<Box<str>, MergedForm>> = FxHashMap::default();
     for (group, summary) in groups.iter().zip(summaries) {
+        let summary: &BookNormalization = summary;
         for (nfc_key, raw_forms) in &summary.forms {
             let key_entry = merged.entry(nfc_key.clone()).or_default();
             for (raw, form) in raw_forms {
