@@ -1241,3 +1241,192 @@ the owner may direct Phase B. Do not begin either within this packet.
   `isize`.
 - **Correction 3 — production comments de-cited:** all "(Phase A step N)"
   citations in crates/ replaced with the invariant they stood for.
+
+---
+
+## Entry 10 — Work Packet 3a: Phase A-W §A.6 steps 1–3 (ssc-wire + generated JS surface + pins)
+
+- **Date:** 2026-07-24
+- **Branch:** `granularity-spine` (main tree). Base for this packet: `3ef2e31`.
+- **Scope:** Appendix A §A.6 **steps 1–3 only** — the `ssc-wire` crate, the
+  generated JS decoder/reconciler surface, and the discriminant-pin +
+  generated-JS-conformance tests. **Step 4 (the atomic wasm cutover) and
+  everything after belong to WP3b.** The wasm crate's public output surface is
+  unchanged this packet (no `crates/wasm/src` edit; `analyze_vref`/`Galley.analyze`/
+  wire `Finding`/`project()` untouched).
+- **Discipline:** per §A.5 there is **no finding-oracle re-dump for pure wire
+  work**. Confirmed no `crates/core`/`crates/galley` source touched
+  (`git diff --name-only 3ef2e31 HEAD | grep crates/(core|galley)` = empty), so
+  the WA gate was not triggered. Base WA pin taken anyway as insurance at
+  `3ef2e31` (`/tmp/oracle/spine/wp3a.base.wa.*.tsv`) and is **byte-identical to
+  the standing WP1/2a/2b/2c contract**: findings.default `38a0cead…`,
+  findings.all `128fdd93…`, inc.default `7b19caa7…`, inc.all `c951a758…`.
+  Every commit ran full `cargo test --workspace`,
+  `cargo check -p ssc-wasm --target wasm32-unknown-unknown` (clean), and clippy
+  (new crate + xtask code clean; the 3 pre-existing `ssc-core` warnings are
+  untouched and out of scope).
+
+### Commits (in order)
+
+| step | commit | what landed |
+| --- | --- | --- |
+| 1 | `b7b371f` | `crates/wire` (`ssc-wire`): `schema.rs` (single-source exhaustive `wire_def` match → §A.2 discriminants + §A.1.1 digest shapes; derived reverse lookup / `WireSchema` / `schema_json`), `packed.rs` (32-byte header + 16-byte record constants; `pack(...)` with `project_utf16_checked`, u16 score quantization, one `(code,&args)` digest match; `PackError`; fallible test-only `decode`), 24 unit tests. Dead code until step 4. |
+| 2 | `0a221d8` | `cargo xtask wire-js` generator + `crates/wasm/js/{findings.generated.js,findings.generated.d.ts,findings.d.ts}`; hand-written reviewed `findings.js` (decode/persist/reconcile); `wire-vectors` emitter + `findings.test.mjs` (14 node tests); `./findings` package export + restore-script copy. |
+| 3 | `2080c72` | `discriminant_pins_are_exact` (ssc-wire), `committed_generated_files_match_render` (xtask conformance), and node `generated schema tables equal the pinned §A.2/§A.1.1 mapping`. |
+| final | (this entry) | progress log. |
+
+Workspace test counts at HEAD: core 421, ssc-wire **25**, galley 22, wasm 7,
+xtask **1** (+3 core doctests); node **15**.
+
+### §A.1.1 / §A.2 verification against the CURRENT `FindingArgs` (exact-match list)
+
+Every §A.1.1 digest row was checked against the real
+`ssc_core::diagnostics::FindingArgs` (read from source, not assumed). **All 12
+assigned rows map cleanly onto a real variant + fields; no stop clause fired**
+(no production variant that cannot satisfy its digest row; no `RuleId` without a
+sensible code):
+
+| code | rule | §A.1.1 payload | real variant → fields |
+| ---: | --- | --- | --- |
+| 7 | `prop.length-ratio` | `(rounded_percent, 0)` | `LengthRatio{ ratio_pct: f32, .. }` → `round(ratio_pct)`; non-finite/negative ratio ⇒ `PackError::DigestValueInvalid` |
+| 18 | `punct.bracket-balance` | `(majority, total)` | `BracketWindow{ majority: u32, total: u32, .. }` |
+| 19 | `punct.spacing-anomaly` | `(primary.count, primary.total)` | `SpacingConvention{ left: Option<SpacingSide>, right: Option<SpacingSide>, .. }`; `SpacingSide{ count: u32, total: u32 }`; primary = only side, else rarer by checked u128 cross-mult (`l.count*r.total ≤ r.count*l.total` ⇒ left, left-on-tie); neither side ⇒ `DigestArgsMismatch` |
+| 20 | `case.sentence-initial-lowercase` | `(upper, total)` | `CasingConvention{ upper: u32, total: u32, .. }` |
+| 21 | `case.inconsistent-word-casing` | `(upper, total)` | `WordCasing{ upper: u32, total: u32, .. }` |
+| 12 | `lex.punct-only-token` | `(count, units)` | `PunctOnlyRate{ count: u32, units: u32 }` |
+| 10 | `punct.adjacency-anomaly` | `(books, corpus)` | `AdjacencyEvidence{ books: u32, corpus: u32, .. }` (omits `k/lead_n`) |
+| 15 | `uni.mixed-script-in-token` | `(books, corpus)` | `ScriptMixEvidence{ books: u32, corpus: u32, .. }` (omits `k/n`) |
+| 23 | `case.mixed-case-word` | `(other, total)` | `MixedCaseWord{ other: u32, total: u32, .. }` |
+| 16 | `lex.repeated-character-run` | u32 `run` | `RepeatEvidence{ run: u32, .. }` |
+| 22 | `uni.rare-glyph` | u32 `count` | `RareGlyph{ count: u32, .. }` |
+| 24 | `uni.mixed-normalization` | u32 `affected` | `Normalization{ affected: u32, .. }` |
+
+All 13 other codes (incl. `lex.duplicate-word`, which carries args but has no
+digest) write four zero bytes; `has_args` may still be set. §A.2 codes 0–24 pinned
+exactly and follow today's declaration list — but the exhaustive `wire_def` match
+(hand-assigned literals), not enum position, is normative.
+
+Count-pair lanes clamp to `0xFFFF` + set `payload_saturated`; u32 lanes are
+lossless and never saturate; length-ratio saturates its single lane. `pack` never
+calls `Span::to_utf16` — `project_utf16_checked` validates `start ≤ end ≤ len` +
+both UTF-8 boundaries, then checked-converts each UTF-16 count to `u16` (start/end
+overflow are distinct errors). No promised error is an `expect`/unchecked cast.
+
+### Schema / generation design notes
+
+- **One home for the contract.** `schema::wire_def(RuleId) -> WireDef{code,digest}`
+  is a single exhaustive `const fn` match; a new `RuleId` is a compile error until
+  it gets an explicit `(code, digest)`. Reverse `code→RuleId`, the digest shape the
+  JS decoder reads, the `WireSchema`/`schema_json`, and the whole generated JS are
+  all *derived* by iterating `RuleId::ALL`. There is no second hand-maintained table.
+- **Generation.** `cargo xtask wire-js` calls `ssc_wire::schema::{schema,schema_json}`
+  and renders three do-not-edit files: `findings.generated.js` embeds the canonical
+  `WIRE_SCHEMA` (JSON is valid JS) plus frozen derived maps
+  (`CODE_TO_RULE`/`RULE_TO_CODE`/`CODE_TO_DIGEST`/`CODE_TO_INPUT_DEPENDENCY`/`HEADER`/
+  `SEVERITIES`); `findings.generated.d.ts` the wire unions + `Digest` type;
+  `findings.d.ts` the public API. Deterministic (no timestamps) — running twice is a
+  no-op (demonstrated) and `committed == render(schema)` is a durable xtask test.
+- **JS surface (~5 sentences).** `findings.js` is the reviewed algorithm and imports
+  the generated schema — it copies no numeric constant, code table, digest table, or
+  wire union. `decodeFindings` builds a little-endian `DataView`, performs full §A.1
+  header/record/key-index validation (fail-loud, never a partial decode), reads score
+  as `getUint16/65535`, and dispatches the 4-byte digest on code honoring
+  `payload_saturated` (UI renders "65k+"). Identity is `(resolved key string +
+  duplicate-key occurrence ordinal + code + start + end)`, paired as a multiset in
+  record order; `reconcileFindings` returns the exact prior array when nothing visible
+  changed, else reuses unchanged objects by identity, with each snapshot privately
+  owning its `_identities` + `(analysisId, array-index)` locator (no shared mutable
+  WeakMap; the public finding exposes `sid`, not the rebasing `key_idx`, so reuse
+  never carries a stale index). `decodePersistedFindings` is fail-closed: exact
+  identity-triple match, or the single saved-reference-present → current-reference-
+  absent salvage (matching `targetContextId`) that filters
+  `target-and-reference-silent-when-absent` rows via generated metadata and
+  dense-reindexes under the current no-reference `analysisId`; every other mismatch
+  throws. Little-endian `getBigUint64` reads the two `u64` ids as `bigint`.
+
+### Test inventory
+
+- **ssc-wire (25 unit tests):** header round-trips incl. `0`/`u64::MAX` ids +
+  reference flag; empty buffer; every severity×score×args combo; score
+  round-trip + monotonicity + NaN/inf/range errors; span reversed/out-of-bounds/
+  non-boundary + UTF-16 projection; invalid key_idx; digest round-trip for every
+  §A.1.1 row; spacing one-side/both-side/exact-tie selection; clamp+saturation
+  (count-pair, length-ratio, lossless u32); code/args mismatch incl. spacing-
+  neither-side; length-ratio non-finite/negative; four-zero-bytes for an
+  unassigned code carrying args; exact malformed-header + length + record
+  rejections; the analyze→pack→decode **equivalence bookend** (replaces
+  `project()`); finding-free corpus = count 0 with content-derived id;
+  schema one-to-one coverage; **discriminant pins**.
+- **xtask (1):** `committed_generated_files_match_render` (schema-to-generated
+  equality).
+- **node (`findings.test.mjs`, 15):** generated-table conformance pin;
+  cross-language parity (Rust-encoder vectors decode to the Rust decoder's
+  values); Rust malformed vectors rejected by the same categories; too-short /
+  non-Uint8Array / out-of-range-key rejects; empty buffer; saturation exposure;
+  reconcile exact-array fast path; reuse-vs-replace; key_idx-rebase no-churn;
+  duplicate-key ordinal; insert/delete/reorder vs a slow multiset oracle;
+  persistence exact-match accept; reference-removal salvage == fresh no-ref
+  decode; every non-salvageable mismatch (changed id/tcid, absent→present,
+  changed reference, malformed) rejects.
+- Cross-language vectors are emitted by `cargo xtask wire-vectors` into
+  `crates/wasm/js/__vectors__.json` (committed generated fixture; regenerate if
+  the schema or `ANALYSIS_ENGINE_STAMP`/config changes the ids).
+
+### Deferred to WP3b (§A.6 step 4+), with exact pointers
+
+- **The atomic wasm cutover (§A.6 step 4 / §A.3):** `crates/wasm/src/lib.rs` —
+  `Galley.analyze()`/`analyze_vref` → packed `Uint8Array` via `ssc_wire::pack`;
+  `last_analysis_id`/`last_args` retention + `finding_args`/`findings_args`
+  accessors (§A.3.3); delete wire `Finding`/`Findings`/`project()`
+  (`lib.rs:260–276,529` region) and the obsolete `bench_synthetic_findings*`
+  probes; `EngineCurrentWireStale` wasm-adapter state (§3.3). `ssc-wasm` will
+  need to depend on `ssc-wire` (not added this packet).
+- **pkg regeneration (§A.6 step 4 / step 6, A.3.6):** `npm run build:wasm`
+  populates `pkg-web`/`pkg-bundler` — including copying the JS surface via the
+  now-updated `scripts/restore-wasm-package-layout.mjs` and honoring the new
+  `./findings` export in `package.json`. This packet added the export map +
+  restore-script logic (they don't alter committed built output) but did **not**
+  run the build, so the committed `pkg-*` dirs do not yet contain
+  `findings*.js`/`.d.ts`; the `./findings` export resolves only after WP3b's
+  build. No current consumer imports `scripture-sous-chef-web/findings`, so the
+  transient state is inert.
+- **A.5.4 throwaway `pkg-node` smoke + worker transfer** and **A.5.6
+  `npm run build:wasm` .d.ts inspection**: both require the wasm cutover; the
+  wire-only equivalents (Rust-encoder vectors ↔ JS decoder, determinism no-op,
+  schema-to-generated equality) are done here.
+- **findings-wire.md reference doc (§A.6 step 6)** and **the ADR (§A.6 step 7):**
+  explicitly out of scope for this packet.
+
+### Deviations / notes for the owner (clearly marked)
+
+1. **`KeyIdx` has no public constructor, by design — tests derive findings from
+   `analyze`.** `pack` takes real `&[ssc_core::Finding]`; the ssc-wire unit tests
+   and the `wire-vectors` emitter build synthetic findings via functional-record-
+   update `..base` from a real analyzed finding (KeyIdx is `Copy`). This kept the
+   packet **zero-core-change** (no `KeyIdx::new`), which matches §A.5.6's "crates/
+   core changes only for the two folds, registry metadata, and the KeyIdx accessor"
+   — all already landed in Phase A. No new core surface requested.
+2. **`DecodedFinding` exposes `sid`, not `key_idx`.** The public JS finding is
+   addressed by the resolved key string; the ephemeral wire `key_idx` is not
+   surfaced, so a reused object never carries a stale (rebased) index and object
+   identity is clean across edits. The duplicate-key occurrence ordinal (derived
+   from `key_idx` at decode) still distinguishes duplicate-verse findings. Flagged
+   in case a consumer wants the raw `key_idx` too (trivial additive follow-up).
+3. **`__vectors__.json` is a committed generated fixture** under `crates/wasm/js/`
+   (not in the published `files` list, so it never ships). It lets `node --test`
+   run standalone. Regenerate with `cargo xtask wire-vectors` if the schema or the
+   analysis ids change.
+4. **`./findings` points at the pkg-bundler copy for both targets.** `findings.js`
+   is pure, target-agnostic JS (no wasm init, no `import.meta`), so one export
+   serves web and bundler consumers; the restore script still copies it into both
+   pkg dirs for completeness. Flagged in case a distinct `./web/findings` variant
+   is later wanted.
+
+### Stop-safe next step
+
+WP3a complete and gated (no oracle re-dump required for pure wire work; base WA
+pin confirmed byte-identical to the standing contract). Next stop-safe step is
+**WP3b: Appendix A §A.6 step 4** (the atomic wasm cutover) then steps 5–7
+(cross-language/reconciliation/smoke tests that need the cutover, findings-wire.md,
+the ADR). Phase B must not begin until Phase A-W completes (Entry 9 erratum:
+Phase A → Phase A-W → Phase B).
