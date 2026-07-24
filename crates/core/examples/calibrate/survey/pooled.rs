@@ -33,8 +33,6 @@ use std::path::Path;
 
 use ssc_core::charclass::class_of;
 use ssc_core::config::PunctuationSpacingConfig;
-use ssc_core::rule::StatefulRule;
-use ssc_core::signals::punctuation::PunctuationSpacingAnomaly;
 use ssc_core::{Corpus, FindingArgs};
 
 use super::shared::sig_wilson_lb;
@@ -574,19 +572,11 @@ pub(crate) fn analyze_pooled(id: String, map: &Corpus) -> PoolCorpus {
         }
     }
 
-    // Shipped production rule at the reference constants (its default config).
-    let books = ssc_core::corpus::by_book(map);
-    let shipped_rule = PunctuationSpacingAnomaly {
-        cfg: PunctuationSpacingConfig::default(),
-    };
-    let shipped_findings = shipped_rule
-        .judge(
-            &shipped_rule.reduce(&books, None, None).0,
-            &books,
-            None,
-            None,
-        )
-        .len() as u64;
+    // Shipped production spacing (the observation substrate) at the reference
+    // constants (its default config).
+    let shipped_findings =
+        ssc_core::signals::punctuation::spacing_findings(map, &PunctuationSpacingConfig::default())
+            .len() as u64;
 
     // Pass 2 — evaluate each site under both designs.
     let mut a_findings = 0u64;
@@ -948,15 +938,12 @@ fn pooled_regression(id: &str) {
         println!("  {id}: (no corpus file)");
         return;
     }
-    let books = ssc_core::corpus::by_book(&map);
-    let live = PunctuationSpacingAnomaly {
-        cfg: PunctuationSpacingConfig {
-            emit_score_min: 0.0,
-            ..Default::default()
-        },
+    let live_cfg = PunctuationSpacingConfig {
+        emit_score_min: 0.0,
+        ..Default::default()
     };
     let live_floor = f64::from(PunctuationSpacingConfig::default().emit_score_min);
-    let findings = live.judge(&live.reduce(&books, None, None).0, &books, None, None);
+    let findings = ssc_core::signals::punctuation::spacing_findings(&map, &live_cfg);
 
     // Build the pools + a (key, mark_off) → opp reads lookup.
     let mut a_po: BTreeMap<char, ACell> = BTreeMap::new();

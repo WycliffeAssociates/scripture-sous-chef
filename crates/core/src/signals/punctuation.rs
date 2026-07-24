@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 
 use crate::charclass::class_of;
 use crate::config::{PunctuationAdjacencyConfig, PunctuationSpacingConfig};
-use crate::corpus::{BookGroup, Books, Corpus, KeyIdx, LocalKeyIdx, SiteAddr, rebase};
+use crate::corpus::{Books, Corpus, KeyIdx, LocalKeyIdx, SiteAddr, rebase};
 use crate::diagnostics::{Finding, FindingArgs, RuleId, Severity, SpacingSide};
 use crate::evidence::{
     clamp_count, clamp_rate, clamp_unit, clamp_z, dominance, from_strengths, odds_amplify, strength,
@@ -593,163 +593,6 @@ pub(crate) struct BookPunctuationSpacing {
     pub(crate) per_mark: BTreeMap<char, [u64; SIDE_CELLS]>,
 }
 
-/// Cached spacing aggregates, keyed by book code so an edit supersedes only its
-/// book. Corpus-wide counts are the sums over books, derived at `judge`.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct PunctuationSpacingStats {
-    pub(crate) per_book: BTreeMap<Box<str>, BookPunctuationSpacing>,
-}
-
-impl PunctuationSpacingStats {
-    /// Book-level supersede: books in `other` replace those in `self`.
-    pub(crate) fn merge(mut self, other: PunctuationSpacingStats) -> PunctuationSpacingStats {
-        for (book, b) in other.per_book {
-            self.per_book.insert(book, b);
-        }
-        self
-    }
-
-    pub(crate) fn remove_book(&mut self, slug: &str) {
-        self.per_book.remove(slug);
-    }
-}
-
-pub struct PunctuationSpacingAnomaly {
-    pub cfg: PunctuationSpacingConfig,
-}
-
-impl StatefulRule for PunctuationSpacingAnomaly {
-    fn id(&self) -> RuleId {
-        PUNCTUATION_SPACING_ANOMALY
-    }
-
-    fn reduce(
-        &self,
-        books: &Books<'_>,
-        _source: Option<&Corpus>,
-        _tokens: Option<&TokenCache<'_>>,
-    ) -> (RuleStats, rule::RuleSites<'static>) {
-        // Thin driver over the shared listener (the fused walk feeds the same
-        // `SpacingAcc`); kept for calibration/tests.
-        let mut per_book = BTreeMap::new();
-        let mut sites = BTreeMap::new();
-        for (group, (counts, book_sites)) in books.iter().zip(rule::map_books(books, |group| {
-            stream::drive_book(
-                group,
-                stream::Needs {
-                    graphemes: true,
-                    ..Default::default()
-                },
-                SpacingAcc::new(),
-                |a, v| a.verse(v),
-                SpacingAcc::finish,
-            )
-        })) {
-            per_book.insert(Box::from(group.slug), counts);
-            sites.insert(Box::from(group.slug), book_sites);
-        }
-        (
-            RuleStats::PunctuationSpacing(PunctuationSpacingStats { per_book }),
-            rule::RuleSites::PunctuationSpacing(sites.into_iter().map(|(k, v)| (k, std::borrow::Cow::Owned(v))).collect()),
-        )
-    }
-
-    fn judge(
-        &self,
-        stats: &RuleStats,
-        books: &Books<'_>,
-        _tokens: Option<&TokenCache<'_>>,
-        sites: Option<&rule::RuleSites<'_>>,
-    ) -> Vec<Finding> {
-        let RuleStats::PunctuationSpacing(stats) = stats else {
-            return Vec::new();
-        };
-
-        // Corpus-wide per-mark per-side tallies: sum the per-book aggregates.
-        let mut totals: BTreeMap<char, [u64; SIDE_CELLS]> = BTreeMap::new();
-        for book in stats.per_book.values() {
-            for (&mark, counts) in &book.per_mark {
-                let e = totals.entry(mark).or_insert([0u64; SIDE_CELLS]);
-                for (x, y) in e.iter_mut().zip(counts) {
-                    *x += y;
-                }
-            }
-        }
-
-        let z = clamp_z(self.cfg.confidence_z);
-        let minority_k = clamp_count(self.cfg.minority_recurrence_k);
-        let minority_rate = clamp_count(self.cfg.minority_rate_per_10k);
-        let floor = f64::from(clamp_unit(self.cfg.emit_score_min));
-
-        // A mark's verdict — each `(side, class)` pool's two-factor score — is
-        // identical for every occurrence sharing a pool + form, so compute it
-        // once per mark.
-        let verdicts: BTreeMap<char, MarkVerdict> = totals
-            .iter()
-            .map(|(&mark, counts)| {
-                (
-                    mark,
-                    mark_verdict(counts, z, minority_k, minority_rate, floor),
-                )
-            })
-            .collect();
-
-        // Recover spans (aggregate-only state holds none): from the forwarded
-        // reduce sites where this call scanned the book (ADR 0044) — the site
-        // carries mark + per-side class/form + span pieces, so this path never
-        // touches text — by re-scanning otherwise. Both paths fan out per book
-        // (ADR 0042).
-        let forwarded = match sites {
-            Some(rule::RuleSites::PunctuationSpacing(m)) => Some(m),
-            _ => None,
-        };
-        let mut out: Vec<Finding> = rule::map_books(books, |group| {
-            let mut found = Vec::new();
-            if let Some(book_sites) = forwarded.and_then(|m| m.get(group.slug)) {
-                for s in book_sites.iter() {
-                    if let Some(v) = verdicts.get(&s.mark)
-                        && let Some(f) = spacing_finding_for_site(
-                            v,
-                            floor,
-                            rebase(group.base, s.local_idx),
-                            s.mark,
-                            s.left,
-                            s.right,
-                            s.left_span,
-                            s.right_span,
-                        )
-                    {
-                        found.push(f);
-                    }
-                }
-            } else {
-                for_each_spacing_opportunity(group, |local, opp| {
-                    if let Some(v) = verdicts.get(&opp.mark)
-                        && let Some(f) = spacing_finding_for_site(
-                            v,
-                            floor,
-                            rebase(group.base, local),
-                            opp.mark,
-                            opp.left,
-                            opp.right,
-                            opp.left_span,
-                            opp.right_span,
-                        )
-                    {
-                        found.push(f);
-                    }
-                });
-            }
-            found
-        })
-        .into_iter()
-        .flatten()
-        .collect();
-        out.sort_by_key(|f| (f.key_idx, f.range.start, f.range.end));
-        out
-    }
-}
-
 /// Score one spacing occurrence against its mark's corpus verdict, returning the
 /// finding it produces (or `None` when neither side is anomalous). Extracted so
 /// the aggregate-only `judge` and the [`SpacingSubstrate`] materializer share
@@ -965,7 +808,9 @@ pub(crate) struct SideRead {
 
 /// One separator/dash-mark occurrence: the mark, its read on each side (or
 /// `None` where that side abstains), and the neighbourhood span to highlight for
-/// each side if it is flagged.
+/// each side if it is flagged. The batch extractor is retained as the reference
+/// the streaming `SpacingAcc` (the census's extractor) is validated against.
+#[cfg(test)]
 struct SpacingOpportunity {
     mark: char,
     left: Option<SideRead>,
@@ -1035,8 +880,9 @@ fn verse_edge_classes(text: &str, graphemes: &[GSpan]) -> (Option<PoolClass>, Op
 /// book-ordered verse neighbours (the seam reads as whitespace, its class read
 /// across; repo `CLAUDE.md`). Each verse is grapheme-segmented once; a book edge
 /// with no neighbour across the seam yields `None` on that side (abstain).
+#[cfg(test)]
 fn for_each_spacing_opportunity(
-    group: &BookGroup<'_>,
+    group: &crate::corpus::BookGroup<'_>,
     mut f: impl FnMut(LocalKeyIdx, &SpacingOpportunity),
 ) {
     let mut per_verse: Vec<Vec<GSpan>> = Vec::with_capacity(group.len());
@@ -1073,6 +919,7 @@ fn for_each_spacing_opportunity(
 /// (`None`). The per-side span highlights where the space is (the crossed
 /// whitespace run) or where it belongs (the attached neighbour grapheme), so the
 /// highlight works for a missing space after a mark as well as before it.
+#[cfg(test)]
 fn spacing_opportunities(
     text: &str,
     graphemes: &[GSpan],
@@ -1110,6 +957,7 @@ pub(crate) enum RightState {
 }
 
 impl RawOpportunity {
+    #[cfg(test)]
     fn resolve(self, right_cross: Option<PoolClass>) -> SpacingOpportunity {
         let right = match self.right {
             RightState::Resolved(r) => r,
@@ -1391,6 +1239,11 @@ impl SpacingAcc {
 /// walk threads `left_cross`/`pending` across verse seams — a chapter boundary
 /// is not a discourse reset (repo `CLAUDE.md`).
 pub(crate) struct SpacingSubstrate;
+
+/// Pins the substrate's registry id at compile time (the typed cache slot and
+/// the closed `SubstrateId` name the same substrate).
+const _: crate::substrate::SubstrateId =
+    <SpacingSubstrate as crate::substrate::ObservationSubstrate>::ID;
 
 /// One verse's input-independent spacing observation: its extracted
 /// opportunities (with the left-seam dependency deferred — a verse-leading
@@ -1701,6 +1554,133 @@ impl crate::substrate::ObservationSubstrate for SpacingSubstrate {
     }
 }
 
+/// The `punct.spacing-anomaly` emission floor for a config — the two-factor
+/// score a rare form must clear to surface. Shared by the substrate materializer
+/// and its judge so the threshold is applied identically.
+pub(crate) fn spacing_floor(cfg: &PunctuationSpacingConfig) -> f64 {
+    f64::from(clamp_unit(cfg.emit_score_min))
+}
+
+/// Drive the `punct.spacing-anomaly` observation substrate for one analysis
+/// (plan §5.2, Phase C). When active: bring every book up to date through the
+/// substrate cache (map only changed chapters, whole-book carry-reduce only a
+/// changed book — a knob change maps/reduces nothing), judge every mark from the
+/// cached corpus aggregate, and materialize every book's findings into `out`.
+/// When inactive (no enabled consumer): drop the substrate's cached products so
+/// an edit while it is disabled does no spacing work.
+pub(crate) fn drive_spacing(
+    active: bool,
+    cache: &mut crate::substrate::SubstrateCache<SpacingSubstrate>,
+    corpus: &Corpus,
+    cfg: &PunctuationSpacingConfig,
+    out: &mut Vec<Finding>,
+) {
+    use crate::substrate::{ChapterView, ObservationInputStamp, ObservationSubstrate};
+    if !active {
+        cache.clear();
+        return;
+    }
+    #[cfg(any(test, feature = "test-probes"))]
+    cache.reset_probes();
+    let texts = corpus.texts();
+    for book in corpus.book_layout() {
+        let chapters: Vec<(Box<str>, ObservationInputStamp)> = book
+            .chapters
+            .iter()
+            .map(|c| {
+                (
+                    c.chapter.clone(),
+                    ObservationInputStamp {
+                        schema_stamp: SpacingSubstrate::SCHEMA_STAMP,
+                        chapter_hash: c.hash,
+                        extractor_fp: SpacingSubstrate::extractor_fp(&()),
+                    },
+                )
+            })
+            .collect();
+        let views: Vec<ChapterView> = book
+            .chapters
+            .iter()
+            .map(|c| ChapterView {
+                chapter: &c.chapter,
+                texts: &texts[c.range.clone()],
+            })
+            .collect();
+        cache.update_book(&book.slug, &chapters, |i| {
+            SpacingSubstrate::map_chapter(&views[i], &())
+        });
+    }
+    let floor = spacing_floor(cfg);
+    let stats = cache.corpus_stats();
+    let verdicts: BTreeMap<char, MarkVerdict> = stats
+        .totals
+        .keys()
+        .copied()
+        .map(|m| (m, SpacingSubstrate::judge(cfg, &m, stats)))
+        .collect();
+    #[cfg(any(test, feature = "test-probes"))]
+    {
+        cache.judged = verdicts.len();
+    }
+    for book in corpus.book_layout() {
+        if let Some(contrib) = cache.book_contribution(&book.slug) {
+            contrib.materialize(&book.slug, corpus, &verdicts, floor, out);
+        }
+    }
+}
+
+/// `punct.spacing-anomaly` findings for a whole corpus at a given config, via
+/// the observation substrate over a fresh transient cache — the single spacing
+/// implementation, for calibration/survey callers that used to construct the
+/// retired `PunctuationSpacingAnomaly` rule directly. Findings are in the final
+/// stable order (`(key_idx, range.start, range.end)`), as the shipped rule
+/// returned them.
+pub fn spacing_findings(corpus: &Corpus, cfg: &PunctuationSpacingConfig) -> Vec<Finding> {
+    let mut cache = crate::substrate::SubstrateCache::new();
+    let mut out = Vec::new();
+    drive_spacing(true, &mut cache, corpus, cfg, &mut out);
+    out.sort_by_key(|f| (f.key_idx, f.range.start, f.range.end));
+    out
+}
+
+/// The corpus per-mark spacing cells (summed over books) the substrate builds —
+/// the authority the census's `MarkSpacing` lane is validated against.
+#[cfg(test)]
+pub(crate) fn spacing_corpus_cells(corpus: &Corpus) -> BTreeMap<char, [u64; SIDE_CELLS]> {
+    use crate::substrate::{ChapterView, ObservationInputStamp, ObservationSubstrate};
+    let mut cache: crate::substrate::SubstrateCache<SpacingSubstrate> =
+        crate::substrate::SubstrateCache::new();
+    let texts = corpus.texts();
+    for book in corpus.book_layout() {
+        let chapters: Vec<(Box<str>, ObservationInputStamp)> = book
+            .chapters
+            .iter()
+            .map(|c| {
+                (
+                    c.chapter.clone(),
+                    ObservationInputStamp {
+                        schema_stamp: SpacingSubstrate::SCHEMA_STAMP,
+                        chapter_hash: c.hash,
+                        extractor_fp: SpacingSubstrate::extractor_fp(&()),
+                    },
+                )
+            })
+            .collect();
+        let views: Vec<ChapterView> = book
+            .chapters
+            .iter()
+            .map(|c| ChapterView {
+                chapter: &c.chapter,
+                texts: &texts[c.range.clone()],
+            })
+            .collect();
+        cache.update_book(&book.slug, &chapters, |i| {
+            SpacingSubstrate::map_chapter(&views[i], &())
+        });
+    }
+    cache.corpus_stats().totals.clone()
+}
+
 impl SpacingBookContribution {
     /// Materialize this book's spacing findings from its keyed sites and the
     /// judged per-mark verdicts, rebasing each chapter-local site to a global
@@ -1708,7 +1688,6 @@ impl SpacingBookContribution {
     /// (the streaming-walk order), so the identical-span tie the final stable
     /// sort preserves is reproduced. Shares [`spacing_finding_for_site`] with the
     /// aggregate-only path, so the two cannot drift.
-    #[allow(dead_code)] // wired into the transition in Phase C step 2
     pub(crate) fn materialize(
         &self,
         slug: &str,
@@ -2367,11 +2346,8 @@ mod tests {
 
     // ── punct spacing anomaly — pooled class-conditioned model (ADR 0054 2nd) ─
 
-    fn sp_rule(cfg: PunctuationSpacingConfig) -> PunctuationSpacingAnomaly {
-        PunctuationSpacingAnomaly { cfg }
-    }
-    fn sp_default() -> PunctuationSpacingAnomaly {
-        sp_rule(PunctuationSpacingConfig::default())
+    fn sp_default() -> PunctuationSpacingConfig {
+        PunctuationSpacingConfig::default()
     }
     fn sp_no_floor() -> PunctuationSpacingConfig {
         PunctuationSpacingConfig {
@@ -2379,9 +2355,10 @@ mod tests {
             ..Default::default()
         }
     }
-    fn sp_run(corpus: &Corpus, r: &PunctuationSpacingAnomaly) -> Vec<Finding> {
-        let books = by_book(corpus);
-        r.judge(&r.reduce(&books, None, None).0, &books, None, None)
+    /// `punct.spacing-anomaly` findings for a corpus — through the observation
+    /// substrate (the sole spacing implementation now).
+    fn sp_run(corpus: &Corpus, cfg: &PunctuationSpacingConfig) -> Vec<Finding> {
+        spacing_findings(corpus, cfg)
     }
     /// An isolated verse: both seams are book edges (no cross neighbour), so a
     /// verse-edge mark abstains on the seam side.
@@ -2810,7 +2787,7 @@ mod tests {
     #[test]
     fn clean_as_you_go_raises_the_surviving_slips_score() {
         let score_of = |sp: usize| {
-            sp_run(&commas(1000, sp), &sp_rule(sp_no_floor()))
+            sp_run(&commas(1000, sp), &sp_no_floor())
                 .iter()
                 .find_map(|x| match &x.args {
                     Some(FindingArgs::SpacingConvention { left: Some(s), .. })
@@ -2878,42 +2855,42 @@ mod tests {
     // ── stateful: corpus-wide pooling, incrementality, removal ───────────
 
     #[test]
-    fn incremental_score_is_corpus_wide_not_book_local() {
-        let r = sp_default();
+    fn spacing_score_is_corpus_wide_and_incremental() {
+        // The substrate judges every mark from the corpus aggregate, and its
+        // resident cache reaches that aggregate incrementally: seed GEN, then add
+        // EXO's rare `word,word` on the SAME cache, and the EXO finding is scored
+        // against the corpus-wide comma opportunities — byte-identical to a cold
+        // analysis of the whole corpus.
+        use crate::substrate::SubstrateCache;
+        let cfg = sp_default();
         let gen_entries = commas_entries(100, 0);
         let exo_entries = vec![(1u16, "word,word".to_string())];
-        let gen_map = book("GEN", &gen_entries);
-        let exo = book("EXO", &exo_entries);
+        let gen_only = book("GEN", &gen_entries);
         let full = build_books(&[("GEN", gen_entries), ("EXO", exo_entries)]);
 
-        let full_books = by_book(&full);
-        let full_score = r
-            .judge(
-                &r.reduce(&full_books, None, None).0,
-                &full_books,
-                None,
-                None,
-            )
-            .into_iter()
-            .find(|f| full.key(f.key_idx) == key_of("EXO", 1))
-            .unwrap()
-            .score;
+        let mut cache: SubstrateCache<SpacingSubstrate> = SubstrateCache::new();
+        let mut seed = Vec::new();
+        drive_spacing(true, &mut cache, &gen_only, &cfg, &mut seed);
+        let mut inc = Vec::new();
+        drive_spacing(true, &mut cache, &full, &cfg, &mut inc);
+        inc.sort_by_key(|f| (f.key_idx, f.range.start, f.range.end));
 
-        let gen_books = by_book(&gen_map);
-        let exo_books = by_book(&exo);
-        let merged = r
-            .reduce(&gen_books, None, None)
-            .0
-            .merge(r.reduce(&exo_books, None, None).0);
-        let inc = r.judge(&merged, &exo_books, None, None);
-        assert_eq!(inc.len(), 1);
-        assert_eq!(exo.key(inc[0].key_idx), key_of("EXO", 1));
-        assert_eq!(inc[0].score, full_score, "incremental score is corpus-wide");
+        let cold = spacing_findings(&full, &cfg);
+        assert_eq!(inc, cold, "resident incremental == cold full analysis");
+        assert!(
+            inc.iter().any(|f| full.key(f.key_idx) == key_of("EXO", 1)),
+            "the EXO comma surfaces against the corpus-wide convention"
+        );
     }
 
     #[test]
-    fn removing_a_book_drops_its_contribution() {
-        let r = sp_default();
+    fn removing_a_book_drops_its_substrate_contribution() {
+        // GEN establishes the spaced-comma convention that makes EXO's attached
+        // `word,word` anomalous; dropping GEN from the substrate cache removes
+        // that convention, so EXO no longer fires — the corpus aggregate is
+        // maintained through `SubstrateCache::remove_book`.
+        use crate::substrate::SubstrateCache;
+        let cfg = sp_default();
         let gen_entries = commas_entries(100, 0);
         let exo_entries = vec![
             (1u16, "word,word".to_string()),
@@ -2922,31 +2899,21 @@ mod tests {
         let exo = book("EXO", &exo_entries);
         let full = build_books(&[("GEN", gen_entries), ("EXO", exo_entries)]);
 
-        let full_books = by_book(&full);
-        let RuleStats::PunctuationSpacing(mut stats) = r.reduce(&full_books, None, None).0 else {
-            unreachable!()
-        };
-        let exo_books = by_book(&exo);
-        let before = r.judge(
-            &RuleStats::PunctuationSpacing(stats.clone()),
-            &exo_books,
-            None,
-            None,
-        );
+        let mut cache: SubstrateCache<SpacingSubstrate> = SubstrateCache::new();
+        let mut before = Vec::new();
+        drive_spacing(true, &mut cache, &full, &cfg, &mut before);
         assert!(
-            before
-                .iter()
-                .any(|f| exo.key(f.key_idx) == key_of("EXO", 1))
+            before.iter().any(|f| full.key(f.key_idx) == key_of("EXO", 1)),
+            "EXO's attached comma fires against GEN's spaced-comma convention"
         );
-        stats.remove_book("GEN");
+
+        cache.remove_book("GEN");
+        // Re-judge EXO alone against the now GEN-free aggregate.
+        let mut after = Vec::new();
+        drive_spacing(true, &mut cache, &exo, &cfg, &mut after);
         assert!(
-            r.judge(
-                &RuleStats::PunctuationSpacing(stats),
-                &exo_books,
-                None,
-                None
-            )
-            .is_empty()
+            after.iter().all(|f| exo.key(f.key_idx) != key_of("EXO", 1)),
+            "with GEN's convention gone, EXO's comma no longer surfaces"
         );
     }
 
@@ -2958,7 +2925,7 @@ mod tests {
             minority_recurrence_k: f32::NAN,
             minority_rate_per_10k: f32::NAN,
         };
-        for f in sp_run(&commas(100, 3), &sp_rule(cfg)) {
+        for f in sp_run(&commas(100, 3), &cfg) {
             let s = f.score.unwrap();
             assert!(s.is_finite() && (0.0..=1.0).contains(&s), "score {s}");
         }
@@ -2974,160 +2941,114 @@ mod tests {
         Corpus::try_from_parts(keys, texts).unwrap()
     }
 
-    /// Drive the full spacing SUBSTRATE pipeline (map every chapter → whole-book
-    /// left-to-right carry reduce → fold → judge → materialize) over a corpus and
-    /// return `(findings, corpus per-mark cells)` — the Phase C step 2 flow,
-    /// exercised here to pin byte-identity against the shipped rule BEFORE it is
-    /// wired into the transition (step 2 deletes the old path).
-    fn substrate_run(
+    /// Resident-substrate findings for a corpus on a persisted cache — the
+    /// incremental path the transition drives (map only changed chapters,
+    /// whole-book carry-reduce only a changed book), in final stable order.
+    fn resident_findings(
+        cache: &mut crate::substrate::SubstrateCache<SpacingSubstrate>,
         corpus: &Corpus,
         cfg: &PunctuationSpacingConfig,
-    ) -> (Vec<Finding>, BTreeMap<char, [u64; SIDE_CELLS]>) {
-        use crate::substrate::{
-            ChapterView, ObservationInputStamp, ObservationSubstrate, SubstrateCache,
-        };
-        let mut cache: SubstrateCache<SpacingSubstrate> = SubstrateCache::new();
-        let texts = corpus.texts();
-        for book in corpus.book_layout() {
-            let chapters: Vec<(Box<str>, ObservationInputStamp)> = book
-                .chapters
-                .iter()
-                .map(|c| {
-                    (
-                        c.chapter.clone(),
-                        ObservationInputStamp {
-                            schema_stamp: SpacingSubstrate::SCHEMA_STAMP,
-                            chapter_hash: c.hash,
-                            extractor_fp: SpacingSubstrate::extractor_fp(&()),
-                        },
-                    )
-                })
-                .collect();
-            let views: Vec<ChapterView> = book
-                .chapters
-                .iter()
-                .map(|c| ChapterView {
-                    slug: &book.slug,
-                    chapter: &c.chapter,
-                    texts: &texts[c.range.clone()],
-                })
-                .collect();
-            cache.update_book(&book.slug, &chapters, |i| {
-                SpacingSubstrate::map_chapter(&views[i], &())
-            });
-        }
-        let floor = f64::from(clamp_unit(cfg.emit_score_min));
-        let stats = cache.corpus_stats();
-        let cells = stats.totals.clone();
-        let verdicts: BTreeMap<char, MarkVerdict> = cells
-            .keys()
-            .copied()
-            .map(|m| (m, SpacingSubstrate::judge(cfg, &m, stats)))
-            .collect();
+    ) -> Vec<Finding> {
         let mut out = Vec::new();
-        for book in corpus.book_layout() {
-            if let Some(contrib) = cache.book_contribution(&book.slug) {
-                contrib.materialize(&book.slug, corpus, &verdicts, floor, &mut out);
-            }
-        }
+        drive_spacing(true, cache, corpus, cfg, &mut out);
         out.sort_by_key(|f| (f.key_idx, f.range.start, f.range.end));
-        (out, cells)
+        out
     }
 
-    /// The shipped rule's corpus per-mark cells — the whole-book reference the
-    /// substrate must reproduce (cells are config-independent).
-    fn rule_cells(corpus: &Corpus) -> BTreeMap<char, [u64; SIDE_CELLS]> {
-        let books = by_book(corpus);
-        let RuleStats::PunctuationSpacing(stats) = sp_default().reduce(&books, None, None).0 else {
-            panic!("spacing reduce yields spacing stats");
-        };
-        let mut totals: BTreeMap<char, [u64; SIDE_CELLS]> = BTreeMap::new();
-        for b in stats.per_book.values() {
-            for (&m, c) in &b.per_mark {
-                let e = totals.entry(m).or_insert([0u64; SIDE_CELLS]);
-                for (x, y) in e.iter_mut().zip(c) {
-                    *x += y;
-                }
-            }
-        }
-        totals
-    }
-
-    /// The spacing substrate — chapter map + whole-book carry reduce + fold +
-    /// judge + materialize — reproduces the shipped whole-book rule exactly, in
-    /// both cells and findings, across a battery covering cross-chapter carry,
-    /// empty/whitespace verses between chapters, verse-leading/trailing marks at
-    /// chapter edges, duplicate keys, and out-of-order verse tokens. This is the
-    /// byte-identity that Phase C step 2 wires into the transition.
+    /// The spacing substrate is byte-identical cold vs. incremental: a resident
+    /// cache carried across a sequence of real mutations (chapter replacement, a
+    /// new book, whole-book replacement, book removal) reproduces a cold
+    /// full-corpus analysis at every step. This is the Phase C gate (plan §8
+    /// step 2 / step 3) at the unit level; the fleet oracle enforces it at scale.
     #[test]
-    fn spacing_substrate_matches_the_shipped_rule() {
-        let corpora: Vec<Corpus> = vec![
-            // Single book, two chapters; a comma convention spanning the seam.
-            multi(&[
-                ("GEN 1:1", "In the beginning, God created the heavens."),
-                ("GEN 1:2", "The earth was formless, and void, and dark."),
-                ("GEN 1:3", "God said, Let there be light, and light"),
-                ("GEN 2:1", ", thus the heavens and the earth were finished."),
-                ("GEN 2:2", "On the seventh day God ended,his work."),
-                ("GEN 2:3", "And he rested, and blessed, and hallowed it."),
-            ]),
-            // Pericope-adulterae shape: a trailing mark at a chapter's last verse
-            // resolving against the next chapter's leading edge (JHN 7:53 → 8:1),
-            // with an empty verse between (pending skips empty verses).
-            multi(&[
-                ("JHN 7:52", "They answered, Art thou also of Galilee?"),
-                ("JHN 7:53", "And every man went unto his own house."),
-                ("JHN 8:1", "Jesus went unto the mount of Olives,"),
-                ("JHN 8:2", ""),
-                ("JHN 8:3", "and the scribes brought a woman, taken."),
-            ]),
-            // Two books, out-of-order and duplicate verse tokens, cross-chapter
-            // trailing/leading marks, whitespace-only verse between chapters.
-            multi(&[
-                ("MRK 1:1", "The beginning of the gospel,of Jesus Christ."),
-                ("MRK 1:3", "The voice of one crying, Prepare ye,"),
-                ("MRK 1:2", "As it is written, Behold, I send,"),
-                ("MRK 1:2", "my messenger,before thy face, who shall"),
-                ("MRK 2:1", "   "),
-                ("MRK 2:2", ",And again he entered, into Capernaum."),
-                ("LUK 1:1", "Forasmuch as many, have taken in hand,"),
-                ("LUK 1:2", "even as they delivered,them unto us,"),
-            ]),
-            // Every verse a lone mark or empty — pathological seam threading.
-            multi(&[
-                ("PSA 1:1", "."),
-                ("PSA 1:2", ""),
-                ("PSA 1:3", ","),
-                ("PSA 2:1", "!"),
-                ("PSA 2:2", "   "),
-                ("PSA 2:3", "-"),
-            ]),
-        ];
-        for corpus in &corpora {
-            // Cells are config-independent and directly witness the carry.
-            let (_, sub_cells) = substrate_run(corpus, &PunctuationSpacingConfig::default());
-            assert_eq!(
-                sub_cells,
-                rule_cells(corpus),
-                "substrate corpus cells diverge from the whole-book rule"
-            );
-            // Findings must be byte-identical at the shipped floor and at no floor
-            // (which surfaces every holding pool's minority — the widest set).
-            for cfg in [PunctuationSpacingConfig::default(), sp_no_floor()] {
-                assert_eq!(
-                    substrate_run(corpus, &cfg).0,
-                    sp_run(corpus, &sp_rule(cfg)),
-                    "substrate findings diverge from the shipped rule"
-                );
-            }
-        }
+    fn spacing_substrate_incremental_equals_cold_under_edits() {
+        use crate::corpus::{BookBlock, ChapterBlock};
+        use crate::substrate::SubstrateCache;
+        let cfg = sp_no_floor(); // widest finding set surfaces every holding pool
+        let mut corpus = multi(&[
+            ("GEN 1:1", "In the beginning, God created the heavens."),
+            ("GEN 1:2", "The earth was formless, and void, and dark."),
+            ("GEN 1:3", "God said, Let there be light, and light"),
+            ("GEN 2:1", ", thus the heavens and the earth were finished."),
+            ("GEN 2:2", "On the seventh day God ended,his work."),
+            ("EXO 1:1", "Now these are the names, of the sons,"),
+            ("EXO 1:2", "who came into Egypt,every man and his household."),
+        ]);
+        let mut cache: SubstrateCache<SpacingSubstrate> = SubstrateCache::new();
+        assert_eq!(
+            resident_findings(&mut cache, &corpus, &cfg),
+            spacing_findings(&corpus, &cfg),
+            "cold seed"
+        );
+
+        // Replace GEN chapter 2 (changes its hash; GEN ch1 + EXO reuse).
+        corpus
+            .replace_chapter(ChapterBlock {
+                slug: "GEN".into(),
+                chapter: "2".into(),
+                keys: vec!["GEN 2:1".into(), "GEN 2:2".into(), "GEN 2:3".into()],
+                texts: vec![
+                    "thus the heavens,and the earth were finished.".into(),
+                    "and God rested, and blessed the seventh day,".into(),
+                    ",a new leading comma reading across the chapter seam.".into(),
+                ],
+            })
+            .unwrap();
+        assert_eq!(
+            resident_findings(&mut cache, &corpus, &cfg),
+            spacing_findings(&corpus, &cfg),
+            "after chapter replacement"
+        );
+
+        // Append a new book.
+        corpus
+            .replace_books(vec![BookBlock {
+                slug: "LEV".into(),
+                keys: vec!["LEV 1:1".into(), "LEV 1:2".into()],
+                texts: vec![
+                    "And the Lord called, unto Moses,and spake:".into(),
+                    "Speak unto the children, of Israel,".into(),
+                ],
+            }])
+            .unwrap();
+        assert_eq!(
+            resident_findings(&mut cache, &corpus, &cfg),
+            spacing_findings(&corpus, &cfg),
+            "after appending a new book"
+        );
+
+        // Replace an existing whole book in place.
+        corpus
+            .replace_books(vec![BookBlock {
+                slug: "EXO".into(),
+                keys: vec!["EXO 1:1".into(), "EXO 2:1".into()],
+                texts: vec![
+                    "Now these,are the names of the sons of Israel,".into(),
+                    "who came,into Egypt.".into(),
+                ],
+            }])
+            .unwrap();
+        assert_eq!(
+            resident_findings(&mut cache, &corpus, &cfg),
+            spacing_findings(&corpus, &cfg),
+            "after whole-book replacement"
+        );
+
+        // Remove a book — the cache drops its contribution.
+        corpus.remove_book("GEN");
+        cache.remove_book("GEN");
+        assert_eq!(
+            resident_findings(&mut cache, &corpus, &cfg),
+            spacing_findings(&corpus, &cfg),
+            "after book removal"
+        );
     }
 
     /// The carry is load-bearing: a verse-leading mark at a chapter's start reads
     /// its left neighbour ACROSS the chapter seam (the previous chapter's last
     /// verse), so its Left cell is populated — a `()`-boundary migration that
     /// dropped the carry would leave it empty and diff the fleet. Witnessed
-    /// directly on the cells, independent of any emission threshold.
+    /// directly on the substrate's corpus cells, independent of any threshold.
     #[test]
     fn spacing_substrate_carry_populates_the_cross_chapter_left_cell() {
         // GEN 1:2 ends with a letter ("light"); GEN 2:1 begins with a comma whose
@@ -3137,7 +3058,7 @@ mod tests {
             ("GEN 1:2", "and there was light"),
             ("GEN 2:1", ", thus it was"),
         ]);
-        let (_, cells) = substrate_run(&corpus, &PunctuationSpacingConfig::default());
+        let cells = spacing_corpus_cells(&corpus);
         let comma = cells.get(&',').expect("the comma has cells");
         let left_letter_spaced = comma[cell_index(Side::Left, PoolClass::Letter, SideForm::Spaced)];
         assert_eq!(
@@ -3145,7 +3066,6 @@ mod tests {
             "the chapter-leading comma's left must read the previous chapter's \
              trailing letter across the seam (the code-proven carry)"
         );
-        // And it still matches the whole-book rule exactly.
-        assert_eq!(cells, rule_cells(&corpus));
     }
+
 }

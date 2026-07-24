@@ -135,7 +135,6 @@ fn fold_letter_tokens<'t>(text: &'t str, tokens: &[Token], buf: &mut Vec<Option<
 pub(crate) struct WalkPlan {
     pub casing: bool,
     pub adjacency: bool,
-    pub spacing: bool,
     pub repeated_run: bool,
     pub punct_only: bool,
     pub mixed_script: bool,
@@ -157,9 +156,6 @@ impl WalkPlan {
         }
         if self.adjacency || self.punct_only {
             n.tape = true;
-        }
-        if self.spacing {
-            n.graphemes = true;
         }
         if self.repeated_run {
             n.graphemes = true;
@@ -184,7 +180,7 @@ impl WalkPlan {
         if self.adjacency || self.punct_only {
             n.tape = true;
         }
-        if self.spacing || self.repeated_run {
+        if self.repeated_run {
             n.graphemes = true;
         }
         // Repeated-run's anchor mode skips its per-token word fold, so it
@@ -237,10 +233,6 @@ pub(crate) struct BookOut {
     pub adjacency: Option<(
         punctuation::BookPunctuationAdjacency,
         Vec<crate::corpus::SiteAddr>,
-    )>,
-    pub spacing: Option<(
-        punctuation::BookPunctuationSpacing,
-        Vec<punctuation::SpacingSite>,
     )>,
     pub repeated_run: Option<(
         lexical::BookRepeatedCharacterRun,
@@ -353,7 +345,6 @@ fn walk_book(
     let mut adjacency_acc = plan
         .adjacency
         .then(|| punctuation::AdjacencyAcc::new(count));
-    let mut spacing_acc = plan.spacing.then(punctuation::SpacingAcc::new);
     let mut repeated_acc = plan
         .repeated_run
         .then(|| lexical::RepeatedRunAcc::new(count));
@@ -414,9 +405,6 @@ fn walk_book(
         if let Some(a) = &mut adjacency_acc {
             a.verse(&v);
         }
-        if let Some(a) = &mut spacing_acc {
-            a.verse(&v);
-        }
         if let Some(a) = &mut repeated_acc {
             a.verse(&v);
         }
@@ -462,7 +450,6 @@ fn walk_book(
         counting_accs_ran,
         casing: casing_acc.map(casing::CasingAcc::finish),
         adjacency: adjacency_acc.map(punctuation::AdjacencyAcc::finish),
-        spacing: spacing_acc.map(punctuation::SpacingAcc::finish),
         repeated_run: repeated_acc.map(lexical::RepeatedRunAcc::finish),
         punct_only: punct_only_acc.map(lexical::PunctOnlyAcc::finish),
         mixed_script: mixed_script_acc.map(script_mixing::MixedScriptAcc::finish),

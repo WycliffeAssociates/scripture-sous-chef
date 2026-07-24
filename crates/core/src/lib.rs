@@ -319,11 +319,16 @@ fn transition(
     // supplied book. `collect_tokens` retains each verse's tokenization as
     // the shared cache for the token-consuming judges (repeated-run's
     // containing-word lookup; rare-glyph / mixed-case / mixed-script re-scans).
+    // Which typed observation substrates are active — computed once, before
+    // mapping, from the closed registry and the final coalesced config (plan
+    // §5.3). `punct.spacing-anomaly` is a substrate now, so it is absent from
+    // the fused walk plan below; it maps/reduces through its own stamp-derived
+    // cache after the stateful judge loop.
+    let active = substrate::ActiveSubstrates::from_config(config);
     let plan = stream::WalkPlan {
         casing: config.is_enabled(RuleId::SentenceInitialLowercase)
             || config.is_enabled(RuleId::InconsistentWordCasing),
         adjacency: config.is_enabled(RuleId::PunctuationAdjacencyAnomaly),
-        spacing: config.is_enabled(RuleId::PunctuationSpacingAnomaly),
         repeated_run: config.is_enabled(RuleId::RepeatedCharacterRun),
         punct_only: config.is_enabled(RuleId::PunctOnlyToken),
         mixed_script: config.is_enabled(RuleId::MixedScriptInToken),
@@ -522,7 +527,9 @@ fn transition(
     // disjoint fields, so the shared prep borrow and the mutable finding borrow
     // coexist.
     let cache::AnalysisCache {
-        prep, findings: finding_lane, ..
+        prep,
+        substrates,
+        findings: finding_lane,
     } = &mut *cache;
     let prep: &cache::PrepSection = prep;
 
@@ -608,35 +615,6 @@ fn transition(
                 per_book: pb,
             }),
             rule::RuleSites::PunctuationAdjacency(st),
-        )
-    });
-    let mut spacing_fresh = plan.spacing.then(|| {
-        let mut pb = BTreeMap::new();
-        let mut st: BTreeMap<Box<str>, Cow<'_, [signals::punctuation::SpacingSite]>> =
-            BTreeMap::new();
-        for (group, slot) in books.iter().zip(slots.iter_mut()) {
-            match slot {
-                BookProducts::Walked(o) => {
-                    if let Some((bc, s)) = o.spacing.take() {
-                        if o.counted {
-                            pb.insert(Box::from(group.slug), bc);
-                        }
-                        st.insert(Box::from(group.slug), Cow::Owned(s));
-                    }
-                }
-                BookProducts::Clean(e) => {
-                    let e: &cache::BookEntry = e;
-                    if let Some(s) = e.spacing.as_ref() {
-                        st.insert(Box::from(group.slug), Cow::Borrowed(s.as_slice()));
-                    }
-                }
-            }
-        }
-        (
-            RuleStats::PunctuationSpacing(signals::punctuation::PunctuationSpacingStats {
-                per_book: pb,
-            }),
-            rule::RuleSites::PunctuationSpacing(st),
         )
     });
     let mut repeated_fresh = plan.repeated_run.then(|| {
@@ -900,11 +878,6 @@ fn transition(
                 sites_slot = ss;
                 (st, &sites_slot)
             }
-            RuleId::PunctuationSpacingAnomaly => {
-                let (st, ss) = spacing_fresh.take().expect("listener ran");
-                sites_slot = ss;
-                (st, &sites_slot)
-            }
             RuleId::RepeatedCharacterRun => {
                 let (st, ss) = repeated_fresh.take().expect("listener ran");
                 sites_slot = ss;
@@ -949,6 +922,21 @@ fn transition(
         out.extend(r.judge(&merged, &books, token_cache.as_ref(), Some(sites_ref)));
         stats.insert(id, merged);
     }
+
+    // Typed observation substrates (plan §5.2). Each owns stamp-derived validity
+    // independent of the Tally counting model above: it maps only chapters whose
+    // observation input stamp changed and re-reduces an owning book only when a
+    // chapter changed, so a judging-knob change reuses every observation and
+    // reduction (maps/reduces zero) and re-judges from the cached corpus
+    // aggregate. A disabled substrate (no active consumer) drops its products so
+    // edits while it is inactive do no work for it.
+    signals::punctuation::drive_spacing(
+        active.spacing,
+        &mut substrates.spacing,
+        target,
+        &config.punctuation_spacing,
+        &mut out,
+    );
 
     // Stamp per-book provenance for every supplied book: a freshly-counted book
     // gets its new Tally; a non-stale supplied book gets the identical value it
@@ -1873,12 +1861,14 @@ mod tests {
     }
 
     /// Registry completeness: every declared `RuleId` must be produced by
-    /// exactly one runner registry. A rule that is implemented but never wired
-    /// in — the ADR-0031 P0, where `punct.adjacency-anomaly` ran in calibration
-    /// but was absent from `stateful_rules`, so it never fired through
-    /// `analyze` — surfaces here as a count of zero.
+    /// exactly one runner registry OR consumed by exactly one typed observation
+    /// substrate. A rule that is implemented but never wired in — the ADR-0031
+    /// P0, where `punct.adjacency-anomaly` ran in calibration but was absent from
+    /// `stateful_rules`, so it never fired through `analyze` — surfaces here as a
+    /// count of zero. `punct.spacing-anomaly` is claimed by `SpacingSubstrate`
+    /// (its sole consumer), not a rule registry.
     #[test]
-    fn every_rule_id_is_claimed_by_exactly_one_registry() {
+    fn every_rule_id_is_claimed_by_exactly_one_registry_or_substrate() {
         use std::collections::BTreeMap;
         let cfg = Config::v1_defaults();
         // Registries are membership-complete (they include rules `v1_defaults`
@@ -1897,18 +1887,25 @@ mod tests {
         {
             *seen.entry(id).or_default() += 1;
         }
+        // Substrate consumers claim their rule ids too — exactly once, across the
+        // closed substrate registry.
+        for &sid in substrate::SubstrateId::ALL {
+            for &id in substrate::consumers_of(sid) {
+                *seen.entry(id).or_default() += 1;
+            }
+        }
         for &id in RuleId::ALL {
             assert_eq!(
                 seen.get(&id).copied().unwrap_or(0),
                 1,
-                "{} must be wired into exactly one runner registry",
+                "{} must be wired into exactly one runner registry or substrate",
                 id.code()
             );
         }
         assert_eq!(
             seen.len(),
             RuleId::ALL.len(),
-            "a registry emitted an unknown id"
+            "a registry or substrate emitted an unknown id"
         );
     }
 

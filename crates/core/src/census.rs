@@ -807,7 +807,7 @@ fn assemble(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{MixedCaseConfig, PunctuationSpacingConfig};
+    use crate::config::MixedCaseConfig;
     use crate::rule::StatefulRule;
     use crate::stats::RuleStats;
 
@@ -925,30 +925,22 @@ mod tests {
         assert_eq!(got, expected);
     }
 
-    /// Per-mark attached/spaced totals equal the spacing rule's per-mark
-    /// cells (summed over sides and classes).
+    /// Per-mark attached/spaced totals equal the spacing SUBSTRATE's corpus
+    /// per-mark cells (summed over sides and classes) — the census lane mirrors
+    /// the shipped spacing extractor.
     #[test]
     fn mark_spacing_matches_rule_tallies() {
         let corpus = book("GEN", &["word, word , word", "end. Next"]);
         let inv = run(&corpus);
         let lane = section(&inv, SectionId::MarkSpacing);
 
-        let rule = crate::signals::punctuation::PunctuationSpacingAnomaly {
-            cfg: PunctuationSpacingConfig::default(),
-        };
-        let books = corpus::by_book(&corpus);
-        let (stats, _) = rule.reduce(&books, None, None);
-        let RuleStats::PunctuationSpacing(ps) = stats else {
-            panic!()
-        };
+        let cells = crate::signals::punctuation::spacing_corpus_cells(&corpus);
         let mut expected: BTreeMap<char, (u64, u64)> = BTreeMap::new();
-        for bp in ps.per_book.values() {
-            for (&mark, cells) in &bp.per_mark {
-                let (a, s) = mark_attached_spaced(cells);
-                let e = expected.entry(mark).or_default();
-                e.0 += a;
-                e.1 += s;
-            }
+        for (&mark, cells) in &cells {
+            let (a, s) = mark_attached_spaced(cells);
+            let e = expected.entry(mark).or_default();
+            e.0 += a;
+            e.1 += s;
         }
         let got: BTreeMap<char, (u64, u64)> = lane
             .rows

@@ -53,9 +53,9 @@ pub(crate) struct CachedPerVerseFinding {
 pub struct AnalysisCache {
     /// Shared-prep section: content-keyed per-book map products.
     pub(crate) prep: PrepSection,
-    /// Substrate-chapter-products section: typed per-substrate observations.
-    /// Empty placeholder until Phase C fills it.
-    substrates: SubstrateSection,
+    /// Substrate-chapter-products section: typed per-substrate observations and
+    /// reductions. Driven by the transition (`substrate::drive_*`).
+    pub(crate) substrates: SubstrateSection,
     /// Resident-finding section: per-rule chapter-local finding partitions.
     pub(crate) findings: FindingSection,
 }
@@ -545,7 +545,6 @@ impl PrepSection {
             }
         });
         entry.adjacency = output.adjacency.as_ref().map(|(_, sites)| sites.clone());
-        entry.spacing = output.spacing.as_ref().map(|(_, sites)| sites.clone());
         entry.repeated_run = output.repeated_run.as_ref().map(|(_, sites)| sites.clone());
         entry.punct_only = output.punct_only.as_ref().map(|(_, sites)| sites.clone());
         entry.mixed_script = output.mixed_script.as_ref().map(|(_, sites)| sites.clone());
@@ -571,7 +570,6 @@ pub(crate) struct BookEntry {
     pub(crate) per_verse: Option<Vec<CachedPerVerseFinding>>,
     pub(crate) casing: Option<casing::CasingSites>,
     pub(crate) adjacency: Option<Vec<SiteAddr>>,
-    pub(crate) spacing: Option<Vec<punctuation::SpacingSite>>,
     pub(crate) repeated_run: Option<Vec<SiteAddr>>,
     pub(crate) punct_only: Option<Vec<SiteAddr>>,
     pub(crate) mixed_script: Option<Vec<script_mixing::MixedScriptSite>>,
@@ -588,7 +586,6 @@ impl BookEntry {
             per_verse: None,
             casing: None,
             adjacency: None,
-            spacing: None,
             repeated_run: None,
             punct_only: None,
             mixed_script: None,
@@ -602,7 +599,6 @@ impl BookEntry {
     fn has_walk_lanes(&self, plan: &WalkPlan) -> bool {
         (!plan.casing || self.casing.is_some())
             && (!plan.adjacency || self.adjacency.is_some())
-            && (!plan.spacing || self.spacing.is_some())
             && (!plan.repeated_run || self.repeated_run.is_some())
             && (!plan.punct_only || self.punct_only.is_some())
             && (!plan.mixed_script || self.mixed_script.is_some())

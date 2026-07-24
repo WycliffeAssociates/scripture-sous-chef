@@ -30,13 +30,11 @@
 //!   own judging knobs and returns a per-key outcome; the aggregate is built
 //!   only by [`replace_book_in_corpus_stats`](ObservationSubstrate::replace_book_in_corpus_stats).
 //!
-//! Phase C **step 1** lands this contract and the spacing substrate that
-//! implements it as behaviour-neutral scaffolding: the machinery and its
-//! byte-identity against the shipped rule are proven by unit tests, but the
-//! transition still drives the old spacing path. Step 2 wires this module into
-//! [`crate::transition`] and deletes that path; this blanket allow, which keeps
-//! the not-yet-driven surface from tripping dead-code lints, is removed then.
-#![allow(dead_code)]
+//! The contract is driven from [`crate::transition`] via each substrate's
+//! `drive_*` entry point. A few members are retained ahead of their first
+//! reader — the reduced-chapter boundary stamps feed Phase D's ordered-replay
+//! convergence test, and the registry iterators back the completeness tests —
+//! and are marked as such at their definitions.
 
 use rustc_hash::FxHashMap;
 
@@ -56,6 +54,7 @@ pub(crate) enum SubstrateId {
 impl SubstrateId {
     /// Every substrate id, declaration order — the exhaustive iteration source
     /// the registry-completeness tests walk.
+    #[allow(dead_code)] // registry-completeness tests + future multi-substrate iteration
     pub(crate) const ALL: &'static [SubstrateId] = &[SubstrateId::Spacing];
 }
 
@@ -64,7 +63,6 @@ impl SubstrateId {
 /// input: a chapter's text, addressed chapter-locally. It carries no book
 /// position, no neighbour, and no config — mapping cannot depend on any of them.
 pub(crate) struct ChapterView<'a> {
-    pub(crate) slug: &'a str,
     pub(crate) chapter: &'a str,
     /// The chapter's verse texts in presented order; verse `i` is chapter-local
     /// index `i`.
@@ -96,6 +94,10 @@ pub(crate) struct ObservationInputStamp {
 /// replay can compare it against the next chapter's entering state (the Phase D
 /// convergence test — Phase C re-reduces the whole owning book, so it compares
 /// nothing, but the stamp is carried from the start so the shape does not move).
+// The fields feed Phase D's ordered-replay convergence test (leaving vs the next
+// chapter's entering); Phase C re-reduces the whole owning book, so it stores but
+// does not yet read them.
+#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ReducedChapterStamp<B> {
     /// The observation stamp the reduction was produced from.
@@ -233,12 +235,16 @@ struct SubstrateBook<S: ObservationSubstrate> {
 }
 
 /// One chapter's resident substrate state: its opaque token, the observation and
-/// its input stamp, and the reduced result and its stamp.
+/// its input stamp, and the reduced result and its stamp. `reduced`/
+/// `reduced_stamp` are stored for Phase D's ordered-replay convergence; Phase C
+/// re-reduces the whole owning book from observations, so it does not read them.
 struct SubstrateChapter<S: ObservationSubstrate> {
     token: Box<str>,
     input_stamp: ObservationInputStamp,
     observation: S::ChapterObservation,
+    #[allow(dead_code)] // Phase D convergence replay
     reduced_stamp: ReducedChapterStamp<S::BoundaryState>,
+    #[allow(dead_code)] // Phase D convergence replay
     reduced: S::ReducedChapter,
 }
 
@@ -294,7 +300,8 @@ impl<S: ObservationSubstrate> SubstrateCache<S> {
         self.judged = 0;
     }
 
-    #[cfg(test)]
+    /// A book's folded contribution, for materialization. `None` when the book
+    /// is absent from this substrate's cache.
     pub(crate) fn book_contribution(&self, slug: &str) -> Option<&S::BookContribution> {
         self.books.get(slug).map(|b| &b.contribution)
     }
@@ -448,6 +455,7 @@ impl ActiveSubstrates {
         }
     }
 
+    #[allow(dead_code)] // exhaustive per-id accessor; used by the completeness tests and future multi-substrate gating
     pub(crate) fn is_active(&self, id: SubstrateId) -> bool {
         match id {
             SubstrateId::Spacing => self.spacing,
@@ -464,6 +472,7 @@ pub(crate) fn spacing_consumers() -> &'static [RuleId] {
 
 /// The consumers of a substrate by id — the exhaustive closed match the
 /// completeness tests walk.
+#[allow(dead_code)] // registry-completeness tests + future multi-substrate iteration
 pub(crate) fn consumers_of(id: SubstrateId) -> &'static [RuleId] {
     match id {
         SubstrateId::Spacing => spacing_consumers(),
@@ -473,6 +482,16 @@ pub(crate) fn consumers_of(id: SubstrateId) -> &'static [RuleId] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Each substrate type's `ID` const matches its registry id — the typed
+    /// cache slot and the closed enum name the same substrate.
+    #[test]
+    fn substrate_ids_pair_with_the_registry() {
+        assert_eq!(
+            <crate::signals::punctuation::SpacingSubstrate as ObservationSubstrate>::ID,
+            SubstrateId::Spacing
+        );
+    }
 
     /// Every substrate id has at least one consumer, and the active-set fields
     /// cover every id — the registry is exhaustive over `SubstrateId::ALL`.

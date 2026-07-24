@@ -18,8 +18,6 @@ use std::path::Path;
 
 use ssc_core::charclass::class_of;
 use ssc_core::config::PunctuationSpacingConfig;
-use ssc_core::rule::StatefulRule;
-use ssc_core::signals::punctuation::PunctuationSpacingAnomaly;
 use ssc_core::{Corpus, FindingArgs};
 
 use super::shared::{rarity_abs, sig_wilson_lb};
@@ -630,18 +628,15 @@ fn signature_regression(id: &str) {
         println!("  {id}: (no corpus file)");
         return;
     }
-    let books = ssc_core::corpus::by_book(&map);
-
+    
     // Live rule at shipped defaults, floor 0 — every scored minority site, so we
     // can split by the shipped floor ourselves.
-    let live = PunctuationSpacingAnomaly {
-        cfg: PunctuationSpacingConfig {
-            emit_score_min: 0.0,
-            ..Default::default()
-        },
+    let live_cfg = PunctuationSpacingConfig {
+        emit_score_min: 0.0,
+        ..Default::default()
     };
     let live_floor = f64::from(PunctuationSpacingConfig::default().emit_score_min);
-    let findings = live.judge(&live.reduce(&books, None, None).0, &books, None, None);
+    let findings = ssc_core::signals::punctuation::spacing_findings(&map, &live_cfg);
 
     // Signature distribution + a (key, mark_off) → signature index lookup.
     let mut marks: BTreeMap<char, [u64; SIG_CELLS]> = BTreeMap::new();

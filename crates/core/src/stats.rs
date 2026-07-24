@@ -21,7 +21,7 @@ use crate::signals::casing::CasingStats;
 use crate::signals::lexical::{PunctOnlyTokenStats, RepeatedCharacterRunStats};
 use crate::signals::mixed_case::MixedCaseStats;
 use crate::signals::proportionality::ProportionalityStats;
-use crate::signals::punctuation::{PunctuationAdjacencyStats, PunctuationSpacingStats};
+use crate::signals::punctuation::PunctuationAdjacencyStats;
 use crate::signals::rare_glyph::RareGlyphStats;
 use crate::signals::script_mixing::MixedScriptStats;
 
@@ -43,7 +43,6 @@ pub enum RuleStats {
     Casing(CasingStats),
     Proportionality(ProportionalityStats),
     PunctuationAdjacency(PunctuationAdjacencyStats),
-    PunctuationSpacing(PunctuationSpacingStats),
     RepeatedCharacterRun(RepeatedCharacterRunStats),
     PunctOnlyToken(PunctOnlyTokenStats),
     MixedScript(MixedScriptStats),
@@ -70,9 +69,6 @@ impl RuleStats {
             (RuleStats::PunctuationAdjacency(a), RuleStats::PunctuationAdjacency(b)) => {
                 RuleStats::PunctuationAdjacency(a.merge(b))
             }
-            (RuleStats::PunctuationSpacing(a), RuleStats::PunctuationSpacing(b)) => {
-                RuleStats::PunctuationSpacing(a.merge(b))
-            }
             (RuleStats::RepeatedCharacterRun(a), RuleStats::RepeatedCharacterRun(b)) => {
                 RuleStats::RepeatedCharacterRun(a.merge(b))
             }
@@ -96,7 +92,6 @@ impl RuleStats {
                 RuleStats::Casing(_)
                 | RuleStats::Proportionality(_)
                 | RuleStats::PunctuationAdjacency(_)
-                | RuleStats::PunctuationSpacing(_)
                 | RuleStats::RepeatedCharacterRun(_)
                 | RuleStats::PunctOnlyToken(_)
                 | RuleStats::MixedScript(_)
@@ -113,7 +108,6 @@ impl RuleStats {
             RuleStats::Casing(c) => c.remove_book(slug),
             RuleStats::Proportionality(p) => p.remove_book(slug),
             RuleStats::PunctuationAdjacency(p) => p.remove_book(slug),
-            RuleStats::PunctuationSpacing(p) => p.remove_book(slug),
             RuleStats::RepeatedCharacterRun(r) => r.remove_book(slug),
             RuleStats::PunctOnlyToken(p) => p.remove_book(slug),
             RuleStats::MixedScript(m) => m.remove_book(slug),

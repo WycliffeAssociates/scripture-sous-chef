@@ -8,7 +8,7 @@ use ssc_core::config::{
 use ssc_core::rule::{ProjectRule, StatefulRule};
 use ssc_core::signals::bracket_balance::BracketBalance;
 use ssc_core::signals::lexical::{PunctOnlyToken, RepeatedCharacterRun};
-use ssc_core::signals::punctuation::{PunctuationAdjacencyAnomaly, PunctuationSpacingAnomaly};
+use ssc_core::signals::punctuation::PunctuationAdjacencyAnomaly;
 use ssc_core::{
     BracketMeasure, Config, Corpus, Finding, FindingArgs, RuleId, analyze, analyze_with_config,
 };
@@ -837,17 +837,13 @@ pub(crate) fn spacing_fleet_sweep(dir: &Path) {
     eprintln!("spacing sweep fleet: {total_corpora} corpora");
 
     let count = |k: f32, rate: f32, map: &Corpus| -> usize {
-        let rule = PunctuationSpacingAnomaly {
-            cfg: PunctuationSpacingConfig {
-                emit_score_min: 0.5,
-                confidence_z: 1.96,
-                minority_recurrence_k: k,
-                minority_rate_per_10k: rate,
-            },
+        let cfg = PunctuationSpacingConfig {
+            emit_score_min: 0.5,
+            confidence_z: 1.96,
+            minority_recurrence_k: k,
+            minority_rate_per_10k: rate,
         };
-        let books = ssc_core::corpus::by_book(map);
-        rule.judge(&rule.reduce(&books, None, None).0, &books, None, None)
-            .len()
+        ssc_core::signals::punctuation::spacing_findings(map, &cfg).len()
     };
 
     // Per-corpus: for each (k, rate) cell, the finding count. Reduce fleet in

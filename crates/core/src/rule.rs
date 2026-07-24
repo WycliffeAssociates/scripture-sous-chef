@@ -116,7 +116,6 @@ pub enum RuleSites<'a> {
     Casing(BTreeMap<Box<str>, Cow<'a, signals::casing::CasingSites>>),
     Proportionality,
     PunctuationAdjacency(BTreeMap<Box<str>, Cow<'a, [SiteAddr]>>),
-    PunctuationSpacing(BTreeMap<Box<str>, Cow<'a, [signals::punctuation::SpacingSite]>>),
     RepeatedCharacterRun(BTreeMap<Box<str>, Cow<'a, [SiteAddr]>>),
     PunctOnlyToken(BTreeMap<Box<str>, Cow<'a, [SiteAddr]>>),
     MixedScript(BTreeMap<Box<str>, Cow<'a, [signals::script_mixing::MixedScriptSite]>>),
@@ -258,12 +257,11 @@ pub fn stateful_rules(config: &Config) -> Vec<Box<dyn StatefulRule>> {
         Box::new(signals::proportionality::ProjectLengthRatio {
             cfg: config.proportionality,
         }),
-        // Corpus-relative punctuation rules, both aggregate-only stateful.
+        // Corpus-relative punctuation-adjacency rule, aggregate-only stateful.
+        // (`punct.spacing-anomaly` is a typed observation substrate now — see
+        // `SpacingSubstrate` — driven outside this registry.)
         Box::new(signals::punctuation::PunctuationAdjacencyAnomaly {
             cfg: config.punctuation_adjacency,
-        }),
-        Box::new(signals::punctuation::PunctuationSpacingAnomaly {
-            cfg: config.punctuation_spacing,
         }),
         Box::new(signals::lexical::RepeatedCharacterRun {
             cfg: config.repeated_character_run,
