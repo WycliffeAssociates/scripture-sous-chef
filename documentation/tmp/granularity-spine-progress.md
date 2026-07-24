@@ -2018,3 +2018,268 @@ new packet. Do not begin it here.
   knobs (read only in judge); spacing has zero extraction-config fields, so
   Step 3's extraction-config sub-test is N/A for spacing and lands generically
   with a later substrate that has one.
+
+---
+
+## Entry 17 — Work Packet 5a: Phase C steps 1–3 (ObservationSubstrate contract + PunctuationSpacing migration + knob isolation)
+
+- **Date:** 2026-07-24
+- **Branch:** `granularity-spine` (main tree). Base for this packet: `ee0f5aa`
+  (Entry 16, the option-C plan amendment).
+- **Scope:** plan §8 Phase C **steps 1–3**. The compile-time
+  `ObservationSubstrate` contract; migrating `PunctuationSpacing` as the first
+  keyed substrate (with its code-proven seam boundary state, option C); and the
+  knob-only isolation proofs + work probes. Phase C **steps 4–5** (direct-lane
+  chapter products, chapter-parallel seam) are the NEXT packet — not started.
+- **Discipline:** per-commit **WA** oracle (four dumps: findings + transcript ×
+  default + all, against `oracle-blobs/wa.blob`) byte-identical + full
+  `cargo test --workspace` serial AND `--features parallel` + `cargo check -p
+  ssc-wasm --target wasm32-unknown-unknown` + node suites + clippy. Plus a
+  **full-fleet findings confirmation** this packet (below), since it reworks how
+  a rule executes.
+
+### WA oracle base pin (this packet's per-commit referee)
+
+Pinned at HEAD `ee0f5aa`, `/tmp/oracle/spine/wp5a.base.wa.*.tsv`, scope=**wa**
+(blob-scoped: the dumps pass `oracle-blobs/wa.blob`, whose preset implies the WA
+251-corpus slice; the trailing `wa` token is cosmetic for a blob path — a WA dump
+only ever diffs another WA dump). Byte-identical to the standing
+WP1/2a/2b/2c/3a/3b/4 contract:
+
+| file | sha256 |
+| --- | --- |
+| `wp5a.base.wa.findings.default.tsv` | `38a0ceadcc792a6656905c7a0f9e2e4c2720c86f47f41f94c66e7a8ad1a9702c` |
+| `wp5a.base.wa.findings.all.tsv` | `128fdd933dc71cda0a4a6d9d9971ceb5648a5703f8b22ee798d30b09d2c15660` |
+| `wp5a.base.wa.inc.default.tsv` | `7b19caa79b284bfa16a56f300f5660591ffc58ffa183888451daf82778676dca` |
+| `wp5a.base.wa.inc.all.tsv` | `c951a758823629c6b6d2e1d558e92c59c1873ed17856b328a60c7ebdc4cee74f` |
+
+**Every commit re-dumped all four and diffed byte-identical to this base.** The
+`findings.all` / `inc.all` dumps are the load-bearing ones: spacing is
+default-disabled, so only the `all` config exercises it — `findings.all` cold
+(one-shot) and `inc.all` incrementally (resident Galley + `EDIT_TEXT`).
+
+### Full-fleet findings confirmation (stronger than WA; this packet reworks a rule)
+
+Dumped at HEAD `a56db12` over the whole `corpora/vref` directory (scope=**full**,
+1,504 corpora), both configs, and diffed against the Entry-1 standing full pins
+— **byte-identical**:
+
+| file | sha256 | == Entry-1 pin |
+| --- | --- | --- |
+| `wp5a.after.full.findings.default.tsv` | `a10cf5a4c17492bf9771d77ea4daace337e1042d66b83dcea8042eceb6748e29` | ✅ `pin.full.findings.default` |
+| `wp5a.after.full.findings.all.tsv` | `ddedee96571b2e8bff082ec45bdaa7723cd188fc911f21e1d633b19f6e65b986` | ✅ `pin.full.findings.all` |
+
+So the spacing observation substrate reproduces the shipped rule byte-for-byte
+across the entire fleet, including the `all`-config path that fires spacing. (The
+full-fleet **transcript** bookend remains Phase F, as every WP.)
+
+### Per-step commits
+
+| step | commit | what landed |
+| --- | --- | --- |
+| 1 | `434030a` | Compile-time `ObservationSubstrate` trait + closed `SubstrateId` + the two stamp types + generic `SubstrateCache<S>` (stamp-keyed observation reuse, whole-book carry-reduce driver, owner-routed cross-seam resolution) + `ActiveSubstrates` from the closed registry + completeness tests; `SpacingSubstrate` impl reusing the spacing internals; typed slot in `SubstrateSection`. Behaviour-neutral (old path still runs); byte-identity vs the shipped rule pinned by unit tests. |
+| 2 | `4135c44` | Drive spacing through the substrate in `transition`; DELETE the old rule (`PunctuationSpacingAnomaly`, `PunctuationSpacingStats`, `RuleStats::PunctuationSpacing`, `RuleSites::PunctuationSpacing`, the fused-walk spacing lane). Surveys/census test → `spacing_findings`/`spacing_corpus_cells`. |
+| 3 | `a56db12` | `update_config` no longer clears the cache (plan §7.2); `CacheProbe` gains substrate map/reduce/judge counts; core + galley knob/toggle isolation tests. |
+| final | (this entry) | progress log. |
+
+Workspace test counts at HEAD: core **434**, ssc-wire 25, galley **24**, ssc-wasm
+14, xtask 1; node 19. All green serial and `--features parallel` (core 434);
+wasm32 check clean (no surface change); clippy clean (only the 3 documented
+pre-existing `ssc-core` lib warnings — casing.rs:459, token.rs:544, lib.rs:252
+`BookProducts` size — this packet adds none).
+
+### The `ObservationSubstrate` trait, as landed (crates/core/src/substrate.rs)
+
+```rust
+pub(crate) trait ObservationSubstrate {
+    const ID: SubstrateId;
+    const SCHEMA_STAMP: u64;
+    type Key: Clone + Eq + Ord;
+    type BoundaryState: Clone + Eq + Default;
+    type ChapterObservation: Clone + Eq;
+    type ReducedChapter: Clone + Eq + Default;
+    type BookContribution: Clone + Eq;
+    type CorpusStats: Default;
+    type ExtractorConfig: Clone;
+    type JudgeConfig: Clone;
+    type EntryOutcome;
+
+    fn extractor_fp(extractor: &Self::ExtractorConfig) -> u64;
+    fn map_chapter(chapter: &ChapterView<'_>, extractor: &Self::ExtractorConfig)
+        -> Self::ChapterObservation;                        // predecessor-free
+    fn pending_owner(state: &Self::BoundaryState) -> Option<&str>;
+    fn reduce_chapter(observation: &Self::ChapterObservation, entering: &Self::BoundaryState,
+        carry_out: &mut Self::ReducedChapter) -> (Self::ReducedChapter, Self::BoundaryState);
+    fn finish_book(leaving: &Self::BoundaryState, carry_out: &mut Self::ReducedChapter);
+    fn fold_book(reduced: &[Self::ReducedChapter]) -> Self::BookContribution;
+    fn replace_book_in_corpus_stats(stats: &mut Self::CorpusStats, slug: &str,
+        old: Option<&Self::BookContribution>, new: Option<&Self::BookContribution>)
+        -> Vec<Self::Key>;                                  // returns the stats-delta keys
+    fn judge(judge: &Self::JudgeConfig, key: &Self::Key, stats: &Self::CorpusStats)
+        -> Self::EntryOutcome;                              // never mutates stats
+}
+```
+
+Deviations from the plan §5.2 sketch (semantic inputs/outputs and purity are
+preserved; these are the "may borrow scratch / use helper types" latitude the
+plan grants):
+
+- **`pending_owner` + `carry_out`** are the ordered-reduction plumbing. A
+  cross-seam contribution belongs to an *earlier* chapter (a pending trailing
+  mark whose right neighbour lands in a later chapter, possibly across an
+  all-empty chapter). The generic driver routes `carry_out` to that owning
+  chapter (found via `pending_owner`'s opaque token → position), so
+  `reduce_chapter` stays a pure left-to-right step that never peeks forward.
+  `finish_book` resolves the book-edge dangling state into its owner.
+- **`ReducedChapter: Default`** (the plan lists `Clone + Eq`): the empty reduced
+  chapter is the carry sink at book start, where the default entering state
+  resolves nothing.
+- **`extractor_fp` / `ExtractorConfig` / `JudgeConfig` / `EntryOutcome`** name
+  the split the plan describes in prose (extraction fingerprint into the stamp;
+  judging config only into `judge`; a per-key outcome materialised at sites).
+
+Materialization is a separate step (`SpacingBookContribution::materialize`),
+matching §6.3: `judge` yields the per-key `EntryOutcome`; materialization
+combines it with each cached site. Both the substrate materializer and the
+(deleted) rule's judge shared one scoring body (`spacing_finding_for_site`), so
+byte-identity was structural, not coincidental.
+
+### §11 migration-ledger row — `spacing anomaly` → `SpacingSubstrate` (FILLED)
+
+- **Consumers / shared prep:** sole consumer `punct.spacing-anomaly`; shared-prep
+  needs = none declared — `map_chapter` grapheme-segments its own chapter
+  (`grapheme::segment`). (A shared-prep grapheme lane is a later optimization;
+  see the cold-cost note under the ladder.)
+- **Key:** `char` — the separator/dash mark.
+- **ChapterObservation:** `SpacingChapterObs { token: Box<str>, verses:
+  Vec<SpacingVerseObs> }`; `SpacingVerseObs { opps: Vec<RawOpportunity>,
+  first_edge: Option<PoolClass>, last_edge: Option<PoolClass> }`. Opps are
+  extracted with `walk_opportunities(text, graphemes, left_cross = None)` — the
+  one cross-verse dependency (a verse-leading mark's left) is deferred (`left ==
+  None` means verse-leading), so the observation is position-independent.
+- **BoundaryState:** `SpacingBoundary { left_cross: Option<PoolClass>, pending:
+  Option<(Box<str> owner_token, PendingSeam)> }` — the **code-proven seam carry**
+  (previous trailing-edge content class + a pending trailing candidate mark whose
+  right neighbour lives in the next verse/chapter). `Default = { None, None }`
+  (book start). NOT `()` (owner adjudication 2026-07-24; JHN 7:53 → 8:1).
+- **ReducedChapter:** `SpacingReduced { token, cells: BTreeMap<char,
+  [u64; SIDE_CELLS]>, sites: Vec<SpacingSite> }` — the chapter's cell
+  contributions (its own marks + any cross-seam mark it owns once resolved) and
+  its keyed sites, chapter-local, in scan order.
+- **BookContribution:** `SpacingBookContribution { cells: BTreeMap<char,
+  [u64; SIDE_CELLS]>, chapters: Vec<(Box<str> token, Vec<SpacingSite>)> }` — book
+  cells + sites grouped by owning chapter, in book order (materializer rebases
+  each site via its chapter's current base).
+- **CorpusStats:** `SpacingCorpusStats { totals: BTreeMap<char, [u64; SIDE_CELLS]> }`
+  — per-mark cells summed over books.
+- **Delta keys:** `replace_book_in_corpus_stats` subtracts the old book cells and
+  adds the new, returning every mark whose corpus aggregate moved (stats-delta
+  keys). Phase C re-judges all present marks each analyze; the delta set is the
+  Phase D incremental hook.
+- **EntryOutcome:** `MarkVerdict` (the per-mark, per-side, per-class Wilson +
+  recurrence verdict).
+- **Config classification (recorded fact):** all four `PunctuationSpacingConfig`
+  fields (`emit_score_min`, `confidence_z`, `minority_recurrence_k`,
+  `minority_rate_per_10k`) are **judging** knobs. Spacing has **zero
+  extraction-config fields** → `ExtractorConfig = ()`, `extractor_fp ≡ 0`. So a
+  spacing config change is always knob-only; Step 3's "extraction-config change
+  rebuilds only the substrate" sub-test is **N/A for spacing** and lands
+  generically with a later substrate that has extraction config.
+- **Retained bytes:** per book, the observation (per-verse opps + 2 edge classes)
+  + reduced cells (≤ SIDE_CELLS=12 u64 per mark) + sites. No global `KeyIdx` in
+  any cross-call product (sites are chapter-local; rebased once at materialize).
+- **Migration verdict:** migrated (byte-identical fleet-wide, cold + incremental).
+
+### Isolation probe evidence (the zero rows) — plan §8 Phase C gate
+
+Substrate work probes (`CacheProbe.spacing_{mapped,reduced,judged}`, reset per
+analyze). Core tests (`spacing_substrate_work_probes_show_exact_work`,
+`spacing_substrate_toggle_drops_and_rebuilds`) and galley lifecycle tests
+(`spacing_knob_change_is_substrate_local`, `spacing_toggle_off_and_on_is_substrate_local`,
+`update_config_knob_only_change_retallies_nothing`) assert:
+
+| scenario | mapped | reduced | judged | other rules |
+| --- | ---: | ---: | ---: | --- |
+| cold (3-chapter corpus) | 3 | 3 | ≥1 | — |
+| **judging-knob change** | **0** | **0** | ≥1 | findings byte-identical |
+| edit-then-undo (unchanged re-analyze) | **0** | **0** | ≥1 | — |
+| one-chapter content edit | **1** | 2 (owning book only) | ≥1 | — |
+| toggle OFF | 0 | 0 | 0 (dropped) | untouched |
+| **edit while disabled** | **0** | **0** | **0** | untouched |
+| re-enable | rebuild (cold) | rebuild | ≥1 | untouched |
+
+The galley knob-change test additionally asserts unrelated rules' findings are
+byte-identical across the change and `resident == cold`. (Caveat, honestly
+recorded: a config change still clears the **shared-prep** section via its
+whole-config fingerprint, so the non-migrated rules re-walk — that lane's
+knob-independence arrives when they too become substrates and the global
+fingerprint is retired, plan §6.2. The **substrate** lane is fully isolated,
+which is what the probes prove.)
+
+### Property / cold-vs-incremental test design
+
+`spacing_substrate_incremental_equals_cold_under_edits` (punctuation tests):
+seed a resident `SubstrateCache`, then apply a scripted mutation sequence —
+chapter replacement, a new book, whole-book replacement in place, book removal —
+re-driving the resident cache after each and asserting it equals a cold
+full-corpus `spacing_findings` at **every** step, at `sp_no_floor` (widest
+finding set). The fleet incremental transcript (`inc.all`) is the same property
+at scale. `spacing_substrate_carry_populates_the_cross_chapter_left_cell`
+witnesses the carry directly on the cells (a chapter-leading comma's Left cell is
+populated from the previous chapter's trailing letter across the seam),
+independent of any threshold. (A randomized Bible-shaped generator is a
+reasonable Phase D/E addition; the scripted sequence + the fleet transcript cover
+the Phase C gate.)
+
+### Ladder (§13) — indicative; machine heavily loaded
+
+`spike-bench/warm_ladder_profile` over `corpora/vref/WA-en-ulb.txt`,
+`RAYON_NUM_THREADS=4`, single-batch medians. **Load was 7–34 the whole session**
+(vs ~5–13 for the WP4/Entry-14 baseline), so these are indicative, not a §13
+5-batch verdict; the byte-identical correctness gate dominates (§13).
+
+| scenario | this packet (total) | WP4 (Entry 14) | note |
+| --- | ---: | ---: | --- |
+| 3JN default | 0.675 ms (map 0.10 / reduce 0.42 / judge 0.04) | 0.691 ms | flat — spacing inactive in default, the path is unchanged |
+| 3JN all | 24.96 ms (map 0.46 / reduce 0.49 / judge 23.79) | 23.669 ms | within heavy-load noise; all-config warm is judge-dominated (~22 ms fixed mixed-case/rare-glyph), spacing a sub-ms term |
+
+The default control being flat confirms no regression to the unchanged path.
+All-config warm is dominated by the fixed judge cost, not spacing. A **cold**
+all-config note: the substrate grapheme-segments its chapters independently of
+the fused walk, so cold all-config double-segments graphemes for chapters (the
+substrate + the walk's other grapheme rules); this is a cold cost, not on the
+warm gate, and a shared-prep grapheme lane (plan §5.1) removes it in a later
+phase. No warm regression observed beyond load noise.
+
+### Deviations / notes for the owner (clearly marked)
+
+1. **Census keeps its own `SpacingAcc` extractor.** The census `MarkSpacing`
+   lane still uses `SpacingAcc`/`BookPunctuationSpacing`/`mark_attached_spaced`
+   (kept, no longer used by the rule). This is the census lane, not a parallel
+   rule implementation — CLAUDE.md: "the census mirrors the rule's extractor."
+   The batch `for_each_spacing_opportunity`/`spacing_opportunities` became
+   `#[cfg(test)]` (they validate `SpacingAcc` in `streaming_spacing_walk_equals_batch_walk`).
+   **Residual duplication flagged:** a future packet should migrate the census
+   to consume the substrate (census-on-substrate), retiring `SpacingAcc`.
+2. **`ReducedChapterStamp` fields + `SubstrateChapter.reduced`/`reduced_stamp`
+   are stored but not yet read** (Phase C re-reduces the whole owning book from
+   observations; the §5.4 replay-to-convergence driver that reads leaving-vs-
+   entering states is Phase D). Marked `#[allow(dead_code)] // Phase D`.
+3. **`update_config` no longer clears the cache** (plan §7.2 line 903). Prep
+   self-clears via its whole-config fingerprint at analyze; substrates
+   self-validate by their own stamps. This is required for knob isolation and is
+   the plan's stated intent.
+4. **Full-fleet transcript bookend deferred to Phase F** (as every WP). The
+   full-fleet *findings* were confirmed byte-identical this packet (above)
+   because the packet reworks a rule's execution; the transcript is exercised on
+   the WA slice per commit + the fleet incremental property test.
+
+### Stop-safe next step
+
+WP5a complete and gated: the `ObservationSubstrate` contract is in, spacing is
+the first migrated keyed substrate (byte-identical fleet-wide, cold + incremental),
+and its knob/toggle isolation is proven by work probes. Next stop-safe step is
+**Phase C step 4** (convert the direct per-verse lane to chapter-local cached
+products, patch only the replaced chapter's direct-rule partitions) then **step
+5** (the order-preserving native chapter-map seam) — the NEXT packet. Do not
+begin it here.
