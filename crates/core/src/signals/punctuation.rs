@@ -1606,13 +1606,25 @@ pub(crate) fn spacing_floor(cfg: &PunctuationSpacingConfig) -> f64 {
     f64::from(clamp_unit(cfg.emit_score_min))
 }
 
+/// One chapter the substrate has to map this analysis, as the ordered map seam
+/// sees it: its caller-order `(book, chapter)` slot plus the view mapping reads.
+struct SpacingMapWork<'a> {
+    book: usize,
+    chapter: usize,
+    view: crate::substrate::ChapterView<'a>,
+}
+
 /// Drive the `punct.spacing-anomaly` observation substrate for one analysis
-/// (plan §5.2, Phase C). When active: bring every book up to date through the
-/// substrate cache (map only changed chapters, whole-book carry-reduce only a
-/// changed book — a knob change maps/reduces nothing), judge every mark from the
+/// (plan §5.2). When active: plan the dirty chapters across every book, map them
+/// through the ordered chapter-map seam (one Rayon grain, caller-order slots),
+/// replay each book's ordered reduction to convergence, judge every mark from the
 /// cached corpus aggregate, and materialize every book's findings into `out`.
 /// When inactive (no enabled consumer): drop the substrate's cached products so
 /// an edit while it is disabled does no spacing work.
+///
+/// Mapping fans out; **reduction does not**. Chapter `n + 1` consumes chapter
+/// `n`'s boundary state, so a book's reduction is a sequential carry fold — it
+/// walks compact cached observations, not text, and stays deterministic.
 pub(crate) fn drive_spacing(
     active: bool,
     cache: &mut crate::substrate::SubstrateCache<SpacingSubstrate>,
@@ -1630,31 +1642,77 @@ pub(crate) fn drive_spacing(
         return;
     }
     let texts = corpus.texts();
-    for book in corpus.book_layout() {
-        let chapters: Vec<(Box<str>, ObservationInputStamp)> = book
-            .chapters
-            .iter()
-            .map(|c| {
-                (
-                    c.chapter.clone(),
-                    ObservationInputStamp {
-                        schema_stamp: SpacingSubstrate::SCHEMA_STAMP,
-                        chapter_hash: c.hash,
-                        extractor_fp: SpacingSubstrate::extractor_fp(&()),
+    let layout = corpus.book_layout();
+    // Planning pass. Stamps are built once and handed to both the seam and the
+    // driver; the dirty question is put to the cache with the same predicate the
+    // driver reuses by, so the two cannot disagree.
+    let mut stamped: Vec<Vec<(Box<str>, ObservationInputStamp)>> = Vec::with_capacity(layout.len());
+    let mut work: Vec<SpacingMapWork<'_>> = Vec::new();
+    let mut book_runs: Vec<std::ops::Range<usize>> = Vec::new();
+    // The dirty work's size, for the seam's route decision only — summing string
+    // lengths already known, reading no text.
+    let mut work_bytes = 0usize;
+    for (bi, book) in layout.iter().enumerate() {
+        let run_start = work.len();
+        let mut chapters = Vec::with_capacity(book.chapters.len());
+        for (ci, c) in book.chapters.iter().enumerate() {
+            let stamp = ObservationInputStamp {
+                schema_stamp: SpacingSubstrate::SCHEMA_STAMP,
+                chapter_hash: c.hash,
+                extractor_fp: SpacingSubstrate::extractor_fp(&()),
+            };
+            if !cache.observation_is_current(&book.slug, &c.chapter, &stamp) {
+                let verses = &texts[c.range.clone()];
+                work_bytes += verses.iter().map(String::len).sum::<usize>();
+                work.push(SpacingMapWork {
+                    book: bi,
+                    chapter: ci,
+                    view: ChapterView {
+                        chapter: &c.chapter,
+                        texts: verses,
                     },
+                });
+            }
+            chapters.push((c.chapter.clone(), stamp));
+        }
+        if work.len() > run_start {
+            book_runs.push(run_start..work.len());
+        }
+        stamped.push(chapters);
+    }
+    let route = crate::rule::map_route(&book_runs, work.len(), work_bytes);
+    #[cfg(any(test, feature = "test-probes"))]
+    {
+        cache.map_route = route.label();
+    }
+    let fresh = crate::rule::map_chapter_work(&work, &book_runs, route, |w| {
+        SpacingSubstrate::map_chapter(&w.view, &())
+    });
+    // Back into caller-order `(book, chapter)` slots. Reduction reads them in
+    // corpus order, never completion order, so serial and parallel builds — and
+    // any thread count — produce identical reductions.
+    let mut slots: Vec<Vec<Option<SpacingChapterObs>>> = layout
+        .iter()
+        .map(|b| (0..b.chapters.len()).map(|_| None).collect())
+        .collect();
+    for (w, obs) in work.iter().zip(fresh) {
+        slots[w.book][w.chapter] = Some(obs);
+    }
+    for (bi, book) in layout.iter().enumerate() {
+        cache.update_book(&book.slug, &stamped[bi], |i| {
+            // Pre-mapped above. The planning pass asked the cache the same
+            // question the driver asks, so this slot is filled whenever the driver
+            // wants it; mapping in place is the correct answer if it ever is not.
+            slots[bi][i].take().unwrap_or_else(|| {
+                let c = &book.chapters[i];
+                SpacingSubstrate::map_chapter(
+                    &ChapterView {
+                        chapter: &c.chapter,
+                        texts: &texts[c.range.clone()],
+                    },
+                    &(),
                 )
             })
-            .collect();
-        let views: Vec<ChapterView> = book
-            .chapters
-            .iter()
-            .map(|c| ChapterView {
-                chapter: &c.chapter,
-                texts: &texts[c.range.clone()],
-            })
-            .collect();
-        cache.update_book(&book.slug, &chapters, |i| {
-            SpacingSubstrate::map_chapter(&views[i], &())
         });
     }
     let floor = spacing_floor(cfg);
@@ -1691,40 +1749,20 @@ pub fn spacing_findings(corpus: &Corpus, cfg: &PunctuationSpacingConfig) -> Vec<
 }
 
 /// The corpus per-mark spacing cells (summed over books) the substrate builds —
-/// the authority the census's `MarkSpacing` lane is validated against.
+/// the authority the census's `MarkSpacing` lane is validated against. Cells are
+/// a pure function of the text, so any config produces the same aggregate.
 #[cfg(test)]
 pub(crate) fn spacing_corpus_cells(corpus: &Corpus) -> BTreeMap<char, [u64; SIDE_CELLS]> {
-    use crate::substrate::{ChapterView, ObservationInputStamp, ObservationSubstrate};
     let mut cache: crate::substrate::SubstrateCache<SpacingSubstrate> =
         crate::substrate::SubstrateCache::new();
-    let texts = corpus.texts();
-    for book in corpus.book_layout() {
-        let chapters: Vec<(Box<str>, ObservationInputStamp)> = book
-            .chapters
-            .iter()
-            .map(|c| {
-                (
-                    c.chapter.clone(),
-                    ObservationInputStamp {
-                        schema_stamp: SpacingSubstrate::SCHEMA_STAMP,
-                        chapter_hash: c.hash,
-                        extractor_fp: SpacingSubstrate::extractor_fp(&()),
-                    },
-                )
-            })
-            .collect();
-        let views: Vec<ChapterView> = book
-            .chapters
-            .iter()
-            .map(|c| ChapterView {
-                chapter: &c.chapter,
-                texts: &texts[c.range.clone()],
-            })
-            .collect();
-        cache.update_book(&book.slug, &chapters, |i| {
-            SpacingSubstrate::map_chapter(&views[i], &())
-        });
-    }
+    let mut out = Vec::new();
+    drive_spacing(
+        true,
+        &mut cache,
+        corpus,
+        &PunctuationSpacingConfig::default(),
+        &mut out,
+    );
     cache.corpus_stats().totals.clone()
 }
 

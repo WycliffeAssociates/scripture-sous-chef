@@ -221,6 +221,10 @@ pub(crate) struct SubstrateCache<S: ObservationSubstrate> {
     pub(crate) reduced: usize,
     #[cfg(any(test, feature = "test-probes"))]
     pub(crate) judged: usize,
+    /// Which single map grain this substrate's chapter map used on the most
+    /// recent analyze.
+    #[cfg(any(test, feature = "test-probes"))]
+    pub(crate) map_route: &'static str,
 }
 
 /// One book's resident substrate state: its ordered chapters and its folded
@@ -338,6 +342,8 @@ impl<S: ObservationSubstrate> SubstrateCache<S> {
             reduced: 0,
             #[cfg(any(test, feature = "test-probes"))]
             judged: 0,
+            #[cfg(any(test, feature = "test-probes"))]
+            map_route: "serial",
         }
     }
 
@@ -371,12 +377,30 @@ impl<S: ObservationSubstrate> SubstrateCache<S> {
         self.mapped = 0;
         self.reduced = 0;
         self.judged = 0;
+        self.map_route = "serial";
     }
 
     /// A book's folded contribution, for materialization. `None` when the book
     /// is absent from this substrate's cache.
     pub(crate) fn book_contribution(&self, slug: &str) -> Option<&S::BookContribution> {
         self.books.get(slug).map(|b| &b.contribution)
+    }
+
+    /// Whether this substrate already holds a current observation for
+    /// `(slug, token)` at `stamp`. This is the planning pass's question, and it is
+    /// answered by the same token-keyed predicate [`update_book`] reuses by — so a
+    /// plan and the driver can never disagree about which chapters are dirty.
+    pub(crate) fn observation_is_current(
+        &self,
+        slug: &str,
+        token: &str,
+        stamp: &ObservationInputStamp,
+    ) -> bool {
+        self.books.get(slug).is_some_and(|b| {
+            b.by_token
+                .get(token)
+                .is_some_and(|&i| b.chapters[i].input_stamp == *stamp)
+        })
     }
 
     /// Bring one book up to date from its ordered chapters — the **ordered

@@ -482,6 +482,10 @@ pub struct CacheProbe {
     pub spacing_mapped: usize,
     pub spacing_reduced: usize,
     pub spacing_judged: usize,
+    /// Which single map grain the spacing substrate's chapter map used on the most
+    /// recent analyze — `"serial"`, `"books"`, or `"chapters"`. A route is a
+    /// wall-clock decision only: every route produces byte-identical output.
+    pub spacing_map_route: &'static str,
 }
 
 impl Default for AnalysisCache {
@@ -507,6 +511,7 @@ impl AnalysisCache {
         p.spacing_mapped = self.substrates.spacing.mapped;
         p.spacing_reduced = self.substrates.spacing.reduced;
         p.spacing_judged = self.substrates.spacing.judged;
+        p.spacing_map_route = self.substrates.spacing.map_route;
         p.direct_chapters_patched = self.findings.chapters_patched;
         p.direct_map_route = self.prep.direct_route;
         p
@@ -667,6 +672,7 @@ impl PrepSection {
             retallied: self.retallied,
             direct_chapters_patched: 0,
             direct_map_route: "serial",
+            spacing_map_route: "serial",
             // Filled by `AnalysisCache::probe` from the substrate section.
             spacing_mapped: 0,
             spacing_reduced: 0,

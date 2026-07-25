@@ -2560,6 +2560,64 @@ mod tests {
         assert_eq!(cache.probe().direct_map_route, "serial");
     }
 
+    /// The spacing substrate's chapter map goes through the same ordered seam,
+    /// with the same routing table: several dirty books take the book grain, one
+    /// dirty book with many dirty chapters takes the chapter grain, and one dirty
+    /// chapter stays serial. Reduction is a carry fold and stays sequential per
+    /// book regardless of the route.
+    #[test]
+    fn the_spacing_substrate_routes_by_dirty_map_scope() {
+        let mut cfg = Config::v1_defaults();
+        cfg.rules
+            .insert(crate::diagnostics::RuleId::PunctuationSpacingAnomaly, true);
+        fn expect(route: &'static str) -> &'static str {
+            if cfg!(feature = "parallel") { route } else { "serial" }
+        }
+
+        // Cold, one book, 40 chapters, well over the byte threshold.
+        let one_book = wide_book("PSA", 40, 6, 400);
+        let mut cache = AnalysisCache::new();
+        analyze_resident(&one_book, None, &cfg, None, &mut cache).unwrap();
+        assert_eq!(cache.probe().spacing_map_route, expect("chapters"));
+        assert_eq!(cache.probe().spacing_mapped, 40, "cold maps every chapter");
+
+        // Cold, several books: the substrate plans across books, so it sees a
+        // multi-book scope (which the per-book Phase C loop could not).
+        let mut keys = Vec::new();
+        let mut texts = Vec::new();
+        for slug in ["GEN", "EXO", "LEV"] {
+            let b = wide_book(slug, 10, 6, 400);
+            keys.extend(b.keys().to_vec());
+            texts.extend(b.texts().to_vec());
+        }
+        let many_books = Corpus::try_from_parts(keys, texts).unwrap();
+        let mut cache = AnalysisCache::new();
+        analyze_resident(&many_books, None, &cfg, None, &mut cache).unwrap();
+        assert_eq!(cache.probe().spacing_map_route, expect("books"));
+
+        // Warm, one chapter edited: one map task, so nothing to fan out.
+        let mut cache = AnalysisCache::new();
+        let (_, prior) = analyze_resident(&one_book, None, &cfg, None, &mut cache).unwrap();
+        let mut edited = one_book.clone();
+        edited
+            .replace_chapter(crate::corpus::ChapterBlock {
+                slug: "PSA".into(),
+                chapter: "7".into(),
+                keys: (1..=6).map(|v| format!("PSA 7:{v}")).collect(),
+                texts: (1..=6).map(|_| "edited  text)".to_string()).collect(),
+            })
+            .unwrap();
+        analyze_resident(&edited, None, &cfg, Some(prior), &mut cache).unwrap();
+        let p = cache.probe();
+        assert_eq!(p.spacing_map_route, "serial");
+        assert_eq!(p.spacing_mapped, 1, "a one-chapter edit maps one chapter");
+        assert!(
+            p.spacing_reduced < 40,
+            "the replay converges instead of re-reducing the whole book, got {}",
+            p.spacing_reduced
+        );
+    }
+
     /// Mapper output is identical regardless of thread count. The chapter route
     /// writes each result back into the caller-order slot it came from, so
     /// completion order cannot reach the answer.
