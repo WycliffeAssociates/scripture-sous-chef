@@ -3827,3 +3827,287 @@ byte-identical to the standing WP1…WP6c contract. **Recorded before any edit:*
 | `wp7a.base.small.findings.all.tsv` | `d657dcff009565e509dcbd891c5f7bf50db5bc9f5c8d19dff316dd4aa6c539e2` |
 | `wp7a.base.small.inc.default.tsv` | `10da8d93dd5c275f38925d726508fa43ba368d43f3ce4f1674652cc47e13661e` |
 | `wp7a.base.small.inc.all.tsv` | `c3532af9a4efa7ec370ba5531b9332fb2c7a0f54b6a86aa8b79972d659f8855e` |
+
+### STOP CLAUSE FIRED — `ord: u8` is not viable on this fleet (owner decision needed)
+
+Entry 25's site-record design specifies `LowerSite` as a 6-byte ordinal record
+`{ key: u16, verse: u16, ord: u8, pos: u8 }`, with the stop clause "if any fleet
+verse exceeds 255 words, stop and report". **It does, and not marginally.**
+
+Measured over the whole 1,504-corpus vref fleet through the *exact*
+`compound_words` segmentation and fold the casing map walk uses (new
+`bench-probes` probe `casing::field_extent_probe`, driven by
+`spike-bench/field_extents`):
+
+| extent | fleet max | worst corpus | verdict for the record |
+| --- | ---: | --- | --- |
+| compound words in one verse | **1,958** | `hltmcsb` (Matupi Chin) | `ord: u8` **impossible** |
+| distinct word types in one chapter | 1,125 | `swe` | `key: u16` safe, 58x margin |
+| distinct boundary classes in one chapter | 26 | `oyde` | a `u8` class code is safe |
+| UAX #29 tokens in one verse | 1,963 | `hltmcsb` | (mixed-case's unit — same story) |
+
+It is not one freak corpus: **101 of 1,504 corpora (6.7%)** contain at least one
+verse over 255 whitespace-words. `hltmcsb`'s worst verse is 10,134 bytes /
+1,958 words (a 2ES passage). Verse byte offsets still fit `u16` (consistent with
+the Step-0 fleet scan behind `SiteAddr`'s 13 KiB figure), so the *span* is
+packable even though the *ordinal* is not.
+
+So the design's premise fails, and the choice of what replaces it is the
+owner's, not mine. The two candidates, priced on WA-en-ulb's 668,257 casing
+sites:
+
+| option | record | bytes/site | casing sites total | needs |
+| --- | --- | ---: | ---: | --- |
+| A — owner's design with a wider ordinal | `{ key: u16, verse: u16, ord: u16, pos: u8 }` | **8** (padded) | 5.1 MiB (from 15.3) | the span re-derivation machinery: a per-chapter boundary-class table for `pos`, plus `tokenize` + `compound_words` on the verse per emitted finding (memoized per verse), because **no cached segmentation exists at materialization** for this lane |
+| B — retain the packed span instead | `{ key: u16, verse: u16, start: u16, end: u16, pos: u8 }` | **10** (padded) | 6.4 MiB (from 15.3) | nothing new; `SiteAddr` already proves 16-bit verse offsets fleet-wide |
+
+A buys 1.3 MiB more than B and costs the re-derivation path; B is a pure
+narrowing of the existing fields. Both need a checked constructor for `key: u16`
+(house rule) — the 1,125 measured max leaves ample margin but the bound must be
+enforced, not assumed. **Not built pending adjudication.**
+
+The other half of Entry 25's item 1 — the per-chapter `WordStats`
+representation, which Entry 24 measured as the *larger* of the two levers and
+which does not depend on the site-record width at all — was built and gated
+(commit `b3f83bc`).
+
+### Per-step commits
+
+| step | commit | what landed |
+| --- | --- | --- |
+| pin | `18bd081` | The WA + `small` base pin above, recorded before any edit. |
+| 1a | `b3f83bc` | `WordStats`' two `BTreeMap<char, ForcedTally>`s → one flat `Vec<Forced>` sorted by `(quoted, mark)`; sealed at the two retained boundaries. Plus the `bench-probes` fleet field-extent probe. |
+| 1b | — | **BLOCKED** on the stop clause above. |
+| 2 | `536aa61` | `MixedCaseSubstrate` (Phase E row 1). Old `StatefulRule`, `RuleStats::MixedCase`, `RuleSites::MixedCase` and the fused walk's mixed-case lane deleted. |
+| 3–4 | — | **NOT STARTED** (punctuation adjacency, repeated-character-run). |
+
+Every commit re-dumped **all eight** dumps (WA + `small`, both configs, findings
++ incremental) and diffed **byte-identical** to the pin — both on the first
+attempt. Test counts at HEAD: core **481** serial / **482** `--features
+parallel` (four new: the forced-list order property, and mixed-case's
+edit-locality, knob-isolation and randomized resident-equals-cold tests, less
+the retired `RuleStats`-shaped merge test), galley 25, ssc-wire 25, ssc-wasm 14,
+xtask 1; node 19. Green serial, `--features parallel`, and `--features parallel`
+under `RAYON_NUM_THREADS=1`. wasm32 checks clean for `ssc-core` and `ssc-wasm`.
+clippy at the documented 2-warning `ssc-core` lib baseline. `git diff --check`
+clean. No `cargo fmt` sweep.
+
+### Item 1a — the casing `WordStats` representation
+
+The target was named by Entry 24's dhat by-site decomposition, not guessed. Two
+`BTreeMap<char, ForcedTally>` per word cost 48 bytes of dead inline weight on
+every one of an English Bible's 265,207 per-chapter word entries — forced
+positions occur once per *sentence*, so the great majority of word types carry
+no forced tally at all — plus a full B-tree leaf node for each of the ~48,000
+that do.
+
+They become one flat `Vec<Forced>` (`{ mark: char, quoted: bool, tally }`, 16 B)
+sorted by **`(quoted, mark)`**. That key is not cosmetic: `false < true` makes
+the list iterate bare-glyph classes in mark order and *then* quote-context
+classes in mark order — byte-for-byte the sequence the two maps produced.
+`Model::effective_upper` sums `f64` discounts in exactly that order and float
+addition is not associative, so this is a correctness property. It is pinned
+directly by `the_forced_list_iterates_bare_then_quote_each_in_mark_order` and
+end-to-end by the oracle. The list is *sealed* (slack released) at the two
+points a table stops growing and starts being retained — a chapter observation
+and a book's folded table — the same accounting that boxed the outer tables in
+`89e8bd8`; the judge model's own table stays unsealed because it is rebuilt
+whenever the aggregate moves and its merge wants amortized growth.
+
+**dhat, paired configs** (`all` minus `all-no-casing`, `curr_bytes` after the
+cold seed). Both arms measured in this session; the base arm reproduces WP6c's
+figure **to the byte**, which is the cross-check that the comparison is sound:
+
+| corpus | base (WP6c) | after 1a | delta | live blocks |
+| --- | ---: | ---: | ---: | --- |
+| WA-en-ulb | 55,290,391 (**52.7 MiB**) | 37,762,311 (**36.0 MiB**) | **−16.7 MiB (−32%)** | 98,075 → 89,864 |
+| qub | 81,332,748 (**77.6 MiB**) | 51,583,524 (**49.2 MiB**) | **−28.4 MiB (−37%)** | 204,605 → 197,019 |
+
+Warm allocations per analyze are flat-to-better (WA-en-ulb 8,628 → 8,427 blocks;
+qub 21,939 → 20,679). Entry 25's envelope estimate for the *whole* item 1 was
+"low-20s MiB"; 1a alone reaches 36.0 MiB, and option A/B above would take a
+further 8.9–10.2 MiB off, landing at **26–27 MiB**. The gap to the estimate is
+the same one Entry 24 documented: the `LowerSite` and `WordStats` populations are
+what they are, and neither shape change can beat its own element count.
+
+### Item 2 — `case.mixed-case-word`, ledger row as finalized
+
+| field | value |
+| --- | --- |
+| **substrate / consumers** | `MixedCaseSubstrate`; sole consumer `case.mixed-case-word` |
+| **shared prep** | none — it maps its own chapter tokenization. It shares the WP6c `WordInterner` instance with casing (`type Symbols = WordInterner`), so a word's symbol means the same thing in both |
+| **key** | the case-folded word type (`Arc<str>`) |
+| **boundary state** | `()` — **proven from the listener** (below) |
+| **chapter observation** | per-chapter word symbols + their raw four-shape `ShapeProfile`s + the chapter's OtherMixed occurrences in scan order, all `Box<[…]>` behind one `Arc` |
+| **reduced chapter** | identical to the observation (reduction is the identity) |
+| **book contribution** | the book's `(folded word, ShapeProfile)` table sorted by word, plus its reduced chapters |
+| **corpus stats** | per-book tables by slug **plus a corpus-wide per-word sum maintained incrementally** |
+| **stats-delta** | exactly the words whose merged counts moved, from a merge-join over the two sorted book tables |
+| **extractor config** | `()` — all three knobs are read at judge; probe-asserted to map and reduce zero |
+| **retained bytes** | WA-en-ulb 3.85 → **8.37 MiB**; qub 9.04 → **15.98 MiB** |
+| **verdict** | **migrate.** Warm win in every measured cell, 5/5 batches; cost is retained bytes |
+
+**Boundary-state proof.** `MixedCaseAcc::verse` read only the current verse's
+`tokens`, `folds` and `text`; its three fields (`intern`/`keys`/`profiles`) are
+the per-book *tally*, not a carry. `case_shape(word)` is a pure function of the
+token's own bytes and the word type a pure function of its own fold. Position is
+deliberately irrelevant to this rule — ADR 0055 measured the fleet OtherMixed
+rate as flat across the sentence seam (forced/mid ratio 0.964) — which is
+precisely why it imports none of casing's pending-terminal machine. No pending
+state, no neighbour read, no previous-verse lookahead: `()` is honest, and no
+stop-and-report was warranted.
+
+**Two properties the casing row could not have**, both because every judged
+quantity is a function of one word's own merged counts and nothing is
+corpus-global:
+
+1. **The aggregate is maintained incrementally and exactly.** A book replacement
+   subtracts its old per-word counts and adds its new ones. That is *bit-exact*
+   because the counts are integers — where casing's aggregate must be re-folded
+   whole, since its judge sums floats in a load-bearing insertion order (Entry
+   23). This is what removes the "whole-corpus rebuild" the ledger named, and it
+   is visible in the numbers even on a corpus with zero findings.
+2. **The stats-delta is genuinely per-key.** Equal counts *are* proof here —
+   unlike site equality (plan §6.2) — because the aggregate is a pure sum. A word
+   contributed identically by the old and new tables is not a delta key;
+   `the_stats_delta_names_exactly_the_words_whose_sum_moved` pins that, and pins
+   that the incrementally maintained sum equals a fresh fold.
+
+**Retain-vs-rederive choice.** `MixedCaseSite` is 12 bytes and retains *both*
+the word symbol and the packed verse-local span:
+
+- the **symbol** is the judge key's identity, not a verse-local deterministic
+  offset, so the principle says retain: re-deriving it means case-folding the
+  token's bytes again at every judge, and the shared interner already named it at
+  map time for free;
+- the **span** declines the principle's re-derive default, on measurement. A
+  token ordinal needs 16 bits on this fleet (1,963 tokens in the widest verse),
+  so it buys **nothing** over the packed 16-bit span while costing a
+  re-tokenization of the verse per emitted finding. And the population is two to
+  three orders of magnitude smaller than casing's lowercase sites, so retention's
+  rent is negligible here where it was casing's whole problem. This is the
+  principle applied, not waived: the curve's optimum genuinely sits at the
+  retain end for a sparse site population.
+
+**The re-scan/rebuild is retired.** Both halves of the old judge are gone: the
+whole-corpus re-scan (`rule::map_books` re-tokenizing and re-shaping every verse
+of every book to recover spans) and the per-call merge of every book's
+`BTreeMap<String, ShapeProfile>` into one `FxHashMap`. The judge-warm-diet
+hash-key memo was the *latter* — the `FxHashMap<&str, ShapeProfile>` presized to
+the largest book's table. It is **subsumed, not retained**: there is no per-call
+merge left to memo, because the sum is maintained across calls.
+
+### §13 ladder — item 2, two corpora, both configs
+
+§13 protocol: same machine/session/build, alternating BASE/CAND **one batch per
+invocation**, five batches per cell, median of the five batch medians,
+`--distinct-variants` (so no content-keyed memo can hide a rebuild in either
+arm). BASE = `b3f83bc` in a paired worktree. **Load 5.2–5.6 (1-min).** Two
+corpora deliberately: `WA-gay-reg` has 17 mixed-case findings, and `WA-en-ulb`
+has **zero interior-capital tokens anywhere** — the worst case for this
+migration, because there the old judge's `surviving.is_empty()` short-circuit
+meant there was no re-scan to remove.
+
+| corpus | cell | BASE | CAND | Δ | Δ% | map BASE→CAND | judge BASE→CAND |
+| --- | --- | ---: | ---: | ---: | ---: | --- | --- |
+| WA-gay-reg | 3JN all | 32.61 ms | **27.22 ms** | −5.39 | **−16.5%** | 0.397→0.358 | 31.96→**26.59** |
+| WA-gay-reg | MAT all | 50.81 ms | **44.52 ms** | −6.29 | **−12.4%** | 17.64→**16.26** | 32.65→**27.82** |
+| WA-gay-reg | MAT default | 7.771 ms | 7.644 ms | −0.127 | −1.6% | 7.414→7.297 | 0.035→0.035 |
+| WA-gay-reg | 3JN default | 0.301 ms | 0.298 ms | −0.003 | −0.9% | 0.105→0.104 | 0.026→0.025 |
+| WA-en-ulb | 3JN all | 31.87 ms | **29.50 ms** | −2.37 | **−7.4%** | 0.397→0.355 | 30.88→**28.55** |
+| WA-en-ulb | MAT all | 45.42 ms | **42.26 ms** | −3.16 | **−7.0%** | 13.25→**12.19** | 31.40→**29.32** |
+| WA-en-ulb | MAT default | 7.785 ms | 7.672 ms | −0.113 | −1.5% | 7.070→6.963 | 0.050→0.049 |
+| WA-en-ulb | 3JN default | 0.674 ms | 0.667 ms | −0.007 | −1.0% | 0.121→0.119 | 0.040→0.039 |
+
+§13 regression rule (candidate both >5% and >0.25 ms slower in ≥3/5 paired
+batches): **0/5 in every cell — the candidate is faster everywhere,
+consistently.** 3JN/default holds the Phase A `<= 2 ms` floor at 0.30/0.67 ms.
+
+**The mixed-case judge cost, before and after, explicitly** (the brief's ask):
+the whole judge term falls **−4.8 to −5.4 ms** on the exercising corpus and
+**−2.1 to −2.3 ms** on the zero-finding corpus. The map term also falls
+1.0–1.4 ms on MAT because the mixed-case listener left the fused whole-book walk.
+The zero-finding case is the informative one: with no sites at all and no
+re-scan to remove, the −2.2 ms is **purely** the retired per-call whole-corpus
+table merge (~83,000 `BTreeMap` entry probes per warm analyze) — i.e. the ledger's
+"whole-corpus rebuild", measured in isolation.
+
+**A measurement trap worth recording, because it nearly produced a wrong
+conclusion.** The first attempt measured this lane with `dhat_probe` and read
+the mixed-case lane's warm cost as 1.020 s → 0.033 s (a 30x "win") and then, on
+a second reading, as 0.5 ms → 23.0 ms (a 46x "regression"). Both are artifacts:
+
+1. dhat's wrapping allocator makes each allocation cost ~microseconds, so any
+   *allocation-count* difference is amplified ~100x in wall-clock. The
+   substrate lane's per-analyze planning pass allocates ~1,189 chapter-token
+   `Box<str>`, which dhat inflated into 11.5 ms of pure instrument overhead.
+   **dhat times are unusable for timing this lane**; only its byte and block
+   counts are.
+2. spike-bench builds `ssc-core` with `test-probes`, which turns on
+   `analyze_stateful`'s test-only `let fault_rollback = prior.clone()`. That
+   clone deep-copies the whole `Stats`, including the old mixed-case per-book
+   `BTreeMap<String, ShapeProfile>` — ~83,000 `String` allocations per warm
+   analyze that a release build never makes. Re-measuring with `test-probes` off
+   removed 90,000 of the base arm's 113,519 warm blocks.
+
+Both readings were discarded and the table above was taken with
+`warm_ladder_profile` (no dhat, real timers). **Note for future ladders:** every
+prior entry's ladder was also built with `test-probes` on, so all of them include
+that `Stats` clone for whatever rules still had a `RuleStats` variant at the time.
+
+### Migration ledger rows (plan §11), as finalized this packet
+
+| rule(s) | substrate | key | boundary | chapter observation | reduced | book contribution | corpus stats | stats-delta | retained | verdict |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | ---: | --- |
+| mixed-case word | `MixedCaseSubstrate` | folded word (`Arc<str>`) | `()` (proven from the listener) | word symbols + four-shape profiles + OtherMixed sites (`Arc`, boxed) | identical (identity reduction) | word table sorted by word + reduced chapters | per-book tables + an incrementally maintained corpus sum | exactly the words whose sum moved (merge-join) | 8.37 MiB (ulb) / 15.98 MiB (qub) | migrate |
+
+### Deviations / notes for the owner (clearly marked)
+
+1. **The stop clause above is the packet's headline.** `ord: u8` is dead on this
+   fleet (6.7% of corpora), so Entry 25's 6-byte record cannot be built as
+   specified. Options A and B are priced; the choice is not mine to make.
+   Everything else in item 1 that does not depend on it is landed and gated.
+2. **Items 3 and 4 are not started.** Punctuation adjacency and
+   repeated-character-run are untouched — no partial state in the tree. Both are
+   independent of the pending adjudication and start cleanly from `536aa61`.
+   Stopping here rather than starting a third migration was a deliberate call:
+   the two landed rows are fully gated and measured, and a half-migrated tree
+   would be worth less than a short one.
+3. **The mixed-case RAM watch fires** (+4.5 MiB on English, +6.9 MiB on Quechua,
+   roughly doubling the lane). Cause measured, not guessed: on WA-en-ulb the lane
+   retains *zero* sites, so the entire increase is the per-chapter word-table
+   scatter — 263,514 chapter word entries where one per-book table held ~13,000.
+   Same structural cause Entry 23 named for casing. Named follow-up, not built:
+   a chapter-local shape count cannot exceed its chapter's token count, so the
+   per-chapter profiles could be `4 x u16` (8 B) instead of `4 x u32` (16 B),
+   halving that scatter — but the *same* `ShapeProfile` type keys the book table
+   and the corpus sum, where `u32` is genuinely needed, so this is a
+   two-representation change and belongs in its own step.
+4. **`MixedCaseKey` is `Arc<str>`, not `Box<str>`.** The aggregate is keyed by
+   the interner's shared words, so a delta key is a refcount bump rather than a
+   fresh allocation per changed word. The plan permits finalizing exact key types
+   in the migration commit.
+5. **A census test changed shape, not meaning.** `case_shapes_match_mixed_case_profiles`
+   used to reach through `RuleStats::MixedCase`; it now reads the substrate's own
+   corpus aggregate via a `#[cfg(test)] shape_totals` helper, so the census lane
+   and the substrate still cannot drift.
+6. **The `small` preset was gated alongside WA on every commit**, as in WP6c —
+   mixed-case's conventions (`HaElohim`, `TUHANlah`, Bantu class prefixes) live
+   outside the WA-en-* corpora, and the script-diverse 15-corpus preset covers
+   them. Both were byte-identical at every step.
+7. **Harness additions committed** (measurement instruments, not engine): the
+   `bench-probes` `casing::field_extent_probe`, `spike-bench/field_extents` (the
+   fleet probe behind the stop-clause table), and `dhat_probe`'s
+   `all-no-mixed-case` paired arm.
+
+### Stop-safe next step
+
+The tree is clean and every commit is independently gated. Two things are owed,
+in this order: **(a)** the owner's adjudication of option A vs B for the casing
+site record (item 1b), and **(b)** Phase E rows 2 and 3 — punctuation adjacency
+and repeated-character-run — which are unblocked by (a) and follow item 2's
+shape closely. Both are counts-only rules today whose boundary state must be
+proven from their listeners before anything is written; a first read of
+`AdjacencyAcc::verse` and `RepeatedRunAcc::verse` shows neither holds any
+cross-verse field, which would make both `()`, but that is a claim to prove in
+the migration commit, not to carry over from here.
