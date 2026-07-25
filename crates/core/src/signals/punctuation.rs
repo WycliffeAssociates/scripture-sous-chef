@@ -3474,4 +3474,53 @@ mod tests {
         );
     }
 
+    /// Editing the chapter that RESOLVES an earlier chapter's pending seam mark
+    /// must not lose (or double) that resolution. The replay window has to reach
+    /// back to the owning chapter, because the owner's reduced result is rebuilt
+    /// from nothing and the resolution folds into it again. Compared against the
+    /// independent whole-book batch walk, which shares no code with the substrate.
+    #[test]
+    fn editing_the_resolving_chapter_keeps_the_owners_cross_seam_cell() {
+        use crate::corpus::ChapterBlock;
+        use crate::substrate::SubstrateCache;
+        // GEN 1:2 ends with a trailing comma whose right neighbour lives in GEN 2
+        // — a pending seam owned by chapter 1 and resolved by chapter 2.
+        let mut corpus = multi(&[
+            ("GEN 1:1", "In the beginning"),
+            ("GEN 1:2", "and there was light,"),
+            ("GEN 2:1", "thus it was so"),
+            ("GEN 3:1", "and the day ended"),
+        ]);
+        let cfg = sp_no_floor();
+        let mut cache: SubstrateCache<SpacingSubstrate> = SubstrateCache::new();
+        let cold = resident_findings(&mut cache, &corpus, &cfg);
+        assert_eq!(
+            cache.corpus_stats().totals,
+            batch_corpus_cells(&corpus),
+            "cold cells equal the independent batch walk"
+        );
+        let _ = cold;
+
+        // Edit the RESOLVING chapter only.
+        corpus
+            .replace_chapter(ChapterBlock {
+                slug: "GEN".into(),
+                chapter: "2".into(),
+                keys: vec!["GEN 2:1".into()],
+                // The first character's class CHANGES (letter → digit), so the
+                // owning chapter's cross-seam cell must actually move: a replay
+                // that started after the owner would keep the stale letter cell.
+                texts: vec!["40 days it came to be".into()],
+            })
+            .unwrap();
+        cache.reset_probes();
+        let warm = resident_findings(&mut cache, &corpus, &cfg);
+        assert_eq!(cache.mapped, 1, "only the edited chapter is re-mapped");
+        assert_eq!(
+            cache.corpus_stats().totals,
+            batch_corpus_cells(&corpus),
+            "the owning chapter keeps exactly one cross-seam resolution"
+        );
+        assert_eq!(warm, spacing_findings(&corpus, &cfg), "resident equals cold");
+    }
 }

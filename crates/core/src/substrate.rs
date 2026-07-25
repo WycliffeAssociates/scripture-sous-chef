@@ -31,10 +31,11 @@
 //!   only by [`replace_book_in_corpus_stats`](ObservationSubstrate::replace_book_in_corpus_stats).
 //!
 //! The contract is driven from [`crate::transition`] via each substrate's
-//! `drive_*` entry point. A few members are retained ahead of their first
-//! reader — the reduced-chapter boundary stamps feed Phase D's ordered-replay
-//! convergence test, and the registry iterators back the completeness tests —
-//! and are marked as such at their definitions.
+//! `drive_*` entry point. [`SubstrateCache::update_book`] is the generic ordered
+//! reduction-to-convergence driver every substrate shares: it maps only the
+//! chapters whose content moved and then replays the carry fold over **cached
+//! observations** until the boundary state converges, so a changed carry never
+//! re-walks an unchanged chapter's text.
 
 use rustc_hash::FxHashMap;
 
@@ -89,15 +90,10 @@ pub(crate) struct ObservationInputStamp {
 }
 
 /// Validity stamp for a cached [reduced chapter](ObservationSubstrate::ReducedChapter).
-/// A reduction is valid iff its observation is valid AND it was produced from
-/// the same entering boundary state; the leaving state is retained so an ordered
-/// replay can compare it against the next chapter's entering state (the Phase D
-/// convergence test — Phase C re-reduces the whole owning book, so it compares
-/// nothing, but the stamp is carried from the start so the shape does not move).
-// The fields feed Phase D's ordered-replay convergence test (leaving vs the next
-// chapter's entering); Phase C re-reduces the whole owning book, so it stores but
-// does not yet read them.
-#[allow(dead_code)]
+/// A reduction is valid iff its observation is valid AND it was produced from the
+/// same entering boundary state. The leaving state is the ordered replay's
+/// convergence referee: when a replayed chapter leaves the state it left before,
+/// every later cached reduction is already what a full re-reduce would produce.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ReducedChapterStamp<B> {
     /// The observation stamp the reduction was produced from.
@@ -231,21 +227,98 @@ pub(crate) struct SubstrateCache<S: ObservationSubstrate> {
 /// contribution to the corpus aggregate.
 struct SubstrateBook<S: ObservationSubstrate> {
     chapters: Vec<SubstrateChapter<S>>,
+    /// Opaque chapter token → position in `chapters`. Tokens are unique within a
+    /// book (a chapter run may not reopen), so this is a function. It makes the
+    /// driver's per-chapter reuse decision O(1) rather than a scan of the book.
+    by_token: FxHashMap<Box<str>, usize>,
     contribution: S::BookContribution,
 }
 
 /// One chapter's resident substrate state: its opaque token, the observation and
-/// its input stamp, and the reduced result and its stamp. `reduced`/
-/// `reduced_stamp` are stored for Phase D's ordered-replay convergence; Phase C
-/// re-reduces the whole owning book from observations, so it does not read them.
+/// its input stamp, and the reduced result and its stamp.
 struct SubstrateChapter<S: ObservationSubstrate> {
     token: Box<str>,
     input_stamp: ObservationInputStamp,
     observation: S::ChapterObservation,
-    #[allow(dead_code)] // Phase D convergence replay
     reduced_stamp: ReducedChapterStamp<S::BoundaryState>,
-    #[allow(dead_code)] // Phase D convergence replay
     reduced: S::ReducedChapter,
+}
+
+/// A book's cached state taken apart into parallel columns, indexed by the
+/// chapter's position in the **cached** (previous) order. The replay driver
+/// `take()`s from the `Option` columns, so an unchanged chapter hands its
+/// observation and reduced result to the new state by move — a warm analyze
+/// copies neither.
+struct OldColumns<S: ObservationSubstrate> {
+    tokens: Vec<Box<str>>,
+    input_stamps: Vec<ObservationInputStamp>,
+    observations: Vec<Option<S::ChapterObservation>>,
+    reduced_stamps: Vec<Option<ReducedChapterStamp<S::BoundaryState>>>,
+    reduced: Vec<Option<S::ReducedChapter>>,
+    by_token: FxHashMap<Box<str>, usize>,
+}
+
+impl<S: ObservationSubstrate> OldColumns<S> {
+    /// The empty previous state — a book this substrate has never seen. Every
+    /// position then reads as changed, so the driver maps and reduces the whole
+    /// book (the cold path).
+    fn empty() -> Self {
+        OldColumns {
+            tokens: Vec::new(),
+            input_stamps: Vec::new(),
+            observations: Vec::new(),
+            reduced_stamps: Vec::new(),
+            reduced: Vec::new(),
+            by_token: FxHashMap::default(),
+        }
+    }
+
+    fn take_apart(book: SubstrateBook<S>) -> (Self, S::BookContribution) {
+        let mut cols = Self::empty();
+        cols.by_token = book.by_token;
+        for c in book.chapters {
+            cols.tokens.push(c.token);
+            cols.input_stamps.push(c.input_stamp);
+            cols.observations.push(Some(c.observation));
+            cols.reduced_stamps.push(Some(c.reduced_stamp));
+            cols.reduced.push(Some(c.reduced));
+        }
+        (cols, book.contribution)
+    }
+
+    /// Rebuild the book exactly as it was — the whole-book-unchanged path, which
+    /// must put back what it took apart without reducing anything. Step 1 already
+    /// moved every observation out into `observations` (position-aligned here,
+    /// because this path runs only when no position changed), so they come back
+    /// from there.
+    fn reassemble(
+        self,
+        observations: Vec<S::ChapterObservation>,
+        contribution: S::BookContribution,
+    ) -> SubstrateBook<S> {
+        let chapters = self
+            .tokens
+            .into_iter()
+            .zip(self.input_stamps)
+            .zip(observations)
+            .zip(self.reduced_stamps)
+            .zip(self.reduced)
+            .map(
+                |((((token, input_stamp), observation), reduced_stamp), reduced)| SubstrateChapter {
+                    token,
+                    input_stamp,
+                    observation,
+                    reduced_stamp: reduced_stamp.expect("unchanged book retains every stamp"),
+                    reduced: reduced.expect("unchanged book retains every reduced chapter"),
+                },
+            )
+            .collect();
+        SubstrateBook {
+            chapters,
+            by_token: self.by_token,
+            contribution,
+        }
+    }
 }
 
 impl<S: ObservationSubstrate> Default for SubstrateCache<S> {
@@ -306,103 +379,233 @@ impl<S: ObservationSubstrate> SubstrateCache<S> {
         self.books.get(slug).map(|b| &b.contribution)
     }
 
-    /// Bring one book up to date from its ordered chapters (plan §5.4, Phase C
-    /// schedule). Each chapter is mapped iff its observation input stamp changed
-    /// (a knob change leaves every stamp valid → zero maps); the whole book is
-    /// then re-reduced left-to-right whenever any chapter changed, or reused
-    /// wholesale when none did. Returns the stats-delta keys the aggregate
-    /// change produced. The predecessor state never re-walks unchanged chapter
-    /// text — reduction consumes cached observations only.
+    /// Bring one book up to date from its ordered chapters — the **ordered
+    /// reduction-to-convergence driver** (plan §5.4). Returns the stats-delta
+    /// keys the book's new contribution produced.
     ///
-    /// `chapters` is the book's ordered `(opaque token, ObservationInputStamp,
-    /// map)` triples; `map` is called only for a chapter whose stamp changed.
+    /// Five steps:
+    ///
+    /// 1. map only the chapters whose observation input stamp changed, each into
+    ///    its caller-order slot. Reuse is keyed by the chapter's **opaque token**,
+    ///    not its position: [`map_chapter`](ObservationSubstrate::map_chapter) is
+    ///    predecessor-free, so a chapter that merely moved carries its
+    ///    observation with it. A judging-knob change leaves every stamp valid and
+    ///    therefore maps nothing;
+    /// 2. take the cached boundary state entering the earliest changed chapter
+    ///    (the default state at book start);
+    /// 3. reduce that chapter and compare the state it now leaves against the
+    ///    state it left before;
+    /// 4. while they differ, reduce the next chapter's **cached observation** with
+    ///    the new state — a changed carry never re-walks a chapter's text; and
+    /// 5. stop as soon as a replayed chapter leaves the state it left before. The
+    ///    book's end is the correctness fallback; there is no replay cap, because
+    ///    a cap would be a silent behavioural cutoff rather than a computed one.
+    ///
+    /// Convergence is sound because reduction is a left-to-right fold: if the
+    /// state leaving chapter `k` is unchanged and the chapters after `k` are
+    /// untouched, each of their cached reduced results was produced from exactly
+    /// the inputs a full re-reduce would hand it.
+    ///
+    /// `chapters` is the book's ordered `(opaque token, ObservationInputStamp)`
+    /// pairs; `map` is called only for a chapter whose observation is stale.
     pub(crate) fn update_book(
         &mut self,
         slug: &str,
         chapters: &[(Box<str>, ObservationInputStamp)],
         mut map: impl FnMut(usize) -> S::ChapterObservation,
     ) -> Vec<S::Key> {
-        let existing = self.books.get(slug);
-        // Decide, per chapter, whether the cached observation is reusable. A
-        // chapter is reusable iff a cached chapter at the same position carries
-        // the same opaque token and an equal input stamp.
-        let mut observations: Vec<(ObservationInputStamp, S::ChapterObservation)> =
-            Vec::with_capacity(chapters.len());
-        let mut any_changed = existing.is_none_or(|b| b.chapters.len() != chapters.len());
-        for (i, (token, stamp)) in chapters.iter().enumerate() {
-            let reuse = existing.and_then(|b| b.chapters.get(i)).filter(|c| {
-                *c.token == **token && c.input_stamp == *stamp
-            });
-            match reuse {
-                Some(c) => observations.push((*stamp, c.observation.clone())),
+        let n = chapters.len();
+        let (mut old, old_contribution) = match self.books.remove(slug) {
+            Some(book) => {
+                let (cols, contribution) = OldColumns::take_apart(book);
+                (cols, Some(contribution))
+            }
+            None => (OldColumns::empty(), None),
+        };
+
+        // ── Step 1: map the stale chapters into their caller-order slots.
+        let mut observations: Vec<S::ChapterObservation> = Vec::with_capacity(n);
+        for (k, (token, stamp)) in chapters.iter().enumerate() {
+            let reused = old
+                .by_token
+                .get(&**token)
+                .copied()
+                .filter(|&i| old.input_stamps[i] == *stamp)
+                .and_then(|i| old.observations[i].take());
+            match reused {
+                Some(obs) => observations.push(obs),
                 None => {
-                    any_changed = true;
                     #[cfg(any(test, feature = "test-probes"))]
                     {
                         self.mapped += 1;
                     }
-                    observations.push((*stamp, map(i)));
+                    observations.push(map(k));
                 }
             }
         }
 
-        if !any_changed {
-            // Whole book unchanged: reuse its contribution and reduced results
-            // as-is, contributing zero aggregate delta.
-            return Vec::new();
-        }
-
-        // Whole-book left-to-right carry reduce over the (cached or fresh)
-        // observations (Phase C conservative schedule; the §5.4 replay-to-
-        // convergence driver is Phase D). Text is never re-walked: reduction
-        // consumes observations only.
-        // Route a carried cross-seam contribution to its OWNING chapter by
-        // opaque token — an owner can sit behind an all-empty chapter, so it is
-        // not always the immediate predecessor. Tokens are unique within a book
-        // (no reopened chapter — Phase A invariant), so token → position is a
-        // function.
-        let token_pos: FxHashMap<&str, usize> = chapters
+        // Token → position in the NEW order. A carried cross-seam contribution
+        // belongs to an EARLIER chapter, and that owner is not always the
+        // immediate predecessor (a carry can cross an all-empty chapter), so the
+        // driver resolves the owner by its opaque token.
+        let new_pos: FxHashMap<&str, usize> = chapters
             .iter()
             .enumerate()
             .map(|(i, (t, _))| (&**t, i))
             .collect();
-        let mut reduced: Vec<S::ReducedChapter> = Vec::with_capacity(observations.len());
-        let mut stamps: Vec<ReducedChapterStamp<S::BoundaryState>> =
-            Vec::with_capacity(observations.len());
-        let mut carry = S::BoundaryState::default();
-        for (input_stamp, obs) in &observations {
+
+        // ── Step 2: locate the replay window. A position is changed when the
+        // chapter that sat there is gone, is a different chapter, or was mapped
+        // from different content.
+        let changed = |k: usize| match (old.tokens.get(k), old.input_stamps.get(k)) {
+            (Some(token), Some(stamp)) => **token != *chapters[k].0 || *stamp != chapters[k].1,
+            _ => true,
+        };
+        // A different chapter count reshaped the book: positions shifted, and the
+        // book edge may now fall on a different dangling state, so the replay
+        // runs to the book's end rather than looking for convergence.
+        let structural = old.tokens.len() != n;
+        let first_changed = (0..n).find(|&k| changed(k));
+        let last_changed = (0..n).rev().find(|&k| changed(k));
+        if first_changed.is_none() && !structural {
+            // Nothing moved: put the book back exactly as it was. Zero reductions,
+            // zero aggregate delta — this is the path a judging-knob change takes.
+            let book = old.reassemble(
+                observations,
+                old_contribution.expect("an unchanged book was already resident"),
+            );
+            self.books.insert(Box::from(slug), book);
+            return Vec::new();
+        }
+        let must_replay_through = if structural {
+            n.saturating_sub(1)
+        } else {
+            last_changed.expect("a changed book has a last changed position")
+        };
+
+        // Walk the window's start back to the chapter that OWNS any cross-seam
+        // contribution carried into it. That owner's reduced result is rebuilt
+        // from nothing, and the resolution folds into it again; starting later
+        // would fold the same contribution into a cached result that already
+        // holds it. Each hop strictly decreases the index, so this terminates.
+        let (start, mut carry) = {
+            let entering_at = |k: usize| -> S::BoundaryState {
+                if k == 0 {
+                    return S::BoundaryState::default();
+                }
+                old.reduced_stamps[k - 1]
+                    .as_ref()
+                    .expect("the position before the replay window is an unchanged chapter")
+                    .leaving
+                    .clone()
+            };
+            let mut start = first_changed.unwrap_or(0);
+            loop {
+                let entering = entering_at(start);
+                match S::pending_owner(&entering).and_then(|t| new_pos.get(t).copied()) {
+                    Some(owner) if owner < start => start = owner,
+                    _ => break,
+                }
+            }
+            let carry = entering_at(start);
+            (start, carry)
+        };
+
+        // ── Steps 3–5: replay the ordered reduction until the boundary state
+        // converges. Positions before the window keep their cached reduced
+        // results untouched (nothing the replay can produce reaches back past its
+        // own start).
+        let mut reduced: Vec<Option<S::ReducedChapter>> = (0..n)
+            .map(|k| if k < start { old.reduced[k].take() } else { None })
+            .collect();
+        let mut stamps: Vec<Option<ReducedChapterStamp<S::BoundaryState>>> = vec![None; n];
+        let mut converged_at: Option<usize> = None;
+        for k in start..n {
             let entering = carry.clone();
-            let owner = S::pending_owner(&entering).map(|tok| token_pos[tok]);
-            // `carry_out` is the owner chapter's reduced result (already pushed,
-            // so its index is < the current one); at book start there is no
-            // carry, so the throwaway sink is never written.
-            let (this, leaving) = match owner {
-                Some(k) => S::reduce_chapter(obs, &entering, &mut reduced[k]),
+            let owner = S::pending_owner(&entering)
+                .and_then(|t| new_pos.get(t).copied())
+                .filter(|&o| o >= start);
+            let (this, leaving) = match owner.and_then(|o| reduced[o].as_mut()) {
+                // `carry_out` is the owning chapter's reduced result; this
+                // chapter's data resolves the carried contribution into it.
+                Some(carry_out) => S::reduce_chapter(&observations[k], &entering, carry_out),
                 None => {
                     let mut sink = S::ReducedChapter::default();
-                    S::reduce_chapter(obs, &entering, &mut sink)
+                    S::reduce_chapter(&observations[k], &entering, &mut sink)
                 }
             };
-            stamps.push(ReducedChapterStamp {
-                observation: *input_stamp,
-                entering,
-                leaving: leaving.clone(),
-            });
-            reduced.push(this);
-            carry = leaving;
             #[cfg(any(test, feature = "test-probes"))]
             {
                 self.reduced += 1;
             }
-        }
-        // Book edge: no neighbour across the final seam — resolve the dangling
-        // boundary state into its OWNING chapter's reduced result.
-        if let Some(owner) = S::pending_owner(&carry).map(|tok| token_pos[tok]) {
-            S::finish_book(&carry, &mut reduced[owner]);
+            stamps[k] = Some(ReducedChapterStamp {
+                observation: chapters[k].1,
+                entering,
+                leaving: leaving.clone(),
+            });
+            reduced[k] = Some(this);
+            carry = leaving;
+
+            // Convergence: this chapter leaves the state it left before, the same
+            // chapter sits here, and every later position is untouched — so every
+            // later cached reduced result is already what a full re-reduce would
+            // produce. A contribution still carried and still owned by a chapter
+            // this replay rebuilt is NOT converged: its resolution lives in a
+            // later chapter and has to fold in again.
+            let dangling = S::pending_owner(&carry)
+                .and_then(|t| new_pos.get(t).copied())
+                .is_some_and(|o| o >= start);
+            let same_chapter_here = old.tokens.get(k).is_some_and(|t| **t == *chapters[k].0);
+            let left_as_before = old
+                .reduced_stamps
+                .get(k)
+                .and_then(Option::as_ref)
+                .is_some_and(|s| s.leaving == carry);
+            if !structural
+                && k >= must_replay_through
+                && same_chapter_here
+                && !dangling
+                && left_as_before
+            {
+                converged_at = Some(k);
+                break;
+            }
         }
 
+        // Book edge: no neighbour across the final seam, so a still-dangling state
+        // resolves into its owning chapter. Only when the replay actually reached
+        // the book's end — a replay that converged earlier left the cached
+        // book-edge resolution in place, inside a cached reduced result.
+        if converged_at.is_none_or(|k| k + 1 == n)
+            && let Some(owner) = S::pending_owner(&carry)
+                .and_then(|t| new_pos.get(t).copied())
+                .filter(|&o| o >= start)
+            && let Some(carry_out) = reduced[owner].as_mut()
+        {
+            S::finish_book(&carry, carry_out);
+        }
+
+        // Past the convergence point every cached reduction stands.
+        if let Some(m) = converged_at {
+            for (slot, cached) in reduced.iter_mut().zip(old.reduced.iter_mut()).skip(m + 1) {
+                *slot = cached.take();
+            }
+        }
+
+        let reduced: Vec<S::ReducedChapter> = reduced
+            .into_iter()
+            .map(|r| r.expect("every position is either replayed or reused"))
+            .collect();
+        let stamps: Vec<ReducedChapterStamp<S::BoundaryState>> = stamps
+            .into_iter()
+            .enumerate()
+            .map(|(k, s)| {
+                s.or_else(|| old.reduced_stamps[k].take())
+                    .expect("every position is either replayed or reused")
+            })
+            .collect();
+
         let new_contribution = S::fold_book(&reduced);
-        let old_contribution = self.books.get(slug).map(|b| b.contribution.clone());
         let delta = S::replace_book_in_corpus_stats(
             &mut self.corpus_stats,
             slug,
@@ -410,25 +613,31 @@ impl<S: ObservationSubstrate> SubstrateCache<S> {
             Some(&new_contribution),
         );
 
-        let new_chapters: Vec<SubstrateChapter<S>> = chapters
+        let chapters_out: Vec<SubstrateChapter<S>> = chapters
             .iter()
             .zip(observations)
             .zip(reduced)
             .zip(stamps)
-            .map(|((((token, _stamp), (input_stamp, observation)), reduced), reduced_stamp)| {
-                SubstrateChapter {
+            .map(
+                |(((( token, stamp), observation), reduced), reduced_stamp)| SubstrateChapter {
                     token: token.clone(),
-                    input_stamp,
+                    input_stamp: *stamp,
                     observation,
                     reduced_stamp,
                     reduced,
-                }
-            })
+                },
+            )
+            .collect();
+        let by_token = chapters_out
+            .iter()
+            .enumerate()
+            .map(|(i, c)| (c.token.clone(), i))
             .collect();
         self.books.insert(
             Box::from(slug),
             SubstrateBook {
-                chapters: new_chapters,
+                chapters: chapters_out,
+                by_token,
                 contribution: new_contribution,
             },
         );
@@ -540,5 +749,666 @@ mod tests {
         );
         cfg.rules.insert(RuleId::PunctuationSpacingAnomaly, false);
         assert!(!ActiveSubstrates::from_config(&cfg).spacing);
+    }
+}
+
+/// The generic driver's own replay tests (plan §12.3), driven by two synthetic
+/// substrates whose boundary state is chosen to put the convergence rule under
+/// direct control. Spacing's tests exercise the driver on real evidence; these
+/// exercise the *algorithm*: where the replay window starts, how far it walks,
+/// and that a carry change never re-maps a chapter.
+#[cfg(test)]
+mod replay {
+    use super::*;
+
+    /// Boundary state `()` — the chapter-local shape (a direct rule). Every
+    /// chapter leaves the same (empty) state, so a changed chapter always
+    /// converges at itself.
+    struct Local;
+
+    /// Boundary state `Option<char>` — a carry that a chapter either replaces
+    /// (its content's last character) or, when it has no content, passes
+    /// straight through. That pass-through is what lets a test place
+    /// convergence an arbitrary distance away: a run of empty chapters forwards
+    /// a changed carry until the next chapter with content absorbs it.
+    struct Carry;
+
+    /// What a chapter reduced to: the state that entered it and its own content.
+    /// The entering state is part of the value, so a reduction produced from the
+    /// wrong carry cannot compare equal to the right one — which is what makes
+    /// "resident equals cold" a real check on the replay window.
+    #[derive(Clone, Debug, Default, PartialEq, Eq)]
+    struct Reduced {
+        entering: Option<char>,
+        content: String,
+    }
+
+    fn render(reduced: &[Reduced]) -> String {
+        reduced
+            .iter()
+            .map(|r| format!("<{}|{}>", r.entering.unwrap_or('_'), r.content))
+            .collect()
+    }
+
+    impl ObservationSubstrate for Local {
+        const ID: SubstrateId = SubstrateId::Spacing;
+        const SCHEMA_STAMP: u64 = 1;
+        type Key = String;
+        type BoundaryState = ();
+        type ChapterObservation = String;
+        type ReducedChapter = Reduced;
+        type BookContribution = String;
+        type CorpusStats = Vec<(String, String)>;
+        type ExtractorConfig = ();
+        type JudgeConfig = ();
+        type EntryOutcome = ();
+
+        fn extractor_fp(_: &()) -> u64 {
+            0
+        }
+        fn map_chapter(chapter: &ChapterView<'_>, _: &()) -> String {
+            chapter.texts.concat()
+        }
+        fn pending_owner(_: &()) -> Option<&str> {
+            None
+        }
+        fn reduce_chapter(obs: &String, _: &(), _: &mut Reduced) -> (Reduced, ()) {
+            (
+                Reduced {
+                    entering: None,
+                    content: obs.clone(),
+                },
+                (),
+            )
+        }
+        fn finish_book(_: &(), _: &mut Reduced) {}
+        fn fold_book(reduced: &[Reduced]) -> String {
+            render(reduced)
+        }
+        fn replace_book_in_corpus_stats(
+            stats: &mut Vec<(String, String)>,
+            slug: &str,
+            _: Option<&String>,
+            new: Option<&String>,
+        ) -> Vec<String> {
+            stats.retain(|(s, _)| s != slug);
+            if let Some(new) = new {
+                stats.push((slug.to_string(), new.clone()));
+            }
+            vec![slug.to_string()]
+        }
+        fn judge(_: &(), _: &String, _: &Vec<(String, String)>) {}
+    }
+
+    impl ObservationSubstrate for Carry {
+        const ID: SubstrateId = SubstrateId::Spacing;
+        const SCHEMA_STAMP: u64 = 2;
+        type Key = String;
+        type BoundaryState = Option<char>;
+        type ChapterObservation = String;
+        type ReducedChapter = Reduced;
+        type BookContribution = String;
+        type CorpusStats = Vec<(String, String)>;
+        type ExtractorConfig = ();
+        type JudgeConfig = ();
+        type EntryOutcome = ();
+
+        fn extractor_fp(_: &()) -> u64 {
+            0
+        }
+        fn map_chapter(chapter: &ChapterView<'_>, _: &()) -> String {
+            chapter.texts.concat()
+        }
+        fn pending_owner(_: &Option<char>) -> Option<&str> {
+            None
+        }
+        fn reduce_chapter(
+            obs: &String,
+            entering: &Option<char>,
+            _: &mut Reduced,
+        ) -> (Reduced, Option<char>) {
+            // A chapter with content replaces the carry with its last character;
+            // an empty chapter forwards whatever entered it.
+            let leaving = obs.chars().last().or(*entering);
+            (
+                Reduced {
+                    entering: *entering,
+                    content: obs.clone(),
+                },
+                leaving,
+            )
+        }
+        fn finish_book(_: &Option<char>, _: &mut Reduced) {}
+        fn fold_book(reduced: &[Reduced]) -> String {
+            render(reduced)
+        }
+        fn replace_book_in_corpus_stats(
+            stats: &mut Vec<(String, String)>,
+            slug: &str,
+            _: Option<&String>,
+            new: Option<&String>,
+        ) -> Vec<String> {
+            stats.retain(|(s, _)| s != slug);
+            if let Some(new) = new {
+                stats.push((slug.to_string(), new.clone()));
+            }
+            vec![slug.to_string()]
+        }
+        fn judge(_: &(), _: &String, _: &Vec<(String, String)>) {}
+    }
+
+    /// Drive one book through the generic driver. `chapters` are
+    /// `(opaque token, content)`; the stamp's chapter hash is the content's, so
+    /// editing a chapter's content is exactly what marks its observation stale.
+    fn drive<S>(cache: &mut SubstrateCache<S>, slug: &str, chapters: &[(&str, &str)])
+    where
+        S: ObservationSubstrate<ChapterObservation = String, ExtractorConfig = ()>,
+    {
+        let stamped: Vec<(Box<str>, ObservationInputStamp)> = chapters
+            .iter()
+            .map(|(token, content)| {
+                (
+                    Box::from(*token),
+                    ObservationInputStamp {
+                        schema_stamp: S::SCHEMA_STAMP,
+                        chapter_hash: content
+                            .bytes()
+                            .fold(1u128, |h, b| h.wrapping_mul(31).wrapping_add(u128::from(b))),
+                        extractor_fp: S::extractor_fp(&()),
+                    },
+                )
+            })
+            .collect();
+        let texts: Vec<Vec<String>> = chapters
+            .iter()
+            .map(|(_, c)| vec![(*c).to_string()])
+            .collect();
+        cache.update_book(slug, &stamped, |i| {
+            S::map_chapter(
+                &ChapterView {
+                    chapter: chapters[i].0,
+                    texts: &texts[i],
+                },
+                &(),
+            )
+        });
+    }
+
+    /// The resident cache's book contribution must equal a cold build's. This is
+    /// the property every replay test asserts alongside its work probes: probes
+    /// prove the driver did little, this proves it did enough.
+    fn assert_equals_cold<S>(resident: &SubstrateCache<S>, slug: &str, chapters: &[(&str, &str)])
+    where
+        S: ObservationSubstrate<ChapterObservation = String, ExtractorConfig = ()>,
+        S::BookContribution: std::fmt::Debug,
+    {
+        let mut cold: SubstrateCache<S> = SubstrateCache::new();
+        drive(&mut cold, slug, chapters);
+        assert_eq!(
+            resident.book_contribution(slug),
+            cold.book_contribution(slug),
+            "resident replay differs from a cold whole-book build"
+        );
+    }
+
+    /// Boundary state `()`: a changed chapter leaves the same (empty) state, so
+    /// the replay stops at the chapter it started on.
+    #[test]
+    fn empty_state_stops_at_the_changed_chapter() {
+        let mut cache: SubstrateCache<Local> = SubstrateCache::new();
+        let cold = [("1", "aa"), ("2", "bb"), ("3", "cc"), ("4", "dd")];
+        drive(&mut cache, "GEN", &cold);
+        assert_eq!((cache.mapped, cache.reduced), (4, 4), "cold does every chapter");
+
+        cache.reset_probes();
+        let edited = [("1", "aa"), ("2", "BB"), ("3", "cc"), ("4", "dd")];
+        drive(&mut cache, "GEN", &edited);
+        assert_eq!(cache.mapped, 1, "only the changed chapter is mapped");
+        assert_eq!(cache.reduced, 1, "an empty boundary state converges at once");
+        assert_equals_cold(&cache, "GEN", &edited);
+    }
+
+    /// A changed carry converges at the next chapter: chapter 2's content — and
+    /// so the state it leaves — changed, chapter 3 absorbs the new carry and
+    /// leaves the same state it left before.
+    #[test]
+    fn a_changed_carry_converges_at_the_next_chapter() {
+        let mut cache: SubstrateCache<Carry> = SubstrateCache::new();
+        let cold = [("1", "aa"), ("2", "bb"), ("3", "cc"), ("4", "dd")];
+        drive(&mut cache, "GEN", &cold);
+
+        cache.reset_probes();
+        let edited = [("1", "aa"), ("2", "bx"), ("3", "cc"), ("4", "dd")];
+        drive(&mut cache, "GEN", &edited);
+        assert_eq!(cache.mapped, 1, "only the changed chapter is mapped");
+        assert_eq!(
+            cache.reduced, 2,
+            "chapter 2 leaves a new carry; chapter 3 absorbs it and converges"
+        );
+        assert_equals_cold(&cache, "GEN", &edited);
+    }
+
+    /// The carry survives several pass-through (empty) chapters, so convergence
+    /// lands well beyond the changed chapter — and the intervening chapters are
+    /// re-reduced from their CACHED observations, never re-mapped.
+    #[test]
+    fn a_changed_carry_converges_after_several_chapters() {
+        let mut cache: SubstrateCache<Carry> = SubstrateCache::new();
+        let cold = [
+            ("1", "aa"),
+            ("2", "bb"),
+            ("3", ""),
+            ("4", ""),
+            ("5", ""),
+            ("6", "ff"),
+            ("7", "gg"),
+        ];
+        drive(&mut cache, "GEN", &cold);
+
+        cache.reset_probes();
+        let edited = [
+            ("1", "aa"),
+            ("2", "bx"),
+            ("3", ""),
+            ("4", ""),
+            ("5", ""),
+            ("6", "ff"),
+            ("7", "gg"),
+        ];
+        drive(&mut cache, "GEN", &edited);
+        assert_eq!(
+            cache.mapped, 1,
+            "a changed carry never re-maps an unchanged chapter's observation"
+        );
+        assert_eq!(
+            cache.reduced, 5,
+            "chapters 2..6 replay; chapter 6 has content, absorbs the carry and converges"
+        );
+        assert_equals_cold(&cache, "GEN", &edited);
+    }
+
+    /// Nothing absorbs the changed carry, so the replay legitimately runs to the
+    /// book's end. It still maps exactly the one changed chapter — the plan's
+    /// "one changed chapter maps exactly one chapter even when ordered reduction
+    /// reaches book end".
+    #[test]
+    fn a_changed_carry_may_converge_only_at_book_end() {
+        let mut cache: SubstrateCache<Carry> = SubstrateCache::new();
+        let cold = [("1", "aa"), ("2", "bb"), ("3", ""), ("4", ""), ("5", "")];
+        drive(&mut cache, "GEN", &cold);
+
+        cache.reset_probes();
+        let edited = [("1", "aa"), ("2", "bx"), ("3", ""), ("4", ""), ("5", "")];
+        drive(&mut cache, "GEN", &edited);
+        assert_eq!(
+            cache.mapped, 1,
+            "one changed chapter maps exactly one chapter, however far the reduction runs"
+        );
+        assert_eq!(
+            cache.reduced, 4,
+            "no later chapter absorbs the carry, so the replay runs to the book's end"
+        );
+        assert_equals_cold(&cache, "GEN", &edited);
+    }
+
+    /// An unchanged re-drive does nothing at all: no map, no reduce. The
+    /// whole-book-unchanged path must put the book back byte-for-byte.
+    #[test]
+    fn an_unchanged_book_maps_and_reduces_nothing() {
+        let mut cache: SubstrateCache<Carry> = SubstrateCache::new();
+        let cold = [("1", "aa"), ("2", "bb"), ("3", "cc")];
+        drive(&mut cache, "GEN", &cold);
+        let after_cold = cache.book_contribution("GEN").cloned();
+
+        cache.reset_probes();
+        drive(&mut cache, "GEN", &cold);
+        assert_eq!((cache.mapped, cache.reduced), (0, 0));
+        assert_eq!(cache.book_contribution("GEN").cloned(), after_cold);
+    }
+
+    /// A chapter that merely MOVES carries its observation with it: mapping is
+    /// predecessor-free, so a reordered book re-reduces but re-maps nothing.
+    #[test]
+    fn a_moved_chapter_is_re_reduced_but_never_re_mapped() {
+        let mut cache: SubstrateCache<Carry> = SubstrateCache::new();
+        let cold = [("1", "aa"), ("2", "bb"), ("3", "cc")];
+        drive(&mut cache, "GEN", &cold);
+
+        cache.reset_probes();
+        let moved = [("1", "aa"), ("3", "cc"), ("2", "bb")];
+        drive(&mut cache, "GEN", &moved);
+        assert_eq!(cache.mapped, 0, "a moved chapter's observation is position-independent");
+        assert!(cache.reduced >= 2, "the reordered suffix is re-reduced");
+        assert_equals_cold(&cache, "GEN", &moved);
+    }
+
+    /// Chapter insertion and removal reshape the book: the driver must re-reduce
+    /// to the book's end (positions shifted and the book edge moved) while still
+    /// mapping only genuinely new content.
+    #[test]
+    fn chapter_insertion_and_removal_stay_equal_to_cold() {
+        let mut cache: SubstrateCache<Carry> = SubstrateCache::new();
+        let cold = [("1", "aa"), ("2", "bb"), ("3", "cc")];
+        drive(&mut cache, "GEN", &cold);
+
+        cache.reset_probes();
+        let inserted = [("1", "aa"), ("1b", "xx"), ("2", "bb"), ("3", "cc")];
+        drive(&mut cache, "GEN", &inserted);
+        assert_eq!(cache.mapped, 1, "only the inserted chapter is mapped");
+        assert_equals_cold(&cache, "GEN", &inserted);
+
+        cache.reset_probes();
+        let removed = [("1", "aa"), ("2", "bb")];
+        drive(&mut cache, "GEN", &removed);
+        assert_eq!(cache.mapped, 0, "removal maps nothing");
+        assert_equals_cold(&cache, "GEN", &removed);
+    }
+
+    /// The property test (plan §12.6 shape): a resident cache driven through a
+    /// deterministic pseudo-random edit sequence equals a cold build at every
+    /// step, and never maps a chapter whose content did not change.
+    #[test]
+    fn resident_equals_cold_under_randomized_edit_sequences() {
+        let mut cache: SubstrateCache<Carry> = SubstrateCache::new();
+        // Chapters carry content or are empty (pass-through) so the generated
+        // edits exercise short, long, and book-end convergence distances.
+        let tokens = ["1", "2", "3", "4", "5", "6", "7", "8"];
+        let mut contents: Vec<String> =
+            tokens.iter().map(|t| format!("{t}x")).collect();
+        let mut rng = 0x2545_F491_4F6C_DD1Du64;
+        // Seed cold, so every later step measures incremental work only.
+        let next = |rng: &mut u64| {
+            *rng ^= *rng << 13;
+            *rng ^= *rng >> 7;
+            *rng ^= *rng << 17;
+            *rng
+        };
+        {
+            let seed: Vec<(&str, &str)> = tokens
+                .iter()
+                .enumerate()
+                .map(|(i, t)| (*t, contents[i].as_str()))
+                .collect();
+            drive(&mut cache, "GEN", &seed);
+        }
+        for step in 0..120 {
+            let which = (next(&mut rng) % tokens.len() as u64) as usize;
+            let kind = next(&mut rng) % 3;
+            contents[which] = match kind {
+                0 => String::new(),              // becomes a pass-through chapter
+                1 => format!("{which}{step}"),   // new content, new trailing char
+                _ => format!("{step}{which}"),   // new content, same trailing char
+            };
+            let chapters: Vec<(&str, &str)> = tokens
+                .iter()
+                .enumerate()
+                .map(|(i, t)| (*t, contents[i].as_str()))
+                .collect();
+            let before = cache.mapped;
+            drive(&mut cache, "GEN", &chapters);
+            assert!(
+                cache.mapped - before <= 1,
+                "step {step}: one edited chapter must map at most one chapter"
+            );
+            assert_equals_cold(&cache, "GEN", &chapters);
+        }
+    }
+
+    /// A substrate with **owner-routed carry**: a chapter can leave behind an
+    /// unresolved item that belongs to *it*, and a later chapter resolves that
+    /// item by folding the resolution back into the owner's reduced result. This
+    /// is spacing's real shape (a trailing mark whose neighbour lands in a later
+    /// chapter, possibly across an all-empty one), reduced to its essentials —
+    /// content ending in `!` buffers an item; content starting with `+` resolves
+    /// a carried one.
+    struct Owned;
+
+    /// `Owned`'s observation has to carry its own chapter token: the item it
+    /// buffers belongs to this chapter, and reduction is the only place that
+    /// identity can be attached.
+    #[derive(Clone, PartialEq, Eq)]
+    struct TokenedObs {
+        token: Box<str>,
+        content: String,
+    }
+
+    #[derive(Clone, Debug, Default, PartialEq, Eq)]
+    struct OwnedReduced {
+        content: String,
+        /// Resolutions folded in from LATER chapters. Losing one, or folding one
+        /// in twice, changes the book contribution — which is what makes the
+        /// replay window's start observable.
+        resolutions: usize,
+        /// Set when the book edge resolved this chapter's dangling item.
+        abstained: bool,
+    }
+
+    impl ObservationSubstrate for Owned {
+        const ID: SubstrateId = SubstrateId::Spacing;
+        const SCHEMA_STAMP: u64 = 3;
+        type Key = String;
+        type BoundaryState = Option<Box<str>>;
+        type ChapterObservation = TokenedObs;
+        type ReducedChapter = OwnedReduced;
+        type BookContribution = String;
+        type CorpusStats = Vec<(String, String)>;
+        type ExtractorConfig = ();
+        type JudgeConfig = ();
+        type EntryOutcome = ();
+
+        fn extractor_fp(_: &()) -> u64 {
+            0
+        }
+        fn map_chapter(chapter: &ChapterView<'_>, _: &()) -> TokenedObs {
+            TokenedObs {
+                token: Box::from(chapter.chapter),
+                content: chapter.texts.concat(),
+            }
+        }
+        fn pending_owner(state: &Option<Box<str>>) -> Option<&str> {
+            state.as_deref()
+        }
+        fn reduce_chapter(
+            obs: &TokenedObs,
+            entering: &Option<Box<str>>,
+            carry_out: &mut OwnedReduced,
+        ) -> (OwnedReduced, Option<Box<str>>) {
+            let mut pending = entering.clone();
+            if pending.is_some() && obs.content.starts_with('+') {
+                // Resolve the carried item into the chapter that OWNS it.
+                carry_out.resolutions += 1;
+                pending = None;
+            }
+            if obs.content.ends_with('!') {
+                pending = Some(obs.token.clone());
+            }
+            (
+                OwnedReduced {
+                    content: obs.content.clone(),
+                    resolutions: 0,
+                    abstained: false,
+                },
+                pending,
+            )
+        }
+        fn finish_book(_: &Option<Box<str>>, carry_out: &mut OwnedReduced) {
+            carry_out.abstained = true;
+        }
+        fn fold_book(reduced: &[OwnedReduced]) -> String {
+            reduced
+                .iter()
+                .map(|r| format!("<{}|{}|{}>", r.content, r.resolutions, r.abstained))
+                .collect()
+        }
+        fn replace_book_in_corpus_stats(
+            stats: &mut Vec<(String, String)>,
+            slug: &str,
+            _: Option<&String>,
+            new: Option<&String>,
+        ) -> Vec<String> {
+            stats.retain(|(s, _)| s != slug);
+            if let Some(new) = new {
+                stats.push((slug.to_string(), new.clone()));
+            }
+            vec![slug.to_string()]
+        }
+        fn judge(_: &(), _: &String, _: &Vec<(String, String)>) {}
+    }
+
+    /// Drive one book of the owner-routed substrate.
+    fn drive_owned(cache: &mut SubstrateCache<Owned>, slug: &str, chapters: &[(&str, &str)]) {
+        let stamped: Vec<(Box<str>, ObservationInputStamp)> = chapters
+            .iter()
+            .map(|(token, content)| {
+                (
+                    Box::from(*token),
+                    ObservationInputStamp {
+                        schema_stamp: Owned::SCHEMA_STAMP,
+                        chapter_hash: content
+                            .bytes()
+                            .fold(1u128, |h, b| h.wrapping_mul(31).wrapping_add(u128::from(b))),
+                        extractor_fp: 0,
+                    },
+                )
+            })
+            .collect();
+        let texts: Vec<Vec<String>> = chapters
+            .iter()
+            .map(|(_, c)| vec![(*c).to_string()])
+            .collect();
+        cache.update_book(slug, &stamped, |i| {
+            Owned::map_chapter(
+                &ChapterView {
+                    chapter: chapters[i].0,
+                    texts: &texts[i],
+                },
+                &(),
+            )
+        });
+    }
+
+    fn assert_owned_equals_cold(
+        resident: &SubstrateCache<Owned>,
+        slug: &str,
+        chapters: &[(&str, &str)],
+    ) {
+        let mut cold: SubstrateCache<Owned> = SubstrateCache::new();
+        drive_owned(&mut cold, slug, chapters);
+        assert_eq!(
+            resident.book_contribution(slug),
+            cold.book_contribution(slug),
+            "resident replay differs from a cold whole-book build"
+        );
+    }
+
+    /// The replay window must start at the chapter that OWNS a carried item, not
+    /// at the earliest changed chapter: the owner's reduced result is rebuilt from
+    /// nothing, so the resolution has to fold into it again. Starting later either
+    /// drops the resolution or folds it into a cached result that already holds it.
+    #[test]
+    fn the_replay_window_starts_at_the_owner_of_a_carried_item() {
+        let mut cache: SubstrateCache<Owned> = SubstrateCache::new();
+        let cold = [("1", "a!"), ("2", "+b"), ("3", "c")];
+        drive_owned(&mut cache, "GEN", &cold);
+
+        // Edit chapter 2 — the chapter that RESOLVES chapter 1's item.
+        cache.reset_probes();
+        let edited = [("1", "a!"), ("2", "+bb"), ("3", "c")];
+        drive_owned(&mut cache, "GEN", &edited);
+        assert_eq!(cache.mapped, 1, "only the edited chapter is mapped");
+        assert!(
+            cache.reduced >= 2,
+            "the replay reaches back to the owning chapter, so it reduces at least two"
+        );
+        assert_owned_equals_cold(&cache, "GEN", &edited);
+    }
+
+    /// The owner can sit behind chapters that neither buffer nor resolve
+    /// anything — the all-empty-chapter case Entry 19's spacing fix pinned. The
+    /// window still reaches back to the owner.
+    #[test]
+    fn the_owner_is_found_across_intervening_chapters() {
+        let mut cache: SubstrateCache<Owned> = SubstrateCache::new();
+        let cold = [("1", "a!"), ("2", ""), ("3", ""), ("4", "+d"), ("5", "e")];
+        drive_owned(&mut cache, "GEN", &cold);
+
+        cache.reset_probes();
+        let edited = [("1", "a!"), ("2", ""), ("3", ""), ("4", "+dd"), ("5", "e")];
+        drive_owned(&mut cache, "GEN", &edited);
+        assert_eq!(cache.mapped, 1);
+        assert_owned_equals_cold(&cache, "GEN", &edited);
+    }
+
+    /// A dangling item at the book edge is resolved by `finish_book` into its
+    /// owner. A replay that converges early must not do that twice, and a replay
+    /// that reaches the end must do it exactly once.
+    #[test]
+    fn the_book_edge_resolution_happens_exactly_once() {
+        let mut cache: SubstrateCache<Owned> = SubstrateCache::new();
+        let cold = [("1", "a"), ("2", "b"), ("3", "c!")];
+        drive_owned(&mut cache, "GEN", &cold);
+        assert_owned_equals_cold(&cache, "GEN", &cold);
+
+        // Edit the first chapter: the replay converges immediately (nothing is
+        // carried), so the cached book-edge resolution must stay put.
+        cache.reset_probes();
+        let edited = [("1", "aa"), ("2", "b"), ("3", "c!")];
+        drive_owned(&mut cache, "GEN", &edited);
+        assert_eq!(cache.reduced, 1, "nothing is carried, so it converges at once");
+        assert_owned_equals_cold(&cache, "GEN", &edited);
+
+        // Edit the dangling chapter itself: the replay reaches the book edge.
+        cache.reset_probes();
+        let edited2 = [("1", "aa"), ("2", "b"), ("3", "cc!")];
+        drive_owned(&mut cache, "GEN", &edited2);
+        assert_owned_equals_cold(&cache, "GEN", &edited2);
+    }
+
+    /// The owner-routed property test: randomized edits over a book whose
+    /// chapters buffer, resolve, pass through, or do neither.
+    #[test]
+    fn owner_routed_resident_equals_cold_under_randomized_edits() {
+        let mut cache: SubstrateCache<Owned> = SubstrateCache::new();
+        let tokens = ["1", "2", "3", "4", "5", "6"];
+        let shapes = ["a!", "+b", "", "c", "+d!", "e!"];
+        let mut contents: Vec<String> = shapes.iter().map(|s| (*s).to_string()).collect();
+        let mut rng = 0x9E37_79B9_7F4A_7C15u64;
+        let next = |rng: &mut u64| {
+            *rng ^= *rng << 13;
+            *rng ^= *rng >> 7;
+            *rng ^= *rng << 17;
+            *rng
+        };
+        {
+            let seed: Vec<(&str, &str)> = tokens
+                .iter()
+                .enumerate()
+                .map(|(i, t)| (*t, contents[i].as_str()))
+                .collect();
+            drive_owned(&mut cache, "GEN", &seed);
+        }
+        for step in 0..150 {
+            let which = (next(&mut rng) % tokens.len() as u64) as usize;
+            let shape = (next(&mut rng) % 5) as usize;
+            contents[which] = match shape {
+                0 => format!("{step}!"),
+                1 => format!("+{step}"),
+                2 => String::new(),
+                3 => format!("+{step}!"),
+                _ => format!("{step}"),
+            };
+            let chapters: Vec<(&str, &str)> = tokens
+                .iter()
+                .enumerate()
+                .map(|(i, t)| (*t, contents[i].as_str()))
+                .collect();
+            let before = cache.mapped;
+            drive_owned(&mut cache, "GEN", &chapters);
+            assert!(
+                cache.mapped - before <= 1,
+                "step {step}: one edited chapter must map at most one chapter"
+            );
+            assert_owned_equals_cold(&cache, "GEN", &chapters);
+        }
     }
 }
