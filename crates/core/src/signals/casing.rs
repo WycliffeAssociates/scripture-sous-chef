@@ -184,32 +184,107 @@ impl ForcedTally {
     }
 }
 
+/// One boundary class's forced first-letter tallies for one word: the class's
+/// `(mark, quoted)` identity beside its counts. 16 bytes, `Copy`, no interior
+/// allocation — the flat-list element that replaced two
+/// `BTreeMap<char, ForcedTally>`s per word (see [`WordStats`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Forced {
+    mark: char,
+    quoted: bool,
+    tally: ForcedTally,
+}
+
 /// One word's raw case tallies within one book. Mid-flow upper/lower (the
-/// intrinsic profile), forced upper/lower split by the *bare* terminal glyph
-/// (`after_glyph`) and by the *quote-context* glyph (`after_quote`, the `."`
-/// classes ADR 0051 discarded to mid-flow), and book-initial. All raw — no
-/// censoring, no trust — so book-supersede holds.
+/// intrinsic profile), forced upper/lower per boundary class — split by the
+/// *bare* terminal glyph and by the *quote-context* glyph (the `."` classes
+/// ADR 0051 discarded to mid-flow) — and book-initial. All raw — no censoring,
+/// no trust — so book-supersede holds.
+///
+/// The forced tallies are **one flat list sorted by `(quoted, mark)`**, not two
+/// maps. Two reasons, both measured:
+///
+/// - *Bytes.* A word is seen at ~2 boundary classes and the overwhelming
+///   majority of word types are seen at none at all (forced positions occur
+///   once per sentence, not once per word), so two empty `BTreeMap`s were 48
+///   bytes of dead inline weight on every one of an English Bible's 265,207
+///   per-chapter word entries, plus a full B-tree leaf node (~152 bytes) for
+///   each of the ~48,000 that did have one.
+/// - *Order.* The sort key is `(quoted, mark)` precisely because `false < true`
+///   makes the list iterate bare-glyph classes in mark order and *then*
+///   quote-context classes in mark order — byte-for-byte the sequence the two
+///   maps produced. That is load-bearing, not cosmetic:
+///   [`Model::effective_upper`] sums `f64` discounts in this order and float
+///   addition is not associative (see [`Model::build`]).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct WordStats {
     mid_upper: u32,
     mid_lower: u32,
     book_initial: ForcedTally,
-    after_glyph: BTreeMap<char, ForcedTally>,
-    after_quote: BTreeMap<char, ForcedTally>,
+    forced: Vec<Forced>,
 }
 
 impl WordStats {
+    /// This word's tally slot for one boundary class, inserted in
+    /// `(quoted, mark)` order on first sight. Linear/binary over a handful of
+    /// entries — the fleet's widest chapter holds 26 distinct classes in total
+    /// and a single word sees ~2 — so a sorted flat list beats any map here.
+    fn forced_slot(&mut self, mark: char, quoted: bool) -> &mut ForcedTally {
+        match self
+            .forced
+            .binary_search_by(|f| (f.quoted, f.mark).cmp(&(quoted, mark)))
+        {
+            Ok(i) => &mut self.forced[i].tally,
+            Err(i) => {
+                self.forced.insert(
+                    i,
+                    Forced {
+                        mark,
+                        quoted,
+                        tally: ForcedTally::default(),
+                    },
+                );
+                &mut self.forced[i].tally
+            }
+        }
+    }
+
+    /// The bare-terminal classes, in mark order — the old `after_glyph`.
+    fn bare(&self) -> impl Iterator<Item = (char, &ForcedTally)> + '_ {
+        self.forced
+            .iter()
+            .filter(|f| !f.quoted)
+            .map(|f| (f.mark, &f.tally))
+    }
+
+    /// The quote-context classes, in mark order — the old `after_quote`.
+    fn quoted(&self) -> impl Iterator<Item = (char, &ForcedTally)> + '_ {
+        self.forced
+            .iter()
+            .filter(|f| f.quoted)
+            .map(|f| (f.mark, &f.tally))
+    }
+
+    /// Release the list's growth slack. Called at the two points a table stops
+    /// growing and starts being *retained* — a chapter's observation and a
+    /// book's folded table — because a warm session holds hundreds of thousands
+    /// of these and a `Vec`'s doubling slack would otherwise be resident for
+    /// the whole session (the same accounting that boxed the outer tables).
+    /// The judge model's own table is deliberately left unsealed: it is rebuilt
+    /// whenever the aggregate moves, so its slack never accumulates and its
+    /// merge wants the amortized growth.
+    fn seal(&mut self) {
+        self.forced.shrink_to_fit();
+    }
+
     /// Sum another book's counts for the same word into this (corpus-wide
     /// aggregation at judge).
     fn add(&mut self, o: &WordStats) {
         self.mid_upper += o.mid_upper;
         self.mid_lower += o.mid_lower;
         self.book_initial.add(&o.book_initial);
-        for (g, t) in &o.after_glyph {
-            self.after_glyph.entry(*g).or_default().add(t);
-        }
-        for (g, t) in &o.after_quote {
-            self.after_quote.entry(*g).or_default().add(t);
+        for f in &o.forced {
+            self.forced_slot(f.mark, f.quoted).add(&f.tally);
         }
     }
 
@@ -221,12 +296,7 @@ impl WordStats {
             (PosClass::BookInitial, Case::Upper) => self.book_initial.upper += 1,
             (PosClass::BookInitial, Case::Lower) => self.book_initial.lower += 1,
             (PosClass::ForcedAfterTerminal(ck), c) => {
-                let map = if ck.quoted {
-                    &mut self.after_quote
-                } else {
-                    &mut self.after_glyph
-                };
-                let t = map.entry(ck.mark).or_default();
+                let t = self.forced_slot(ck.mark, ck.quoted);
                 match c {
                     Case::Upper => t.upper += 1,
                     Case::Lower => t.lower += 1,
@@ -241,38 +311,19 @@ impl WordStats {
         self.mid_upper > 0
             || self.mid_lower > 0
             || self.book_initial.total() > 0
-            || self.after_glyph.values().any(|t| t.total() > 0)
-            || self.after_quote.values().any(|t| t.total() > 0)
+            || self.forced.iter().any(|f| f.tally.total() > 0)
     }
 
     // ── Fold-invariant raw sums (position labels don't affect these). ────────
     fn all_upper(&self) -> u64 {
         u64::from(self.mid_upper)
             + self.book_initial.upper()
-            + self
-                .after_glyph
-                .values()
-                .map(ForcedTally::upper)
-                .sum::<u64>()
-            + self
-                .after_quote
-                .values()
-                .map(ForcedTally::upper)
-                .sum::<u64>()
+            + self.forced.iter().map(|f| f.tally.upper()).sum::<u64>()
     }
     fn all_lower(&self) -> u64 {
         u64::from(self.mid_lower)
             + self.book_initial.lower()
-            + self
-                .after_glyph
-                .values()
-                .map(ForcedTally::lower)
-                .sum::<u64>()
-            + self
-                .after_quote
-                .values()
-                .map(ForcedTally::lower)
-                .sum::<u64>()
+            + self.forced.iter().map(|f| f.tally.lower()).sum::<u64>()
     }
     fn all_total(&self) -> u64 {
         self.all_upper() + self.all_lower()
@@ -285,7 +336,7 @@ impl WordStats {
     fn baseline_mid(&self) -> (u64, u64) {
         let mut up = u64::from(self.mid_upper);
         let mut lo = u64::from(self.mid_lower);
-        for t in self.after_quote.values() {
+        for (_, t) in self.quoted() {
             up += t.upper();
             lo += t.lower();
         }
@@ -404,28 +455,20 @@ fn build_trust(words: &FxHashMap<Arc<str>, WordStats>, z: f64) -> FxHashMap<Clas
             continue;
         }
         *word_start_total.entry(key).or_default() += total;
-        for (m, t) in &w.after_glyph {
-            if t.total() > 0 {
+        // Bare classes then quote classes, each in mark order — the flat list's
+        // own order, which is exactly what the two maps produced, so `after`'s
+        // insertion sequence (and every hash iteration derived from it) is
+        // unchanged.
+        for f in &w.forced {
+            if f.tally.total() > 0 {
                 *after
                     .entry(ClassKey {
-                        mark: *m,
-                        quoted: false,
+                        mark: f.mark,
+                        quoted: f.quoted,
                     })
                     .or_default()
                     .entry(key)
-                    .or_default() += t.total();
-            }
-        }
-        for (m, t) in &w.after_quote {
-            if t.total() > 0 {
-                *after
-                    .entry(ClassKey {
-                        mark: *m,
-                        quoted: true,
-                    })
-                    .or_default()
-                    .entry(key)
-                    .or_default() += t.total();
+                    .or_default() += f.tally.total();
             }
         }
     }
@@ -452,25 +495,15 @@ fn build_trust(words: &FxHashMap<Arc<str>, WordStats>, z: f64) -> FxHashMap<Clas
         if !w.is_lexicon_lower(z) {
             continue;
         }
-        for (m, t) in &w.after_glyph {
+        for f in &w.forced {
             let e = w1
                 .entry(ClassKey {
-                    mark: *m,
-                    quoted: false,
+                    mark: f.mark,
+                    quoted: f.quoted,
                 })
                 .or_default();
-            e.0 += t.upper();
-            e.1 += t.total();
-        }
-        for (m, t) in &w.after_quote {
-            let e = w1
-                .entry(ClassKey {
-                    mark: *m,
-                    quoted: true,
-                })
-                .or_default();
-            e.0 += t.upper();
-            e.1 += t.total();
+            e.0 += f.tally.upper();
+            e.1 += f.tally.total();
         }
     }
 
@@ -618,21 +651,18 @@ impl Model {
                 e.0 += w.book_initial.upper();
                 e.1 += w.book_initial.total();
             }
-            for (m, t) in &w.after_glyph {
+            for (m, t) in w.bare() {
                 let e = habit
                     .entry(Some(ClassKey {
-                        mark: *m,
+                        mark: m,
                         quoted: false,
                     }))
                     .or_default();
                 e.0 += t.upper();
                 e.1 += t.total();
             }
-            for (m, t) in &w.after_quote {
-                let ck = ClassKey {
-                    mark: *m,
-                    quoted: true,
-                };
+            for (m, t) in w.quoted() {
+                let ck = ClassKey { mark: m, quoted: true };
                 if trust.get(&ck).copied().unwrap_or(0.0) > PROMOTE_BAR {
                     let e = habit.entry(Some(ck)).or_default();
                     e.0 += t.upper();
@@ -673,8 +703,8 @@ impl Model {
     fn eff_mid(&self, w: &WordStats) -> (u64, u64) {
         let mut up = u64::from(w.mid_upper);
         let mut lo = u64::from(w.mid_lower);
-        for (m, t) in &w.after_quote {
-            if !self.quote_promoted(*m) {
+        for (m, t) in w.quoted() {
+            if !self.quote_promoted(m) {
                 up += t.upper();
                 lo += t.lower();
             }
@@ -692,22 +722,23 @@ impl Model {
         if w.book_initial.upper > 0 {
             up += (1.0 - self.habit_dominance(None)) * f64::from(w.book_initial.upper);
         }
-        for (m, t) in &w.after_glyph {
+        // Bare classes in mark order, then promoted quote classes in mark order.
+        // This `f64` accumulation order is the load-bearing one (see
+        // [`WordStats`]): float addition is not associative, so the flat list's
+        // `(quoted, mark)` sort is what keeps every score bit-identical.
+        for (m, t) in w.bare() {
             if t.upper > 0 {
                 let ck = ClassKey {
-                    mark: *m,
+                    mark: m,
                     quoted: false,
                 };
                 let discount = 1.0 - self.trust_class(ck) * self.habit_dominance(Some(ck));
                 up += discount * f64::from(t.upper);
             }
         }
-        for (m, t) in &w.after_quote {
-            if t.upper > 0 && self.quote_promoted(*m) {
-                let ck = ClassKey {
-                    mark: *m,
-                    quoted: true,
-                };
+        for (m, t) in w.quoted() {
+            if t.upper > 0 && self.quote_promoted(m) {
+                let ck = ClassKey { mark: m, quoted: true };
                 let discount = 1.0 - self.trust_class(ck) * self.habit_dominance(Some(ck));
                 up += discount * f64::from(t.upper);
             }
@@ -720,9 +751,9 @@ impl Model {
     /// lowercase folded into the mid-flow pool).
     fn forced_lower(&self, w: &WordStats) -> u64 {
         let mut lo = w.book_initial.lower();
-        lo += self.after_glyph_sum(w, ForcedTally::lower);
-        for (m, t) in &w.after_quote {
-            if self.quote_promoted(*m) {
+        lo += self.bare_sum(w, ForcedTally::lower);
+        for (m, t) in w.quoted() {
+            if self.quote_promoted(m) {
                 lo += t.lower();
             }
         }
@@ -731,17 +762,17 @@ impl Model {
 
     fn forced_total(&self, w: &WordStats) -> u64 {
         let mut n = w.book_initial.total();
-        n += self.after_glyph_sum(w, ForcedTally::total);
-        for (m, t) in &w.after_quote {
-            if self.quote_promoted(*m) {
+        n += self.bare_sum(w, ForcedTally::total);
+        for (m, t) in w.quoted() {
+            if self.quote_promoted(m) {
                 n += t.total();
             }
         }
         n
     }
 
-    fn after_glyph_sum(&self, w: &WordStats, f: fn(&ForcedTally) -> u64) -> u64 {
-        w.after_glyph.values().map(f).sum()
+    fn bare_sum(&self, w: &WordStats, f: fn(&ForcedTally) -> u64) -> u64 {
+        w.bare().map(|(_, t)| f(t)).sum()
     }
 
     fn is_cap_soft(&self, w: &WordStats) -> bool {
@@ -1311,7 +1342,13 @@ impl ChapterAcc {
         }
     }
 
-    fn finish(self, token: &str, symbols: &WordInterner) -> CasingChapterObs {
+    fn finish(mut self, token: &str, symbols: &WordInterner) -> CasingChapterObs {
+        // The chapter's tallies stop growing here and start being retained, so
+        // each word's forced list releases its growth slack (see
+        // `WordStats::seal`).
+        for t in &mut self.tallies {
+            t.seal();
+        }
         CasingChapterObs {
             token: Box::from(token),
             // Boxed, not `Vec`: these three are built once by the walk and never
@@ -1570,10 +1607,11 @@ impl crate::substrate::ObservationSubstrate for CasingSubstrate {
         let words: BookWords = order
             .iter()
             .map(|&i| {
-                (
-                    Arc::clone(&resolved[i as usize]),
-                    tallies[i as usize].clone(),
-                )
+                let mut w = tallies[i as usize].clone();
+                // Retained in the corpus aggregate from here on — seal its
+                // forced list (see `WordStats::seal`).
+                w.seal();
+                (Arc::clone(&resolved[i as usize]), w)
             })
             .collect();
         let chapters = reduced
@@ -1962,6 +2000,55 @@ fn site_span(site: &LowerSite) -> Span {
         start: site.start,
         end: site.end,
     }
+}
+
+/// The widest field extents one corpus's casing segmentation produces:
+/// `(max words in one verse, max distinct word types in one chapter, max
+/// distinct boundary classes in one chapter)`. Measured through the exact
+/// [`compound_words`] segmentation and fold the map walk uses, so it is the
+/// segmentation's own answer rather than a proxy.
+///
+/// The site record's field widths are only sound while these stay inside their
+/// integer ceilings, and no corpus statistic predicts them — so the fleet is
+/// measured rather than assumed (`bench-probes` only; the shipped path proves
+/// the same bounds with checked constructors).
+#[cfg(feature = "bench-probes")]
+pub fn field_extent_probe(corpus: &Corpus) -> (usize, usize, usize) {
+    let texts = corpus.texts();
+    let mut max_words = 0usize;
+    let mut max_types = 0usize;
+    let mut max_classes = 0usize;
+    let mut words_buf = Vec::new();
+    let mut tokens_buf = Vec::new();
+    for book in corpus.book_layout() {
+        let mut book_initial = true;
+        for c in &book.chapters {
+            let mut types: FxHashMap<String, ()> = FxHashMap::default();
+            let mut classes: FxHashMap<PosClass, ()> = FxHashMap::default();
+            let mut pending: Option<Pending> = None;
+            for text in &texts[c.range.clone()] {
+                tokens_buf.clear();
+                crate::token::tokenize_into(text, &mut tokens_buf);
+                compound_words(text, &tokens_buf, &mut words_buf);
+                max_words = max_words.max(words_buf.len());
+                let mut prev_letter = false;
+                let mut cursor = 0usize;
+                for w in words_buf.iter().copied() {
+                    advance_gap(&text[cursor..w.start as usize], &mut pending, &mut prev_letter);
+                    let word = &text[w.start as usize..w.end as usize];
+                    types.insert(word.to_lowercase(), ());
+                    classes.insert(pos_of(book_initial, pending.take()), ());
+                    book_initial = false;
+                    prev_letter = word.chars().next_back().is_some_and(is_letter);
+                    cursor = w.end as usize;
+                }
+                advance_gap(&text[cursor..], &mut pending, &mut prev_letter);
+            }
+            max_types = max_types.max(types.len());
+            max_classes = max_classes.max(classes.len());
+        }
+    }
+    (max_words, max_types, max_classes)
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -2639,6 +2726,65 @@ mod tests {
             "the folded book table is keyed by words in string order, so it \
              cannot see which integers named them"
         );
+    }
+
+    /// The flat forced list iterates **every bare class in mark order, then
+    /// every quote class in mark order** — the exact sequence the two
+    /// `BTreeMap`s it replaced produced. `Model::effective_upper` sums `f64`
+    /// discounts in this order, and float addition is not associative, so this
+    /// is a correctness property and not a tidiness one.
+    #[test]
+    fn the_forced_list_iterates_bare_then_quote_each_in_mark_order() {
+        let mut w = WordStats::default();
+        // Recorded in a deliberately scrambled order.
+        for (mark, quoted) in [
+            ('.', true),
+            ('!', false),
+            ('?', true),
+            ('.', false),
+            ('!', true),
+            ('?', false),
+        ] {
+            w.record(
+                PosClass::ForcedAfterTerminal(ClassKey { mark, quoted }),
+                Case::Upper,
+            );
+        }
+        assert_eq!(
+            w.forced
+                .iter()
+                .map(|f| (f.mark, f.quoted))
+                .collect::<Vec<_>>(),
+            vec![
+                ('!', false),
+                ('.', false),
+                ('?', false),
+                ('!', true),
+                ('.', true),
+                ('?', true)
+            ]
+        );
+        assert_eq!(w.bare().map(|(m, _)| m).collect::<Vec<_>>(), vec!['!', '.', '?']);
+        assert_eq!(w.quoted().map(|(m, _)| m).collect::<Vec<_>>(), vec!['!', '.', '?']);
+        // A merge preserves it, and does not duplicate a class already present.
+        let mut other = WordStats::default();
+        other.record(
+            PosClass::ForcedAfterTerminal(ClassKey {
+                mark: ',',
+                quoted: false,
+            }),
+            Case::Lower,
+        );
+        other.record(
+            PosClass::ForcedAfterTerminal(ClassKey {
+                mark: '.',
+                quoted: false,
+            }),
+            Case::Lower,
+        );
+        w.add(&other);
+        assert_eq!(w.bare().map(|(m, _)| m).collect::<Vec<_>>(), vec!['!', ',', '.', '?']);
+        assert_eq!(w.bare().map(|(_, t)| t.total()).sum::<u64>(), 5);
     }
 
     fn reduce_one(
