@@ -45,7 +45,19 @@ fn build_config(name: &str) -> Config {
             }
             cfg
         }
-        other => panic!("unknown config {other:?} (want default|all)"),
+        // Every rule on EXCEPT punct.spacing-anomaly — its substrate then has no
+        // active consumer, so the cache retains none of its products. Paired with
+        // "all", the live-bytes difference after the cold seed IS the spacing
+        // substrate's retained footprint.
+        "all-no-spacing" => {
+            let mut cfg = Config::v1_defaults();
+            for &id in RuleId::ALL {
+                cfg.rules.insert(id, true);
+            }
+            cfg.rules.insert(RuleId::PunctuationSpacingAnomaly, false);
+            cfg
+        }
+        other => panic!("unknown config {other:?} (want default|all|all-no-spacing)"),
     }
 }
 

@@ -643,7 +643,7 @@ impl<S: ObservationSubstrate> SubstrateCache<S> {
             .zip(reduced)
             .zip(stamps)
             .map(
-                |(((( token, stamp), observation), reduced), reduced_stamp)| SubstrateChapter {
+                |((((token, stamp), observation), reduced), reduced_stamp)| SubstrateChapter {
                     token: token.clone(),
                     input_stamp: *stamp,
                     observation,
