@@ -3772,3 +3772,28 @@ revertible; the oracle is byte-identical at each. Phase E's `MixedCase` can adop
 the shared interner as-is (`type Symbols = WordInterner`, same instance). The
 open adjudication the owner now holds is (3) above: whether casing's ~11 ms
 per-analyze model rebuild gets a memo, a cheaper build, or is accepted.
+
+---
+
+## Entry 25 — Owner adjudications: WP6c accepted; retain-vs-rederive principle; WP7a scope
+
+- **Date:** 2026-07-25
+- **WP6c accepted:** the hybrid interner fix cleared its gate on honest terms
+  (allocations −90%, retained −30%, all-config at-or-better than both
+  references in 5/6 cells, default flat). Entry 23's §13 exception is
+  RESOLVED — and two-thirds of that "regression" was a measurement artifact
+  (the pre-WP6b arm's model memo was never defeated by the old harness's
+  punctuation-only edit variants; word-distinct edits put both architectures
+  at the same ~11 ms rebuild). The ~11 ms model rebuild on aggregate movement
+  is now the recorded headline cost of the all-config casing world; neither a
+  benchmark-only LRU nor an order-constrained rebuild rework is pursued now —
+  revisit with the full post-Phase-E profile.
+- **Retain-vs-rederive principle** recorded in plan §11 (see the plan text):
+  retain discourse-global bits, re-derive verse-local bits via cached
+  segmentation, materialize only judge-time failures through direct addresses.
+- **WP7a scope (owner go):** casing storage rework (6-byte ordinal site
+  records; per-chapter WordStats → dense slices indexed by chapter-key id;
+  book-level fold order preserved) + `MixedCase`, punctuation-adjacency, and
+  repeated-character-run migrations, each choosing its retain-vs-rederive
+  point and proving its boundary state from the listener code (stop-and-report
+  on surprising carry, per house precedent).

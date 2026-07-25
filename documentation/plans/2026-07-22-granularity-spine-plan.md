@@ -1269,6 +1269,19 @@ This table is a required execution register, not a prediction that may be
 ignored. Exact key/contribution/state names are finalized in the row's migration
 commit and recorded in progress.
 
+**Retain-vs-rederive principle (owner, 2026-07-25):** a substrate's retained
+per-site payload stores exactly the bits that need cross-verse/discourse
+context to recompute (e.g. casing's sentence-position class); bits that are
+verse-local and deterministic — spans, token offsets — are re-derived at
+materialization through the cached segmentation: indexed lookups, never
+re-walks. Aggregates (the counts judging needs) are always retained; site
+records are minimal direct addresses (per-chapter key id, verse, word ordinal,
+plus the context bits) at u16-clean field granularity; materialization touches
+only keys whose outcome fails or changes at judge time. This prices memory and
+speed together: retention pays rent in resident bytes and map-time allocation
+churn; re-derivation pays per-materialized-finding at cached-lookup prices.
+Each migration row chooses its point on this curve and records the choice.
+
 | rule(s) | current shape | target substrate/lane | initial key | boundary state | phase |
 | --- | --- | --- | --- | --- | --- |
 | excess whitespace; tab; controls; zero-width misuse; empty verse; invalid codepoint; replacement run; combining mark; mixed numerals; redundant ZWSP; source marker; merge conflict | per-verse direct | chapter-local direct partitions over shared prep | verse/site | `()` | C |
