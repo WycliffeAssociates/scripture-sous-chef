@@ -694,7 +694,7 @@ Examples:
 | substrate | boundary state | expected convergence |
 | --- | --- | --- |
 | chapter-local direct rules | `()` | changed chapter |
-| duplicate word | previous word/token address | normally next first token |
+| duplicate word | `()` — chapter-gated by design (ADR 0016 amendment) | changed chapter |
 | casing | pending terminal/position state | first unchanged equivalent exit state |
 | bracket pairing | unmatched opener stack | matching closer or book end |
 
@@ -1273,7 +1273,7 @@ commit and recorded in progress.
 | --- | --- | --- | --- | --- | --- |
 | excess whitespace; tab; controls; zero-width misuse; empty verse; invalid codepoint; replacement run; combining mark; mixed numerals; redundant ZWSP; source marker; merge conflict | per-verse direct | chapter-local direct partitions over shared prep | verse/site | `()` | C |
 | spacing anomaly | stateful | `SpacingSubstrate` | mark/attachment class | previous trailing-edge class + pending seam mark (code-proven carry) | C |
-| duplicate word | project token | `DuplicateWordSubstrate` | normalized adjacent word pair/site | previous relevant word | D |
+| duplicate word | project token | `DuplicateWordSubstrate` | normalized adjacent word pair/site | `()` — the shipped rule resets at every chapter boundary by design (ADR 0016 amendment; owner adjudication 2026-07-24) | D |
 | sentence-initial lowercase; inconsistent word casing | shared stateful counts | `CasingSubstrate`, two judges | word + position class as required | complete pending sentence/position state | D |
 | mixed-case word | stateful dense re-scan | `MixedCaseSubstrate` | normalized word | `()` | E |
 | punctuation adjacency | stateful | `AdjacencySubstrate` | punctuation sequence/class | prove from listener | E |
@@ -1349,7 +1349,8 @@ and oracle inputs, not checked-in fixtures.
   reaches book end;
 - empty state stops at changed chapter;
 - state converges at next chapter, after several chapters, and only book end;
-- duplicate word across chapter boundary;
+- a duplicate spanning a chapter boundary stays CLEAN (the rule is
+  chapter-gated by design — the negative case is the contract);
 - casing pending terminal across empty/nonletter and pericope-shaped chapters;
 - deep/crossed bracket stacks, closer convergence, unmatched to book end;
 - changed chapter boundaries via whole-book replacement invalidate/re-pair
@@ -1379,7 +1380,8 @@ and oracle inputs, not checked-in fixtures.
 ### 12.5 Stateful mutation transcript
 
 One realistic hand-built synthetic corpus: at least three books, several
-chapters, out-of-order verse tokens, duplicate keys, a cross-chapter duplicate,
+chapters, out-of-order verse tokens, duplicate keys, a cross-chapter duplicate
+(which must stay clean — the rule is chapter-gated by design),
 casing carry, bracket carry, and source-paired proportionality. Script:
 
 1. cold seed;

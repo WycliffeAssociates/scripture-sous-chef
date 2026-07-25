@@ -3115,3 +3115,30 @@ stop-safe step after it is **Phase D step 3** (the casing substrate and both
 casing judges) — which option (B) would promote ahead of duplicate word — and
 then **step 4** (the measurement close-out, including the replay-distance
 distribution this entry only sampled).
+
+---
+
+## Entry 22 — Owner adjudication: duplicate-word is chapter-gated by design; casing becomes the convergence exemplar
+
+- **Date:** 2026-07-24
+- **Trigger:** WP6a's step-2 stop clause — the shipped duplicate-word rule
+  deliberately resets its carry at every chapter boundary (rule doc, the
+  `Tail.chapter` gate in code, ADR 0016 amendment, and the shipped test
+  `duplicate_across_chapter_boundary_is_clean` all agree).
+- **Decision (owner, options A+B):** the plan's ledger row, §5.4 example, and
+  §12.3/§12.5 mentions are amended to `()` / negative-case wording — byte-
+  identical findings are the contract, and the gate is a deliberate shipped
+  adjudication, not a bug. Re-litigating the gate itself (option C) would be
+  a separate ADR'd behavior change with measured drift and a re-pinned
+  oracle; not this epic's business. Duplicate-word migrates as a cheap
+  chapter-local substrate in WP6b; **casing (Phase D step 3) becomes the
+  first real convergence consumer.**
+- **Also recorded from WP6a:** spacing gains no replay-distance win in real
+  scripture (the successor-deposit chain — a rebuilt chapter's contribution
+  has a hole only its successor's reduction fills, and real chapters end in
+  marks), so its window runs to book end at ~0.6 ms whole-book; a
+  resolution-memo hook is a parked proposal with a real design sketch. The
+  WP6a ladder win (−6.3% 3JN all) was deep-clone elimination, not
+  convergence. Spacing lane retained bytes: 13.25 MiB on WA-en-ulb
+  (~447 B/verse) — the ledger's retained-bytes column is now the standing
+  RAM watch across every migration.
