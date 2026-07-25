@@ -245,6 +245,16 @@ pub mod fault {
         }
     }
 
+    /// Is any fault currently armed on this thread? Cheap thread-local read.
+    /// The transition uses it to take its rollback clone ONLY when a fault
+    /// test is actually running — a `test-probes` build doing measurement
+    /// (the ladder, dhat) must not pay a deep `Stats` copy per analyze, or
+    /// every timing/allocation number silently measures the probe, not the
+    /// engine.
+    pub(crate) fn is_armed() -> bool {
+        ARMED.with(|c| c.get().is_some())
+    }
+
     /// Fire-once: returns `true` (and immediately disarms) the first time the
     /// armed phase is polled by the transition. Crate-internal — only the engine
     /// polls it, and the fire-once + guard-on-drop pair keep an armed fault from
@@ -881,10 +891,12 @@ fn transition(
     // counting itself now happens once, fused, above.
     // Test-only rollback copy: the judge fault fires AFTER judging and
     // provenance stamping, by which point `prior` is long consumed into the
-    // working stats. The clone exists only under test cfgs — release builds
-    // carry no copy and no judge failure path.
+    // working stats. Taken only while a fault is actually ARMED — a
+    // `test-probes` measurement build (ladder, dhat) never pays this deep
+    // copy, so its numbers measure the engine, not the probe. Release builds
+    // carry no copy and no judge failure path at all.
     #[cfg(any(test, feature = "test-probes"))]
-    let fault_rollback = prior.clone();
+    let fault_rollback: Option<Option<Stats>> = fault::is_armed().then(|| prior.clone());
 
     let mut stats = prior.unwrap_or_default();
 
@@ -1022,7 +1034,12 @@ fn transition(
     // consumed and nothing was published.
     #[cfg(any(test, feature = "test-probes"))]
     if fault::fires(fault::Phase::Judge) {
-        return Err((AnalyzeError { phase: "judge" }, fault_rollback));
+        // `fires()` implies a fault was armed when the rollback was taken, so
+        // the outer Option is always `Some` on this path.
+        return Err((
+            AnalyzeError { phase: "judge" },
+            fault_rollback.expect("judge fault fired, so a fault was armed"),
+        ));
     }
 
     // JUDGE done: record the coarse phase split for the warm-path harness.
