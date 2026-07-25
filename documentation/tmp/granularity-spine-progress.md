@@ -2849,3 +2849,269 @@ Pinned at HEAD `188bc53`, `/tmp/oracle/spine/wp6a.base.wa.*.tsv`, scope=**wa**
 | `wp6a.base.wa.findings.all.tsv` | `128fdd933dc71cda0a4a6d9d9971ceb5648a5703f8b22ee798d30b09d2c15660` |
 | `wp6a.base.wa.inc.default.tsv` | `7b19caa79b284bfa16a56f300f5660591ffc58ffa183888451daf82778676dca` |
 | `wp6a.base.wa.inc.all.tsv` | `c951a758823629c6b6d2e1d558e92c59c1873ed17856b328a60c7ebdc4cee74f` |
+
+### Per-step commits
+
+| step | commit | what landed |
+| --- | --- | --- |
+| pin | `57aa234` | The WA base pin above, recorded before any edit. |
+| 1 | `75a6135` | `SubstrateCache::update_book` becomes the generic §5.4 ordered reduction-to-convergence driver. Observation reuse re-keyed from position to **opaque token**. Unchanged chapters hand over their observations and reduced results by **move**, not clone. Synthetic `Local`/`Carry`/`Owned` substrates + a mutation-verified spacing witness. |
+| 1b | `1a1a966` | Substrate chapter maps adopt the WP5b ordered parallel seam (Entry 20's accepted deviation 1): `drive_spacing` plans dirty chapters across every book, routes once, slots results back in caller order; reduction stays sequential per book. `CacheProbe.spacing_map_route`. |
+| rider | `6876050` | Whitespace nit; `dhat_probe` gains the `all-no-spacing` config that makes the retained-bytes measurement possible. |
+| final | (this entry) | progress log. |
+
+Test counts at HEAD: core **460** serial / **461** `--features parallel`, galley 25,
+ssc-wire 25, ssc-wasm 14, xtask 1; node **19**. Green serial, `--features
+parallel`, and `--features parallel` under `RAYON_NUM_THREADS=1`. wasm32 target
+check clean (no wasm surface change). clippy back to the documented baseline —
+the same 3 pre-existing `ssc-core` lib warnings (casing.rs:459, token.rs:544,
+lib.rs `BookProducts` size); this packet adds none. `git diff --check` clean.
+
+Every commit re-dumped all four WA dumps and diffed **byte-identical** to the
+base pin above (`diff -q`, same WA blob scope, `RAYON_NUM_THREADS=4`).
+
+### STOP CLAUSE FIRED — step 2 (`DuplicateWord`) did not land
+
+**The shipped rule does NOT carry across chapter seams.** It is chapter-gated,
+deliberately, by an adjudicated ADR amendment. Evidence, all three agreeing:
+
+- `crates/core/src/signals/lexical.rs:36` — the rule's own doc: "**Book scope,
+  chapter reset (ADR 0016 amendment)** … it carries only the previous verse's
+  last word token … and **resets the carry at every chapter boundary**: a word
+  repeating across a `\c` break is discourse reset, not a typo."
+- `lexical.rs:210–216` — the gate in code: `duplicate_word_verse` parses the
+  verse's chapter token and the cross-verse branch requires `t.chapter ==
+  chapter`. `Tail` carries the chapter token for exactly this comparison.
+- `documentation/adrs/0016-bracket-balance-book-scope-windowed.md:110–115` —
+  the amendment that decided it: "Reset the carry at *chapter* boundaries, not
+  just book boundaries. Bracket nesting legitimately spans chapters, so
+  bracket-balance resets only per book. Lexical adjacency does not."
+- `lexical.rs:1034` — `duplicate_across_chapter_boundary_is_clean` is a
+  shipped test pinning the behaviour.
+
+This contradicts two places in the plan, which is why it is an owner call and
+not an implementer's choice:
+
+- **§11 ledger row** gives duplicate word's boundary state as "previous
+  relevant word"; the code's honest boundary state is **`()`** — the carry
+  cannot cross a chapter seam, so nothing enters a chapter's reduction.
+- **§5.4's example table** predicts "normally next first token" convergence,
+  and **§12.5** requires the mutation-transcript corpus to contain "a
+  cross-chapter duplicate" and **§12.3** a "duplicate word across chapter
+  boundary" replay test. Under the shipped semantics a cross-chapter duplicate
+  is *by design* not a finding, so those test items as written would pin the
+  opposite of the rule's behaviour.
+
+Byte-identical findings are the contract, so the substrate must reproduce the
+chapter gate. That makes `DuplicateWordSubstrate` a `()`-boundary migration
+(observation = the chapter's within-chapter duplicate sites, including its
+internal verse seams; boundary state `()`; convergence always at the changed
+chapter) — which is a **fine and cheap migration**, but it is no longer the
+"first real convergence consumer" the plan chose it for, and it needs the
+ledger row, §5.4 example row, §12.3 and §12.5 items amended before it lands.
+This is the mirror image of Entry 16's spacing adjudication: there the code
+carried more than the plan assumed, here it carries less.
+
+**Not decided here.** Options for the owner:
+
+- **(A)** amend §11/§5.4/§12.3/§12.5 to the code's `()` boundary state and
+  migrate `DuplicateWord` as a chapter-local substrate next packet. Keeps the
+  oracle contract; loses the intended convergence exemplar.
+- **(B)** promote casing (Phase D step 3) to be the first real convergence
+  consumer and take duplicate word later as a `()` row. Its pending
+  sentence/terminal state genuinely crosses chapter seams (`walk_book` in
+  `signals/casing.rs` carries it across verse seams for exactly that reason).
+- **(C)** adjudicate the chapter gate itself as wrong (the repo `CLAUDE.md`
+  invariant says discourse flows across seams and the book is the real unit —
+  the gate is in tension with it). This is a **behaviour change**: it would
+  produce new findings and needs its own ADR, measured drift, and a re-pinned
+  oracle per `CLAUDE.md`. Not perf work, not hideable in a migration.
+
+### The driver, as landed (`crates/core/src/substrate.rs`)
+
+`SubstrateCache::update_book` is the one generic driver every substrate shares.
+Per book, the cached state is taken apart into parallel columns (`OldColumns`)
+so unchanged chapters hand over their observations and reduced results **by
+move**; the whole-book-unchanged path puts them straight back.
+
+1. **Map.** Reuse is keyed by the chapter's **opaque token**, not its position —
+   `map_chapter` is predecessor-free, so a chapter that merely moved carries its
+   observation with it. (Entry 20 flagged the old positional matching as a
+   Phase D/E item; this closes it.) A judging-knob change leaves every stamp
+   valid ⇒ zero maps.
+2. **Window start.** The earliest changed position, then walked **back to the
+   chapter that OWNS any cross-seam item carried into it**. That owner's reduced
+   result is rebuilt from nothing, so the resolution must fold into it again;
+   starting later keeps a stale resolution or drops it. Each hop strictly
+   decreases the index, so it terminates.
+3. **Replay.** Left-to-right over **cached observations** — a changed carry never
+   re-walks text. `carry_out` is routed to the owning chapter's reduced result by
+   token, exactly as Entry 19's P1 fix requires; `reduce_chapter` and
+   `finish_book` are untouched.
+4. **Convergence.** Stop when the chapter leaves the state it left before, the
+   same chapter sits at that position, the book was not reshaped, and **nothing
+   is still carried that a rebuilt chapter owns**. That last clause is the
+   non-obvious one: a matching leaving state whose pending is owned inside the
+   rebuilt window is *not* converged, because the resolution lives in a later
+   chapter and has to fold in again.
+5. **Fallbacks.** The book's end, with `finish_book` applied only when the replay
+   actually reached it (a replay that converged earlier left the cached
+   book-edge resolution in place, inside a cached reduced result). A different
+   chapter count reshapes the book — positions shifted and the book edge may now
+   fall on a different dangling state — so that case replays to the end. **No
+   replay cap anywhere.**
+
+Both non-obvious clauses are **mutation-verified**: dropping the
+`left_as_before`/`!dangling` guards fails 4 replay tests; disabling the
+owner walk-back fails `the_replay_window_starts_at_the_owner_of_a_carried_item`,
+`owner_routed_resident_equals_cold_under_randomized_edits`, and the new spacing
+witness.
+
+### What the probes prove
+
+| scenario (synthetic substrate) | mapped | reduced |
+| --- | ---: | ---: |
+| boundary state `()`, one chapter edited | 1 | **1** (converges at the changed chapter) |
+| carry changed, next chapter absorbs it | 1 | **2** |
+| carry crosses 3 pass-through chapters | **1** | 5 |
+| nothing absorbs the carry | **1** | to book end |
+| unchanged re-drive | 0 | **0** |
+| chapter moved (reordered) | **0** | suffix only |
+
+The `mapped` column is the load-bearing one: **changing carry never re-maps an
+unchanged chapter's observation**, at any convergence distance.
+
+### Convergence-distance observations (the honest finding)
+
+Measured through the real engine (`spacing_map_route`/`spacing_reduced` probes,
+40-chapter synthetic book):
+
+| fixture | edit | mapped | reduced (was: whole book) |
+| --- | --- | ---: | ---: |
+| chapters ending in whitespace (no pending seam) | any single chapter | 1 | **1** |
+| same, ladder-shaped whole-book replace of verse 1 | 1 verse | 1 | **1** |
+| chapters ending in a trailing `,` (pending seam live at every seam) | chapter 1, 10 or 20 of 20 | 1 | **20** |
+
+The third row is the finding, and it is about spacing, not about the driver:
+**real scripture ends nearly every chapter with a verse-final mark**, so
+spacing's `pending` is live at essentially every chapter seam. The owner
+walk-back then cascades to chapter 0 (chapter *j*'s resolution folds into
+*j−1*, whose own resolution folds into *j−2*, …) and the `!dangling` clause
+keeps the replay running to the book's end. So **spacing's replay window is the
+whole book in practice — exactly Phase C's schedule** — and the driver buys it
+no reduce-distance win. The convergence machinery pays off for substrates whose
+carry resolves locally; the synthetic tests are where it is *proven*, and
+casing (Phase D step 3) is the first real consumer likely to exercise it.
+
+**Proposal, clearly marked, not built:** the cascade is only necessary because a
+rebuilt owner loses its fold. A substrate-declared "this resolution is unchanged
+given an unchanged resolving edge" hook — or an unfold/replace operation on
+`carry_out` — would let the window start at the changed chapter even with a live
+carry. That is new trait surface and its own correctness argument; it belongs in
+its own adjudication, not inside this packet.
+
+### Ladder (§13) — five alternating batches per cell vs `188bc53`
+
+`spike-bench/warm_ladder_profile` over `corpora/vref/WA-en-ulb.txt`, baseline
+built in a throwaway worktree at `188bc53`, alternating BASE/CAND per batch
+(3JN 250/120 trials, MAT 150/100, PSA 100/60). Median of the five batch medians.
+**Load 13–22 (1-min) across the run** — `mediaanalysisd` was pegging ~3 cores
+the whole session and never subsided; the remote quiet box was unreachable
+(ssh agent failure), so these are honest-but-loaded local numbers. The
+alternating protocol is what makes them usable: both arms ate the same load, and
+the all-config deltas are consistent in **all five** batches, not an average
+artefact.
+
+| scenario | BASE total | CAND total | Δ | Δ% |
+| --- | ---: | ---: | ---: | ---: |
+| 3JN default | 661.3µs | 676.2µs | +14.9µs | +2.3% |
+| MAT default | 7.659ms | 7.696ms | +37µs | +0.5% |
+| PSA default | 13.316ms | 13.348ms | +32µs | +0.2% |
+| 3JN all | 23.829ms | 22.338ms | **−1.491ms** | **−6.3%** |
+| MAT all | 40.993ms | 39.857ms | **−1.136ms** | **−2.8%** |
+| PSA all | 54.407ms | 52.896ms | **−1.511ms** | **−2.8%** |
+
+§13 regression rule (candidate both >5% AND >0.25 ms slower in ≥3/5 batches):
+**not tripped**. The default cells are flat — spacing is default-disabled, so
+the substrate is not driven at all there; 3JN default was bimodal in *both* arms
+(clusters at ~660µs and ~840µs, a CPU-state effect), and within the low cluster
+the delta is +5–15µs, three orders of magnitude under the 0.25 ms floor.
+3JN/default at 661µs reconfirms the Phase A `<= 2 ms` floor gate.
+
+**Where the all-config win comes from, and what it is not.** The phase split
+attributes it entirely to `judge` (3JN all: 22.63 → 21.27 ms), which this packet
+did not touch — because `drive_spacing` is called *after*
+`bench_judge_start` (`lib.rs:927` vs `:1036`), so the whole substrate drive is
+timed in the harness's `judge` bucket. The cause is concrete: the old
+`update_book` built its observation vector by **cloning every cached
+observation** for **every book** *before* discovering the book was unchanged —
+~1,189 chapter-observation deep clones on every analyze, whatever the edit. The
+driver moves them instead, and `observation_is_current` answers the planning
+question without touching them. That is why the win is ~1.1–1.5 ms in all three
+books (constant in edit size, proportional to corpus size) rather than
+proportional to the edited book. **The reduce term itself is flat** (3JN all
+462 → 460µs; MAT all 578.5 → 575.9µs; PSA all 642.9 → 635.1µs) — consistent with
+the convergence finding above: spacing's replay was already the whole book and
+still is.
+
+### Retained bytes — spacing's cached observations
+
+Method: **dhat** live-bytes (`dhat_probe testing`, `curr_bytes` after the cold
+seed), differencing two configs over the whole `WA-en-ulb` Bible (31,086 verses,
+1,189 chapters) — `all` versus the new `all-no-spacing` (every rule on except
+`punct.spacing-anomaly`, so the substrate has no active consumer and retains
+nothing). Recorded rather than dhat-profiled per allocation site because the
+paired-config difference needs no attribution heuristics.
+
+| config | curr_blocks | curr_bytes |
+| --- | ---: | ---: |
+| `all` | 554,740 | 74,067,364 |
+| `all-no-spacing` | 510,864 | 60,170,003 |
+| **spacing lane** | **43,876** | **13,897,361 (13.25 MiB)** |
+
+≈ **11.7 KB per chapter**, ≈ 447 bytes per verse. That is the whole lane —
+chapter observations (the dominant term: per-verse `RawOpportunity` vectors plus
+two edge classes) + reduced chapters (cells + chapter-local sites) + book
+contributions + corpus stats + the rule's finding partition. The partition's
+share is negligible: WA-en-ulb emits **34** spacing findings at the shipped
+knobs. A finer observations-vs-reduced split would need a typed retained-bytes
+hook on the trait — measurement-only production surface, deliberately not added.
+
+### Deviations / notes for the owner (clearly marked)
+
+1. **Step 2 did not land** — stop clause, see above. This packet is step 1 only.
+2. **`SubstrateChapter.reduced`/`reduced_stamp` are now read**, so WP5a's
+   `#[allow(dead_code)] // Phase D` markers are gone, as is the
+   `ReducedChapterStamp` doc's "Phase C compares nothing" caveat.
+3. **A test substrate reuses `SubstrateId::Spacing`.** The three synthetic
+   substrates in `substrate::replay` need an `ID`, and `SubstrateId` is a closed
+   production enum; adding fake variants to it to satisfy tests seemed worse than
+   letting test-only types borrow an existing id (the id is only used for
+   registry pairing, which those types are not in).
+4. **The seam is wired through `drive_spacing`, not into `SubstrateCache`.** The
+   cache stays a pure per-book driver with a `map` callback; the *planning* pass
+   and the route decision live in the caller, which is what lets one route cover
+   every book at once. `observation_is_current` is the shared predicate that
+   keeps plan and driver from disagreeing, and mapping in place remains the
+   correct fallback if a pre-mapped slot is ever missing.
+5. **`spacing_corpus_cells` no longer duplicates the drive loop** — it calls
+   `drive_spacing` (cells are a pure function of the text, so any config gives
+   the same aggregate).
+6. **Full-fleet bookend remains Phase F**, as every WP. No rule's semantics or
+   extraction moved this packet — only the window over which identical products
+   are recomputed — so the WA slice in both configs, cold (findings) and
+   incremental (transcript), carries the gate.
+7. **No `cargo fmt` sweep.** The local rustfmt disagrees with the tree's
+   existing style in many pre-existing places (it wants to expand `if/else`
+   one-liners the repo uses throughout), so only a stray-space nit in new code
+   was fixed by hand.
+
+### Stop-safe next step
+
+Phase D **step 1 is complete and gated**; the driver is in, spacing is on it, and
+the substrate map lane shares the ordered parallel seam. **Step 2 is blocked on
+the owner adjudication above** (options A/B/C). Whichever is chosen, the next
+stop-safe step after it is **Phase D step 3** (the casing substrate and both
+casing judges) — which option (B) would promote ahead of duplicate word — and
+then **step 4** (the measurement close-out, including the replay-distance
+distribution this entry only sampled).
