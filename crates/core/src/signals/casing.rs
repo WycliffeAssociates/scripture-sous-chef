@@ -1011,13 +1011,13 @@ pub(crate) struct ChapterWords {
     /// word type, and 1,189 chapters of an English Bible hold 265,207 references
     /// to 13,096 distinct types. Symbol equality is string equality (the table is
     /// append-only), so this stays a sound `Eq` for the cached observation.
-    keys: Vec<WordSym>,
+    keys: Box<[WordSym]>,
     /// Per-id raw tallies. The chapter's **first** word's own occurrence is
     /// absent here: its position class is the one thing the entering boundary
     /// state decides, so reduction records it.
-    tallies: Vec<WordStats>,
+    tallies: Box<[WordStats]>,
     /// Flag candidates after the first word, in scan order.
-    sites: Vec<LowerSite>,
+    sites: Box<[LowerSite]>,
     /// Cased word-starts in the chapter — the emergent-gate input. Position
     /// independent, so the first word counts here too.
     cased_starts: u32,
@@ -1314,10 +1314,15 @@ impl ChapterAcc {
     fn finish(self, token: &str, symbols: &WordInterner) -> CasingChapterObs {
         CasingChapterObs {
             token: Box::from(token),
+            // Boxed, not `Vec`: these three are built once by the walk and never
+            // grow again, so a chapter would otherwise retain its `Vec`s' final
+            // doubling slack for the whole session — measured at 12 MiB of the
+            // site lists' 22 MiB and 6 MiB of the tallies' 23 MiB across an
+            // English Bible's 1,189 chapters.
             words: Arc::new(ChapterWords {
-                keys: symbols.intern_all(self.keys),
-                tallies: self.tallies,
-                sites: self.sites,
+                keys: symbols.intern_all(self.keys).into_boxed_slice(),
+                tallies: self.tallies.into_boxed_slice(),
+                sites: self.sites.into_boxed_slice(),
                 cased_starts: self.cased_starts,
             }),
             lead: self.lead,
