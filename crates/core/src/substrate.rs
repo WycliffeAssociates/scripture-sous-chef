@@ -57,6 +57,9 @@ pub(crate) enum SubstrateId {
     /// The shared casing model: per-word case tables + lowercase flag
     /// candidates, judged by two rules.
     Casing,
+    /// `case.mixed-case-word`'s per-word case-shape profiles + its retained
+    /// interior-capital occurrences.
+    MixedCase,
 }
 
 impl SubstrateId {
@@ -68,6 +71,7 @@ impl SubstrateId {
         SubstrateId::Spacing,
         SubstrateId::DuplicateWord,
         SubstrateId::Casing,
+        SubstrateId::MixedCase,
     ];
 }
 
@@ -709,6 +713,7 @@ pub(crate) struct ActiveSubstrates {
     pub(crate) spacing: bool,
     pub(crate) duplicate_word: bool,
     pub(crate) casing: bool,
+    pub(crate) mixed_case: bool,
 }
 
 impl ActiveSubstrates {
@@ -720,6 +725,7 @@ impl ActiveSubstrates {
             spacing: any(spacing_consumers()),
             duplicate_word: any(duplicate_word_consumers()),
             casing: any(casing_consumers()),
+            mixed_case: any(mixed_case_consumers()),
         }
     }
 
@@ -729,6 +735,7 @@ impl ActiveSubstrates {
             SubstrateId::Spacing => self.spacing,
             SubstrateId::DuplicateWord => self.duplicate_word,
             SubstrateId::Casing => self.casing,
+            SubstrateId::MixedCase => self.mixed_case,
         }
     }
 }
@@ -754,6 +761,11 @@ pub(crate) fn casing_consumers() -> &'static [RuleId] {
     ]
 }
 
+/// The closed registry: the mixed-case substrate's sole consumer.
+pub(crate) fn mixed_case_consumers() -> &'static [RuleId] {
+    &[RuleId::MixedCaseWord]
+}
+
 /// The consumers of a substrate by id — the exhaustive closed match the
 /// completeness tests walk.
 #[allow(dead_code)] // registry-completeness tests + future multi-substrate iteration
@@ -762,6 +774,7 @@ pub(crate) fn consumers_of(id: SubstrateId) -> &'static [RuleId] {
         SubstrateId::Spacing => spacing_consumers(),
         SubstrateId::DuplicateWord => duplicate_word_consumers(),
         SubstrateId::Casing => casing_consumers(),
+        SubstrateId::MixedCase => mixed_case_consumers(),
     }
 }
 
@@ -785,6 +798,10 @@ mod tests {
             <crate::signals::casing::CasingSubstrate as ObservationSubstrate>::ID,
             SubstrateId::Casing
         );
+        assert_eq!(
+            <crate::signals::mixed_case::MixedCaseSubstrate as ObservationSubstrate>::ID,
+            SubstrateId::MixedCase
+        );
     }
 
     /// Every substrate id has at least one consumer, and the active-set fields
@@ -802,6 +819,7 @@ mod tests {
                 spacing: true,
                 duplicate_word: true,
                 casing: true,
+                mixed_case: true,
             };
             assert!(all_on.is_active(id), "{id:?} has no active-set field");
             assert!(!ActiveSubstrates::default().is_active(id));

@@ -360,13 +360,11 @@ fn transition(
         punct_only: config.is_enabled(RuleId::PunctOnlyToken),
         mixed_script: config.is_enabled(RuleId::MixedScriptInToken),
         rare_glyph: config.is_enabled(RuleId::RareGlyph),
-        mixed_case: config.is_enabled(RuleId::MixedCaseWord),
         proportionality: config.is_enabled(RuleId::ProjectLengthRatio),
         bracket: config.is_enabled(RuleId::BracketBalance),
         normalization: config.is_enabled(RuleId::MixedNormalization),
         collect_tokens: config.is_enabled(RuleId::RepeatedCharacterRun)
             || config.is_enabled(RuleId::RareGlyph)
-            || config.is_enabled(RuleId::MixedCaseWord)
             || config.is_enabled(RuleId::MixedScriptInToken),
     };
 
@@ -787,20 +785,6 @@ fn transition(
             rule::RuleSites::RareGlyph,
         )
     });
-    let mut mixed_case_fresh = plan.mixed_case.then(|| {
-        let mut pb = BTreeMap::new();
-        for (group, slot) in books.iter().zip(slots.iter_mut()) {
-            if let BookProducts::Walked(o) = slot
-                && let Some(bmc) = o.mixed_case.take()
-            {
-                pb.insert(Box::from(group.slug), bmc);
-            }
-        }
-        (
-            RuleStats::MixedCase(signals::mixed_case::MixedCaseStats { per_book: pb }),
-            rule::RuleSites::MixedCase,
-        )
-    });
     let mut proportionality_fresh = plan.proportionality.then(|| {
         let mut pb = BTreeMap::new();
         for (group, slot) in books.iter().zip(slots.iter_mut()) {
@@ -957,11 +941,6 @@ fn transition(
                 sites_slot = ss;
                 (st, &sites_slot)
             }
-            RuleId::MixedCaseWord => {
-                let (st, ss) = mixed_case_fresh.take().expect("listener ran");
-                sites_slot = ss;
-                (st, &sites_slot)
-            }
             RuleId::ProjectLengthRatio => {
                 let (st, ss) = proportionality_fresh.take().expect("listener ran");
                 sites_slot = ss;
@@ -1000,6 +979,16 @@ fn transition(
         active.duplicate_word,
         &mut substrates.duplicate_word,
         target,
+        &mut out,
+    );
+    signals::mixed_case::drive_mixed_case(
+        active.mixed_case,
+        signals::mixed_case::MixedCaseState {
+            cache: &mut substrates.mixed_case,
+            symbols: &substrates.words,
+        },
+        target,
+        &config.mixed_case,
         &mut out,
     );
     signals::casing::drive_casing(

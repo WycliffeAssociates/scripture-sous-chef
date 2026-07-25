@@ -38,7 +38,7 @@ use crate::corpus::{BookGroup, Books, Corpus, LocalKeyIdx};
 use crate::grapheme::{self, GSpan};
 use crate::rule::{self};
 use crate::signals::{
-    bracket_balance, lexical, mixed_case, mixed_normalization, proportionality, punctuation,
+    bracket_balance, lexical, mixed_normalization, proportionality, punctuation,
     rare_glyph, script_mixing,
 };
 use crate::tape::{self, TapeEntry};
@@ -65,10 +65,8 @@ pub(crate) struct VerseInputs<'t, 'b> {
     pub tokens: &'b [Token],
     /// Each token's case-folded word-type key, index-aligned with `tokens`
     /// (`None` where the token isn't a letter token — the same tokens
-    /// `mixed_case`/`rare_glyph` already skip). Computed once per token by
-    /// the walk (see `fold_letter_tokens`) instead of once per listener —
-    /// `mixed_case` and `rare_glyph` key by the identical fold, so this
-    /// replaces two `to_lowercase` calls per word with one.
+    /// `rare_glyph` already skips). Computed once per token by the walk (see
+    /// `fold_letter_tokens`).
     pub folds: &'b [Option<Cow<'t, str>>],
 }
 
@@ -95,10 +93,11 @@ impl Needs {
 }
 
 /// Case-fold each verse token to its lowercase word-type key, once per token.
-/// `mixed_case` and `rare_glyph` both key their per-book word tables by this
-/// exact fold (`word.to_lowercase()` gated by `mixed_case::is_letter_token`,
-/// the same predicate both already use) — computing it once here instead of
-/// once per listener removes a redundant `to_lowercase` pass per listener.
+/// `rare_glyph` keys its per-book word table by this exact fold
+/// (`word.to_lowercase()` gated by `mixed_case::is_letter_token`, the shared
+/// letter-run predicate). `case.mixed-case-word` keyed by the identical fold
+/// until it became an observation substrate, which maps chapters on its own
+/// stamp-derived schedule and so folds its own tokens.
 /// Cow fast-path (mirrors `rare_glyph`'s original path): a token with no
 /// uppercase scalar borrows `text` directly; only a token with an uppercase
 /// scalar allocates.
@@ -114,7 +113,7 @@ fn fold_letter_tokens<'t>(text: &'t str, tokens: &[Token], buf: &mut Vec<Option<
     buf.reserve(tokens.len());
     for tok in tokens {
         let word = tok.span.slice(text);
-        if !mixed_case::is_letter_token(word) {
+        if !crate::signals::mixed_case::is_letter_token(word) {
             buf.push(None);
             continue;
         }
@@ -138,7 +137,6 @@ pub(crate) struct WalkPlan {
     pub punct_only: bool,
     pub mixed_script: bool,
     pub rare_glyph: bool,
-    pub mixed_case: bool,
     pub proportionality: bool,
     pub bracket: bool,
     pub normalization: bool,
@@ -156,10 +154,10 @@ impl WalkPlan {
             n.graphemes = true;
             n.tokens = true;
         }
-        if self.mixed_script || self.rare_glyph || self.mixed_case {
+        if self.mixed_script || self.rare_glyph {
             n.tokens = true;
         }
-        if self.rare_glyph || self.mixed_case {
+        if self.rare_glyph {
             n.folds = true;
         }
         n
@@ -214,7 +212,7 @@ pub(crate) struct BookOut {
     /// merge (the book was in the reduce scope).
     pub counted: bool,
     /// Test observability (`test-probes`): whether this book's count-gated
-    /// site-free accumulators (rare-glyph / mixed-case / proportionality) were
+    /// site-free accumulators (rare-glyph / proportionality) were
     /// actually instantiated and run. A witness of real counting work read from
     /// the accumulators themselves, not from `counted` above — so a listener
     /// that counted an anchor-mode (clean) book would diverge from the decision
@@ -235,7 +233,6 @@ pub(crate) struct BookOut {
         Vec<script_mixing::MixedScriptSite>,
     )>,
     pub rare_glyph: Option<rare_glyph::BookGlyphs>,
-    pub mixed_case: Option<mixed_case::BookMixedCase>,
     pub proportionality: Option<Vec<proportionality::RatioObs>>,
     pub bracket: Option<bracket_balance::BookMatch>,
     pub normalization: Option<mixed_normalization::BookNormalization>,
@@ -342,7 +339,6 @@ fn walk_book(
         .mixed_script
         .then(|| script_mixing::MixedScriptAcc::new(count));
     let mut rare_glyph_acc = (count && plan.rare_glyph).then(rare_glyph::RareGlyphAcc::new);
-    let mut mixed_case_acc = (count && plan.mixed_case).then(mixed_case::MixedCaseAcc::new);
     let mut prop_acc = (count && plan.proportionality)
         .then(|| proportionality::ProportionalityAcc::new(source_index));
     // Project listeners (every supplied book — their emission scope).
@@ -402,9 +398,6 @@ fn walk_book(
         if let Some(a) = &mut rare_glyph_acc {
             a.verse(&v);
         }
-        if let Some(a) = &mut mixed_case_acc {
-            a.verse(&v);
-        }
         if let Some(a) = &mut prop_acc {
             a.verse(&v);
         }
@@ -424,7 +417,7 @@ fn walk_book(
     // before `finish` consumes them — independent of the `count` flag below.
     #[cfg(any(test, feature = "test-probes"))]
     let counting_accs_ran =
-        rare_glyph_acc.is_some() || mixed_case_acc.is_some() || prop_acc.is_some();
+        rare_glyph_acc.is_some() || prop_acc.is_some();
 
     BookOut {
         counted: count,
@@ -435,7 +428,6 @@ fn walk_book(
         punct_only: punct_only_acc.map(lexical::PunctOnlyAcc::finish),
         mixed_script: mixed_script_acc.map(script_mixing::MixedScriptAcc::finish),
         rare_glyph: rare_glyph_acc.map(rare_glyph::RareGlyphAcc::finish),
-        mixed_case: mixed_case_acc.map(mixed_case::MixedCaseAcc::finish),
         proportionality: prop_acc.map(proportionality::ProportionalityAcc::finish),
         bracket: bracket_acc.map(bracket_balance::BracketAcc::finish),
         normalization: normalization_acc.map(mixed_normalization::NormalizationAcc::finish),

@@ -807,7 +807,6 @@ fn assemble(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::MixedCaseConfig;
     use crate::rule::StatefulRule;
     use crate::stats::RuleStats;
 
@@ -964,23 +963,13 @@ mod tests {
         let inv = run(&corpus);
         let lane = section(&inv, SectionId::CaseShapes);
 
-        let rule = crate::signals::mixed_case::MixedCaseWord {
-            cfg: MixedCaseConfig::default(),
-        };
-        let books = corpus::by_book(&corpus);
-        let (stats, _) = rule.reduce(&books, None, None);
-        let RuleStats::MixedCase(mc) = stats else {
-            panic!()
-        };
+        let [lower, title, allcaps, other] =
+            crate::signals::mixed_case::shape_totals(&corpus);
         let mut expected: BTreeMap<&str, u64> = BTreeMap::new();
-        for bm in mc.per_book.values() {
-            for p in bm.words.values() {
-                *expected.entry("lower").or_default() += u64::from(p.lower);
-                *expected.entry("title").or_default() += u64::from(p.title);
-                *expected.entry("allcaps").or_default() += u64::from(p.allcaps);
-                *expected.entry("mixed").or_default() += u64::from(p.other);
-            }
-        }
+        expected.insert("lower", lower);
+        expected.insert("title", title);
+        expected.insert("allcaps", allcaps);
+        expected.insert("mixed", other);
         expected.retain(|_, n| *n > 0);
         let got: BTreeMap<&str, u64> = lane
             .rows

@@ -32,6 +32,7 @@ use crate::diagnostics::{Finding, RuleId, Severity};
 use crate::signals::{
     bracket_balance, casing, lexical, mixed_normalization, punctuation, script_mixing,
 };
+
 use crate::span::Span;
 use crate::stream::{BookOut, WalkPlan};
 use crate::substrate::SubstrateCache;
@@ -140,8 +141,10 @@ pub(crate) struct SubstrateSection {
     /// that moved neither rebuilds nothing. It is a memo, not state: dropping it
     /// costs one rebuild and can never change output.
     pub(crate) casing_model: Option<casing::CasingModel>,
+    /// `case.mixed-case-word`'s substrate (Phase E).
+    pub(crate) mixed_case: SubstrateCache<crate::signals::mixed_case::MixedCaseSubstrate>,
     /// The shared folded-word table every word-keyed substrate names its word
-    /// types through (casing today; `case.mixed-case-word` next). It lives here,
+    /// types through (casing and `case.mixed-case-word`). It lives here,
     /// beside the substrate slots rather than inside one, for two reasons: a
     /// second substrate must be able to share one table (a word's symbol has to
     /// mean the same thing in both), and a `SubstrateCache`'s own driver borrows
@@ -161,6 +164,7 @@ impl SubstrateSection {
             duplicate_word: SubstrateCache::new(),
             casing: SubstrateCache::new(),
             casing_model: None,
+            mixed_case: SubstrateCache::new(),
             words: crate::interner::WordInterner::default(),
         }
     }
@@ -172,6 +176,7 @@ impl SubstrateSection {
         self.duplicate_word.clear();
         self.casing.clear();
         self.casing_model = None;
+        self.mixed_case.clear();
         // Every observation that could hold a symbol is gone, so the table's
         // symbols have no readers left — the one point it is safe to drop.
         self.words = crate::interner::WordInterner::default();
@@ -183,6 +188,7 @@ impl SubstrateSection {
         self.spacing.remove_book(slug);
         self.duplicate_word.remove_book(slug);
         self.casing.remove_book(slug);
+        self.mixed_case.remove_book(slug);
     }
 }
 

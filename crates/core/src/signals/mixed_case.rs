@@ -57,33 +57,50 @@
 //! `signals::casing::walk_book`) so the interior-capital phenomenon is reported
 //! once here, not twice.
 //!
-//! ## Stats shape and merge (raw, per book)
+//! ## Evidence shape and merge (raw, per chapter then per book)
 //!
-//! Per book, [`MixedCaseStats`] stores a word→[`ShapeProfile`] table of raw
+//! Per chapter, the observation stores a word→[`ShapeProfile`] table of raw
 //! four-shape counts. Every **cased** word is kept (an uncased/caseless token is
 //! dropped — it has no shape); a word cannot be pruned to "only words seen mixed
 //! somewhere" because its clean-shape mass — which drives `dominance` — is spread
-//! across books, and a book with no local mixed observation still carries mass
-//! the corpus-wide dominance needs. Keeping every cased word is what keeps
-//! book-supersede **sound** (a book carries its own counts, replaced wholesale on
-//! edit). The four small counts per word are compact — strictly smaller than the
-//! casing table's per-word tallies.
-
+//! across chapters and books, and a chapter with no local mixed observation still
+//! carries mass the corpus-wide dominance needs. Keeping every cased word is what
+//! keeps replacement **sound** at every granularity. The four small counts per
+//! word are compact — strictly smaller than the casing table's per-word tallies.
+//!
+//! ## Why this is a substrate, and what it retains
+//!
+//! Every judged quantity is a function of **one word type's own merged counts**:
+//! `dominance` is the Wilson bound on that word's clean share and `rarity` is the
+//! knee on that word's OtherMixed count. Nothing is corpus-*global*. Two
+//! consequences the casing substrate does not get:
+//!
+//! - the corpus aggregate is maintained **incrementally and exactly** — a book
+//!   replacement subtracts its old per-word counts and adds its new ones, and
+//!   integer counts make that bit-exact (casing's aggregate must be re-folded
+//!   whole because its judge sums floats in a load-bearing order);
+//! - the **stats-delta is genuinely per-key**: exactly the words whose merged
+//!   counts moved, computed by a merge-join over the two sorted book tables.
+//!
+//! What it retains per chapter is its OtherMixed occurrences
+//! ([`MixedCaseSite`], 12 bytes) — the only positions that can ever emit. That
+//! replaces the pre-substrate judge's whole-corpus re-scan, which re-tokenized
+//! and re-shaped every verse of every book on every call just to recover the
+//! spans of a handful of surviving words.
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::charclass::class_of;
 use crate::config::MixedCaseConfig;
-use crate::corpus::{Books, Corpus, KeyIdx, LocalKeyIdx, rebase};
+use crate::corpus::{Corpus, LocalKeyIdx, SiteAddr, rebase};
 use crate::diagnostics::{Finding, FindingArgs, RuleId, Severity};
 use crate::evidence::{clamp_count, clamp_unit, clamp_z, wilson_lower_bound};
-use crate::rule::{self, StatefulRule, TokenCache};
+use crate::interner::{WordInterner, WordSym};
 use crate::signals::case_shape::{CaseShape, case_shape};
 use crate::span::Span;
-use crate::stats::RuleStats;
-use crate::stream;
-use crate::token::{Token, tokenize};
+use crate::token::tokenize_into;
 
 pub const MIXED_CASE_WORD: RuleId = RuleId::MixedCaseWord;
 
@@ -110,9 +127,9 @@ pub(crate) fn is_letter_token(word: &str) -> bool {
     has_letter
 }
 
-/// One case-folded word type's raw shape counts within one book. Raw and
-/// mergeable — no dominance, no censoring — so book-supersede holds.
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
+/// One case-folded word type's raw shape counts. Raw and mergeable — no
+/// dominance, no censoring — so replacement at any granularity holds.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct ShapeProfile {
     pub(crate) lower: u32,
     pub(crate) title: u32,
@@ -138,6 +155,21 @@ impl ShapeProfile {
         self.other += o.other;
     }
 
+    /// Remove a contribution previously [`add`](Self::add)ed. Exact: these are
+    /// integer counts, so subtract-then-add restores the identical value — which
+    /// is what lets the corpus aggregate be maintained incrementally instead of
+    /// re-folded whole (see the module docs).
+    fn sub(&mut self, o: &ShapeProfile) {
+        self.lower -= o.lower;
+        self.title -= o.title;
+        self.allcaps -= o.allcaps;
+        self.other -= o.other;
+    }
+
+    fn is_empty(&self) -> bool {
+        self.total() == 0
+    }
+
     fn total(&self) -> u64 {
         u64::from(self.lower)
             + u64::from(self.title)
@@ -151,242 +183,178 @@ impl ShapeProfile {
     }
 }
 
-/// One book's contribution: the per-word shape table.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub(crate) struct BookMixedCase {
-    pub(crate) words: BTreeMap<String, ShapeProfile>,
-}
+// ── The mixed-case observation substrate (plan §5.2 / §11 ledger row). ──────
 
-/// Cached mixed-case statistics, keyed by book so an edit supersedes only its
-/// book. Corpus-wide profiles are the sums over books, derived at `judge`.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct MixedCaseStats {
-    pub(crate) per_book: BTreeMap<Box<str>, BookMixedCase>,
-}
-
-impl MixedCaseStats {
-    /// Book-level supersede: books in `other` replace those in `self`.
-    pub(crate) fn merge(mut self, other: MixedCaseStats) -> MixedCaseStats {
-        for (book, bmc) in other.per_book {
-            self.per_book.insert(book, bmc);
-        }
-        self
-    }
-
-    /// Drop a book's contribution.
-    pub(crate) fn remove_book(&mut self, slug: &str) {
-        self.per_book.remove(slug);
-    }
-}
-
-pub struct MixedCaseWord {
-    pub cfg: MixedCaseConfig,
-}
-
-impl StatefulRule for MixedCaseWord {
-    fn id(&self) -> RuleId {
-        MIXED_CASE_WORD
-    }
-
-    fn reduce(
-        &self,
-        books: &Books<'_>,
-        _source: Option<&Corpus>,
-        tokens: Option<&TokenCache<'_>>,
-    ) -> (RuleStats, rule::RuleSites<'static>) {
-        // Thin driver over the shared listener (the fused walk feeds the same
-        // `MixedCaseAcc`); kept for calibration/tests. The shared token cache
-        // is ignored — the driver tokenizes each verse once, which is exactly
-        // what the cache would supply.
-        let _ = tokens;
-        let mut per_book = BTreeMap::new();
-        for (group, bmc) in books.iter().zip(rule::map_books(books, |group| {
-            stream::drive_book(
-                group,
-                stream::Needs {
-                    tokens: true,
-                    folds: true,
-                    ..Default::default()
-                },
-                MixedCaseAcc::new(),
-                |a, v| a.verse(v),
-                MixedCaseAcc::finish,
-            )
-        })) {
-            per_book.insert(Box::from(group.slug), bmc);
-        }
-        (
-            RuleStats::MixedCase(MixedCaseStats { per_book }),
-            // Surviving candidates are rare, so judge re-scans the supplied books
-            // (the sanctioned `sites`-free path, ADR 0044) rather than forward
-            // every OtherMixed occurrence — mirrors `uni.rare-glyph`.
-            rule::RuleSites::MixedCase,
-        )
-    }
-
-    fn judge(
-        &self,
-        stats: &RuleStats,
-        books: &Books<'_>,
-        tokens: Option<&TokenCache<'_>>,
-        _sites: Option<&rule::RuleSites<'_>>,
-    ) -> Vec<Finding> {
-        let RuleStats::MixedCase(stats) = stats else {
-            return Vec::new();
-        };
-        let k = clamp_count(self.cfg.recurrence_k);
-        let floor = f64::from(clamp_unit(self.cfg.emit_score_min));
-        let z = clamp_z(self.cfg.confidence_z);
-
-        // Corpus-wide per-word profiles: sum each book's raw shape counts.
-        // Hash-keyed (not a `BTreeMap`): the same word type recurs across many
-        // books, so this loop is dominated by `entry` probes — a hash probe per
-        // key instead of a log-n string memcmp descent (the measured cost, ~half
-        // the ~11-13 ms/call under all-rules). Output order is unaffected: the
-        // findings are span-sorted below, never word-order-dependent. Presized to
-        // the largest single book's table to blunt the initial rehash storm.
-        let cap = stats
-            .per_book
-            .values()
-            .map(|bmc| bmc.words.len())
-            .max()
-            .unwrap_or(0);
-        let mut words: FxHashMap<&str, ShapeProfile> =
-            FxHashMap::with_capacity_and_hasher(cap, Default::default());
-        for bmc in stats.per_book.values() {
-            for (key, p) in &bmc.words {
-                words.entry(key.as_str()).or_default().add(p);
-            }
-        }
-
-        // Score each word that was ever OtherMixed. A hapax mixed word has
-        // not_other == 0 ⇒ dominance 0 ⇒ silent, structurally. Survivors carry
-        // (score, other, total) for the finding args. Hash-keyed and looked up by
-        // key in `emit_verse`, so order-independent like `words`.
-        let mut surviving: FxHashMap<&str, (f32, u32, u32)> = FxHashMap::default();
-        for (&key, p) in &words {
-            if p.other == 0 {
-                continue;
-            }
-            let total = p.total();
-            let dominance = wilson_lower_bound(p.not_other(), total, z);
-            let score = dominance * rarity(u64::from(p.other), k);
-            if score < floor {
-                continue;
-            }
-            surviving.insert(
-                key,
-                (score as f32, p.other, total.min(u64::from(u32::MAX)) as u32),
-            );
-        }
-        if surviving.is_empty() {
-            return Vec::new();
-        }
-
-        // Recover spans by re-scanning the supplied books: emit at each
-        // OtherMixed occurrence of a surviving word type.
-        let mut out: Vec<Finding> = rule::map_books(books, |group| {
-            let mut found = Vec::new();
-            for (vi, text) in group.texts.iter().enumerate() {
-                let key_idx = rebase(group.base, LocalKeyIdx::from_usize(vi));
-                emit_verse(key_idx, text, tokens, &surviving, &mut found);
-            }
-            found
-        })
-        .into_iter()
-        .flatten()
-        .collect();
-        out.sort_by_key(|f| (f.key_idx, f.range.start, f.range.end));
-        out
-    }
-}
-
-/// Emit a finding at each OtherMixed occurrence of a surviving word in one verse.
-fn emit_verse(
-    key_idx: KeyIdx,
-    text: &str,
-    tokens: Option<&TokenCache<'_>>,
-    surviving: &FxHashMap<&str, (f32, u32, u32)>,
-    out: &mut Vec<Finding>,
-) {
-    let toks = verse_tokens(key_idx, text, tokens);
-    for tok in toks.iter() {
-        let word = tok.span.slice(text);
-        if !is_letter_token(word) || case_shape(word) != Some(CaseShape::OtherMixed) {
-            continue;
-        }
-        let key = word.to_lowercase();
-        if let Some(&(score, other, total)) = surviving.get(key.as_str()) {
-            out.push(Finding {
-                key_idx,
-                code: MIXED_CASE_WORD,
-                severity: Severity::Info,
-                range: Span {
-                    start: tok.span.start,
-                    end: tok.span.end,
-                },
-                score: Some(score),
-                args: Some(FindingArgs::MixedCaseWord {
-                    word: key,
-                    other,
-                    total,
-                }),
-            });
-        }
-    }
-}
-
-/// The verse's shared tokens when the runner built a cache, else a fresh
-/// tokenization owned by the caller — the single-consumer fallback.
-fn verse_tokens<'a>(
-    key_idx: KeyIdx,
-    text: &str,
-    cache: Option<&'a TokenCache<'a>>,
-) -> std::borrow::Cow<'a, [Token]> {
-    match cache.and_then(|c| c.get(&key_idx)).copied() {
-        Some(t) => std::borrow::Cow::Borrowed(t),
-        None => std::borrow::Cow::Owned(tokenize(text)),
-    }
-}
-
-/// The mixed-case counting listener — walks one book, tallying each cased
-/// letter-run token's shape into its case-folded word type. No position
-/// tracking — a mid-word capital is position-independent (ADR 0055). Caseless
-/// tokens have no shape and are dropped (the sole pruning; every cased word
-/// is kept for dominance mass). Fed per verse by the fused walk.
+/// One OtherMixed occurrence: the word type it is an occurrence of, and its
+/// verse-local address within the owning chapter. 12 bytes.
 ///
-/// Per-book word-type interner (mirrors `CasingAcc`, ADR 0057 allocation-diet
-/// follow-up): folded key → id, tallying into the id-indexed `profiles` (one
-/// hash probe per token) instead of a `BTreeMap<String, _>` entry walk (log n
-/// string memcmps per token, on every occurrence — not just per distinct
-/// type). The pinned sorted `words` shape is rebuilt once in `finish`.
-pub(crate) struct MixedCaseAcc {
+/// Both fields are retained deliberately, and the plan's retain-vs-rederive
+/// principle is what picks each:
+///
+/// - `word` is the judge **key's** identity, not a verse-local offset.
+///   Re-deriving it would mean case-folding the token's bytes again at every
+///   judge; the shared interner already named it at map time for free.
+/// - `addr` is the verse-local span. Re-deriving it from a token ordinal is the
+///   principle's default, and it is declined here on measurement: the fleet's
+///   widest verse holds 1,963 UAX #29 tokens, so an ordinal needs 16 bits and
+///   buys **nothing** over the packed 16-bit span, while costing a
+///   re-tokenization of the verse per emitted finding. The population is also
+///   two to three orders of magnitude smaller than casing's lowercase sites
+///   (only interior-capital tokens land here), so retention's rent is
+///   negligible where casing's was the whole problem.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct MixedCaseSite {
+    word: WordSym,
+    addr: SiteAddr,
+}
+
+/// Everything about one chapter that no entering state can change: its word-type
+/// symbols, their raw shape counts, and its OtherMixed occurrences in scan
+/// order. Boxed, not `Vec`: built once by the walk and never grown again, so a
+/// retained chapter would otherwise hold its growth slack for a whole session.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub(crate) struct MixedCaseWords {
+    /// chapter-local id → the word type's symbol in the cache's shared
+    /// [`WordInterner`], in first-sight order.
+    keys: Box<[WordSym]>,
+    /// Per-id raw shape counts.
+    profiles: Box<[ShapeProfile]>,
+    /// OtherMixed occurrences in scan order — the only positions that can emit.
+    sites: Box<[MixedCaseSite]>,
+}
+
+/// One chapter's input-independent mixed-case observation.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub(crate) struct MixedCaseChapterObs {
+    token: Box<str>,
+    /// Shared with the reduced chapter and the book contribution: reduction is
+    /// the identity here, so the table is handed on by `Arc` rather than copied.
+    words: Arc<MixedCaseWords>,
+}
+
+/// One chapter's reduced mixed-case result — identical to its observation,
+/// because nothing crosses a chapter seam for this rule.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub(crate) struct MixedCaseReduced {
+    token: Box<str>,
+    words: Arc<MixedCaseWords>,
+}
+
+/// A book's ordered word table: `(folded word, raw shape counts)` sorted by
+/// word. Sorted for two reasons — a deterministic `Eq` that cannot see which
+/// integers the interner happened to hand out, and a merge-join against the
+/// previous table that yields the exact stats-delta in one pass.
+///
+/// The key is a shared `Arc<str>` from the cache's [`WordInterner`], so building
+/// this table and keying the corpus aggregate by it copies no bytes.
+type MixedCaseBookWords = Vec<(Arc<str>, ShapeProfile)>;
+
+/// A book's folded mixed-case contribution: its ordered word table (the corpus
+/// aggregate's addend) and its chapters' reduced results.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub(crate) struct MixedCaseBookContribution {
+    words: Arc<MixedCaseBookWords>,
+    chapters: Vec<MixedCaseReduced>,
+}
+
+/// The mixed-case corpus aggregate: each book's ordered table, plus the
+/// corpus-wide per-word sum maintained **incrementally** across book
+/// replacements. Exact because the counts are integers (see [`ShapeProfile::sub`]).
+#[derive(Default)]
+pub(crate) struct MixedCaseCorpusStats {
+    per_book: BTreeMap<Box<str>, Arc<MixedCaseBookWords>>,
+    /// word → corpus-wide summed shape counts. A word whose every contribution
+    /// has been subtracted away is removed, so this holds exactly the corpus's
+    /// live cased vocabulary.
+    merged: FxHashMap<Arc<str>, ShapeProfile>,
+}
+
+/// The judge key: the case-folded word type. Every judged quantity is a function
+/// of this one word's merged counts and nothing else, which is what makes the
+/// per-key stats-delta meaningful here.
+pub(crate) type MixedCaseKey = Arc<str>;
+
+/// One word's verdict: its score and finding-arg counts, or silence.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct MixedCaseOutcome {
+    emit: Option<(f32, u32, u32)>,
+}
+
+/// The judging half: the three clamped knobs, hoisted out of the per-key path.
+#[derive(Clone, Copy)]
+pub(crate) struct MixedCaseJudge {
+    k: f64,
+    floor: f64,
+    z: f64,
+}
+
+impl MixedCaseJudge {
+    fn new(cfg: &MixedCaseConfig) -> Self {
+        MixedCaseJudge {
+            k: clamp_count(cfg.recurrence_k),
+            floor: f64::from(clamp_unit(cfg.emit_score_min)),
+            z: clamp_z(cfg.confidence_z),
+        }
+    }
+}
+
+/// `case.mixed-case-word`'s typed observation substrate. Its boundary state is
+/// **empty**, proven from the extraction walk rather than assumed: a token's
+/// shape is a pure function of the token's own bytes
+/// ([`case_shape`](crate::signals::case_shape::case_shape)) and its word type is
+/// a pure function of its own fold, so the walk holds no pending state, reads no
+/// neighbour, and looks at no previous verse. Position is deliberately
+/// irrelevant to this rule (ADR 0055: the fleet OtherMixed rate is flat across
+/// the sentence seam), which is exactly why it imports none of casing's
+/// pending-terminal machine. Reduction is therefore the identity and every
+/// replay converges at the chapter that changed.
+pub(crate) struct MixedCaseSubstrate;
+
+/// Pins the substrate's registry id at compile time.
+const _: crate::substrate::SubstrateId =
+    <MixedCaseSubstrate as crate::substrate::ObservationSubstrate>::ID;
+
+/// One chapter's mixed-case map: the same per-token tally the listener always
+/// ran, plus the chapter's OtherMixed occurrences.
+struct ChapterAcc {
     intern: FxHashMap<String, u32>,
     keys: Vec<String>,
     profiles: Vec<ShapeProfile>,
+    sites: Vec<(u32, SiteAddr)>,
+    tokens_buf: Vec<crate::token::Token>,
 }
 
-impl MixedCaseAcc {
-    pub(crate) fn new() -> Self {
-        MixedCaseAcc {
+impl ChapterAcc {
+    fn new() -> Self {
+        ChapterAcc {
             intern: FxHashMap::default(),
             keys: Vec::new(),
             profiles: Vec::new(),
+            sites: Vec::new(),
+            tokens_buf: Vec::new(),
         }
     }
 
-    pub(crate) fn verse(&mut self, v: &stream::VerseInputs<'_, '_>) {
-        for (tok, folded) in v.tokens.iter().zip(v.folds) {
-            let Some(folded) = folded else { continue };
-            let word = tok.span.slice(v.text);
+    fn verse(&mut self, local_idx: LocalKeyIdx, text: &str) {
+        self.tokens_buf.clear();
+        tokenize_into(text, &mut self.tokens_buf);
+        for i in 0..self.tokens_buf.len() {
+            let span = self.tokens_buf[i].span;
+            let word = span.slice(text);
+            if !is_letter_token(word) {
+                continue;
+            }
             let Some(shape) = case_shape(word) else {
                 continue;
             };
-            let id = match self.intern.get(folded.as_ref()) {
+            // The fold is the exact `to_lowercase` the fused-walk listener keyed
+            // by, so the word types — and every count derived from them — are
+            // unchanged by the migration.
+            let key = word.to_lowercase();
+            let id = match self.intern.get(&key) {
                 Some(&id) => id,
                 None => {
                     let id = self.keys.len() as u32;
-                    let key = folded.clone().into_owned();
                     self.intern.insert(key.clone(), id);
                     self.keys.push(key);
                     self.profiles.push(ShapeProfile::default());
@@ -394,21 +362,472 @@ impl MixedCaseAcc {
                 }
             };
             self.profiles[id as usize].record(shape);
+            if shape == CaseShape::OtherMixed {
+                self.sites.push((id, SiteAddr::pack(local_idx, span)));
+            }
         }
     }
 
-    pub(crate) fn finish(self) -> BookMixedCase {
-        // Every interned key was a cased word with ≥1 recorded shape (the sole
-        // pruning — caseless tokens never intern), so no filter is needed here.
-        let words = self.keys.into_iter().zip(self.profiles).collect();
-        BookMixedCase { words }
+    fn finish(self, token: &str, symbols: &WordInterner) -> MixedCaseChapterObs {
+        let keys = symbols.intern_all(self.keys);
+        let sites = self
+            .sites
+            .iter()
+            .map(|&(id, addr)| MixedCaseSite {
+                word: keys[id as usize],
+                addr,
+            })
+            .collect();
+        MixedCaseChapterObs {
+            token: Box::from(token),
+            words: Arc::new(MixedCaseWords {
+                keys: keys.into_boxed_slice(),
+                profiles: self.profiles.into_boxed_slice(),
+                sites,
+            }),
+        }
     }
+}
+
+impl crate::substrate::ObservationSubstrate for MixedCaseSubstrate {
+    const ID: crate::substrate::SubstrateId = crate::substrate::SubstrateId::MixedCase;
+    // Bump on any observation/reduction schema change.
+    const SCHEMA_STAMP: u64 = 1;
+
+    type Key = MixedCaseKey;
+    type BoundaryState = ();
+    type ChapterObservation = MixedCaseChapterObs;
+    type ReducedChapter = MixedCaseReduced;
+    type BookContribution = MixedCaseBookContribution;
+    type CorpusStats = MixedCaseCorpusStats;
+    // Every `MixedCaseConfig` field (the score floor, the recurrence knee, the
+    // confidence z) is read at judge, so a knob change maps and reduces nothing.
+    type ExtractorConfig = ();
+    // The shared folded-word table, the same instance casing names its word
+    // types through: a word's symbol has to mean the same thing in both.
+    type Symbols = WordInterner;
+    type JudgeConfig = MixedCaseJudge;
+    type EntryOutcome = MixedCaseOutcome;
+
+    fn extractor_fp(_extractor: &()) -> u64 {
+        0
+    }
+
+    fn map_chapter(
+        chapter: &crate::substrate::ChapterView<'_>,
+        _extractor: &(),
+        symbols: &WordInterner,
+    ) -> MixedCaseChapterObs {
+        let mut acc = ChapterAcc::new();
+        for (vi, text) in chapter.texts.iter().enumerate() {
+            acc.verse(LocalKeyIdx::from_usize(vi), text);
+        }
+        acc.finish(chapter.chapter, symbols)
+    }
+
+    fn pending_owner(_state: &()) -> Option<&str> {
+        None
+    }
+
+    fn reduce_chapter(
+        observation: &MixedCaseChapterObs,
+        _entering: &(),
+        _carry_out: &mut MixedCaseReduced,
+    ) -> (MixedCaseReduced, ()) {
+        (
+            MixedCaseReduced {
+                token: observation.token.clone(),
+                words: Arc::clone(&observation.words),
+            },
+            (),
+        )
+    }
+
+    fn finish_book(_leaving: &(), _carry_out: &mut MixedCaseReduced) {}
+
+    fn fold_book(reduced: &[MixedCaseReduced], symbols: &WordInterner) -> MixedCaseBookContribution {
+        // Sum the chapters' per-symbol profiles, keyed by the shared SYMBOL, so
+        // this pass hashes 4-byte integers instead of words and never touches
+        // the arena; the words are resolved once, below, for the sort.
+        let mut intern: FxHashMap<WordSym, u32> = FxHashMap::default();
+        let mut syms: Vec<WordSym> = Vec::new();
+        let mut profiles: Vec<ShapeProfile> = Vec::new();
+        for r in reduced {
+            for (i, &sym) in r.words.keys.iter().enumerate() {
+                let id = match intern.get(&sym) {
+                    Some(&id) => id,
+                    None => {
+                        let id = syms.len() as u32;
+                        intern.insert(sym, id);
+                        syms.push(sym);
+                        profiles.push(ShapeProfile::default());
+                        id
+                    }
+                };
+                profiles[id as usize].add(&r.words.profiles[i]);
+            }
+        }
+        // Sort by the keys' STRING order — symbols are assigned in map-completion
+        // order and carry no meaning here beyond identity, so a symbol-ordered
+        // table would compare unequal across two caches holding identical text.
+        let resolved = symbols.resolve_all(syms.iter().copied());
+        let mut order: Vec<u32> = (0..resolved.len() as u32).collect();
+        order.sort_unstable_by(|&a, &b| resolved[a as usize].cmp(&resolved[b as usize]));
+        let words: MixedCaseBookWords = order
+            .iter()
+            .map(|&i| (Arc::clone(&resolved[i as usize]), profiles[i as usize]))
+            .collect();
+        MixedCaseBookContribution {
+            words: Arc::new(words),
+            chapters: reduced.to_vec(),
+        }
+    }
+
+    fn replace_book_in_corpus_stats(
+        stats: &mut MixedCaseCorpusStats,
+        slug: &str,
+        old: Option<&MixedCaseBookContribution>,
+        new: Option<&MixedCaseBookContribution>,
+    ) -> Vec<MixedCaseKey> {
+        // Both tables are sorted by word, so one merge-join both applies the
+        // replacement (subtract the old contribution, add the new) and yields
+        // the EXACT stats-delta: a word's corpus sum moves iff this book's
+        // contribution to it moved, so a word contributed identically by both
+        // tables is untouched and is not a delta key. Equal counts are proof
+        // here — unlike site equality — because the aggregate is a pure sum.
+        let empty: MixedCaseBookWords = Vec::new();
+        let o = old.map_or(&empty[..], |c| &c.words[..]);
+        let n = new.map_or(&empty[..], |c| &c.words[..]);
+        let mut delta: Vec<MixedCaseKey> = Vec::new();
+        let mut i = 0usize;
+        let mut j = 0usize;
+        while i < o.len() || j < n.len() {
+            let ord = match (o.get(i), n.get(j)) {
+                (Some((a, _)), Some((b, _))) => a.cmp(b),
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, None) => unreachable!("loop guard"),
+            };
+            match ord {
+                std::cmp::Ordering::Less => {
+                    let (w, p) = &o[i];
+                    subtract(stats, w, p);
+                    delta.push(Arc::clone(w));
+                    i += 1;
+                }
+                std::cmp::Ordering::Greater => {
+                    let (w, p) = &n[j];
+                    stats.merged.entry(Arc::clone(w)).or_default().add(p);
+                    delta.push(Arc::clone(w));
+                    j += 1;
+                }
+                std::cmp::Ordering::Equal => {
+                    let (w, op) = &o[i];
+                    let np = &n[j].1;
+                    if op != np {
+                        let e = stats
+                            .merged
+                            .get_mut(w)
+                            .expect("a contributed word is in the aggregate");
+                        e.sub(op);
+                        e.add(np);
+                        delta.push(Arc::clone(w));
+                    }
+                    i += 1;
+                    j += 1;
+                }
+            }
+        }
+        match new {
+            Some(c) => {
+                stats.per_book.insert(Box::from(slug), Arc::clone(&c.words));
+            }
+            None => {
+                stats.per_book.remove(slug);
+            }
+        }
+        delta
+    }
+
+    fn judge(
+        judge: &MixedCaseJudge,
+        key: &MixedCaseKey,
+        stats: &MixedCaseCorpusStats,
+    ) -> MixedCaseOutcome {
+        let Some(p) = stats.merged.get(key) else {
+            return MixedCaseOutcome::default();
+        };
+        // A word never seen OtherMixed has nothing to report; a hapax mixed word
+        // has not_other == 0 ⇒ dominance 0 ⇒ silent, structurally (ADR 0055).
+        if p.other == 0 {
+            return MixedCaseOutcome::default();
+        }
+        let total = p.total();
+        let dominance = wilson_lower_bound(p.not_other(), total, judge.z);
+        let score = dominance * rarity(u64::from(p.other), judge.k);
+        if score < judge.floor {
+            return MixedCaseOutcome::default();
+        }
+        MixedCaseOutcome {
+            emit: Some((
+                score as f32,
+                p.other,
+                total.min(u64::from(u32::MAX)) as u32,
+            )),
+        }
+    }
+}
+
+/// Remove one book's contribution to a word, dropping the entry when nothing is
+/// left — so the aggregate holds exactly the corpus's live cased vocabulary and
+/// a removed book cannot keep a dead word alive.
+fn subtract(stats: &mut MixedCaseCorpusStats, word: &Arc<str>, p: &ShapeProfile) {
+    if let Some(e) = stats.merged.get_mut(word) {
+        e.sub(p);
+        if e.is_empty() {
+            stats.merged.remove(word);
+        }
+    }
+}
+
+impl MixedCaseBookContribution {
+    /// Emit this book's findings: one per retained OtherMixed occurrence whose
+    /// word type survived judging. `verdicts` is resolved once per analyze for
+    /// every word any site names, so this is a hash probe per site.
+    fn materialize(
+        &self,
+        slug: &str,
+        corpus: &Corpus,
+        verdicts: &FxHashMap<WordSym, (Arc<str>, MixedCaseOutcome)>,
+        out: &mut Vec<Finding>,
+    ) {
+        for chapter in &self.chapters {
+            let Some(range) = corpus.chapter_range(slug, &chapter.token) else {
+                continue;
+            };
+            let base = crate::corpus::KeyIdx::from_usize(range.start);
+            for site in chapter.words.sites.iter() {
+                let Some((word, outcome)) = verdicts.get(&site.word) else {
+                    continue;
+                };
+                let Some((score, other, total)) = outcome.emit else {
+                    continue;
+                };
+                let (local, range) = site.addr.unpack();
+                out.push(Finding {
+                    key_idx: rebase(base, local),
+                    code: MIXED_CASE_WORD,
+                    severity: Severity::Info,
+                    range: Span {
+                        start: range.start,
+                        end: range.end,
+                    },
+                    score: Some(score),
+                    args: Some(FindingArgs::MixedCaseWord {
+                        word: word.to_string(),
+                        other,
+                        total,
+                    }),
+                });
+            }
+        }
+    }
+}
+
+/// The resident state one mixed-case drive reads and writes: the substrate's own
+/// cache and the shared word table its observations name word types through.
+pub(crate) struct MixedCaseState<'a> {
+    pub(crate) cache: &'a mut crate::substrate::SubstrateCache<MixedCaseSubstrate>,
+    pub(crate) symbols: &'a WordInterner,
+}
+
+/// One chapter the substrate has to map this analysis, as the ordered map seam
+/// sees it: its caller-order `(book, chapter)` slot plus the view mapping reads.
+struct MixedCaseMapWork<'a> {
+    book: usize,
+    chapter: usize,
+    view: crate::substrate::ChapterView<'a>,
+}
+
+/// Drive the `case.mixed-case-word` observation substrate for one analysis: map
+/// the dirty chapters through the ordered chapter-map seam, reduce (the
+/// identity), judge exactly the word types its retained sites name, and
+/// materialize. When inactive, drop the cached products so an edit while it is
+/// disabled does no work for it.
+pub(crate) fn drive_mixed_case(
+    active: bool,
+    state: MixedCaseState<'_>,
+    corpus: &Corpus,
+    cfg: &MixedCaseConfig,
+    out: &mut Vec<Finding>,
+) {
+    use crate::substrate::{ChapterView, ObservationInputStamp, ObservationSubstrate};
+    let MixedCaseState { cache, symbols } = state;
+    #[cfg(any(test, feature = "test-probes"))]
+    cache.reset_probes();
+    if !active {
+        cache.clear();
+        return;
+    }
+    let texts = corpus.texts();
+    let layout = corpus.book_layout();
+    let mut stamped: Vec<Vec<(Box<str>, ObservationInputStamp)>> = Vec::with_capacity(layout.len());
+    let mut work: Vec<MixedCaseMapWork<'_>> = Vec::new();
+    let mut book_runs: Vec<std::ops::Range<usize>> = Vec::new();
+    let mut work_bytes = 0usize;
+    for (bi, book) in layout.iter().enumerate() {
+        let run_start = work.len();
+        let mut chapters = Vec::with_capacity(book.chapters.len());
+        for (ci, c) in book.chapters.iter().enumerate() {
+            let stamp = ObservationInputStamp {
+                schema_stamp: MixedCaseSubstrate::SCHEMA_STAMP,
+                chapter_hash: c.hash,
+                extractor_fp: MixedCaseSubstrate::extractor_fp(&()),
+            };
+            if !cache.observation_is_current(&book.slug, &c.chapter, &stamp) {
+                let verses = &texts[c.range.clone()];
+                work_bytes += verses.iter().map(String::len).sum::<usize>();
+                work.push(MixedCaseMapWork {
+                    book: bi,
+                    chapter: ci,
+                    view: ChapterView {
+                        chapter: &c.chapter,
+                        texts: verses,
+                    },
+                });
+            }
+            chapters.push((c.chapter.clone(), stamp));
+        }
+        if work.len() > run_start {
+            book_runs.push(run_start..work.len());
+        }
+        stamped.push(chapters);
+    }
+    let route = crate::rule::map_route(&book_runs, work.len(), work_bytes);
+    #[cfg(any(test, feature = "test-probes"))]
+    {
+        cache.map_route = route.label();
+    }
+    let fresh = crate::rule::map_chapter_work(&work, &book_runs, route, |w| {
+        MixedCaseSubstrate::map_chapter(&w.view, &(), symbols)
+    });
+    // Back into caller-order `(book, chapter)` slots, so reduction reads them in
+    // corpus order and never in completion order.
+    let mut slots: Vec<Vec<Option<MixedCaseChapterObs>>> = layout
+        .iter()
+        .map(|b| (0..b.chapters.len()).map(|_| None).collect())
+        .collect();
+    for (w, obs) in work.iter().zip(fresh) {
+        slots[w.book][w.chapter] = Some(obs);
+    }
+    for (bi, book) in layout.iter().enumerate() {
+        cache.update_book(&book.slug, &stamped[bi], symbols, |i| {
+            slots[bi][i].take().unwrap_or_else(|| {
+                let c = &book.chapters[i];
+                MixedCaseSubstrate::map_chapter(
+                    &ChapterView {
+                        chapter: &c.chapter,
+                        texts: &texts[c.range.clone()],
+                    },
+                    &(),
+                    symbols,
+                )
+            })
+        });
+    }
+
+    // The judge key set is exactly the word types the retained sites name — the
+    // only words that could ever emit. Collected before judging so each word type
+    // is judged once however many occurrences it has.
+    let mut named: FxHashSet<WordSym> = FxHashSet::default();
+    for book in layout {
+        if let Some(contrib) = cache.book_contribution(&book.slug) {
+            for chapter in &contrib.chapters {
+                for site in chapter.words.sites.iter() {
+                    named.insert(site.word);
+                }
+            }
+        }
+    }
+    let judge = MixedCaseJudge::new(cfg);
+    let stats = cache.corpus_stats();
+    let syms: Vec<WordSym> = named.into_iter().collect();
+    let words = symbols.resolve_all(syms.iter().copied());
+    let verdicts: FxHashMap<WordSym, (Arc<str>, MixedCaseOutcome)> = syms
+        .iter()
+        .copied()
+        .zip(words)
+        .map(|(sym, word)| {
+            let outcome = MixedCaseSubstrate::judge(&judge, &word, stats);
+            (sym, (word, outcome))
+        })
+        .collect();
+    #[cfg(any(test, feature = "test-probes"))]
+    {
+        cache.judged = verdicts.len();
+    }
+    for book in layout {
+        if let Some(contrib) = cache.book_contribution(&book.slug) {
+            contrib.materialize(&book.slug, corpus, &verdicts, out);
+        }
+    }
+}
+
+/// The corpus-wide shape-count totals this substrate observes, as
+/// `(lower, title, allcaps, other)` — the census lane's cross-check: its
+/// `CaseShapes` section must count exactly the same shapes over the same token
+/// unit. Reads the substrate's own corpus aggregate, so the two cannot drift.
+#[cfg(test)]
+pub(crate) fn shape_totals(corpus: &Corpus) -> [u64; 4] {
+    let mut cache = crate::substrate::SubstrateCache::new();
+    let symbols = WordInterner::default();
+    let mut sink = Vec::new();
+    drive_mixed_case(
+        true,
+        MixedCaseState {
+            cache: &mut cache,
+            symbols: &symbols,
+        },
+        corpus,
+        &MixedCaseConfig::default(),
+        &mut sink,
+    );
+    let mut totals = [0u64; 4];
+    for p in cache.corpus_stats().merged.values() {
+        totals[0] += u64::from(p.lower);
+        totals[1] += u64::from(p.title);
+        totals[2] += u64::from(p.allcaps);
+        totals[3] += u64::from(p.other);
+    }
+    totals
+}
+
+/// `case.mixed-case-word` findings for a whole corpus at a given config, via the
+/// observation substrate over a fresh transient cache — the single mixed-case
+/// implementation, for tests and calibration callers. Findings are in the final
+/// stable order.
+#[cfg(any(test, feature = "bench-probes"))]
+pub fn mixed_case_findings(corpus: &Corpus, cfg: &MixedCaseConfig) -> Vec<Finding> {
+    let mut cache = crate::substrate::SubstrateCache::new();
+    let symbols = WordInterner::default();
+    let mut out = Vec::new();
+    drive_mixed_case(
+        true,
+        MixedCaseState {
+            cache: &mut cache,
+            symbols: &symbols,
+        },
+        corpus,
+        cfg,
+        &mut out,
+    );
+    out.sort_by_key(|f| (f.key_idx, f.range.start, f.range.end));
+    out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::corpus::by_book;
 
     fn cfg(emit_score_min: f32, recurrence_k: f32, confidence_z: f32) -> MixedCaseConfig {
         MixedCaseConfig {
@@ -418,14 +837,10 @@ mod tests {
         }
     }
 
-    fn rule(cfg: MixedCaseConfig) -> MixedCaseWord {
-        MixedCaseWord { cfg }
-    }
-
-    fn run(corpus: &Corpus, r: &MixedCaseWord) -> Vec<Finding> {
-        let books = by_book(corpus);
-        let (stats, _) = r.reduce(&books, None, None);
-        r.judge(&stats, &books, None, None)
+    /// Every test runs the shipped substrate over a fresh transient cache — the
+    /// one mixed-case implementation.
+    fn run(corpus: &Corpus, cfg: &MixedCaseConfig) -> Vec<Finding> {
+        mixed_case_findings(corpus, cfg)
     }
 
     fn slice<'a>(corpus: &'a Corpus, f: &Finding) -> &'a str {
@@ -478,7 +893,7 @@ mod tests {
         let mut cb = cycle("GEN", &["we praise Dios today"], 40);
         cb.push("GEN", 500, "we praise DIos today");
         let corpus = cb.build();
-        let f = run(&corpus, &rule(cfg(0.5, 32.0, 0.0)));
+        let f = run(&corpus, &cfg(0.5, 32.0, 0.0));
         assert_eq!(f.len(), 1, "{f:?}");
         assert_eq!(slice(&corpus, &f[0]), "DIos");
         assert_eq!(f[0].severity, Severity::Info);
@@ -498,7 +913,7 @@ mod tests {
         let mut cb = cycle("GEN", &["we praise Dios today"], 40);
         cb.push("GEN", 500, "we praise DIos today");
         let corpus = cb.build();
-        let f = run(&corpus, &rule(cfg(0.5, 32.0, 0.0)));
+        let f = run(&corpus, &cfg(0.5, 32.0, 0.0));
         assert_eq!(f.len(), 1);
         let expected = (40.0 / 41.0) * 1.0;
         assert!(
@@ -516,8 +931,8 @@ mod tests {
         cb.push("GEN", 500, "we praise DIos today");
         let corpus = cb.build();
         // dominance = 3/4 = 0.75, below a 0.9 floor.
-        assert!(run(&corpus, &rule(cfg(0.9, 32.0, 0.0))).is_empty());
-        assert_eq!(run(&corpus, &rule(cfg(0.5, 32.0, 0.0))).len(), 1);
+        assert!(run(&corpus, &cfg(0.9, 32.0, 0.0)).is_empty());
+        assert_eq!(run(&corpus, &cfg(0.5, 32.0, 0.0)).len(), 1);
     }
 
     // ── recurrence excuses conventions (no hardcoded list) ───────────────────
@@ -534,7 +949,7 @@ mod tests {
             cb.push("GEN", 500, "we praise MUngu now");
             cb.build()
         };
-        assert_eq!(run(&one, &rule(cfg(0.5, 4.0, 0.0))).len(), 1);
+        assert_eq!(run(&one, &cfg(0.5, 4.0, 0.0)).len(), 1);
 
         // Recurring convention: `MUngu` ×many collapses rarity past the knee.
         let many = {
@@ -545,7 +960,7 @@ mod tests {
             cb.build()
         };
         assert!(
-            run(&many, &rule(cfg(0.5, 4.0, 0.0))).is_empty(),
+            run(&many, &cfg(0.5, 4.0, 0.0)).is_empty(),
             "recurring convention silenced"
         );
     }
@@ -555,7 +970,7 @@ mod tests {
     #[test]
     fn dominantly_mixed_convention_is_silent() {
         let corpus = cycle("GEN", &["and HaElohim spoke here"], 60).build();
-        assert!(run(&corpus, &rule(cfg(0.5, 32.0, 0.0))).is_empty());
+        assert!(run(&corpus, &cfg(0.5, 32.0, 0.0)).is_empty());
     }
 
     // ── hapax silence + guards ───────────────────────────────────────────────
@@ -568,7 +983,7 @@ mod tests {
         cb.push("GEN", 500, "a stray deJésus word");
         let corpus = cb.build();
         assert!(
-            run(&corpus, &rule(cfg(0.5, 32.0, 0.0))).is_empty(),
+            run(&corpus, &cfg(0.5, 32.0, 0.0)).is_empty(),
             "hapax mixed word stays silent"
         );
     }
@@ -578,14 +993,14 @@ mod tests {
     #[test]
     fn single_letter_is_never_mixed() {
         let corpus = cycle("GEN", &["I A I saw A tree"], 40).build();
-        assert!(run(&corpus, &rule(cfg(0.0, 32.0, 0.0))).is_empty());
+        assert!(run(&corpus, &cfg(0.0, 32.0, 0.0)).is_empty());
     }
 
     /// A caseless script has no shape, so nothing is a candidate.
     #[test]
     fn caseless_script_is_silent() {
         let corpus = cycle("GEN", &["उसने कहा वे चले", "फिर वह चला गया"], 40).build();
-        assert!(run(&corpus, &rule(cfg(0.0, 32.0, 0.0))).is_empty());
+        assert!(run(&corpus, &cfg(0.0, 32.0, 0.0)).is_empty());
     }
 
     /// Hyphen compounds are two tokens, not one: `Obed-Edom` is two Titlecase
@@ -594,7 +1009,7 @@ mod tests {
     fn hyphen_compound_is_two_tokens() {
         let corpus = cycle("GEN", &["from Obed-Edom the gittite"], 60).build();
         assert!(
-            run(&corpus, &rule(cfg(0.5, 32.0, 0.0))).is_empty(),
+            run(&corpus, &cfg(0.5, 32.0, 0.0)).is_empty(),
             "Obed-Edom is two Title tokens"
         );
     }
@@ -648,42 +1063,270 @@ mod tests {
             run_casing(&mixed)
         );
         // … and mixed-case flags exactly that token.
-        let f = run(&mixed, &rule(cfg(0.5, 32.0, 0.0)));
+        let f = run(&mixed, &cfg(0.5, 32.0, 0.0));
         assert_eq!(f.len(), 1, "{f:?}");
         assert_eq!(slice(&mixed, &f[0]), "dIos");
     }
 
-    // ── stateful plumbing: merge / remove_book ───────────────────────────────
+    // ── resident equivalence + work probes (plan §8 Phase E, §12.3/§12.6) ────
 
-    /// The score is corpus-wide: a slip in a later-edited book scores against
-    /// the whole merged corpus, and book-supersede replaces a book wholesale.
+    /// Keys and texts for a multi-chapter, multi-book corpus built from a fixed
+    /// shape rotation. Keys are `BOOK ch:v`, so a chapter is a real chapter run.
+    fn shaped(
+        books: &[&str],
+        chapters: u16,
+        verses: u16,
+        shapes: &'static [&'static str],
+    ) -> (Vec<String>, Vec<&'static str>) {
+        let mut keys = Vec::new();
+        let mut texts = Vec::new();
+        for book in books {
+            for ch in 1..=chapters {
+                for v in 1..=verses {
+                    keys.push(format!("{book} {ch}:{v}"));
+                    texts.push(shapes[(keys.len() + ch as usize) % shapes.len()]);
+                }
+            }
+        }
+        (keys, texts)
+    }
+
+    /// Drive the substrate over a resident cache, in `mixed_case_findings`' order.
+    fn resident(
+        cache: &mut crate::substrate::SubstrateCache<MixedCaseSubstrate>,
+        symbols: &WordInterner,
+        corpus: &Corpus,
+        cfg: &MixedCaseConfig,
+    ) -> Vec<Finding> {
+        let mut out = Vec::new();
+        drive_mixed_case(true, MixedCaseState { cache, symbols }, corpus, cfg, &mut out);
+        out.sort_by_key(|f| (f.key_idx, f.range.start, f.range.end));
+        out
+    }
+
+    /// Comparable rendering — key, span text, score and both arg counts, so an
+    /// equal-length-but-wrong result cannot pass.
+    fn render(corpus: &Corpus, f: &[Finding]) -> Vec<String> {
+        f.iter()
+            .map(|f| {
+                let a = match &f.args {
+                    Some(FindingArgs::MixedCaseWord { word, other, total }) => {
+                        format!("{word}/{other}/{total}")
+                    }
+                    _ => "-".to_string(),
+                };
+                format!(
+                    "{}|{}|{:?}|{a}",
+                    corpus.key(f.key_idx),
+                    f.range.slice(corpus.text(f.key_idx)),
+                    f.score
+                )
+            })
+            .collect()
+    }
+
+    /// An edit to one chapter maps and reduces exactly that chapter. The boundary
+    /// state is empty — a token's case shape is a function of its own bytes — so
+    /// no reduction can cascade past the chapter that changed.
     #[test]
-    fn book_supersede_via_merge_and_remove() {
-        let r = rule(cfg(0.5, 32.0, 0.0));
-
-        // Dirty EXO merged onto a clean GEN establishing `Dios` dominance.
-        let gen_corpus = cycle("GEN", &["we praise Dios today"], 40).build();
-        let mut exo_cb = CorpusBuilder::default();
-        exo_cb.push("EXO", 1, "we praise DIos today");
-        let exo = exo_cb.build();
-
-        let gen_books = by_book(&gen_corpus);
-        let exo_books = by_book(&exo);
-        let merged = r
-            .reduce(&gen_books, None, None)
-            .0
-            .merge(r.reduce(&exo_books, None, None).0);
-        let inc = r.judge(&merged, &exo_books, None, None);
-        assert_eq!(inc.len(), 1, "corpus-wide dominance lifts the EXO slip");
-        assert_eq!(exo.key(inc[0].key_idx), "EXO 1:1");
-
-        // Removing GEN drops the dominance mass, so the EXO slip goes silent
-        // (its own book has dominance 0 — the mixed form is all it has seen).
-        let RuleStats::MixedCase(mut stats) = merged else {
-            unreachable!()
+    fn an_edit_maps_and_reduces_exactly_its_own_chapter() {
+        const SHAPES: &[&str] = &["we praise Dios today", "and Dios spoke", "Dios again"];
+        let (keys, mut texts) = shaped(&["GEN"], 8, 3, SHAPES);
+        let build = |texts: &[&str]| {
+            Corpus::try_from_parts(keys.clone(), texts.iter().map(|t| (*t).to_string()).collect())
+                .unwrap()
         };
-        stats.remove_book("GEN");
-        let after = RuleStats::MixedCase(stats);
-        assert!(r.judge(&after, &exo_books, None, None).is_empty());
+        let knobs = cfg(0.5, 32.0, 0.0);
+        let symbols = WordInterner::default();
+        let mut cache = crate::substrate::SubstrateCache::new();
+        let _ = resident(&mut cache, &symbols, &build(&texts), &knobs);
+        assert_eq!(cache.mapped, 8, "cold maps every chapter");
+        assert_eq!(cache.reduced, 8);
+
+        // Introduce an interior-capital slip in chapter 5.
+        texts[4 * 3 + 1] = "we praise DIos today";
+        let e = build(&texts);
+        cache.reset_probes();
+        let inc = resident(&mut cache, &symbols, &e, &knobs);
+        assert_eq!(cache.mapped, 1, "one changed chapter maps one chapter");
+        assert_eq!(
+            cache.reduced, 1,
+            "an empty boundary state can never cascade past the changed chapter"
+        );
+        assert_eq!(inc.len(), 1, "{:?}", render(&e, &inc));
+        assert_eq!(render(&e, &inc), render(&e, &mixed_case_findings(&e, &knobs)));
+
+        // An unchanged re-drive maps and reduces nothing, and says the same thing.
+        cache.reset_probes();
+        let again = resident(&mut cache, &symbols, &e, &knobs);
+        assert_eq!((cache.mapped, cache.reduced), (0, 0));
+        assert_eq!(render(&e, &again), render(&e, &inc));
+    }
+
+    /// A judging-knob change maps and reduces **nothing**: every knob is read at
+    /// judge, so the extraction fingerprint cannot move.
+    #[test]
+    fn a_knob_change_maps_and_reduces_nothing() {
+        const SHAPES: &[&str] = &[
+            "we praise Dios today",
+            "we praise DIos today",
+            "Dios spoke",
+        ];
+        let (keys, texts) = shaped(&["GEN"], 4, 3, SHAPES);
+        let corpus =
+            Corpus::try_from_parts(keys, texts.iter().map(|t| (*t).to_string()).collect()).unwrap();
+        let symbols = WordInterner::default();
+        let mut cache = crate::substrate::SubstrateCache::new();
+        let low = resident(&mut cache, &symbols, &corpus, &cfg(0.0, 32.0, 0.0));
+        cache.reset_probes();
+        let high = resident(&mut cache, &symbols, &corpus, &cfg(0.99, 32.0, 0.0));
+        assert_eq!((cache.mapped, cache.reduced), (0, 0));
+        assert!(!low.is_empty(), "the low floor must actually emit");
+        assert!(high.is_empty(), "the high floor must actually silence it");
+        assert_eq!(
+            render(&corpus, &low),
+            render(&corpus, &mixed_case_findings(&corpus, &cfg(0.0, 32.0, 0.0)))
+        );
+    }
+
+    /// Property test (plan §12.6 shape): a resident cache driven through a
+    /// pseudo-random edit sequence over a multi-chapter, multi-book corpus equals
+    /// a cold whole-corpus run at every step. The rotation deliberately moves
+    /// clean and mixed mass around, so both the corpus-wide dominance and the
+    /// recurrence knee change under it — which is what exercises the
+    /// incrementally maintained aggregate rather than just the site bookkeeping.
+    #[test]
+    fn resident_mixed_case_equals_cold_under_randomized_edits() {
+        const SHAPES: &[&str] = &[
+            "we praise Dios today",
+            "we praise DIos today",
+            "and MUngu spoke here",
+            "and Mungu spoke here",
+            "HaElohim said so",
+            "",
+            "plain words only",
+        ];
+        let (keys, mut texts) = shaped(&["GEN", "EXO"], 4, 3, SHAPES);
+        let build = |texts: &[&str]| {
+            Corpus::try_from_parts(keys.clone(), texts.iter().map(|t| (*t).to_string()).collect())
+                .unwrap()
+        };
+        let knobs = cfg(0.5, 4.0, 0.0);
+        let symbols = WordInterner::default();
+        let mut cache = crate::substrate::SubstrateCache::new();
+        let _ = resident(&mut cache, &symbols, &build(&texts), &knobs);
+        let mut rng = 0x2545_F491_4F6C_DD1Du64;
+        let next = |rng: &mut u64| {
+            *rng ^= *rng << 13;
+            *rng ^= *rng >> 7;
+            *rng ^= *rng << 17;
+            *rng
+        };
+        let mut saw_findings = false;
+        for step in 0..120 {
+            let which = (next(&mut rng) % texts.len() as u64) as usize;
+            texts[which] = SHAPES[(next(&mut rng) % SHAPES.len() as u64) as usize];
+            let corpus = build(&texts);
+            let inc = resident(&mut cache, &symbols, &corpus, &knobs);
+            assert!(
+                cache.mapped <= 1 && cache.reduced <= 1,
+                "step {step}: one edited verse touches one chapter and converges there"
+            );
+            saw_findings |= !inc.is_empty();
+            assert_eq!(
+                render(&corpus, &inc),
+                render(&corpus, &mixed_case_findings(&corpus, &knobs)),
+                "step {step}: resident differs from cold"
+            );
+        }
+        assert!(saw_findings, "the edit sequence never produced a finding");
+    }
+
+    // ── the incrementally maintained aggregate ───────────────────────────────
+
+    /// The score is corpus-wide, and the aggregate is maintained incrementally
+    /// across book replacements: a slip in one book scores against the whole
+    /// resident corpus, and removing the book that supplied the dominance mass
+    /// silences it again. Exercises `replace_book_in_corpus_stats`'s subtract/add
+    /// path, which a whole-corpus re-fold would hide.
+    #[test]
+    fn the_aggregate_is_maintained_incrementally_across_book_replacement() {
+        let knobs = cfg(0.5, 32.0, 0.0);
+
+        // A clean GEN establishing `Dios` dominance, plus a dirty EXO.
+        let mut both = cycle("GEN", &["we praise Dios today"], 40);
+        both.push("EXO", 1, "we praise DIos today");
+        let both = both.build();
+
+        let mut cache = crate::substrate::SubstrateCache::new();
+        let symbols = WordInterner::default();
+        let out = resident(&mut cache, &symbols, &both, &knobs);
+        assert_eq!(out.len(), 1, "corpus-wide dominance lifts the EXO slip");
+        assert_eq!(both.key(out[0].key_idx), "EXO 1:1");
+
+        // Drop GEN from the resident aggregate: the EXO slip loses its dominance
+        // mass (its own book has seen only the mixed form) and goes silent.
+        cache.remove_book("GEN");
+        let exo = {
+            let mut cb = CorpusBuilder::default();
+            cb.push("EXO", 1, "we praise DIos today");
+            cb.build()
+        };
+        let after = resident(&mut cache, &symbols, &exo, &knobs);
+        assert!(after.is_empty(), "{after:?}");
+    }
+
+    /// The stats-delta is exactly the words whose corpus sum moved — not every
+    /// word the replaced book contributed. Equal counts ARE proof here, because
+    /// the aggregate is a pure integer sum (unlike site equality, plan §6.2).
+    #[test]
+    fn the_stats_delta_names_exactly_the_words_whose_sum_moved() {
+        use crate::substrate::ObservationSubstrate;
+
+        let before = cycle("GEN", &["alpha beta gamma"], 3).build();
+        let after = {
+            let mut cb = cycle("GEN", &["alpha beta gamma"], 2);
+            cb.push("GEN", 3, "alpha beta DElta");
+            cb.build()
+        };
+        let symbols = WordInterner::default();
+        let fold = |corpus: &Corpus| {
+            let mut cache: crate::substrate::SubstrateCache<MixedCaseSubstrate> =
+                crate::substrate::SubstrateCache::new();
+            let _ = resident(&mut cache, &symbols, corpus, &cfg(0.5, 32.0, 0.0));
+            cache.book_contribution("GEN").expect("GEN folded").clone()
+        };
+        let old = fold(&before);
+        let new = fold(&after);
+
+        let mut stats = MixedCaseCorpusStats::default();
+        assert_eq!(
+            MixedCaseSubstrate::replace_book_in_corpus_stats(&mut stats, "GEN", None, Some(&old))
+                .len(),
+            3,
+            "a first insertion names every word it contributes"
+        );
+        let delta = MixedCaseSubstrate::replace_book_in_corpus_stats(
+            &mut stats,
+            "GEN",
+            Some(&old),
+            Some(&new),
+        );
+        let mut names: Vec<&str> = delta.iter().map(|k| &**k).collect();
+        names.sort_unstable();
+        // `gamma` lost an occurrence and `delta` gained one; `alpha`/`beta` are
+        // contributed identically by both tables and are NOT delta keys.
+        assert_eq!(names, vec!["delta", "gamma"]);
+
+        // And the incrementally maintained sum equals a fresh fold of `after`.
+        let mut fresh = MixedCaseCorpusStats::default();
+        MixedCaseSubstrate::replace_book_in_corpus_stats(&mut fresh, "GEN", None, Some(&new));
+        let sorted = |s: &MixedCaseCorpusStats| {
+            let mut v: Vec<(String, ShapeProfile)> =
+                s.merged.iter().map(|(w, p)| (w.to_string(), *p)).collect();
+            v.sort_by(|a, b| a.0.cmp(&b.0));
+            v
+        };
+        assert_eq!(sorted(&stats), sorted(&fresh));
     }
 }

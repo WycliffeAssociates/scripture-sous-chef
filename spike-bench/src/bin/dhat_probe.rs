@@ -78,8 +78,13 @@ fn build_config(name: &str) -> Config {
             cfg.rules.insert(RuleId::InconsistentWordCasing, false);
             cfg
         }
+        "all-no-mixed-case" => {
+            let mut cfg = build_config("all");
+            cfg.rules.insert(RuleId::MixedCaseWord, false);
+            cfg
+        }
         other => panic!(
-            "unknown config {other:?} (want default|all|all-no-spacing|all-no-duplicate|all-no-casing)"
+            "unknown config {other:?} (want default|all|all-no-spacing|all-no-duplicate|all-no-casing|all-no-mixed-case)"
         ),
     }
 }
@@ -88,7 +93,7 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let (Some(mode), Some(config_name)) = (args.first().map(String::as_str), args.get(1)) else {
         eprintln!(
-            "usage: dhat_probe <testing|profile|warm-profile> <default|all|all-no-spacing|all-no-duplicate|all-no-casing> [corpus-path]"
+            "usage: dhat_probe <testing|profile|warm-profile> <default|all|all-no-spacing|all-no-duplicate|all-no-casing|all-no-mixed-case> [corpus-path]"
         );
         std::process::exit(2);
     };
