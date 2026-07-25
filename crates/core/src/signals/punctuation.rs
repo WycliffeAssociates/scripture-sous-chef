@@ -1361,13 +1361,20 @@ impl crate::substrate::ObservationSubstrate for SpacingSubstrate {
     // the extractor config is `()` and its fingerprint is a constant.
     type ExtractorConfig = ();
     type JudgeConfig = PunctuationSpacingConfig;
+    // Spacing's observations are mark/side counts and cross-seam pendings — no
+    // word identities to name, so no symbol table.
+    type Symbols = ();
     type EntryOutcome = MarkVerdict;
 
     fn extractor_fp(_extractor: &()) -> u64 {
         0
     }
 
-    fn map_chapter(chapter: &crate::substrate::ChapterView<'_>, _extractor: &()) -> SpacingChapterObs {
+    fn map_chapter(
+        chapter: &crate::substrate::ChapterView<'_>,
+        _extractor: &(),
+        _symbols: &(),
+    ) -> SpacingChapterObs {
         let mut verses = Vec::with_capacity(chapter.texts.len());
         for text in chapter.texts {
             let mut g = Vec::new();
@@ -1514,7 +1521,7 @@ impl crate::substrate::ObservationSubstrate for SpacingSubstrate {
         }
     }
 
-    fn fold_book(reduced: &[SpacingReduced]) -> SpacingBookContribution {
+    fn fold_book(reduced: &[SpacingReduced], _symbols: &()) -> SpacingBookContribution {
         let mut cells: BTreeMap<char, [u64; SIDE_CELLS]> = BTreeMap::new();
         let mut chapters = Vec::with_capacity(reduced.len());
         for r in reduced {
@@ -1686,7 +1693,7 @@ pub(crate) fn drive_spacing(
         cache.map_route = route.label();
     }
     let fresh = crate::rule::map_chapter_work(&work, &book_runs, route, |w| {
-        SpacingSubstrate::map_chapter(&w.view, &())
+        SpacingSubstrate::map_chapter(&w.view, &(), &())
     });
     // Back into caller-order `(book, chapter)` slots. Reduction reads them in
     // corpus order, never completion order, so serial and parallel builds — and
@@ -1699,7 +1706,7 @@ pub(crate) fn drive_spacing(
         slots[w.book][w.chapter] = Some(obs);
     }
     for (bi, book) in layout.iter().enumerate() {
-        cache.update_book(&book.slug, &stamped[bi], |i| {
+        cache.update_book(&book.slug, &stamped[bi], &(), |i| {
             // Pre-mapped above. The planning pass asked the cache the same
             // question the driver asks, so this slot is filled whenever the driver
             // wants it; mapping in place is the correct answer if it ever is not.
@@ -1710,6 +1717,7 @@ pub(crate) fn drive_spacing(
                         chapter: &c.chapter,
                         texts: &texts[c.range.clone()],
                     },
+                    &(),
                     &(),
                 )
             })
@@ -3044,6 +3052,7 @@ mod tests {
                         texts: &texts,
                     },
                     &(),
+                    &(),
                 )
             })
             .collect();
@@ -3067,7 +3076,7 @@ mod tests {
         {
             SpacingSubstrate::finish_book(&carry, &mut reduced[owner]);
         }
-        SpacingSubstrate::fold_book(&reduced)
+        SpacingSubstrate::fold_book(&reduced, &())
     }
 
     /// Corpus per-mark cells from the INDEPENDENT whole-book batch walk

@@ -140,6 +140,18 @@ pub(crate) struct SubstrateSection {
     /// that moved neither rebuilds nothing. It is a memo, not state: dropping it
     /// costs one rebuild and can never change output.
     pub(crate) casing_model: Option<casing::CasingModel>,
+    /// The shared folded-word table every word-keyed substrate names its word
+    /// types through (casing today; `case.mixed-case-word` next). It lives here,
+    /// beside the substrate slots rather than inside one, for two reasons: a
+    /// second substrate must be able to share one table (a word's symbol has to
+    /// mean the same thing in both), and a `SubstrateCache`'s own driver borrows
+    /// itself mutably while the table is read shared.
+    ///
+    /// Append-only, so a symbol issued for an observation cached long ago still
+    /// names the same word. It is therefore dropped only with the whole section
+    /// (`clear`) — never per book, which would renumber live symbols. See
+    /// [`crate::interner::WordInterner`] for the growth bound that buys.
+    pub(crate) words: crate::interner::WordInterner,
 }
 
 impl SubstrateSection {
@@ -149,6 +161,7 @@ impl SubstrateSection {
             duplicate_word: SubstrateCache::new(),
             casing: SubstrateCache::new(),
             casing_model: None,
+            words: crate::interner::WordInterner::default(),
         }
     }
 
@@ -159,6 +172,9 @@ impl SubstrateSection {
         self.duplicate_word.clear();
         self.casing.clear();
         self.casing_model = None;
+        // Every observation that could hold a symbol is gone, so the table's
+        // symbols have no readers left — the one point it is safe to drop.
+        self.words = crate::interner::WordInterner::default();
     }
 
     /// Deletion-invalidation entry point: drop a book across every substrate so a
@@ -518,6 +534,11 @@ pub struct CacheProbe {
     pub casing_reduced: usize,
     pub casing_judged: usize,
     pub casing_map_route: &'static str,
+    /// Distinct folded word types in the shared word table. Append-only, so this
+    /// only ever grows within a corpus: it is the interner's growth bound made
+    /// observable (a removed book's unique words stay counted until the section
+    /// is cleared).
+    pub interned_words: usize,
 }
 
 impl Default for AnalysisCache {
@@ -551,6 +572,7 @@ impl AnalysisCache {
         p.casing_reduced = self.substrates.casing.reduced;
         p.casing_judged = self.substrates.casing.judged;
         p.casing_map_route = self.substrates.casing.map_route;
+        p.interned_words = self.substrates.words.len();
         p.direct_chapters_patched = self.findings.chapters_patched;
         p.direct_map_route = self.prep.direct_route;
         p
@@ -723,6 +745,7 @@ impl PrepSection {
             casing_reduced: 0,
             casing_judged: 0,
             casing_map_route: "serial",
+            interned_words: 0,
         }
     }
 

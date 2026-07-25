@@ -22,6 +22,7 @@ pub mod diagnostics;
 mod evidence;
 pub mod grapheme;
 pub mod identity;
+mod interner;
 pub mod key;
 pub mod rule;
 pub mod script;
@@ -1004,8 +1005,11 @@ fn transition(
     signals::casing::drive_casing(
         config.is_enabled(RuleId::SentenceInitialLowercase),
         config.is_enabled(RuleId::InconsistentWordCasing),
-        &mut substrates.casing,
-        &mut substrates.casing_model,
+        signals::casing::CasingState {
+            cache: &mut substrates.casing,
+            retained: &mut substrates.casing_model,
+            symbols: &substrates.words,
+        },
         target,
         &config.casing,
         &mut out,

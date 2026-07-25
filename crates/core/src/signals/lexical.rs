@@ -213,6 +213,9 @@ impl crate::substrate::ObservationSubstrate for DuplicateWordSubstrate {
     type CorpusStats = ();
     type ExtractorConfig = ();
     type JudgeConfig = ();
+    // A duplicate-word hit is a pair of chapter-local spans; nothing it stores
+    // is a word identity, so it names nothing.
+    type Symbols = ();
     type EntryOutcome = DuplicateVerdict;
 
     fn extractor_fp(_extractor: &()) -> u64 {
@@ -222,6 +225,7 @@ impl crate::substrate::ObservationSubstrate for DuplicateWordSubstrate {
     fn map_chapter(
         chapter: &crate::substrate::ChapterView<'_>,
         _extractor: &(),
+        _symbols: &(),
     ) -> DuplicateChapterObs {
         let mut hits = Vec::new();
         // The carry starts empty at the chapter's first verse — that IS the
@@ -263,7 +267,7 @@ impl crate::substrate::ObservationSubstrate for DuplicateWordSubstrate {
 
     fn finish_book(_leaving: &(), _carry_out: &mut DuplicateReduced) {}
 
-    fn fold_book(reduced: &[DuplicateReduced]) -> DuplicateBookContribution {
+    fn fold_book(reduced: &[DuplicateReduced], _symbols: &()) -> DuplicateBookContribution {
         DuplicateBookContribution {
             chapters: reduced.to_vec(),
         }
@@ -386,7 +390,7 @@ pub(crate) fn drive_duplicate_word(
         cache.map_route = route.label();
     }
     let fresh = crate::rule::map_chapter_work(&work, &book_runs, route, |w| {
-        DuplicateWordSubstrate::map_chapter(&w.view, &())
+        DuplicateWordSubstrate::map_chapter(&w.view, &(), &())
     });
     let mut slots: Vec<Vec<Option<DuplicateChapterObs>>> = layout
         .iter()
@@ -396,7 +400,7 @@ pub(crate) fn drive_duplicate_word(
         slots[w.book][w.chapter] = Some(obs);
     }
     for (bi, book) in layout.iter().enumerate() {
-        cache.update_book(&book.slug, &stamped[bi], |i| {
+        cache.update_book(&book.slug, &stamped[bi], &(), |i| {
             slots[bi][i].take().unwrap_or_else(|| {
                 let c = &book.chapters[i];
                 DuplicateWordSubstrate::map_chapter(
@@ -404,6 +408,7 @@ pub(crate) fn drive_duplicate_word(
                         chapter: &c.chapter,
                         texts: &texts[c.range.clone()],
                     },
+                    &(),
                     &(),
                 )
             })

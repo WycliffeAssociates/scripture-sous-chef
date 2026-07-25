@@ -15,7 +15,9 @@
 //! Three purity rules the trait's signatures enforce structurally:
 //!
 //! - **Mapping is predecessor-free.** [`map_chapter`](ObservationSubstrate::map_chapter)
-//!   sees one chapter and the extractor config — never a neighbour's state and
+//!   sees one chapter, the extractor config, and the substrate's append-only
+//!   symbol naming ([`ObservationSubstrate::Symbols`], which encodes an
+//!   observation without changing what it says) — never a neighbour's state and
 //!   never a judging knob. A chapter's observation is therefore identical
 //!   wherever the chapter sits, which is what lets an unchanged chapter's
 //!   observation be reused after any structural edit.
@@ -147,6 +149,18 @@ pub(crate) trait ObservationSubstrate {
     /// The substrate's judging config (spacing: the four score knobs). Read only
     /// by [`judge`](Self::judge); never enters any stamp.
     type JudgeConfig: Clone;
+    /// Shared append-only naming a substrate's map and fold may use to encode
+    /// its observations compactly — casing's folded-word interner
+    /// ([`crate::interner::WordInterner`]); `()` for a substrate that needs
+    /// none.
+    ///
+    /// It is *naming*, never evidence, and that distinction is what keeps the
+    /// map's purity intact: appending to it cannot change what an observation
+    /// says, only which integer stands for a word, so it deliberately does not
+    /// enter [`ObservationInputStamp`] and cannot invalidate a cached
+    /// observation. Reached through `&self` because chapter mapping fans out,
+    /// hence `Sync`.
+    type Symbols: Default + Sync;
     /// A per-key verdict, materialised into findings at each site tagged with
     /// that key.
     type EntryOutcome;
@@ -160,6 +174,7 @@ pub(crate) trait ObservationSubstrate {
     fn map_chapter(
         chapter: &ChapterView<'_>,
         extractor: &Self::ExtractorConfig,
+        symbols: &Self::Symbols,
     ) -> Self::ChapterObservation;
 
     /// The opaque chapter token that owns `entering`'s carried cross-seam
@@ -190,7 +205,13 @@ pub(crate) trait ObservationSubstrate {
     fn finish_book(leaving: &Self::BoundaryState, carry_out: &mut Self::ReducedChapter);
 
     /// Fold a book's ordered reduced chapters into its corpus contribution.
-    fn fold_book(reduced: &[Self::ReducedChapter]) -> Self::BookContribution;
+    /// Reads `symbols` to resolve whatever its observations encoded through them
+    /// — the book table's keys are owned words, in a canonical order the judge's
+    /// arithmetic depends on, so the fold is where symbols turn back into text.
+    fn fold_book(
+        reduced: &[Self::ReducedChapter],
+        symbols: &Self::Symbols,
+    ) -> Self::BookContribution;
 
     /// Replace a book's contribution in the corpus aggregate, returning the
     /// exact set of keys whose corpus aggregate changed (the stats-delta keys).
@@ -446,6 +467,7 @@ impl<S: ObservationSubstrate> SubstrateCache<S> {
         &mut self,
         slug: &str,
         chapters: &[(Box<str>, ObservationInputStamp)],
+        symbols: &S::Symbols,
         mut map: impl FnMut(usize) -> S::ChapterObservation,
     ) -> Vec<S::Key> {
         let n = chapters.len();
@@ -639,7 +661,7 @@ impl<S: ObservationSubstrate> SubstrateCache<S> {
             })
             .collect();
 
-        let new_contribution = S::fold_book(&reduced);
+        let new_contribution = S::fold_book(&reduced, symbols);
         let delta = S::replace_book_in_corpus_stats(
             &mut self.corpus_stats,
             slug,
@@ -869,12 +891,13 @@ mod replay {
         type CorpusStats = Vec<(String, String)>;
         type ExtractorConfig = ();
         type JudgeConfig = ();
+        type Symbols = ();
         type EntryOutcome = ();
 
         fn extractor_fp(_: &()) -> u64 {
             0
         }
-        fn map_chapter(chapter: &ChapterView<'_>, _: &()) -> String {
+        fn map_chapter(chapter: &ChapterView<'_>, _: &(), _: &()) -> String {
             chapter.texts.concat()
         }
         fn pending_owner(_: &()) -> Option<&str> {
@@ -890,7 +913,7 @@ mod replay {
             )
         }
         fn finish_book(_: &(), _: &mut Reduced) {}
-        fn fold_book(reduced: &[Reduced]) -> String {
+        fn fold_book(reduced: &[Reduced], _: &()) -> String {
             render(reduced)
         }
         fn replace_book_in_corpus_stats(
@@ -919,12 +942,13 @@ mod replay {
         type CorpusStats = Vec<(String, String)>;
         type ExtractorConfig = ();
         type JudgeConfig = ();
+        type Symbols = ();
         type EntryOutcome = ();
 
         fn extractor_fp(_: &()) -> u64 {
             0
         }
-        fn map_chapter(chapter: &ChapterView<'_>, _: &()) -> String {
+        fn map_chapter(chapter: &ChapterView<'_>, _: &(), _: &()) -> String {
             chapter.texts.concat()
         }
         fn pending_owner(_: &Option<char>) -> Option<&str> {
@@ -947,7 +971,7 @@ mod replay {
             )
         }
         fn finish_book(_: &Option<char>, _: &mut Reduced) {}
-        fn fold_book(reduced: &[Reduced]) -> String {
+        fn fold_book(reduced: &[Reduced], _: &()) -> String {
             render(reduced)
         }
         fn replace_book_in_corpus_stats(
@@ -970,7 +994,7 @@ mod replay {
     /// editing a chapter's content is exactly what marks its observation stale.
     fn drive<S>(cache: &mut SubstrateCache<S>, slug: &str, chapters: &[(&str, &str)])
     where
-        S: ObservationSubstrate<ChapterObservation = String, ExtractorConfig = ()>,
+        S: ObservationSubstrate<ChapterObservation = String, ExtractorConfig = (), Symbols = ()>,
     {
         let stamped: Vec<(Box<str>, ObservationInputStamp)> = chapters
             .iter()
@@ -991,12 +1015,13 @@ mod replay {
             .iter()
             .map(|(_, c)| vec![(*c).to_string()])
             .collect();
-        cache.update_book(slug, &stamped, |i| {
+        cache.update_book(slug, &stamped, &(), |i| {
             S::map_chapter(
                 &ChapterView {
                     chapter: chapters[i].0,
                     texts: &texts[i],
                 },
+                &(),
                 &(),
             )
         });
@@ -1007,7 +1032,7 @@ mod replay {
     /// prove the driver did little, this proves it did enough.
     fn assert_equals_cold<S>(resident: &SubstrateCache<S>, slug: &str, chapters: &[(&str, &str)])
     where
-        S: ObservationSubstrate<ChapterObservation = String, ExtractorConfig = ()>,
+        S: ObservationSubstrate<ChapterObservation = String, ExtractorConfig = (), Symbols = ()>,
         S::BookContribution: std::fmt::Debug,
     {
         let mut cold: SubstrateCache<S> = SubstrateCache::new();
@@ -1262,12 +1287,13 @@ mod replay {
         type CorpusStats = Vec<(String, String)>;
         type ExtractorConfig = ();
         type JudgeConfig = ();
+        type Symbols = ();
         type EntryOutcome = ();
 
         fn extractor_fp(_: &()) -> u64 {
             0
         }
-        fn map_chapter(chapter: &ChapterView<'_>, _: &()) -> TokenedObs {
+        fn map_chapter(chapter: &ChapterView<'_>, _: &(), _: &()) -> TokenedObs {
             TokenedObs {
                 token: Box::from(chapter.chapter),
                 content: chapter.texts.concat(),
@@ -1302,7 +1328,7 @@ mod replay {
         fn finish_book(_: &Option<Box<str>>, carry_out: &mut OwnedReduced) {
             carry_out.abstained = true;
         }
-        fn fold_book(reduced: &[OwnedReduced]) -> String {
+        fn fold_book(reduced: &[OwnedReduced], _: &()) -> String {
             reduced
                 .iter()
                 .map(|r| format!("<{}|{}|{}>", r.content, r.resolutions, r.abstained))
@@ -1344,12 +1370,13 @@ mod replay {
             .iter()
             .map(|(_, c)| vec![(*c).to_string()])
             .collect();
-        cache.update_book(slug, &stamped, |i| {
+        cache.update_book(slug, &stamped, &(), |i| {
             Owned::map_chapter(
                 &ChapterView {
                     chapter: chapters[i].0,
                     texts: &texts[i],
                 },
+                &(),
                 &(),
             )
         });

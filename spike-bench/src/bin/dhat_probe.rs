@@ -117,6 +117,7 @@ fn main() {
     match mode {
         "testing" => run_testing(&bible, &cfg, block_a, block_b),
         "profile" => run_profile(&bible, &cfg, block_a, block_b),
+        "warm-profile" => run_warm_profile(&bible, &cfg, block_a, block_b),
         other => {
             eprintln!("unknown mode {other:?} (want testing|profile)");
             std::process::exit(2);
@@ -170,6 +171,30 @@ fn run_testing(bible: &Corpus, cfg: &Config, block_a: BookBlock, block_b: BookBl
         );
         prev = now;
     }
+}
+
+/// Warm-only allocation attribution: seed the resident handle with the profiler
+/// OFF, start it, then run a few warm iterations — so `dhat-heap.json`'s
+/// backtraces are the warm analyze's own allocations, not the cold seed's
+/// (which outnumber them by orders of magnitude and would bury them).
+fn run_warm_profile(bible: &Corpus, cfg: &Config, block_a: BookBlock, block_b: BookBlock) {
+    let mut galley = Galley::new(bible.clone(), None, cfg.clone());
+    let seed_start = std::time::Instant::now();
+    let _ = galley.analyze();
+    eprintln!("cold seed (profiler off): {:?}", seed_start.elapsed());
+
+    let _profiler = dhat::Profiler::new_heap();
+    let mut flip = false;
+    const PROFILE_ITERS: usize = 5;
+    for _ in 0..PROFILE_ITERS {
+        let block = if flip { block_a.clone() } else { block_b.clone() };
+        flip = !flip;
+        galley
+            .update_book(block)
+            .expect("valid complete-book replacement");
+        std::hint::black_box(galley.analyze().len());
+    }
+    eprintln!("warm profile: {PROFILE_ITERS} iterations recorded");
 }
 
 fn run_profile(bible: &Corpus, cfg: &Config, block_a: BookBlock, block_b: BookBlock) {

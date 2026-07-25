@@ -84,6 +84,7 @@ use crate::config::CasingConfig;
 use crate::corpus::{Corpus, LocalKeyIdx, rebase};
 use crate::diagnostics::{Finding, FindingArgs, RuleId, Severity};
 use crate::evidence::{clamp_count, clamp_unit, clamp_z, wilson_lower_bound};
+use crate::interner::{WordInterner, WordSym};
 use crate::signals::case_shape::{CaseShape, case_shape};
 use crate::span::Span;
 
@@ -392,12 +393,12 @@ fn tv_distance(p: &FxHashMap<&str, u64>, q: &FxHashMap<&str, u64>, jurors: &[&st
 /// counts, baseline word-start distribution) are reindexed here from the
 /// per-word forced tallies — the reshuffle witness is case-free, so a word's
 /// forced upper+lower after a class is its occurrence count there.
-fn build_trust(words: &FxHashMap<String, WordStats>, z: f64) -> FxHashMap<ClassKey, f64> {
+fn build_trust(words: &FxHashMap<Arc<str>, WordStats>, z: f64) -> FxHashMap<ClassKey, f64> {
     // Baseline word-start distribution + per-class aftermath (reindex).
     let mut word_start_total: FxHashMap<&str, u64> = FxHashMap::default();
     let mut after: FxHashMap<ClassKey, FxHashMap<&str, u64>> = FxHashMap::default();
     for (key, w) in words {
-        let key = key.as_str();
+        let key: &str = key;
         let total = w.all_total();
         if total == 0 {
             continue;
@@ -554,7 +555,12 @@ fn build_trust(words: &FxHashMap<String, WordStats>, z: f64) -> FxHashMap<ClassK
 /// independent of any borrow of the aggregate it was built from (see
 /// [`CasingModel`]).
 pub(crate) struct Model {
-    words: FxHashMap<String, WordStats>,
+    /// Keyed by shared arena words, so this table's keys cost a refcount bump
+    /// each instead of a fresh allocation per corpus word type per build. The
+    /// hash is the word's bytes either way, so the insertion sequence — and with
+    /// it the iteration order the trust math sums over — is exactly what an
+    /// owned-`String` table produced.
+    words: FxHashMap<Arc<str>, WordStats>,
     /// Per class trust; `None`-keyed book-initial is always fully trusted.
     trust: FxHashMap<ClassKey, f64>,
     /// Lexicon-restricted capitalize-after-class counts (up, total). `None` =
@@ -585,7 +591,7 @@ impl Model {
         // per-juror statistic over this map's iteration order, and float
         // addition is not associative — a different insertion sequence would
         // move trust, and with it every score, in its last bits.
-        let mut words: FxHashMap<String, WordStats> = FxHashMap::default();
+        let mut words: FxHashMap<Arc<str>, WordStats> = FxHashMap::default();
         for (book_words, _) in stats.per_book.values() {
             // An uncased-only word is the sole per-book-safe prune (ADR 0051):
             // it yields no candidate site and enters neither the lexicon-
@@ -995,12 +1001,17 @@ impl GapEffect {
 }
 
 /// Everything about one chapter that no entering state can change: its word-type
-/// interner, its per-word raw tallies (excluding the chapter's first word), and
+/// symbols, its per-word raw tallies (excluding the chapter's first word), and
 /// its lowercase flag candidates after that first word.
 #[derive(Clone, Default, PartialEq, Eq)]
 pub(crate) struct ChapterWords {
-    /// id → folded word-type key, in first-sight order during the chapter walk.
-    keys: Vec<String>,
+    /// chapter-local id → the word type's symbol in the cache's shared
+    /// [`WordInterner`], in first-sight order during the chapter walk. A symbol,
+    /// not an owned `String`: a chapter's table only ever needs to *reference* a
+    /// word type, and 1,189 chapters of an English Bible hold 265,207 references
+    /// to 13,096 distinct types. Symbol equality is string equality (the table is
+    /// append-only), so this stays a sound `Eq` for the cached observation.
+    keys: Vec<WordSym>,
     /// Per-id raw tallies. The chapter's **first** word's own occurrence is
     /// absent here: its position class is the one thing the entering boundary
     /// state decides, so reduction records it.
@@ -1109,7 +1120,16 @@ impl CasingReduced {
 /// including uncased-only words (the model prunes those as it folds). Sorted
 /// because the corpus merge's insertion order is load-bearing — see
 /// [`Model::build`].
-type BookWords = Vec<(String, WordStats)>;
+///
+/// The key is a shared `Arc<str>` from the cache's [`WordInterner`], so building
+/// this table — and cloning its keys into the corpus model — copies no bytes.
+/// It is deliberately NOT a symbol: the judge sums per-juror statistics over
+/// this order and that order is the words' string order, which only owned (or
+/// resolved) keys give for free. Making it dense-by-symbol and reconstructing
+/// the string order with a permutation was measured and rejected
+/// (`documentation/calibration/2026-07-24-word-interner-spike.md`: 60–80x worse
+/// per key than a natively ordered table).
+type BookWords = Vec<(Arc<str>, WordStats)>;
 
 /// A book's folded casing contribution: its ordered word table (the corpus
 /// aggregate's addend), its cased-word-start count, and its chapters' resolved
@@ -1154,9 +1174,12 @@ pub(crate) struct CasingModel {
 /// transform rather than applied.
 struct ChapterAcc {
     cased_starts: u32,
-    /// Word-type interner: folded key → id, and id → key. The walk tallies into
-    /// the id-indexed `tallies` (one hash probe per word) instead of a
-    /// `BTreeMap<String, _>` entry walk (log n string memcmps per word).
+    /// Chapter-local word-type interner: folded key → local id, and local id →
+    /// key. The walk tallies into the id-indexed `tallies` (one hash probe per
+    /// word) instead of a `BTreeMap<String, _>` entry walk (log n string memcmps
+    /// per word). The keys become shared symbols once, in `finish` — the walk
+    /// itself never touches the shared table, so the chapter-parallel map seam
+    /// takes one lock per chapter rather than one per word.
     intern: FxHashMap<String, u32>,
     keys: Vec<String>,
     tallies: Vec<WordStats>,
@@ -1288,11 +1311,11 @@ impl ChapterAcc {
         }
     }
 
-    fn finish(self, token: &str) -> CasingChapterObs {
+    fn finish(self, token: &str, symbols: &WordInterner) -> CasingChapterObs {
         CasingChapterObs {
             token: Box::from(token),
             words: Arc::new(ChapterWords {
-                keys: self.keys,
+                keys: symbols.intern_all(self.keys),
                 tallies: self.tallies,
                 sites: self.sites,
                 cased_starts: self.cased_starts,
@@ -1410,6 +1433,11 @@ impl crate::substrate::ObservationSubstrate for CasingSubstrate {
     // floor, the recurrence knee, the confidence z, the trust gate) is read at
     // judge. So a knob change maps and reduces nothing.
     type ExtractorConfig = ();
+    // The shared folded-word table. Casing's chapter observations store word
+    // symbols; the fold resolves them back to words for the book table's
+    // canonical (string) order. `MixedCase` is the next consumer of the same
+    // table.
+    type Symbols = WordInterner;
     type JudgeConfig = CasingJudge;
     type EntryOutcome = CasingOutcome;
 
@@ -1420,12 +1448,13 @@ impl crate::substrate::ObservationSubstrate for CasingSubstrate {
     fn map_chapter(
         chapter: &crate::substrate::ChapterView<'_>,
         _extractor: &(),
+        symbols: &WordInterner,
     ) -> CasingChapterObs {
         let mut acc = ChapterAcc::new();
         for (vi, text) in chapter.texts.iter().enumerate() {
             acc.verse(LocalKeyIdx::from_usize(vi), text);
         }
-        acc.finish(chapter.chapter)
+        acc.finish(chapter.chapter, symbols)
     }
 
     fn pending_owner(_state: &CasingBoundary) -> Option<&str> {
@@ -1489,25 +1518,27 @@ impl crate::substrate::ObservationSubstrate for CasingSubstrate {
         // to fold back.
     }
 
-    fn fold_book(reduced: &[CasingReduced]) -> CasingBookContribution {
+    fn fold_book(reduced: &[CasingReduced], symbols: &WordInterner) -> CasingBookContribution {
         // Book-level interner over the chapters' own id spaces, so the judge can
         // memoize a verdict once per book-word (as it always did) while the
-        // sites stay chapter-local.
-        let mut intern: FxHashMap<&str, u32> = FxHashMap::default();
-        let mut keys: Vec<&str> = Vec::new();
+        // sites stay chapter-local. Keyed by the shared SYMBOL, so this whole
+        // pass hashes 4-byte integers instead of words and never touches the
+        // arena; the words are resolved once, below, for the sort.
+        let mut intern: FxHashMap<WordSym, u32> = FxHashMap::default();
+        let mut syms: Vec<WordSym> = Vec::new();
         let mut tallies: Vec<WordStats> = Vec::new();
         let mut per_chapter: Vec<Vec<u32>> = Vec::with_capacity(reduced.len());
         let mut cased_starts: u32 = 0;
         for r in reduced {
             cased_starts += r.words.cased_starts;
             let mut ids = Vec::with_capacity(r.words.keys.len());
-            for (i, key) in r.words.keys.iter().enumerate() {
-                let id = match intern.get(key.as_str()) {
+            for (i, &sym) in r.words.keys.iter().enumerate() {
+                let id = match intern.get(&sym) {
                     Some(&id) => id,
                     None => {
-                        let id = keys.len() as u32;
-                        intern.insert(key.as_str(), id);
-                        keys.push(key.as_str());
+                        let id = syms.len() as u32;
+                        intern.insert(sym, id);
+                        syms.push(sym);
                         tallies.push(WordStats::default());
                         id
                     }
@@ -1521,15 +1552,24 @@ impl crate::substrate::ObservationSubstrate for CasingSubstrate {
             per_chapter.push(ids);
         }
         // Sort into the pinned order and remap the chapters' id maps onto it.
-        let mut order: Vec<u32> = (0..keys.len() as u32).collect();
-        order.sort_unstable_by_key(|&i| keys[i as usize]);
-        let mut rank = vec![0u32; keys.len()];
+        // The order is the keys' STRING order — symbols are assigned in
+        // first-sight (map-completion) order and carry no meaning here beyond
+        // identity, so the resolved words are what the sort compares.
+        let resolved = symbols.resolve_all(syms.iter().copied());
+        let mut order: Vec<u32> = (0..resolved.len() as u32).collect();
+        order.sort_unstable_by(|&a, &b| resolved[a as usize].cmp(&resolved[b as usize]));
+        let mut rank = vec![0u32; resolved.len()];
         for (r, &i) in order.iter().enumerate() {
             rank[i as usize] = r as u32;
         }
         let words: BookWords = order
             .iter()
-            .map(|&i| (keys[i as usize].to_string(), tallies[i as usize].clone()))
+            .map(|&i| {
+                (
+                    Arc::clone(&resolved[i as usize]),
+                    tallies[i as usize].clone(),
+                )
+            })
             .collect();
         let chapters = reduced
             .iter()
@@ -1703,7 +1743,7 @@ impl CasingBookContribution {
                         range: site_span(&site),
                         score: Some(score),
                         args: Some(FindingArgs::WordCasing {
-                            word: word.clone(),
+                            word: word.to_string(),
                             upper,
                             total,
                         }),
@@ -1712,6 +1752,17 @@ impl CasingBookContribution {
             }
         }
     }
+}
+
+/// The resident state one casing drive reads and writes: the substrate's own
+/// cache, the retained judge-model memo, and the shared word table. They are
+/// three sibling fields of one cache section that are only ever handed over
+/// together — the model is a pure function of the cache's aggregate, and the
+/// word table names the words that aggregate is keyed by.
+pub(crate) struct CasingState<'a> {
+    pub(crate) cache: &'a mut crate::substrate::SubstrateCache<CasingSubstrate>,
+    pub(crate) retained: &'a mut Option<CasingModel>,
+    pub(crate) symbols: &'a WordInterner,
 }
 
 /// One chapter the substrate has to map this analysis, as the ordered map seam
@@ -1733,12 +1784,16 @@ struct CasingMapWork<'a> {
 pub(crate) fn drive_casing(
     positional: bool,
     intrinsic: bool,
-    cache: &mut crate::substrate::SubstrateCache<CasingSubstrate>,
-    retained: &mut Option<CasingModel>,
+    state: CasingState<'_>,
     corpus: &Corpus,
     cfg: &CasingConfig,
     out: &mut Vec<Finding>,
 ) {
+    let CasingState {
+        cache,
+        retained,
+        symbols,
+    } = state;
     use crate::substrate::{ChapterView, ObservationInputStamp, ObservationSubstrate};
     #[cfg(any(test, feature = "test-probes"))]
     cache.reset_probes();
@@ -1790,7 +1845,7 @@ pub(crate) fn drive_casing(
         cache.map_route = route.label();
     }
     let fresh = crate::rule::map_chapter_work(&work, &book_runs, route, |w| {
-        CasingSubstrate::map_chapter(&w.view, &())
+        CasingSubstrate::map_chapter(&w.view, &(), symbols)
     });
     // Back into caller-order `(book, chapter)` slots. Reduction reads them in
     // corpus order, never completion order, so serial and parallel builds — and
@@ -1803,7 +1858,7 @@ pub(crate) fn drive_casing(
         slots[w.book][w.chapter] = Some(obs);
     }
     for (bi, book) in layout.iter().enumerate() {
-        cache.update_book(&book.slug, &stamped[bi], |i| {
+        cache.update_book(&book.slug, &stamped[bi], symbols, |i| {
             // Pre-mapped above. The planning pass asked the cache the same
             // question the driver asks, so this slot is filled whenever the
             // driver wants it; mapping in place is the correct answer if it ever
@@ -1816,6 +1871,7 @@ pub(crate) fn drive_casing(
                         texts: &texts[c.range.clone()],
                     },
                     &(),
+                    symbols,
                 )
             })
         });
@@ -1878,12 +1934,16 @@ pub(crate) fn casing_findings(
 ) -> Vec<Finding> {
     let mut cache = crate::substrate::SubstrateCache::new();
     let mut retained = None;
+    let symbols = WordInterner::default();
     let mut out = Vec::new();
     drive_casing(
         positional,
         intrinsic,
-        &mut cache,
-        &mut retained,
+        CasingState {
+            cache: &mut cache,
+            retained: &mut retained,
+            symbols: &symbols,
+        },
         corpus,
         cfg,
         &mut out,
@@ -1928,7 +1988,19 @@ pub fn evaluate(corpus: &Corpus, cfg: &CasingConfig) -> Vec<SiteEval> {
         crate::substrate::SubstrateCache::new();
     let mut retained = None;
     let mut sink = Vec::new();
-    drive_casing(true, true, &mut cache, &mut retained, corpus, cfg, &mut sink);
+    let symbols = WordInterner::default();
+    drive_casing(
+        true,
+        true,
+        CasingState {
+            cache: &mut cache,
+            retained: &mut retained,
+            symbols: &symbols,
+        },
+        corpus,
+        cfg,
+        &mut sink,
+    );
     let Some(retained) = retained else {
         return Vec::new();
     };
@@ -1938,14 +2010,14 @@ pub fn evaluate(corpus: &Corpus, cfg: &CasingConfig) -> Vec<SiteEval> {
         let Some(contrib) = cache.book_contribution(&book.slug) else {
             continue;
         };
-        for (chapter, _) in &contrib.chapters {
+        for (chapter, ids) in &contrib.chapters {
             let Some(range) = corpus.chapter_range(&book.slug, &chapter.token) else {
                 continue;
             };
             let base = crate::corpus::KeyIdx::from_usize(range.start);
             for site in chapter.sites() {
-                let word = &chapter.words.keys[site.key as usize];
-                let Some(w) = model.words.get(word.as_str()) else {
+                let word = &contrib.words[ids[site.key as usize] as usize].0;
+                let Some(w) = model.words.get(&**word) else {
                     continue;
                 };
                 out.push(SiteEval {
@@ -2031,11 +2103,23 @@ mod tests {
     fn resident(
         cache: &mut crate::substrate::SubstrateCache<CasingSubstrate>,
         retained: &mut Option<CasingModel>,
+        symbols: &WordInterner,
         corpus: &Corpus,
         cfg: &CasingConfig,
     ) -> Vec<Finding> {
         let mut out = Vec::new();
-        drive_casing(true, true, cache, retained, corpus, cfg, &mut out);
+        drive_casing(
+            true,
+            true,
+            CasingState {
+                cache,
+                retained,
+                symbols,
+            },
+            corpus,
+            cfg,
+            &mut out,
+        );
         out.sort_by_key(|f| (f.key_idx, f.range.start, f.code));
         out
     }
@@ -2113,7 +2197,19 @@ mod tests {
         let mut retained = None;
         let cfg = CasingConfig::default();
         let mut sink = Vec::new();
-        drive_casing(true, true, &mut cache, &mut retained, corpus, &cfg, &mut sink);
+        let symbols = WordInterner::default();
+        drive_casing(
+        true,
+        true,
+        CasingState {
+            cache: &mut cache,
+            retained: &mut retained,
+            symbols: &symbols,
+        },
+        corpus,
+        &cfg,
+        &mut sink,
+    );
         retained
             .expect("a cased corpus builds a model")
             .model
@@ -2259,11 +2355,12 @@ mod tests {
         let c = cfg(0.5, 32.0, 0.0);
         let mut cache = crate::substrate::SubstrateCache::new();
         let mut retained = None;
+        let symbols = WordInterner::default();
 
         let dirty = cycle("GEN", &["we saw Jesus"], 20);
         let dirty = push_verse(dirty, "GEN", 100, "we saw jesus");
         assert_eq!(
-            resident(&mut cache, &mut retained, &dirty, &c)
+            resident(&mut cache, &mut retained, &symbols, &dirty, &c)
                 .iter()
                 .filter(|f| f.code == INCONSISTENT_WORD_CASING)
                 .count(),
@@ -2273,13 +2370,13 @@ mod tests {
         // Same book, fixed content: the old contribution must not survive.
         let fixed = cycle("GEN", &["we saw Jesus"], 20);
         let fixed = push_verse(fixed, "GEN", 100, "we saw Jesus");
-        assert!(resident(&mut cache, &mut retained, &fixed, &c).is_empty());
+        assert!(resident(&mut cache, &mut retained, &symbols, &fixed, &c).is_empty());
 
         // A second book carries the slip; dropping the first leaves it alone.
         let two = cycle("GEN", &["we saw Jesus"], 20);
         let two = extend_corpus(two, book("EXO", &[(1, "we saw jesus")]));
         assert_eq!(
-            resident(&mut cache, &mut retained, &two, &c)
+            resident(&mut cache, &mut retained, &symbols, &two, &c)
                 .iter()
                 .filter(|f| f.code == INCONSISTENT_WORD_CASING)
                 .count(),
@@ -2289,7 +2386,7 @@ mod tests {
         let exo = book("EXO", &[(1, "we saw jesus")]);
         // GEN carried the capital-dominant evidence; without it `jesus` has no
         // convention to violate.
-        assert!(resident(&mut cache, &mut retained, &exo, &c).is_empty());
+        assert!(resident(&mut cache, &mut retained, &symbols, &exo, &c).is_empty());
     }
 
     #[test]
@@ -2486,6 +2583,12 @@ mod tests {
     }
 
     fn map_one(token: &str, verses: &[&str]) -> CasingChapterObs {
+        map_one_with(token, verses, &WordInterner::default())
+    }
+
+    /// The same, against a caller-owned symbol table — for a test that maps two
+    /// chapters and needs their symbols to be comparable.
+    fn map_one_with(token: &str, verses: &[&str], symbols: &WordInterner) -> CasingChapterObs {
         let texts: Vec<String> = verses.iter().map(|v| (*v).to_string()).collect();
         CasingSubstrate::map_chapter(
             &ChapterView {
@@ -2493,7 +2596,44 @@ mod tests {
                 texts: &texts,
             },
             &(),
+            symbols,
         )
+    }
+
+    /// Symbols are *naming*, not evidence: the same chapter text mapped against a
+    /// word table that already holds other words gets different symbol numbers
+    /// and still folds to the byte-identical book contribution. This is the
+    /// invariant that lets the shared table be append-only and lets chapter
+    /// mapping fan out (symbols are assigned in map-completion order, which is
+    /// not deterministic across thread counts — so nothing downstream may read
+    /// them as anything but identity).
+    #[test]
+    fn symbol_numbering_never_reaches_the_fold() {
+        let verses = ["There we go there.", "there he goes"];
+        let fresh = WordInterner::default();
+        let a = map_one_with("1", &verses, &fresh);
+
+        let warm = WordInterner::default();
+        let _ = map_one_with("0", &["Wholly different vocabulary appears first."], &warm);
+        let b = map_one_with("1", &verses, &warm);
+
+        assert_ne!(
+            a.words.keys, b.words.keys,
+            "the two tables must have numbered these words differently"
+        );
+
+        let fold = |obs: &CasingChapterObs, symbols: &WordInterner| {
+            let mut sink = CasingReduced::default();
+            let (reduced, _) =
+                CasingSubstrate::reduce_chapter(obs, &CasingBoundary::default(), &mut sink);
+            CasingSubstrate::fold_book(&[reduced], symbols)
+        };
+        assert_eq!(
+            fold(&a, &fresh).words,
+            fold(&b, &warm).words,
+            "the folded book table is keyed by words in string order, so it \
+             cannot see which integers named them"
+        );
     }
 
     fn reduce_one(
@@ -2723,14 +2863,15 @@ mod tests {
         let c = cfg(0.5, 32.0, 0.0);
         let mut cache = SubstrateCache::new();
         let mut retained = None;
-        let cold = resident(&mut cache, &mut retained, &vm, &c);
+        let symbols = WordInterner::default();
+        let cold = resident(&mut cache, &mut retained, &symbols, &vm, &c);
         assert_eq!(cache.mapped, 10, "cold maps every chapter");
         assert_eq!(cache.reduced, 10);
 
         let mut edited = chapters.clone();
         edited[5][0] = "There we went there.".to_string();
         let ev = chaptered("GEN", &edited);
-        let inc = resident(&mut cache, &mut retained, &ev, &c);
+        let inc = resident(&mut cache, &mut retained, &symbols, &ev, &c);
         assert_eq!(cache.mapped, 1, "one changed chapter maps one chapter");
         assert!(
             cache.reduced <= 2,
@@ -2743,7 +2884,7 @@ mod tests {
 
         // Unchanged re-drive: no map, no reduce, and the model is reused.
         let before = retained.as_ref().map(|m| m.generation);
-        let again = resident(&mut cache, &mut retained, &ev, &c);
+        let again = resident(&mut cache, &mut retained, &symbols, &ev, &c);
         assert_eq!((cache.mapped, cache.reduced), (0, 0));
         assert_eq!(retained.as_ref().map(|m| m.generation), before);
         assert_eq!(render(&ev, &again), render(&ev, &inc));
@@ -2765,10 +2906,11 @@ mod tests {
         let vm = chaptered("GEN", &chapters);
         let mut cache = SubstrateCache::new();
         let mut retained = None;
-        let _ = resident(&mut cache, &mut retained, &vm, &cfg(0.5, 32.0, 0.0));
+        let symbols = WordInterner::default();
+        let _ = resident(&mut cache, &mut retained, &symbols, &vm, &cfg(0.5, 32.0, 0.0));
 
         let loose = cfg(0.0, 32.0, 0.0);
-        let after = resident(&mut cache, &mut retained, &vm, &loose);
+        let after = resident(&mut cache, &mut retained, &symbols, &vm, &loose);
         assert_eq!((cache.mapped, cache.reduced), (0, 0));
         assert!(cache.judged >= 1, "the knob change re-judges");
         assert_eq!(render(&vm, &after), render(&vm, &run_both(&vm, &loose)));
@@ -2786,7 +2928,19 @@ mod tests {
         let mut cache = SubstrateCache::new();
         let mut retained = None;
         let mut both = Vec::new();
-        drive_casing(true, true, &mut cache, &mut retained, &vm, &c, &mut both);
+        let symbols = WordInterner::default();
+        drive_casing(
+        true,
+        true,
+        CasingState {
+            cache: &mut cache,
+            retained: &mut retained,
+            symbols: &symbols,
+        },
+        &vm,
+        &c,
+        &mut both,
+    );
         assert!(
             both.iter().any(|f| f.code == SENTENCE_INITIAL_LOWERCASE),
             "{both:?}"
@@ -2795,7 +2949,18 @@ mod tests {
         // Positional only: the substrate is reused (nothing re-mapped) and the
         // intrinsic consumer's findings are simply not materialized.
         let mut only_pos = Vec::new();
-        drive_casing(true, false, &mut cache, &mut retained, &vm, &c, &mut only_pos);
+        drive_casing(
+        true,
+        false,
+        CasingState {
+            cache: &mut cache,
+            retained: &mut retained,
+            symbols: &symbols,
+        },
+        &vm,
+        &c,
+        &mut only_pos,
+    );
         assert_eq!(cache.mapped, 0, "a consumer toggle re-maps nothing");
         assert!(only_pos.iter().all(|f| f.code == SENTENCE_INITIAL_LOWERCASE));
         assert_eq!(
@@ -2807,11 +2972,33 @@ mod tests {
 
         // Both off: the last consumer leaving drops the substrate's products.
         let mut off = Vec::new();
-        drive_casing(false, false, &mut cache, &mut retained, &vm, &c, &mut off);
+        drive_casing(
+        false,
+        false,
+        CasingState {
+            cache: &mut cache,
+            retained: &mut retained,
+            symbols: &symbols,
+        },
+        &vm,
+        &c,
+        &mut off,
+    );
         assert!(off.is_empty());
         assert!(retained.is_none(), "the model memo goes with the substrate");
         let mut back = Vec::new();
-        drive_casing(true, true, &mut cache, &mut retained, &vm, &c, &mut back);
+        drive_casing(
+        true,
+        true,
+        CasingState {
+            cache: &mut cache,
+            retained: &mut retained,
+            symbols: &symbols,
+        },
+        &vm,
+        &c,
+        &mut back,
+    );
         assert!(cache.mapped > 0, "re-enabling rebuilds the substrate");
         assert_eq!(render(&vm, &back), render(&vm, &both));
     }
@@ -2857,7 +3044,8 @@ mod tests {
         let c = cfg(0.0, 32.0, 0.0);
         let mut cache = SubstrateCache::new();
         let mut retained = None;
-        let _ = resident(&mut cache, &mut retained, &build(&texts), &c);
+        let symbols = WordInterner::default();
+        let _ = resident(&mut cache, &mut retained, &symbols, &build(&texts), &c);
         let mut rng = 0x9E37_79B9_7F4A_7C15u64;
         let next = |rng: &mut u64| {
             *rng ^= *rng << 13;
@@ -2869,7 +3057,7 @@ mod tests {
             let which = (next(&mut rng) % texts.len() as u64) as usize;
             texts[which] = (next(&mut rng) % shapes.len() as u64) as usize;
             let corpus = build(&texts);
-            let inc = resident(&mut cache, &mut retained, &corpus, &c);
+            let inc = resident(&mut cache, &mut retained, &symbols, &corpus, &c);
             assert!(
                 cache.mapped <= 1,
                 "step {step}: one edited verse maps at most one chapter"
