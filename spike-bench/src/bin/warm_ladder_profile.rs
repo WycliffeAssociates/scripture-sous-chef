@@ -73,8 +73,17 @@ fn main() {
             texts,
         }
     };
-    let block_a = make_block(" edited");
-    let block_b = make_block(" edited twice");
+    let variants: usize = args
+        .iter()
+        .position(|a| a == "--variants")
+        .and_then(|i| args.get(i + 1))
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(2);
+    let blocks: Vec<BookBlock> = (0..variants.max(2))
+        .map(|i| make_block(&format!(" edited{}", "!".repeat(i))))
+        .collect();
+    let block_a = blocks[0].clone();
+    let block_b = blocks[1].clone();
 
     // Same construction as the calibrate oracle's configs (`oracle_config` in
     // crates/core/examples/calibrate/oracle.rs): "all" = v1 defaults with
@@ -88,7 +97,18 @@ fn main() {
             }
             cfg
         }
-        other => panic!("unknown config {other:?} (want default|all)"),
+        // Every rule on EXCEPT the two casing consumers — paired with "all", the
+        // difference is casing's whole warm contribution.
+        "all-no-casing" => {
+            let mut cfg = Config::v1_defaults();
+            for &id in RuleId::ALL {
+                cfg.rules.insert(id, true);
+            }
+            cfg.rules.insert(RuleId::SentenceInitialLowercase, false);
+            cfg.rules.insert(RuleId::InconsistentWordCasing, false);
+            cfg
+        }
+        other => panic!("unknown config {other:?} (want default|all|all-no-casing)"),
     };
     eprintln!("config: {config_name}");
     // Cold seed: the resident Galley's first analyze warms the prior + both
@@ -137,7 +157,7 @@ fn main() {
     // Decompose each warm iteration into update_book (whole-corpus layout
     // rebuild + prior/prep bookkeeping) and analyze, and analyze further into
     // the map/reduce/judge phase split (`ssc_core::bench`, bench-probes only).
-    let mut flip2 = false;
+    let mut rot = 0usize;
     let mut batch_totals: Vec<std::time::Duration> = Vec::new();
     for b in 0..batches {
         let mut total = Vec::with_capacity(trials);
@@ -148,8 +168,8 @@ fn main() {
         let mut jud = Vec::with_capacity(trials);
         let mut findings = 0usize;
         for _ in 0..trials {
-            flip2 = !flip2;
-            let block = if flip2 { block_a.clone() } else { block_b.clone() };
+            rot = (rot + 1) % blocks.len();
+            let block = blocks[rot].clone();
             let t0 = std::time::Instant::now();
             galley
                 .update_book(block)

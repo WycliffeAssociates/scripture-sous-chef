@@ -1597,15 +1597,52 @@ pub(crate) struct Consumers {
     pub(crate) intrinsic: bool,
 }
 
-/// One key's resolved verdict, cached against the book-word id it was computed
-/// for. A word appears at one position class almost everywhere, so a
-/// single-entry direct-mapped cache per book-word turns the per-site verdict
-/// lookup into an array index — the per-site hash probe was ~half the whole
-/// casing judge on an all-rules corpus.
-#[derive(Clone, Copy)]
-enum Slot {
-    Empty,
-    One(PosClass, CasingOutcome),
+/// Per-book verdict memo: for each book-word id, the chain of position classes
+/// judged for it so far. A frequent word genuinely appears at several position
+/// classes (`the` sits mid-flow and after a terminal, interleaved), so a
+/// one-entry-per-word cache thrashes on exactly the words that matter; a chain
+/// keeps every pair while still costing an array index plus one or two `PosClass`
+/// compares per site, instead of the hash probe per site that was ~half the
+/// whole casing judge on an all-rules corpus.
+struct VerdictMemo {
+    /// book-word id → first node index, or `NIL`.
+    head: Vec<u32>,
+    nodes: Vec<(PosClass, CasingOutcome, u32)>,
+}
+
+const NIL: u32 = u32::MAX;
+
+impl VerdictMemo {
+    fn new(words: usize) -> Self {
+        VerdictMemo {
+            head: vec![NIL; words],
+            nodes: Vec::new(),
+        }
+    }
+
+    /// The verdict for `(book-word id, pos)`, computing and linking it on a miss.
+    /// Returns `true` alongside it when it was computed (the `judged` probe).
+    fn get(
+        &mut self,
+        id: usize,
+        pos: PosClass,
+        judged: &mut usize,
+        compute: impl FnOnce() -> CasingOutcome,
+    ) -> CasingOutcome {
+        let mut n = self.head[id];
+        while n != NIL {
+            let node = &self.nodes[n as usize];
+            if node.0 == pos {
+                return node.1;
+            }
+            n = node.2;
+        }
+        let outcome = compute();
+        self.nodes.push((pos, outcome, self.head[id]));
+        self.head[id] = (self.nodes.len() - 1) as u32;
+        *judged += 1;
+        outcome
+    }
 }
 
 impl CasingBookContribution {
@@ -1625,24 +1662,20 @@ impl CasingBookContribution {
             positional,
             intrinsic,
         } = enabled;
-        let mut slots = vec![Slot::Empty; self.words.len()];
+        let mut memo = VerdictMemo::new(self.words.len());
         for (chapter, ids) in &self.chapters {
             let Some(range) = corpus.chapter_range(slug, &chapter.token) else {
                 continue;
             };
             let base = crate::corpus::KeyIdx::from_usize(range.start);
-            let keys = &chapter.words.keys;
             for site in chapter.sites() {
+                // Resolve the folded word through the BOOK's table, not the
+                // chapter's: one contiguous allocation per book keeps the judge's
+                // lookups on warm cache lines, where 1,189 per-chapter interners
+                // would scatter them.
                 let bid = ids[site.key as usize] as usize;
-                let outcome = match slots[bid] {
-                    Slot::One(pos, outcome) if pos == site.pos => outcome,
-                    _ => {
-                        let outcome = judge.outcome(&keys[site.key as usize], site.pos);
-                        slots[bid] = Slot::One(site.pos, outcome);
-                        *judged += 1;
-                        outcome
-                    }
-                };
+                let word = &self.words[bid].0;
+                let outcome = memo.get(bid, site.pos, judged, || judge.outcome(word, site.pos));
                 if positional
                     && let Some((score, glyph, quoted, upper, total)) = outcome.positional
                 {
@@ -1670,7 +1703,7 @@ impl CasingBookContribution {
                         range: site_span(&site),
                         score: Some(score),
                         args: Some(FindingArgs::WordCasing {
-                            word: keys[site.key as usize].clone(),
+                            word: word.clone(),
                             upper,
                             total,
                         }),

@@ -57,14 +57,32 @@ fn build_config(name: &str) -> Config {
             cfg.rules.insert(RuleId::PunctuationSpacingAnomaly, false);
             cfg
         }
-        other => panic!("unknown config {other:?} (want default|all|all-no-spacing)"),
+        // Same paired-difference trick for the other two migrated substrates:
+        // with no active consumer the cache retains none of that substrate's
+        // products, so "all" minus this config IS its retained footprint.
+        "all-no-duplicate" => {
+            let mut cfg = build_config("all");
+            cfg.rules.insert(RuleId::DuplicateWord, false);
+            cfg
+        }
+        "all-no-casing" => {
+            let mut cfg = build_config("all");
+            cfg.rules.insert(RuleId::SentenceInitialLowercase, false);
+            cfg.rules.insert(RuleId::InconsistentWordCasing, false);
+            cfg
+        }
+        other => panic!(
+            "unknown config {other:?} (want default|all|all-no-spacing|all-no-duplicate|all-no-casing)"
+        ),
     }
 }
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let (Some(mode), Some(config_name)) = (args.first().map(String::as_str), args.get(1)) else {
-        eprintln!("usage: dhat_probe <testing|profile> <default|all>");
+        eprintln!(
+            "usage: dhat_probe <testing|profile> <default|all|all-no-spacing|all-no-duplicate|all-no-casing>"
+        );
         std::process::exit(2);
     };
 
