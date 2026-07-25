@@ -3142,3 +3142,33 @@ distribution this entry only sampled).
   convergence. Spacing lane retained bytes: 13.25 MiB on WA-en-ulb
   (~447 B/verse) — the ledger's retained-bytes column is now the standing
   RAM watch across every migration.
+
+---
+
+## Entry 23 — Work Packet 6b: Phase D steps 2–4 (duplicate-word + casing migrations, Phase D close-out)
+
+- **Date:** 2026-07-24
+- **Branch:** `granularity-spine` (main tree). Base for this packet: `6e74c10`
+  (Entry 22, the duplicate-word/casing adjudication).
+- **Scope:** plan §8 Phase D **steps 2, 3, 4** as re-adjudicated in Entry 22 —
+  `DuplicateWordSubstrate` as a chapter-local `()` row, `CasingSubstrate` with
+  both casing judges (the first real convergence consumer), and Phase D's
+  measurement close-out.
+
+### WA oracle base pin (this packet's per-commit referee)
+
+Pinned at HEAD `6e74c10`, `/tmp/oracle/spine/wp6b.base.wa.*.tsv`, scope=**wa**
+(`oracle-blobs/wa.blob`; 251 corpora findings / 32 corpora transcript),
+`RAYON_NUM_THREADS=4`. Byte-identical to the standing WP1…WP6a contract —
+**recorded here before any edit**:
+
+| file | sha256 |
+| --- | --- |
+| `wp6b.base.wa.findings.default.tsv` | `38a0ceadcc792a6656905c7a0f9e2e4c2720c86f47f41f94c66e7a8ad1a9702c` |
+| `wp6b.base.wa.findings.all.tsv` | `128fdd933dc71cda0a4a6d9d9971ceb5648a5703f8b22ee798d30b09d2c15660` |
+| `wp6b.base.wa.inc.default.tsv` | `7b19caa79b284bfa16a56f300f5660591ffc58ffa183888451daf82778676dca` |
+| `wp6b.base.wa.inc.all.tsv` | `c951a758823629c6b6d2e1d558e92c59c1873ed17856b328a60c7ebdc4cee74f` |
+
+(Entry continues at the end of the packet with per-step commits, the casing
+boundary-state definition, replay-distance tables, retained bytes, and the
+judge-term before/after.)
