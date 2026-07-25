@@ -3797,3 +3797,33 @@ per-analyze model rebuild gets a memo, a cheaper build, or is accepted.
   repeated-character-run migrations, each choosing its retain-vs-rederive
   point and proving its boundary state from the listener code (stop-and-report
   on surprising carry, per house precedent).
+
+---
+
+## Entry 26 — Work Packet 7a: casing storage rework + Phase E rows 1–3
+
+- **Date:** 2026-07-25
+- **Branch:** `granularity-spine` (main tree). Base for this packet: `830cb3c`
+  (Entry 25, the WP6c acceptance + retain-vs-rederive principle).
+- **Scope:** the casing storage rework Entry 25 specified, then plan §8 Phase E
+  rows 1–3 — `case.mixed-case-word`, `punct.adjacency-anomaly`,
+  `lex.repeated-character-run`. Design law for every storage choice: plan §11's
+  retain-vs-rederive principle.
+
+### WA + small oracle base pin (this packet's per-commit referee)
+
+Pinned at HEAD `830cb3c`, `RAYON_NUM_THREADS=4`, `/tmp/oracle/spine/wp7a.base.*`
+— WA scope from `oracle-blobs/wa.blob` (251 corpora findings / 32 transcript),
+`small` from `oracle-blobs/small.blob` (15 / 2). All eight hashes are
+byte-identical to the standing WP1…WP6c contract. **Recorded before any edit:**
+
+| file | sha256 |
+| --- | --- |
+| `wp7a.base.wa.findings.default.tsv` | `38a0ceadcc792a6656905c7a0f9e2e4c2720c86f47f41f94c66e7a8ad1a9702c` |
+| `wp7a.base.wa.findings.all.tsv` | `128fdd933dc71cda0a4a6d9d9971ceb5648a5703f8b22ee798d30b09d2c15660` |
+| `wp7a.base.wa.inc.default.tsv` | `7b19caa79b284bfa16a56f300f5660591ffc58ffa183888451daf82778676dca` |
+| `wp7a.base.wa.inc.all.tsv` | `c951a758823629c6b6d2e1d558e92c59c1873ed17856b328a60c7ebdc4cee74f` |
+| `wp7a.base.small.findings.default.tsv` | `8d638a441bb654e00fc7fca6e7b0da10d7449a697d9663fdc5efb430bb50ff00` |
+| `wp7a.base.small.findings.all.tsv` | `d657dcff009565e509dcbd891c5f7bf50db5bc9f5c8d19dff316dd4aa6c539e2` |
+| `wp7a.base.small.inc.default.tsv` | `10da8d93dd5c275f38925d726508fa43ba368d43f3ce4f1674652cc47e13661e` |
+| `wp7a.base.small.inc.all.tsv` | `c3532af9a4efa7ec370ba5531b9332fb2c7a0f54b6a86aa8b79972d659f8855e` |
