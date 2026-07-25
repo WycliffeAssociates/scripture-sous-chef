@@ -31,6 +31,12 @@ rustc-hash = "2"
 unicode-segmentation = "1.12"
 dhat = "0.3"
 rayon = { version = "1", optional = true }
+# word_interner_spike comparison arms (owner-approved scope extension):
+# compact_str for the small-string-optimization arm, lasso for the
+# crate-interner-vs-hand-rolled grounding (the 2026-07-18 grapheme survey's
+# prior lasso numbers give context).
+compact_str = "0.8"
+lasso = "0.7"
 
 [features]
 # Nightly-only: gates the M4b portable-`std::simd` variant in
