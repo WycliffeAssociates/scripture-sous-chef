@@ -12,12 +12,16 @@
 //! hang, or misbehave on some configurations).
 //!
 //! Usage:
-//!   dhat_probe <testing|profile> <default|all>
+//!   dhat_probe <testing|profile|warm-profile> <default|all|all-no-*> [corpus]
 //!
 //! `testing` mode: `dhat::Profiler::builder().testing().build()`, seed once,
 //! then run N=20 warm iterations, printing per-iteration `HeapStats` deltas
 //! (total_blocks/total_bytes) and wall time so the dhat-mode slowdown is
 //! visible directly.
+//!
+//! `warm-profile` mode: as `profile`, but the profiler starts AFTER the cold
+//! seed, so the backtraces are the warm analyze's own allocations rather than
+//! the seed's (which outnumber them by orders of magnitude).
 //!
 //! `profile` mode: `dhat::Profiler::new_heap()`, seed + a handful of warm
 //! iterations, then let the profiler drop at the end of `main` so it writes
@@ -31,6 +35,9 @@ use std::path::PathBuf;
 use ssc_core::{BookBlock, Config, Corpus, RuleId};
 use ssc_galley::Galley;
 
+/// Default corpus; an optional third argument overrides it (e.g. the hapax-heavy
+/// `qub`), so a retained-bytes measurement can be repeated on a second
+/// vocabulary regime.
 const CORPUS_PATH: &str = "../corpora/vref/WA-en-ulb.txt";
 const BOOK_CODE: &str = "3JN";
 const WARM_ITERS: usize = 20;
@@ -81,12 +88,14 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let (Some(mode), Some(config_name)) = (args.first().map(String::as_str), args.get(1)) else {
         eprintln!(
-            "usage: dhat_probe <testing|profile> <default|all|all-no-spacing|all-no-duplicate|all-no-casing>"
+            "usage: dhat_probe <testing|profile|warm-profile> <default|all|all-no-spacing|all-no-duplicate|all-no-casing> [corpus-path]"
         );
         std::process::exit(2);
     };
 
-    let path = PathBuf::from(CORPUS_PATH);
+    let path = args
+        .get(2)
+        .map_or_else(|| PathBuf::from(CORPUS_PATH), PathBuf::from);
     let bible = spike_bench::vref_io::load_corpus(&path);
     eprintln!("loaded {} verses from {}", bible.len(), path.display());
 

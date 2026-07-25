@@ -79,8 +79,21 @@ fn main() {
         .and_then(|i| args.get(i + 1))
         .and_then(|s| s.parse().ok())
         .unwrap_or(2);
+    let distinct = args.iter().any(|a| a == "--distinct-variants");
     let blocks: Vec<BookBlock> = (0..variants.max(2))
-        .map(|i| make_block(&format!(" edited{}", "!".repeat(i))))
+        .map(|i| {
+            if distinct {
+                // Each variant introduces a DIFFERENT word type, so every
+                // iteration presents a genuinely different word aggregate. The
+                // default "!"-repeat variants differ only in trailing
+                // punctuation, and for a word-tallying rule that makes variants
+                // 2 and 3 the SAME aggregate — enough for a two-entry
+                // content-keyed model memo to hit on every warm iteration.
+                make_block(&format!(" editedx{i}zz"))
+            } else {
+                make_block(&format!(" edited{}", "!".repeat(i)))
+            }
+        })
         .collect();
     let block_a = blocks[0].clone();
     let block_b = blocks[1].clone();
@@ -97,6 +110,20 @@ fn main() {
             }
             cfg
         }
+        // Every rule on with only ONE casing consumer. Paired with "all", this
+        // isolates the cost of a second per-site emit pass: the pre-substrate
+        // engine judged and walked the sites once PER RULE, so dropping one rule
+        // drops one whole pass; the substrate engine emits both consumers in a
+        // single pass, so dropping one changes almost nothing. The difference
+        // between those two differences is the decomposition.
+        "all-pos-only" => {
+            let mut cfg = Config::v1_defaults();
+            for &id in RuleId::ALL {
+                cfg.rules.insert(id, true);
+            }
+            cfg.rules.insert(RuleId::InconsistentWordCasing, false);
+            cfg
+        }
         // Every rule on EXCEPT the two casing consumers — paired with "all", the
         // difference is casing's whole warm contribution.
         "all-no-casing" => {
@@ -108,7 +135,7 @@ fn main() {
             cfg.rules.insert(RuleId::InconsistentWordCasing, false);
             cfg
         }
-        other => panic!("unknown config {other:?} (want default|all|all-no-casing)"),
+        other => panic!("unknown config {other:?} (want default|all|all-pos-only|all-no-casing)"),
     };
     eprintln!("config: {config_name}");
     // Cold seed: the resident Galley's first analyze warms the prior + both

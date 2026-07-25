@@ -3501,3 +3501,274 @@ byte-identical to the standing WP1…WP6b contract. **Recorded before any edit:*
 | `wp6c.base.small.findings.all.tsv` | `d657dcff009565e509dcbd891c5f7bf50db5bc9f5c8d19dff316dd4aa6c539e2` |
 | `wp6c.base.small.inc.default.tsv` | `10da8d93dd5c275f38925d726508fa43ba368d43f3ce4f1674652cc47e13661e` |
 | `wp6c.base.small.inc.all.tsv` | `c3532af9a4efa7ec370ba5531b9332fb2c7a0f54b6a86aa8b79972d659f8855e` |
+
+### Per-step commits
+
+| step | commit | what landed |
+| --- | --- | --- |
+| pin | `ea1287b` | The WA + `small` base pin above, recorded before any edit. |
+| 1 | `50d6785` | `crates/core/src/interner.rs` (cache-owned append-only `WordInterner`), `ChapterWords.keys: Vec<WordSym>`, `BookWords`/`Model` keyed by shared `Arc<str>`, the `ObservationSubstrate::Symbols` associated type. |
+| 2 | `89e8bd8` | The per-chapter tables become `Box<[T]>` — stop retaining `Vec` doubling slack. |
+| final | (this entry) | measurement harnesses + this log. |
+
+Every commit re-dumped **all eight** dumps (WA + `small`, both configs, findings +
+incremental) and diffed **byte-identical** to the pin. Test counts at HEAD: core
+**476** serial / **477** `--features parallel` (two new: the interner's own
+dedup/stability test and `symbol_numbering_never_reaches_the_fold`), galley 25,
+ssc-wire 25, ssc-wasm 14, xtask 1; node 19. Green serial, `--features parallel`,
+and `--features parallel` under `RAYON_NUM_THREADS=1`. wasm32 target check clean.
+clippy at the documented 2-warning baseline for the `ssc-core` lib (`drive_casing`
+grew past the 7-argument line, so its three cache-side parameters became one
+`CasingState` bundle rather than an `allow`). `git diff --check` clean. No
+`cargo fmt` sweep.
+
+### The interner as landed
+
+```rust
+struct WordInterner { inner: Mutex<Inner> }
+struct Inner { arena: Vec<Arc<str>>, index: FxHashMap<Arc<str>, u32> }
+```
+
+- **Ownership.** One instance per `AnalysisCache`, in `SubstrateSection` beside
+  the substrate slots rather than inside one — two substrates must be able to
+  share a table (a word's symbol has to mean the same thing in both, and
+  `MixedCase` is the named next consumer), and a `SubstrateCache`'s driver
+  borrows itself mutably while the table is read shared. Reached by the substrate
+  contract's new `Symbols` associated type, threaded into `map_chapter` (which
+  fans out, hence the interior mutability) and `fold_book`.
+- **Batching.** One lock per chapter, taken once in `ChapterAcc::finish` for the
+  chapter's whole first-sight key list — never one lock per word. The walk itself
+  keeps its chapter-local `FxHashMap<String, u32>`, so the hot per-word path is
+  unchanged.
+- **Reserve sizing — deviation, recorded.** The brief asked for capacity reserved
+  from corpus stats. There is no corpus statistic that predicts distinct word
+  types usefully (WA-en-ulb: 13,096 types from 31,086 verses; qub: 69,766 from
+  7,957 — a 8.7x difference in the same ratio), so each batch reserves for its own
+  exact worst case instead: `keys.len()` new types. A reserve already satisfied
+  costs nothing, and this is data rather than a guess.
+- **Growth bound.** `remove_book` deliberately does not compact: compacting would
+  renumber symbols that are live inside every other book's cached observations,
+  which is the one thing the append-only invariant forbids. So a removed book's
+  unique word types keep one arena slot plus one small allocation each until the
+  section is cleared, and the table is bounded by the distinct folded word types
+  the cache has *ever* seen. The `interned_words` cache probe makes that
+  observable.
+- **Safety property worth naming.** Because the arena hands out `Arc<str>` rather
+  than borrows, a retained judge model can outlive the table it was built from —
+  `clear()` can drop the whole interner while a model still holds its keys, with
+  no ordering hazard.
+- **Symbols are naming, not evidence.** Assignment order follows map completion,
+  so symbol *numbers* are not deterministic across thread counts. Nothing
+  downstream reads them as anything but identity: the book table is sorted by
+  resolved word, so every order that reaches a finding is a string order.
+  `symbol_numbering_never_reaches_the_fold` pins exactly that.
+
+### The CompactString verdict: NOT adopted, no dependency added
+
+The spike pointed at `CompactString` for the aggregate table. Two measurements
+killed it before it was written:
+
+1. The spike's own Q2 negative result — `BTreeMap<CompactString>::entry()` HIT
+   costs 186.9/220.8 ns/word against plain `Box<str>`'s 155.1/161.6, because
+   tree traversal dominates the allocation SSO removes.
+2. This packet's replacement is strictly better on the same axis. Resolving a
+   book-table key from the arena is an `Arc<str>` refcount bump — **zero** bytes
+   copied and zero allocations — where `CompactString` would copy 24 bytes per key
+   and allocate for any key over 24 bytes. `Model::build`'s per-key entry cost
+   went from one fresh `String` allocation per corpus word type (dhat: 83,445
+   blocks per warm analyze, the single largest warm allocation site in the whole
+   engine) to a refcount bump.
+
+So the aggregate keeps its natively ordered `(Arc<str>, WordStats)` shape and
+`ssc-core` gains no dependency. Recorded in `BookWords`' doc comment, with the
+measured rejection of the dense/permutation alternative beside it.
+
+### Retained bytes — both corpora, dhat paired configs
+
+Method as Entry 21/23: dhat `curr_bytes` after the cold seed, `all` minus
+`all-no-casing`, so the difference is exactly what the casing substrate retains.
+Both arms measured in this session on this machine; the WP6b arm reproduces
+Entry 23's number to the byte.
+
+| corpus | arm | casing retained | live blocks |
+| --- | --- | ---: | ---: |
+| WA-en-ulb (31,086 verses, 1,189 ch) | pre-WP6b (Entry 23) | 40.1 MiB | — |
+| WA-en-ulb | WP6b (`e71697c`) | **75.8 MiB** (79,475,108) | 446,723 |
+| WA-en-ulb | WP6c (HEAD) | **52.7 MiB** (55,290,391) | **98,075** |
+| qub (hapax-heavy NT) | WP6b | **99.7 MiB** (104,494,636) | 697,673 |
+| qub | WP6c | **77.6 MiB** (81,332,748) | **204,605** |
+
+−23.1 MiB (−30%) on English, −22.1 MiB (−22%) on Quechua; live blocks 4.6x and
+3.4x fewer. **This is well short of the ~5x the brief expected, and the reason is
+measured, not guessed.** A dhat by-site decomposition of the WP6b arm's peak live
+bytes shows where casing's 75.8 MiB actually was:
+
+| site | WP6b | WP6c |
+| --- | ---: | ---: |
+| per-chapter `tallies` (`Vec<WordStats>`, 265,207 entries) | 23.17 MiB | 16.19 MiB |
+| per-chapter `sites` (`Vec<LowerSite>`, 668,257 entries) | 22.09 MiB | 15.30 MiB |
+| per-chapter `keys` (`Vec<String>` header array) | 8.69 MiB | ~1.0 MiB (`Box<[WordSym]>`) |
+| the folded key strings themselves | 1.31 MiB | ~0.5 MiB (13,096 shared, once) |
+| `WordStats`' `BTreeMap` nodes (`record`) | 6.99 MiB | 6.99 MiB |
+| book tables + per-chapter id maps (`fold_book`) | 8.03 MiB | 6.37 MiB |
+
+The owned strings were **10.0 MiB of 75.8** — so an interner could never return
+more than that, whatever its shape; the spike's 5.26x model excluded real
+`WordStats` (its own methodology note says so) and that is exactly the gap
+between its prediction and this outcome. Boxing the three tables returned another
+~13 MiB of `Vec` doubling slack. What remains is not string storage at all:
+265,207 per-chapter `WordStats` at 64 B plus their `BTreeMap` nodes (23 MiB), and
+668,257 `LowerSite`s at 24 B (15 MiB). **Named follow-up, not built** (it is the
+dhat-driven representation work the brief scoped out): flatten `WordStats`'
+two `BTreeMap<char, ForcedTally>`s into an inline triple list, and pack
+`LowerSite` to 16 B. Together those are worth ~15–20 MiB more, on evidence.
+
+### Allocations per warm analyze — the packet's clearest win
+
+Same paired-config method, dhat `total_blocks` delta over one warm
+`update_book` + `analyze` (median of 20 iterations, casing lane only):
+
+| corpus | WP6b | WP6c | change |
+| --- | ---: | ---: | ---: |
+| WA-en-ulb | **92,224** blocks | **8,628** blocks | **−90.6%** |
+| qub | **201,515** blocks | **21,939** blocks | **−89.1%** |
+
+Entry 23's "~92,000 extra small allocations per warm analyze" is confirmed to the
+hundred and is now gone. dhat's warm-only backtrace attribution named the site
+before the fix was written: `Model::build`'s `words.entry(key.clone())`, 83,445
+blocks per warm analyze — one fresh `String` per corpus word type, every build.
+
+### The §13 ladder — and the finding that reframes Entry 23's regression
+
+§13 protocol, three arms alternating one batch per invocation (PRE = pre-WP6b
+`6e74c10`, WP6b = `e71697c`, CAND = HEAD), five batches per cell, median of the
+five batch medians, `--variants 3`, WA-en-ulb, trials 250/150/100 (default) and
+120/100/60 (all) as Entry 23. **Load 3.6–5.1 (1-min) across the run** — this
+machine is busier than Entry 23's session, so absolute milliseconds are ~1.5x its
+numbers; the alternation is what makes the arms comparable.
+
+**First, a benchmark defect that has to come before any table.** With the harness
+edit Entry 23 used, the PRE arm **never rebuilds the casing model on a warm
+iteration** — an instrumented build counter recorded zero warm calls to
+`build_uncached` over 120 iterations. The reason is exact: pre-WP6b kept a
+thread-local *two-entry* content-fingerprint model cache, and the harness's
+variants differ only in trailing `!`s (`" edited"`, `" edited!"`, `" edited!!"`).
+For a word-tallying rule, `" edited!"` and `" edited!!"` produce the **identical**
+aggregate (same folded word, same terminal glyph forcing the next word), so three
+variants are only **two** distinct aggregates — which a two-entry cache holds
+completely. Entry 23's `--variants 3` control was intended to defeat that cache
+and could not: the pre-WP6b harness does not even parse `--variants` (the flag was
+added in the WP6b commit), so both of its readings, "21.2 ms at two variants,
+21.2 ms at three", were the same two-block alternation. Its conclusion that
+`Model::build` "costs 11.0 ms per warm call in *both* arms" is therefore wrong for
+the PRE arm: PRE paid ~0.29 ms of fingerprint-and-memo per warm analyze, and the
+substrate arm paid a real build.
+
+Adding a word-distinct rotation (`--distinct-variants`: each variant introduces a
+different word type, so every iteration is a genuinely different aggregate — which
+is what any real editing session presents) makes the PRE arm build too:
+**11.77 ms per build**, and PRE's 3JN/all total moves 23.4 → **35.0 ms**, landing
+on top of the substrate arms. So the "+6 to +10.5 ms all-config regression"
+Entry 23 recorded is, in its dominant part, a benchmark artifact of a two-way
+alternation hitting a two-entry memo that the substrate's single retained slot
+cannot hold.
+
+**Like-for-like table** (`--distinct-variants`, so neither arm's memo can hide a
+rebuild — the only comparison where the arms do the same work):
+
+| cell | PRE | WP6b | CAND | CAND−WP6b | CAND−PRE | map PRE/WP6b/CAND | judge PRE/WP6b/CAND |
+| --- | ---: | ---: | ---: | ---: | ---: | --- | --- |
+| 3JN default | 0.676 | 0.699 | 0.699 | −0.000 | +0.023 (+3.4%) | 0.12/0.12/0.12 | 0.04/0.05/0.05 |
+| MAT default | 7.702 | 7.751 | 7.698 | −0.053 | −0.003 (−0.0%) | 6.99/7.02/6.96 | 0.05/0.06/0.06 |
+| PSA default | 13.291 | 13.366 | 13.276 | −0.090 | −0.015 (−0.1%) | 12.41/12.46/12.37 | 0.05/0.07/0.06 |
+| 3JN all | 33.675 | 36.429 | **35.501** | −0.928 | **+1.826 (+5.4%)** | 0.47/0.40/0.40 | 32.56/34.31/33.36 |
+| MAT all | 50.257 | 50.126 | **49.653** | −0.474 | **−0.604 (−1.2%)** | 15.71/13.19/13.19 | 33.50/35.06/34.55 |
+| PSA all | 61.829 | 59.952 | **58.969** | −0.983 | **−2.859 (−4.6%)** | 26.96/22.64/22.61 | 33.63/35.24/34.30 |
+
+§13 regression rule (candidate both >5% and >0.25 ms slower in ≥3/5 paired
+batches): **vs WP6b, 0/5 in every cell — the candidate is faster in all three
+all-config cells, consistently.** **Vs PRE: 0/5 in five cells and 4/5 in
+3JN/all** (+1.83 ms of 33.7). Default is flat everywhere, reconfirming the Phase A
+`<= 2 ms` floor at 0.70 ms.
+
+**Same table against Entry 23's own recorded numbers** (its `--variants`-`!`
+harness, so the PRE arm's memo hits): PRE 3JN/MAT/PSA all = 23.4/38.6/52.3 ms
+here versus CAND 36.9/48.2/59.9 — i.e. measured that way the packet's gate
+("all-config warm at or better than pre-WP6b") **fails by +7.6 to +13.5 ms**. Both
+readings are reported because only one of them is a like-for-like comparison, and
+the honest summary is: *the gate as written is failed on the artifact-bearing
+comparison and met in 5 of 6 cells (missed by 1.8 ms in one) on the corrected
+one.*
+
+**Where casing's warm time actually is** (scratch `Instant` instrumentation in
+both arms, since reverted; 3JN/all, per warm analyze):
+
+| term | PRE | CAND |
+| --- | ---: | ---: |
+| `Model::build` (corpus merge + trust/habit math) | 11.77 ms per build, **0 builds warm** with the `!` variants / every analyze with distinct ones | ~11 ms, every analyze the aggregate moves |
+| per-site emit + per-key verdicts | 8.82 ms **× 2 passes** = 17.6 ms | **17.75 ms, one pass** |
+| substrate drive (map 1 chapter + reduce + fold) | n/a (in the map bucket) | 1.19 ms |
+
+Three things this settles:
+
+1. **The per-site/per-key path is not a regression and never was.** One combined
+   pass over 668,257 sites judging 82,919 keys costs 17.75 ms; the pre-substrate
+   engine's two single-channel passes cost 17.6 ms together. Entry 23's "the gap
+   is per-key verdict math, ~7 ms of it" was an artifact of comparing a memo-hit
+   arm against a rebuilding one.
+2. **The dominant warm cost of casing is the model rebuild** (~11 ms), in both
+   architectures, whenever the corpus word aggregate moves — which every real
+   forward edit does. That is the lever, and it is a *rebuild-frequency* question,
+   not a storage one.
+3. **This packet's storage fix is worth ~1 ms of that build** (PRE 11.77 ms/build
+   against CAND's ~11 ms with 83,445 fewer allocations in it) plus the −0.5 to
+   −1.0 ms visible in every all-config cell against WP6b — real, small, and in
+   the right direction, but not the size of the gap Entry 23 named.
+
+### Deviations / notes for the owner (clearly marked)
+
+1. **The §13 gate as briefed is not met on 3JN/all** (+1.83 ms, +5.4%, 4/5
+   batches) even on the corrected comparison, and is met (indeed bettered) on
+   MAT/all and PSA/all. Per the stop clause no further optimization was attempted.
+   The residual on a one-chapter book is the substrate lane's fixed per-analyze
+   overhead (1.19 ms of drive, plus 1,189 chapter-stamp clones and 66
+   `update_book` take-apart/reassemble cycles), which the bigger books' map-term
+   win (−2.5 / −4.3 ms) more than covers.
+2. **Entry 23's regression figure and its `Model::build` decomposition are
+   corrected above.** The correction is a measurement finding, not a behaviour
+   change, but it does mean the WP6b entry's "+6 to +10.5 ms" and its memo
+   adjudication ("a strict gain in the one case a content memo could not see")
+   should be read against this entry.
+3. **The named next lever, NOT built** (it is the owner's call, and it is not
+   storage): give the retained casing model a small generation-keyed LRU instead
+   of one slot, restoring what WP6b deleted. That would recover ~11 ms on any
+   benchmark that alternates between a bounded set of aggregates — but **nothing**
+   in a real forward-editing session, where every edit is a new aggregate. The
+   honest version of the same lever is to make the rebuild itself incremental or
+   cheaper, which the load-bearing insertion order makes hard (see the spike).
+4. **Retained bytes fell 30%/22%, not ~5x.** Cause measured and tabulated above:
+   owned strings were only 10.0 MiB of the 75.8 MiB. The remaining bulk has two
+   named, measured owners (per-chapter `WordStats` representation, `LowerSite`
+   packing) worth ~15–20 MiB.
+5. **One addition beyond the briefed three items:** boxing the per-chapter tables
+   (commit `89e8bd8`). It is pure storage shape, on none of the packet's
+   exclusion list, its own revertible commit, and dhat measured it at ~13 MiB —
+   more than the interner itself returned.
+6. **The substrate contract grew an associated type** (`Symbols`) rather than
+   smuggling the interner through `ExtractorConfig`. `extractor_fp` stays honest
+   (it fingerprints knobs; the symbol table has no fingerprint and cannot
+   invalidate an observation) and the two non-word substrates say `()`.
+7. **Harness changes committed** (measurement instruments, not engine):
+   `dhat_probe` gains a `warm-profile` mode (profiler starts after the cold seed,
+   so backtraces are the warm analyze's own allocations — this is what found the
+   83,445-block site) and an optional corpus argument; `warm_ladder_profile` gains
+   `--distinct-variants` and an `all-pos-only` config (the toggle that isolated
+   the second emit pass).
+
+### Stop-safe next step
+
+The two storage commits are semantics-free by construction and independently
+revertible; the oracle is byte-identical at each. Phase E's `MixedCase` can adopt
+the shared interner as-is (`type Symbols = WordInterner`, same instance). The
+open adjudication the owner now holds is (3) above: whether casing's ~11 ms
+per-analyze model rebuild gets a memo, a cheaper build, or is accepted.
