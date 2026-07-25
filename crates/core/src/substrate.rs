@@ -50,13 +50,16 @@ use crate::diagnostics::RuleId;
 pub(crate) enum SubstrateId {
     /// `punct.spacing-anomaly`'s per-mark per-side attachment model.
     Spacing,
+    /// `struct.duplicate-word`'s adjacent-pair sites.
+    DuplicateWord,
 }
 
 impl SubstrateId {
     /// Every substrate id, declaration order — the exhaustive iteration source
     /// the registry-completeness tests walk.
     #[allow(dead_code)] // registry-completeness tests + future multi-substrate iteration
-    pub(crate) const ALL: &'static [SubstrateId] = &[SubstrateId::Spacing];
+    pub(crate) const ALL: &'static [SubstrateId] =
+        &[SubstrateId::Spacing, SubstrateId::DuplicateWord];
 }
 
 /// A verse-slice view of one chapter, handed to
@@ -675,23 +678,25 @@ impl<S: ObservationSubstrate> SubstrateCache<S> {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct ActiveSubstrates {
     pub(crate) spacing: bool,
+    pub(crate) duplicate_word: bool,
 }
 
 impl ActiveSubstrates {
     /// Derive the active set from the final coalesced config: a substrate is
     /// active iff any of its consumers is enabled (the closed registry below).
     pub(crate) fn from_config(config: &Config) -> Self {
+        let any = |rules: &[RuleId]| rules.iter().any(|&r| config.is_enabled(r));
         Self {
-            spacing: spacing_consumers()
-                .iter()
-                .any(|&r| config.is_enabled(r)),
+            spacing: any(spacing_consumers()),
+            duplicate_word: any(duplicate_word_consumers()),
         }
     }
 
-    #[allow(dead_code)] // exhaustive per-id accessor; used by the completeness tests and future multi-substrate gating
+    #[allow(dead_code)] // exhaustive per-id accessor; the completeness tests walk it
     pub(crate) fn is_active(&self, id: SubstrateId) -> bool {
         match id {
             SubstrateId::Spacing => self.spacing,
+            SubstrateId::DuplicateWord => self.duplicate_word,
         }
     }
 }
@@ -703,12 +708,18 @@ pub(crate) fn spacing_consumers() -> &'static [RuleId] {
     &[RuleId::PunctuationSpacingAnomaly]
 }
 
+/// The closed registry: the duplicate-word substrate's sole consumer.
+pub(crate) fn duplicate_word_consumers() -> &'static [RuleId] {
+    &[RuleId::DuplicateWord]
+}
+
 /// The consumers of a substrate by id — the exhaustive closed match the
 /// completeness tests walk.
 #[allow(dead_code)] // registry-completeness tests + future multi-substrate iteration
 pub(crate) fn consumers_of(id: SubstrateId) -> &'static [RuleId] {
     match id {
         SubstrateId::Spacing => spacing_consumers(),
+        SubstrateId::DuplicateWord => duplicate_word_consumers(),
     }
 }
 
@@ -724,6 +735,10 @@ mod tests {
             <crate::signals::punctuation::SpacingSubstrate as ObservationSubstrate>::ID,
             SubstrateId::Spacing
         );
+        assert_eq!(
+            <crate::signals::lexical::DuplicateWordSubstrate as ObservationSubstrate>::ID,
+            SubstrateId::DuplicateWord
+        );
     }
 
     /// Every substrate id has at least one consumer, and the active-set fields
@@ -736,9 +751,13 @@ mod tests {
                 "{id:?} has no consumer — a substrate with no consumer is dead"
             );
             // `is_active` matches exhaustively, so this compiles only if every
-            // id is handled; assert it reads the right field for spacing.
-            let active = ActiveSubstrates { spacing: true };
-            let _ = active.is_active(id);
+            // id is handled; assert every field reads through for its own id.
+            let all_on = ActiveSubstrates {
+                spacing: true,
+                duplicate_word: true,
+            };
+            assert!(all_on.is_active(id), "{id:?} has no active-set field");
+            assert!(!ActiveSubstrates::default().is_active(id));
         }
     }
 

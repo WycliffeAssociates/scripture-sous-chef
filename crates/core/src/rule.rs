@@ -442,11 +442,6 @@ pub fn project_rules(config: &Config) -> Vec<Box<dyn ProjectRule>> {
     ]
 }
 
-/// Project-scoped rules that also consult per-verse tokens.
-pub fn project_token_rules() -> Vec<Box<dyn ProjectTokenRule>> {
-    vec![Box::new(signals::lexical::DuplicateWord)]
-}
-
 /// Every stateful (observe-then-judge) rule wired in, constructed from
 /// `config`'s typed sub-configs (ADR 0017). Like the project registry, this
 /// is complete — including rules `v1_defaults` disables.

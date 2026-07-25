@@ -142,7 +142,6 @@ pub(crate) struct WalkPlan {
     pub mixed_case: bool,
     pub proportionality: bool,
     pub bracket: bool,
-    pub duplicate: bool,
     pub normalization: bool,
     pub collect_tokens: bool,
 }
@@ -197,7 +196,7 @@ impl WalkPlan {
         if self.bracket {
             n.tape = true;
         }
-        if self.duplicate || self.collect_tokens {
+        if self.collect_tokens {
             n.tokens = true;
         }
         if self.normalization {
@@ -247,7 +246,6 @@ pub(crate) struct BookOut {
     pub mixed_case: Option<mixed_case::BookMixedCase>,
     pub proportionality: Option<Vec<proportionality::RatioObs>>,
     pub bracket: Option<bracket_balance::BookMatch>,
-    pub duplicate: Option<Vec<lexical::DuplicateHit>>,
     pub normalization: Option<mixed_normalization::BookNormalization>,
     pub tokens: Option<Vec<(LocalKeyIdx, Vec<Token>)>>,
 }
@@ -358,7 +356,6 @@ fn walk_book(
         .then(|| proportionality::ProportionalityAcc::new(source_index));
     // Project listeners (every supplied book — their emission scope).
     let mut bracket_acc = plan.bracket.then(bracket_balance::BracketAcc::new);
-    let mut duplicate_acc = plan.duplicate.then(lexical::DuplicateWordAcc::new);
     let mut normalization_acc = plan
         .normalization
         .then(mixed_normalization::NormalizationAcc::new);
@@ -426,9 +423,6 @@ fn walk_book(
         if let Some(a) = &mut bracket_acc {
             a.verse(&v);
         }
-        if let Some(a) = &mut duplicate_acc {
-            a.verse(&v);
-        }
         if let Some(a) = &mut normalization_acc {
             a.verse(&v);
         }
@@ -457,7 +451,6 @@ fn walk_book(
         mixed_case: mixed_case_acc.map(mixed_case::MixedCaseAcc::finish),
         proportionality: prop_acc.map(proportionality::ProportionalityAcc::finish),
         bracket: bracket_acc.map(bracket_balance::BracketAcc::finish),
-        duplicate: duplicate_acc.map(lexical::DuplicateWordAcc::finish),
         normalization: normalization_acc.map(mixed_normalization::NormalizationAcc::finish),
         tokens: cache,
     }

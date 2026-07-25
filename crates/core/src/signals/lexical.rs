@@ -8,12 +8,11 @@ use unicode_segmentation::UnicodeSegmentation;
 
 use crate::charclass::class_of;
 use crate::config::RepeatedCharacterRunConfig;
-use crate::corpus::{BookGroup, Books, Corpus, LocalKeyIdx, SiteAddr, rebase};
+use crate::corpus::{Books, Corpus, LocalKeyIdx, SiteAddr, rebase};
 use crate::diagnostics::{Finding, FindingArgs, RuleId, Severity};
 use crate::evidence;
 use crate::grapheme::{GSpan, segment, segment_tape};
-use crate::key::parse_key;
-use crate::rule::{self, ProjectTokenRule, StatefulRule, TokenCache};
+use crate::rule::{self, StatefulRule, TokenCache};
 use crate::span::Span;
 use crate::stats::RuleStats;
 use crate::stream;
@@ -35,86 +34,46 @@ use crate::token::{Token, tokenize};
 ///
 /// **Book scope, chapter reset (ADR 0016 amendment).** A doubled word can
 /// straddle a verse boundary (`\v 1 …the thing \v 2 thing was…`), which a
-/// per-verse matcher can never see, so the rule is a `ProjectRule` that
-/// walks each book's verses in presented order via [`corpus::by_book`]. It
-/// carries only the previous verse's last word token (adjacency is all
-/// duplication needs — no window, no stack), and **resets the carry at
-/// every chapter boundary**: a word repeating across a `\c` break is
-/// discourse reset, not a typo. The whitespace-only-gap invariant that
-/// keeps `truly, truly` clean within a verse also keeps anadiplosis
-/// (`…the Lord. / The Lord is…`) clean across a boundary — the trailing
-/// `.` makes the gap non-whitespace.
+/// per-verse matcher can never see, so the walk carries the previous verse's
+/// last word token (adjacency is all duplication needs — no window, no stack)
+/// and **resets that carry at every chapter boundary**: a word repeating across
+/// a `\c` break is discourse reset, not a typo. The whitespace-only-gap
+/// invariant that keeps `truly, truly` clean within a verse also keeps
+/// anadiplosis (`…the Lord. / The Lord is…`) clean across a boundary — the
+/// trailing `.` makes the gap non-whitespace.
+///
+/// The chapter reset is why [`DuplicateWordSubstrate`]'s boundary state is
+/// empty: nothing this rule observes can cross a chapter seam, so a chapter's
+/// observation is already the complete, final answer for that chapter.
 pub const DUPLICATE_WORD: RuleId = RuleId::DuplicateWord;
 
-pub struct DuplicateWord;
-
-/// One flagged duplicate, local to its book. Retained by the fused walk /
-/// analysis cache; rebased to a `Finding` only at emission via [`emit`].
-#[derive(Clone)]
+/// One flagged duplicate, local to its **chapter** — the verse's index within
+/// the chapter run plus the verse-local span. Chapter-local because that is the
+/// unit a chapter replacement replaces: a hit in an untouched chapter stays
+/// valid *and* correctly addressed with no rebase, and the global `KeyIdx` is
+/// resolved once at materialization.
+#[derive(Clone, PartialEq, Eq)]
 pub(crate) struct DuplicateHit {
-    anchor_local_idx: LocalKeyIdx,
+    anchor_local: LocalKeyIdx,
     /// `Some` for a cross-verse duplicate (the first occurrence lives in the
-    /// previous verse); `None` when the finding range already spans both
-    /// occurrences within one verse.
-    first_local_idx: Option<LocalKeyIdx>,
+    /// previous verse of the same chapter); `None` when the finding range
+    /// already spans both occurrences within one verse.
+    first_local: Option<LocalKeyIdx>,
     range: Span,
 }
 
-/// The previous verse's trailing word, carried across a verse boundary so
-/// the doubling check can straddle it. All borrows are into the `Corpus`.
+/// The previous verse's trailing word, carried across a verse boundary so the
+/// doubling check can straddle it. All borrows are into the chapter's texts.
+/// It carries no chapter token: the carry never leaves the chapter it started
+/// in, so every verse it reaches is by construction in the same chapter.
 struct Tail<'a> {
-    local_idx: LocalKeyIdx,
-    /// The verse's parsed chapter token (opaque, compared by string equality
-    /// — the chapter gate does not parse it as a number).
-    chapter: &'a str,
+    local: LocalKeyIdx,
     /// The verse's full text — needed to slice the gap after `last_end`.
     text: &'a str,
     /// Byte offset where the last word token ends.
     last_end: usize,
     /// The last word token's slice.
     last_word: &'a str,
-}
-
-/// Rebase one book's duplicate hits to `Finding`s, resolving the
-/// cross-verse `first_local_idx` to its key string only now, at emission.
-pub(crate) fn emit(group: &BookGroup<'_>, hits: &[DuplicateHit]) -> Vec<Finding> {
-    hits.iter()
-        .map(|h| Finding {
-            key_idx: rebase(group.base, h.anchor_local_idx),
-            code: DUPLICATE_WORD,
-            severity: Severity::Warning,
-            range: h.range,
-            score: None,
-            args: h.first_local_idx.map(|local| FindingArgs::DuplicateWord {
-                first_sid: group.key(local).to_string(),
-            }),
-        })
-        .collect()
-}
-
-impl ProjectTokenRule for DuplicateWord {
-    fn id(&self) -> RuleId {
-        DUPLICATE_WORD
-    }
-
-    // Duplication is intrinsic to the target; the reference is irrelevant.
-    fn check(
-        &self,
-        books: &Books<'_>,
-        _source: Option<&Corpus>,
-        tokens: Option<&TokenCache<'_>>,
-    ) -> Vec<Finding> {
-        // Books are independent (the tail carry never crosses a book), so
-        // the walk fans out per book under `parallel` (ADR 0042).
-        rule::map_books(books, |group| {
-            let mut hits = Vec::new();
-            check_book(group, tokens, &mut hits);
-            emit(group, &hits)
-        })
-        .into_iter()
-        .flatten()
-        .collect()
-    }
 }
 
 /// Case-insensitive word equality **without allocating**. The old form
@@ -142,113 +101,337 @@ fn eq_ignore_case(a: &str, b: &str) -> bool {
         .eq(b.chars().flat_map(char::to_lowercase))
 }
 
-/// The duplicate-word listener: one book's cross-verse doubling walk, tail
-/// carried across verse seams (chapter-gated). Fed per verse by the fused
-/// walk; `check_book` drives it for direct trait callers.
-pub(crate) struct DuplicateWordAcc<'t> {
-    tail: Option<Tail<'t>>,
-    found: Vec<DuplicateHit>,
-}
-
-impl<'t> DuplicateWordAcc<'t> {
-    pub(crate) fn new() -> Self {
-        DuplicateWordAcc {
-            tail: None,
-            found: Vec::new(),
-        }
-    }
-
-    pub(crate) fn verse(&mut self, v: &stream::VerseInputs<'t, '_>) {
-        duplicate_word_verse(
-            v.key,
-            v.local_idx,
-            v.text,
-            v.tokens,
-            &mut self.tail,
-            &mut self.found,
-        );
-    }
-
-    pub(crate) fn finish(self) -> Vec<DuplicateHit> {
-        self.found
-    }
-}
-
-fn check_book(group: &BookGroup<'_>, cache: Option<&TokenCache<'_>>, out: &mut Vec<DuplicateHit>) {
-    let mut tail: Option<Tail> = None;
-    for (vi, (key, text)) in group.keys.iter().zip(group.texts.iter()).enumerate() {
-        let local_idx = LocalKeyIdx::from_usize(vi);
-        let text = text.as_str();
-        // Use the shared per-verse tokens when the runner built a cache;
-        // otherwise tokenize this verse ourselves (single-consumer case).
-        let owned;
-        let tokens: &[Token] = match cache {
-            Some(c) => c
-                .get(&rebase(group.base, local_idx))
-                .copied()
-                .unwrap_or(&[]),
-            None => {
-                owned = tokenize(text);
-                &owned
-            }
-        };
-        duplicate_word_verse(key, local_idx, text, tokens, &mut tail, out);
-    }
-}
-
-/// One verse of the duplicate-word walk — the shared body behind
-/// [`DuplicateWordAcc`] and [`check_book`].
+/// One verse of the duplicate-word walk, within one chapter's map.
 fn duplicate_word_verse<'t>(
-    key: &'t str,
-    local_idx: LocalKeyIdx,
+    local: LocalKeyIdx,
     text: &'t str,
     tokens: &[Token],
     tail: &mut Option<Tail<'t>>,
     out: &mut Vec<DuplicateHit>,
 ) {
-    {
-        let chapter = parse_key(key).expect("Corpus validated keys").chapter;
-        // Cross-verse boundary: the carried last word meeting this verse's
-        // first word, with only whitespace (or a bare verse break) between
-        // them. Gated to the same chapter — adjacency does not cross `\c`.
-        if let (Some(t), Some(first)) = (&*tail, tokens.first())
-            && t.chapter == chapter
-        {
-            let prev_tail = &t.text[t.last_end..];
-            let head = &text[..first.span.start as usize];
-            let gap_ws =
-                prev_tail.chars().all(char::is_whitespace) && head.chars().all(char::is_whitespace);
-            if gap_ws && eq_ignore_case(t.last_word, first.span.slice(text)) {
-                // Anchor the deletable second occurrence; the first lives in
-                // another verse, so it rides in args (ADR 0016 amendment).
-                out.push(DuplicateHit {
-                    anchor_local_idx: local_idx,
-                    first_local_idx: Some(t.local_idx),
-                    range: first.span,
+    // Cross-verse boundary: the carried last word meeting this verse's first
+    // word, with only whitespace (or a bare verse break) between them. No
+    // chapter comparison is needed here — the carry is created and consumed
+    // inside one chapter's walk, so it can never reach a different chapter.
+    if let (Some(t), Some(first)) = (&*tail, tokens.first()) {
+        let prev_tail = &t.text[t.last_end..];
+        let head = &text[..first.span.start as usize];
+        let gap_ws =
+            prev_tail.chars().all(char::is_whitespace) && head.chars().all(char::is_whitespace);
+        if gap_ws && eq_ignore_case(t.last_word, first.span.slice(text)) {
+            // Anchor the deletable second occurrence; the first lives in
+            // another verse, so it rides in args (ADR 0016 amendment).
+            out.push(DuplicateHit {
+                anchor_local: local,
+                first_local: Some(t.local),
+                range: first.span,
+            });
+        }
+    }
+
+    // Within-verse doublings: one range spanning both words, no args.
+    for span in scan_verse(text, tokens) {
+        out.push(DuplicateHit {
+            anchor_local: local,
+            first_local: None,
+            range: span,
+        });
+    }
+
+    // Carry this verse's last word forward; a verse with no word tokens
+    // (empty / punctuation-only) breaks adjacency — its content sits
+    // between any flanking words — so it clears the carry.
+    *tail = tokens.last().map(|last| Tail {
+        local,
+        text,
+        last_end: last.span.end as usize,
+        last_word: last.span.slice(text),
+    });
+}
+
+// ── The duplicate-word observation substrate (plan §5.2 / §11 ledger row). ──
+
+/// `struct.duplicate-word`'s typed observation substrate. Its boundary state is
+/// **empty**: the rule resets its adjacency carry at every chapter boundary (see
+/// [`DUPLICATE_WORD`]), so a chapter's observation is self-contained by
+/// construction — no predecessor input can reach it and nothing it produces can
+/// reach a successor. Reduction is therefore the identity and every replay
+/// converges at the chapter that changed.
+pub(crate) struct DuplicateWordSubstrate;
+
+/// Pins the substrate's registry id at compile time.
+const _: crate::substrate::SubstrateId =
+    <DuplicateWordSubstrate as crate::substrate::ObservationSubstrate>::ID;
+
+/// One chapter's duplicate-word observation: its opaque token and its hits in
+/// scan order. `Arc` so reduction (the identity here) and the book contribution
+/// share one allocation instead of deep-copying every hit.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub(crate) struct DuplicateChapterObs {
+    token: Box<str>,
+    hits: std::sync::Arc<[DuplicateHit]>,
+}
+
+/// One chapter's reduced duplicate-word result — identical to its observation,
+/// because nothing crosses a chapter seam for this rule.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub(crate) struct DuplicateReduced {
+    token: Box<str>,
+    hits: std::sync::Arc<[DuplicateHit]>,
+}
+
+/// A book's folded duplicate-word contribution: its chapters' hits grouped by
+/// owning chapter token, in book order — the materializer rebases each hit
+/// through its chapter's current base.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub(crate) struct DuplicateBookContribution {
+    chapters: Vec<DuplicateReduced>,
+}
+
+/// The per-key verdict. Duplication is deterministic: there is no threshold and
+/// no corpus statistic, so every extracted site emits.
+#[derive(Clone, Copy)]
+pub(crate) struct DuplicateVerdict {
+    emits: bool,
+}
+
+impl crate::substrate::ObservationSubstrate for DuplicateWordSubstrate {
+    const ID: crate::substrate::SubstrateId = crate::substrate::SubstrateId::DuplicateWord;
+    // Bump on any observation/reduction schema change.
+    const SCHEMA_STAMP: u64 = 1;
+
+    // There is no corpus aggregate to key: the extraction predicate (two
+    // adjacent word tokens that fold equal across a whitespace-only gap) is
+    // decided entirely inside the chapter observation, and no statistic of the
+    // pair reaches a judge. So the judge has exactly one trivial key, and the
+    // judge-dirty set is always exactly the site delta.
+    type Key = ();
+    type BoundaryState = ();
+    type ChapterObservation = DuplicateChapterObs;
+    type ReducedChapter = DuplicateReduced;
+    type BookContribution = DuplicateBookContribution;
+    type CorpusStats = ();
+    type ExtractorConfig = ();
+    type JudgeConfig = ();
+    type EntryOutcome = DuplicateVerdict;
+
+    fn extractor_fp(_extractor: &()) -> u64 {
+        0
+    }
+
+    fn map_chapter(
+        chapter: &crate::substrate::ChapterView<'_>,
+        _extractor: &(),
+    ) -> DuplicateChapterObs {
+        let mut hits = Vec::new();
+        // The carry starts empty at the chapter's first verse — that IS the
+        // shipped chapter reset, not an approximation of it.
+        let mut tail: Option<Tail<'_>> = None;
+        for (vi, text) in chapter.texts.iter().enumerate() {
+            let tokens = tokenize(text);
+            duplicate_word_verse(
+                LocalKeyIdx::from_usize(vi),
+                text,
+                &tokens,
+                &mut tail,
+                &mut hits,
+            );
+        }
+        DuplicateChapterObs {
+            token: Box::from(chapter.chapter),
+            hits: hits.into(),
+        }
+    }
+
+    fn pending_owner(_state: &()) -> Option<&str> {
+        None
+    }
+
+    fn reduce_chapter(
+        observation: &DuplicateChapterObs,
+        _entering: &(),
+        _carry_out: &mut DuplicateReduced,
+    ) -> (DuplicateReduced, ()) {
+        (
+            DuplicateReduced {
+                token: observation.token.clone(),
+                hits: std::sync::Arc::clone(&observation.hits),
+            },
+            (),
+        )
+    }
+
+    fn finish_book(_leaving: &(), _carry_out: &mut DuplicateReduced) {}
+
+    fn fold_book(reduced: &[DuplicateReduced]) -> DuplicateBookContribution {
+        DuplicateBookContribution {
+            chapters: reduced.to_vec(),
+        }
+    }
+
+    fn replace_book_in_corpus_stats(
+        _stats: &mut (),
+        _slug: &str,
+        _old: Option<&DuplicateBookContribution>,
+        _new: Option<&DuplicateBookContribution>,
+    ) -> Vec<()> {
+        // No corpus aggregate exists, so no key's aggregate can move: the
+        // stats delta is always empty and every judge-dirty key comes from the
+        // site delta.
+        Vec::new()
+    }
+
+    fn judge(_judge: &(), _key: &(), _stats: &()) -> DuplicateVerdict {
+        DuplicateVerdict { emits: true }
+    }
+}
+
+impl DuplicateBookContribution {
+    /// Rebase this book's hits to `Finding`s, resolving each chapter's current
+    /// base and each cross-verse hit's first-occurrence key string only now, at
+    /// materialization.
+    fn materialize(
+        &self,
+        slug: &str,
+        corpus: &Corpus,
+        verdict: DuplicateVerdict,
+        out: &mut Vec<Finding>,
+    ) {
+        if !verdict.emits {
+            return;
+        }
+        for chapter in &self.chapters {
+            let Some(range) = corpus.chapter_range(slug, &chapter.token) else {
+                continue;
+            };
+            let base = crate::corpus::KeyIdx::from_usize(range.start);
+            for h in chapter.hits.iter() {
+                out.push(Finding {
+                    key_idx: rebase(base, h.anchor_local),
+                    code: DUPLICATE_WORD,
+                    severity: Severity::Warning,
+                    range: h.range,
+                    score: None,
+                    args: h.first_local.map(|local| FindingArgs::DuplicateWord {
+                        first_sid: corpus.key(rebase(base, local)).to_string(),
+                    }),
                 });
             }
         }
+    }
+}
 
-        // Within-verse doublings: one range spanning both words, no args.
-        for span in scan_verse(text, tokens) {
-            out.push(DuplicateHit {
-                anchor_local_idx: local_idx,
-                first_local_idx: None,
-                range: span,
-            });
+/// One chapter the substrate has to map this analysis, as the ordered map seam
+/// sees it: its caller-order `(book, chapter)` slot plus the view mapping reads.
+struct DuplicateMapWork<'a> {
+    book: usize,
+    chapter: usize,
+    view: crate::substrate::ChapterView<'a>,
+}
+
+/// Drive the `struct.duplicate-word` observation substrate for one analysis:
+/// map the dirty chapters through the ordered chapter-map seam, reduce (the
+/// identity), and materialize every book's hits into `out`. When inactive, drop
+/// the cached products so an edit while it is disabled does no work for it.
+pub(crate) fn drive_duplicate_word(
+    active: bool,
+    cache: &mut crate::substrate::SubstrateCache<DuplicateWordSubstrate>,
+    corpus: &Corpus,
+    out: &mut Vec<Finding>,
+) {
+    use crate::substrate::{ChapterView, ObservationInputStamp, ObservationSubstrate};
+    #[cfg(any(test, feature = "test-probes"))]
+    cache.reset_probes();
+    if !active {
+        cache.clear();
+        return;
+    }
+    let texts = corpus.texts();
+    let layout = corpus.book_layout();
+    let mut stamped: Vec<Vec<(Box<str>, ObservationInputStamp)>> = Vec::with_capacity(layout.len());
+    let mut work: Vec<DuplicateMapWork<'_>> = Vec::new();
+    let mut book_runs: Vec<std::ops::Range<usize>> = Vec::new();
+    let mut work_bytes = 0usize;
+    for (bi, book) in layout.iter().enumerate() {
+        let run_start = work.len();
+        let mut chapters = Vec::with_capacity(book.chapters.len());
+        for (ci, c) in book.chapters.iter().enumerate() {
+            let stamp = ObservationInputStamp {
+                schema_stamp: DuplicateWordSubstrate::SCHEMA_STAMP,
+                chapter_hash: c.hash,
+                extractor_fp: DuplicateWordSubstrate::extractor_fp(&()),
+            };
+            if !cache.observation_is_current(&book.slug, &c.chapter, &stamp) {
+                let verses = &texts[c.range.clone()];
+                work_bytes += verses.iter().map(String::len).sum::<usize>();
+                work.push(DuplicateMapWork {
+                    book: bi,
+                    chapter: ci,
+                    view: ChapterView {
+                        chapter: &c.chapter,
+                        texts: verses,
+                    },
+                });
+            }
+            chapters.push((c.chapter.clone(), stamp));
         }
-
-        // Carry this verse's last word forward; a verse with no word tokens
-        // (empty / punctuation-only) breaks adjacency — its content sits
-        // between any flanking words — so it clears the carry.
-        *tail = tokens.last().map(|last| Tail {
-            local_idx,
-            chapter,
-            text,
-            last_end: last.span.end as usize,
-            last_word: last.span.slice(text),
+        if work.len() > run_start {
+            book_runs.push(run_start..work.len());
+        }
+        stamped.push(chapters);
+    }
+    let route = crate::rule::map_route(&book_runs, work.len(), work_bytes);
+    #[cfg(any(test, feature = "test-probes"))]
+    {
+        cache.map_route = route.label();
+    }
+    let fresh = crate::rule::map_chapter_work(&work, &book_runs, route, |w| {
+        DuplicateWordSubstrate::map_chapter(&w.view, &())
+    });
+    let mut slots: Vec<Vec<Option<DuplicateChapterObs>>> = layout
+        .iter()
+        .map(|b| (0..b.chapters.len()).map(|_| None).collect())
+        .collect();
+    for (w, obs) in work.iter().zip(fresh) {
+        slots[w.book][w.chapter] = Some(obs);
+    }
+    for (bi, book) in layout.iter().enumerate() {
+        cache.update_book(&book.slug, &stamped[bi], |i| {
+            slots[bi][i].take().unwrap_or_else(|| {
+                let c = &book.chapters[i];
+                DuplicateWordSubstrate::map_chapter(
+                    &ChapterView {
+                        chapter: &c.chapter,
+                        texts: &texts[c.range.clone()],
+                    },
+                    &(),
+                )
+            })
         });
     }
+    let verdict = DuplicateWordSubstrate::judge(&(), &(), cache.corpus_stats());
+    #[cfg(any(test, feature = "test-probes"))]
+    {
+        cache.judged = 1;
+    }
+    for book in layout {
+        if let Some(contrib) = cache.book_contribution(&book.slug) {
+            contrib.materialize(&book.slug, corpus, verdict, out);
+        }
+    }
+}
+
+/// `struct.duplicate-word` findings for a whole corpus, via the observation
+/// substrate over a fresh transient cache — the single duplicate-word
+/// implementation, for tests and callers that used to construct the retired
+/// `DuplicateWord` rule directly.
+#[cfg(test)]
+pub(crate) fn duplicate_findings(corpus: &Corpus) -> Vec<Finding> {
+    let mut cache = crate::substrate::SubstrateCache::new();
+    let mut out = Vec::new();
+    drive_duplicate_word(true, &mut cache, corpus, &mut out);
+    out.sort_by_key(|f| (f.key_idx, f.range.start));
+    out
 }
 
 /// Within-verse consecutive-duplicate spans, given the verse's tokens.
@@ -1007,7 +1190,7 @@ mod tests {
     }
 
     fn check(corpus: &Corpus) -> Vec<Finding> {
-        DuplicateWord.check(&crate::corpus::by_book(corpus), None, None)
+        duplicate_findings(corpus)
     }
 
     #[test]
@@ -1067,6 +1250,204 @@ mod tests {
         assert_eq!(f.len(), 1);
         assert_eq!(f[0].range.slice(c.text(f[0].key_idx)), "the the");
         assert_eq!(f[0].args, None);
+    }
+
+    // ── The observation substrate (chapter-local, empty boundary state). ─────
+
+    /// A cross-verse duplicate at a chapter's own edges still fires: the pair
+    /// that must stay clean is the one that *crosses* the seam, not the one that
+    /// sits against it. Both edges of the middle chapter are covered, so a walk
+    /// that started or stopped one verse inside the chapter would fail here.
+    #[test]
+    fn in_chapter_duplicates_at_the_chapter_edges_still_fire() {
+        let c = book_corpus(
+            "GEN",
+            &[
+                (1, 1, "alpha"),
+                (2, 1, "here is a thing"),
+                (2, 2, "thing indeed"),
+                (2, 3, "closing word"),
+                (2, 4, "word at last"),
+                (3, 1, "omega"),
+            ],
+        );
+        let f = check(&c);
+        assert_eq!(f.len(), 2, "{f:?}");
+        assert_eq!(c.key(f[0].key_idx), "GEN 2:2");
+        assert_eq!(c.key(f[1].key_idx), "GEN 2:4");
+    }
+
+    /// A cross-verse hit's `first_sid` is resolved through its OWN chapter's
+    /// current base. The hit stores a chapter-local index, so a materializer that
+    /// rebased it against the book (or against the wrong chapter) would name a
+    /// plausible but wrong verse — a silent wrong answer, not a crash.
+    #[test]
+    fn a_cross_verse_hit_names_the_first_occurrences_own_verse() {
+        let c = book_corpus(
+            "GEN",
+            &[
+                (1, 1, "a"),
+                (1, 2, "b"),
+                (1, 3, "c"),
+                (2, 1, "x"),
+                (3, 7, "trailing thing"),
+                (3, 8, "thing again"),
+            ],
+        );
+        let f = check(&c);
+        assert_eq!(f.len(), 1);
+        assert_eq!(c.key(f[0].key_idx), "GEN 3:8");
+        assert_eq!(
+            f[0].args,
+            Some(FindingArgs::DuplicateWord {
+                first_sid: "GEN 3:7".to_string()
+            })
+        );
+    }
+
+    /// A punctuation-only or empty verse inside a chapter breaks adjacency, and a
+    /// non-letter verse at a chapter's leading edge does not resurrect a carry
+    /// from the previous chapter.
+    #[test]
+    fn nonletter_verses_inside_a_chapter_break_adjacency() {
+        let c = book_corpus(
+            "GEN",
+            &[
+                (1, 1, "a word"),
+                (1, 2, ""),
+                (1, 3, "word again"),
+                (2, 1, "tail thing"),
+                (2, 2, "…"),
+                (2, 3, "thing once more"),
+            ],
+        );
+        assert!(check(&c).is_empty());
+    }
+
+    /// Drive the substrate over a resident cache, returning its findings in the
+    /// same order `duplicate_findings` produces.
+    fn resident(
+        cache: &mut crate::substrate::SubstrateCache<DuplicateWordSubstrate>,
+        corpus: &Corpus,
+    ) -> Vec<Finding> {
+        let mut out = Vec::new();
+        drive_duplicate_word(true, cache, corpus, &mut out);
+        out.sort_by_key(|f| (f.key_idx, f.range.start));
+        out
+    }
+
+    /// Comparable rendering of a finding list — key string, span text, and the
+    /// cross-verse arg, so an equal-length-but-wrong result cannot pass.
+    fn render(corpus: &Corpus, f: &[Finding]) -> Vec<String> {
+        f.iter()
+            .map(|f| {
+                let first = match &f.args {
+                    Some(FindingArgs::DuplicateWord { first_sid }) => first_sid.clone(),
+                    _ => "-".to_string(),
+                };
+                format!(
+                    "{}|{}|{first}",
+                    corpus.key(f.key_idx),
+                    f.range.slice(corpus.text(f.key_idx))
+                )
+            })
+            .collect()
+    }
+
+    /// An edit to chapter `k` maps exactly chapter `k` and converges there. The
+    /// boundary state is empty, so no reduction can ever cascade past the
+    /// chapter that changed — `mapped == reduced == 1` is the whole contract.
+    #[test]
+    fn an_edit_maps_and_reduces_exactly_its_own_chapter() {
+        let verses: Vec<(u16, u16, &str)> = (1..=8)
+            .flat_map(|c| (1..=4).map(move |v| (c, v, "some words here now")))
+            .collect();
+        let c = book_corpus("GEN", &verses);
+        let mut cache = crate::substrate::SubstrateCache::new();
+        let _ = resident(&mut cache, &c);
+        assert_eq!(cache.mapped, 8, "cold maps every chapter");
+        assert_eq!(cache.reduced, 8);
+
+        // Edit chapter 5's second verse into a duplicate.
+        let mut edited: Vec<(u16, u16, &str)> = verses.clone();
+        edited[4 * 4 + 1] = (5, 2, "some some words");
+        let e = book_corpus("GEN", &edited);
+        cache.reset_probes();
+        let inc = resident(&mut cache, &e);
+        assert_eq!(cache.mapped, 1, "one changed chapter maps one chapter");
+        assert_eq!(
+            cache.reduced, 1,
+            "an empty boundary state can never cascade past the changed chapter"
+        );
+        assert_eq!(render(&e, &inc), render(&e, &check(&e)));
+
+        // An unchanged re-drive does nothing at all.
+        cache.reset_probes();
+        let again = resident(&mut cache, &e);
+        assert_eq!((cache.mapped, cache.reduced), (0, 0));
+        assert_eq!(render(&e, &again), render(&e, &inc));
+    }
+
+    /// Property test (plan §12.6 shape): a resident cache driven through a
+    /// pseudo-random edit sequence over a multi-chapter, multi-book corpus equals
+    /// a cold whole-corpus run at every step — including the cross-chapter
+    /// negative case, which the generated texts deliberately produce.
+    #[test]
+    fn resident_duplicate_word_equals_cold_under_randomized_edits() {
+        let shapes = [
+            "some words here",
+            "the the doubled",
+            "trailing thing",
+            "thing leading on",
+            "",
+            "…",
+            "go go go",
+        ];
+        // Two books, four chapters each, three verses per chapter.
+        let mut texts: Vec<&str> = Vec::new();
+        let mut keys: Vec<String> = Vec::new();
+        for book in ["GEN", "EXO"] {
+            for ch in 1..=4u16 {
+                for v in 1..=3u16 {
+                    keys.push(format!("{book} {ch}:{v}"));
+                    texts.push(shapes[(keys.len() + ch as usize) % shapes.len()]);
+                }
+            }
+        }
+        let build = |texts: &[&str]| {
+            Corpus::try_from_parts(
+                keys.clone(),
+                texts.iter().map(|t| (*t).to_string()).collect(),
+            )
+            .unwrap()
+        };
+        let mut cache = crate::substrate::SubstrateCache::new();
+        let corpus = build(&texts);
+        let _ = resident(&mut cache, &corpus);
+        let mut rng = 0x2545_F491_4F6C_DD1Du64;
+        let next = |rng: &mut u64| {
+            *rng ^= *rng << 13;
+            *rng ^= *rng >> 7;
+            *rng ^= *rng << 17;
+            *rng
+        };
+        for step in 0..120 {
+            let which = (next(&mut rng) % texts.len() as u64) as usize;
+            texts[which] = shapes[(next(&mut rng) % shapes.len() as u64) as usize];
+            let corpus = build(&texts);
+            let inc = resident(&mut cache, &corpus);
+            // The driver resets its own probes each call, so this is that
+            // call's work alone.
+            assert!(
+                cache.mapped <= 1 && cache.reduced <= 1,
+                "step {step}: one edited verse touches one chapter and converges there"
+            );
+            assert_eq!(
+                render(&corpus, &inc),
+                render(&corpus, &check(&corpus)),
+                "step {step}: resident differs from cold"
+            );
+        }
     }
 
     fn tp(text: &str) -> Vec<TapeEntry> {

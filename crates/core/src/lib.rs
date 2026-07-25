@@ -364,7 +364,6 @@ fn transition(
         mixed_case: config.is_enabled(RuleId::MixedCaseWord),
         proportionality: config.is_enabled(RuleId::ProjectLengthRatio),
         bracket: config.is_enabled(RuleId::BracketBalance),
-        duplicate: config.is_enabled(RuleId::DuplicateWord),
         normalization: config.is_enabled(RuleId::MixedNormalization),
         collect_tokens: config.is_enabled(RuleId::RepeatedCharacterRun)
             || config.is_enabled(RuleId::RareGlyph)
@@ -887,16 +886,6 @@ fn transition(
             &config.bracket_balance,
         ));
     }
-    if plan.duplicate {
-        for (group, slot) in books.iter().zip(slots.iter()) {
-            let hits = match slot {
-                BookProducts::Walked(o) => o.duplicate.as_ref(),
-                BookProducts::Clean(e) => e.duplicate.as_ref(),
-            }
-            .expect("duplicate listener ran on every book");
-            out.extend(signals::lexical::emit(group, hits));
-        }
-    }
     if plan.normalization {
         let summaries: Vec<&signals::mixed_normalization::BookNormalization> = slots
             .iter()
@@ -1038,6 +1027,12 @@ fn transition(
         &mut substrates.spacing,
         target,
         &config.punctuation_spacing,
+        &mut out,
+    );
+    signals::lexical::drive_duplicate_word(
+        active.duplicate_word,
+        &mut substrates.duplicate_word,
+        target,
         &mut out,
     );
 
@@ -1977,8 +1972,8 @@ mod tests {
     /// substrate. A rule that is implemented but never wired in — the ADR-0031
     /// P0, where `punct.adjacency-anomaly` ran in calibration but was absent from
     /// `stateful_rules`, so it never fired through `analyze` — surfaces here as a
-    /// count of zero. `punct.spacing-anomaly` is claimed by `SpacingSubstrate`
-    /// (its sole consumer), not a rule registry.
+    /// count of zero. `punct.spacing-anomaly` and `struct.duplicate-word` are
+    /// claimed by their substrates (each its sole consumer), not a rule registry.
     #[test]
     fn every_rule_id_is_claimed_by_exactly_one_registry_or_substrate() {
         use std::collections::BTreeMap;
@@ -1987,14 +1982,12 @@ mod tests {
         // disables); config only feeds knobs, so any config yields the full set.
         let pv = rule::per_verse_rules();
         let pr = rule::project_rules(&cfg);
-        let pt = rule::project_token_rules();
         let sf = rule::stateful_rules(&cfg);
         let mut seen: BTreeMap<RuleId, u32> = BTreeMap::new();
         for id in pv
             .iter()
             .map(|r| r.id())
             .chain(pr.iter().map(|r| r.id()))
-            .chain(pt.iter().map(|r| r.id()))
             .chain(sf.iter().map(|r| r.id()))
         {
             *seen.entry(id).or_default() += 1;

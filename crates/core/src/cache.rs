@@ -131,12 +131,15 @@ pub(crate) struct PrepSection {
 pub(crate) struct SubstrateSection {
     /// `punct.spacing-anomaly`'s substrate (plan §11 ledger row, Phase C).
     pub(crate) spacing: SubstrateCache<punctuation::SpacingSubstrate>,
+    /// `struct.duplicate-word`'s substrate (Phase D).
+    pub(crate) duplicate_word: SubstrateCache<lexical::DuplicateWordSubstrate>,
 }
 
 impl SubstrateSection {
     fn new() -> Self {
         SubstrateSection {
             spacing: SubstrateCache::new(),
+            duplicate_word: SubstrateCache::new(),
         }
     }
 
@@ -144,12 +147,14 @@ impl SubstrateSection {
     /// cached chapter products and corpus aggregate.
     fn clear(&mut self) {
         self.spacing.clear();
+        self.duplicate_word.clear();
     }
 
     /// Deletion-invalidation entry point: drop a book across every substrate so a
     /// removed book cannot keep contributing to any corpus aggregate.
     fn remove_book(&mut self, slug: &str) {
         self.spacing.remove_book(slug);
+        self.duplicate_word.remove_book(slug);
     }
 }
 
@@ -486,6 +491,12 @@ pub struct CacheProbe {
     /// recent analyze — `"serial"`, `"books"`, or `"chapters"`. A route is a
     /// wall-clock decision only: every route produces byte-identical output.
     pub spacing_map_route: &'static str,
+    /// Duplicate-word substrate work on the most recent analyze. Its boundary
+    /// state is empty, so `duplicate_mapped` and `duplicate_reduced` are equal
+    /// on any edit: the replay always converges at the chapter that changed.
+    pub duplicate_mapped: usize,
+    pub duplicate_reduced: usize,
+    pub duplicate_map_route: &'static str,
 }
 
 impl Default for AnalysisCache {
@@ -512,6 +523,9 @@ impl AnalysisCache {
         p.spacing_reduced = self.substrates.spacing.reduced;
         p.spacing_judged = self.substrates.spacing.judged;
         p.spacing_map_route = self.substrates.spacing.map_route;
+        p.duplicate_mapped = self.substrates.duplicate_word.mapped;
+        p.duplicate_reduced = self.substrates.duplicate_word.reduced;
+        p.duplicate_map_route = self.substrates.duplicate_word.map_route;
         p.direct_chapters_patched = self.findings.chapters_patched;
         p.direct_map_route = self.prep.direct_route;
         p
@@ -677,6 +691,9 @@ impl PrepSection {
             spacing_mapped: 0,
             spacing_reduced: 0,
             spacing_judged: 0,
+            duplicate_mapped: 0,
+            duplicate_reduced: 0,
+            duplicate_map_route: "serial",
         }
     }
 
@@ -818,7 +835,6 @@ impl PrepSection {
         entry.punct_only = output.punct_only.as_ref().map(|(_, sites)| sites.clone());
         entry.mixed_script = output.mixed_script.as_ref().map(|(_, sites)| sites.clone());
         entry.bracket = output.bracket.clone();
-        entry.duplicate = output.duplicate.clone();
         entry.normalization = output.normalization.clone();
         entry.tokens = output.tokens.clone();
     }
@@ -842,7 +858,6 @@ pub(crate) struct BookEntry {
     pub(crate) punct_only: Option<Vec<SiteAddr>>,
     pub(crate) mixed_script: Option<Vec<script_mixing::MixedScriptSite>>,
     pub(crate) bracket: Option<bracket_balance::BookMatch>,
-    pub(crate) duplicate: Option<Vec<lexical::DuplicateHit>>,
     pub(crate) normalization: Option<mixed_normalization::BookNormalization>,
     pub(crate) tokens: Option<Vec<(LocalKeyIdx, Vec<Token>)>>,
 }
@@ -857,7 +872,6 @@ impl BookEntry {
             punct_only: None,
             mixed_script: None,
             bracket: None,
-            duplicate: None,
             normalization: None,
             tokens: None,
         }
@@ -870,7 +884,6 @@ impl BookEntry {
             && (!plan.punct_only || self.punct_only.is_some())
             && (!plan.mixed_script || self.mixed_script.is_some())
             && (!plan.bracket || self.bracket.is_some())
-            && (!plan.duplicate || self.duplicate.is_some())
             && (!plan.normalization || self.normalization.is_some())
             && (!plan.collect_tokens || self.tokens.is_some())
     }
