@@ -3169,6 +3169,304 @@ Pinned at HEAD `6e74c10`, `/tmp/oracle/spine/wp6b.base.wa.*.tsv`, scope=**wa**
 | `wp6b.base.wa.inc.default.tsv` | `7b19caa79b284bfa16a56f300f5660591ffc58ffa183888451daf82778676dca` |
 | `wp6b.base.wa.inc.all.tsv` | `c951a758823629c6b6d2e1d558e92c59c1873ed17856b328a60c7ebdc4cee74f` |
 
-(Entry continues at the end of the packet with per-step commits, the casing
-boundary-state definition, replay-distance tables, retained bytes, and the
-judge-term before/after.)
+### Per-step commits
+
+| step | commit | what landed |
+| --- | --- | --- |
+| pin | `8f3d775` | The WA base pin above, recorded before any edit. |
+| 2 | `f4b28cd` | `DuplicateWordSubstrate` — chapter-local, boundary state `()`. Old `ProjectTokenRule` path + fused-walk lane deleted. |
+| 3 | `e7a632f` | `CasingSubstrate` with both casing judges as consumers. Old `StatefulRule` path, `RuleStats::Casing`, `CasingStats`, `CasingSites`, and the fused walk's casing lane deleted. |
+| 4 | `a6c0bc2` | Measurement harnesses (`replay_distance` new; `dhat_probe` paired configs; `warm_ladder_profile --variants`/`all-no-casing`) + the casing judge's chained per-book verdict memo and book-table word resolution. |
+| final | (this entry) | progress log. |
+
+Test counts at HEAD: core **474** serial / **475** `--features parallel`, galley 25,
+ssc-wire 25, ssc-wasm 14, xtask 1; node 19. Green serial, `--features parallel`,
+and `--features parallel` under `RAYON_NUM_THREADS=1`. wasm32 target check clean.
+clippy **below** the documented baseline — the `ssc-core` lib now has 2 warnings,
+not 3 (`casing.rs:459`'s collapsible-`if` went with the deleted `Model::build`
+memo); `token.rs:544` and `lib.rs` `BookProducts` size remain. `git diff --check`
+clean. No `cargo fmt` sweep.
+
+Every commit re-dumped all four WA dumps **and** all four `small`-preset dumps
+(the script-diverse 15-corpus preset: two CJK, Devanagari, Telugu, Arabic,
+Ethiopic, Cyrillic, Thai, Hebrew, Vietnamese) and diffed **byte-identical**. The
+`small` baseline was pinned from a throwaway worktree at `6e74c10`. Both
+migrations are genuinely exercised, not merely compiled: the WA slice carries
+**901** `case.sentence-initial-lowercase`, **238** `case.inconsistent-word-casing`
+and **60,569** `lex.duplicate-word` findings in the all config.
+
+**Briefing correction:** casing is **default-DISABLED** (`Config::v1_defaults`
+disables both consumers), so the default-config dumps do not exercise it; the
+all-config dumps (cold and incremental) carry the whole casing gate.
+
+### The casing boundary state — fields, and why each is necessary and sufficient
+
+```rust
+struct CasingBoundary {
+    pending: Option<Pending>,   // Pending { mark: char, quote: bool, other: bool }
+    book_initial: bool,         // Default = true (book start)
+}
+```
+
+Derived from `CasingAcc`'s own cross-verse state, not from intuition: the walk
+carried exactly `pending` + `book_initial` across a verse seam, and a chapter
+boundary **is** a verse seam.
+
+- **`pending` is necessary.** The chapter-initial word's `PosClass` is a pure
+  function of it: a bare terminal makes the position forced (its own habit/trust
+  class), a terminal-then-close-quote makes the quoted class, non-quote
+  intervening punctuation collapses to mid-flow. Drop it (or reset at `\c`) and
+  every chapter-initial word silently re-classifies — the pericope-adulterae
+  period ending JHN 7:53 is what forces the capital opening 8:1. A one-verse
+  window is *also* insufficient: a run of word-less verses (and word-less
+  chapters) forwards the pending arbitrarily far.
+- **`book_initial` is necessary and not derivable from position.** A book's first
+  word is forced with no terminal glyph — its own habit key, always fully
+  trusted — and a word-less opening chapter carries that fact forward, so
+  "chapter index 0" is not a substitute.
+- **Together they are sufficient.** Everything else the walk touches is
+  chapter-local: `prev_letter` (whether a letter immediately precedes) is
+  deliberately reset at every verse seam, so it provably never crosses; and a
+  word's fold, case, span, and tally bucket are decided inside its own chapter
+  once its position class is known.
+- **Equality-comparable and clone-cheap:** two `bool`s, a `char`, an `Option`
+  tag — 8 bytes, `Copy` inside an `Option`. No cap, no truncation, no
+  variable-size state.
+
+The one thing an entering state decides is the chapter's **first** word, so the
+observation records that word unresolved (key id, case, candidate site) plus a
+`GapEffect` for the text before it. `GapEffect` is the exact transform of
+`advance_gap` over that prefix — `{ from_none, saw_quote, saw_other }` — exact
+because a live pending is never *replaced* by a gap (only its flags are set) and
+a gap can create one only when nothing was pending.
+
+**No backward deposit.** `pending_owner` is always `None`: a chapter's own
+reduction consumes what entered it and produces its own leaving state; nothing is
+written into a predecessor's contribution. That is the structural difference from
+spacing (Entry 21's deposit chain), and it is why casing's replay window starts
+at the chapter that changed and needs no owner walk-back.
+
+### Replay-distance distribution — measured on real scripture
+
+`spike-bench/replay_distance` over `corpora/vref/WA-en-ulb.txt`, all rules on:
+every chapter of the book is replaced with its own verses, one verse edited, and
+each substrate's mapped/reduced chapter counts are histogrammed. **Chapters
+mapped was 1 for every substrate on every one of the 357 edits** — a changed
+carry never re-maps an unchanged chapter, on real text as in the synthetic tests.
+
+Replay distance (chapters reduced):
+
+| substrate | edit | 3JN (1 ch) | MAT (28 ch) | PSA (150 ch) |
+| --- | --- | --- | --- | --- |
+| casing | first verse | 1 | mean **1.00** (all 28 = 1) | mean **1.00** (all 150 = 1) |
+| casing | last verse (moves the trailing context) | 1 | mean **1.64**, max **2** | mean **1.60**, max **2** |
+| duplicate word | either | 1 | mean 1.00 | mean 1.00 |
+| spacing | first verse | 1 | mean 3.71 | mean 11.71 |
+| spacing | last verse | 1 | mean 16.75, max 28 | mean **81.83**, max 150 |
+
+**Casing is the convergence exemplar Entry 22 hoped for**: distance 1 when the
+edit leaves the chapter's trailing terminal context alone, and never more than 2
+when it moves it — because a chapter with a word leaves a state that does not
+depend on what entered it, so the next worded chapter absorbs any change. Set
+against spacing's mean 82 on PSA, this is what the §5.4 machinery was built for.
+Duplicate word's `()` state converges at the changed chapter by construction.
+
+### Retained bytes (plan step 4; Entry 22's RAM watch)
+
+Method as Entry 21: **dhat** live bytes (`dhat_probe testing`, `curr_bytes` after
+the cold seed) over the whole WA-en-ulb Bible (31,086 verses, 1,189 chapters),
+differencing paired configs — `all` versus `all` with that substrate's consumers
+disabled, so the substrate retains nothing. Base numbers from the same probe in a
+worktree at `6e74c10`.
+
+| lane | base curr_bytes | after curr_bytes | delta |
+| --- | ---: | ---: | ---: |
+| whole cache, `all` | 74,067,364 (70.6 MiB) | 111,799,196 (106.6 MiB) | +36.0 MiB |
+| casing | 42,033,192 (40.1 MiB) | **79,475,108 (75.8 MiB)** | **+35.7 MiB (+89%)** |
+| duplicate word | 883 B | **299,351 B (292 KiB)** | +292 KiB |
+
+**The RAM watch fires on casing.** The cause is structural and named: the word
+table is now **per chapter** (`ChapterWords.keys` + `tallies`), so a word type
+that occurs in 50 chapters of a book stores 50 copies of its folded `String` and
+50 `WordStats` (each with two `BTreeMap`s) where the book-keyed table stored one.
+1,189 chapters × ~400 word types is the whole +35.7 MiB. The per-chapter tallies
+are not dead weight — the book fold needs them when any *other* chapter changes —
+but their representation is fat. Named follow-up, not built: a flat
+`(mark, upper, lower)` triple list per word instead of two `BTreeMap`s, and/or a
+book- or corpus-level word interner so a chapter stores ids rather than `String`s
+(this is the parked interning-enabler idea, which now has a second profile line
+naming it). Duplicate word's 292 KiB is the honest cost of chapter-granular hits.
+
+### The ladder (§13) — and the judge-term regression, reported not hidden
+
+`spike-bench/warm_ladder_profile` over WA-en-ulb, baseline built in a throwaway
+worktree at `6e74c10`, **alternating BASE/CAND one batch per invocation**, five
+batches per cell, `--variants 3` (see below), median of the five batch medians.
+3JN 250/120 trials, MAT 150/100, PSA 100/60. **Load 2.5–7.3 (1-min) across the
+run** — much quieter than WP6a's session; the alternating protocol is what makes
+the numbers usable, and the all-config deltas are consistent in **5/5** batches.
+
+| scenario | BASE total | CAND total | Δ | Δ% | map BASE→CAND | reduce BASE→CAND | judge BASE→CAND |
+| --- | ---: | ---: | ---: | ---: | --- | --- | --- |
+| 3JN default | 0.649 ms | 0.651 ms | +0.002 | +0.4% | 0.115→0.116 | 0.401→0.402 | 0.038→0.039 |
+| MAT default | 7.451 ms | 7.486 ms | +0.034 | +0.5% | 6.771→6.803 | 0.407→0.409 | 0.046→0.046 |
+| PSA default | 12.897 ms | 12.953 ms | +0.056 | +0.4% | 12.036→12.100 | 0.410→0.411 | 0.049→0.048 |
+| 3JN all | 21.237 ms | **31.760 ms** | **+10.523** | **+49.6%** | 0.431→0.382 | 0.454→0.432 | 20.204→30.812 |
+| MAT all | 37.163 ms | **45.103 ms** | **+7.940** | **+21.4%** | 15.142→**12.807** | 0.558→0.435 | 21.124→31.543 |
+| PSA all | 48.768 ms | **54.719 ms** | **+5.952** | **+12.2%** | 25.954→**21.985** | 0.608→0.437 | 21.478→31.944 |
+
+§13 regression rule (candidate both >5% AND >0.25 ms slower in ≥3/5 batches):
+**not tripped for default (0/5 in all three cells), TRIPPED for all-config in
+5/5 batches in all three cells.** Default is flat because both migrated
+substrates are default-disabled. 3JN/default at 0.65 ms reconfirms the Phase A
+`<= 2 ms` floor gate.
+
+**What improved.** The map term drops exactly as the migration intended: MAT
+15.14 → 12.81 ms, PSA 25.95 → 21.99 ms (−2.3 / −4.0 ms), because the casing
+listener left the fused whole-book walk and only the edited chapter is re-walked.
+Reduce also fell (0.61 → 0.44 on PSA). As in WP6a, `drive_*` runs after
+`bench_judge_start`, so the substrates' whole drive — chapter map, reduction,
+model build and materialization — is timed in the harness's **judge** bucket.
+
+**What regressed, decomposed.** Instrumented runs (a scratch `Drop` timer, both
+arms measured the same way, 3JN all):
+
+| term | BASE | CAND |
+| --- | ---: | ---: |
+| `Model::build` (corpus word-table merge + G²/Fisher trust math) | 11.0 ms | 11.0 ms |
+| per-site emit / materialize | 6.2 + 10.8 ms (two passes, one per rule) | 15.1–16.2 ms (one pass) |
+| substrate chapter map + reduce + fold (edited book) | n/a | ~0.3 ms |
+| sites visited / distinct keys judged | 668,257 / 82,919 per rule | 668,257 / 82,919 once |
+
+Three facts the decomposition settles:
+
+1. **`Model::build` is not the regression.** It costs 11.0 ms per warm call in
+   *both* arms. The old judge-warm-diet memo was keyed by a content fingerprint,
+   so it missed on a real edit too — proven by adding `--variants 3` to the
+   harness (a rotation a capacity-2 LRU cannot hold) and watching BASE not move:
+   21.2 ms at two variants, 21.2 ms at three. Retaining the model behind the
+   aggregate generation is therefore an exact replacement, not a loss.
+2. **Per-site iteration is cheap.** Walking all 668,257 sites through the
+   1,189-chapter indirection and emitting nothing costs **1.2 ms**. The migration
+   did not make site traversal expensive.
+3. **The gap is per-key verdict math: ~7 ms of it.** Both arms compute the same
+   82,919 distinct `(book-word, position)` keys, and CAND computes each key's two
+   channels once where BASE computed one channel twice — the same arithmetic — yet
+   CAND's pass costs ~15 ms against BASE's ~7 ms combined. The measured
+   difference is **allocation/locality, not arithmetic**: the dhat probe shows
+   ~92,000 extra small allocations per warm analyze attributable to casing, and
+   the folded word keys now live in 1,189 per-chapter `Vec<String>`s instead of
+   66 per-book ones, so the model's `FxHashMap<String, WordStats>` probes walk
+   colder memory. This is the same root cause as the retained-bytes doubling.
+
+Two attempts to close it were measured and **rejected**: a one-entry
+direct-mapped per-word slot cache (thrashes — frequent words genuinely appear at
+several position classes; 34.2 → 32.6 ms when replaced by the chained memo that
+shipped), and splitting the verdict into a cached pos-independent half plus a
+per-class half (measured *worse*, and ~100 extra lines: with only ~1.8 position
+classes per word there is little to amortize). Resolving each site's word through
+the book's contiguous table did ship — it is unambiguously the right indirection
+even though the machine was too noisy that hour to score it.
+
+**Per plan §16 this is where optimization stops and the report begins.** The
+correctness gates all pass; the named remaining term is the casing judge's
+per-key verdict recomputation, and its named cause is chapter-granular string
+storage. The two candidate fixes are the same one: a book-or-corpus-level word
+interner (chapters store ids), which would also return most of the +35.7 MiB.
+Both are new design surface and belong in their own adjudication.
+
+**One parity item, not built:** BASE's emit ran through `rule::map_books`, which
+fans out per book under `--features parallel`; the substrate materializer is
+serial. The ladder harness and the wasm build are serial either way, so this does
+not affect any number above, but a native `parallel` consumer lost that fan-out.
+Books are independent here, so restoring it is a `map_books`-shaped change with
+caller-order concatenation.
+
+### Migration ledger rows (plan §11), as finalized
+
+| rule(s) | substrate | key | boundary state | chapter observation | reduced chapter | book contribution | corpus stats | retained |
+| --- | --- | --- | --- | --- | --- | --- | --- | ---: |
+| duplicate word | `DuplicateWordSubstrate` | `()` | `()` | the chapter's adjacent-pair hits in scan order (`Arc<[DuplicateHit]>`, chapter-local addresses) | identical (reduction is the identity) | hits grouped by owning chapter token, book order | `()` | 292 KiB |
+| sentence-initial lowercase; inconsistent word casing | `CasingSubstrate`, two judges | `(folded word, PosClass)` | `{ pending: Option<Pending>, book_initial: bool }` | per-chapter interner + tallies + lowercase sites with the FIRST word unresolved, plus the leading gap's `GapEffect` and the trailing `Pending` | the same table by `Arc` + the first word with its position resolved | ordered `(word, WordStats)` table (`Arc`), cased-start count, per-chapter `(reduced, chapter-id→book-word-index)` | each book's ordered table by slug + a generation counter | 75.8 MiB |
+
+Delta-key derivation, both rows, and the §6.3 finding:
+
+- **duplicate word** has no corpus aggregate, so no key's aggregate can move:
+  the stats delta is always empty and the judge-dirty set is exactly the site
+  delta. Its judge is unconditional (no threshold, no statistic).
+- **casing**'s judge is corpus-**global**: the dominance, per-class habit and
+  trust a word is judged against are functions of *every* word's tallies. So the
+  exact set of keys whose verdict inputs moved is either **∅** (the aggregate did
+  not change) or **every key in the corpus** — never a per-word subset, and a
+  per-word subset is the one answer that would be wrong. The driver therefore
+  derives judge-dirtiness from the aggregate's generation counter plus the
+  judging knobs, which states the same fact without allocating a key per word
+  type to say it. `replace_book_in_corpus_stats` returns an empty delta with that
+  reasoning recorded at the call site. This is the honest §6.3 union for a
+  corpus-global model, and it is worth writing down as a general result: **a
+  substrate whose judge reads a corpus-global model cannot have a useful
+  stats-delta.** Site-delta granularity is likewise all-or-nothing.
+- **`Model::build`'s insertion order is load-bearing.** The corpus word table is
+  merged books-in-slug-order, words-in-sorted-order, exactly as the per-book
+  `BTreeMap` tables always produced, because the reshuffle witness sums a
+  per-juror statistic over that map's iteration order and float addition is not
+  associative. This constraint killed an otherwise attractive design (an
+  interned, incrementally-maintained corpus aggregate) and is why the aggregate
+  stays a per-book table folded fresh whenever it moves. It is also why the
+  oracle came out byte-identical on the first dump.
+
+### Memo decision (recorded, as asked)
+
+The judge-warm-diet `Model::build` memo is **subsumed, not retained**. The
+substrate owns one corpus aggregate, so there is no second identical build to
+memo within a call; the model is retained across calls behind
+`(aggregate generation, CasingConfig)`. Consequences: `CasingStats::fp`,
+`book_fp`, the custom `PartialEq` that excluded the fingerprint, and the
+thread-local size-2 LRU are all deleted, and the fingerprint's per-merge
+maintenance cost with them. Perf consequence measured: **none** on the warm path
+(11.0 ms per call in both arms, `--variants 3`), and a strict gain in the one
+case a content memo could not see — an edit that changes text without moving any
+word tally leaves the generation alone and reuses the model outright.
+
+### Deviations / notes for the owner (clearly marked)
+
+1. **The all-config warm ladder regresses** (+6 to +10.5 ms, 5/5 batches).
+   Reported above with a decomposition and a named cause; per §16 no further
+   optimization was attempted. The owner's call is whether the map-term win
+   (−2.3/−4.0 ms) plus chapter granularity plus being the prerequisite for
+   Phase E's `MixedCase` row justifies carrying it while the interning follow-up
+   is adjudicated.
+2. **Retained bytes nearly doubled for casing** (+35.7 MiB on a whole English
+   Bible). Same root cause as (1). This is the RAM watch's first real hit.
+3. **`Key = ()` for duplicate word**, not the ledger's "normalized adjacent word
+   pair/site". The extraction predicate (two adjacent word tokens folding equal
+   across a whitespace-only gap) is decided entirely inside the chapter
+   observation and no statistic of the pair reaches a judge, so a pair-shaped key
+   would be a key type no judge ever reads. The plan permits finalizing exact key
+   names in the migration commit; recorded here rather than silently.
+4. **`--casing-size` is deleted.** It measured the serialized `CasingStats` JSON
+   byte size — a surface retired in Phase A step 5 and now non-existent (the
+   aggregate derives no serde at all). The `WordStats`/`ForcedTally` serde derives
+   and their `skip_serializing_if` helpers went with it.
+5. **Casing's judging config has no extraction knob**, so `ExtractorConfig = ()`
+   and a knob change maps and reduces zero — probe-asserted.
+6. **A pre-existing hole, unchanged:** a caller that reuses an `AnalysisCache`
+   across corpora with a *removed* book, without calling
+   `AnalysisCache::remove_book`, leaves that book contributing to a substrate's
+   corpus aggregate. `Galley` always calls it (and the transient one-shot cache is
+   fresh), so nothing shipped is affected; spacing has had the same shape since
+   Phase C. Worth a driver-side prune (each `drive_*` dropping books absent from
+   the corpus) in a later step.
+7. **`SubstrateId::ALL` is now three variants** and the registry-completeness
+   tests walk all three; `is_active`/`consumers_of` stay exhaustive matches.
+8. **Full-fleet bookend remains Phase F.** This packet added the `small` preset
+   (both configs, cold and incremental) alongside the WA slice, since duplicate
+   word's reduplicative corpora and the script-diverse casing cases live outside
+   WA-en-*.
+
+### Stop-safe next step
+
+Phase D is **complete and gated** (steps 1–4). Phase E begins with `MixedCase`
+(word-keyed, `()` boundary state) — which shares casing's word-table shape and
+would inherit both problems above, so the interning/representation adjudication
+should land first or alongside it.
