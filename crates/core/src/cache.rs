@@ -133,6 +133,13 @@ pub(crate) struct SubstrateSection {
     pub(crate) spacing: SubstrateCache<punctuation::SpacingSubstrate>,
     /// `struct.duplicate-word`'s substrate (Phase D).
     pub(crate) duplicate_word: SubstrateCache<lexical::DuplicateWordSubstrate>,
+    /// The shared casing substrate and its two consumer judges (Phase D).
+    pub(crate) casing: SubstrateCache<casing::CasingSubstrate>,
+    /// The casing judge model — a derived product of the casing substrate's
+    /// corpus aggregate and the casing judging knobs, retained so an analyze
+    /// that moved neither rebuilds nothing. It is a memo, not state: dropping it
+    /// costs one rebuild and can never change output.
+    pub(crate) casing_model: Option<casing::CasingModel>,
 }
 
 impl SubstrateSection {
@@ -140,6 +147,8 @@ impl SubstrateSection {
         SubstrateSection {
             spacing: SubstrateCache::new(),
             duplicate_word: SubstrateCache::new(),
+            casing: SubstrateCache::new(),
+            casing_model: None,
         }
     }
 
@@ -148,6 +157,8 @@ impl SubstrateSection {
     fn clear(&mut self) {
         self.spacing.clear();
         self.duplicate_word.clear();
+        self.casing.clear();
+        self.casing_model = None;
     }
 
     /// Deletion-invalidation entry point: drop a book across every substrate so a
@@ -155,6 +166,7 @@ impl SubstrateSection {
     fn remove_book(&mut self, slug: &str) {
         self.spacing.remove_book(slug);
         self.duplicate_word.remove_book(slug);
+        self.casing.remove_book(slug);
     }
 }
 
@@ -497,6 +509,15 @@ pub struct CacheProbe {
     pub duplicate_mapped: usize,
     pub duplicate_reduced: usize,
     pub duplicate_map_route: &'static str,
+    /// Casing substrate work on the most recent analyze: chapters mapped,
+    /// chapters reduced, and `(word, position)` keys judged. A judging-knob
+    /// change maps and reduces zero. `casing_judged` counts the distinct keys
+    /// whose verdict was computed while materializing — the complete-snapshot
+    /// contract means every site is still visited every call.
+    pub casing_mapped: usize,
+    pub casing_reduced: usize,
+    pub casing_judged: usize,
+    pub casing_map_route: &'static str,
 }
 
 impl Default for AnalysisCache {
@@ -526,6 +547,10 @@ impl AnalysisCache {
         p.duplicate_mapped = self.substrates.duplicate_word.mapped;
         p.duplicate_reduced = self.substrates.duplicate_word.reduced;
         p.duplicate_map_route = self.substrates.duplicate_word.map_route;
+        p.casing_mapped = self.substrates.casing.mapped;
+        p.casing_reduced = self.substrates.casing.reduced;
+        p.casing_judged = self.substrates.casing.judged;
+        p.casing_map_route = self.substrates.casing.map_route;
         p.direct_chapters_patched = self.findings.chapters_patched;
         p.direct_map_route = self.prep.direct_route;
         p
@@ -694,6 +719,10 @@ impl PrepSection {
             duplicate_mapped: 0,
             duplicate_reduced: 0,
             duplicate_map_route: "serial",
+            casing_mapped: 0,
+            casing_reduced: 0,
+            casing_judged: 0,
+            casing_map_route: "serial",
         }
     }
 
@@ -823,13 +852,6 @@ impl PrepSection {
 
     fn store_walk(&mut self, slug: &str, hash: u128, output: &BookOut) {
         let entry = self.entry_for_write(slug, hash);
-        entry.casing = output.casing.as_ref().map(|(_, sites)| {
-            if sites.sites.is_empty() {
-                casing::CasingSites::default()
-            } else {
-                sites.clone()
-            }
-        });
         entry.adjacency = output.adjacency.as_ref().map(|(_, sites)| sites.clone());
         entry.repeated_run = output.repeated_run.as_ref().map(|(_, sites)| sites.clone());
         entry.punct_only = output.punct_only.as_ref().map(|(_, sites)| sites.clone());
@@ -852,7 +874,6 @@ impl PrepSection {
 
 pub(crate) struct BookEntry {
     pub(crate) hash: u128,
-    pub(crate) casing: Option<casing::CasingSites>,
     pub(crate) adjacency: Option<Vec<SiteAddr>>,
     pub(crate) repeated_run: Option<Vec<SiteAddr>>,
     pub(crate) punct_only: Option<Vec<SiteAddr>>,
@@ -866,7 +887,6 @@ impl BookEntry {
     fn new(hash: u128) -> Self {
         Self {
             hash,
-            casing: None,
             adjacency: None,
             repeated_run: None,
             punct_only: None,
@@ -878,8 +898,7 @@ impl BookEntry {
     }
 
     fn has_walk_lanes(&self, plan: &WalkPlan) -> bool {
-        (!plan.casing || self.casing.is_some())
-            && (!plan.adjacency || self.adjacency.is_some())
+(!plan.adjacency || self.adjacency.is_some())
             && (!plan.repeated_run || self.repeated_run.is_some())
             && (!plan.punct_only || self.punct_only.is_some())
             && (!plan.mixed_script || self.mixed_script.is_some())
@@ -917,14 +936,16 @@ mod tests {
         assert_ne!(content_hash(&k1, &same_text), content_hash(&k3, &same_text));
     }
 
-    fn casing_walk(key: &str) -> BookOut {
+    /// A walk output carrying one identifiable site lane, so a cache test can
+    /// tell a reused entry from a rebuilt one.
+    fn walk_with_lane() -> BookOut {
         BookOut {
-            casing: Some((
+            adjacency: Some((
                 Default::default(),
-                casing::CasingSites {
-                    keys: vec![key.into()],
-                    sites: Vec::new(),
-                },
+                vec![SiteAddr::pack(
+                    LocalKeyIdx::from_usize(0),
+                    Span { start: 0, end: 1 },
+                )],
             )),
             ..Default::default()
         }
@@ -935,7 +956,7 @@ mod tests {
         let mut cache = AnalysisCache::new();
         let cfg = Config::v1_defaults();
         cache.ensure_fingerprint(&cfg);
-        cache.store_walk("GEN", 1, &casing_walk("old"));
+        cache.store_walk("GEN", 1, &walk_with_lane());
         cache.store_direct_chapter("GEN", "1", 7, Vec::new());
         assert_eq!(cache.book_count(), 1);
 
@@ -953,8 +974,8 @@ mod tests {
     fn content_replacement_drops_a_stale_walk_lane() {
         let mut cache = AnalysisCache::new();
         cache.ensure_fingerprint(&Config::v1_defaults());
-        cache.store_walk("GEN", 1, &casing_walk("old"));
-        assert!(cache.prep.books.get("GEN").unwrap().casing.is_some());
+        cache.store_walk("GEN", 1, &walk_with_lane());
+        assert!(cache.prep.books.get("GEN").unwrap().adjacency.is_some());
 
         // A new book hash replaces the entry outright: no lane from the old
         // content may survive into it.
@@ -962,7 +983,7 @@ mod tests {
         let entry = cache.prep.books.get("GEN").unwrap();
         assert_eq!(entry.hash, 2);
         assert!(
-            entry.casing.is_none(),
+            entry.adjacency.is_none(),
             "old walk lane must not survive a hash change"
         );
     }

@@ -52,6 +52,9 @@ pub(crate) enum SubstrateId {
     Spacing,
     /// `struct.duplicate-word`'s adjacent-pair sites.
     DuplicateWord,
+    /// The shared casing model: per-word case tables + lowercase flag
+    /// candidates, judged by two rules.
+    Casing,
 }
 
 impl SubstrateId {
@@ -59,7 +62,11 @@ impl SubstrateId {
     /// the registry-completeness tests walk.
     #[allow(dead_code)] // registry-completeness tests + future multi-substrate iteration
     pub(crate) const ALL: &'static [SubstrateId] =
-        &[SubstrateId::Spacing, SubstrateId::DuplicateWord];
+        &[
+        SubstrateId::Spacing,
+        SubstrateId::DuplicateWord,
+        SubstrateId::Casing,
+    ];
 }
 
 /// A verse-slice view of one chapter, handed to
@@ -679,6 +686,7 @@ impl<S: ObservationSubstrate> SubstrateCache<S> {
 pub(crate) struct ActiveSubstrates {
     pub(crate) spacing: bool,
     pub(crate) duplicate_word: bool,
+    pub(crate) casing: bool,
 }
 
 impl ActiveSubstrates {
@@ -689,6 +697,7 @@ impl ActiveSubstrates {
         Self {
             spacing: any(spacing_consumers()),
             duplicate_word: any(duplicate_word_consumers()),
+            casing: any(casing_consumers()),
         }
     }
 
@@ -697,6 +706,7 @@ impl ActiveSubstrates {
         match id {
             SubstrateId::Spacing => self.spacing,
             SubstrateId::DuplicateWord => self.duplicate_word,
+            SubstrateId::Casing => self.casing,
         }
     }
 }
@@ -713,6 +723,15 @@ pub(crate) fn duplicate_word_consumers() -> &'static [RuleId] {
     &[RuleId::DuplicateWord]
 }
 
+/// The closed registry: the casing substrate's two consumers. Either may be
+/// disabled while the other keeps the shared substrate alive.
+pub(crate) fn casing_consumers() -> &'static [RuleId] {
+    &[
+        RuleId::SentenceInitialLowercase,
+        RuleId::InconsistentWordCasing,
+    ]
+}
+
 /// The consumers of a substrate by id — the exhaustive closed match the
 /// completeness tests walk.
 #[allow(dead_code)] // registry-completeness tests + future multi-substrate iteration
@@ -720,6 +739,7 @@ pub(crate) fn consumers_of(id: SubstrateId) -> &'static [RuleId] {
     match id {
         SubstrateId::Spacing => spacing_consumers(),
         SubstrateId::DuplicateWord => duplicate_word_consumers(),
+        SubstrateId::Casing => casing_consumers(),
     }
 }
 
@@ -739,6 +759,10 @@ mod tests {
             <crate::signals::lexical::DuplicateWordSubstrate as ObservationSubstrate>::ID,
             SubstrateId::DuplicateWord
         );
+        assert_eq!(
+            <crate::signals::casing::CasingSubstrate as ObservationSubstrate>::ID,
+            SubstrateId::Casing
+        );
     }
 
     /// Every substrate id has at least one consumer, and the active-set fields
@@ -755,6 +779,7 @@ mod tests {
             let all_on = ActiveSubstrates {
                 spacing: true,
                 duplicate_word: true,
+                casing: true,
             };
             assert!(all_on.is_active(id), "{id:?} has no active-set field");
             assert!(!ActiveSubstrates::default().is_active(id));

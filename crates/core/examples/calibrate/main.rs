@@ -59,7 +59,7 @@ mod survey;
 use corpus_blob::{Preset, build_blob};
 use oracle::{OracleScope, dump_findings};
 use reporting::{census_fleet, census_single, time_configs};
-use survey::casing::{analyze_casing, casing_fleet, casing_single_report, casing_size};
+use survey::casing::{analyze_casing, casing_fleet, casing_single_report};
 use survey::glyphs::{analyze_glyphs, glyph_fleet, glyph_single_report};
 use survey::misc::{
     batch, bracket_calib, fleet, punct_calib, punct_only_calib, repeat_calib,
@@ -212,13 +212,6 @@ fn main() {
                 let id = p.file_stem().unwrap().to_string_lossy().to_string();
                 terminal_single(&terminal::analyze_corpus(id, &load_corpus(p), variant_b));
             }
-            return;
-        }
-        // Casing stats-size probe (ADR 0051): reduce each corpus with the real
-        // rule and report the serialized `CasingStats` JSON byte size (the wire
-        // size that round-trips) percentiles across the fleet.
-        [flag, dir] if flag == "--casing-size" => {
-            casing_size(Path::new(dir));
             return;
         }
         // Bracket-balance calibration (ADR 0037): floor-0 score distribution,

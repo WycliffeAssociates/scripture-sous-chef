@@ -113,7 +113,6 @@ pub trait ProjectTokenRule: Sync {
 /// lifetime is that of the resident cache borrow held across the judge phase;
 /// `reduce` (calibration/tests) produces a fully-owned `RuleSites<'static>`.
 pub enum RuleSites<'a> {
-    Casing(BTreeMap<Box<str>, Cow<'a, signals::casing::CasingSites>>),
     Proportionality,
     PunctuationAdjacency(BTreeMap<Box<str>, Cow<'a, [SiteAddr]>>),
     RepeatedCharacterRun(BTreeMap<Box<str>, Cow<'a, [SiteAddr]>>),
@@ -447,8 +446,6 @@ pub fn project_rules(config: &Config) -> Vec<Box<dyn ProjectRule>> {
 /// is complete — including rules `v1_defaults` disables.
 pub fn stateful_rules(config: &Config) -> Vec<Box<dyn StatefulRule>> {
     vec![
-        Box::new(signals::casing::SentenceInitialLowercase { cfg: config.casing }),
-        Box::new(signals::casing::InconsistentWordCasing { cfg: config.casing }),
         Box::new(signals::proportionality::ProjectLengthRatio {
             cfg: config.proportionality,
         }),

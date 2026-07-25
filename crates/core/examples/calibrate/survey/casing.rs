@@ -11,7 +11,6 @@
 use std::path::Path;
 
 use ssc_core::Corpus;
-use ssc_core::rule::StatefulRule;
 use ssc_core::signals::casing::{PosClass, SiteEval, evaluate};
 
 use super::shared::{PACKET_FLOORS, PACKET_KS, REF_FLOOR, REF_K, rarity_abs};
@@ -113,11 +112,10 @@ pub(crate) struct CasingCorpus {
 /// Run the real casing model over one corpus and roll up the sweep grids,
 /// reference-setting counts, histogram, tracked anchors, and samples.
 pub(crate) fn analyze_casing(id: String, map: &Corpus) -> CasingCorpus {
-    let books = ssc_core::corpus::by_book(map);
     // Production knobs (ADR 0051 floor/k/z + ADR 0052 trust gate 0.90). The
     // sweep below varies floor/k around the reference cell; the trust gate and
     // discount are baked into the returned factors.
-    let sites = evaluate(&books, &ssc_core::config::CasingConfig::default());
+    let sites = evaluate(map, &ssc_core::config::CasingConfig::default());
 
     let nk = PACKET_KS.len();
     let mut grid_intr = vec![[0u64; PACKET_FLOORS.len()]; nk];
@@ -516,60 +514,3 @@ pub(crate) fn casing_fleet(dir: &Path) {
         print_casing_samples(&s.iter().take(3).copied().collect::<Vec<_>>());
     }
 }
-
-/// Casing stats-size probe: reduce every corpus with the real
-/// `SentenceInitialLowercase` rule and report the serialized `CasingStats`
-/// JSON byte size (the wire size the shell round-trips) — p50/p90/max plus a
-/// few named corpora.
-pub(crate) fn casing_size(dir: &Path) {
-    use rayon::prelude::*;
-    use ssc_core::config::CasingConfig;
-    use ssc_core::signals::casing::SentenceInitialLowercase;
-
-    let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
-        .unwrap_or_else(|e| panic!("read {}: {e}", dir.display()))
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|x| x == "txt"))
-        .collect();
-    files.sort();
-    let rule = SentenceInitialLowercase {
-        cfg: CasingConfig::default(),
-    };
-    let mut rows: Vec<(String, usize)> = files
-        .par_iter()
-        .map(|path| {
-            let id = path.file_stem().unwrap().to_string_lossy().to_string();
-            let map = load_corpus(path);
-            let books = ssc_core::corpus::by_book(&map);
-            let (stats, _) = rule.reduce(&books, None, None);
-            // The monolithic serialized `Stats` wire was retired (granularity-
-            // spine Phase A step 5); this size survey measures the inner
-            // `CasingStats` aggregate directly, which still derives serde.
-            let bytes = match &stats {
-                ssc_core::RuleStats::Casing(cs) => {
-                    serde_json::to_string(cs).map(|s| s.len()).unwrap_or(0)
-                }
-                _ => 0,
-            };
-            (id, bytes)
-        })
-        .collect();
-    rows.sort_by_key(|r| r.1);
-    let n = rows.len();
-    let pct = |q: f64| rows[((n - 1) as f64 * q) as usize].1;
-    println!("casing CasingStats JSON size over {n} corpora:");
-    println!(
-        "  p50 {} B  p90 {} B  max {} B",
-        pct(0.5),
-        pct(0.9),
-        pct(1.0)
-    );
-    println!("  largest: {} ({} B)", rows[n - 1].0, rows[n - 1].1);
-    for id in ["eng-kjv", "deu1912", "swhulb", "vie1934"] {
-        if let Some((_, b)) = rows.iter().find(|r| r.0 == id) {
-            println!("  {id}: {b} B");
-        }
-    }
-}
-

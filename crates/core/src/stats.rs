@@ -17,7 +17,6 @@
 use std::collections::BTreeMap;
 
 use crate::diagnostics::RuleId;
-use crate::signals::casing::CasingStats;
 use crate::signals::lexical::{PunctOnlyTokenStats, RepeatedCharacterRunStats};
 use crate::signals::mixed_case::MixedCaseStats;
 use crate::signals::proportionality::ProportionalityStats;
@@ -40,7 +39,6 @@ use crate::signals::script_mixing::MixedScriptStats;
 /// no corpus statistics.
 #[derive(Debug, Clone, PartialEq)]
 pub enum RuleStats {
-    Casing(CasingStats),
     Proportionality(ProportionalityStats),
     PunctuationAdjacency(PunctuationAdjacencyStats),
     RepeatedCharacterRun(RepeatedCharacterRunStats),
@@ -62,7 +60,6 @@ impl RuleStats {
     /// other books carry forward — so an edit re-reduces only its book.
     pub(crate) fn merge(self, other: RuleStats) -> RuleStats {
         match (self, other) {
-            (RuleStats::Casing(a), RuleStats::Casing(b)) => RuleStats::Casing(a.merge(b)),
             (RuleStats::Proportionality(a), RuleStats::Proportionality(b)) => {
                 RuleStats::Proportionality(a.merge(b))
             }
@@ -89,8 +86,7 @@ impl RuleStats {
             // new variant makes this match non-exhaustive until its own
             // same-type merge arm is added above.
             (
-                RuleStats::Casing(_)
-                | RuleStats::Proportionality(_)
+                RuleStats::Proportionality(_)
                 | RuleStats::PunctuationAdjacency(_)
                 | RuleStats::RepeatedCharacterRun(_)
                 | RuleStats::PunctOnlyToken(_)
@@ -105,7 +101,6 @@ impl RuleStats {
     /// Drop a book's contribution from this rule's cache.
     fn remove_book(&mut self, slug: &str) {
         match self {
-            RuleStats::Casing(c) => c.remove_book(slug),
             RuleStats::Proportionality(p) => p.remove_book(slug),
             RuleStats::PunctuationAdjacency(p) => p.remove_book(slug),
             RuleStats::RepeatedCharacterRun(r) => r.remove_book(slug),

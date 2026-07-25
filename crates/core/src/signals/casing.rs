@@ -53,44 +53,39 @@
 //!   0051 (no loss). Trust is only known at judge, so the walk records every
 //!   quote-context tally by class and the judge folds untrusted classes back.
 //!
-//! ## Stats shape and merge semantics (raw, per book)
+//! ## Stats shape (raw, per book)
 //!
-//! Per book, [`CasingStats`] stores a word→[`WordStats`] table of **raw**
-//! tallies (mid-flow upper/lower; forced upper/lower split by the bare terminal
-//! glyph, by the quote-context glyph, and book-initial separately). Nothing is
-//! censored and no trust is computed at reduce: the lexicon classification, the
-//! per-class habit, and the two witnesses are corpus-wide, so they are all
-//! **judge-time** arithmetic over the merged table. The W2 aggregates the ADR
-//! calls for — per-class following-word counts and the baseline word-start
-//! distribution — are *reindexed at judge from these same per-word tallies*
-//! (the reshuffle witness is case-free, so a word's forced upper+lower is its
-//! occurrence count after that class); no second stored table, no size cost
-//! beyond the quote-context split. This keeps book-supersede sound (a book
-//! carries its own counts, replaced wholesale on edit) and `reduce` one walk.
+//! Per book, the substrate's corpus aggregate stores a word→[`WordStats`] table
+//! of **raw** tallies (mid-flow upper/lower; forced upper/lower split by the
+//! bare terminal glyph, by the quote-context glyph, and book-initial
+//! separately). Nothing is censored and no trust is computed at reduce: the
+//! lexicon classification, the per-class habit, and the two witnesses are
+//! corpus-wide, so they are all **judge-time** arithmetic over the merged
+//! table. The W2 aggregates the ADR calls for — per-class following-word counts
+//! and the baseline word-start distribution — are *reindexed at judge from
+//! these same per-word tallies* (the reshuffle witness is case-free, so a
+//! word's forced upper+lower is its occurrence count after that class); no
+//! second stored table, no size cost beyond the quote-context split. A book
+//! carries its own counts and is replaced wholesale on edit.
 //!
 //! **Pruning.** As ADR 0051: the sole per-book-safe drop is an *uncased-only*
 //! word (a caseless-script token) — it yields no candidate site and never enters
 //! the lexicon-lowercase habit or the (bicameral) witnesses. Every cased word is
 //! kept with raw tallies.
 
-use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use rustc_hash::FxHashMap;
-use xxhash_rust::xxh3::Xxh3;
 
 use crate::analysis::association::Table2;
 use crate::charclass::class_of;
 use crate::config::CasingConfig;
-use crate::corpus::{BookGroup, Books, Corpus, LocalKeyIdx, rebase};
+use crate::corpus::{Corpus, LocalKeyIdx, rebase};
 use crate::diagnostics::{Finding, FindingArgs, RuleId, Severity};
 use crate::evidence::{clamp_count, clamp_unit, clamp_z, wilson_lower_bound};
-use crate::rule::{self, StatefulRule, TokenCache};
 use crate::signals::case_shape::{CaseShape, case_shape};
 use crate::span::Span;
-use crate::stats::RuleStats;
-use crate::stream;
 
 pub const SENTENCE_INITIAL_LOWERCASE: RuleId = RuleId::SentenceInitialLowercase;
 pub const INCONSISTENT_WORD_CASING: RuleId = RuleId::InconsistentWordCasing;
@@ -140,7 +135,7 @@ pub struct ClassKey {
 /// Everything else — including a token after *non-quote* intervening
 /// punctuation (`...`) — is [`Midflow`](PosClass::Midflow). Verse-initial is
 /// NOT forced (`CLAUDE.md`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum PosClass {
     /// The first word of the book — forced with no terminal glyph.
     BookInitial,
@@ -166,31 +161,10 @@ impl PosClass {
 }
 
 /// Forced-position first-letter tallies after one key. Raw and mergeable.
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(default))]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct ForcedTally {
-    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "is_zero"))]
     upper: u32,
-    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "is_zero"))]
     lower: u32,
-}
-
-/// `skip_serializing_if` predicate — the per-word table is dominated by zero
-/// tallies, so omitting them from the wire is a large, lossless size win.
-#[cfg(feature = "serde")]
-fn is_zero(n: &u32) -> bool {
-    *n == 0
-}
-
-#[cfg(feature = "serde")]
-fn is_default_tally(t: &ForcedTally) -> bool {
-    t.upper == 0 && t.lower == 0
-}
-
-#[cfg(feature = "serde")]
-fn is_empty_map(m: &BTreeMap<char, ForcedTally>) -> bool {
-    m.is_empty()
 }
 
 impl ForcedTally {
@@ -214,19 +188,12 @@ impl ForcedTally {
 /// (`after_glyph`) and by the *quote-context* glyph (`after_quote`, the `."`
 /// classes ADR 0051 discarded to mid-flow), and book-initial. All raw — no
 /// censoring, no trust — so book-supersede holds.
-#[derive(Debug, Clone, Default, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(default))]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct WordStats {
-    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "is_zero"))]
     mid_upper: u32,
-    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "is_zero"))]
     mid_lower: u32,
-    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "is_default_tally"))]
     book_initial: ForcedTally,
-    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "is_empty_map"))]
     after_glyph: BTreeMap<char, ForcedTally>,
-    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "is_empty_map"))]
     after_quote: BTreeMap<char, ForcedTally>,
 }
 
@@ -329,138 +296,6 @@ impl WordStats {
         let (up, lo) = self.baseline_mid();
         let n = up + lo;
         n > 0 && wilson_lower_bound(lo, n, z) > 0.5
-    }
-}
-
-/// Cached casing statistics, keyed by book so an edit supersedes only its book.
-///
-/// Carries a cheap content fingerprint (`fp`) so [`Model::build`]'s memo can
-/// prove a hit with a `u128` compare instead of deep-equating the whole
-/// per-book word table (the old memo key, ~4–6 ms/call under all-rules — the
-/// two casing rules build the identical model from clones of the same stats).
-/// The fingerprint is an order-independent XOR of per-book digests, maintained
-/// incrementally through [`merge`](Self::merge) / [`remove_book`](Self::remove_book)
-/// and computed once at construction — so the warm path never re-hashes the
-/// clean books. It is a pure function of `per_book` (never serialized: a
-/// deserialized value carries `None` and recomputes lazily on first use), so it
-/// is excluded from [`PartialEq`] and the oracle wire alike.
-#[derive(Debug, Clone, Default)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct CasingStats {
-    pub(crate) per_book: BTreeMap<Box<str>, BookCasing>,
-    /// Content fingerprint (XOR of per-book digests), `None` until computed.
-    /// `#[serde(skip)]` keeps it off the wire — a deserialized value is `None`
-    /// and [`fingerprint`](Self::fingerprint) recomputes it on demand.
-    #[cfg_attr(feature = "serde", serde(skip))]
-    fp: Option<u128>,
-}
-
-// The fingerprint is a derived cache of `per_book`, never part of content
-// identity — equal tables are equal regardless of whether either has computed
-// its fingerprint yet. (Also keeps `Stats`/`RuleStats` equality — used in
-// tests — faithful to content.)
-impl PartialEq for CasingStats {
-    fn eq(&self, other: &Self) -> bool {
-        self.per_book == other.per_book
-    }
-}
-
-/// Digest one book's contribution deterministically (the `BTreeMap` orders keep
-/// this stable). Delimiters between the two glyph maps and after each word key
-/// keep distinct structures from colliding by byte concatenation.
-fn book_fp(slug: &str, bc: &BookCasing) -> u128 {
-    let mut h = Xxh3::new();
-    h.update(slug.as_bytes());
-    h.update(&bc.cased_starts.to_le_bytes());
-    for (word, ws) in &bc.words {
-        h.update(word.as_bytes());
-        h.update(&[0]);
-        h.update(&ws.mid_upper.to_le_bytes());
-        h.update(&ws.mid_lower.to_le_bytes());
-        h.update(&ws.book_initial.upper.to_le_bytes());
-        h.update(&ws.book_initial.lower.to_le_bytes());
-        for (c, t) in &ws.after_glyph {
-            h.update(&(*c as u32).to_le_bytes());
-            h.update(&t.upper.to_le_bytes());
-            h.update(&t.lower.to_le_bytes());
-        }
-        h.update(&[1]);
-        for (c, t) in &ws.after_quote {
-            h.update(&(*c as u32).to_le_bytes());
-            h.update(&t.upper.to_le_bytes());
-            h.update(&t.lower.to_le_bytes());
-        }
-    }
-    h.digest128()
-}
-
-/// One book's contribution: the pruned word table plus the cased-word-start
-/// count that drives the emergent gate.
-#[derive(Debug, Clone, Default, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub(crate) struct BookCasing {
-    words: BTreeMap<String, WordStats>,
-    /// Cased word-start observations in the book — the emergent gate input,
-    /// counted before pruning.
-    cased_starts: u32,
-}
-
-impl CasingStats {
-    /// Build from a per-book table, computing the fingerprint over its books.
-    pub(crate) fn from_per_book(per_book: BTreeMap<Box<str>, BookCasing>) -> CasingStats {
-        let fp = per_book
-            .iter()
-            .fold(0u128, |acc, (slug, bc)| acc ^ book_fp(slug, bc));
-        CasingStats {
-            per_book,
-            fp: Some(fp),
-        }
-    }
-
-    /// The content fingerprint — the maintained value, or a fresh full compute
-    /// (a deserialized value arrives with `fp == None`).
-    fn fingerprint(&self) -> u128 {
-        self.fp.unwrap_or_else(|| {
-            self.per_book
-                .iter()
-                .fold(0u128, |acc, (slug, bc)| acc ^ book_fp(slug, bc))
-        })
-    }
-
-    /// Book-level supersede: books in `other` replace those in `self`.
-    pub(crate) fn merge(mut self, other: CasingStats) -> CasingStats {
-        // Maintain the fingerprint incrementally when a base is known: XOR out
-        // each replaced book's old digest, XOR in its new one. With no base
-        // (deserialized `self`), recompute once at the end.
-        let base = self.fp;
-        let mut delta = 0u128;
-        for (book, bc) in other.per_book {
-            if base.is_some() {
-                if let Some(old) = self.per_book.get(&book) {
-                    delta ^= book_fp(&book, old);
-                }
-                delta ^= book_fp(&book, &bc);
-            }
-            self.per_book.insert(book, bc);
-        }
-        self.fp = Some(base.map_or_else(
-            || {
-                self.per_book
-                    .iter()
-                    .fold(0u128, |acc, (slug, bc)| acc ^ book_fp(slug, bc))
-            },
-            |f| f ^ delta,
-        ));
-        self
-    }
-
-    /// Drop a book's contribution.
-    pub(crate) fn remove_book(&mut self, slug: &str) {
-        if let Some(bc) = self.per_book.remove(slug) {
-            if let Some(f) = self.fp.as_mut() {
-                *f ^= book_fp(slug, &bc);
-            }
-        }
     }
 }
 
@@ -715,12 +550,10 @@ fn build_trust(words: &FxHashMap<String, WordStats>, z: f64) -> FxHashMap<ClassK
 /// The lexicon-restricted per-class habit, plus the corpus trust map (ADR
 /// 0052). Built corpus-wide at judge over the merged table.
 ///
-/// Owns its word table (rather than borrowing `&'a str` out of the input
-/// `CasingStats`) specifically so it can be cached independent of the
-/// caller's borrow — see [`Model::build`]'s within-process memo (perf note
-/// below `judge_casing`: both casing rules build the identical model from
-/// the same merged stats within one `analyze` call).
-struct Model {
+/// Owns its word table so the built model can be retained across analyze calls
+/// independent of any borrow of the aggregate it was built from (see
+/// [`CasingModel`]).
+pub(crate) struct Model {
     words: FxHashMap<String, WordStats>,
     /// Per class trust; `None`-keyed book-initial is always fully trusted.
     trust: FxHashMap<ClassKey, f64>,
@@ -742,59 +575,22 @@ pub struct Factors {
     pub raw_total: u64,
 }
 
-// Within-process memo for `Model::build` (perf note above `judge_casing`):
-// `SentenceInitialLowercase` and `InconsistentWordCasing` both build the
-// identical model from the same merged `CasingStats` + `CasingConfig` inside
-// one `analyze_stateful` call — the Fisher/G² association math in
-// `build_trust` is ~44% of everything-on self-time on English, so rebuilding
-// it twice per call is pure waste. Keyed by the stats' cheap content
-// fingerprint (`CasingStats::fingerprint`) + `CasingConfig`, not by deep
-// equality — the two calls pass distinct clones with identical content, so
-// their fingerprints match with a single `u128` compare instead of a memcmp
-// over every book's word table (the old key, ~4–6 ms/call under all-rules).
-// A collision is a false hit, forbidden — but the fingerprint is a 128-bit
-// xxh3 digest, so it is ignored by the same 2⁻¹²⁸ policy as `book_hash`.
-// A size-2 LRU is enough to catch the two adjacent judge calls; it is not a
-// correctness dependency — a miss just rebuilds.
-thread_local! {
-    static MODEL_CACHE: RefCell<Vec<(u128, CasingConfig, Arc<Model>)>> =
-        const { RefCell::new(Vec::new()) };
-}
-
-const MODEL_CACHE_CAP: usize = 2;
-
 impl Model {
-    fn build(stats: &CasingStats, cfg: &CasingConfig) -> Arc<Model> {
-        let fp = stats.fingerprint();
-        if let Some(hit) = MODEL_CACHE.with(|c| {
-            c.borrow()
-                .iter()
-                .find(|(f, c, _)| *f == fp && c == cfg)
-                .map(|(_, _, m)| Arc::clone(m))
-        }) {
-            return hit;
-        }
-
-        let model = Arc::new(Self::build_uncached(stats, cfg));
-
-        MODEL_CACHE.with(|c| {
-            let mut c = c.borrow_mut();
-            if c.len() >= MODEL_CACHE_CAP {
-                c.remove(0);
-            }
-            c.push((fp, *cfg, Arc::clone(&model)));
-        });
-
-        model
-    }
-
-    fn build_uncached(stats: &CasingStats, cfg: &CasingConfig) -> Model {
+    fn build(stats: &CasingCorpusStats, cfg: &CasingConfig) -> Model {
         let z = clamp_z(cfg.confidence_z);
         let gate = f64::from(clamp_unit(cfg.trust_gate));
-        // Corpus-wide word table: sum each book's raw tallies.
+        // Corpus-wide word table: sum each book's raw tallies, books in slug
+        // order and each book's words in sorted order. That insertion sequence
+        // is load-bearing, not incidental: the reshuffle witness sums a
+        // per-juror statistic over this map's iteration order, and float
+        // addition is not associative — a different insertion sequence would
+        // move trust, and with it every score, in its last bits.
         let mut words: FxHashMap<String, WordStats> = FxHashMap::default();
-        for bc in stats.per_book.values() {
-            for (key, w) in &bc.words {
+        for (book_words, _) in stats.per_book.values() {
+            // An uncased-only word is the sole per-book-safe prune (ADR 0051):
+            // it yields no candidate site and enters neither the lexicon-
+            // lowercase habit nor the (bicameral) witnesses.
+            for (key, w) in book_words.iter().filter(|(_, w)| w.has_case()) {
                 words.entry(key.clone()).or_default().add(w);
             }
         }
@@ -959,8 +755,7 @@ impl Model {
     /// The intrinsic-channel factors for a lowercase site of word `key`, if the
     /// word is intrinsically capitalized (soft-censored). The censoring discount
     /// is trust-weighted; the channel is never gated.
-    fn intrinsic(&self, key: &str) -> Option<Factors> {
-        let w = self.words.get(key)?;
+    fn intrinsic(&self, w: &WordStats) -> Option<Factors> {
         if !self.is_cap_soft(w) {
             return None;
         }
@@ -979,11 +774,10 @@ impl Model {
     /// word `key` at `pos`, if the word is classifiable AND the site's class
     /// clears the trust gate (ADR 0052). An unpromoted quote-context site has
     /// folded to mid-flow and is not forced ⇒ `None`.
-    fn positional(&self, key: &str, pos: PosClass) -> Option<Factors> {
+    fn positional(&self, w: &WordStats, pos: PosClass) -> Option<Factors> {
         if !pos.is_forced() {
             return None;
         }
-        let w = self.words.get(key)?;
         let (habit_key, trust) = match pos {
             PosClass::BookInitial => (None, 1.0),
             PosClass::ForcedAfterTerminal(ck) => {
@@ -1015,32 +809,22 @@ impl Model {
     }
 }
 
-/// A lowercase word-start observed by the book walk — a flag candidate for
-/// either rule. Forwarded reduce→judge within a call (ADR 0044), and retained
-/// in the content-keyed analysis cache when its owning book is clean.
-#[derive(Clone)]
+/// A lowercase word-start observed by the chapter walk — a flag candidate for
+/// either rule. Chapter-local: `local_idx` is the verse's index within its
+/// chapter run, so a hit in an untouched chapter stays correctly addressed
+/// after any edit elsewhere and the global `KeyIdx` is resolved once, at
+/// materialization.
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct LowerSite {
     pub(crate) local_idx: LocalKeyIdx,
     pub(crate) start: u32,
     pub(crate) end: u32,
-    /// Interned word-type id — an index into the owning [`CasingSites`]'
-    /// `keys` table (per-book, first-sight order). A `Copy` id instead of a
-    /// `String` so the judge memo hashes a `(u32, PosClass)` instead of
-    /// re-hashing/memcmp-ing the folded string per site occurrence.
+    /// Interned word-type id — an index into the owning [`ChapterWords`]'
+    /// `keys` table (per-chapter, first-sight order). A `Copy` id instead of a
+    /// `String` so the judge resolves a verdict through an array index per site
+    /// instead of hashing the folded word.
     pub(crate) key: u32,
     pub(crate) pos: PosClass,
-}
-
-/// One book's lowercase sites plus the per-book word-type interner that
-/// resolves each site's `key` id back to its case-folded string. It never
-/// enters serialized stats; ids remain meaningful only against this book's
-/// `keys` table, including when the native product is retained by the
-/// content-keyed analysis cache.
-#[derive(Clone, Default)]
-pub struct CasingSites {
-    /// id → folded word-type key, in first-sight order during the book walk.
-    pub(crate) keys: Vec<String>,
-    pub(crate) sites: Vec<LowerSite>,
 }
 
 /// True iff `c` is a cased/uncased letter (GC L*).
@@ -1092,7 +876,7 @@ fn compound_words(text: &str, tokens: &[crate::token::Token], out: &mut Vec<Span
 ///
 /// `pub(crate)`: `signals::rare_glyph` reuses this exact pending-terminal
 /// machine (ADR 0053) so the forced-position definition lives in one place.
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Pending {
     mark: char,
     quote: bool,
@@ -1151,45 +935,263 @@ pub(crate) fn pos_of(book_initial: bool, taken: Option<Pending>) -> PosClass {
     }
 }
 
-/// The casing counting listener: one book's raw per-word table plus the
-/// lowercase flag candidates, fed per verse by the fused walk. The pending
-/// terminal is carried across verse seams; the book-initial word is forced.
-pub(crate) struct CasingAcc {
-    /// Cased word-start observations (the emergent-gate input).
-    cased_starts: u32,
-    /// Per-book word-type interner: folded key → id, and id → key. The walk
-    /// tallies into the id-indexed `word_stats` (one hash probe per word)
-    /// instead of a `BTreeMap<String, _>` entry walk (log n string memcmps
-    /// per word) — the stats' pinned sorted shape is rebuilt once in
-    /// `finish`.
-    intern: FxHashMap<String, u32>,
-    keys: Vec<String>,
-    word_stats: Vec<WordStats>,
-    sites: Vec<LowerSite>,
-    pending: Option<Pending>,
-    book_initial: bool,
-    /// Reusable `compound_words` scratch buffer (ADR 0057 allocation-diet
-    /// follow-up) — cleared and refilled each verse instead of allocating.
-    words_buf: Vec<Span>,
+// ─────────────────────────────────────────────────────────────────────────
+// The casing observation substrate (plan §5.2 / §11 ledger row).
+// ─────────────────────────────────────────────────────────────────────────
+
+/// The effect of a run of gap text on the pending-terminal machine, recorded at
+/// map time so reduction can resolve a chapter-initial position under **any**
+/// entering state without re-reading the text.
+///
+/// [`advance_gap`] is monotone in a way that makes a two-field summary exact: a
+/// pending state that is already live is never replaced by a gap (only its
+/// `quote`/`other` flags can be set), and a gap can create a pending only when
+/// none was live. So the whole transform is "what this gap produces from
+/// nothing" plus "which flags it would OR into something".
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+struct GapEffect {
+    /// The pending state this gap leaves when nothing was pending on entry.
+    from_none: Option<Pending>,
+    /// The gap contains a close-quote…
+    saw_quote: bool,
+    /// …and/or a non-quote mark, which collapses the boundary to mid-flow.
+    saw_other: bool,
 }
 
-impl CasingAcc {
-    pub(crate) fn new() -> Self {
-        CasingAcc {
-            cased_starts: 0,
-            intern: FxHashMap::default(),
-            keys: Vec::new(),
-            word_stats: Vec::new(),
-            sites: Vec::new(),
-            pending: None,
-            book_initial: true,
-            words_buf: Vec::new(),
+impl GapEffect {
+    /// Apply the recorded transform to a concrete entering pending state.
+    fn apply(self, entering: Option<Pending>) -> Option<Pending> {
+        match entering {
+            Some(mut p) => {
+                p.quote |= self.saw_quote;
+                p.other |= self.saw_other;
+                Some(p)
+            }
+            None => self.from_none,
         }
     }
 
-    pub(crate) fn verse(&mut self, v: &stream::VerseInputs<'_, '_>) {
-        let text = v.text;
-        compound_words(text, v.tokens, &mut self.words_buf);
+    /// Fold one gap segment in. `prev_letter` starts false for every segment
+    /// because a segment is always either a whole word-less verse or a verse's
+    /// leading run — and the machine resets `prev_letter` at each verse start
+    /// (a terminal opening verse N is not attached to the last letter of verse
+    /// N−1). The flag scan is a second pass over the same (short) run rather
+    /// than a re-implementation, so the pending machine stays in one place.
+    fn extend(&mut self, gap: &str) {
+        let mut prev_letter = false;
+        advance_gap(gap, &mut self.from_none, &mut prev_letter);
+        for c in gap.chars() {
+            let cl = class_of(c);
+            if cl.is_whitespace() || cl.is_numeric() || cl.is_alphabetic() {
+                continue;
+            }
+            if cl.is_quote() {
+                self.saw_quote = true;
+            } else {
+                self.saw_other = true;
+            }
+        }
+    }
+}
+
+/// Everything about one chapter that no entering state can change: its word-type
+/// interner, its per-word raw tallies (excluding the chapter's first word), and
+/// its lowercase flag candidates after that first word.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub(crate) struct ChapterWords {
+    /// id → folded word-type key, in first-sight order during the chapter walk.
+    keys: Vec<String>,
+    /// Per-id raw tallies. The chapter's **first** word's own occurrence is
+    /// absent here: its position class is the one thing the entering boundary
+    /// state decides, so reduction records it.
+    tallies: Vec<WordStats>,
+    /// Flag candidates after the first word, in scan order.
+    sites: Vec<LowerSite>,
+    /// Cased word-starts in the chapter — the emergent-gate input. Position
+    /// independent, so the first word counts here too.
+    cased_starts: u32,
+}
+
+/// The chapter's first word, whose position class reduction resolves.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct FirstWord {
+    key: u32,
+    case: Case,
+    /// The flag candidate this word contributes, if any. Its `pos` is a
+    /// placeholder until reduction fills it in.
+    site: Option<LowerSite>,
+}
+
+/// The same word with its position class resolved against the entering state.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct ResolvedFirst {
+    key: u32,
+    case: Case,
+    pos: PosClass,
+    site: Option<LowerSite>,
+}
+
+/// One chapter's input-independent casing observation.
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct CasingChapterObs {
+    token: Box<str>,
+    /// Shared with the reduced chapter and the book contribution — reduction
+    /// changes one word's tally bucket, never the chapter's whole table, so the
+    /// table is handed on by `Arc` instead of deep-copied per reduce.
+    words: Arc<ChapterWords>,
+    /// The gap before the chapter's first word — the whole chapter when it has
+    /// no word at all.
+    lead: GapEffect,
+    first: Option<FirstWord>,
+    /// The pending terminal left after the chapter's last word. Chapter-local
+    /// by construction: the first word consumed whatever entered, so every
+    /// later gap starts from nothing. `None` when the chapter has no word (the
+    /// entering state passes through `lead` instead).
+    tail: Option<Pending>,
+}
+
+/// The casing boundary state carried across chapters — the **complete** state
+/// [`ChapterAcc`] carries across a verse seam, which is the same seam a chapter
+/// boundary is (a chapter boundary is not a discourse reset).
+///
+/// Two fields, both necessary and together sufficient:
+///
+/// - `pending` — the live pending-terminal machine. The chapter's first word's
+///   position class is a function of it, so dropping it (or resetting at `\c`)
+///   would silently re-classify chapter-initial words: the pericope-adulterae
+///   period at JHN 7:53 forces the capital at 8:1.
+/// - `book_initial` — whether the book's first word is still ahead. The first
+///   word of a book is forced with no terminal glyph (its own habit key, always
+///   fully trusted), and a word-less opening chapter carries that fact forward,
+///   so it cannot be inferred from the chapter's position alone.
+///
+/// Nothing else crosses: `prev_letter` (whether a letter immediately precedes)
+/// is deliberately verse-local — the machine restarts it at every verse seam,
+/// and a chapter seam is a verse seam — and every other input to a word's
+/// tally (its fold, its case, its span) is inside its own chapter.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CasingBoundary {
+    pending: Option<Pending>,
+    book_initial: bool,
+}
+
+impl Default for CasingBoundary {
+    /// Book start: nothing pending, and the book's first word is still ahead.
+    fn default() -> Self {
+        CasingBoundary {
+            pending: None,
+            book_initial: true,
+        }
+    }
+}
+
+/// One chapter's reduced casing result: its shared word table plus its first
+/// word with a resolved position class.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub(crate) struct CasingReduced {
+    token: Box<str>,
+    words: Arc<ChapterWords>,
+    first: Option<ResolvedFirst>,
+}
+
+impl CasingReduced {
+    /// The chapter's flag candidates in scan order — the first word's, then
+    /// every later word's.
+    fn sites(&self) -> impl Iterator<Item = LowerSite> + '_ {
+        self.first
+            .and_then(|f| f.site)
+            .into_iter()
+            .chain(self.words.sites.iter().copied())
+    }
+}
+
+/// A book's ordered word table: `(folded key, raw tallies)` sorted by key,
+/// including uncased-only words (the model prunes those as it folds). Sorted
+/// because the corpus merge's insertion order is load-bearing — see
+/// [`Model::build`].
+type BookWords = Vec<(String, WordStats)>;
+
+/// A book's folded casing contribution: its ordered word table (the corpus
+/// aggregate's addend), its cased-word-start count, and its chapters' resolved
+/// sites with a chapter-local-id → book-word-index map per chapter.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub(crate) struct CasingBookContribution {
+    words: Arc<BookWords>,
+    cased_starts: u32,
+    chapters: Vec<(CasingReduced, Arc<[u32]>)>,
+}
+
+/// The casing corpus aggregate: each book's ordered word table and cased-start
+/// count, keyed by slug. The tables are shared (`Arc`) with the book
+/// contributions they were folded from, so a book replacement is a pointer swap
+/// and the aggregate stores no second copy of the corpus vocabulary.
+#[derive(Default)]
+pub(crate) struct CasingCorpusStats {
+    per_book: BTreeMap<Box<str>, (Arc<BookWords>, u32)>,
+    /// Bumped whenever `per_book` changes. The judge model is a pure function of
+    /// this aggregate and the judging knobs, so this counter is the whole memo
+    /// key — no content fingerprint, no deep equality.
+    generation: u64,
+}
+
+impl CasingCorpusStats {
+    /// True iff the merged corpus has any cased word-start — the emergent gate.
+    fn any_cased(&self) -> bool {
+        self.per_book.values().any(|&(_, starts)| starts > 0)
+    }
+}
+
+/// The retained judge model: the corpus model plus the aggregate generation and
+/// judging knobs it was built from. Rebuilt only when one of those moved.
+pub(crate) struct CasingModel {
+    generation: u64,
+    cfg: CasingConfig,
+    model: Arc<Model>,
+}
+
+/// One chapter's casing map: the same per-verse walk the rules always ran, with
+/// the chapter's first word left unresolved and the gap before it recorded as a
+/// transform rather than applied.
+struct ChapterAcc {
+    cased_starts: u32,
+    /// Word-type interner: folded key → id, and id → key. The walk tallies into
+    /// the id-indexed `tallies` (one hash probe per word) instead of a
+    /// `BTreeMap<String, _>` entry walk (log n string memcmps per word).
+    intern: FxHashMap<String, u32>,
+    keys: Vec<String>,
+    tallies: Vec<WordStats>,
+    sites: Vec<LowerSite>,
+    lead: GapEffect,
+    first: Option<FirstWord>,
+    /// Live only once the first word has been seen; before that the gap goes
+    /// into `lead`.
+    pending: Option<Pending>,
+    /// Reusable `compound_words` scratch buffer (ADR 0057 allocation-diet
+    /// follow-up) — cleared and refilled each verse instead of allocating.
+    words_buf: Vec<Span>,
+    tokens_buf: Vec<crate::token::Token>,
+}
+
+impl ChapterAcc {
+    fn new() -> Self {
+        ChapterAcc {
+            cased_starts: 0,
+            intern: FxHashMap::default(),
+            keys: Vec::new(),
+            tallies: Vec::new(),
+            sites: Vec::new(),
+            lead: GapEffect::default(),
+            first: None,
+            pending: None,
+            words_buf: Vec::new(),
+            tokens_buf: Vec::new(),
+        }
+    }
+
+    fn verse(&mut self, local_idx: LocalKeyIdx, text: &str) {
+        self.tokens_buf.clear();
+        crate::token::tokenize_into(text, &mut self.tokens_buf);
+        compound_words(text, &self.tokens_buf, &mut self.words_buf);
         let mut prev_letter = false;
         let mut cursor = 0usize;
 
@@ -1198,17 +1200,18 @@ impl CasingAcc {
         // `self` fields without holding a borrow of `words_buf` open.
         for i in 0..self.words_buf.len() {
             let w = self.words_buf[i];
-            advance_gap(
-                &text[cursor..w.start as usize],
-                &mut self.pending,
-                &mut prev_letter,
-            );
+            let gap = &text[cursor..w.start as usize];
+            if self.first.is_none() {
+                // Still before the chapter's first word: the gap's effect on an
+                // arbitrary entering state is recorded, not applied.
+                self.lead.extend(gap);
+            } else {
+                advance_gap(gap, &mut self.pending, &mut prev_letter);
+            }
 
-            let first = text[w.start as usize..w.end as usize]
-                .chars()
-                .next()
-                .unwrap();
-            let fcl = class_of(first);
+            let word = &text[w.start as usize..w.end as usize];
+            let first_char = word.chars().next().unwrap();
+            let fcl = class_of(first_char);
             let case = if fcl.is_uppercase() {
                 Case::Upper
             } else if fcl.is_lowercase() {
@@ -1216,8 +1219,6 @@ impl CasingAcc {
             } else {
                 Case::Uncased
             };
-            let pos = pos_of(self.book_initial, self.pending.take());
-            self.book_initial = false;
 
             if case != Case::Uncased {
                 self.cased_starts += 1;
@@ -1225,18 +1226,17 @@ impl CasingAcc {
             // The fold is deliberately the exact `str::to_lowercase` of the
             // compound-word span (context-sensitive: final sigma etc.), same
             // as it always was — no fast-path gate, so no drift.
-            let key = text[w.start as usize..w.end as usize].to_lowercase();
+            let key = word.to_lowercase();
             let id = match self.intern.get(&key) {
                 Some(&id) => id,
                 None => {
                     let id = self.keys.len() as u32;
                     self.intern.insert(key.clone(), id);
                     self.keys.push(key);
-                    self.word_stats.push(WordStats::default());
+                    self.tallies.push(WordStats::default());
                     id
                 }
             };
-            self.word_stats[id as usize].record(pos, case);
             // Boundary predicate (ADR 0055): an OtherMixed token (`asÍ`,
             // `word-wOrd`) is `case.mixed-case-word`'s to report — its interior
             // capital is the defect, not its incidental lowercase initial. Skip
@@ -1246,145 +1246,615 @@ impl CasingAcc {
             // OtherMixed word whose first letter is uppercase never reaches here
             // — `case` would be `Upper` — so this only touches the first-lower
             // overlap class.)
-            if case == Case::Lower
-                && case_shape(&text[w.start as usize..w.end as usize])
-                    != Some(CaseShape::OtherMixed)
-            {
-                self.sites.push(LowerSite {
-                    local_idx: v.local_idx,
-                    start: w.start,
-                    end: w.end,
+            let candidate = case == Case::Lower && case_shape(word) != Some(CaseShape::OtherMixed);
+
+            if self.first.is_none() {
+                // The chapter's first word: its position class is not knowable
+                // here (it depends on what entered the chapter), so neither its
+                // tally bucket nor its site's `pos` is decided yet.
+                self.first = Some(FirstWord {
                     key: id,
-                    pos,
+                    case,
+                    site: candidate.then_some(LowerSite {
+                        local_idx,
+                        start: w.start,
+                        end: w.end,
+                        key: id,
+                        pos: PosClass::Midflow,
+                    }),
                 });
+            } else {
+                let pos = pos_of(false, self.pending.take());
+                self.tallies[id as usize].record(pos, case);
+                if candidate {
+                    self.sites.push(LowerSite {
+                        local_idx,
+                        start: w.start,
+                        end: w.end,
+                        key: id,
+                        pos,
+                    });
+                }
             }
 
-            prev_letter = text[w.start as usize..w.end as usize]
-                .chars()
-                .next_back()
-                .is_some_and(is_letter);
+            prev_letter = word.chars().next_back().is_some_and(is_letter);
             cursor = w.end as usize;
         }
-        advance_gap(&text[cursor..], &mut self.pending, &mut prev_letter);
+        let rest = &text[cursor..];
+        if self.first.is_none() {
+            self.lead.extend(rest);
+        } else {
+            advance_gap(rest, &mut self.pending, &mut prev_letter);
+        }
     }
 
-    pub(crate) fn finish(self) -> (BookCasing, CasingSites) {
-        // Rebuild the stats' pinned sorted word table (dropping caseless
-        // words, exactly the old `retain`); the interner strings live on in
-        // the sites half so ids stay resolvable at judge.
-        let words: BTreeMap<String, WordStats> = self
-            .keys
-            .iter()
-            .zip(&self.word_stats)
-            .filter(|(_, w)| w.has_case())
-            .map(|(k, w)| (k.clone(), w.clone()))
-            .collect();
-        (
-            BookCasing {
-                words,
-                cased_starts: self.cased_starts,
-            },
-            CasingSites {
+    fn finish(self, token: &str) -> CasingChapterObs {
+        CasingChapterObs {
+            token: Box::from(token),
+            words: Arc::new(ChapterWords {
                 keys: self.keys,
+                tallies: self.tallies,
                 sites: self.sites,
+                cased_starts: self.cased_starts,
+            }),
+            lead: self.lead,
+            // A chapter with no word carries no local pending: whatever entered
+            // it flows on through `lead`.
+            tail: self.first.is_some().then_some(self.pending).flatten(),
+            first: self.first,
+        }
+    }
+}
+
+/// The casing observation substrate — one shared model, two consumer judges
+/// (`case.sentence-initial-lowercase` and `case.inconsistent-word-casing`).
+pub(crate) struct CasingSubstrate;
+
+/// Pins the substrate's registry id at compile time.
+const _: crate::substrate::SubstrateId =
+    <CasingSubstrate as crate::substrate::ObservationSubstrate>::ID;
+
+/// Casing's judge key: the word type plus the position class of the site being
+/// judged. The positional channel reads both; the intrinsic channel reads only
+/// the word, and shares the key so one outcome serves both consumers.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct CasingKey {
+    word: Box<str>,
+    pos: PosClass,
+}
+
+/// Both consumers' verdicts for one key, computed together from the one shared
+/// model. `None` in a channel is that rule staying silent at this key.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct CasingOutcome {
+    /// `case.sentence-initial-lowercase`: score, then its finding args.
+    positional: Option<(f32, Option<char>, bool, u32, u32)>,
+    /// `case.inconsistent-word-casing`: score, then its count pair. The word
+    /// itself comes from the site's own chapter interner at materialization.
+    intrinsic: Option<(f32, u32, u32)>,
+}
+
+/// The judging half: the corpus model plus the knobs, with the two clamped
+/// scalars hoisted out of the per-key path.
+pub(crate) struct CasingJudge {
+    model: Arc<Model>,
+    k: f64,
+    floor: f64,
+}
+
+impl Clone for CasingJudge {
+    fn clone(&self) -> Self {
+        CasingJudge {
+            model: Arc::clone(&self.model),
+            k: self.k,
+            floor: self.floor,
+        }
+    }
+}
+
+impl CasingJudge {
+    fn new(model: Arc<Model>, cfg: &CasingConfig) -> Self {
+        CasingJudge {
+            model,
+            k: clamp_count(cfg.recurrence_k),
+            floor: f64::from(clamp_unit(cfg.emit_score_min)),
+        }
+    }
+
+    /// Both channels for one `(word, position)` key. The word's tallies are
+    /// looked up once and handed to both channels — a word absent from the model
+    /// (uncased-only everywhere) is silent in both.
+    fn outcome(&self, word: &str, pos: PosClass) -> CasingOutcome {
+        let Some(w) = self.model.words.get(word) else {
+            return CasingOutcome::default();
+        };
+        let score_of = |f: &Factors| f.dominance * rarity(f.minority, self.k);
+        let positional = self.model.positional(w, pos).and_then(|f| {
+            let score = score_of(&f);
+            if score < self.floor {
+                return None;
+            }
+            let (glyph, quoted) = pos.habit_glyph();
+            Some((score as f32, glyph, quoted, clamp_u32(f.raw_major), clamp_u32(f.raw_total)))
+        });
+        let intrinsic = self.model.intrinsic(w).and_then(|f| {
+            let score = score_of(&f);
+            if score < self.floor {
+                return None;
+            }
+            Some((score as f32, clamp_u32(f.raw_major), clamp_u32(f.raw_total)))
+        });
+        CasingOutcome {
+            positional,
+            intrinsic,
+        }
+    }
+}
+
+fn clamp_u32(n: u64) -> u32 {
+    n.min(u64::from(u32::MAX)) as u32
+}
+
+impl crate::substrate::ObservationSubstrate for CasingSubstrate {
+    const ID: crate::substrate::SubstrateId = crate::substrate::SubstrateId::Casing;
+    // Bump on any observation/reduction schema change.
+    const SCHEMA_STAMP: u64 = 1;
+
+    type Key = CasingKey;
+    type BoundaryState = CasingBoundary;
+    type ChapterObservation = CasingChapterObs;
+    type ReducedChapter = CasingReduced;
+    type BookContribution = CasingBookContribution;
+    type CorpusStats = CasingCorpusStats;
+    // Casing has NO extraction knobs: every `CasingConfig` field (the score
+    // floor, the recurrence knee, the confidence z, the trust gate) is read at
+    // judge. So a knob change maps and reduces nothing.
+    type ExtractorConfig = ();
+    type JudgeConfig = CasingJudge;
+    type EntryOutcome = CasingOutcome;
+
+    fn extractor_fp(_extractor: &()) -> u64 {
+        0
+    }
+
+    fn map_chapter(
+        chapter: &crate::substrate::ChapterView<'_>,
+        _extractor: &(),
+    ) -> CasingChapterObs {
+        let mut acc = ChapterAcc::new();
+        for (vi, text) in chapter.texts.iter().enumerate() {
+            acc.verse(LocalKeyIdx::from_usize(vi), text);
+        }
+        acc.finish(chapter.chapter)
+    }
+
+    fn pending_owner(_state: &CasingBoundary) -> Option<&str> {
+        // Nothing is ever deposited backwards for casing: a chapter's own
+        // reduction consumes the state that entered it (to classify its first
+        // word) and produces its own. A successor never writes into a
+        // predecessor's contribution, which is why the replay window always
+        // starts at the chapter that changed.
+        None
+    }
+
+    fn reduce_chapter(
+        observation: &CasingChapterObs,
+        entering: &CasingBoundary,
+        _carry_out: &mut CasingReduced,
+    ) -> (CasingReduced, CasingBoundary) {
+        let at_first = observation.lead.apply(entering.pending);
+        let (first, leaving) = match observation.first {
+            None => (
+                None,
+                // A word-less chapter is a pass-through: the entering state
+                // flows on, modified only by the chapter's own gap text.
+                CasingBoundary {
+                    pending: at_first,
+                    book_initial: entering.book_initial,
+                },
+            ),
+            Some(f) => {
+                let pos = pos_of(entering.book_initial, at_first);
+                (
+                    Some(ResolvedFirst {
+                        key: f.key,
+                        case: f.case,
+                        pos,
+                        site: f.site.map(|s| LowerSite { pos, ..s }),
+                    }),
+                    // Everything after the first word is this chapter's own
+                    // text, so the leaving state is independent of what entered
+                    // — which is why a changed carry converges within one
+                    // chapter of the edit.
+                    CasingBoundary {
+                        pending: observation.tail,
+                        book_initial: false,
+                    },
+                )
+            }
+        };
+        (
+            CasingReduced {
+                token: observation.token.clone(),
+                words: Arc::clone(&observation.words),
+                first,
             },
+            leaving,
         )
     }
-}
 
-/// Scan one book's verses — the standalone driver over [`CasingAcc`], used by
-/// the judge's re-scan path (a prior-carried book has no forwarded sites) and
-/// the calibration API.
-fn walk_book(group: &BookGroup<'_>) -> (BookCasing, CasingSites) {
-    stream::drive_book(
-        group,
-        stream::Needs {
-            tokens: true,
-            ..Default::default()
-        },
-        CasingAcc::new(),
-        |a, v| a.verse(v),
-        CasingAcc::finish,
-    )
-}
-
-/// Shared reduce for both casing rules: walk each book once.
-fn reduce_casing(books: &Books<'_>) -> (CasingStats, BTreeMap<Box<str>, CasingSites>) {
-    let mut per_book = BTreeMap::new();
-    let mut sites = BTreeMap::new();
-    for (group, (bc, book_sites)) in books.iter().zip(rule::map_books(books, walk_book)) {
-        per_book.insert(Box::from(group.slug), bc);
-        sites.insert(Box::from(group.slug), book_sites);
+    fn finish_book(_leaving: &CasingBoundary, _carry_out: &mut CasingReduced) {
+        // A pending terminal live at the book's end has no following word to
+        // force, so it resolves to nothing — there is no book-edge contribution
+        // to fold back.
     }
-    (CasingStats::from_per_book(per_book), sites)
-}
 
-/// True iff the merged corpus has any cased word-start — the emergent gate.
-fn any_cased(stats: &CasingStats) -> bool {
-    stats.per_book.values().any(|b| b.cased_starts > 0)
-}
-
-/// Shared judge skeleton: build the corpus model, recover each book's lowercase
-/// sites, and turn each into at most one finding via a memoized two-step
-/// evaluation. `verdict` is the expensive Wilson-bound math — a pure function
-/// of `(key, pos)`, never the individual occurrence — so it is computed once
-/// per distinct `(key, pos)` seen in a book and cached in a per-book memo.
-/// `materialize` is the cheap per-site step that turns a cached verdict into
-/// a `Finding` at the site's own span.
-fn judge_casing<V: Clone + Sync + Send>(
-    stats: &RuleStats,
-    books: &Books<'_>,
-    sites: Option<&rule::RuleSites<'_>>,
-    cfg: &CasingConfig,
-    verdict: impl Fn(&str, PosClass, &Model) -> Option<V> + Sync,
-    materialize: impl Fn(&LowerSite, &str, &V, crate::corpus::KeyIdx) -> Finding + Sync,
-) -> Vec<Finding> {
-    let RuleStats::Casing(stats) = stats else {
-        return Vec::new();
-    };
-    // Emergent gate: no cased word-starts, no convention to violate.
-    if !any_cased(stats) {
-        return Vec::new();
+    fn fold_book(reduced: &[CasingReduced]) -> CasingBookContribution {
+        // Book-level interner over the chapters' own id spaces, so the judge can
+        // memoize a verdict once per book-word (as it always did) while the
+        // sites stay chapter-local.
+        let mut intern: FxHashMap<&str, u32> = FxHashMap::default();
+        let mut keys: Vec<&str> = Vec::new();
+        let mut tallies: Vec<WordStats> = Vec::new();
+        let mut per_chapter: Vec<Vec<u32>> = Vec::with_capacity(reduced.len());
+        let mut cased_starts: u32 = 0;
+        for r in reduced {
+            cased_starts += r.words.cased_starts;
+            let mut ids = Vec::with_capacity(r.words.keys.len());
+            for (i, key) in r.words.keys.iter().enumerate() {
+                let id = match intern.get(key.as_str()) {
+                    Some(&id) => id,
+                    None => {
+                        let id = keys.len() as u32;
+                        intern.insert(key.as_str(), id);
+                        keys.push(key.as_str());
+                        tallies.push(WordStats::default());
+                        id
+                    }
+                };
+                ids.push(id);
+                tallies[id as usize].add(&r.words.tallies[i]);
+            }
+            if let Some(f) = r.first {
+                tallies[ids[f.key as usize] as usize].record(f.pos, f.case);
+            }
+            per_chapter.push(ids);
+        }
+        // Sort into the pinned order and remap the chapters' id maps onto it.
+        let mut order: Vec<u32> = (0..keys.len() as u32).collect();
+        order.sort_unstable_by_key(|&i| keys[i as usize]);
+        let mut rank = vec![0u32; keys.len()];
+        for (r, &i) in order.iter().enumerate() {
+            rank[i as usize] = r as u32;
+        }
+        let words: BookWords = order
+            .iter()
+            .map(|&i| (keys[i as usize].to_string(), tallies[i as usize].clone()))
+            .collect();
+        let chapters = reduced
+            .iter()
+            .cloned()
+            .zip(per_chapter)
+            .map(|(r, ids)| {
+                let ids: Arc<[u32]> = ids.into_iter().map(|id| rank[id as usize]).collect();
+                (r, ids)
+            })
+            .collect();
+        CasingBookContribution {
+            words: Arc::new(words),
+            cased_starts,
+            chapters,
+        }
     }
-    let model = Model::build(stats, cfg);
 
-    let forwarded = match sites {
-        Some(rule::RuleSites::Casing(m)) => Some(m),
-        _ => None,
-    };
-    // Per-site loop over one book's sites: the memo hashes the Copy
-    // `(id, PosClass)` pair — the folded string is resolved through the
-    // book's interner only on a memo miss (once per distinct pair).
-    let emit = |base: crate::corpus::KeyIdx, book_sites: &CasingSites, found: &mut Vec<Finding>| {
-        let keys = &book_sites.keys;
-        let mut memo: FxHashMap<(u32, PosClass), Option<V>> = FxHashMap::default();
-        for site in &book_sites.sites {
-            let v = memo
-                .entry((site.key, site.pos))
-                .or_insert_with(|| verdict(&keys[site.key as usize], site.pos, &model));
-            if let Some(v) = v {
-                found.push(materialize(
-                    site,
-                    &keys[site.key as usize],
-                    v,
-                    rebase(base, site.local_idx),
-                ));
+    fn replace_book_in_corpus_stats(
+        stats: &mut CasingCorpusStats,
+        slug: &str,
+        old: Option<&CasingBookContribution>,
+        new: Option<&CasingBookContribution>,
+    ) -> Vec<CasingKey> {
+        let moved = match (old, new) {
+            (Some(o), Some(n)) => !Arc::ptr_eq(&o.words, &n.words) && o.words != n.words,
+            (None, None) => false,
+            _ => true,
+        };
+        match new {
+            Some(n) => {
+                stats
+                    .per_book
+                    .insert(Box::from(slug), (Arc::clone(&n.words), n.cased_starts));
+            }
+            None => {
+                stats.per_book.remove(slug);
             }
         }
-    };
-    let mut out: Vec<Finding> = rule::map_books(books, |group| {
-        let mut found = Vec::new();
-        if let Some(book_sites) = forwarded.and_then(|m| m.get(group.slug)) {
-            emit(group.base, book_sites, &mut found);
-        } else {
-            let (_, walked) = walk_book(group);
-            emit(group.base, &walked, &mut found);
+        if moved {
+            stats.generation += 1;
         }
-        found
-    })
-    .into_iter()
-    .flatten()
-    .collect();
+        // The stats delta is deliberately empty, and the driver derives
+        // judge-dirtiness from `generation` instead. This substrate's judge is
+        // corpus-global: the dominance, per-class habit, and trust a word is
+        // judged against are functions of *every* word's tallies, so the exact
+        // set of keys whose verdict inputs moved is either the empty set (the
+        // aggregate did not change) or every key in the corpus. Returning a key
+        // per word type to state the second case would allocate the whole
+        // vocabulary to say what one counter already says — and returning only
+        // the words whose own tallies moved would be a subset, which is the one
+        // answer that is wrong.
+        Vec::new()
+    }
+
+    fn judge(judge: &CasingJudge, key: &CasingKey, _stats: &CasingCorpusStats) -> CasingOutcome {
+        judge.outcome(&key.word, key.pos)
+    }
+}
+
+/// Which of the substrate's two consumers this analysis emits for. Either may be
+/// off while the other keeps the shared substrate alive.
+#[derive(Clone, Copy)]
+pub(crate) struct Consumers {
+    pub(crate) positional: bool,
+    pub(crate) intrinsic: bool,
+}
+
+/// One key's resolved verdict, cached against the book-word id it was computed
+/// for. A word appears at one position class almost everywhere, so a
+/// single-entry direct-mapped cache per book-word turns the per-site verdict
+/// lookup into an array index — the per-site hash probe was ~half the whole
+/// casing judge on an all-rules corpus.
+#[derive(Clone, Copy)]
+enum Slot {
+    Empty,
+    One(PosClass, CasingOutcome),
+}
+
+impl CasingBookContribution {
+    /// Emit both consumers' findings for this book, in one pass over its sites.
+    /// `positional`/`intrinsic` are the two rules' enabled bits: either may be
+    /// off while the other keeps the shared substrate alive.
+    fn materialize(
+        &self,
+        slug: &str,
+        corpus: &Corpus,
+        judge: &CasingJudge,
+        enabled: Consumers,
+        out: &mut Vec<Finding>,
+        judged: &mut usize,
+    ) {
+        let Consumers {
+            positional,
+            intrinsic,
+        } = enabled;
+        let mut slots = vec![Slot::Empty; self.words.len()];
+        for (chapter, ids) in &self.chapters {
+            let Some(range) = corpus.chapter_range(slug, &chapter.token) else {
+                continue;
+            };
+            let base = crate::corpus::KeyIdx::from_usize(range.start);
+            let keys = &chapter.words.keys;
+            for site in chapter.sites() {
+                let bid = ids[site.key as usize] as usize;
+                let outcome = match slots[bid] {
+                    Slot::One(pos, outcome) if pos == site.pos => outcome,
+                    _ => {
+                        let outcome = judge.outcome(&keys[site.key as usize], site.pos);
+                        slots[bid] = Slot::One(site.pos, outcome);
+                        *judged += 1;
+                        outcome
+                    }
+                };
+                if positional
+                    && let Some((score, glyph, quoted, upper, total)) = outcome.positional
+                {
+                    out.push(Finding {
+                        key_idx: rebase(base, site.local_idx),
+                        code: SENTENCE_INITIAL_LOWERCASE,
+                        severity: Severity::Info,
+                        range: site_span(&site),
+                        score: Some(score),
+                        args: Some(FindingArgs::CasingConvention {
+                            glyph,
+                            quoted,
+                            upper,
+                            total,
+                        }),
+                    });
+                }
+                if intrinsic
+                    && let Some((score, upper, total)) = outcome.intrinsic
+                {
+                    out.push(Finding {
+                        key_idx: rebase(base, site.local_idx),
+                        code: INCONSISTENT_WORD_CASING,
+                        severity: Severity::Info,
+                        range: site_span(&site),
+                        score: Some(score),
+                        args: Some(FindingArgs::WordCasing {
+                            word: keys[site.key as usize].clone(),
+                            upper,
+                            total,
+                        }),
+                    });
+                }
+            }
+        }
+    }
+}
+
+/// One chapter the substrate has to map this analysis, as the ordered map seam
+/// sees it: its caller-order `(book, chapter)` slot plus the view mapping reads.
+struct CasingMapWork<'a> {
+    book: usize,
+    chapter: usize,
+    view: crate::substrate::ChapterView<'a>,
+}
+
+/// Drive the casing observation substrate and both its consumer judges for one
+/// analysis: map the dirty chapters through the ordered chapter-map seam, replay
+/// each book's ordered reduction to convergence, build (or reuse) the corpus
+/// model, and materialize every book's findings for the enabled consumers.
+///
+/// Mapping fans out; **reduction does not**. Chapter `n + 1` consumes chapter
+/// `n`'s boundary state, so a book's reduction is a sequential carry fold — it
+/// walks compact cached observations, not text, and stays deterministic.
+pub(crate) fn drive_casing(
+    positional: bool,
+    intrinsic: bool,
+    cache: &mut crate::substrate::SubstrateCache<CasingSubstrate>,
+    retained: &mut Option<CasingModel>,
+    corpus: &Corpus,
+    cfg: &CasingConfig,
+    out: &mut Vec<Finding>,
+) {
+    use crate::substrate::{ChapterView, ObservationInputStamp, ObservationSubstrate};
+    #[cfg(any(test, feature = "test-probes"))]
+    cache.reset_probes();
+    if !positional && !intrinsic {
+        cache.clear();
+        *retained = None;
+        return;
+    }
+    let texts = corpus.texts();
+    let layout = corpus.book_layout();
+    // Planning pass. Stamps are built once and handed to both the seam and the
+    // driver; the dirty question is put to the cache with the same predicate the
+    // driver reuses by, so the two cannot disagree.
+    let mut stamped: Vec<Vec<(Box<str>, ObservationInputStamp)>> = Vec::with_capacity(layout.len());
+    let mut work: Vec<CasingMapWork<'_>> = Vec::new();
+    let mut book_runs: Vec<std::ops::Range<usize>> = Vec::new();
+    let mut work_bytes = 0usize;
+    for (bi, book) in layout.iter().enumerate() {
+        let run_start = work.len();
+        let mut chapters = Vec::with_capacity(book.chapters.len());
+        for (ci, c) in book.chapters.iter().enumerate() {
+            let stamp = ObservationInputStamp {
+                schema_stamp: CasingSubstrate::SCHEMA_STAMP,
+                chapter_hash: c.hash,
+                extractor_fp: CasingSubstrate::extractor_fp(&()),
+            };
+            if !cache.observation_is_current(&book.slug, &c.chapter, &stamp) {
+                let verses = &texts[c.range.clone()];
+                work_bytes += verses.iter().map(String::len).sum::<usize>();
+                work.push(CasingMapWork {
+                    book: bi,
+                    chapter: ci,
+                    view: ChapterView {
+                        chapter: &c.chapter,
+                        texts: verses,
+                    },
+                });
+            }
+            chapters.push((c.chapter.clone(), stamp));
+        }
+        if work.len() > run_start {
+            book_runs.push(run_start..work.len());
+        }
+        stamped.push(chapters);
+    }
+    let route = crate::rule::map_route(&book_runs, work.len(), work_bytes);
+    #[cfg(any(test, feature = "test-probes"))]
+    {
+        cache.map_route = route.label();
+    }
+    let fresh = crate::rule::map_chapter_work(&work, &book_runs, route, |w| {
+        CasingSubstrate::map_chapter(&w.view, &())
+    });
+    // Back into caller-order `(book, chapter)` slots. Reduction reads them in
+    // corpus order, never completion order, so serial and parallel builds — and
+    // any thread count — produce identical reductions.
+    let mut slots: Vec<Vec<Option<CasingChapterObs>>> = layout
+        .iter()
+        .map(|b| (0..b.chapters.len()).map(|_| None).collect())
+        .collect();
+    for (w, obs) in work.iter().zip(fresh) {
+        slots[w.book][w.chapter] = Some(obs);
+    }
+    for (bi, book) in layout.iter().enumerate() {
+        cache.update_book(&book.slug, &stamped[bi], |i| {
+            // Pre-mapped above. The planning pass asked the cache the same
+            // question the driver asks, so this slot is filled whenever the
+            // driver wants it; mapping in place is the correct answer if it ever
+            // is not.
+            slots[bi][i].take().unwrap_or_else(|| {
+                let c = &book.chapters[i];
+                CasingSubstrate::map_chapter(
+                    &ChapterView {
+                        chapter: &c.chapter,
+                        texts: &texts[c.range.clone()],
+                    },
+                    &(),
+                )
+            })
+        });
+    }
+
+    let stats = cache.corpus_stats();
+    // Emergent gate: no cased word-starts, no convention to violate.
+    if !stats.any_cased() {
+        *retained = None;
+        return;
+    }
+    // Judge-dirty keys, per the substrate's own derivation: the model is a pure
+    // function of the corpus aggregate and the judging knobs, and every key's
+    // verdict is a function of the whole model. So either nothing moved and
+    // every retained verdict stands, or the model moved and every key is dirty.
+    let reusable = retained
+        .as_ref()
+        .is_some_and(|m| m.generation == stats.generation && m.cfg == *cfg);
+    if !reusable {
+        *retained = Some(CasingModel {
+            generation: stats.generation,
+            cfg: *cfg,
+            model: Arc::new(Model::build(stats, cfg)),
+        });
+    }
+    let model = retained.as_ref().expect("just built or reused");
+    let judge = CasingJudge::new(Arc::clone(&model.model), cfg);
+    let mut judged = 0usize;
+    for book in layout {
+        if let Some(contrib) = cache.book_contribution(&book.slug) {
+            contrib.materialize(
+                &book.slug,
+                corpus,
+                &judge,
+                Consumers {
+                    positional,
+                    intrinsic,
+                },
+                out,
+                &mut judged,
+            );
+        }
+    }
+    #[cfg(any(test, feature = "test-probes"))]
+    {
+        cache.judged = judged;
+    }
+    let _ = judged;
+}
+
+/// Casing findings for a whole corpus at a given config, via the observation
+/// substrate over a fresh transient cache — the single casing implementation,
+/// for tests and calibration callers. Findings are in the final stable order.
+#[cfg(test)]
+pub(crate) fn casing_findings(
+    corpus: &Corpus,
+    cfg: &CasingConfig,
+    positional: bool,
+    intrinsic: bool,
+) -> Vec<Finding> {
+    let mut cache = crate::substrate::SubstrateCache::new();
+    let mut retained = None;
+    let mut out = Vec::new();
+    drive_casing(
+        positional,
+        intrinsic,
+        &mut cache,
+        &mut retained,
+        corpus,
+        cfg,
+        &mut out,
+    );
     out.sort_by_key(|f| (f.key_idx, f.range.start, f.range.end));
     out
 }
@@ -1397,143 +1867,9 @@ fn site_span(site: &LowerSite) -> Span {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// case.sentence-initial-lowercase — the positional rule.
-// ─────────────────────────────────────────────────────────────────────────
-
-pub struct SentenceInitialLowercase {
-    pub cfg: CasingConfig,
-}
-
-impl StatefulRule for SentenceInitialLowercase {
-    fn id(&self) -> RuleId {
-        SENTENCE_INITIAL_LOWERCASE
-    }
-
-    fn reduce(
-        &self,
-        books: &Books<'_>,
-        _source: Option<&Corpus>,
-        _tokens: Option<&TokenCache<'_>>,
-    ) -> (RuleStats, rule::RuleSites<'static>) {
-        let (stats, sites) = reduce_casing(books);
-        (RuleStats::Casing(stats), rule::RuleSites::Casing(sites.into_iter().map(|(k, v)| (k, std::borrow::Cow::Owned(v))).collect()))
-    }
-
-    fn judge(
-        &self,
-        stats: &RuleStats,
-        books: &Books<'_>,
-        _tokens: Option<&TokenCache<'_>>,
-        sites: Option<&rule::RuleSites<'_>>,
-    ) -> Vec<Finding> {
-        let k = clamp_count(self.cfg.recurrence_k);
-        let floor = f64::from(clamp_unit(self.cfg.emit_score_min));
-        judge_casing(
-            stats,
-            books,
-            sites,
-            &self.cfg,
-            |key, pos, model| {
-                let f = model.positional(key, pos)?;
-                let score = f.dominance * rarity(f.minority, k);
-                if score < floor {
-                    return None;
-                }
-                let (glyph, quoted) = pos.habit_glyph();
-                Some((
-                    score,
-                    glyph,
-                    quoted,
-                    f.raw_major.min(u64::from(u32::MAX)) as u32,
-                    f.raw_total.min(u64::from(u32::MAX)) as u32,
-                ))
-            },
-            |site, _key, &(score, glyph, quoted, upper, total), key_idx| Finding {
-                key_idx,
-                code: SENTENCE_INITIAL_LOWERCASE,
-                severity: Severity::Info,
-                range: site_span(site),
-                score: Some(score as f32),
-                args: Some(FindingArgs::CasingConvention {
-                    glyph,
-                    quoted,
-                    upper,
-                    total,
-                }),
-            },
-        )
-    }
-}
-
-// ─────────────────────────────────────────────────────────────────────────
-// case.inconsistent-word-casing — the intrinsic rule.
-// ─────────────────────────────────────────────────────────────────────────
-
-pub struct InconsistentWordCasing {
-    pub cfg: CasingConfig,
-}
-
-impl StatefulRule for InconsistentWordCasing {
-    fn id(&self) -> RuleId {
-        INCONSISTENT_WORD_CASING
-    }
-
-    fn reduce(
-        &self,
-        books: &Books<'_>,
-        _source: Option<&Corpus>,
-        _tokens: Option<&TokenCache<'_>>,
-    ) -> (RuleStats, rule::RuleSites<'static>) {
-        let (stats, sites) = reduce_casing(books);
-        (RuleStats::Casing(stats), rule::RuleSites::Casing(sites.into_iter().map(|(k, v)| (k, std::borrow::Cow::Owned(v))).collect()))
-    }
-
-    fn judge(
-        &self,
-        stats: &RuleStats,
-        books: &Books<'_>,
-        _tokens: Option<&TokenCache<'_>>,
-        sites: Option<&rule::RuleSites<'_>>,
-    ) -> Vec<Finding> {
-        let k = clamp_count(self.cfg.recurrence_k);
-        let floor = f64::from(clamp_unit(self.cfg.emit_score_min));
-        judge_casing(
-            stats,
-            books,
-            sites,
-            &self.cfg,
-            |key, _pos, model| {
-                let f = model.intrinsic(key)?;
-                let score = f.dominance * rarity(f.minority, k);
-                if score < floor {
-                    return None;
-                }
-                Some((
-                    score,
-                    f.raw_major.min(u64::from(u32::MAX)) as u32,
-                    f.raw_total.min(u64::from(u32::MAX)) as u32,
-                ))
-            },
-            |site, key, &(score, upper, total), key_idx| Finding {
-                key_idx,
-                code: INCONSISTENT_WORD_CASING,
-                severity: Severity::Info,
-                range: site_span(site),
-                score: Some(score as f32),
-                args: Some(FindingArgs::WordCasing {
-                    word: key.to_owned(),
-                    upper,
-                    total,
-                }),
-            },
-        )
-    }
-}
-
-// ─────────────────────────────────────────────────────────────────────────
 // Calibration API (ADR 0051/0052). The `--casing` harness in calibrate.rs
 // consumes this to sweep floor/k and track review anchors over the real walk,
-// model, trust map, and gate; it is not used by the shipped rules' judge.
+// model, trust map, and gate; it is not used by the shipped judges.
 // ─────────────────────────────────────────────────────────────────────────
 
 /// One lowercase site evaluated against the corpus model: its position and the
@@ -1550,35 +1886,53 @@ pub struct SiteEval {
 }
 
 /// Build the corpus model and classify every lowercase site at the config's
-/// knobs (including `trust_gate`) — the calibration entry point.
-pub fn evaluate(books: &Books<'_>, cfg: &CasingConfig) -> Vec<SiteEval> {
-    let (stats, sites_map) = reduce_casing(books);
-    let model = Model::build(&stats, cfg);
+/// knobs (including `trust_gate`) — the calibration entry point. Drives the
+/// substrate over a fresh transient cache, so it sees exactly the evidence the
+/// shipped judges see.
+pub fn evaluate(corpus: &Corpus, cfg: &CasingConfig) -> Vec<SiteEval> {
+    use crate::substrate::ObservationSubstrate;
+    let mut cache: crate::substrate::SubstrateCache<CasingSubstrate> =
+        crate::substrate::SubstrateCache::new();
+    let mut retained = None;
+    let mut sink = Vec::new();
+    drive_casing(true, true, &mut cache, &mut retained, corpus, cfg, &mut sink);
+    let Some(retained) = retained else {
+        return Vec::new();
+    };
+    let model = &retained.model;
     let mut out = Vec::new();
-    for (slug, book_sites) in &sites_map {
-        let group = books
-            .iter()
-            .find(|g| g.slug == slug.as_ref())
-            .expect("sites keyed by a book in this corpus");
-        let keys = &book_sites.keys;
-        for site in &book_sites.sites {
-            out.push(SiteEval {
-                key_idx: rebase(group.base, site.local_idx),
-                start: site.start,
-                end: site.end,
-                pos: site.pos,
-                intrinsic: model.intrinsic(&keys[site.key as usize]),
-                positional: model.positional(&keys[site.key as usize], site.pos),
-            });
+    for book in corpus.book_layout() {
+        let Some(contrib) = cache.book_contribution(&book.slug) else {
+            continue;
+        };
+        for (chapter, _) in &contrib.chapters {
+            let Some(range) = corpus.chapter_range(&book.slug, &chapter.token) else {
+                continue;
+            };
+            let base = crate::corpus::KeyIdx::from_usize(range.start);
+            for site in chapter.sites() {
+                let word = &chapter.words.keys[site.key as usize];
+                let Some(w) = model.words.get(word.as_str()) else {
+                    continue;
+                };
+                out.push(SiteEval {
+                    key_idx: rebase(base, site.local_idx),
+                    start: site.start,
+                    end: site.end,
+                    pos: site.pos,
+                    intrinsic: model.intrinsic(w),
+                    positional: model.positional(w, site.pos),
+                });
+            }
         }
     }
+    let _ = <CasingSubstrate as ObservationSubstrate>::ID;
     out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::corpus;
 
     /// Full config with an explicit trust gate (ADR 0052).
     fn cfg_g(
@@ -1612,17 +1966,61 @@ mod tests {
         Corpus::try_from_parts(keys, texts).unwrap()
     }
 
-    fn run(corpus: &Corpus, r: &dyn StatefulRule) -> Vec<Finding> {
-        let books = corpus::by_book(corpus);
-        let (stats, sites) = r.reduce(&books, None, None);
-        r.judge(&stats, &books, None, Some(&sites))
+    /// One consumer of the shared substrate, at a config — the test handle that
+    /// replaced the two retired rule structs.
+    struct Consumer {
+        cfg: CasingConfig,
+        positional: bool,
+        intrinsic: bool,
     }
 
-    fn intrinsic(cfg: CasingConfig) -> InconsistentWordCasing {
-        InconsistentWordCasing { cfg }
+    fn run(corpus: &Corpus, r: &Consumer) -> Vec<Finding> {
+        casing_findings(corpus, &r.cfg, r.positional, r.intrinsic)
     }
-    fn positional(cfg: CasingConfig) -> SentenceInitialLowercase {
-        SentenceInitialLowercase { cfg }
+
+    fn intrinsic(cfg: CasingConfig) -> Consumer {
+        Consumer {
+            cfg,
+            positional: false,
+            intrinsic: true,
+        }
+    }
+    fn positional(cfg: CasingConfig) -> Consumer {
+        Consumer {
+            cfg,
+            positional: true,
+            intrinsic: false,
+        }
+    }
+
+    /// Drive one corpus through a resident substrate cache, returning both
+    /// consumers' findings in the final stable order.
+    fn resident(
+        cache: &mut crate::substrate::SubstrateCache<CasingSubstrate>,
+        retained: &mut Option<CasingModel>,
+        corpus: &Corpus,
+        cfg: &CasingConfig,
+    ) -> Vec<Finding> {
+        let mut out = Vec::new();
+        drive_casing(true, true, cache, retained, corpus, cfg, &mut out);
+        out.sort_by_key(|f| (f.key_idx, f.range.start, f.code));
+        out
+    }
+
+    /// Comparable rendering: key string, code, span text, score, args.
+    fn render(corpus: &Corpus, f: &[Finding]) -> Vec<String> {
+        f.iter()
+            .map(|f| {
+                format!(
+                    "{}|{}|{}|{:?}|{:?}",
+                    corpus.key(f.key_idx),
+                    f.code.code(),
+                    f.range.slice(corpus.text(f.key_idx)),
+                    f.score,
+                    f.args
+                )
+            })
+            .collect()
     }
 
     fn slice<'a>(corpus: &'a Corpus, f: &Finding) -> &'a str {
@@ -1677,10 +2075,16 @@ mod tests {
 
     /// The corpus-wide trust for one class (test introspection over the model).
     fn class_trust(corpus: &Corpus, mark: char, quoted: bool) -> f64 {
-        let books = corpus::by_book(corpus);
-        let (stats, _) = reduce_casing(&books);
-        let model = Model::build(&stats, &CasingConfig::default());
-        model.trust_class(ClassKey { mark, quoted })
+        let mut cache: crate::substrate::SubstrateCache<CasingSubstrate> =
+            crate::substrate::SubstrateCache::new();
+        let mut retained = None;
+        let cfg = CasingConfig::default();
+        let mut sink = Vec::new();
+        drive_casing(true, true, &mut cache, &mut retained, corpus, &cfg, &mut sink);
+        retained
+            .expect("a cased corpus builds a model")
+            .model
+            .trust_class(ClassKey { mark, quoted })
     }
 
     // ── ADR 0051 behaviours (schema-updated only where forced). ──────────────
@@ -1814,38 +2218,45 @@ mod tests {
         );
     }
 
+    /// Book supersede over a resident substrate cache: replacing a book's
+    /// content replaces its whole contribution to the corpus aggregate, and
+    /// dropping a book removes it.
     #[test]
-    fn book_supersede_via_merge_and_remove() {
-        let r = intrinsic(cfg(0.5, 32.0, 0.0));
+    fn book_supersede_over_a_resident_cache() {
+        let c = cfg(0.5, 32.0, 0.0);
+        let mut cache = crate::substrate::SubstrateCache::new();
+        let mut retained = None;
+
         let dirty = cycle("GEN", &["we saw Jesus"], 20);
         let dirty = push_verse(dirty, "GEN", 100, "we saw jesus");
-        let dirty_books = corpus::by_book(&dirty);
-        let (prior, _) = r.reduce(&dirty_books, None, None);
-        assert_eq!(r.judge(&prior, &dirty_books, None, None).len(), 1);
-
-        let fixed = cycle("GEN", &["we saw Jesus"], 20);
-        let fixed = push_verse(fixed, "GEN", 100, "we saw Jesus");
-        let fixed_books = corpus::by_book(&fixed);
-        let (fresh, _) = r.reduce(&fixed_books, None, None);
-        let merged = prior.merge(fresh);
-        assert!(r.judge(&merged, &fixed_books, None, None).is_empty());
-
-        let two = cycle("GEN", &["we saw Jesus"], 20);
-        let two = extend_corpus(two, book("EXO", &[(1, "we saw jesus")]));
-        let (mut stats2, _) = r.reduce(&corpus::by_book(&two), None, None);
         assert_eq!(
-            r.judge(&stats2, &corpus::by_book(&two), None, None).len(),
+            resident(&mut cache, &mut retained, &dirty, &c)
+                .iter()
+                .filter(|f| f.code == INCONSISTENT_WORD_CASING)
+                .count(),
             1
         );
-        let RuleStats::Casing(ref mut c) = stats2 else {
-            unreachable!()
-        };
-        c.remove_book("GEN");
-        let exo = book("EXO", &[(1, "we saw jesus")]);
-        assert!(
-            r.judge(&stats2, &corpus::by_book(&exo), None, None)
-                .is_empty()
+
+        // Same book, fixed content: the old contribution must not survive.
+        let fixed = cycle("GEN", &["we saw Jesus"], 20);
+        let fixed = push_verse(fixed, "GEN", 100, "we saw Jesus");
+        assert!(resident(&mut cache, &mut retained, &fixed, &c).is_empty());
+
+        // A second book carries the slip; dropping the first leaves it alone.
+        let two = cycle("GEN", &["we saw Jesus"], 20);
+        let two = extend_corpus(two, book("EXO", &[(1, "we saw jesus")]));
+        assert_eq!(
+            resident(&mut cache, &mut retained, &two, &c)
+                .iter()
+                .filter(|f| f.code == INCONSISTENT_WORD_CASING)
+                .count(),
+            1
         );
+        cache.remove_book("GEN");
+        let exo = book("EXO", &[(1, "we saw jesus")]);
+        // GEN carried the capital-dominant evidence; without it `jesus` has no
+        // convention to violate.
+        assert!(resident(&mut cache, &mut retained, &exo, &c).is_empty());
     }
 
     #[test]
@@ -2015,5 +2426,426 @@ mod tests {
         let vm = Corpus::try_from_parts(keys, texts).unwrap();
         assert!(run(&vm, &positional(cfg(0.0, 32.0, 1.96))).is_empty());
         assert!(run(&vm, &intrinsic(cfg(0.0, 32.0, 1.96))).is_empty());
+    }
+
+    // ── The observation substrate: boundary state, replay, and work. ─────────
+
+    use crate::substrate::{ChapterView, ObservationSubstrate, SubstrateCache};
+
+    /// A multi-chapter single-book corpus: `chapters[i]` holds chapter `i + 1`'s
+    /// verse texts, numbered from 1 within the chapter.
+    fn chaptered(slug: &str, chapters: &[Vec<String>]) -> Corpus {
+        let mut keys = Vec::new();
+        let mut texts = Vec::new();
+        for (ci, verses) in chapters.iter().enumerate() {
+            for (vi, text) in verses.iter().enumerate() {
+                keys.push(format!("{slug} {}:{}", ci + 1, vi + 1));
+                texts.push(text.clone());
+            }
+        }
+        Corpus::try_from_parts(keys, texts).unwrap()
+    }
+
+    fn lines(templates: &[&str], reps: usize) -> Vec<String> {
+        (0..reps)
+            .flat_map(|_| templates.iter().map(|t| (*t).to_string()))
+            .collect()
+    }
+
+    fn map_one(token: &str, verses: &[&str]) -> CasingChapterObs {
+        let texts: Vec<String> = verses.iter().map(|v| (*v).to_string()).collect();
+        CasingSubstrate::map_chapter(
+            &ChapterView {
+                chapter: token,
+                texts: &texts,
+            },
+            &(),
+        )
+    }
+
+    fn reduce_one(
+        obs: &CasingChapterObs,
+        entering: &CasingBoundary,
+    ) -> (Option<PosClass>, CasingBoundary) {
+        let mut sink = CasingReduced::default();
+        let (reduced, leaving) = CasingSubstrate::reduce_chapter(obs, entering, &mut sink);
+        (reduced.first.map(|f| f.pos), leaving)
+    }
+
+    /// The boundary state after a chapter ending in a bare terminal.
+    fn after_terminal(mark: char) -> CasingBoundary {
+        CasingBoundary {
+            pending: Some(Pending {
+                mark,
+                quote: false,
+                other: false,
+            }),
+            book_initial: false,
+        }
+    }
+
+    /// The chapter-initial word's position class is decided entirely by the
+    /// entering boundary state — this is the whole reason the state has these two
+    /// fields and no others.
+    #[test]
+    fn the_entering_state_decides_the_chapter_initial_position() {
+        let obs = map_one("8", &["there he goes", "and on"]);
+
+        // A pending terminal from the previous chapter forces the position: the
+        // pericope-adulterae shape, where the period ending JHN 7:53 forces the
+        // capital opening 8:1.
+        assert_eq!(
+            reduce_one(&obs, &after_terminal('.')).0,
+            Some(PosClass::ForcedAfterTerminal(ClassKey {
+                mark: '.',
+                quoted: false,
+            })),
+            "a pending terminal must cross the chapter seam"
+        );
+        // Nothing pending: not forced. A chapter start is not a sentence start.
+        assert_eq!(
+            reduce_one(
+                &obs,
+                &CasingBoundary {
+                    pending: None,
+                    book_initial: false
+                }
+            )
+            .0,
+            Some(PosClass::Midflow),
+            "a chapter boundary is not a discourse reset — and not a forced position"
+        );
+        // The book's first word is forced with no glyph, whatever else is
+        // pending — so `book_initial` is not derivable from the pending state.
+        assert_eq!(
+            reduce_one(&obs, &CasingBoundary::default()).0,
+            Some(PosClass::BookInitial)
+        );
+        assert_eq!(
+            reduce_one(
+                &obs,
+                &CasingBoundary {
+                    pending: Some(Pending {
+                        mark: '.',
+                        quote: false,
+                        other: false
+                    }),
+                    book_initial: true,
+                }
+            )
+            .0,
+            Some(PosClass::BookInitial)
+        );
+    }
+
+    /// The chapter's own leading gap transforms the entering state exactly as
+    /// the streaming machine would: a close quote promotes the class, any other
+    /// intervening mark collapses it to mid-flow.
+    #[test]
+    fn the_leading_gap_transforms_the_entering_state() {
+        let quoted = map_one("8", &["\u{201d} there he goes"]);
+        assert_eq!(
+            reduce_one(&quoted, &after_terminal('.')).0,
+            Some(PosClass::ForcedAfterTerminal(ClassKey {
+                mark: '.',
+                quoted: true,
+            })),
+        );
+        let dotted = map_one("8", &[".. there he goes"]);
+        assert_eq!(
+            reduce_one(&dotted, &after_terminal('.')).0,
+            Some(PosClass::Midflow),
+            "non-quote intervening punctuation collapses the boundary"
+        );
+    }
+
+    /// The recorded transform is the exact one the streaming machine applies: a
+    /// live pending is only ever added to (never replaced) by a gap, and a gap
+    /// creates one only when nothing was pending.
+    #[test]
+    fn the_gap_transform_matches_the_streaming_machine() {
+        let mut e = GapEffect::default();
+        e.extend("x. ");
+        assert_eq!(
+            e.from_none,
+            Some(Pending {
+                mark: '.',
+                quote: false,
+                other: false
+            }),
+            "a letter then a mark creates the pending"
+        );
+        assert_eq!(
+            e.apply(Some(Pending {
+                mark: '!',
+                quote: false,
+                other: false
+            })),
+            Some(Pending {
+                mark: '!',
+                quote: false,
+                other: true
+            }),
+            "an entering pending keeps its mark and takes the gap's flags"
+        );
+        let mut q = GapEffect::default();
+        q.extend(" \u{201d} ");
+        assert_eq!(q.from_none, None, "no letter precedes, so nothing is created");
+        assert_eq!(
+            q.apply(Some(Pending {
+                mark: '.',
+                quote: false,
+                other: false
+            })),
+            Some(Pending {
+                mark: '.',
+                quote: true,
+                other: false
+            })
+        );
+        assert_eq!(GapEffect::default().apply(None), None);
+    }
+
+    /// A word-less chapter passes the entering state through — the empty /
+    /// nonletter-verse case. A chapter WITH a word leaves a state that does not
+    /// depend on what entered it, which is exactly why the ordered replay
+    /// converges within one chapter of an edit.
+    #[test]
+    fn a_wordless_chapter_passes_state_through_and_a_worded_one_absorbs_it() {
+        let empty = map_one("2", &["", "   ", "\u{2014}"]);
+        for entering in [
+            CasingBoundary::default(),
+            after_terminal('.'),
+            CasingBoundary {
+                pending: None,
+                book_initial: false,
+            },
+        ] {
+            let (first, leaving) = reduce_one(&empty, &entering);
+            assert!(first.is_none(), "a word-less chapter classifies nothing");
+            assert_eq!(
+                leaving.book_initial, entering.book_initial,
+                "book-initial survives a word-less chapter"
+            );
+        }
+        // The em-dash verse is non-quote punctuation, so it collapses a carried
+        // terminal on its way through.
+        assert_eq!(
+            reduce_one(&empty, &after_terminal('.')).1.pending,
+            Some(Pending {
+                mark: '.',
+                quote: false,
+                other: true,
+            })
+        );
+
+        let worded = map_one("2", &["he stops."]);
+        let a = reduce_one(&worded, &after_terminal('!')).1;
+        let b = reduce_one(&worded, &CasingBoundary::default()).1;
+        assert_eq!(a, b, "a chapter with a word leaves its own state, not a carry");
+    }
+
+    /// End to end (plan §12.3): a terminal at the end of one chapter forces the
+    /// position of the first word of the next, across a word-less chapter too.
+    #[test]
+    fn positional_carries_across_a_chapter_seam() {
+        let bulk = lines(&["There we go there.", "There it is there."], 15);
+        for filler in [None, Some(vec!["\u{2014}".to_string()])] {
+            let mut chapters = vec![bulk.clone(), bulk.clone()];
+            chapters.push(vec!["he stops.".to_string()]);
+            if let Some(f) = filler.clone() {
+                chapters.push(f);
+            }
+            chapters.push(vec!["there he goes".to_string()]);
+            let vm = chaptered("GEN", &chapters);
+            let f = run(&vm, &positional(cfg(0.5, 32.0, 0.0)));
+            let want = format!("GEN {}:1", chapters.len());
+            let hit = f
+                .iter()
+                .any(|f| vm.key(f.key_idx) == want && slice(&vm, f) == "there");
+            // A word-less chapter carries non-quote punctuation, which collapses
+            // the boundary to mid-flow — the same answer the streaming walk gives
+            // for an em-dash verse mid-chapter.
+            assert_eq!(
+                hit,
+                filler.is_none(),
+                "chapters={}, filler={:?}",
+                chapters.len(),
+                filler
+            );
+        }
+    }
+
+    /// A chapter edit maps exactly its own chapter and the replay converges at
+    /// it or at its successor — casing's leaving state is its own trailing
+    /// terminal context, so the carry resolves locally.
+    #[test]
+    fn an_edit_maps_one_chapter_and_converges_locally() {
+        let bulk = lines(&["There we go there.", "There it is there."], 8);
+        let mut chapters: Vec<Vec<String>> = (0..10).map(|_| bulk.clone()).collect();
+        // A forced-lowercase slip in chapter 8, so the fixture has findings to
+        // move: the previous verse's `.` forces this verse's first word.
+        chapters[7].push("there he goes".to_string());
+        let vm = chaptered("GEN", &chapters);
+        let c = cfg(0.5, 32.0, 0.0);
+        let mut cache = SubstrateCache::new();
+        let mut retained = None;
+        let cold = resident(&mut cache, &mut retained, &vm, &c);
+        assert_eq!(cache.mapped, 10, "cold maps every chapter");
+        assert_eq!(cache.reduced, 10);
+
+        let mut edited = chapters.clone();
+        edited[5][0] = "There we went there.".to_string();
+        let ev = chaptered("GEN", &edited);
+        let inc = resident(&mut cache, &mut retained, &ev, &c);
+        assert_eq!(cache.mapped, 1, "one changed chapter maps one chapter");
+        assert!(
+            cache.reduced <= 2,
+            "the changed chapter leaves its own trailing context, so the replay \
+             converges at it or its successor; reduced={}",
+            cache.reduced
+        );
+        assert!(!cold.is_empty(), "the fixture must have findings to preserve");
+        assert_eq!(render(&ev, &inc), render(&ev, &run_both(&ev, &c)));
+
+        // Unchanged re-drive: no map, no reduce, and the model is reused.
+        let before = retained.as_ref().map(|m| m.generation);
+        let again = resident(&mut cache, &mut retained, &ev, &c);
+        assert_eq!((cache.mapped, cache.reduced), (0, 0));
+        assert_eq!(retained.as_ref().map(|m| m.generation), before);
+        assert_eq!(render(&ev, &again), render(&ev, &inc));
+    }
+
+    /// Both consumers' findings for a corpus, cold.
+    fn run_both(corpus: &Corpus, cfg: &CasingConfig) -> Vec<Finding> {
+        let mut out = casing_findings(corpus, cfg, true, true);
+        out.sort_by_key(|f| (f.key_idx, f.range.start, f.code));
+        out
+    }
+
+    /// A judging-knob change maps and reduces nothing: no `CasingConfig` field
+    /// is an extraction input, so every observation and reduction stays valid.
+    #[test]
+    fn a_knob_change_maps_and_reduces_nothing() {
+        let bulk = lines(&["There we go there.", "There it is there."], 8);
+        let chapters: Vec<Vec<String>> = (0..4).map(|_| bulk.clone()).collect();
+        let vm = chaptered("GEN", &chapters);
+        let mut cache = SubstrateCache::new();
+        let mut retained = None;
+        let _ = resident(&mut cache, &mut retained, &vm, &cfg(0.5, 32.0, 0.0));
+
+        let loose = cfg(0.0, 32.0, 0.0);
+        let after = resident(&mut cache, &mut retained, &vm, &loose);
+        assert_eq!((cache.mapped, cache.reduced), (0, 0));
+        assert!(cache.judged >= 1, "the knob change re-judges");
+        assert_eq!(render(&vm, &after), render(&vm, &run_both(&vm, &loose)));
+    }
+
+    /// Disabling one consumer leaves the shared substrate — and the other
+    /// consumer — untouched (plan §12.4).
+    #[test]
+    fn either_consumer_may_be_disabled_without_dropping_the_substrate() {
+        let vm = {
+            let base = cycle("GEN", &["There we go there."], 30);
+            push_verse(base, "GEN", 200, "there we go there")
+        };
+        let c = cfg(0.5, 32.0, 0.0);
+        let mut cache = SubstrateCache::new();
+        let mut retained = None;
+        let mut both = Vec::new();
+        drive_casing(true, true, &mut cache, &mut retained, &vm, &c, &mut both);
+        assert!(
+            both.iter().any(|f| f.code == SENTENCE_INITIAL_LOWERCASE),
+            "{both:?}"
+        );
+
+        // Positional only: the substrate is reused (nothing re-mapped) and the
+        // intrinsic consumer's findings are simply not materialized.
+        let mut only_pos = Vec::new();
+        drive_casing(true, false, &mut cache, &mut retained, &vm, &c, &mut only_pos);
+        assert_eq!(cache.mapped, 0, "a consumer toggle re-maps nothing");
+        assert!(only_pos.iter().all(|f| f.code == SENTENCE_INITIAL_LOWERCASE));
+        assert_eq!(
+            only_pos.len(),
+            both.iter()
+                .filter(|f| f.code == SENTENCE_INITIAL_LOWERCASE)
+                .count()
+        );
+
+        // Both off: the last consumer leaving drops the substrate's products.
+        let mut off = Vec::new();
+        drive_casing(false, false, &mut cache, &mut retained, &vm, &c, &mut off);
+        assert!(off.is_empty());
+        assert!(retained.is_none(), "the model memo goes with the substrate");
+        let mut back = Vec::new();
+        drive_casing(true, true, &mut cache, &mut retained, &vm, &c, &mut back);
+        assert!(cache.mapped > 0, "re-enabling rebuilds the substrate");
+        assert_eq!(render(&vm, &back), render(&vm, &both));
+    }
+
+    /// Property test (plan §12.6 shape): a resident cache driven through a
+    /// pseudo-random edit sequence over a multi-chapter, multi-book corpus equals
+    /// a cold whole-corpus run at every step, and never maps more than the
+    /// chapter that changed.
+    #[test]
+    fn resident_casing_equals_cold_under_randomized_edits() {
+        // Shapes that move the pending terminal at chapter edges: a trailing
+        // terminal, a trailing quote-terminal, a bare word, an empty verse, and
+        // a lowercase opener that only flags when something forces it.
+        let shapes = [
+            "There we go there.",
+            "There it is there.\u{201d}",
+            "there he goes",
+            "",
+            "he stops.",
+            "\u{2014}",
+            "There we go there",
+        ];
+        let mut layout: Vec<(&str, usize, usize)> = Vec::new(); // (slug, chapter, verses)
+        for slug in ["GEN", "EXO"] {
+            for ch in 1..=4 {
+                layout.push((slug, ch, 6));
+            }
+        }
+        let mut texts: Vec<usize> = (0..layout.len() * 6).map(|i| i % shapes.len()).collect();
+        let build = |texts: &[usize]| {
+            let mut keys = Vec::new();
+            let mut out = Vec::new();
+            let mut i = 0;
+            for &(slug, ch, n) in &layout {
+                for v in 1..=n {
+                    keys.push(format!("{slug} {ch}:{v}"));
+                    out.push(shapes[texts[i]].to_string());
+                    i += 1;
+                }
+            }
+            Corpus::try_from_parts(keys, out).unwrap()
+        };
+        let c = cfg(0.0, 32.0, 0.0);
+        let mut cache = SubstrateCache::new();
+        let mut retained = None;
+        let _ = resident(&mut cache, &mut retained, &build(&texts), &c);
+        let mut rng = 0x9E37_79B9_7F4A_7C15u64;
+        let next = |rng: &mut u64| {
+            *rng ^= *rng << 13;
+            *rng ^= *rng >> 7;
+            *rng ^= *rng << 17;
+            *rng
+        };
+        for step in 0..100 {
+            let which = (next(&mut rng) % texts.len() as u64) as usize;
+            texts[which] = (next(&mut rng) % shapes.len() as u64) as usize;
+            let corpus = build(&texts);
+            let inc = resident(&mut cache, &mut retained, &corpus, &c);
+            assert!(
+                cache.mapped <= 1,
+                "step {step}: one edited verse maps at most one chapter"
+            );
+            assert_eq!(
+                render(&corpus, &inc),
+                render(&corpus, &run_both(&corpus, &c)),
+                "step {step}: resident differs from cold"
+            );
+        }
     }
 }

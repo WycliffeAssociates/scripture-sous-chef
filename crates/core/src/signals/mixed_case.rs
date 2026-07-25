@@ -610,7 +610,6 @@ mod tests {
     #[test]
     fn casing_skips_othermixed_while_mixed_case_flags_it() {
         use crate::config::CasingConfig;
-        use crate::signals::casing::InconsistentWordCasing;
 
         let casing_cfg = CasingConfig {
             emit_score_min: 0.5,
@@ -618,11 +617,10 @@ mod tests {
             confidence_z: 0.0,
             trust_gate: 0.90,
         };
-        let casing = InconsistentWordCasing { cfg: casing_cfg };
+        // `case.inconsistent-word-casing` alone — the intrinsic consumer of the
+        // shared casing substrate.
         let run_casing = |corpus: &Corpus| {
-            let books = by_book(corpus);
-            let (stats, sites) = casing.reduce(&books, None, None);
-            casing.judge(&stats, &books, None, Some(&sites))
+            crate::signals::casing::casing_findings(corpus, &casing_cfg, false, true)
         };
 
         // Control: a plain lowercase `dios` — casing DOES flag it.

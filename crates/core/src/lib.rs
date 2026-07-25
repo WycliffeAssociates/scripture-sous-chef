@@ -354,8 +354,6 @@ fn transition(
     // cache after the stateful judge loop.
     let active = substrate::ActiveSubstrates::from_config(config);
     let plan = stream::WalkPlan {
-        casing: config.is_enabled(RuleId::SentenceInitialLowercase)
-            || config.is_enabled(RuleId::InconsistentWordCasing),
         adjacency: config.is_enabled(RuleId::PunctuationAdjacencyAnomaly),
         repeated_run: config.is_enabled(RuleId::RepeatedCharacterRun),
         punct_only: config.is_enabled(RuleId::PunctOnlyToken),
@@ -665,32 +663,6 @@ fn transition(
     // ever count on walked books, so a clean book contributes nothing to them.
     // A book outside the `counted` scope contributes sites only, so the judge
     // phase stays site-driven for every supplied book (ADR 0044).
-    let casing_fresh = plan.casing.then(|| {
-        let mut pb = BTreeMap::new();
-        let mut st: BTreeMap<Box<str>, Cow<'_, signals::casing::CasingSites>> = BTreeMap::new();
-        for (group, slot) in books.iter().zip(slots.iter_mut()) {
-            match slot {
-                BookProducts::Walked(o) => {
-                    if let Some((bc, s)) = o.casing.take() {
-                        if o.counted {
-                            pb.insert(Box::from(group.slug), bc);
-                        }
-                        st.insert(Box::from(group.slug), Cow::Owned(s));
-                    }
-                }
-                BookProducts::Clean(e) => {
-                    let e: &cache::BookEntry = e;
-                    if let Some(s) = e.casing.as_ref() {
-                        st.insert(Box::from(group.slug), Cow::Borrowed(s));
-                    }
-                }
-            }
-        }
-        (
-            signals::casing::CasingStats::from_per_book(pb),
-            rule::RuleSites::Casing(st),
-        )
-    });
     let mut adjacency_fresh = plan.adjacency.then(|| {
         let mut pb = BTreeMap::new();
         let mut st: BTreeMap<Box<str>, Cow<'_, [corpus::SiteAddr]>> = BTreeMap::new();
@@ -959,12 +931,6 @@ fn transition(
         // clone of the stats (the wire shape keeps one entry per rule id, as
         // before) and judges from the same site list.
         let (fresh, sites_ref): (RuleStats, &rule::RuleSites<'_>) = match id {
-            RuleId::SentenceInitialLowercase | RuleId::InconsistentWordCasing => {
-                let (cs, ss) = casing_fresh
-                    .as_ref()
-                    .expect("enabled casing rule implies the casing listener ran");
-                (RuleStats::Casing(cs.clone()), ss)
-            }
             RuleId::PunctuationAdjacencyAnomaly => {
                 let (st, ss) = adjacency_fresh.take().expect("listener ran");
                 sites_slot = ss;
@@ -1033,6 +999,15 @@ fn transition(
         active.duplicate_word,
         &mut substrates.duplicate_word,
         target,
+        &mut out,
+    );
+    signals::casing::drive_casing(
+        config.is_enabled(RuleId::SentenceInitialLowercase),
+        config.is_enabled(RuleId::InconsistentWordCasing),
+        &mut substrates.casing,
+        &mut substrates.casing_model,
+        target,
+        &config.casing,
         &mut out,
     );
 
@@ -1615,14 +1590,6 @@ mod tests {
             cache.direct_hit_count(),
             1,
             "prior-none calls still reuse pure findings"
-        );
-        assert!(
-            cache
-                .prep
-                .books
-                .get("GEN")
-                .and_then(|entry| entry.casing.as_ref())
-                .is_some_and(|sites| sites.sites.is_empty())
         );
 
         let full = corpus_of(vec![keyed("GEN", &["你好"]), keyed("EXO", &["a  b"])]);
