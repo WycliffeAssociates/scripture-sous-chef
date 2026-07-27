@@ -5298,3 +5298,99 @@ are ~92% of the `all` config and the only cells this packet did not move; **(c)*
 Phase F — the ledger is already complete and the batch census empty, so what
 remains there is the ADRs, the `Stats`/`RuleStats` public-surface retirement, the
 `pkg:` regeneration, and moving the plan to `completed/`.
+
+---
+
+## Entry 33 — Review of WP7c: accepted; the §5.2 input registry closed, batch lane deferred to Phase F
+
+- **Date:** 2026-07-27. Review received on `7029083`; six migrations accepted as
+  behaviorally sound, rare-glyph's RAM cost accepted as-is (default-off, total
+  all-rules memory still below the pre-spine baseline, the dense/interner redesign
+  not yet justified). Reviewer independently ran 523 parallel core tests + 25 galley
+  tests and verified the recorded fleet hashes. Two P1s.
+
+### P1 (closed this commit, `f8b3463`) — the substrate input registry was incomplete
+
+The reviewer was right and right about the sequencing: proportionality built paired
+views and stamped reference presence correctly, but the dependency lived by hand in
+one driver. Nothing connected `ProportionalitySubstrate` to
+`ProjectLengthRatio.input_dependency()`, proved the other eleven target-only, or
+stopped a target-only driver from receiving paired input. Since WP8 builds cache
+validity and persisted identity on this seam, it is closed before WP8 rather than
+in Phase F.
+
+`ObservationSubstrate` now declares `type Pairing: ReferencePairing` —
+`NoReference` or `SameSlugSameChapter` — and only the latter implements
+`DeclaresReference`, which is the bound on `ObservationInputStamp::with_reference`
+and `ChapterView::paired`. `target_only` requires `Pairing = NoReference`. The
+`reference` and `paired` fields are now private to `substrate.rs`, so those
+constructors are the only route to any reference-bearing value.
+
+**A typed declaration, not an enum value, and the reason is worth recording.** The
+first cut used `const { assert!(matches!(S::INPUT, ..)) }`. That is a
+post-monomorphization check: with proportionality deliberately mis-declared,
+`cargo check` **passed** and only `cargo build` would have failed. The trait-bound
+version fails at `cargo check` with three `NoReference: DeclaresReference` errors.
+Both were verified by flipping the declaration and re-running. A guard that a
+`cargo check` loop does not see is not a guard.
+
+`input_of(SubstrateId)` is the runtime half, held to the types by three tests:
+`substrate_pairing_types_pair_with_the_registry` (type vs registry),
+`substrate_input_agreees_with_every_consumers_input_dependency` (both directions
+against `RuleId::input_dependency()`), and
+`every_reference_dependent_rule_is_served_by_a_reference_declaring_substrate` (over
+the rule set, catching a future source-dependent rule attached to a target-only
+substrate). `SubstrateInput`'s doc records plan §17's stop clause for a
+cross-slug or corpus-wide variant.
+
+### P1 (deferred to Phase F, as the reviewer scoped it) — the batch lane is disconnected
+
+Confirmed exactly as described: `transition` never calls `project_rules`, its
+`stateful_rules` loop cannot run, and `#[expect]` yields a lint rather than a
+compile failure. So a rule added to either registry today would pass
+`every_rule_id_is_claimed_by_exactly_one_registry_or_substrate` — the test that
+exists to prevent ADR 0031's unwired-rule failure — and never emit.
+
+The API choice is the owner's, so this commit does not make it. What it does is
+convert the silent trap into a forced decision:
+`the_batch_registries_are_empty_and_membership_would_not_mean_execution` pins both
+registries empty, so adding a member breaks the build at exactly the moment the
+decision is required. The completeness test's own doc now says that counting
+registry membership as "wired" is honest only while they are empty, and points at
+the tripwire.
+
+**Steward's view, for the record:** I agree with the reviewer's lean toward
+retiring/privatising rather than building a speculative executable path. The
+evidence from this packet is that nothing in the batch lane survived contact —
+`RuleStats` is uninhabited, `RuleSites`' variants are unused, `walk_fused` has no
+listener, and `counted` narrows nothing. Keeping an executable batch API alive
+against a hypothetical adopter means maintaining and testing five dead seams;
+reserving the design and instantiating it with a real adopter costs one commit at
+that time and nothing until then. Plan §9's "the batch lane is permanent" is
+satisfied by the *affordance* (the traits, the `RuleId` closed set, this tripwire),
+not by dead plumbing.
+
+### Advisory (closed this commit) — four now-false architecture comments
+
+- `lib.rs`'s "no cached lane depends on source" — false since proportionality. It
+  is the PREP fingerprint that is source-independent; the per-substrate reference
+  stamp is the actual source-validity seam, and the comment now says so.
+- `BookOut` / `walk_fused` — still described retired counting and project
+  listeners; now state that the walk is down to the token-cache lane and why
+  `counted` is still threaded through.
+- `RuleStats` — said proportionality remained, immediately above an uninhabited
+  enum.
+- `RuleSites` — described its two variants as live batch variants.
+
+Each now also names the Phase F decision it is waiting on, so the next reader is
+pointed at the adjudication rather than at a stale claim.
+
+### Sequencing, as agreed
+
+1. ~~Small WP7c follow-up: closed substrate input/pairing registry and tests.~~ **done, `f8b3463`.**
+2. **WP8** — delta consumption. Casing's `keys` (10.5 ms) + `materialize` (17.4 ms)
+   and spacing's `materialize` (0.96 ms) are 92% of the `all` config and the only
+   cells WP7c did not move.
+3. **Phase F** — adjudicate the batch lane (tripwire in place), retire the
+   `Stats`/`RuleStats`/`RuleSites` scaffolding across `ssc-galley`/`ssc-wasm`,
+   reconcile the remaining ADRs, regenerate packages, move the plan to `completed/`.
