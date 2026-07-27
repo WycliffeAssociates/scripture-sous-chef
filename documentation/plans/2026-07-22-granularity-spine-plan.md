@@ -1298,6 +1298,32 @@ Each migration row chooses its point on this curve and records the choice.
 | mixed normalization | project, one corpus finding | `NormalizationSubstrate` | normalized cluster/raw form | deterministic first-deviant summary | E |
 | bracket balance | project book stack | `BracketSubstrate` | bracket family/event | unmatched opener stack | E |
 
+### Delta consumption per row (WP8, 2026-07-27)
+
+Migration put every rule on a substrate; WP8 recorded which of them PATCH their
+partition from the delta and which still replace it. A row stays on rebuild when
+its partition is cheaper to rebuild than to reason about — that is a recorded
+decision, not an omission.
+
+| rule(s) | lane | delta consumed | rebuild cost retained |
+| --- | --- | --- | --- |
+| spacing anomaly | patch | site-delta ∪ chapters naming a mark whose cells moved | — (was 1.198 ms materialize) |
+| sentence-initial lowercase; inconsistent word casing | patch (site-delta only) | site-delta; an aggregate move dirties every key by construction | 13.1 ms `keys` + 21.4 ms `materialize` whenever the aggregate moves (stop clause, below) |
+| mixed-case word | patch | exact per-word stats-delta ∪ site-delta | — (was 0.008 ms materialize) |
+| adjacency; repeated-run; punct-only; mixed-script; glyph; proportionality; normalization; bracket; duplicate-word | rebuild retained | none | 0.07–0.55 ms per whole row, of which `materialize` is 0.000–0.014 ms — below the ~0.05 ms per-substrate fixed floor, so a patch path would add branch and state for no measurable gain |
+
+**Casing's `keys` phase cannot be delta-scoped without a semantic change**, and
+that is a §16 stop clause rather than a deferral. `Model::build` (measured split:
+words-sum 2.7 ms, `build_trust` 6.8 ms, habit 0.3 ms) re-derives two corpus-global
+terms — the per-class trust map and the lexicon-restricted habit — from EVERY word
+type. On a one-chapter edit 1 of 13,097 word types moves, and both terms move with
+it, so every key is genuinely dirty and re-materialization is required, not wasted.
+Patching either term would need an incremental float sum (subtract-then-add is not
+bit-identical to a re-sum) or an insertion-order-preserving incremental hash map
+(`build_trust`'s juror order is hash-iteration order and its TV-distance sums are
+order-sensitive by the code's own comment). Both change the model's verdicts in
+their last bits. Owner adjudication required; see progress Entry 35.
+
 For every row, the implementer records:
 
 - exact active consumers and shared prep needs;

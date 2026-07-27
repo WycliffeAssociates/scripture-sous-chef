@@ -5458,3 +5458,246 @@ batch 0/1 3JN all: total 30.540ms | update_book 0.097ms | analyze 30.421ms
 
 Casing's two cells are 91.5% of the 30.12 ms; spacing's `materialize` is 3.2%;
 the other ten substrates sum to 1.3 ms.
+
+## Entry 35 — Work Packet 8: delta consumption (the substrate partition-patch lane)
+
+- **Date:** 2026-07-27. Base `5514b74` (Entry 34's pin). Commits `51b4f88`
+  (machinery + mixed-case), `e0d0d3e` (casing), `3caf952` (spacing), `531caa8`
+  (interner fix + §13 lanes). Main tree, no worktree. Every commit gated on all
+  eight WA+small dumps; two full-fleet bookends (after casing, and final) matched
+  the standing pins exactly.
+
+### What the packet actually changed
+
+Before WP8 every drive discarded its delta: it judged every key, materialized
+every site, and handed the result to `rebuild_batch`, which threw the whole
+partition away and rebuilt it. WP8 adds the lane a drive patches through, and
+converts the three substrates whose `materialize` cell was measurable.
+
+The delta is the union plan §6.2 asks for, and the two halves stay separate:
+
+- **stats-delta** — `update_book` returns the keys whose corpus aggregate moved,
+  exactly as `replace_book_in_corpus_stats` computed them.
+- **site-delta** — the chapters whose reduced result is not what the same chapter
+  TOKEN reduced to before. Token-keyed, not positional, so a chapter that merely
+  moved is recognised as unchanged. Compared AFTER `finish_book`, because the
+  book-edge resolution and every `carry_out` fold mutate an earlier chapter's
+  reduced result: a chapter whose own reduction was value-identical can still have
+  had a cross-seam contribution folded into it.
+
+Neither is inferred from the other. `spacing_stats_delta_is_exact_when_sites_move_but_counts_do_not`
+already proved the aggregate half in isolation; WP8's `an_equal_aggregate_with_moved_sites_still_patches_the_partition`
+(one per converted substrate) proves the consequence end-to-end.
+
+### Retry safety: the delta is accumulated, never consumed
+
+The site-delta does not reach the drive as a return value. It accumulates into a
+`PendingPartition` that **only the finding lane's commit discharges**
+(`SubstrateSection::ack_committed` → `PendingPartition::promote`). A drive maps,
+reduces and materializes before the judge fault seam; if the attempt then fails,
+nothing published, but the substrate cache is warm and would report every chapter
+clean on the retry. This is §16's "destructively draining dirty flags during an
+attempt", and it is the same asymmetry the direct lane already had between prep
+and `direct_stamps`.
+
+The patch itself is a candidate (`SubstratePatch` on a `SubstrateLane`), committed
+with the other two lanes after the judge boundary — a drive that wrote the resident
+partition in place would leave it half-written when a later drive failed.
+
+Chapter granularity is what makes the patch order-safe: records in different
+chapters occupy disjoint `KeyIdx` ranges and never tie on the final sort key
+(`(key_idx, range.start, code)`, stable), so a replaced group may land at a
+different position in the partition's chapter list without moving an output byte.
+Within a chapter, emission order is reproduced because the chapter is
+re-materialized whole.
+
+### Two defects the witnesses found
+
+1. **Book removal marked nothing dirty.** `SubstrateCache::remove_book` discarded
+   the delta from withdrawing the book's contribution. The removed book's own
+   records go with it, but the surviving books' records are now judged against a
+   different aggregate. It now owes the whole partition when the removal actually
+   moved the aggregate. Caught by
+   `the_aggregate_is_maintained_incrementally_across_book_replacement` the moment
+   it stopped being masked by a full rebuild.
+2. **A retained-memory regression only dhat could see** (below).
+
+### Casing: the site half lands, the model rebuild is a stop clause
+
+Casing's `keys` cell is `Model::build`. Measured split (SSC_WP8_PROBE
+instrumentation, reverted before the first commit): words-sum 2.77 ms,
+`build_trust` 6.94 ms, habit 0.32 ms ≈ the 10.4 ms cell. Measured behaviour on a
+one-chapter edit of a resident whole Bible, `all` config:
+
+```
+WP8 probe: words=13097 moved=1 trust_same=false trust_order=true habit_same=false
+WP8 materialize probe: sites=668257 judged=82920 distinct_book_word_pos=82920 emitted=43
+```
+
+One word type of 13,097 moves — and both corpus-global terms move with it. So every
+one of the ~83,000 judge keys is **genuinely** dirty and re-materializing all
+668,257 sites is required work, not waste. This is the seam the substrate's own
+`replace_book_in_corpus_stats` already documented ("returning only the words whose
+own tallies moved would be a subset, which is the one answer that is wrong"); WP8
+confirms it empirically rather than by assertion.
+
+**Stop clause (owner adjudication required, not decided here).** Scoping casing's
+`keys` needs one of:
+
+- an incremental corpus word table — but `build_trust` derives its juror list from
+  that table's hash-iteration order and sums per-juror TV distances over it, and
+  float addition is not associative (the code says so in three places). An
+  incrementally patched hashbrown table has no iteration-order guarantee against a
+  fresh book-order build, so trust would move in its last bits.
+- incremental trust/habit sums — subtract-then-add is not bit-identical to a
+  re-sum.
+
+Either moves verdicts. Per the packet's own stop-clause list ("casing's word-model
+patch requiring a semantic change to the model"), this is reported, not adjudicated.
+An option that WOULD be sound but is a behaviour change needing its own ADR:
+canonicalise the juror order (sort it), which makes trust independent of hash
+iteration order and unlocks the incremental table. That is an ADR 0059-shaped
+decision — measured drift, user adjudication, re-pinned oracle — not perf work.
+
+What DID land: when the aggregate does not move, `generation` is unchanged, the
+model is reused, every key's verdict is bit-identical to the committed one, and
+only the chapters whose own sites moved owe records. That is the whole 21 ms
+`materialize` cell on an aggregate-stable edit. The owed-rebuild is recorded in the
+substrate cache rather than derived from the model memo's freshness — the memo
+lives in a section a failed attempt does not roll back.
+
+### Drive-phase tables (resident WA-en-ulb, `--drive-phases`)
+
+**3JN, `all`, `--stable-aggregate`** (the pure site-delta lane; 150 trials):
+
+| substrate | cell | baseline | candidate |
+| --- | --- | ---: | ---: |
+| spacing | materialize | 1.1976 | **0.0003** |
+| casing | keys | 0.0004 | 0.0005 |
+| casing | materialize | 21.4095 | **0.0389** |
+| mixed-case | materialize | 0.0082 | **0.0006** |
+| — | all substrates, all phases | 24.5222 | **1.5876** |
+
+**3JN, `all`, `--distinct-variants`** (forced rebuild; 150 trials):
+
+| substrate | cell | baseline | candidate |
+| --- | --- | ---: | ---: |
+| spacing | materialize | 1.1975 | **0.0007** |
+| casing | keys | 13.1214 | 13.0772 |
+| casing | materialize | 21.8337 | 21.3400 |
+| — | all substrates, all phases | 38.0643 | 36.3061 |
+
+**MAT, `all`** (120 trials): stable-aggregate 31.14 → **8.84** ms all-substrates
+(casing row 21.75 → 0.73, spacing 1.39 → 0.18); distinct-variants 44.11 → 41.55
+(spacing 1.40 → 0.19, casing unchanged).
+
+**3JN, `default`**: none of the three converted substrates is enabled in
+`v1_defaults`, so every cell is unchanged; the substrate table is 0.5002 ms.
+
+### §13 three-lane ladder (3JN, 5 batches × 200 warm iterations, alternating)
+
+Load average recorded per lane; the machine was busy throughout (load 11–29), so
+absolutes run high — baseline and candidate were measured alternately on the same
+loads, which is what the comparison needs.
+
+| lane | config | baseline med-of-med | candidate med-of-med | delta |
+| --- | --- | ---: | ---: | ---: |
+| `--stable-aggregate` | all | 24.91 ms | **2.01 ms** | −22.90 ms (12.4×) |
+| `--distinct-variants` | all | 38.32 ms | 36.32 ms | −2.00 ms |
+| `--undo` | all | 38.40 ms | 36.40 ms | −2.00 ms |
+| `--stable-aggregate` | default | 688.7 µs | 696.4 µs | +7.7 µs (+1.1%) |
+| `--distinct-variants` | default | 682.5 µs | 689.6 µs | +7.1 µs (+1.0%) |
+| `--undo` | default | 688.9 µs | 690.8 µs | +1.9 µs (+0.3%) |
+
+The default-config movement is **not** a §13 regression: the rule is >5% AND
+>0.25 ms in ≥3/5 batches, and these are ~1% and ~0.008 ms. The ≤2 ms contractual
+gate stands with wide margin. Note the default figures sit above the 0.538 ms floor
+quoted for HEAD purely because of machine load — the floor is unchanged relative to
+a baseline measured on the same loads, which is the only comparison a loaded box
+supports.
+
+Honest note on variance: in one `--distinct-variants` batch (load 19.8) the
+candidate read 44.3 ms against a 39.0 ms baseline, and in another 39.1 vs 38.3.
+Three of five batches favour the candidate by ~2 ms and two are load artefacts;
+the median-of-medians is the reported figure.
+
+### dhat, and the regression it caught
+
+| config | baseline retained | candidate retained |
+| --- | ---: | ---: |
+| `all` | 77,808,533 B (74.20 MiB) | 77,808,537 B (74.20 MiB) |
+| `default` | 9,360,970 B (8.93 MiB) | 9,360,970 B (8.93 MiB) |
+
+`all` is +4 bytes and `default` is exactly flat — **after** a fix that dhat, and
+nothing else, forced. The first mixed-case cut turned its stats-delta words back
+into symbols through `WordInterner::intern_all`, which reserves arena and index
+capacity for the whole batch up front. On a cold analyze the delta is the corpus's
+entire vocabulary, so both tables grew permanently even though every key was a hit:
+**+773,124 bytes in 2 blocks**, +1.0% on the `all` budget. Isolated by paired
+configs — `all-no-mixed-case` showed +3 bytes, `all-no-spacing` still showed the
+full +773 KB — which named mixed-case exactly. Fixed with
+`WordInterner::symbols_of`, a pure read that inserts and reserves nothing, plus
+skipping the aggregate-half derivation entirely when the whole partition is already
+owed (which is the cold analyze that triggered it).
+
+This is worth recording as a method point: the timing lanes were all green while
+this was live. Retained bytes needed their own measurement.
+
+### Witness inventory (all fresh; synthetic `VerseMap`s only)
+
+| witness | substrate(s) | what only a patch path can fail |
+| --- | --- | --- |
+| `an_equal_aggregate_with_moved_sites_still_patches_the_partition` | mixed-case, casing, spacing | plan §12.4: an edit that leaves the aggregate bit-identical while moving sites. Each asserts the PRECONDITION too (mixed-case: profiles equal; casing: `generation` unmoved; spacing: per-mark cells equal), so it cannot pass by accidentally taking the rebuild path. |
+| `every_patched_step_equals_a_cold_rebuild` | mixed-case, casing, spacing | patch ≡ rebuild across in-place edit, verse insertion, verse deletion, new chapter, new book, and edit-then-undo. Casing's and spacing's variants deliberately move a chapter-final terminal / verse-final mark, so the site-delta must be WIDER than the edit. |
+| `a_disabled_then_reenabled_consumer_rebuilds_its_whole_partition` | mixed-case | §7.2 both directions, over a partition that is now retained across calls. |
+| `a_knob_change_rebuilds_the_partition_without_mapping` | casing | a judging knob maps/reduces zero and still re-judges every key — a retained partition would otherwise republish the old verdicts. |
+| `casing_judging_fp_moves_with_every_knob`, `mixed_case_…`, `spacing_…` | all three | field-by-field completeness of the judging fingerprint. |
+| existing suites | all | 538 core + 25 galley + 14 wasm + 25 wire tests, all green. Every isolated-drive helper now commits its patch into a real `FindingSection` and assembles from it, because the drive publishes a PATCH — a helper reading the patch alone would test the delta instead of the result. |
+
+### Mutation verification (10 runs; each mutation reverted immediately)
+
+| # | mutation | caught by |
+| --- | --- | --- |
+| 1, 5, 8 | site-delta forced empty | 6 witnesses across all three substrates |
+| 2 | mixed-case stats-delta half suppressed | 2 witnesses |
+| 3 | judging-fp / consumer-set check dropped from `plan` | `a_knob_change_maps_and_reduces_nothing` |
+| 6 | casing aggregate move no longer owes the rebuild | `book_supersede_over_a_resident_cache`, `resident_casing_equals_cold_under_randomized_edits` |
+| 9 | spacing stats-delta half suppressed | 2 witnesses |
+| 7, 10 | a knob dropped from a judging fingerprint | the `…_moves_with_every_knob` witnesses |
+| 4 | `promote` ungated (candidate-less commit clears the owed flag) | **NOT caught** — and correctly so: the inactive path also calls `clear()`, so the re-enable owes its rebuild through the cold route regardless. The gate is kept as belt-and-braces and its comment now says exactly that rather than claiming a defect it does not prevent. |
+
+### Deviations and honest notes
+
+- **The §13 stable-aggregate and undo lanes did not exist**; the harness only had
+  `--variants`/`--distinct-variants`. Both were added. The stable-aggregate lane's
+  filler word is load-bearing: the first cut appended `" alpha beta"` vs
+  `" beta alpha"`, and because the base verse may end in a terminal the first
+  appended word is sentence-forced — so `alpha` moved between casing's forced and
+  mid-flow buckets and the aggregate was NOT stable. The measurement showed it
+  (casing `keys` stayed at 13.1 ms in a lane that should have reused the model),
+  and `" zz alpha beta"` fixes it.
+- **The remote quiet box was unreachable** (`ssh: connect to 172.19.144.192 port
+  22: Operation timed out`), so both full-fleet bookends ran locally, as the packet
+  allows. Local pins matched.
+- **Nine substrates stayed on rebuild** and that is recorded in the §11 ledger with
+  their costs, per the packet's instruction not to force sub-0.05 ms partitions
+  into the patch path.
+- One `substrate.rs` reconstruction: a `git checkout` during mutation testing
+  reverted the file wholesale. It was rebuilt from the same edits and re-verified by
+  the full suite plus an eight-dump gate before the commit; no partial state
+  reached a commit. Subsequent mutation rounds copied the files to a scratch
+  backup first.
+
+### Open items for Phase F
+
+1. **Casing's `keys` (13.1 ms) — owner adjudication.** The juror-order
+   canonicalisation is the sound unlock and needs an ADR 0059-shaped decision.
+   Until then a punctuation-or-word edit pays the full model rebuild.
+2. **Casing's `materialize` on the forced path (21.4 ms)** follows (1): every key
+   is dirty because the model moved. Independently, its ~83,000 judged keys are
+   `(book, word, pos)` triples while `judge.outcome` reads only `(word, pos)` — the
+   verdict memo is per-book, so a frequent word is judged once per book. A
+   corpus-scoped memo is worth ~4× on that cell and is pure perf work (no delta
+   semantics), so it belongs to a perf campaign, not here.
+3. The nine rebuild-retained rows can be revisited if their `plan`/`map`/`reduce`
+   cells ever dominate; their `materialize` cells cannot repay a patch path.
