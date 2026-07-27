@@ -886,20 +886,21 @@ pub(crate) fn drive_mixed_case(
     probe.mark(DrivePhase::Reduce);
     // ── Aggregate half of the judge-dirty set. A word whose corpus sum moved is
     // judged differently everywhere it occurs, so every chapter naming one owes
-    // its records. The delta words are turned back into symbols through the
-    // interner — every one of them came from it, so this resolves existing
-    // symbols and cannot grow the table — which makes the site scan an integer
-    // set probe instead of a per-site string resolve.
+    // its records. The delta words are looked up in the shared table — a pure
+    // read that inserts and reserves nothing — so the site scan is an integer set
+    // probe rather than a per-site string resolve.
+    //
+    // Skipped entirely when the whole partition is already owed, which is the cold
+    // analyze: the delta is then the corpus's whole vocabulary and naming the
+    // chapters that hold it would be a whole-corpus walk to reach a conclusion one
+    // flag already states.
     //
     // Accumulated into `pending`, not consumed here: the aggregate move is
     // already applied to the cache by `update_book`, so a retry after a failed
     // attempt would see an empty stats-delta while the partition still described
     // the previous input.
-    if !stats_delta.is_empty() {
-        let delta_syms: FxHashSet<WordSym> = symbols
-            .intern_all(stats_delta.iter().map(|w| w.to_string()).collect())
-            .into_iter()
-            .collect();
+    if !stats_delta.is_empty() && !cache.pending.owes_all() {
+        let delta_syms: FxHashSet<WordSym> = symbols.symbols_of(stats_delta.iter().map(|w| &**w));
         // Positions, not borrowed tokens: the tokens live in the contribution, and
         // `owe_chapter` needs the cache mutably.
         let mut owed: Vec<(usize, usize)> = Vec::new();

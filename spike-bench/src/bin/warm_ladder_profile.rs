@@ -80,9 +80,51 @@ fn main() {
         .and_then(|s| s.parse().ok())
         .unwrap_or(2);
     let distinct = args.iter().any(|a| a == "--distinct-variants");
+    // ── The §13 lanes. Each is a different answer to "what does this edit move?",
+    // and a delta-consuming engine's cost depends on that, not on the edit's size.
+    //
+    // `--stable-aggregate`: two variants that append the SAME two words in a
+    // different order. Every substrate's corpus aggregate is then bit-identical
+    // across variants — same word types, same case shapes, same position classes,
+    // same punctuation cells, same glyph inventory, same verse length — while the
+    // chapter's content hash, and therefore its ordered SITES, move. It is the
+    // pure site-delta lane, and the one that separates "the aggregate moved" from
+    // "the text moved".
+    //
+    // `--undo`: variant 0 is the UNEDITED book, so the rotation is
+    // edit/undo/edit/undo — a real editor's most common warm sequence, and the one
+    // where a content-keyed memo would hit where a generation-keyed one does not.
+    let stable_aggregate = args.iter().any(|a| a == "--stable-aggregate");
+    let undo = args.iter().any(|a| a == "--undo");
     let blocks: Vec<BookBlock> = (0..variants.max(2))
         .map(|i| {
-            if distinct {
+            if stable_aggregate {
+                // Two lowercase words swapped. Nothing any substrate COUNTS can
+                // tell the variants apart; only where the words sit differs.
+                //
+                // The leading `zz` is load-bearing and was found by measurement.
+                // The verse this appends to may end in a terminal, which makes the
+                // FIRST appended word sentence-forced — so `" alpha beta"` versus
+                // `" beta alpha"` moves `alpha` between the forced and mid-flow
+                // buckets of casing's word table, and the aggregate is not stable
+                // after all. `zz` absorbs the forced position, leaving both swapped
+                // words mid-flow in either order.
+                if i % 2 == 0 {
+                    make_block(" zz alpha beta")
+                } else {
+                    make_block(" zz beta alpha")
+                }
+            } else if undo {
+                if i % 2 == 0 {
+                    BookBlock {
+                        slug: code.as_str().into(),
+                        keys: base_keys.clone(),
+                        texts: base_texts.clone(),
+                    }
+                } else {
+                    make_block(" edited")
+                }
+            } else if distinct {
                 // Each variant introduces a DIFFERENT word type, so every
                 // iteration presents a genuinely different word aggregate. The
                 // default "!"-repeat variants differ only in trailing

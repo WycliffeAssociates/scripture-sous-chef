@@ -603,6 +603,14 @@ impl PendingPartition {
         self.chapters.clear();
     }
 
+    /// Whether the whole partition is already owed. A drive asks before deriving
+    /// the aggregate half of its dirty set: naming individual chapters is wasted
+    /// work once the rebuild is unconditional, and on a cold analyze that
+    /// derivation is a whole-corpus walk.
+    pub(crate) fn owes_all(&self) -> bool {
+        self.all
+    }
+
     pub(crate) fn owe_chapter(&mut self, slug: &str, chapter: &str) {
         if !self.all {
             self.chapters.insert((Box::from(slug), Box::from(chapter)));
