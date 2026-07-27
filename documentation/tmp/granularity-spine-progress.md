@@ -5394,3 +5394,67 @@ pointed at the adjudication rather than at a stale claim.
 3. **Phase F** — adjudicate the batch lane (tripwire in place), retire the
    `Stats`/`RuleStats`/`RuleSites` scaffolding across `ssc-galley`/`ssc-wasm`,
    reconcile the remaining ADRs, regenerate packages, move the plan to `completed/`.
+
+## Entry 34 — Work Packet 8: the eight-dump referee pinned at base `5514b74`
+
+- **Date:** 2026-07-27. Packet: delta consumption (plan §6.2–6.4, §7.1). Base
+  `5514b74`, tree clean, main tree (no worktree). This commit contains **no code
+  change** — it exists so the per-commit referee is recorded before the first
+  edit, per repo `CLAUDE.md` step 1.
+
+### The WA+small eight-dump pin (local, this Mac)
+
+Findings + incremental transcript × {default, all} × {`oracle-blobs/wa.blob`,
+`oracle-blobs/small.blob`}. Every WP8 commit re-dumps all eight and must match
+byte-for-byte.
+
+| dump | sha256 |
+| --- | --- |
+| `findings.default.wa.tsv` | `38a0ceadcc792a6656905c7a0f9e2e4c2720c86f47f41f94c66e7a8ad1a9702c` |
+| `findings.all.wa.tsv` | `128fdd933dc71cda0a4a6d9d9971ceb5648a5703f8b22ee798d30b09d2c15660` |
+| `findings.default.small.tsv` | `8d638a441bb654e00fc7fca6e7b0da10d7449a697d9663fdc5efb430bb50ff00` |
+| `findings.all.small.tsv` | `d657dcff009565e509dcbd891c5f7bf50db5bc9f5c8d19dff316dd4aa6c539e2` |
+| `transcript.default.wa.tsv` | `7b19caa79b284bfa16a56f300f5660591ffc58ffa183888451daf82778676dca` |
+| `transcript.all.wa.tsv` | `c951a758823629c6b6d2e1d558e92c59c1873ed17856b328a60c7ebdc4cee74f` |
+| `transcript.default.small.tsv` | `10da8d93dd5c275f38925d726508fa43ba368d43f3ce4f1674652cc47e13661e` |
+| `transcript.all.small.tsv` | `c3532af9a4efa7ec370ba5531b9332fb2c7a0f54b6a86aa8b79972d659f8855e` |
+
+The small blob's scope token is `full` on the command line (`oracle.rs` parses
+only `wa|full`; a blob ignores the token and uses its own preset). The
+transcript oracle is the load-bearing one for this packet — WP8 changes exactly
+the warm path it drives.
+
+Standing FULL-fleet bookend targets, unchanged from Entry 32: findings
+`a10cf5a4c17492bf9771d77ea4daace337e1042d66b83dcea8042eceb6748e29` (default) /
+`ddedee96571b2e8bff082ec45bdaa7723cd188fc911f21e1d633b19f6e65b986` (all);
+transcript `ab9b0f966a3b310dc0b37f5832a7f6f1c0dcd2618205f3343519f09b3848090b`
+(default) / `c8a1be69a9b88f13d299d06fd916a370395efe9f9261e1d26c25d645912128c9`
+(all).
+
+### Baseline drive-phase table (3JN, `all`, resident WA-en-ulb, 200 trials)
+
+`spike-bench/warm_ladder_profile corpora/vref/WA-en-ulb.txt 3JN --config all
+--drive-phases`. Load average 21.17 at capture — high, so the absolute
+milliseconds are soft; the *shape* is what this entry pins, and it reproduces
+Entry 30/32's shape exactly.
+
+```
+batch 0/1 3JN all: total 30.540ms | update_book 0.097ms | analyze 30.421ms
+  substrate            plan       map    reduce      keys     judge   materlz  row total
+  spacing            0.0818    0.0235    0.0236    0.0000    0.0024    0.9539     1.0852
+  adjacency          0.0397    0.0138    0.0204    0.0000    0.0015    0.0099     0.0853
+  repeated-run       0.0377    0.0605    0.0202    0.0055    0.0003    0.0070     0.1312
+  punct-only         0.0372    0.0144    0.0184    0.0000    0.0004    0.0085     0.0788
+  mixed-script       0.0349    0.0455    0.0190    0.0000    0.0002    0.0090     0.1085
+  glyph              0.0739    0.1112    0.2530    0.0014    0.0020    0.0000     0.4415
+  proportionality    0.0392    0.0029    0.0192    0.0000    0.0074    0.0122     0.0808
+  normalization      0.0355    0.0132    0.0191    0.0000    0.0002    0.0000     0.0680
+  bracket            0.0387    0.0085    0.0240    0.0000    0.0012    0.0113     0.0838
+  duplicate-word     0.0364    0.0181    0.0110    0.0000    0.0001    0.0091     0.0746
+  casing             0.0715    0.0470    0.0421   10.4418    0.0000   17.1351    27.7375
+  mixed-case         0.0376    0.0508    0.0452    0.0047    0.0005    0.0065     0.1453
+                  all substrates, all phases: 30.1205 ms
+```
+
+Casing's two cells are 91.5% of the 30.12 ms; spacing's `materialize` is 3.2%;
+the other ten substrates sum to 1.3 ms.
