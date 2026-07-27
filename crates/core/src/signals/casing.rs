@@ -81,7 +81,7 @@ use rustc_hash::FxHashMap;
 use crate::analysis::association::Table2;
 use crate::charclass::class_of;
 use crate::config::CasingConfig;
-use crate::corpus::{Corpus, LocalKeyIdx, rebase};
+use crate::corpus::{Corpus, LocalKeyIdx, SiteAddr, rebase};
 use crate::diagnostics::{Finding, FindingArgs, RuleId, Severity};
 use crate::evidence::{clamp_count, clamp_unit, clamp_z, wilson_lower_bound};
 use crate::interner::{WordInterner, WordSym};
@@ -943,21 +943,56 @@ impl Model {
 }
 
 /// A lowercase word-start observed by the chapter walk — a flag candidate for
-/// either rule. Chapter-local: `local_idx` is the verse's index within its
-/// chapter run, so a hit in an untouched chapter stays correctly addressed
-/// after any edit elsewhere and the global `KeyIdx` is resolved once, at
-/// materialization.
+/// either rule. Chapter-local: the address is the verse's index within its
+/// chapter run plus a verse-relative byte range, so a hit in an untouched
+/// chapter stays correctly addressed after any edit elsewhere and the global
+/// `KeyIdx` is resolved once, at materialization.
+///
+/// **12 bytes**, down from 24. This is the highest-volume retained record in the
+/// engine — 668,257 of them on WA-en-ulb — so every field is at its measured
+/// width rather than a comfortable one:
+///
+/// - the span is a [`SiteAddr`] (the existing checked 6-byte packer), *retained*
+///   rather than re-derived. Plan §11's principle defaults to re-deriving
+///   verse-local offsets, and this row declines that default on measurement: a
+///   word ordinal within a verse needs 16 bits on this fleet (WP7a measured
+///   1,958 compound words in `hltmcsb`'s widest verse), so an ordinal buys
+///   *nothing* over the packed span while costing a `tokenize` +
+///   `compound_words` per emitted finding — and no cached segmentation exists at
+///   materialization to make that a lookup instead of a re-walk (Entry 26). The
+///   same reasoning the mixed-case row recorded, at 50x the population;
+/// - `key` is the per-chapter word-type id, `u16` by the [`chapter_word_id`]
+///   checked constructor;
+/// - `pos` is the one genuinely context-dependent bit, packed into 4 bytes by
+///   [`PosClass`].
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct LowerSite {
-    pub(crate) local_idx: LocalKeyIdx,
-    pub(crate) start: u32,
-    pub(crate) end: u32,
+    /// Chapter-local verse index + verse-relative byte range, packed.
+    pub(crate) addr: SiteAddr,
     /// Interned word-type id — an index into the owning [`ChapterWords`]'
     /// `keys` table (per-chapter, first-sight order). A `Copy` id instead of a
     /// `String` so the judge resolves a verdict through an array index per site
     /// instead of hashing the folded word.
-    pub(crate) key: u32,
+    pub(crate) key: ChapterWordId,
     pub(crate) pos: PosClass,
+}
+
+/// A word type's id within one chapter's first-sight table. `u16`: WP7a measured
+/// the fleet maximum distinct word types in a chapter at **1,125** (`swe`), a
+/// 58x margin under the ceiling, and [`chapter_word_id`] enforces the bound
+/// rather than assuming it.
+pub(crate) type ChapterWordId = u16;
+
+/// Narrow a chapter word-table length to the next [`ChapterWordId`]. Called once
+/// per *new word type* in a chapter (not per word), so the checked branch is
+/// free. Panics rather than truncating: a chapter with more than 65,535 distinct
+/// word types would be 58x the measured fleet maximum and is a stop-and-report
+/// event, not something to wrap silently.
+fn chapter_word_id(len: usize) -> ChapterWordId {
+    ChapterWordId::try_from(len).expect(
+        "distinct word types in one chapter fit u16 (fleet max 1,125 — a violation is a \
+         stop-and-report, see granularity-spine Entry 26/28)",
+    )
 }
 
 /// True iff `c` is a cased/uncased letter (GC L*).
@@ -1153,7 +1188,7 @@ pub(crate) struct ChapterWords {
 /// The chapter's first word, whose position class reduction resolves.
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct FirstWord {
-    key: u32,
+    key: ChapterWordId,
     case: Case,
     /// The flag candidate this word contributes, if any. Its `pos` is a
     /// placeholder until reduction fills it in.
@@ -1163,7 +1198,7 @@ struct FirstWord {
 /// The same word with its position class resolved against the entering state.
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct ResolvedFirst {
-    key: u32,
+    key: ChapterWordId,
     case: Case,
     pos: PosClass,
     site: Option<LowerSite>,
@@ -1307,7 +1342,7 @@ struct ChapterAcc {
     /// per word). The keys become shared symbols once, in `finish` — the walk
     /// itself never touches the shared table, so the chapter-parallel map seam
     /// takes one lock per chapter rather than one per word.
-    intern: FxHashMap<String, u32>,
+    intern: FxHashMap<String, ChapterWordId>,
     keys: Vec<String>,
     tallies: Vec<WordStats>,
     sites: Vec<LowerSite>,
@@ -1380,7 +1415,7 @@ impl ChapterAcc {
             let id = match self.intern.get(&key) {
                 Some(&id) => id,
                 None => {
-                    let id = self.keys.len() as u32;
+                    let id = chapter_word_id(self.keys.len());
                     self.intern.insert(key.clone(), id);
                     self.keys.push(key);
                     self.tallies.push(WordStats::default());
@@ -1406,9 +1441,7 @@ impl ChapterAcc {
                     key: id,
                     case,
                     site: candidate.then_some(LowerSite {
-                        local_idx,
-                        start: w.start,
-                        end: w.end,
+                        addr: SiteAddr::pack(local_idx, w),
                         key: id,
                         pos: PosClass::MIDFLOW,
                     }),
@@ -1418,9 +1451,7 @@ impl ChapterAcc {
                 self.tallies[id as usize].record(pos, case);
                 if candidate {
                     self.sites.push(LowerSite {
-                        local_idx,
-                        start: w.start,
-                        end: w.end,
+                        addr: SiteAddr::pack(local_idx, w),
                         key: id,
                         pos,
                     });
@@ -1852,14 +1883,14 @@ impl CasingBookContribution {
                 // chapter's: one contiguous allocation per book keeps the judge's
                 // lookups on warm cache lines, where 1,189 per-chapter interners
                 // would scatter them.
-                let bid = ids[site.key as usize] as usize;
+                let bid = ids[usize::from(site.key)] as usize;
                 let word = &self.words[bid].0;
                 let outcome = memo.get(bid, site.pos, judged, || judge.outcome(word, site.pos));
                 if positional
                     && let Some((score, glyph, quoted, upper, total)) = outcome.positional
                 {
                     out.push(Finding {
-                        key_idx: rebase(base, site.local_idx),
+                        key_idx: rebase(base, site.addr.unpack().0),
                         code: SENTENCE_INITIAL_LOWERCASE,
                         severity: Severity::Info,
                         range: site_span(&site),
@@ -1876,7 +1907,7 @@ impl CasingBookContribution {
                     && let Some((score, upper, total)) = outcome.intrinsic
                 {
                     out.push(Finding {
-                        key_idx: rebase(base, site.local_idx),
+                        key_idx: rebase(base, site.addr.unpack().0),
                         code: INCONSISTENT_WORD_CASING,
                         severity: Severity::Info,
                         range: site_span(&site),
@@ -2091,11 +2122,9 @@ pub(crate) fn casing_findings(
     out
 }
 
+/// A site's verse-relative span, unpacked from its [`SiteAddr`].
 fn site_span(site: &LowerSite) -> Span {
-    Span {
-        start: site.start,
-        end: site.end,
-    }
+    site.addr.unpack().1
 }
 
 /// The widest field extents one corpus's casing segmentation produces:
@@ -2204,14 +2233,15 @@ pub fn evaluate(corpus: &Corpus, cfg: &CasingConfig) -> Vec<SiteEval> {
             };
             let base = crate::corpus::KeyIdx::from_usize(range.start);
             for site in chapter.sites() {
-                let word = &contrib.words[ids[site.key as usize] as usize].0;
+                let word = &contrib.words[ids[usize::from(site.key)] as usize].0;
                 let Some(w) = model.words.get(&**word) else {
                     continue;
                 };
+                let span = site_span(&site);
                 out.push(SiteEval {
-                    key_idx: rebase(base, site.local_idx),
-                    start: site.start,
-                    end: site.end,
+                    key_idx: rebase(base, site.addr.unpack().0),
+                    start: span.start,
+                    end: span.end,
                     pos: site.pos,
                     intrinsic: model.intrinsic(w),
                     positional: model.positional(w, site.pos),
@@ -2272,6 +2302,32 @@ mod tests {
                 assert_ne!(p, PosClass::forced(ClassKey { mark, quoted: !quoted }));
             }
         }
+    }
+
+    /// The site record's width is the point of the WP7b storage rework, so it is
+    /// pinned: 668,257 of these are retained on WA-en-ulb, and a field silently
+    /// widening back to 16 or 24 bytes is a multi-MiB regression that no
+    /// behavioral test would notice.
+    #[test]
+    fn the_lowercase_site_record_stays_twelve_bytes() {
+        assert_eq!(std::mem::size_of::<LowerSite>(), 12);
+        assert_eq!(std::mem::size_of::<PosClass>(), 4);
+    }
+
+    /// The `u16` chapter word-id bound is enforced, not assumed. WP7a measured
+    /// the fleet maximum at 1,125 distinct word types in a chapter — a 58x
+    /// margin — and a corpus that broke it must stop rather than wrap.
+    #[test]
+    #[should_panic(expected = "distinct word types in one chapter fit u16")]
+    fn the_chapter_word_id_bound_panics_instead_of_truncating() {
+        chapter_word_id(usize::from(u16::MAX) + 1);
+    }
+
+    /// The last representable id is not itself rejected — an off-by-one in the
+    /// bound would silently cap chapters one word type early.
+    #[test]
+    fn the_chapter_word_id_bound_admits_the_last_representable_id() {
+        assert_eq!(chapter_word_id(usize::from(u16::MAX)), u16::MAX);
     }
 
     /// The packed form keeps the semantic ordering the tagged enum derived:
