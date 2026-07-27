@@ -4447,6 +4447,27 @@ Three things the owner should weigh:
    up here (it is still wanted by the anchor/project lanes); flagged for the
    Phase F audit.
 
+### FULL-FLEET bookend (not just the WA subset)
+
+Two of this packet's items are real rule migrations, so the packet closed on the
+**full 1,504-corpus fleet** rather than stopping at its WA+`small` per-commit
+gate — repo `CLAUDE.md`'s "the final after pin is always the full fleet". All
+four full-fleet dumps at HEAD are byte-identical to the standing contract:
+
+| file | sha256 | matches |
+| --- | --- | --- |
+| `wp7b.final.full.findings.default.tsv` | `a10cf5a4c17492bf9771d77ea4daace337e1042d66b83dcea8042eceb6748e29` | Entry 1 §2.3 `pin.full.findings.default.tsv` |
+| `wp7b.final.full.findings.all.tsv` | `ddedee96571b2e8bff082ec45bdaa7723cd188fc911f21e1d633b19f6e65b986` | Entry 1 §2.3 `pin.full.findings.all.tsv` |
+| `wp7b.final.full.inc.default.tsv` | `ab9b0f966a3b310dc0b37f5832a7f6f1c0dcd2618205f3343519f09b3848090b` | Entry 5 `wp2a.new-inc.full.default.tsv` |
+| `wp7b.final.full.inc.all.tsv` | `c8a1be69a9b88f13d299d06fd916a370395efe9f9261e1d26c25d645912128c9` | Entry 5 `wp2a.new-inc.full.all.tsv` |
+
+The findings pair matches Gate 0 itself, unchanged since 2026-07-23. The
+incremental pair matches the WP2a re-pin (Entry 5), which is the standing
+transcript contract — Entry 1's pre-WP2a incremental hashes describe the retired
+echo-semantics oracle and are deliberately not the referee. So the **43**
+full-fleet adjacency order-collisions Entry 1 pinned are confirmed intact at
+fleet scope, not merely the 34 the WA subset holds.
+
 ### Stop-safe next step
 
 The tree is clean and every commit is independently gated. Owed, in order:
