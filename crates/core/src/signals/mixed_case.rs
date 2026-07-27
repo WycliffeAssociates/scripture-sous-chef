@@ -127,8 +127,10 @@ pub(crate) fn is_letter_token(word: &str) -> bool {
     has_letter
 }
 
-/// One case-folded word type's raw shape counts. Raw and mergeable — no
-/// dominance, no censoring — so replacement at any granularity holds.
+/// One case-folded word type's raw shape counts at **book/corpus** width. Raw
+/// and mergeable — no dominance, no censoring — so replacement at any
+/// granularity holds. Only ever built by widening and summing
+/// [`ChapterShapeProfile`]s; single occurrences are counted at chapter width.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct ShapeProfile {
     pub(crate) lower: u32,
@@ -138,16 +140,6 @@ pub(crate) struct ShapeProfile {
 }
 
 impl ShapeProfile {
-    fn record(&mut self, shape: CaseShape) {
-        let slot = match shape {
-            CaseShape::Lower => &mut self.lower,
-            CaseShape::Title => &mut self.title,
-            CaseShape::AllCaps => &mut self.allcaps,
-            CaseShape::OtherMixed => &mut self.other,
-        };
-        *slot = slot.saturating_add(1);
-    }
-
     fn add(&mut self, o: &ShapeProfile) {
         self.lower += o.lower;
         self.title += o.title;
@@ -180,6 +172,64 @@ impl ShapeProfile {
     /// The clean-shape mass — the dominance numerator (`lower+title+allcaps`).
     fn not_other(&self) -> u64 {
         self.total() - u64::from(self.other)
+    }
+}
+
+/// A per-**chapter** word type's raw shape counts — the same four slots as
+/// [`ShapeProfile`] at half the width (8 bytes, not 16).
+///
+/// Two representations, deliberately. A chapter-local count is bounded by its own
+/// chapter's letter-token count, which the fleet probe
+/// ([`chapter_extent_probe`]) measures at a maximum of **5,632** (`nabNT`) — an
+/// 11.6x margin under `u16`, with the widest single measured shape count for one
+/// word type in one chapter at **552** (`udu`), a 118x margin. The book table and
+/// the corpus sum are different populations entirely (they accumulate a whole
+/// corpus's occurrences) and stay `u32`.
+///
+/// This matters because the per-chapter table is the lane's *scattered* half:
+/// WA-en-ulb retains 263,514 chapter word entries where one per-book table held
+/// ~13,000, which is what made Entry 26's RAM watch fire. Halving the element
+/// halves that scatter.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct ChapterShapeProfile {
+    lower: u16,
+    title: u16,
+    allcaps: u16,
+    other: u16,
+}
+
+impl ChapterShapeProfile {
+    /// Count one occurrence. Checked, not saturating: the ceiling is 11.6x the
+    /// measured fleet maximum *chapter*, so reaching it means the corpus broke
+    /// the structural assumption and must stop and be reported — a silently
+    /// saturated count would corrupt every book and corpus total derived from it.
+    fn record(&mut self, shape: CaseShape) {
+        let slot = match shape {
+            CaseShape::Lower => &mut self.lower,
+            CaseShape::Title => &mut self.title,
+            CaseShape::AllCaps => &mut self.allcaps,
+            CaseShape::OtherMixed => &mut self.other,
+        };
+        *slot = slot.checked_add(1).expect(
+            "one word type's shape count in one chapter fits u16 (fleet max 552, chapter \
+             token max 5,632 — a violation is a stop-and-report, see granularity-spine Entry 28)",
+        );
+    }
+
+    /// Widen to the mergeable corpus-width profile — the only way a chapter count
+    /// enters a book or corpus total.
+    fn widen(self) -> ShapeProfile {
+        ShapeProfile {
+            lower: u32::from(self.lower),
+            title: u32::from(self.title),
+            allcaps: u32::from(self.allcaps),
+            other: u32::from(self.other),
+        }
+    }
+
+    fn total(self) -> u64 {
+        u64::from(self.lower) + u64::from(self.title) + u64::from(self.allcaps)
+            + u64::from(self.other)
     }
 }
 
@@ -217,8 +267,8 @@ pub(crate) struct MixedCaseWords {
     /// chapter-local id → the word type's symbol in the cache's shared
     /// [`WordInterner`], in first-sight order.
     keys: Box<[WordSym]>,
-    /// Per-id raw shape counts.
-    profiles: Box<[ShapeProfile]>,
+    /// Per-id raw shape counts, at chapter width (see [`ChapterShapeProfile`]).
+    profiles: Box<[ChapterShapeProfile]>,
     /// OtherMixed occurrences in scan order — the only positions that can emit.
     sites: Box<[MixedCaseSite]>,
 }
@@ -319,7 +369,7 @@ const _: crate::substrate::SubstrateId =
 struct ChapterAcc {
     intern: FxHashMap<String, u32>,
     keys: Vec<String>,
-    profiles: Vec<ShapeProfile>,
+    profiles: Vec<ChapterShapeProfile>,
     sites: Vec<(u32, SiteAddr)>,
     tokens_buf: Vec<crate::token::Token>,
 }
@@ -357,7 +407,7 @@ impl ChapterAcc {
                     let id = self.keys.len() as u32;
                     self.intern.insert(key.clone(), id);
                     self.keys.push(key);
-                    self.profiles.push(ShapeProfile::default());
+                    self.profiles.push(ChapterShapeProfile::default());
                     id
                 }
             };
@@ -387,6 +437,39 @@ impl ChapterAcc {
             }),
         }
     }
+}
+
+/// Fleet field-width probe for the per-chapter shape table (WP7b item 4), the
+/// mixed-case analogue of casing's `field_extent_probe`. Returns
+/// `(max letter tokens in one chapter, max single shape count for one word type
+/// in one chapter)` — the second is the quantity a narrowed per-chapter counter
+/// must hold, and the first is its structural upper bound. Measured through the
+/// *exact* tokenization and shape classification `ChapterAcc::verse` uses, so it
+/// cannot disagree with the table it is sizing.
+#[cfg(feature = "bench-probes")]
+pub fn chapter_extent_probe(corpus: &Corpus) -> (usize, usize) {
+    let texts = corpus.texts();
+    let mut max_tokens = 0usize;
+    let mut max_count = 0usize;
+    for book in corpus.book_layout() {
+        for c in &book.chapters {
+            let mut acc = ChapterAcc::new();
+            let mut tokens = 0usize;
+            for (vi, text) in texts[c.range.clone()].iter().enumerate() {
+                acc.verse(LocalKeyIdx::from_usize(vi), text);
+            }
+            for p in &acc.profiles {
+                tokens += p.total() as usize;
+                max_count = max_count
+                    .max(p.lower as usize)
+                    .max(p.title as usize)
+                    .max(p.allcaps as usize)
+                    .max(p.other as usize);
+            }
+            max_tokens = max_tokens.max(tokens);
+        }
+    }
+    (max_tokens, max_count)
 }
 
 impl crate::substrate::ObservationSubstrate for MixedCaseSubstrate {
@@ -464,7 +547,7 @@ impl crate::substrate::ObservationSubstrate for MixedCaseSubstrate {
                         id
                     }
                 };
-                profiles[id as usize].add(&r.words.profiles[i]);
+                profiles[id as usize].add(&r.words.profiles[i].widen());
             }
         }
         // Sort by the keys' STRING order — symbols are assigned in map-completion
@@ -828,6 +911,58 @@ pub fn mixed_case_findings(corpus: &Corpus, cfg: &MixedCaseConfig) -> Vec<Findin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The two representations are the point of WP7b item 4: the scattered
+    /// per-chapter element is half the width of the mergeable one. Pinned,
+    /// because a widening back is a multi-MiB regression on the retained lane
+    /// that no behavioral test would notice.
+    #[test]
+    fn the_chapter_shape_profile_is_half_the_width_of_the_corpus_one() {
+        assert_eq!(std::mem::size_of::<ChapterShapeProfile>(), 8);
+        assert_eq!(std::mem::size_of::<ShapeProfile>(), 16);
+    }
+
+    /// The narrowed counter widens losslessly into the corpus-width profile —
+    /// the only path by which a chapter count enters a book or corpus total.
+    #[test]
+    fn a_chapter_profile_widens_losslessly() {
+        let mut c = ChapterShapeProfile::default();
+        for _ in 0..7 {
+            c.record(CaseShape::Lower);
+        }
+        c.record(CaseShape::Title);
+        c.record(CaseShape::AllCaps);
+        for _ in 0..3 {
+            c.record(CaseShape::OtherMixed);
+        }
+        assert_eq!(c.total(), 12);
+        assert_eq!(
+            c.widen(),
+            ShapeProfile {
+                lower: 7,
+                title: 1,
+                allcaps: 1,
+                other: 3
+            }
+        );
+        assert_eq!(c.widen().total(), c.total());
+    }
+
+    /// The chapter-width bound is enforced, not assumed. The fleet's widest
+    /// single shape count for one word type in one chapter is 552 (`udu`) and the
+    /// widest chapter holds 5,632 letter tokens (`nabNT`) — 118x and 11.6x
+    /// margins — and a corpus that broke that must stop rather than saturate,
+    /// because a saturated chapter count would silently corrupt every book and
+    /// corpus total folded from it.
+    #[test]
+    #[should_panic(expected = "one word type's shape count in one chapter fits u16")]
+    fn the_chapter_shape_count_bound_panics_instead_of_saturating() {
+        let mut c = ChapterShapeProfile {
+            lower: u16::MAX,
+            ..Default::default()
+        };
+        c.record(CaseShape::Lower);
+    }
 
     fn cfg(emit_score_min: f32, recurrence_k: f32, confidence_z: f32) -> MixedCaseConfig {
         MixedCaseConfig {

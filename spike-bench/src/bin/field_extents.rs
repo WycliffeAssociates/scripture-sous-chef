@@ -32,6 +32,8 @@ fn main() {
     let mut worst_types = (0usize, String::new());
     let mut worst_classes = (0usize, String::new());
     let mut worst_tokens = (0usize, String::new());
+    let mut worst_chapter_tokens = (0usize, String::new());
+    let mut worst_shape_count = (0usize, String::new());
 
     for (i, path) in files.iter().enumerate() {
         if i % 200 == 0 {
@@ -51,6 +53,17 @@ fn main() {
             worst_classes = (classes, name.clone());
         }
 
+        // Mixed-case's per-chapter shape table (WP7b item 4): how wide one
+        // chapter's counters actually have to be.
+        let (ch_tokens, shape_count) =
+            ssc_core::signals::mixed_case::chapter_extent_probe(&corpus);
+        if ch_tokens > worst_chapter_tokens.0 {
+            worst_chapter_tokens = (ch_tokens, name.clone());
+        }
+        if shape_count > worst_shape_count.0 {
+            worst_shape_count = (shape_count, name.clone());
+        }
+
         // Plain UAX #29 token counts, straight off the file's verse lines —
         // mixed-case's token unit, which does not hyphen-merge.
         let raw = std::fs::read_to_string(path).expect("read corpus file");
@@ -66,4 +79,12 @@ fn main() {
     println!("max distinct types / chapter : {:>7} ({})", worst_types.0, worst_types.1);
     println!("max distinct classes / chap  : {:>7} ({})", worst_classes.0, worst_classes.1);
     println!("max UAX tokens per verse     : {:>7} ({})", worst_tokens.0, worst_tokens.1);
+    println!(
+        "max letter tokens / chapter  : {:>7} ({})",
+        worst_chapter_tokens.0, worst_chapter_tokens.1
+    );
+    println!(
+        "max one-shape count / chapter: {:>7} ({})",
+        worst_shape_count.0, worst_shape_count.1
+    );
 }
