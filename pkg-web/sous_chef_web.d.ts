@@ -7,6 +7,28 @@
 export type FindingsArgsOut = (FindingArgs | null)[];
 
 /**
+ * A separator mark\'s *judged* form on one side of an occurrence (ADR 0054 2nd
+ * amendment — the binary bit inside a class pool):
+ *
+ * - `Attached` — the mark clings directly to the neighbour (no whitespace).
+ * - `Spaced` — horizontal whitespace was crossed to reach the neighbour, **or**
+ *   the verse/book seam was reached (the seam reads as whitespace, never its
+ *   own category — repo `CLAUDE.md`; a terminal is never attached across a
+ *   seam). The neighbour\'s *class* is still read across the seam, in book order.
+ *
+ * The form is orthogonal to the neighbour\'s [`SpacingClass`]: a `Number`-pool
+ * `.` can be `Attached` (`7.8`, a decimal) or `Spaced` (`verse. 3`, a
+ * cross-reference), and the pool learns which is the convention.
+ *
+ * This is the shipped wire/args vocabulary as well as the rule\'s internal one —
+ * deliberately one type, so the published JSON string and the counter the rule
+ * incremented cannot drift. Every variant carries an **explicit** `serde`
+ * rename: these strings are a published surface and must never depend on an
+ * inferred naming convention.
+ */
+export type SpacingForm = "attached" | "spaced";
+
+/**
  * An ordered, duplicate-preserving vref corpus as it arrives from JS:
  * parallel `keys`/`texts` arrays in caller-presented order (a `Corpus` is a
  * duplicate-preserving structure, not a map — unlike the retired
@@ -75,15 +97,19 @@ export interface RuleCard {
 /**
  * One violated side of a `punct.spacing-anomaly` finding (ADR 0054 2nd
  * amendment — the pooled class-conditioned model): the observed minority `form`
- * (`\"attached\"` or `\"spaced\"`) against the neighbour-content pool `class`
- * (`\"letter\"`, `\"number\"`, or `\"punct\"`) that judged it, how many of the mark\'s
- * occurrences **in that pool** take this form (`count`), and the pool\'s judged
- * occupancy `N_pool` (`total`). `count / total` is the descriptive rate the
- * Wilson-bound `score` deliberately isn\'t (ADR 0048).
+ * against the neighbour-content pool `class` that judged it, how many of the
+ * mark\'s occurrences **in that pool** take this form (`count`), and the pool\'s
+ * judged occupancy `N_pool` (`total`). `count / total` is the descriptive rate
+ * the Wilson-bound `score` deliberately isn\'t (ADR 0048).
+ *
+ * `form`/`class` are closed vocabularies and are typed as such: they were
+ * `String` until 2026-07-27, which cost 48 bytes of heap-pointer weight per
+ * side and made `FindingArgs` the widest thing in a `Finding`. Field order is
+ * unchanged, so the serialized object\'s key order is unchanged.
  */
 export interface SpacingSide {
-    form: string;
-    class: string;
+    form: SpacingForm;
+    class: SpacingClass;
     count: number;
     total: number;
 }
@@ -268,6 +294,18 @@ export interface RuleCatalog {
  * `\"target-and-reference-silent-when-absent\"`.
  */
 export type InputDependency = "target-only" | "target-and-reference-silent-when-absent";
+
+/**
+ * The content class of a mark\'s first non-whitespace neighbour — the **pool**
+ * its attached-vs-spaced binary is conditioned on (ADR 0054 2nd amendment).
+ * Quote is merged into `Punct` (user ruling). A `Number` neighbour is a
+ * (non-quote) numeric scalar; a `Letter` neighbour is any cluster containing an
+ * alphabetic scalar (a decomposed base + combining letter still counts);
+ * everything else — another mark, a quote, a bracket, a symbol — is `Punct`.
+ *
+ * Explicitly renamed per variant for the same reason as [`SpacingForm`].
+ */
+export type SpacingClass = "letter" | "number" | "punct";
 
 /**
  * The lazy args of one finding, cloned out of the resident `Galley` on the
