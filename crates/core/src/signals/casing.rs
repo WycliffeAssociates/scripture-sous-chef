@@ -1117,7 +1117,7 @@ pub(crate) fn pos_of(book_initial: bool, taken: Option<Pending>) -> PosClass {
 /// none was live. So the whole transform is "what this gap produces from
 /// nothing" plus "which flags it would OR into something".
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
-struct GapEffect {
+pub(crate) struct GapEffect {
     /// The pending state this gap leaves when nothing was pending on entry.
     from_none: Option<Pending>,
     /// The gap contains a close-quote…
@@ -1128,7 +1128,7 @@ struct GapEffect {
 
 impl GapEffect {
     /// Apply the recorded transform to a concrete entering pending state.
-    fn apply(self, entering: Option<Pending>) -> Option<Pending> {
+    pub(crate) fn apply(self, entering: Option<Pending>) -> Option<Pending> {
         match entering {
             Some(mut p) => {
                 p.quote |= self.saw_quote;
@@ -1145,7 +1145,7 @@ impl GapEffect {
     /// (a terminal opening verse N is not attached to the last letter of verse
     /// N−1). The flag scan is a second pass over the same (short) run rather
     /// than a re-implementation, so the pending machine stays in one place.
-    fn extend(&mut self, gap: &str) {
+    pub(crate) fn extend(&mut self, gap: &str) {
         let mut prev_letter = false;
         advance_gap(gap, &mut self.from_none, &mut prev_letter);
         for c in gap.chars() {
@@ -1223,9 +1223,16 @@ pub(crate) struct CasingChapterObs {
     tail: Option<Pending>,
 }
 
-/// The casing boundary state carried across chapters — the **complete** state
-/// [`ChapterAcc`] carries across a verse seam, which is the same seam a chapter
-/// boundary is (a chapter boundary is not a discourse reset).
+/// The forced-position boundary state carried across chapters — the **complete**
+/// state [`ChapterAcc`] carries across a verse seam, which is the same seam a
+/// chapter boundary is (a chapter boundary is not a discourse reset).
+///
+/// Shared by BOTH substrates that read the forced-position machine: the casing
+/// substrate and the glyph substrate (`signals::rare_glyph`, ADR 0053). It is a
+/// *pure state type* over text, not casing's evidence — sharing it keeps one
+/// definition of "forced" rather than letting a second substrate re-derive an
+/// almost-identical machine, and it is emphatically not one rule consuming
+/// another's verdict.
 ///
 /// Two fields, both necessary and together sufficient:
 ///
@@ -1243,15 +1250,15 @@ pub(crate) struct CasingChapterObs {
 /// and a chapter seam is a verse seam — and every other input to a word's
 /// tally (its fold, its case, its span) is inside its own chapter.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct CasingBoundary {
-    pending: Option<Pending>,
-    book_initial: bool,
+pub(crate) struct PositionBoundary {
+    pub(crate) pending: Option<Pending>,
+    pub(crate) book_initial: bool,
 }
 
-impl Default for CasingBoundary {
+impl Default for PositionBoundary {
     /// Book start: nothing pending, and the book's first word is still ahead.
     fn default() -> Self {
-        CasingBoundary {
+        PositionBoundary {
             pending: None,
             book_initial: true,
         }
@@ -1593,7 +1600,7 @@ impl crate::substrate::ObservationSubstrate for CasingSubstrate {
     const SCHEMA_STAMP: u64 = 1;
 
     type Key = CasingKey;
-    type BoundaryState = CasingBoundary;
+    type BoundaryState = PositionBoundary;
     type ChapterObservation = CasingChapterObs;
     type ReducedChapter = CasingReduced;
     type BookContribution = CasingBookContribution;
@@ -1626,7 +1633,7 @@ impl crate::substrate::ObservationSubstrate for CasingSubstrate {
         acc.finish(chapter.chapter, symbols)
     }
 
-    fn pending_owner(_state: &CasingBoundary) -> Option<&str> {
+    fn pending_owner(_state: &PositionBoundary) -> Option<&str> {
         // Nothing is ever deposited backwards for casing: a chapter's own
         // reduction consumes the state that entered it (to classify its first
         // word) and produces its own. A successor never writes into a
@@ -1637,16 +1644,16 @@ impl crate::substrate::ObservationSubstrate for CasingSubstrate {
 
     fn reduce_chapter(
         observation: &CasingChapterObs,
-        entering: &CasingBoundary,
+        entering: &PositionBoundary,
         _carry_out: &mut CasingReduced,
-    ) -> (CasingReduced, CasingBoundary) {
+    ) -> (CasingReduced, PositionBoundary) {
         let at_first = observation.lead.apply(entering.pending);
         let (first, leaving) = match observation.first {
             None => (
                 None,
                 // A word-less chapter is a pass-through: the entering state
                 // flows on, modified only by the chapter's own gap text.
-                CasingBoundary {
+                PositionBoundary {
                     pending: at_first,
                     book_initial: entering.book_initial,
                 },
@@ -1664,7 +1671,7 @@ impl crate::substrate::ObservationSubstrate for CasingSubstrate {
                     // text, so the leaving state is independent of what entered
                     // — which is why a changed carry converges within one
                     // chapter of the edit.
-                    CasingBoundary {
+                    PositionBoundary {
                         pending: observation.tail,
                         book_initial: false,
                     },
@@ -1681,7 +1688,7 @@ impl crate::substrate::ObservationSubstrate for CasingSubstrate {
         )
     }
 
-    fn finish_book(_leaving: &CasingBoundary, _carry_out: &mut CasingReduced) {
+    fn finish_book(_leaving: &PositionBoundary, _carry_out: &mut CasingReduced) {
         // A pending terminal live at the book's end has no following word to
         // force, so it resolves to nothing — there is no book-edge contribution
         // to fold back.
@@ -2959,7 +2966,7 @@ mod tests {
         let fold = |obs: &CasingChapterObs, symbols: &WordInterner| {
             let mut sink = CasingReduced::default();
             let (reduced, _) =
-                CasingSubstrate::reduce_chapter(obs, &CasingBoundary::default(), &mut sink);
+                CasingSubstrate::reduce_chapter(obs, &PositionBoundary::default(), &mut sink);
             CasingSubstrate::fold_book(&[reduced], symbols)
         };
         assert_eq!(
@@ -3031,16 +3038,16 @@ mod tests {
 
     fn reduce_one(
         obs: &CasingChapterObs,
-        entering: &CasingBoundary,
-    ) -> (Option<PosClass>, CasingBoundary) {
+        entering: &PositionBoundary,
+    ) -> (Option<PosClass>, PositionBoundary) {
         let mut sink = CasingReduced::default();
         let (reduced, leaving) = CasingSubstrate::reduce_chapter(obs, entering, &mut sink);
         (reduced.first.map(|f| f.pos), leaving)
     }
 
     /// The boundary state after a chapter ending in a bare terminal.
-    fn after_terminal(mark: char) -> CasingBoundary {
-        CasingBoundary {
+    fn after_terminal(mark: char) -> PositionBoundary {
+        PositionBoundary {
             pending: Some(Pending {
                 mark,
                 quote: false,
@@ -3072,7 +3079,7 @@ mod tests {
         assert_eq!(
             reduce_one(
                 &obs,
-                &CasingBoundary {
+                &PositionBoundary {
                     pending: None,
                     book_initial: false
                 }
@@ -3084,13 +3091,13 @@ mod tests {
         // The book's first word is forced with no glyph, whatever else is
         // pending — so `book_initial` is not derivable from the pending state.
         assert_eq!(
-            reduce_one(&obs, &CasingBoundary::default()).0,
+            reduce_one(&obs, &PositionBoundary::default()).0,
             Some(PosClass::BOOK_INITIAL)
         );
         assert_eq!(
             reduce_one(
                 &obs,
-                &CasingBoundary {
+                &PositionBoundary {
                     pending: Some(Pending {
                         mark: '.',
                         quote: false,
@@ -3180,9 +3187,9 @@ mod tests {
     fn a_wordless_chapter_passes_state_through_and_a_worded_one_absorbs_it() {
         let empty = map_one("2", &["", "   ", "\u{2014}"]);
         for entering in [
-            CasingBoundary::default(),
+            PositionBoundary::default(),
             after_terminal('.'),
-            CasingBoundary {
+            PositionBoundary {
                 pending: None,
                 book_initial: false,
             },
@@ -3207,7 +3214,7 @@ mod tests {
 
         let worded = map_one("2", &["he stops."]);
         let a = reduce_one(&worded, &after_terminal('!')).1;
-        let b = reduce_one(&worded, &CasingBoundary::default()).1;
+        let b = reduce_one(&worded, &PositionBoundary::default()).1;
         assert_eq!(a, b, "a chapter with a word leaves its own state, not a carry");
     }
 

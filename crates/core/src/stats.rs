@@ -18,28 +18,18 @@ use std::collections::BTreeMap;
 
 use crate::diagnostics::RuleId;
 use crate::signals::proportionality::ProportionalityStats;
-use crate::signals::rare_glyph::RareGlyphStats;
 
 /// Per-rule cached statistics — a **closed** union like `FindingArgs`, one
 /// variant per stateful rule. The orchestration treats it opaquely; each
 /// rule reduces into / judges from its own variant.
 ///
-/// What each variant caches varies: proportionality's per-verse ratios are
-/// sparse; punctuation adjacency and repeated-character-run cache only
-/// **aggregate counts** (never per-occurrence sites — those re-derive from the
-/// text at `judge`). Casing (ADR 0051) caches a per-book **word case table** —
-/// larger, but raw and mergeable, with the lexicon and per-glyph habit derived
-/// at `judge`; both casing rules share it and it round-trips like the others.
-/// Zero-width space carries no variant here: it is judged per-verse and
-/// deterministically by `uni.redundant-zero-width-space` (ADR 0027), which needs
-/// no corpus statistics.
+/// One variant remains: proportionality's sparse per-verse ratios. Every other
+/// stateful rule is a typed observation substrate now, whose aggregate lives in
+/// its own [`SubstrateCache`](crate::substrate::SubstrateCache) behind typed
+/// validity stamps rather than in this shared, book-superseded enum.
 #[derive(Debug, Clone, PartialEq)]
 pub enum RuleStats {
     Proportionality(ProportionalityStats),
-    /// `uni.rare-glyph` (ADR 0053): per book, the full scalar inventory (the
-    /// census substrate) plus word-level detail confined to locally-rare
-    /// letters. Named for its dual role as the future glyph census accumulator.
-    GlyphInventory(RareGlyphStats),
 }
 
 impl RuleStats {
@@ -51,20 +41,10 @@ impl RuleStats {
             (RuleStats::Proportionality(a), RuleStats::Proportionality(b)) => {
                 RuleStats::Proportionality(a.merge(b))
             }
-            (RuleStats::GlyphInventory(a), RuleStats::GlyphInventory(b)) => {
-                RuleStats::GlyphInventory(a.merge(b))
-            }
-            // Mismatched variants can't occur via `analyze_stateful` (it keys
-            // prior and fresh by the same `RuleId`). For malformed cached input
-            // the **fresh** reduction wins — never the stale prior. The left
-            // pattern lists every current variant explicitly (not `_`), so a
-            // new variant makes this match non-exhaustive until its own
-            // same-type merge arm is added above.
-            (
-                RuleStats::Proportionality(_)
-                | RuleStats::GlyphInventory(_),
-                fresh,
-            ) => fresh,
+            // With one variant left the same-type arm above is total. A second
+            // variant makes this match non-exhaustive again, which is the point:
+            // it must be given its own same-type merge arm, and mismatched pairs
+            // must resolve to the FRESH reduction, never the stale prior.
         }
     }
 
@@ -72,7 +52,6 @@ impl RuleStats {
     fn remove_book(&mut self, slug: &str) {
         match self {
             RuleStats::Proportionality(p) => p.remove_book(slug),
-            RuleStats::GlyphInventory(g) => g.remove_book(slug),
         }
     }
 }

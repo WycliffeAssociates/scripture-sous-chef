@@ -429,9 +429,6 @@ pub fn stateful_rules(config: &Config) -> Vec<Box<dyn StatefulRule>> {
         // (`punct.spacing-anomaly` and `punct.adjacency-anomaly` are typed
         // observation substrates now — see `SpacingSubstrate` and
         // `AdjacencySubstrate` — driven outside this registry.)
-        Box::new(signals::rare_glyph::RareGlyph {
-            cfg: config.rare_glyph,
-        }),
     ]
 }
 

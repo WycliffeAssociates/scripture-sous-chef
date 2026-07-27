@@ -149,6 +149,8 @@ pub(crate) struct SubstrateSection {
     pub(crate) punct_only: SubstrateCache<lexical::PunctOnlySubstrate>,
     /// `uni.mixed-script-in-token`'s substrate (Phase E).
     pub(crate) mixed_script: SubstrateCache<script_mixing::MixedScriptSubstrate>,
+    /// `uni.rare-glyph`'s substrate (Phase E).
+    pub(crate) glyph: SubstrateCache<crate::signals::rare_glyph::GlyphSubstrate>,
     /// `case.mixed-case-word`'s substrate (Phase E).
     pub(crate) mixed_case: SubstrateCache<crate::signals::mixed_case::MixedCaseSubstrate>,
     /// The shared folded-word table every word-keyed substrate names its word
@@ -173,6 +175,7 @@ impl SubstrateSection {
             repeated_run: SubstrateCache::new(),
             punct_only: SubstrateCache::new(),
             mixed_script: SubstrateCache::new(),
+            glyph: SubstrateCache::new(),
             duplicate_word: SubstrateCache::new(),
             casing: SubstrateCache::new(),
             casing_model: None,
@@ -189,6 +192,7 @@ impl SubstrateSection {
         self.repeated_run.clear();
         self.punct_only.clear();
         self.mixed_script.clear();
+        self.glyph.clear();
         self.duplicate_word.clear();
         self.casing.clear();
         self.casing_model = None;
@@ -206,6 +210,7 @@ impl SubstrateSection {
         self.repeated_run.remove_book(slug);
         self.punct_only.remove_book(slug);
         self.mixed_script.remove_book(slug);
+        self.glyph.remove_book(slug);
         self.duplicate_word.remove_book(slug);
         self.casing.remove_book(slug);
         self.mixed_case.remove_book(slug);

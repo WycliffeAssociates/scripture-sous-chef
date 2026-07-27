@@ -190,9 +190,9 @@ impl StatefulRule for ProjectLengthRatio {
     ) -> Vec<Finding> {
         // Proportionality caches its per-verse ratios (a sparse sufficient
         // statistic), so it emits from them directly — no re-scan of `target`.
-        let RuleStats::Proportionality(stats) = stats else {
-            return Vec::new();
-        };
+        // One variant remains in `RuleStats`, so this destructures rather than
+        // matches; row 7's migration retires the enum with the rule.
+        let RuleStats::Proportionality(stats) = stats;
         let t = f64::from(self.cfg.z_threshold);
 
         // Two pooling scopes (ADR 0017 §8): the verse's own book, and the

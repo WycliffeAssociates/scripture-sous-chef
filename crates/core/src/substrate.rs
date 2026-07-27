@@ -60,6 +60,8 @@ pub(crate) enum SubstrateId {
     PunctOnly,
     /// `uni.mixed-script-in-token`'s per-signature / per-script token counts.
     MixedScript,
+    /// `uni.rare-glyph`'s scalar inventory + rare-letter word detail.
+    Glyph,
     /// `struct.duplicate-word`'s adjacent-pair sites.
     DuplicateWord,
     /// The shared casing model: per-word case tables + lowercase flag
@@ -81,6 +83,7 @@ impl SubstrateId {
         SubstrateId::RepeatedRun,
         SubstrateId::PunctOnly,
         SubstrateId::MixedScript,
+        SubstrateId::Glyph,
         SubstrateId::DuplicateWord,
         SubstrateId::Casing,
         SubstrateId::MixedCase,
@@ -165,6 +168,7 @@ pub const SUBSTRATE_NAMES: [&str; SubstrateId::ALL.len()] = [
     "repeated-run",
     "punct-only",
     "mixed-script",
+    "glyph",
     "duplicate-word",
     "casing",
     "mixed-case",
@@ -925,6 +929,7 @@ pub(crate) struct ActiveSubstrates {
     pub(crate) repeated_run: bool,
     pub(crate) punct_only: bool,
     pub(crate) mixed_script: bool,
+    pub(crate) glyph: bool,
     pub(crate) duplicate_word: bool,
     pub(crate) casing: bool,
     pub(crate) mixed_case: bool,
@@ -941,6 +946,7 @@ impl ActiveSubstrates {
             repeated_run: any(repeated_run_consumers()),
             punct_only: any(punct_only_consumers()),
             mixed_script: any(mixed_script_consumers()),
+            glyph: any(glyph_consumers()),
             duplicate_word: any(duplicate_word_consumers()),
             casing: any(casing_consumers()),
             mixed_case: any(mixed_case_consumers()),
@@ -955,6 +961,7 @@ impl ActiveSubstrates {
             SubstrateId::RepeatedRun => self.repeated_run,
             SubstrateId::PunctOnly => self.punct_only,
             SubstrateId::MixedScript => self.mixed_script,
+            SubstrateId::Glyph => self.glyph,
             SubstrateId::DuplicateWord => self.duplicate_word,
             SubstrateId::Casing => self.casing,
             SubstrateId::MixedCase => self.mixed_case,
@@ -989,6 +996,11 @@ pub(crate) fn mixed_script_consumers() -> &'static [RuleId] {
     &[RuleId::MixedScriptInToken]
 }
 
+/// The closed registry: the glyph substrate's sole consumer.
+pub(crate) fn glyph_consumers() -> &'static [RuleId] {
+    &[RuleId::RareGlyph]
+}
+
 /// The closed registry: the duplicate-word substrate's sole consumer.
 pub(crate) fn duplicate_word_consumers() -> &'static [RuleId] {
     &[RuleId::DuplicateWord]
@@ -1018,6 +1030,7 @@ pub(crate) fn consumers_of(id: SubstrateId) -> &'static [RuleId] {
         SubstrateId::RepeatedRun => repeated_run_consumers(),
         SubstrateId::PunctOnly => punct_only_consumers(),
         SubstrateId::MixedScript => mixed_script_consumers(),
+        SubstrateId::Glyph => glyph_consumers(),
         SubstrateId::DuplicateWord => duplicate_word_consumers(),
         SubstrateId::Casing => casing_consumers(),
         SubstrateId::MixedCase => mixed_case_consumers(),
@@ -1053,6 +1066,10 @@ mod tests {
             SubstrateId::MixedScript
         );
         assert_eq!(
+            <crate::signals::rare_glyph::GlyphSubstrate as ObservationSubstrate>::ID,
+            SubstrateId::Glyph
+        );
+        assert_eq!(
             <crate::signals::lexical::DuplicateWordSubstrate as ObservationSubstrate>::ID,
             SubstrateId::DuplicateWord
         );
@@ -1083,6 +1100,7 @@ mod tests {
                 repeated_run: true,
                 punct_only: true,
                 mixed_script: true,
+                glyph: true,
                 duplicate_word: true,
                 casing: true,
                 mixed_case: true,

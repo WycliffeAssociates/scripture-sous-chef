@@ -72,22 +72,20 @@
 //! `RARE_CAP` at judge so no candidate can exceed the per-book retention bound.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use rustc_hash::FxHashMap;
 
 use crate::charclass::class_of;
 use crate::config::RareGlyphConfig;
-use crate::corpus::{Books, Corpus, KeyIdx, LocalKeyIdx, rebase};
+use crate::corpus::{Corpus, LocalKeyIdx, rebase};
 use crate::diagnostics::{Finding, FindingArgs, RuleId, Severity};
 use crate::evidence::{clamp_count, clamp_unit};
-use crate::rule::{self, StatefulRule, TokenCache};
 use crate::signals::case_shape;
 use crate::signals::casing::{self, PosClass};
 use crate::signals::script_mixing::token_scripts;
 use crate::span::Span;
-use crate::stats::RuleStats;
-use crate::stream;
-use crate::token::{Token, tokenize};
+use crate::token::Token;
 
 pub const RARE_GLYPH: RuleId = RuleId::RareGlyph;
 
@@ -136,275 +134,6 @@ fn rarity(count: u64, k: f64) -> f64 {
     (1.0 - (count.saturating_sub(1) as f64 / k)).clamp(0.0, 1.0)
 }
 
-/// One container word's book-local facts: token count, and the titlecase /
-/// forced shape of its (last-seen) occurrence. Only consulted for hapax
-/// containers, which occur once, so last-seen is unambiguous there.
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
-struct WordInfo {
-    tokens: u32,
-    titlecase: bool,
-    forced: bool,
-}
-
-/// One book's contribution: the full scalar inventory (census substrate) plus
-/// word-level detail confined to locally-rare letter glyphs.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub(crate) struct BookGlyphs {
-    /// Every scalar in the book (ADR 0053 census substrate).
-    pub(crate) inventory: BTreeMap<char, u32>,
-    /// `glyph → word → eligible occurrences of the glyph in that word`, for
-    /// letter glyphs whose per-book eligible count is ≤ [`RARE_CAP`]. "Eligible"
-    /// = inside a single-script letter token (mixed-script tokens are owned by
-    /// `uni.mixed-script-in-token`).
-    rare: BTreeMap<char, BTreeMap<String, u32>>,
-    /// The container words referenced by `rare`: book-local token count + shape.
-    words: BTreeMap<String, WordInfo>,
-}
-
-/// Cached rare-glyph statistics, keyed by book so an edit supersedes only its
-/// book. Corpus-wide quantities are the sums over books, derived at `judge`.
-/// Doubles as the future glyph-census accumulator (ADR 0053).
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct RareGlyphStats {
-    pub(crate) per_book: BTreeMap<Box<str>, BookGlyphs>,
-}
-
-impl RareGlyphStats {
-    /// Book-level supersede: books in `other` replace those in `self`.
-    pub(crate) fn merge(mut self, other: RareGlyphStats) -> RareGlyphStats {
-        for (book, bg) in other.per_book {
-            self.per_book.insert(book, bg);
-        }
-        self
-    }
-
-    /// Drop a book's contribution.
-    pub(crate) fn remove_book(&mut self, slug: &str) {
-        self.per_book.remove(slug);
-    }
-}
-
-pub struct RareGlyph {
-    pub cfg: RareGlyphConfig,
-}
-
-impl StatefulRule for RareGlyph {
-    fn id(&self) -> RuleId {
-        RARE_GLYPH
-    }
-
-    fn reduce(
-        &self,
-        books: &Books<'_>,
-        _source: Option<&Corpus>,
-        tokens: Option<&TokenCache<'_>>,
-    ) -> (RuleStats, rule::RuleSites) {
-        // Thin driver over the shared listener (the fused walk feeds the same
-        // `RareGlyphAcc`); kept for calibration/tests. The shared token cache
-        // is ignored — the driver tokenizes each verse once, which is exactly
-        // what the cache would supply.
-        let _ = tokens;
-        let mut per_book = BTreeMap::new();
-        for (group, bg) in books.iter().zip(rule::map_books(books, |group| {
-            stream::drive_book(
-                group,
-                stream::Needs {
-                    tokens: true,
-                    folds: true,
-                    ..Default::default()
-                },
-                RareGlyphAcc::new(),
-                |a, v| a.verse(v),
-                RareGlyphAcc::finish,
-            )
-        })) {
-            per_book.insert(Box::from(group.slug), bg);
-        }
-        (
-            RuleStats::GlyphInventory(RareGlyphStats { per_book }),
-            // Judge always re-scans the supplied books (the sanctioned
-            // `sites`-free path; ADR 0044): surviving candidates are ultra-rare,
-            // so forwarding every letter occurrence would be far larger than the
-            // re-scan it saves.
-            rule::RuleSites::RareGlyph,
-        )
-    }
-
-    fn judge(
-        &self,
-        stats: &RuleStats,
-        books: &Books<'_>,
-        tokens: Option<&TokenCache<'_>>,
-        _sites: Option<&rule::RuleSites>,
-    ) -> Vec<Finding> {
-        let RuleStats::GlyphInventory(stats) = stats else {
-            return Vec::new();
-        };
-        let threshold = f64::from(clamp_unit(self.cfg.closure_threshold));
-        let k = clamp_count(self.cfg.recurrence_k).min(f64::from(RARE_CAP));
-        let floor = f64::from(clamp_unit(self.cfg.emit_score_min));
-
-        // ── Alphabet-closure gate (ADR 0053): hapax letter-scalar share, read
-        // off the full corpus inventory. Above the threshold the inventory is
-        // open (CJK-like) and the L lane self-silences.
-        let mut letter_scalars = 0u64;
-        let mut hapax_letter_types = 0u64;
-        let mut inv: BTreeMap<char, u64> = BTreeMap::new();
-        for bg in stats.per_book.values() {
-            for (&c, &n) in &bg.inventory {
-                *inv.entry(c).or_default() += u64::from(n);
-            }
-        }
-        for (&c, &n) in &inv {
-            if is_letter_scalar(c) {
-                letter_scalars += n;
-                if n == 1 {
-                    hapax_letter_types += 1;
-                }
-            }
-        }
-        if letter_scalars == 0 {
-            return Vec::new();
-        }
-        let closure = hapax_letter_types as f64 / letter_scalars as f64;
-        if closure > threshold {
-            return Vec::new();
-        }
-
-        // ── Corpus-wide candidate machinery: glyph → word → eligible
-        // occurrences, and each container word's corpus token count + shape.
-        let mut glyph_words: BTreeMap<char, BTreeMap<&str, u64>> = BTreeMap::new();
-        let mut word_tokens: BTreeMap<&str, u64> = BTreeMap::new();
-        let mut word_shape: BTreeMap<&str, (bool, bool)> = BTreeMap::new();
-        for bg in stats.per_book.values() {
-            for (&g, ws) in &bg.rare {
-                let e = glyph_words.entry(g).or_default();
-                for (w, &n) in ws {
-                    *e.entry(w.as_str()).or_default() += u64::from(n);
-                }
-            }
-            for (w, info) in &bg.words {
-                *word_tokens.entry(w.as_str()).or_default() += u64::from(info.tokens);
-                // A hapax container occurs in exactly one book, so its shape is
-                // unambiguous; non-hapax shapes are never consulted.
-                word_shape.insert(w.as_str(), (info.titlecase, info.forced));
-            }
-        }
-
-        // ── Score each candidate letter glyph. Rarity is the corpus-wide
-        // **inventory** count (the census total) — a letter common corpus-wide
-        // is never a candidate even if it is locally rare in one book (and so
-        // recorded in that book's word detail). Survivors carry (score, count).
-        let mut surviving: BTreeMap<char, (f32, u32)> = BTreeMap::new();
-        for (&g, &count) in &inv {
-            if !is_letter_scalar(g) || count == 0 || count as f64 > k {
-                continue;
-            }
-            // Must have ≥1 eligible (single-script letter-token) occurrence — a
-            // letter living only in mixed-script or non-letter tokens is owned
-            // elsewhere (ADR 0053), so this rule stays silent on it.
-            let Some(ws) = glyph_words.get(&g) else {
-                continue;
-            };
-            let accounted: u64 = ws.values().sum();
-            let dominant = ws.iter().max_by_key(|&(_, &n)| n).map(|(&w, &n)| (w, n));
-
-            // A discount can only fire when the eligible word detail accounts for
-            // *every* occurrence (nothing hidden in mixed-script / non-letter
-            // tokens) — mirroring the spike's `accounted == count` guard.
-            let fully_accounted = accounted == count;
-            // Lexical concentration: all occurrences in one recurring word type.
-            let lexical = fully_accounted
-                && dominant.is_some_and(|(w, occ)| {
-                    occ == count && word_tokens.get(w).copied().unwrap_or(0) >= 2
-                });
-            // Titlecase proper-noun shape: sole container is a titlecase hapax at
-            // a non-forced position.
-            let proper_noun = !lexical
-                && fully_accounted
-                && ws.len() == 1
-                && dominant.is_some_and(|(w, occ)| {
-                    occ == count
-                        && word_tokens.get(w).copied().unwrap_or(0) == 1
-                        && word_shape.get(w).is_some_and(|&(tc, forced)| tc && !forced)
-                });
-            if lexical || proper_noun {
-                continue;
-            }
-            let score = rarity(count, k);
-            if score < floor {
-                continue;
-            }
-            surviving.insert(g, (score as f32, count.min(u64::from(u32::MAX)) as u32));
-        }
-        if surviving.is_empty() {
-            return Vec::new();
-        }
-
-        // ── Recover spans by re-scanning the supplied books. Emit at each
-        // eligible occurrence of a surviving glyph (mixed-script tokens skipped).
-        let mut out: Vec<Finding> = rule::map_books(books, |group| {
-            let mut found = Vec::new();
-            for (vi, text) in group.texts.iter().enumerate() {
-                let key_idx = rebase(group.base, LocalKeyIdx::from_usize(vi));
-                emit_verse(key_idx, text, tokens, &surviving, &mut found);
-            }
-            found
-        })
-        .into_iter()
-        .flatten()
-        .collect();
-        out.sort_by_key(|f| (f.key_idx, f.range.start, f.range.end));
-        out
-    }
-}
-
-/// Emit a finding at each eligible occurrence of a surviving glyph in one verse.
-fn emit_verse(
-    key_idx: KeyIdx,
-    text: &str,
-    tokens: Option<&TokenCache<'_>>,
-    surviving: &BTreeMap<char, (f32, u32)>,
-    out: &mut Vec<Finding>,
-) {
-    let toks = verse_tokens(key_idx, text, tokens);
-    for tok in toks.iter() {
-        let word = tok.span.slice(text);
-        if !is_letter_token(word) || token_scripts(word).len() >= 2 {
-            continue;
-        }
-        for (i, c) in word.char_indices() {
-            if let Some(&(score, count)) = surviving.get(&c) {
-                let start = tok.span.start + i as u32;
-                out.push(Finding {
-                    key_idx,
-                    code: RARE_GLYPH,
-                    severity: Severity::Info,
-                    range: Span {
-                        start,
-                        end: start + c.len_utf8() as u32,
-                    },
-                    score: Some(score),
-                    args: Some(FindingArgs::RareGlyph { glyph: c, count }),
-                });
-            }
-        }
-    }
-}
-
-/// The verse's shared tokens when the runner built a cache, else a fresh
-/// tokenization owned by the caller — the single-consumer fallback.
-fn verse_tokens<'a>(
-    key_idx: KeyIdx,
-    text: &str,
-    cache: Option<&'a TokenCache<'a>>,
-) -> std::borrow::Cow<'a, [Token]> {
-    match cache.and_then(|c| c.get(&key_idx)).copied() {
-        Some(t) => std::borrow::Cow::Borrowed(t),
-        None => std::borrow::Cow::Owned(tokenize(text)),
-    }
-}
-
 /// Per-256-codepoint census pages, lazily allocated. The census must touch
 /// every scalar of every verse, so its per-scalar op has to be an array
 /// increment, not a map walk — a `BTreeMap::entry` here cost more than the
@@ -451,110 +180,281 @@ impl CensusPages {
     }
 }
 
-/// The rare-glyph counting listener — walks one book in presented order:
-/// tally every scalar (census), and record word-level detail for eligible
-/// letter tokens, carrying casing's pending-terminal machine across verse
-/// seams (reset per book) for the forced-position fact. `finish` prunes to
-/// locally-rare letter glyphs and the words they reference.
+/// One container word's facts as a chapter records them: how many tokens of that
+/// word type the chapter holds, and the titlecase / forced shape of its LAST
+/// occurrence in the chapter. Last-seen is what the retired listener recorded per
+/// book, and the shape is only ever consulted for a corpus-hapax container, where
+/// last-seen is the only occurrence there is.
 ///
-/// Glyph→word attribution is deferred to book end and derived from *distinct
-/// surface forms*: per-occurrence attribution paid a map walk and a `String`
-/// clone per letter (~3.5M for a Bible), while a book's distinct surfaces
-/// number in the thousands. Equivalent by construction — a surface's letters ×
-/// its occurrence count is exactly what the per-occurrence loop tallied, and
-/// single-script eligibility is a property of the surface string.
-pub(crate) struct RareGlyphAcc {
-    census: CensusPages,
-    // Per-book word-type interner (mirrors `CasingAcc`/`MixedCaseAcc`, ADR
-    // 0057 allocation-diet follow-up): folded key → id, one hash probe per
-    // token via `intern`, replacing the previous contains_key+get_mut double
-    // probe. `word_keys`/`word_info` are id-indexed; the pinned sorted
-    // `words` map (filtered to locally-rare survivors) is rebuilt once in
-    // `finish`.
-    intern: FxHashMap<String, u32>,
-    word_keys: Vec<String>,
-    word_info: Vec<WordInfo>,
-    // Distinct eligible surface forms → occurrence count (original case — the
-    // glyphs attributed are the surface's, not the folded key's). Kept a
-    // plain hash map, not interned: it is already O(1)-hash per occurrence
-    // (no BTreeMap memcmp cost to remove, unlike `words` before this pass),
-    // and its keys are a *different* case-fold domain than `word_keys` (raw
-    // surface vs folded type) — a second interner here would add complexity
-    // for no measured win.
-    surfaces: FxHashMap<String, u32>,
-    pending: Option<casing::Pending>,
-    book_initial: bool,
+/// `forced` is `None` exactly when the last occurrence IS the chapter's first
+/// letter token — the one occurrence whose position class the entering boundary
+/// state decides, and therefore the one thing ordered reduction fills in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ChapterWordInfo {
+    tokens: u32,
+    titlecase: bool,
+    forced: Option<bool>,
 }
 
-impl RareGlyphAcc {
-    pub(crate) fn new() -> Self {
-        RareGlyphAcc {
-            census: CensusPages::new(),
-            intern: FxHashMap::default(),
-            word_keys: Vec::new(),
-            word_info: Vec::new(),
-            surfaces: FxHashMap::default(),
-            pending: None,
-            book_initial: true,
-        }
+/// One container word's facts as a book records them: corpus-facing token count
+/// plus the last-seen shape.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct WordInfo {
+    tokens: u32,
+    titlecase: bool,
+    forced: bool,
+}
+
+/// One chapter's glyph observation — everything about the chapter that no
+/// entering state can change.
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct GlyphChapterObs {
+    token: Box<str>,
+    /// Shared with the reduced chapter and the book fold: reduction changes one
+    /// word's `forced` bit, never the chapter's tables, so they are handed on by
+    /// `Arc` instead of deep-copied per reduce.
+    counts: Arc<GlyphChapterCounts>,
+    /// The gap before the chapter's first letter token — the whole chapter when
+    /// it holds no letter token at all.
+    lead: casing::GapEffect,
+    /// The word-table index whose `forced` reduction must resolve: the chapter's
+    /// first letter token, when that token is also the last occurrence of its
+    /// word type in this chapter. `None` when the chapter has no letter token, or
+    /// when a later occurrence of the same type already fixed the last-seen shape
+    /// from inside the chapter.
+    unresolved: Option<u32>,
+    /// Whether the chapter holds at least one letter token — the fact that clears
+    /// `book_initial` for every later chapter. A word-less chapter carries the
+    /// book's opening forward, which is why this cannot be inferred from the
+    /// chapter's position.
+    has_letter_token: bool,
+    /// The pending terminal left after the chapter's last letter token.
+    /// Chapter-local by construction: the first letter token *takes* whatever
+    /// entered, so every later gap in the chapter starts from nothing. `None`
+    /// when the chapter has no letter token (the entering state passes through
+    /// `lead` instead).
+    tail: Option<casing::Pending>,
+}
+
+/// One chapter's position-independent glyph tables.
+#[derive(Default, PartialEq, Eq)]
+pub(crate) struct GlyphChapterCounts {
+    /// Every scalar in the chapter (ADR 0053 census substrate), key-ordered.
+    inventory: Box<[(char, u32)]>,
+    /// Folded word type → its chapter facts, key-ordered.
+    words: Box<[(Box<str>, ChapterWordInfo)]>,
+    /// Distinct **eligible** surface forms → occurrence count, key-ordered.
+    /// Original case: the glyphs attributed at book fold are the surface's, not
+    /// the folded key's. "Eligible" = a single-script letter token; mixed-script
+    /// tokens belong to `uni.mixed-script-in-token` (ADR 0034).
+    surfaces: Box<[(Box<str>, u32)]>,
+}
+
+/// One chapter's reduced glyph result: its tables plus the one bit ordered
+/// reduction decided.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub(crate) struct GlyphReduced {
+    token: Box<str>,
+    counts: Arc<GlyphChapterCounts>,
+    /// The resolved `forced` for `GlyphChapterObs::unresolved`'s word, when there
+    /// was one.
+    resolved: Option<(u32, bool)>,
+}
+
+impl GlyphReduced {
+    /// This chapter's word table with the resolved bit applied — `forced` is
+    /// total here, which is what the book fold needs.
+    fn words(&self) -> impl Iterator<Item = (&Box<str>, WordInfo)> + '_ {
+        self.counts.words.iter().enumerate().map(|(i, (k, info))| {
+            let forced = match self.resolved {
+                Some((idx, f)) if idx as usize == i => f,
+                // A word whose last occurrence is inside the chapter carries its
+                // own answer; `false` cannot be reached for the unresolved slot
+                // because reduction always resolves it.
+                _ => info.forced.unwrap_or(false),
+            };
+            (
+                k,
+                WordInfo {
+                    tokens: info.tokens,
+                    titlecase: info.titlecase,
+                    forced,
+                },
+            )
+        })
     }
+}
 
-    pub(crate) fn verse(&mut self, v: &stream::VerseInputs<'_, '_>) {
-        let text = v.text;
-        // Census: every scalar.
+/// One `(glyph, folded word)` attribution row: how many eligible occurrences of
+/// that glyph sit inside that word type.
+type RareRow = ((char, Box<str>), u64);
+
+/// One word type's last-seen shape as recorded by one book.
+type ShapeByBook = BTreeMap<Box<str>, (bool, bool)>;
+
+/// A book's folded glyph contribution: the pruned per-book tables the corpus
+/// aggregate takes as addends, plus its chapters' reduced results (whose tokens
+/// materialization rebases through).
+#[derive(Clone, Default, PartialEq, Eq)]
+pub(crate) struct GlyphBookContribution {
+    /// Every scalar in the book, key-ordered — the census substrate's addend.
+    inventory: Arc<Vec<(char, u32)>>,
+    /// `glyph → word → eligible occurrences`, flattened to a key-ordered
+    /// `((glyph, word), count)` table so the corpus merge is one merge-join.
+    /// Confined to letter glyphs whose per-book eligible count is ≤ [`RARE_CAP`].
+    rare: Arc<Vec<RareRow>>,
+    /// The container words `rare` references: book token count + last-seen shape.
+    words: Arc<Vec<(Box<str>, WordInfo)>>,
+    chapters: Vec<GlyphReduced>,
+}
+
+/// A book's three addends as the corpus aggregate holds them, shared by `Arc`
+/// with the contribution they were folded into.
+type GlyphAddends = (
+    Arc<Vec<(char, u32)>>,
+    Arc<Vec<RareRow>>,
+    Arc<Vec<(Box<str>, WordInfo)>>,
+);
+
+/// The glyph corpus aggregate. **Counts and shapes only** — no site ever enters
+/// it, because this rule is deliberately site-free (ADR 0053: surviving
+/// candidates are ultra-rare, so re-scanning at materialization is far cheaper
+/// than retaining every letter occurrence).
+#[derive(Default)]
+pub(crate) struct GlyphCorpusStats {
+    /// Per-book addends, so a replacement can subtract exactly what it added.
+    per_book: BTreeMap<Box<str>, GlyphAddends>,
+    /// Corpus-wide scalar counts.
+    inventory: BTreeMap<char, u64>,
+    /// Corpus-wide letter-scalar occurrences — the closure gate's denominator.
+    /// Maintained as `inventory` moves so the gate needs no full walk per key.
+    letter_scalars: u64,
+    /// Corpus-wide count of letter types whose total is exactly 1 — the closure
+    /// gate's numerator.
+    hapax_letter_types: u64,
+    /// Corpus-wide `(glyph, word) → eligible occurrences`.
+    rare: BTreeMap<(char, Box<str>), u64>,
+    /// Corpus-wide per-word token counts.
+    word_tokens: BTreeMap<Box<str>, u64>,
+    /// Per-word, per-book last-seen shape. Nested by book because the retired
+    /// judge's `word_shape.insert` inside an ascending-slug walk means the
+    /// HIGHEST slug wins — which this reproduces exactly by taking the last
+    /// entry. It is only ever consulted for a word whose corpus token count is
+    /// 1, i.e. a word exactly one book contributes, so the choice is
+    /// unobservable; reproducing it anyway costs one small map and removes the
+    /// need to argue about it.
+    word_shape: BTreeMap<Box<str>, ShapeByBook>,
+}
+
+/// The judge key: a candidate letter scalar. Its whole verdict is a function of
+/// this scalar and the corpus aggregate.
+pub(crate) type GlyphKey = char;
+
+/// One glyph's verdict: the score and its corpus count, or `None` when the glyph
+/// is not a candidate, is explained away by a discount, or falls below the floor.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct GlyphOutcome {
+    emit: Option<(f32, u32)>,
+}
+
+/// The `uni.rare-glyph` observation substrate. Sole consumer: the rule of the
+/// same name.
+pub(crate) struct GlyphSubstrate;
+
+/// Pins the substrate's registry id at compile time.
+const _: crate::substrate::SubstrateId =
+    <GlyphSubstrate as crate::substrate::ObservationSubstrate>::ID;
+
+/// One chapter's glyph map: the same per-verse census and per-letter-token word
+/// walk the retired listener ran, with the one position-dependent bit left for
+/// ordered reduction.
+fn map_glyph_chapter(chapter: &crate::substrate::ChapterView<'_>) -> GlyphChapterObs {
+    let mut census = CensusPages::new();
+    let mut intern: FxHashMap<Box<str>, u32> = FxHashMap::default();
+    let mut word_keys: Vec<Box<str>> = Vec::new();
+    let mut word_info: Vec<ChapterWordInfo> = Vec::new();
+    let mut surfaces: BTreeMap<Box<str>, u32> = BTreeMap::new();
+    let mut lead = casing::GapEffect::default();
+    let mut first_seen: Option<u32> = None;
+    // The live pending machine AFTER the chapter's first letter token. Before it,
+    // the transform is accumulated into `lead` instead, because what the entering
+    // state does to it is not known at map time.
+    let mut pending: Option<casing::Pending> = None;
+    let mut tokens_buf: Vec<crate::token::Token> = Vec::new();
+
+    for text in chapter.texts.iter() {
         for c in text.chars() {
-            self.census.bump(c);
+            census.bump(c);
         }
-
-        // Word-level walk over letter tokens; non-letter tokens stay in the gap
-        // the next letter token sees (cursor deliberately unmoved), mirroring the
-        // casing walk's gap handling.
+        crate::token::tokenize_into(text, &mut tokens_buf);
+        // `prev_letter` restarts at every verse seam: a terminal opening verse N
+        // is not attached to the last letter of verse N-1.
         let mut prev_letter = false;
         let mut cursor = 0usize;
-        for (tok, folded) in v.tokens.iter().zip(v.folds) {
-            let Some(key) = folded else { continue };
+        for tok in tokens_buf.iter() {
             let word = tok.span.slice(text);
-            casing::advance_gap(
-                &text[cursor..tok.span.start as usize],
-                &mut self.pending,
-                &mut prev_letter,
-            );
-            let forced = !matches!(
-                casing::pos_of(self.book_initial, self.pending.take()),
-                PosClass::MIDFLOW
-            );
-            self.book_initial = false;
-
-            // Titlecase name shape via the shared helper (ADR 0055): upper first
-            // + ≥1 lowercase — deliberately looser than mixed-case's strict
-            // `Title` (it admits `McDonald`), documented in `signals::case_shape`.
+            if !is_letter_token(word) {
+                // A non-letter token stays in the gap the next letter token sees
+                // — the cursor is deliberately not moved, mirroring the casing
+                // walk's gap handling.
+                continue;
+            }
+            let gap = &text[cursor..tok.span.start as usize];
+            let is_first = first_seen.is_none();
+            if is_first {
+                lead.extend(gap);
+            } else {
+                casing::advance_gap(gap, &mut pending, &mut prev_letter);
+            }
+            let forced = if is_first {
+                None
+            } else {
+                Some(!matches!(
+                    casing::pos_of(false, pending.take()),
+                    PosClass::MIDFLOW
+                ))
+            };
             let titlecase = case_shape::is_titlecase_name(word);
-            // Fold to the key without allocating for the already-lowercase
-            // majority, and clone map keys only on first sight — computed once
-            // per token by the fused walk (`stream::fold_letter_tokens`), not
-            // per listener. One hash probe per token via the interner (was
-            // contains_key + get_mut, two probes).
-            let id = match self.intern.get(key.as_ref()) {
+            // The same fold the retired listener took from the shared walk: only
+            // a word carrying an uppercase scalar needs lowering.
+            let key: std::borrow::Cow<'_, str> = if word.chars().any(|c| class_of(c).is_uppercase())
+            {
+                std::borrow::Cow::Owned(word.to_lowercase())
+            } else {
+                std::borrow::Cow::Borrowed(word)
+            };
+            let id = match intern.get(key.as_ref()) {
                 Some(&id) => id,
                 None => {
-                    let id = self.word_keys.len() as u32;
-                    let owned = key.clone().into_owned();
-                    self.intern.insert(owned.clone(), id);
-                    self.word_keys.push(owned);
-                    self.word_info.push(WordInfo::default());
+                    let id = word_keys.len() as u32;
+                    let owned: Box<str> = Box::from(key.as_ref());
+                    intern.insert(owned.clone(), id);
+                    word_keys.push(owned);
+                    word_info.push(ChapterWordInfo {
+                        tokens: 0,
+                        titlecase: false,
+                        forced: Some(false),
+                    });
                     id
                 }
             };
-            let info = &mut self.word_info[id as usize];
+            let info = &mut word_info[id as usize];
             info.tokens = info.tokens.saturating_add(1);
             info.titlecase = titlecase;
             info.forced = forced;
+            if is_first {
+                first_seen = Some(id);
+            }
 
-            // Glyph attribution defers to book end; record the surface once.
-            if let Some(n) = self.surfaces.get_mut(word) {
-                *n = n.saturating_add(1);
-            } else {
-                self.surfaces.insert(word.to_string(), 1);
+            // Glyph attribution defers to the book fold; record the surface once.
+            // Eligibility (single-script) is a property of the surface string, so
+            // filtering here is equivalent to filtering per occurrence and costs
+            // one `token_scripts` per distinct surface instead of per token.
+            match surfaces.get_mut(word) {
+                Some(n) => *n = n.saturating_add(1),
+                None => {
+                    surfaces.insert(Box::from(word), 1);
+                }
             }
 
             prev_letter = word
@@ -563,55 +463,667 @@ impl RareGlyphAcc {
                 .is_some_and(|c| class_of(c).is_alphabetic());
             cursor = tok.span.end as usize;
         }
-        casing::advance_gap(&text[cursor..], &mut self.pending, &mut prev_letter);
+        let tail_gap = &text[cursor..];
+        if first_seen.is_none() {
+            lead.extend(tail_gap);
+        } else {
+            casing::advance_gap(tail_gap, &mut pending, &mut prev_letter);
+        }
     }
 
-    pub(crate) fn finish(self) -> BookGlyphs {
-        let mut glyph_words: BTreeMap<char, BTreeMap<String, u32>> = BTreeMap::new();
-        // Derive glyph→word attribution from the distinct surfaces: eligible
-        // (single-script) surfaces only, each letter occurrence in the surface
-        // contributing the surface's count to (glyph → folded key).
-        for (surface, &n) in &self.surfaces {
-            if token_scripts(surface).len() >= 2 {
-                continue;
-            }
-            let key = surface.to_lowercase();
-            for g in surface.chars().filter(|&g| is_letter_scalar(g)) {
-                let ws = glyph_words.entry(g).or_default();
-                if let Some(e) = ws.get_mut(key.as_str()) {
+    // Sort the word table by key, remembering where the first letter token's word
+    // landed, and drop the unresolved marker when a LATER occurrence of the same
+    // type already fixed the chapter's last-seen shape.
+    let mut rows: Vec<(Box<str>, ChapterWordInfo)> =
+        word_keys.into_iter().zip(word_info).collect();
+    rows.sort_by(|a, b| a.0.cmp(&b.0));
+    // At most one row can carry the open `forced`: only the chapter's first letter
+    // token writes `None`, and ANY later occurrence of that same word type
+    // overwrites it with the answer the chapter itself computed. So the marker
+    // exists iff the first letter token is also the last occurrence of its type.
+    let unresolved = rows
+        .iter()
+        .position(|(_, info)| info.forced.is_none())
+        .map(|i| i as u32);
+    debug_assert!(
+        rows.iter().filter(|(_, i)| i.forced.is_none()).count() <= 1,
+        "at most one word row may await the entering boundary state"
+    );
+    let surfaces: Vec<(Box<str>, u32)> = surfaces
+        .into_iter()
+        .filter(|(surface, _)| token_scripts(surface).len() < 2)
+        .collect();
+
+    GlyphChapterObs {
+        token: Box::from(chapter.chapter),
+        counts: Arc::new(GlyphChapterCounts {
+            inventory: census.into_map().into_iter().collect(),
+            words: rows.into_boxed_slice(),
+            surfaces: surfaces.into_boxed_slice(),
+        }),
+        lead,
+        unresolved,
+        has_letter_token: first_seen.is_some(),
+        tail: pending,
+    }
+}
+
+
+impl crate::substrate::ObservationSubstrate for GlyphSubstrate {
+    const ID: crate::substrate::SubstrateId = crate::substrate::SubstrateId::Glyph;
+    // Bump on any observation/reduction schema change.
+    const SCHEMA_STAMP: u64 = 1;
+
+    type Key = GlyphKey;
+    /// The forced-position carry, shared with the casing substrate: a chapter's
+    /// FIRST letter token's position class is a function of what enters, so it
+    /// cannot be `()`. Everything else a chapter's tables hold is inside the
+    /// chapter — see [`GlyphChapterObs`].
+    type BoundaryState = casing::PositionBoundary;
+    type ChapterObservation = GlyphChapterObs;
+    type ReducedChapter = GlyphReduced;
+    type BookContribution = GlyphBookContribution;
+    type CorpusStats = GlyphCorpusStats;
+    // Every `RareGlyphConfig` field (the closure threshold, the recurrence knee,
+    // the floor) is read at judge, so a knob change maps and reduces nothing.
+    type ExtractorConfig = ();
+    // Word keys and surfaces are their own text; the folded-word interner is
+    // deliberately NOT shared here — this rule's fold domain includes raw
+    // surfaces, a different domain from casing's word types.
+    type Symbols = ();
+    type JudgeConfig = RareGlyphConfig;
+    type EntryOutcome = GlyphOutcome;
+
+    fn extractor_fp(_extractor: &()) -> u64 {
+        0
+    }
+
+    fn map_chapter(
+        chapter: &crate::substrate::ChapterView<'_>,
+        _extractor: &(),
+        _symbols: &(),
+    ) -> GlyphChapterObs {
+        map_glyph_chapter(chapter)
+    }
+
+    fn pending_owner(_state: &casing::PositionBoundary) -> Option<&str> {
+        // Nothing is carried *forward to be resolved backwards*: the entering
+        // state resolves inside the chapter it enters, so no earlier chapter's
+        // reduced result is ever amended.
+        None
+    }
+
+    fn reduce_chapter(
+        observation: &GlyphChapterObs,
+        entering: &casing::PositionBoundary,
+        _carry_out: &mut GlyphReduced,
+    ) -> (GlyphReduced, casing::PositionBoundary) {
+        // The gap before the chapter's first letter token, applied to whatever
+        // entered — the whole chapter's gap when it holds no letter token.
+        let at_first = observation.lead.apply(entering.pending);
+        let (resolved, leaving) = if observation.has_letter_token {
+            let forced = !matches!(
+                casing::pos_of(entering.book_initial, at_first),
+                PosClass::MIDFLOW
+            );
+            (
+                observation.unresolved.map(|idx| (idx, forced)),
+                casing::PositionBoundary {
+                    pending: observation.tail,
+                    book_initial: false,
+                },
+            )
+        } else {
+            // A word-less chapter decides nothing and clears nothing: the pending
+            // machine and the book's opening both pass through it.
+            (
+                None,
+                casing::PositionBoundary {
+                    pending: at_first,
+                    book_initial: entering.book_initial,
+                },
+            )
+        };
+        (
+            GlyphReduced {
+                token: observation.token.clone(),
+                counts: Arc::clone(&observation.counts),
+                resolved,
+            },
+            leaving,
+        )
+    }
+
+    fn finish_book(_leaving: &casing::PositionBoundary, _carry_out: &mut GlyphReduced) {}
+
+    fn fold_book(reduced: &[GlyphReduced], _symbols: &()) -> GlyphBookContribution {
+        use std::borrow::Cow;
+
+        let inventory: Vec<(char, u32)> = {
+            let mut acc: BTreeMap<char, u32> = BTreeMap::new();
+            for r in reduced {
+                for &(c, n) in r.counts.inventory.iter() {
+                    let e = acc.entry(c).or_default();
                     *e = e.saturating_add(n);
-                } else {
-                    ws.insert(key.clone(), n);
+                }
+            }
+            acc.into_iter().collect()
+        };
+
+        // Words: token counts sum across chapters; the shape is the LAST chapter's
+        // that holds the type, which is what "last-seen in the book" meant when
+        // one accumulator walked the whole book in order.
+        //
+        // Keyed by BORROWED chapter strings throughout. The book's word types
+        // outnumber the ones that survive pruning by orders of magnitude, so
+        // allocating a key per type here (and again per glyph-word pair below)
+        // would be paying for keys the fold is about to discard; ownership is
+        // taken once, at the end, for exactly the survivors.
+        let mut words: BTreeMap<&str, WordInfo> = BTreeMap::new();
+        for r in reduced {
+            for (key, info) in r.words() {
+                match words.get_mut(key.as_ref()) {
+                    Some(e) => {
+                        e.tokens = e.tokens.saturating_add(info.tokens);
+                        e.titlecase = info.titlecase;
+                        e.forced = info.forced;
+                    }
+                    None => {
+                        words.insert(key.as_ref(), info);
+                    }
                 }
             }
         }
 
-        // Prune to locally-rare letter glyphs, then to the words they reference
-        // (sorting the survivors into the stats' BTreeMap shape).
-        glyph_words.retain(|_, ws| ws.values().copied().sum::<u32>() <= RARE_CAP);
-        let keep: BTreeSet<String> = glyph_words
-            .values()
-            .flat_map(|ws| ws.keys().cloned())
-            .collect();
-        let words: BTreeMap<String, WordInfo> = self
-            .word_keys
+        // Glyph attribution, deferred to the book fold exactly as the retired
+        // listener deferred it to book end: each eligible surface's letters
+        // contribute the surface's book-wide count to `(glyph, folded key)`.
+        // Equivalent to per-occurrence attribution by construction, and a book's
+        // distinct surfaces number in the thousands where its letters number in
+        // millions.
+        let mut surfaces: BTreeMap<&str, u32> = BTreeMap::new();
+        for r in reduced {
+            for (surface, n) in r.counts.surfaces.iter() {
+                let e = surfaces.entry(surface).or_default();
+                *e = e.saturating_add(*n);
+            }
+        }
+        let mut rare: BTreeMap<(char, Cow<'_, str>), u64> = BTreeMap::new();
+        let mut per_glyph: BTreeMap<char, u64> = BTreeMap::new();
+        for (surface, &n) in &surfaces {
+            // The same conditional fold the chapter map took for its word keys, so
+            // the attribution and the word table cannot key the same type two ways.
+            let key: Cow<'_, str> = if surface.chars().any(|c| class_of(c).is_uppercase()) {
+                Cow::Owned(surface.to_lowercase())
+            } else {
+                Cow::Borrowed(*surface)
+            };
+            for g in surface.chars().filter(|&g| is_letter_scalar(g)) {
+                let e = rare.entry((g, key.clone())).or_default();
+                *e = e.saturating_add(u64::from(n));
+                let t = per_glyph.entry(g).or_default();
+                *t = t.saturating_add(u64::from(n));
+            }
+        }
+        // Prune to locally-rare letter glyphs, then to the words they reference.
+        rare.retain(|(g, _), _| per_glyph.get(g).copied().unwrap_or(0) <= u64::from(RARE_CAP));
+        let keep: BTreeSet<&str> = rare.keys().map(|(_, w)| w.as_ref()).collect();
+        let words: Vec<(Box<str>, WordInfo)> = words
             .into_iter()
-            .zip(self.word_info)
-            .filter(|(k, _)| keep.contains(k.as_str()))
+            .filter(|(k, _)| keep.contains(k))
+            .map(|(k, v)| (Box::from(k), v))
+            .collect();
+        let rare: Vec<RareRow> = rare
+            .into_iter()
+            .map(|((g, w), n)| ((g, Box::from(w.as_ref())), n))
             .collect();
 
-        BookGlyphs {
-            inventory: self.census.into_map(),
-            rare: glyph_words,
-            words,
+        GlyphBookContribution {
+            inventory: Arc::new(inventory),
+            rare: Arc::new(rare),
+            words: Arc::new(words),
+            chapters: reduced.to_vec(),
         }
     }
+
+    fn replace_book_in_corpus_stats(
+        stats: &mut GlyphCorpusStats,
+        slug: &str,
+        old: Option<&GlyphBookContribution>,
+        new: Option<&GlyphBookContribution>,
+    ) -> Vec<GlyphKey> {
+        let e_inv: Vec<(char, u32)> = Vec::new();
+        let e_rare: Vec<RareRow> = Vec::new();
+        let e_words: Vec<(Box<str>, WordInfo)> = Vec::new();
+
+        // Inventory, with the closure gate's two derived totals maintained as it
+        // moves — the gate is corpus-global, so recomputing it by walking the whole
+        // inventory per key would be the only alternative.
+        let old_inv: Vec<(char, u64)> = old
+            .map_or(&e_inv[..], |c| &c.inventory[..])
+            .iter()
+            .map(|&(c, n)| (c, u64::from(n)))
+            .collect();
+        let new_inv: Vec<(char, u64)> = new
+            .map_or(&e_inv[..], |c| &c.inventory[..])
+            .iter()
+            .map(|&(c, n)| (c, u64::from(n)))
+            .collect();
+        crate::signals::punctuation::merge_join(&old_inv, &new_inv, |&c, o, n| {
+            if o == n {
+                return;
+            }
+            let e = stats.inventory.entry(c).or_default();
+            let before = *e;
+            *e = *e + n - o;
+            let after = *e;
+            if after == 0 {
+                stats.inventory.remove(&c);
+            }
+            if is_letter_scalar(c) {
+                stats.letter_scalars = stats.letter_scalars + after - before;
+                if before == 1 {
+                    stats.hapax_letter_types -= 1;
+                }
+                if after == 1 {
+                    stats.hapax_letter_types += 1;
+                }
+            }
+        });
+
+        crate::signals::punctuation::merge_join(
+            old.map_or(&e_rare[..], |c| &c.rare[..]),
+            new.map_or(&e_rare[..], |c| &c.rare[..]),
+            |k, o, n| {
+                if o == n {
+                    return;
+                }
+                let e = stats.rare.entry(k.clone()).or_default();
+                *e = *e + n - o;
+                if *e == 0 {
+                    stats.rare.remove(k);
+                }
+            },
+        );
+
+        // Word token counts are a sum; the shape is per-book, replaced wholesale.
+        let old_wt: Vec<(&Box<str>, u64)> = old
+            .map_or(&e_words[..], |c| &c.words[..])
+            .iter()
+            .map(|(k, i)| (k, u64::from(i.tokens)))
+            .collect();
+        let new_wt: Vec<(&Box<str>, u64)> = new
+            .map_or(&e_words[..], |c| &c.words[..])
+            .iter()
+            .map(|(k, i)| (k, u64::from(i.tokens)))
+            .collect();
+        crate::signals::punctuation::merge_join(&old_wt, &new_wt, |&k, o, n| {
+            if o == n {
+                return;
+            }
+            let e = stats.word_tokens.entry(k.clone()).or_default();
+            *e = *e + n - o;
+            if *e == 0 {
+                stats.word_tokens.remove(k);
+            }
+        });
+        for (k, _) in old.map_or(&e_words[..], |c| &c.words[..]) {
+            if let Some(per) = stats.word_shape.get_mut(k) {
+                per.remove(slug);
+                if per.is_empty() {
+                    stats.word_shape.remove(k);
+                }
+            }
+        }
+        for (k, info) in new.map_or(&e_words[..], |c| &c.words[..]) {
+            stats
+                .word_shape
+                .entry(k.clone())
+                .or_default()
+                .insert(Box::from(slug), (info.titlecase, info.forced));
+        }
+
+        match new {
+            Some(c) => {
+                stats.per_book.insert(
+                    Box::from(slug),
+                    (
+                        Arc::clone(&c.inventory),
+                        Arc::clone(&c.rare),
+                        Arc::clone(&c.words),
+                    ),
+                );
+            }
+            None => {
+                stats.per_book.remove(slug);
+            }
+        }
+
+        // The stats delta is deliberately empty, and here the reason is even
+        // starker than repeated-run's: the FIRST thing this judge reads is the
+        // alphabet-closure gate, a single corpus-global ratio over the whole
+        // letter inventory. Any book replacement that moves one letter's count
+        // moves that ratio, and the ratio decides whether EVERY key emits. So the
+        // honest delta is empty or everything, never a subset — the one wrong
+        // answer. WP8 is where this becomes a generation counter.
+        Vec::new()
+    }
+
+    fn judge(
+        cfg: &RareGlyphConfig,
+        key: &GlyphKey,
+        stats: &GlyphCorpusStats,
+    ) -> GlyphOutcome {
+        let threshold = f64::from(clamp_unit(cfg.closure_threshold));
+        let k = clamp_count(cfg.recurrence_k).min(f64::from(RARE_CAP));
+        let floor = f64::from(clamp_unit(cfg.emit_score_min));
+
+        // Alphabet-closure gate (ADR 0053): hapax letter-scalar share over the
+        // whole corpus inventory. Above the threshold the inventory is open
+        // (CJK-like) and the L lane self-silences.
+        if stats.letter_scalars == 0 {
+            return GlyphOutcome::default();
+        }
+        let closure = stats.hapax_letter_types as f64 / stats.letter_scalars as f64;
+        if closure > threshold {
+            return GlyphOutcome::default();
+        }
+
+        let g = *key;
+        let count = stats.inventory.get(&g).copied().unwrap_or(0);
+        // Rarity is the corpus-wide INVENTORY count (the census total): a letter
+        // common corpus-wide is never a candidate even where one book's word
+        // detail recorded it as locally rare.
+        if !is_letter_scalar(g) || count == 0 || count as f64 > k {
+            return GlyphOutcome::default();
+        }
+        // Must have >=1 eligible (single-script letter-token) occurrence — a letter
+        // living only in mixed-script or non-letter tokens is owned elsewhere
+        // (ADR 0053), so this rule stays silent on it.
+        let ws: Vec<(&Box<str>, u64)> = stats
+            .rare
+            .range((g, Box::from(""))..)
+            .take_while(|((gg, _), _)| *gg == g)
+            .map(|((_, w), &n)| (w, n))
+            .collect();
+        if ws.is_empty() {
+            return GlyphOutcome::default();
+        }
+        let accounted: u64 = ws.iter().map(|&(_, n)| n).sum();
+        // `max_by_key` over an ascending-key iteration returns the LAST maximum,
+        // which is what the retired judge's `BTreeMap::iter().max_by_key` returned.
+        let dominant = ws.iter().max_by_key(|&&(_, n)| n).map(|&(w, n)| (w, n));
+
+        // A discount can only fire when the eligible word detail accounts for
+        // EVERY occurrence (nothing hidden in mixed-script / non-letter tokens).
+        let fully_accounted = accounted == count;
+        // Lexical concentration (the Xerxes class): all occurrences in one
+        // recurring word type.
+        let lexical = fully_accounted
+            && dominant.is_some_and(|(w, occ)| {
+                occ == count && stats.word_tokens.get(w).copied().unwrap_or(0) >= 2
+            });
+        // Titlecase proper-noun shape (the Quirinius class): sole container is a
+        // titlecase hapax at a non-forced position.
+        let proper_noun = !lexical
+            && fully_accounted
+            && ws.len() == 1
+            && dominant.is_some_and(|(w, occ)| {
+                occ == count
+                    && stats.word_tokens.get(w).copied().unwrap_or(0) == 1
+                    && stats
+                        .word_shape
+                        .get(w)
+                        // Ascending slug order, last entry wins — the retired
+                        // judge's per-book `insert` in the same order.
+                        .and_then(|per| per.values().next_back())
+                        .is_some_and(|&(tc, forced)| tc && !forced)
+            });
+        if lexical || proper_noun {
+            return GlyphOutcome::default();
+        }
+        let score = rarity(count, k);
+        if score < floor {
+            return GlyphOutcome::default();
+        }
+        GlyphOutcome {
+            emit: Some((
+                score as f32,
+                count.min(u64::from(u32::MAX)) as u32,
+            )),
+        }
+    }
+}
+
+impl GlyphBookContribution {
+    /// Emit this book's rare-glyph findings by RE-SCANNING its verses — the
+    /// sanctioned site-free path (ADR 0044/0053). Surviving candidates are
+    /// ultra-rare, so retaining every letter occurrence would cost far more than
+    /// the scan; and the drive skips this entirely when nothing survives.
+    fn materialize(
+        &self,
+        layout: &[crate::corpus::ChapterLayout],
+        corpus: &Corpus,
+        surviving: &BTreeMap<char, (f32, u32)>,
+        out: &mut Vec<Finding>,
+    ) {
+        let texts = corpus.texts();
+        // Positional zip is truncating: a missing or extra trailing chapter would
+        // silently DROP findings rather than fail. Chapter cardinality is the
+        // alignment precondition; the token check at each pair (inside
+        // `chapter_base`) proves the pairing, but only for pairs that exist.
+        assert_eq!(
+            self.chapters.len(),
+            layout.len(),
+            "materialize: contribution/layout chapter count mismatch"
+        );
+        let mut tokens_buf: Vec<Token> = Vec::new();
+        for (chapter, block) in self.chapters.iter().zip(layout) {
+            let base = crate::substrate::chapter_base(block, &chapter.token);
+            for (vi, text) in texts[block.range.clone()].iter().enumerate() {
+                let local = LocalKeyIdx::from_usize(vi);
+                crate::token::tokenize_into(text, &mut tokens_buf);
+                for tok in tokens_buf.iter() {
+                    let word = tok.span.slice(text);
+                    if !is_letter_token(word) || token_scripts(word).len() >= 2 {
+                        continue;
+                    }
+                    for (i, c) in word.char_indices() {
+                        if let Some(&(score, count)) = surviving.get(&c) {
+                            let start = tok.span.start + i as u32;
+                            out.push(Finding {
+                                key_idx: rebase(base, local),
+                                code: RARE_GLYPH,
+                                severity: Severity::Info,
+                                range: Span {
+                                    start,
+                                    end: start + c.len_utf8() as u32,
+                                },
+                                score: Some(score),
+                                args: Some(FindingArgs::RareGlyph { glyph: c, count }),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// One chapter the substrate has to map this analysis, as the ordered map seam
+/// sees it: its caller-order `(book, chapter)` slot plus the view mapping reads.
+struct GlyphMapWork<'a> {
+    book: usize,
+    chapter: usize,
+    view: crate::substrate::ChapterView<'a>,
+}
+
+/// Drive the `uni.rare-glyph` observation substrate for one analysis: map the
+/// dirty chapters through the ordered chapter-map seam, reduce to boundary
+/// convergence (this substrate carries the forced-position state), judge every
+/// letter scalar the corpus inventory holds, and materialize by re-scan. When
+/// inactive, drop the cached products so an edit while it is disabled does no
+/// work for it.
+pub(crate) fn drive_rare_glyph(
+    active: bool,
+    cache: &mut crate::substrate::SubstrateCache<GlyphSubstrate>,
+    corpus: &Corpus,
+    cfg: &RareGlyphConfig,
+    out: &mut Vec<Finding>,
+) {
+    use crate::substrate::{
+        ChapterView, DrivePhase, DriveProbe, ObservationInputStamp, ObservationSubstrate,
+    };
+    #[cfg(any(test, feature = "test-probes"))]
+    cache.reset_probes();
+    if !active {
+        cache.clear();
+        return;
+    }
+    let mut probe = DriveProbe::new(crate::substrate::SubstrateId::Glyph);
+    let texts = corpus.texts();
+    let layout = corpus.book_layout();
+    // Borrowed chapter tokens: the layout owns them and outlives the drive, so
+    // the planning pass never allocates. `update_book` takes ownership only
+    // where it rebuilds a persistent cache entry.
+    let mut stamped: Vec<Vec<(&str, ObservationInputStamp)>> = Vec::with_capacity(layout.len());
+    let mut work: Vec<GlyphMapWork<'_>> = Vec::new();
+    let mut book_runs: Vec<std::ops::Range<usize>> = Vec::new();
+    let mut work_bytes = 0usize;
+    for (bi, book) in layout.iter().enumerate() {
+        let run_start = work.len();
+        let mut chapters = Vec::with_capacity(book.chapters.len());
+        for (ci, c) in book.chapters.iter().enumerate() {
+            let stamp = ObservationInputStamp {
+                schema_stamp: GlyphSubstrate::SCHEMA_STAMP,
+                chapter_hash: c.hash,
+                extractor_fp: GlyphSubstrate::extractor_fp(&()),
+            };
+            if !cache.observation_is_current(&book.slug, &c.chapter, &stamp) {
+                let verses = &texts[c.range.clone()];
+                work_bytes += verses.iter().map(String::len).sum::<usize>();
+                work.push(GlyphMapWork {
+                    book: bi,
+                    chapter: ci,
+                    view: ChapterView {
+                        chapter: &c.chapter,
+                        texts: verses,
+                    },
+                });
+            }
+            chapters.push((&*c.chapter, stamp));
+        }
+        if work.len() > run_start {
+            book_runs.push(run_start..work.len());
+        }
+        stamped.push(chapters);
+    }
+    probe.mark(DrivePhase::Plan);
+    let route = crate::rule::map_route(&book_runs, work.len(), work_bytes);
+    #[cfg(any(test, feature = "test-probes"))]
+    {
+        cache.map_route = route.label();
+    }
+    let fresh = crate::rule::map_chapter_work(&work, &book_runs, route, |w| {
+        GlyphSubstrate::map_chapter(&w.view, &(), &())
+    });
+    // Back into caller-order `(book, chapter)` slots, so reduction reads them in
+    // corpus order and never in completion order.
+    let mut slots: Vec<Vec<Option<GlyphChapterObs>>> = layout
+        .iter()
+        .map(|b| (0..b.chapters.len()).map(|_| None).collect())
+        .collect();
+    for (w, obs) in work.iter().zip(fresh) {
+        slots[w.book][w.chapter] = Some(obs);
+    }
+    probe.mark(DrivePhase::Map);
+    for (bi, book) in layout.iter().enumerate() {
+        cache.update_book(&book.slug, &stamped[bi], &(), |i| {
+            slots[bi][i].take().unwrap_or_else(|| {
+                let c = &book.chapters[i];
+                GlyphSubstrate::map_chapter(
+                    &ChapterView {
+                        chapter: &c.chapter,
+                        texts: &texts[c.range.clone()],
+                    },
+                    &(),
+                    &(),
+                )
+            })
+        });
+    }
+    probe.mark(DrivePhase::Reduce);
+    // The judge key set is the corpus inventory's letter scalars — the aggregate's
+    // own key set, filtered by the candidacy predicate that costs nothing to
+    // apply. A distinct-scalar inventory is a few hundred entries even for a whole
+    // Bible, so this is not a scan worth a separate index.
+    let stats = cache.corpus_stats();
+    let keys: Vec<char> = stats
+        .inventory
+        .keys()
+        .copied()
+        .filter(|&c| is_letter_scalar(c))
+        .collect();
+    probe.mark(DrivePhase::Keys);
+    let mut surviving: BTreeMap<char, (f32, u32)> = BTreeMap::new();
+    for g in keys {
+        if let Some(emit) = GlyphSubstrate::judge(cfg, &g, stats).emit {
+            surviving.insert(g, emit);
+        }
+    }
+    #[cfg(any(test, feature = "test-probes"))]
+    {
+        cache.judged = stats.inventory.keys().filter(|&&c| is_letter_scalar(c)).count();
+    }
+    probe.mark(DrivePhase::Judge);
+    // Nothing survived: skip the re-scan entirely. This is the overwhelmingly
+    // common case (the closure gate closes, or no letter is rare enough), and it
+    // is why a site-free re-scan is affordable at all.
+    if !surviving.is_empty() {
+        for book in layout {
+            if let Some(contrib) = cache.book_contribution(&book.slug) {
+                contrib.materialize(&book.chapters, corpus, &surviving, out);
+            }
+        }
+    }
+    probe.mark(DrivePhase::Materialize);
+}
+
+/// `uni.rare-glyph` findings for a whole corpus at a given config, via the
+/// observation substrate over a fresh transient cache — the single rare-glyph
+/// implementation, for tests and calibration callers. Findings are in the final
+/// stable order.
+pub fn rare_glyph_findings(corpus: &Corpus, cfg: &RareGlyphConfig) -> Vec<Finding> {
+    let mut cache = crate::substrate::SubstrateCache::new();
+    let mut out = Vec::new();
+    drive_rare_glyph(true, &mut cache, corpus, cfg, &mut out);
+    out.sort_by_key(|f| (f.key_idx, f.range.start, f.range.end));
+    out
+}
+
+/// The corpus letter-scalar inventory this substrate maintains — the census
+/// lane's cross-check (the glyph census must equal rule 1's inventory over the
+/// letter subset). Test-only: production reads the aggregate through `judge`.
+#[cfg(test)]
+pub(crate) fn corpus_letter_inventory(corpus: &Corpus) -> BTreeMap<char, u64> {
+    use crate::substrate::ObservationSubstrate;
+    let mut cache: crate::substrate::SubstrateCache<GlyphSubstrate> =
+        crate::substrate::SubstrateCache::new();
+    let mut out = Vec::new();
+    drive_rare_glyph(true, &mut cache, corpus, &RareGlyphConfig::default(), &mut out);
+    let _ = <GlyphSubstrate as ObservationSubstrate>::ID;
+    cache
+        .corpus_stats()
+        .inventory
+        .iter()
+        .filter(|(c, _)| is_letter_scalar(**c))
+        .map(|(&c, &n)| (c, n))
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::corpus::by_book;
 
     /// A controlled corpus: two templates establish a settled alphabet in both
     /// cases — lowercase {a,n,m,e,l,k,p,o,u,h,i}, uppercase {A,E,O,U} — each
@@ -630,17 +1142,40 @@ mod tests {
             ..RareGlyphConfig::default()
         }
     }
-    fn rule(cfg: RareGlyphConfig) -> RareGlyph {
-        RareGlyph { cfg }
-    }
-    fn default_rule() -> RareGlyph {
-        rule(cfg())
+    /// A cold whole-corpus analysis at `cfg`, in the final stable order.
+    fn run(map: &Corpus, cfg: &RareGlyphConfig) -> Vec<Finding> {
+        rare_glyph_findings(map, cfg)
     }
 
-    fn run(map: &Corpus, r: &RareGlyph) -> Vec<Finding> {
-        let books = by_book(map);
-        let (stats, _) = r.reduce(&books, None, None);
-        r.judge(&stats, &books, None, None)
+    /// A resident drive, findings in the final stable order — the incremental
+    /// path, as `analyze` runs it.
+    fn resident(
+        cache: &mut crate::substrate::SubstrateCache<GlyphSubstrate>,
+        map: &Corpus,
+        cfg: &RareGlyphConfig,
+    ) -> Vec<Finding> {
+        let mut out = Vec::new();
+        drive_rare_glyph(true, cache, map, cfg, &mut out);
+        out.sort_by_key(|f| (f.key_idx, f.range.start, f.range.end));
+        out
+    }
+
+    /// Comparable rendering — key, span text, score and both arg values.
+    fn render(map: &Corpus, f: &[Finding]) -> Vec<String> {
+        f.iter()
+            .map(|f| {
+                let a = match &f.args {
+                    Some(FindingArgs::RareGlyph { glyph, count }) => format!("{glyph}/{count}"),
+                    _ => "-".to_string(),
+                };
+                format!(
+                    "{}|{}|{:?}|{a}",
+                    map.key(f.key_idx),
+                    f.range.slice(map.text(f.key_idx)),
+                    f.score
+                )
+            })
+            .collect()
     }
 
     fn slice<'a>(map: &'a Corpus, f: &Finding) -> &'a str {
@@ -681,7 +1216,7 @@ mod tests {
     #[test]
     fn closed_alphabet_opens_and_flags_stray_letter() {
         let map = corpus("GEN", &[(500, "qami mele")]);
-        let f = run(&map, &default_rule());
+        let f = run(&map, &cfg());
         assert_eq!(f.len(), 1, "the lone q surfaces");
         assert_eq!(slice(&map, &f[0]), "q");
         assert_eq!(f[0].severity, Severity::Info);
@@ -704,11 +1239,11 @@ mod tests {
         }
         let map = Corpus::try_from_parts(keys, texts).unwrap();
         assert!(
-            run(&map, &rule(RareGlyphConfig::default())).is_empty(),
+            run(&map, &RareGlyphConfig::default()).is_empty(),
             "open inventory silent"
         );
         assert!(
-            run(&map, &default_rule()).is_empty(),
+            run(&map, &cfg()).is_empty(),
             "silent even at the relaxed gate"
         );
     }
@@ -720,7 +1255,7 @@ mod tests {
     fn knee_excludes_thrice_seen_letter() {
         let map = corpus("GEN", &[(500, "qami"), (501, "qapo"), (502, "qelu")]);
         assert!(
-            run(&map, &default_rule()).is_empty(),
+            run(&map, &cfg()).is_empty(),
             "count 3 exceeds knee 2"
         );
     }
@@ -729,7 +1264,7 @@ mod tests {
     #[test]
     fn knee_admits_twice_seen_letter() {
         let map = corpus("GEN", &[(500, "qami menu"), (501, "qapo huli")]);
-        let f = run(&map, &default_rule());
+        let f = run(&map, &cfg());
         assert_eq!(f.len(), 2, "both q occurrences surface at count 2");
         assert!(f.iter().all(|x| slice(&map, x) == "q"));
         assert!(
@@ -746,7 +1281,7 @@ mod tests {
     fn lexical_concentration_discounts_recurring_word() {
         let map = corpus("GEN", &[(500, "qami mele"), (501, "qami huli")]);
         assert!(
-            run(&map, &default_rule()).is_empty(),
+            run(&map, &cfg()).is_empty(),
             "recurring container is lexical"
         );
     }
@@ -757,7 +1292,7 @@ mod tests {
     fn lexical_spares_scattered_occurrences() {
         let map = corpus("GEN", &[(500, "qami mele"), (501, "qapo huli")]);
         assert_eq!(
-            run(&map, &default_rule()).len(),
+            run(&map, &cfg()).len(),
             2,
             "scattered rare letter is kept"
         );
@@ -772,7 +1307,7 @@ mod tests {
         // "Qami" mid-flow (after lowercase "aloha"-style words, no terminal).
         let map = corpus("GEN", &[(500, "ana mele Qami po")]);
         assert!(
-            run(&map, &default_rule()).is_empty(),
+            run(&map, &cfg()).is_empty(),
             "titlecase hapax name discounted"
         );
     }
@@ -782,7 +1317,7 @@ mod tests {
     #[test]
     fn lone_capital_still_flagged() {
         let map = corpus("GEN", &[(500, "ana mele Q po")]);
-        let f = run(&map, &default_rule());
+        let f = run(&map, &cfg());
         assert_eq!(f.len(), 1, "lone capital Q stays flagged");
         assert_eq!(slice(&map, &f[0]), "Q");
     }
@@ -792,7 +1327,7 @@ mod tests {
     #[test]
     fn all_caps_word_still_flagged() {
         let map = corpus("GEN", &[(500, "ana mele AQE po")]);
-        let f = run(&map, &default_rule());
+        let f = run(&map, &cfg());
         assert_eq!(f.len(), 1, "all-caps word's rare letter stays flagged");
         assert_eq!(slice(&map, &f[0]), "Q");
     }
@@ -810,7 +1345,7 @@ mod tests {
         keys.extend(base_keys);
         texts.extend(base_texts);
         let map = Corpus::try_from_parts(keys, texts).unwrap();
-        let f = run(&map, &default_rule());
+        let f = run(&map, &cfg());
         assert_eq!(f.len(), 1, "book-initial titlecase is not shape-discounted");
         assert_eq!(slice(&map, &f[0]), "Q");
     }
@@ -824,7 +1359,7 @@ mod tests {
         // Cyrillic 'я' fused into a Latin word (a Latn+Cyrl mixed token).
         let map = corpus("GEN", &[(500, "me\u{044F} loa")]);
         assert!(
-            run(&map, &default_rule()).is_empty(),
+            run(&map, &cfg()).is_empty(),
             "mixed-script token owned elsewhere"
         );
     }
@@ -851,62 +1386,206 @@ mod tests {
         keys.push("GEN 1:500".to_string());
         texts.push("\u{0958} \u{0915}\u{0916}".to_string()); // U+0958 QA stray
         let map = Corpus::try_from_parts(keys, texts).unwrap();
-        let f = run(&map, &default_rule());
+        let f = run(&map, &cfg());
         assert_eq!(f.len(), 1, "rare caseless letter surfaces");
         assert_eq!(slice(&map, &f[0]), "\u{0958}");
     }
 
     // ── stateful plumbing ───────────────────────────────────────────────
 
-    /// The score is corpus-wide, not book-local: a stray letter in a later-
-    /// edited book scores against the whole merged corpus.
+    /// The score is corpus-wide, not book-local: a stray letter in a later-edited
+    /// book scores against the whole resident corpus, and the resident answer
+    /// equals a cold one.
     #[test]
     fn incremental_score_is_corpus_wide() {
-        let r = default_rule();
+        let c = cfg();
         let (gen_keys, gen_texts) = corpus_parts("GEN", &[]);
-        let gen_map = Corpus::try_from_parts(gen_keys.clone(), gen_texts.clone()).unwrap();
-        let exo_keys = vec!["EXO 1:1".to_string()];
-        let exo_texts = vec!["qami mele".to_string()];
-        let exo = Corpus::try_from_parts(exo_keys.clone(), exo_texts.clone()).unwrap();
+        let mut keys = gen_keys.clone();
+        let mut texts = gen_texts.clone();
+        keys.push("EXO 1:1".to_string());
+        texts.push("mele mele".to_string());
+        let before = Corpus::try_from_parts(keys.clone(), texts.clone()).unwrap();
+        let n = texts.len() - 1;
+        texts[n] = "qami mele".to_string();
+        let full = Corpus::try_from_parts(keys, texts).unwrap();
 
-        let mut full_keys = gen_keys;
-        full_keys.extend(exo_keys);
-        let mut full_texts = gen_texts;
-        full_texts.extend(exo_texts);
-        let full = Corpus::try_from_parts(full_keys, full_texts).unwrap();
-
-        let full_hit = run(&full, &r)
-            .into_iter()
-            .find(|f| full.key(f.key_idx) == "EXO 1:1")
-            .unwrap();
-
-        let merged = r
-            .reduce(&by_book(&gen_map), None, None)
-            .0
-            .merge(r.reduce(&by_book(&exo), None, None).0);
-        let inc = r.judge(&merged, &by_book(&exo), None, None);
+        let mut cache = crate::substrate::SubstrateCache::new();
+        let seeded = resident(&mut cache, &before, &c);
+        assert!(seeded.is_empty(), "{seeded:?}");
+        cache.reset_probes();
+        let inc = resident(&mut cache, &full, &c);
+        assert_eq!(cache.mapped, 1, "only EXO's changed chapter is remapped");
         assert_eq!(inc.len(), 1);
-        assert_eq!(exo.key(inc[0].key_idx), "EXO 1:1");
+        assert_eq!(full.key(inc[0].key_idx), "EXO 1:1");
         assert_eq!(
-            inc[0].score, full_hit.score,
-            "incremental score is corpus-wide"
+            render(&full, &inc),
+            render(&full, &run(&full, &c)),
+            "incremental score/args are the corpus-wide ones"
         );
     }
 
-    /// Removing a book drops its contribution to the corpus inventory.
+    /// Removing a book drops its contribution to the corpus inventory — and the
+    /// closure gate and the rarity knee both read that inventory, so the resident
+    /// answer after removal must equal a cold analysis of what is left.
     #[test]
     fn removing_a_book_drops_its_contribution() {
-        let r = default_rule();
+        let c = cfg();
         let (mut keys, mut texts) = corpus_parts("GEN", &[]);
+        let gen_len = keys.len();
         keys.push("EXO 1:1".to_string());
         texts.push("qami".to_string());
-        let full = Corpus::try_from_parts(keys, texts).unwrap();
-        let RuleStats::GlyphInventory(mut stats) = r.reduce(&by_book(&full), None, None).0 else {
-            unreachable!()
+        let full = Corpus::try_from_parts(keys.clone(), texts.clone()).unwrap();
+        let gen_only =
+            Corpus::try_from_parts(keys[..gen_len].to_vec(), texts[..gen_len].to_vec()).unwrap();
+
+        let mut cache = crate::substrate::SubstrateCache::new();
+        let with_exo = resident(&mut cache, &full, &c);
+        assert!(with_exo.iter().any(|f| full.key(f.key_idx) == "EXO 1:1"));
+
+        // Book REMOVAL is shell-driven (`Galley::remove_books` ->
+        // `cache.remove_book`), not inferred from a smaller layout.
+        cache.remove_book("EXO");
+        let after = resident(&mut cache, &gen_only, &c);
+        assert_eq!(
+            render(&gen_only, &after),
+            render(&gen_only, &run(&gen_only, &c)),
+            "the aggregate after removal equals a cold analysis of what is left"
+        );
+    }
+
+    /// THE CARRY TEST. This substrate's boundary state is the forced-position
+    /// machine, so a chapter-initial rare letter's proper-noun discount depends
+    /// on what the PREVIOUS chapter left pending — the one thing ordered
+    /// reduction resolves. Editing the previous chapter's final punctuation must
+    /// therefore change this chapter's verdict, and the resident answer must
+    /// track it.
+    #[test]
+    fn a_chapter_initial_container_takes_its_forced_bit_from_the_previous_chapter() {
+        let c = cfg();
+        // Chapter 1 establishes the alphabet; chapter 2 opens with a titlecase
+        // hapax carrying the only `q`. After a bare terminal the position is
+        // FORCED, so the proper-noun discount cannot fire and the letter surfaces;
+        // with no terminal it is mid-flow, the discount fires, and it goes silent.
+        let mut keys: Vec<String> = Vec::new();
+        let mut texts: Vec<String> = Vec::new();
+        let mut v = 1u16;
+        for _ in 0..60 {
+            for t in BASE {
+                keys.push(format!("GEN 1:{v}"));
+                texts.push(t.to_string());
+                v += 1;
+            }
+        }
+        keys.push("GEN 2:1".to_string());
+        texts.push("Qamile ana".to_string());
+        let last = texts.len() - 2;
+
+        let mut cache = crate::substrate::SubstrateCache::new();
+        // (a) chapter 1 ends without a terminal: chapter 2's first word is
+        // mid-flow, so the titlecase-hapax discount applies.
+        texts[last] = "Aha Ela Ohu Uma".to_string();
+        let midflow = Corpus::try_from_parts(keys.clone(), texts.clone()).unwrap();
+        let a = resident(&mut cache, &midflow, &c);
+        assert_eq!(render(&midflow, &a), render(&midflow, &run(&midflow, &c)));
+
+        // (b) the SAME chapter 2, but chapter 1 now ends with a bare terminal:
+        // chapter 2's first word is forced, the discount cannot fire.
+        texts[last] = "Aha Ela Ohu Uma.".to_string();
+        let forced = Corpus::try_from_parts(keys.clone(), texts.clone()).unwrap();
+        let b = resident(&mut cache, &forced, &c);
+        assert_eq!(render(&forced, &b), render(&forced, &run(&forced, &c)));
+        assert_eq!(cache.mapped, 1, "only chapter 1 is remapped");
+        assert_eq!(
+            cache.reduced, 2,
+            "chapter 1 leaves a new pending terminal; chapter 2 re-reduces its \
+             CACHED observation to resolve its first word"
+        );
+        assert_ne!(
+            render(&forced, &b),
+            render(&midflow, &a),
+            "the forced bit crossing the chapter seam must change the verdict — \
+             if this ever reads equal the test has stopped proving the carry"
+        );
+    }
+
+    /// An edit maps and reduces exactly its own chapter when the carry does not
+    /// move, and a judging-knob change maps and reduces nothing (plan §12.4).
+    #[test]
+    fn edit_locality_and_knob_isolation() {
+        let c = cfg();
+        let (keys, mut texts) = corpus_parts("GEN", &[]);
+        let mut cache = crate::substrate::SubstrateCache::new();
+        let _ = resident(
+            &mut cache,
+            &Corpus::try_from_parts(keys.clone(), texts.clone()).unwrap(),
+            &c,
+        );
+
+        texts[7] = "qami mele".to_string();
+        let edited = Corpus::try_from_parts(keys.clone(), texts.clone()).unwrap();
+        cache.reset_probes();
+        let inc = resident(&mut cache, &edited, &c);
+        assert_eq!(cache.mapped, 1, "one changed chapter maps one chapter");
+        assert_eq!(render(&edited, &inc), render(&edited, &run(&edited, &c)));
+
+        let strict = RareGlyphConfig {
+            emit_score_min: 1.0,
+            ..c
         };
-        assert!(stats.per_book.contains_key("EXO"));
-        stats.remove_book("EXO");
-        assert!(!stats.per_book.contains_key("EXO"));
+        cache.reset_probes();
+        let none = resident(&mut cache, &edited, &strict);
+        assert_eq!(
+            (cache.mapped, cache.reduced),
+            (0, 0),
+            "a knob is not an extraction input"
+        );
+        assert!(none.len() <= inc.len());
+    }
+
+    /// Randomized edits across several chapters: a resident cache's findings
+    /// always equal a cold analysis of the same corpus (plan §12.6). Shapes
+    /// include terminal-bearing and word-less verses, so the carry moves.
+    #[test]
+    fn resident_rare_glyph_equals_cold_under_randomized_edits() {
+        const SHAPES: &[&str] = &[
+            "ana mele ka po lu hi",
+            "Aha Ela Ohu Uma.",
+            "",
+            "qami mele",
+            "Qamile ana",
+            "ana mele!",
+            "\u{0958}ana mele",
+        ];
+        let c = cfg();
+        // Three chapters so the carry can cross two seams.
+        let mut keys: Vec<String> = Vec::new();
+        let mut texts: Vec<String> = Vec::new();
+        for ch in 1..=3u16 {
+            for v in 1..=8u16 {
+                keys.push(format!("GEN {ch}:{v}"));
+                texts.push(BASE[(v as usize) % 2].to_string());
+            }
+        }
+        let mut cache = crate::substrate::SubstrateCache::new();
+        let _ = resident(
+            &mut cache,
+            &Corpus::try_from_parts(keys.clone(), texts.clone()).unwrap(),
+            &c,
+        );
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        for step in 0..24 {
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let vi = (state >> 33) as usize % texts.len();
+            let si = (state >> 11) as usize % SHAPES.len();
+            texts[vi] = SHAPES[si].to_string();
+            let map = Corpus::try_from_parts(keys.clone(), texts.clone()).unwrap();
+            let inc = resident(&mut cache, &map, &c);
+            assert_eq!(
+                render(&map, &inc),
+                render(&map, &run(&map, &c)),
+                "step {step}: resident result diverged from cold"
+            );
+        }
     }
 
     /// The knee is clamped to `RARE_CAP`, so an over-large configured knee cannot
@@ -928,7 +1607,7 @@ mod tests {
             .collect();
         let map = corpus("GEN", &extra);
         assert!(
-            run(&map, &rule(cfg)).is_empty(),
+            run(&map, &cfg).is_empty(),
             "9 > RARE_CAP, pruned, not a candidate"
         );
     }

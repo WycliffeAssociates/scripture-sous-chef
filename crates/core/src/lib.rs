@@ -377,7 +377,6 @@ fn transition(
     // cache after the stateful judge loop.
     let active = substrate::ActiveSubstrates::from_config(config);
     let plan = stream::WalkPlan {
-        rare_glyph: config.is_enabled(RuleId::RareGlyph),
         proportionality: config.is_enabled(RuleId::ProjectLengthRatio),
         bracket: config.is_enabled(RuleId::BracketBalance),
         normalization: config.is_enabled(RuleId::MixedNormalization),
@@ -680,20 +679,6 @@ fn transition(
     // ever count on walked books, so a clean book contributes nothing to them.
     // A book outside the `counted` scope contributes sites only, so the judge
     // phase stays site-driven for every supplied book (ADR 0044).
-    let mut rare_glyph_fresh = plan.rare_glyph.then(|| {
-        let mut pb = BTreeMap::new();
-        for (group, slot) in books.iter().zip(slots.iter_mut()) {
-            if let BookProducts::Walked(o) = slot
-                && let Some(bg) = o.rare_glyph.take()
-            {
-                pb.insert(Box::from(group.slug), bg);
-            }
-        }
-        (
-            RuleStats::GlyphInventory(signals::rare_glyph::RareGlyphStats { per_book: pb }),
-            rule::RuleSites::RareGlyph,
-        )
-    });
     let mut proportionality_fresh = plan.proportionality.then(|| {
         let mut pb = BTreeMap::new();
         for (group, slot) in books.iter().zip(slots.iter_mut()) {
@@ -832,11 +817,6 @@ fn transition(
         // clone of the stats (the wire shape keeps one entry per rule id, as
         // before) and judges from the same site list.
         let (fresh, sites_ref): (RuleStats, &rule::RuleSites) = match id {
-            RuleId::RareGlyph => {
-                let (st, ss) = rare_glyph_fresh.take().expect("listener ran");
-                sites_slot = ss;
-                (st, &sites_slot)
-            }
             RuleId::ProjectLengthRatio => {
                 let (st, ss) = proportionality_fresh.take().expect("listener ran");
                 sites_slot = ss;
@@ -897,6 +877,13 @@ fn transition(
         &mut substrates.mixed_script,
         target,
         &config.mixed_script,
+        &mut out,
+    );
+    signals::rare_glyph::drive_rare_glyph(
+        active.glyph,
+        &mut substrates.glyph,
+        target,
+        &config.rare_glyph,
         &mut out,
     );
     signals::lexical::drive_duplicate_word(

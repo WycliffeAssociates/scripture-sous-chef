@@ -169,7 +169,6 @@ pub fn census(target: &Corpus, opts: &CensusOptions) -> Inventory {
                 tape: true,
                 graphemes: true,
                 tokens: true,
-                folds: false,
             },
             BookCensusAcc::new(),
             |a, v| a.verse(v),
@@ -807,8 +806,6 @@ fn assemble(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::rule::StatefulRule;
-    use crate::stats::RuleStats;
 
     /// Build a single-book `Corpus`: verses numbered 1..=len in chapter 1.
     fn book(book: &str, verses: &[&str]) -> Corpus {
@@ -855,22 +852,10 @@ mod tests {
         let inv = run(&corpus);
         let glyphs = section(&inv, SectionId::LetterGlyphs);
 
-        let rule = crate::signals::rare_glyph::RareGlyph {
-            cfg: crate::config::RareGlyphConfig::default(),
-        };
-        let books = corpus::by_book(&corpus);
-        let (stats, _) = rule.reduce(&books, None, None);
-        let RuleStats::GlyphInventory(gs) = stats else {
-            panic!()
-        };
-        let mut expected: BTreeMap<char, u64> = BTreeMap::new();
-        for bg in gs.per_book.values() {
-            for (&c, &n) in &bg.inventory {
-                if is_letter_scalar(c) {
-                    *expected.entry(c).or_default() += u64::from(n);
-                }
-            }
-        }
+        // The glyph substrate's own incrementally-maintained corpus inventory,
+        // letter subset — the same aggregate its judge reads.
+        let expected: BTreeMap<char, u64> =
+            crate::signals::rare_glyph::corpus_letter_inventory(&corpus);
         let got: BTreeMap<char, u64> = glyphs
             .rows
             .iter()

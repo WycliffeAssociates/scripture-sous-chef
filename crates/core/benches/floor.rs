@@ -57,11 +57,12 @@ fn filter_books(corpus: &Corpus, mut keep: impl FnMut(&str) -> bool) -> Corpus {
     Corpus::try_from_parts(keys, texts).unwrap()
 }
 
-/// The four substrate tiers, in increasing order of what they force on.
-/// `tape_graphemes` and `tape_tokens_folds` mirror the two shapes real rules
-/// actually ask for (e.g. spacing needs only graphemes; casing needs only
-/// tokens) — `all` is the ceiling no single rule reaches alone, but the
-/// whole current rule set does collectively.
+/// The substrate tiers, in increasing order of what they force on.
+/// `tape_graphemes` and `tape_tokens` mirror the two shapes real listeners ask
+/// for — `all` is the ceiling no single one reaches alone. The old
+/// `tape_tokens_folds` tier is gone with the walk's fold lane: every word-keyed
+/// consumer is an observation substrate now and folds inside its own chapter
+/// map, so the fused walk no longer has a fold product to force on.
 const TIERS: &[(&str, FloorNeeds)] = &[
     (
         "tape_only",
@@ -69,7 +70,6 @@ const TIERS: &[(&str, FloorNeeds)] = &[
             tape: true,
             graphemes: false,
             tokens: false,
-            folds: false,
         },
     ),
     (
@@ -78,7 +78,6 @@ const TIERS: &[(&str, FloorNeeds)] = &[
             tape: true,
             graphemes: true,
             tokens: false,
-            folds: false,
         },
     ),
     (
@@ -87,16 +86,6 @@ const TIERS: &[(&str, FloorNeeds)] = &[
             tape: true,
             graphemes: false,
             tokens: true,
-            folds: false,
-        },
-    ),
-    (
-        "tape_tokens_folds",
-        FloorNeeds {
-            tape: true,
-            graphemes: false,
-            tokens: true,
-            folds: true,
         },
     ),
     (
@@ -105,7 +94,6 @@ const TIERS: &[(&str, FloorNeeds)] = &[
             tape: true,
             graphemes: true,
             tokens: true,
-            folds: true,
         },
     ),
 ];

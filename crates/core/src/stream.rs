@@ -31,15 +31,12 @@
 //! calibration and tests) — the fused path and the trait path share one
 //! accumulator implementation per rule, so they cannot drift.
 
-use std::borrow::Cow;
 
-use crate::charclass::class_of;
 use crate::corpus::{BookGroup, Books, Corpus, LocalKeyIdx};
 use crate::grapheme::{self, GSpan};
 use crate::rule::{self};
 use crate::signals::{
     bracket_balance, mixed_normalization, proportionality,
-    rare_glyph,
 };
 use crate::tape::{self, TapeEntry};
 use crate::token::{self, Token};
@@ -63,22 +60,15 @@ pub(crate) struct VerseInputs<'t, 'b> {
     pub tape: &'b [TapeEntry],
     pub graphemes: &'b [GSpan],
     pub tokens: &'b [Token],
-    /// Each token's case-folded word-type key, index-aligned with `tokens`
-    /// (`None` where the token isn't a letter token — the same tokens
-    /// `rare_glyph` already skips). Computed once per token by the walk (see
-    /// `fold_letter_tokens`).
-    pub folds: &'b [Option<Cow<'t, str>>],
 }
 
 /// Which per-verse products a walk must build. Graphemes are tape-driven, so
-/// `graphemes` implies `tape`; folds are token-driven, so `folds` implies
-/// `tokens`.
+/// `graphemes` implies `tape`.
 #[derive(Clone, Copy, Default)]
 pub(crate) struct Needs {
     pub tape: bool,
     pub graphemes: bool,
     pub tokens: bool,
-    pub folds: bool,
 }
 
 impl Needs {
@@ -86,45 +76,11 @@ impl Needs {
         Needs {
             tape: self.tape || o.tape || self.graphemes || o.graphemes,
             graphemes: self.graphemes || o.graphemes,
-            tokens: self.tokens || o.tokens || self.folds || o.folds,
-            folds: self.folds || o.folds,
+            tokens: self.tokens || o.tokens,
         }
     }
 }
 
-/// Case-fold each verse token to its lowercase word-type key, once per token.
-/// `rare_glyph` keys its per-book word table by this exact fold
-/// (`word.to_lowercase()` gated by `mixed_case::is_letter_token`, the shared
-/// letter-run predicate). `case.mixed-case-word` keyed by the identical fold
-/// until it became an observation substrate, which maps chapters on its own
-/// stamp-derived schedule and so folds its own tokens.
-/// Cow fast-path (mirrors `rare_glyph`'s original path): a token with no
-/// uppercase scalar borrows `text` directly; only a token with an uppercase
-/// scalar allocates.
-///
-/// `casing` is deliberately NOT fed by this table: its word unit is
-/// `compound_words` (hyphen-merged spans, not raw tokens) and its letter gate
-/// admits tokens with non-letter scalars alongside letters, so its fold is
-/// not always the same string as a single token's fold — unifying it risked
-/// silent drift (e.g. Greek final-sigma at a merge boundary) for a listener
-/// that isn't the measured hotspot. See the ADR for the full reasoning.
-fn fold_letter_tokens<'t>(text: &'t str, tokens: &[Token], buf: &mut Vec<Option<Cow<'t, str>>>) {
-    buf.clear();
-    buf.reserve(tokens.len());
-    for tok in tokens {
-        let word = tok.span.slice(text);
-        if !crate::signals::mixed_case::is_letter_token(word) {
-            buf.push(None);
-            continue;
-        }
-        let folded = if word.chars().any(|c| class_of(c).is_uppercase()) {
-            Cow::Owned(word.to_lowercase())
-        } else {
-            Cow::Borrowed(word)
-        };
-        buf.push(Some(folded));
-    }
-}
 
 /// What the fused walk runs, derived from the enabled rule set once per
 /// analyze. `counting_*` listeners observe into stats; `bracket` /
@@ -132,7 +88,6 @@ fn fold_letter_tokens<'t>(text: &'t str, tokens: &[Token], buf: &mut Vec<Option<
 /// verse's tokens as the shared [`TokenCache`] for the judge phase.
 #[derive(Clone, Copy, Default)]
 pub(crate) struct WalkPlan {
-    pub rare_glyph: bool,
     pub proportionality: bool,
     pub bracket: bool,
     pub normalization: bool,
@@ -140,16 +95,10 @@ pub(crate) struct WalkPlan {
 }
 
 impl WalkPlan {
-    /// The products the counting listeners need.
+    /// The products the one remaining counting listener (proportionality) needs
+    /// — nothing but the verse text, which every walk has.
     fn counting_needs(&self) -> Needs {
-        let mut n = Needs::default();
-        if self.rare_glyph {
-            n.tokens = true;
-        }
-        if self.rare_glyph {
-            n.folds = true;
-        }
-        n
+        Needs::default()
     }
 
     /// The products the always-on (project) listeners need.
@@ -184,7 +133,6 @@ pub(crate) struct BookOut {
     /// caught.
     #[cfg(any(test, feature = "test-probes"))]
     pub counting_accs_ran: bool,
-    pub rare_glyph: Option<rare_glyph::BookGlyphs>,
     pub proportionality: Option<Vec<proportionality::RatioObs>>,
     pub bracket: Option<bracket_balance::BookMatch>,
     pub normalization: Option<mixed_normalization::BookNormalization>,
@@ -281,7 +229,6 @@ fn walk_book(
     // tokens at all.
     let delegate_tokens = needs.tokens && book_prefers_delegation(group.texts);
 
-    let mut rare_glyph_acc = (count && plan.rare_glyph).then(rare_glyph::RareGlyphAcc::new);
     let mut prop_acc = (count && plan.proportionality)
         .then(|| proportionality::ProportionalityAcc::new(source_index));
     // Project listeners (every supplied book — their emission scope).
@@ -293,7 +240,6 @@ fn walk_book(
     let mut tape_buf: Vec<TapeEntry> = Vec::new();
     let mut graphemes_buf: Vec<GSpan> = Vec::new();
     let mut tokens_buf: Vec<Token> = Vec::new();
-    let mut folds_buf: Vec<Option<Cow<str>>> = Vec::new();
     let mut cache: Option<Vec<(LocalKeyIdx, Vec<Token>)>> =
         plan.collect_tokens.then(|| Vec::with_capacity(group.len()));
 
@@ -313,9 +259,6 @@ fn walk_book(
                 token::tokenize_hand_rolled_into(text, &mut tokens_buf);
             }
         }
-        if needs.folds {
-            fold_letter_tokens(text, &tokens_buf, &mut folds_buf);
-        }
         let v = VerseInputs {
             key,
             local_idx,
@@ -323,12 +266,8 @@ fn walk_book(
             tape: if needs.tape { &tape_buf } else { &[] },
             graphemes: if needs.graphemes { &graphemes_buf } else { &[] },
             tokens: if needs.tokens { &tokens_buf } else { &[] },
-            folds: if needs.folds { &folds_buf } else { &[] },
         };
 
-        if let Some(a) = &mut rare_glyph_acc {
-            a.verse(&v);
-        }
         if let Some(a) = &mut prop_acc {
             a.verse(&v);
         }
@@ -348,12 +287,11 @@ fn walk_book(
     // before `finish` consumes them — independent of the `count` flag below.
     #[cfg(any(test, feature = "test-probes"))]
     let counting_accs_ran =
-        rare_glyph_acc.is_some() || prop_acc.is_some();
+        prop_acc.is_some();
 
     BookOut {
         #[cfg(any(test, feature = "test-probes"))]
         counting_accs_ran,
-        rare_glyph: rare_glyph_acc.map(rare_glyph::RareGlyphAcc::finish),
         proportionality: prop_acc.map(proportionality::ProportionalityAcc::finish),
         bracket: bracket_acc.map(bracket_balance::BracketAcc::finish),
         normalization: normalization_acc.map(mixed_normalization::NormalizationAcc::finish),
@@ -372,7 +310,7 @@ pub(crate) fn drive_book<'g, A, T>(
     mut feed: impl FnMut(&mut A, &VerseInputs<'g, '_>),
     finish: impl FnOnce(A) -> T,
 ) -> T {
-    let needs = needs.union(Needs::default()); // normalize graphemes ⇒ tape, folds ⇒ tokens
+    let needs = needs.union(Needs::default()); // normalize graphemes ⇒ tape
     // Same per-book adaptive gate as `walk_book` (ADR 0064) — computed
     // identically (a pure function of `group.texts`) so this trait-driven
     // path and the fused walk can never diverge on which one a given book
@@ -381,7 +319,6 @@ pub(crate) fn drive_book<'g, A, T>(
     let mut tape_buf: Vec<TapeEntry> = Vec::new();
     let mut graphemes_buf: Vec<GSpan> = Vec::new();
     let mut tokens_buf: Vec<Token> = Vec::new();
-    let mut folds_buf: Vec<Option<Cow<str>>> = Vec::new();
     for (vi, (key, text)) in group.keys.iter().zip(group.texts.iter()).enumerate() {
         let local_idx = LocalKeyIdx::from_usize(vi);
         let text = text.as_str();
@@ -398,9 +335,6 @@ pub(crate) fn drive_book<'g, A, T>(
                 token::tokenize_hand_rolled_into(text, &mut tokens_buf);
             }
         }
-        if needs.folds {
-            fold_letter_tokens(text, &tokens_buf, &mut folds_buf);
-        }
         let v = VerseInputs {
             key,
             local_idx,
@@ -408,7 +342,6 @@ pub(crate) fn drive_book<'g, A, T>(
             tape: if needs.tape { &tape_buf } else { &[] },
             graphemes: if needs.graphemes { &graphemes_buf } else { &[] },
             tokens: if needs.tokens { &tokens_buf } else { &[] },
-            folds: if needs.folds { &folds_buf } else { &[] },
         };
         feed(&mut acc, &v);
     }
@@ -425,7 +358,6 @@ pub struct FloorNeeds {
     pub tape: bool,
     pub graphemes: bool,
     pub tokens: bool,
-    pub folds: bool,
 }
 
 /// The fused walk's substrate cost over `books`, for the requested
@@ -441,7 +373,6 @@ pub fn walk_floor(books: &Books<'_>, needs: FloorNeeds) -> usize {
         tape: needs.tape,
         graphemes: needs.graphemes,
         tokens: needs.tokens,
-        folds: needs.folds,
     };
     books
         .iter()
