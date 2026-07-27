@@ -5701,3 +5701,30 @@ this was live. Retained bytes needed their own measurement.
    semantics), so it belongs to a perf campaign, not here.
 3. The nine rebuild-retained rows can be revisited if their `plan`/`map`/`reduce`
    cells ever dominate; their `materialize` cells cannot repay a patch path.
+
+## Entry 36 — canonical juror order: measured, zero drift, landed (ADR 0066)
+
+Executor: the PO/steward session directly (not a packet agent) — a two-line
+change plus a fleet measurement, per the owner-approved process for the WP8
+casing-`keys` stop clause: flip the order, dump the fleet, rule on numbers.
+
+**Change**: `build_trust`'s juror list is `sort_unstable`d at construction
+(`crates/core/src/signals/casing.rs`). Both order-sensitive f64 accumulations
+(`reshuffle_deviate`, `tv_distance`) consume that one slice; nothing else in
+casing sums floats over hash-iteration order.
+
+**Measured drift: zero.** Full fleet (1,504 corpora, local — the remote box
+was not retried), findings + incremental transcript × default/all: all four
+byte-identical to the standing pins (`a10cf5a4…`, `ddedee96…`, `ab9b0f96…`,
+`c8a1be69…`). Eight WA+small gate dumps byte-identical to the Entry 34 pin
+table. Workspace suite green (605). No re-pin, no ADR 0059 drift table —
+with zero movement there was nothing to adjudicate; the owner-approved
+"bring me the numbers" step returned an empty diff.
+
+**Why it landed anyway** (ADR 0066): the old order was deterministic only
+because `keys` rebuilds from a fresh scan every analyze. Any incremental
+model — the whole point of scoping the 13.1 ms cell — would have made juror
+order a function of edit history, and patch≡rebuild bit-identity witnesses
+cannot hold against a history-dependent rebuild. Canonical order is the
+prerequisite; the incremental design itself (re-sum from retained per-juror
+terms, never subtract-then-add) remains future work, queued behind Phase F.

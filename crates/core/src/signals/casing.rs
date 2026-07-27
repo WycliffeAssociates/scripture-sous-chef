@@ -569,11 +569,17 @@ fn build_trust(words: &FxHashMap<Arc<str>, WordStats>, z: f64) -> FxHashMap<Clas
         }
     }
 
-    let jurors: Vec<&str> = word_start_total
+    // Juror order is a property of corpus CONTENT, never of map insertion
+    // history: `reshuffle_deviate` and `tv_distance` accumulate f64 sums over
+    // this slice, and float addition is order-sensitive in the last bits — an
+    // incrementally maintained model can only reproduce a rebuild bit-for-bit
+    // if both walk the jurors in one canonical order.
+    let mut jurors: Vec<&str> = word_start_total
         .iter()
         .filter(|&(_, &n)| n >= JUROR_MIN)
         .map(|(&k, _)| k)
         .collect();
+    jurors.sort_unstable();
 
     let kept: Vec<ClassKey> = after
         .iter()
