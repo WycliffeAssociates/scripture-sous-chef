@@ -3,6 +3,7 @@
 //! scans raw graphemes so scriptio-continua joins remain observable.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -807,275 +808,606 @@ pub(crate) fn scan_punct_only_token_tape(text: &str, tape: &[TapeEntry]) -> Vec<
 /// or script list; isolated slips remain high-evidence Info findings (ADR 0028).
 pub const REPEATED_CHARACTER_RUN: RuleId = RuleId::RepeatedCharacterRun;
 
-/// One book's aggregate contribution. Raw-text run counts include candidates
-/// outside UAX #29 tokens; the word map includes only token types whose folded
-/// form contains a run. Folding before that gate lets `Eee` establish the same
-/// word convention as `eee` without storing general word frequencies.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub(crate) struct BookRepeatedCharacterRun {
+/// One chapter's input-independent repeated-run observation.
+///
+/// Nothing crosses a chapter seam, and that is **proven from the listener**:
+/// `RepeatedRunAcc::verse` read only the current verse's `text`, `graphemes` and
+/// `tokens`; its `out`/`sites` fields were a book tally and its `word_graphemes`
+/// a scratch buffer refilled per token. A run is bounded by its verse in the
+/// shipped extraction (`scan_repeated_character_run` is handed one verse's
+/// graphemes), and a chapter boundary is a verse boundary. Hence
+/// `BoundaryState = ()` and reduction is the identity — no surprising carry,
+/// nothing to stop and report.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub(crate) struct RepeatChapterObs {
+    token: Box<str>,
+    /// Shared with the reduced chapter and the book contribution — reduction is
+    /// the identity, so the tables are handed on by `Arc`.
+    counts: Arc<RepeatCounts>,
+}
+
+/// One chapter's repeated-run evidence: the three aggregate addends, its distinct
+/// judge keys, and its candidate addresses.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub(crate) struct RepeatCounts {
+    /// Whitespace chunks — the corpus-relative denominator's addend. Word-like in
+    /// spaced text, verse-span-like in scriptio continua (see the retired
+    /// listener's note); deliberately not UAX tokens.
     lexical_units: u64,
-    cluster_runs: BTreeMap<String, u64>,
-    run_words: BTreeMap<String, u64>,
+    /// Per-cluster run occurrence counts, sorted by cluster.
+    clusters: Box<[(Box<str>, u64)]>,
+    /// Per-folded-token-type counts, for token types whose folded form contains a
+    /// run — the word-recurrence axis. Sorted by word.
+    run_words: Box<[(Box<str>, u64)]>,
+    /// This chapter's distinct judge keys in first-sight order; a site names one
+    /// by index.
+    keys: Box<[RepeatKey]>,
+    /// Candidate runs in scan order: verse order, then start-ascending within a
+    /// verse (`scan_repeated_character_run` walks left to right). That is the
+    /// retired judge's own `(key_idx, range.start, range.end)` order, which is
+    /// what preserves the within-rule emission order the final stable sort relies
+    /// on (plan §6.4 as amended).
+    sites: Box<[RepeatSite]>,
 }
 
-/// Cached repeated-run aggregates, partitioned by book so incremental analysis
-/// can supersede one book without retaining occurrence sites.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct RepeatedCharacterRunStats {
-    pub(crate) per_book: BTreeMap<Box<str>, BookRepeatedCharacterRun>,
+/// One candidate run: its verse-local address and the judge key it belongs to.
+/// **8 bytes.**
+///
+/// What is *not* stored is the point (plan §11): the run's args (`ch`, `run`) are
+/// a byte slice of the verse at this very span, so materialization re-derives
+/// them with an indexed lookup — no graphemes, no tape, no tokenization. The key
+/// index IS retained, because its second half (the containing word) needs the
+/// verse's UAX #29 tokenization to recompute, and no cached segmentation exists
+/// at materialization to make that a lookup rather than a re-walk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RepeatSite {
+    addr: SiteAddr,
+    key: RepeatKeyId,
 }
 
-impl RepeatedCharacterRunStats {
-    pub(crate) fn merge(mut self, other: RepeatedCharacterRunStats) -> RepeatedCharacterRunStats {
-        for (book, stats) in other.per_book {
-            self.per_book.insert(book, stats);
-        }
-        self
-    }
+/// A judge key's id within one chapter's first-sight table. `u16` with a checked
+/// constructor: a chapter's distinct keys cannot outnumber its candidate runs,
+/// which are rare by construction (three or more identical letter graphemes).
+pub(crate) type RepeatKeyId = u16;
 
-    pub(crate) fn remove_book(&mut self, slug: &str) {
-        self.per_book.remove(slug);
-    }
+/// Narrow a chapter key-table length to the next [`RepeatKeyId`]. Called once per
+/// *new key* in a chapter. Panics rather than truncating.
+fn repeat_key_id(len: usize) -> RepeatKeyId {
+    RepeatKeyId::try_from(len).expect(
+        "distinct repeated-run keys in one chapter fit u16 — a violation is a stop-and-report \
+         (see granularity-spine Entry 28)",
+    )
 }
 
-pub struct RepeatedCharacterRun {
-    pub cfg: RepeatedCharacterRunConfig,
+/// The judge key: the run's recurrence cluster plus the folded UAX #29 token that
+/// contains the run, when one does. Both axes of the score are functions of this
+/// pair and the corpus aggregate, so one outcome serves every site that shares it.
+///
+/// `word` is `None` when no token contains the run (scriptio-continua joins, runs
+/// straddling a token edge) — exactly the case the retired judge scored with a
+/// zero word strength. A word that IS present but absent from the corpus
+/// `run_words` table also scores zero, and that stays a *judge*-time lookup, so
+/// the distinction the old code drew is preserved rather than folded away at map.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct RepeatKey {
+    cluster: Box<str>,
+    word: Option<Box<str>>,
 }
 
-impl StatefulRule for RepeatedCharacterRun {
-    fn id(&self) -> RuleId {
-        REPEATED_CHARACTER_RUN
-    }
+/// One chapter's reduced repeated-run result — identical to its observation.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub(crate) struct RepeatReduced {
+    token: Box<str>,
+    counts: Arc<RepeatCounts>,
+}
 
-    fn reduce(
-        &self,
-        books: &Books<'_>,
-        _source: Option<&Corpus>,
-        tokens: Option<&TokenCache<'_>>,
-    ) -> (RuleStats, rule::RuleSites<'static>) {
-        // Thin driver over the shared listener (the fused walk feeds the same
-        // `RepeatedRunAcc`); kept for calibration/tests. The shared per-analyze
-        // token cache is ignored — the driver tokenizes each verse once, which
-        // is exactly what the cache would supply.
-        let _ = tokens;
-        let mut per_book = BTreeMap::new();
-        let mut sites = BTreeMap::new();
-        for (group, (counts, book_sites)) in books.iter().zip(rule::map_books(books, |group| {
-            stream::drive_book(
-                group,
-                stream::Needs {
-                    graphemes: true,
-                    tokens: true,
-                    ..Default::default()
-                },
-                RepeatedRunAcc::new(true),
-                |a, v| a.verse(v),
-                RepeatedRunAcc::finish,
-            )
-        })) {
-            per_book.insert(Box::from(group.slug), counts);
-            sites.insert(Box::from(group.slug), book_sites);
-        }
-        (
-            RuleStats::RepeatedCharacterRun(RepeatedCharacterRunStats { per_book }),
-            rule::RuleSites::RepeatedCharacterRun(sites.into_iter().map(|(k, v)| (k, std::borrow::Cow::Owned(v))).collect()),
-        )
-    }
+/// A book's folded repeated-run contribution: its three ordered addends plus its
+/// chapters' reduced results, which own the candidate addresses and the key
+/// tables materialization reads.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub(crate) struct RepeatBookContribution {
+    lexical_units: u64,
+    clusters: Arc<Vec<(Box<str>, u64)>>,
+    run_words: Arc<Vec<(Box<str>, u64)>>,
+    chapters: Vec<RepeatReduced>,
+}
 
-    fn judge(
-        &self,
-        stats: &RuleStats,
-        books: &Books<'_>,
-        tokens: Option<&TokenCache<'_>>,
-        sites: Option<&rule::RuleSites<'_>>,
-    ) -> Vec<Finding> {
-        let RuleStats::RepeatedCharacterRun(stats) = stats else {
-            return Vec::new();
-        };
+/// A book's addends as the corpus aggregate holds them, shared by `Arc` with the
+/// contribution they were folded into.
+type RepeatAddends = (u64, Arc<Vec<(Box<str>, u64)>>, Arc<Vec<(Box<str>, u64)>>);
 
-        let mut lexical_units = 0u64;
-        let mut cluster_runs: BTreeMap<&str, u64> = BTreeMap::new();
-        let mut run_words: BTreeMap<&str, u64> = BTreeMap::new();
-        for book in stats.per_book.values() {
-            lexical_units += book.lexical_units;
-            for (cluster, &count) in &book.cluster_runs {
-                *cluster_runs.entry(cluster.as_str()).or_default() += count;
-            }
-            for (word, &count) in &book.run_words {
-                *run_words.entry(word.as_str()).or_default() += count;
-            }
-        }
+/// The repeated-run corpus aggregate. **Counts only** — no site and no key ever
+/// enters it; both live in the reduced chapters. Every sum is maintained
+/// incrementally and bit-exactly across book replacement (integer counts).
+#[derive(Default)]
+pub(crate) struct RepeatCorpusStats {
+    per_book: BTreeMap<Box<str>, RepeatAddends>,
+    /// Corpus-wide whitespace-chunk count — the cluster rate's denominator.
+    lexical_units: u64,
+    clusters: BTreeMap<Box<str>, u64>,
+    run_words: BTreeMap<Box<str>, u64>,
+}
 
-        // The config rate is "runs per 10k lexical units"; `strength` works in
-        // per-opportunity fractions, so divide at the boundary.
-        let convention_rate = evidence::clamp_rate(self.cfg.convention_rate_per_10k / 10_000.0);
-        let z = evidence::clamp_z(self.cfg.confidence_z);
-        let word_k = evidence::clamp_count(self.cfg.word_recurrence_k);
-        let floor = f64::from(evidence::clamp_unit(self.cfg.emit_score_min));
+/// One key's verdict: the score, or `None` when the run is an established
+/// convention (or below the floor) and stays silent.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct RepeatOutcome {
+    score: Option<f32>,
+}
 
-        let cluster_strengths: BTreeMap<&str, f64> = cluster_runs
-            .iter()
-            .map(|(&cluster, &count)| {
-                (
-                    cluster,
-                    evidence::strength(count, lexical_units, convention_rate, z),
-                )
-            })
-            .collect();
+/// The `lex.repeated-character-run` observation substrate. Sole consumer: the
+/// rule of the same name.
+pub(crate) struct RepeatedRunSubstrate;
 
-        // Recover spans: from the forwarded reduce sites where this call
-        // scanned the book (ADR 0044) — skipping segmentation entirely, the
-        // heaviest part of this rule's scan — by re-scanning otherwise. Both
-        // paths fan out per book (ADR 0042) and read the shared token cache
-        // instead of re-tokenizing when one was built.
-        let forwarded = match sites {
-            Some(rule::RuleSites::RepeatedCharacterRun(m)) => Some(m),
-            _ => None,
-        };
-        let score = |key_idx: crate::corpus::KeyIdx,
-                     text: &str,
-                     verse_tokens: &[Token],
-                     span: Span,
-                     found: &mut Vec<Finding>| {
+/// Pins the substrate's registry id at compile time.
+const _: crate::substrate::SubstrateId =
+    <RepeatedRunSubstrate as crate::substrate::ObservationSubstrate>::ID;
+
+/// One chapter's repeated-run map: the same per-verse extraction and per-token
+/// fold the retired listener ran, plus the key table its sites index.
+fn map_repeat_chapter(chapter: &crate::substrate::ChapterView<'_>) -> RepeatChapterObs {
+    let mut lexical_units = 0u64;
+    let mut clusters: BTreeMap<Box<str>, u64> = BTreeMap::new();
+    let mut run_words: BTreeMap<Box<str>, u64> = BTreeMap::new();
+    let mut intern: BTreeMap<RepeatKey, RepeatKeyId> = BTreeMap::new();
+    let mut keys: Vec<RepeatKey> = Vec::new();
+    let mut sites: Vec<RepeatSite> = Vec::new();
+    let mut tape = Vec::new();
+    let mut graphemes = Vec::new();
+    let mut word_graphemes = Vec::new();
+    for (vi, text) in chapter.texts.iter().enumerate() {
+        let local_idx = LocalKeyIdx::from_usize(vi);
+        crate::tape::build(text, &mut tape);
+        segment_tape(text, &tape, &mut graphemes);
+        let tokens = tokenize(text);
+        for span in scan_repeated_character_run(text, &graphemes) {
             let cluster = repeated_run_cluster(span.slice(text));
-            let cluster_strength = cluster_strengths
-                .get(cluster.as_str())
-                .copied()
-                .unwrap_or(0.0);
-            let word_frequency = containing_word(text, verse_tokens, span)
-                .and_then(|word| run_words.get(word.to_lowercase().as_str()).copied());
-            // Recurrence of the containing word is the second convention
-            // axis: a linear knee in the word's repeat count, not a rate.
-            let word_strength = word_frequency.map_or(0.0, |frequency| {
-                (frequency.saturating_sub(1) as f64 / word_k).clamp(0.0, 1.0)
-            });
-            let evidence = evidence::from_strengths(&[cluster_strength, word_strength]);
-            if evidence < floor {
-                return;
-            }
-            // The plain fact behind the score: which char repeated, how many
-            // times, in the flagged run (ADR 0048).
-            let run_text = span.slice(text);
-            let ch = run_text.chars().next().unwrap_or('\u{FFFD}');
-            let run = run_text.chars().count().min(u32::MAX as usize) as u32;
-            found.push(Finding {
-                key_idx,
-                code: REPEATED_CHARACTER_RUN,
-                severity: Severity::Info,
-                range: span,
-                score: Some(evidence as f32),
-                args: Some(FindingArgs::RepeatEvidence { ch, run }),
-            });
-        };
-        let mut out: Vec<Finding> = rule::map_books(books, |group| {
-            let mut found = Vec::new();
-            if let Some(book_sites) = forwarded.and_then(|m| m.get(group.slug)) {
-                // Memoize tokenization per verse — multiple runs in one verse
-                // (rare) shouldn't tokenize it twice when there's no cache.
-                let mut memo: Option<(LocalKeyIdx, Vec<Token>)> = None;
-                rule::for_each_site_text(group, book_sites, |local, text, span| {
-                    let key_idx = rebase(group.base, local);
-                    let owned_ref: &[Token] = match tokens.and_then(|c| c.get(&key_idx)).copied() {
-                        Some(t) => t,
-                        None => {
-                            if memo.as_ref().map(|(l, _)| *l) != Some(local) {
-                                memo = Some((local, tokenize(text)));
-                            }
-                            &memo.as_ref().unwrap().1
-                        }
-                    };
-                    score(key_idx, text, owned_ref, span, &mut found);
-                });
-            } else {
-                let mut tape = Vec::new();
-                let mut graphemes = Vec::new();
-                for (vi, text) in group.texts.iter().enumerate() {
-                    let local = LocalKeyIdx::from_usize(vi);
-                    let key_idx = rebase(group.base, local);
-                    let owned: Vec<Token>;
-                    let verse_tokens: &[Token] = match tokens.and_then(|c| c.get(&key_idx)).copied() {
-                        Some(t) => t,
-                        None => {
-                            owned = tokenize(text);
-                            &owned
-                        }
-                    };
-                    crate::tape::build(text, &mut tape);
-                    segment_tape(text, &tape, &mut graphemes);
-                    for span in scan_repeated_character_run(text, &graphemes) {
-                        score(key_idx, text, verse_tokens, span, &mut found);
-                    }
+            *clusters.entry(Box::from(cluster.as_str())).or_default() += 1;
+            let key = RepeatKey {
+                cluster: Box::from(cluster.as_str()),
+                word: containing_word(text, &tokens, span)
+                    .map(|w| Box::from(w.to_lowercase().as_str())),
+            };
+            let id = match intern.get(&key) {
+                Some(&id) => id,
+                None => {
+                    let id = repeat_key_id(keys.len());
+                    intern.insert(key.clone(), id);
+                    keys.push(key);
+                    id
                 }
-            }
-            found
-        })
-        .into_iter()
-        .flatten()
-        .collect();
-        out.sort_by_key(|finding| (finding.key_idx, finding.range.start, finding.range.end));
-        out
-    }
-}
-
-/// The repeated-run counting listener: one book's aggregate counts plus the
-/// forwarded sites. Fed per verse by the fused walk (shared tape-driven
-/// graphemes and shared tokens — the same products its per-rule walk built).
-pub(crate) struct RepeatedRunAcc {
-    out: BookRepeatedCharacterRun,
-    sites: Vec<SiteAddr>,
-    word_graphemes: Vec<GSpan>,
-    /// `false` on a prior-carried book (anchor mode): run extraction feeds
-    /// the sites; the aggregate tallies — including the per-token word-
-    /// recurrence fold, this rule's expensive half — are skipped.
-    counting: bool,
-}
-
-impl RepeatedRunAcc {
-    pub(crate) fn new(counting: bool) -> Self {
-        RepeatedRunAcc {
-            out: BookRepeatedCharacterRun::default(),
-            sites: Vec::new(),
-            word_graphemes: Vec::new(),
-            counting,
+            };
+            sites.push(RepeatSite {
+                addr: SiteAddr::pack(local_idx, span),
+                key: id,
+            });
         }
-    }
-
-    pub(crate) fn verse(&mut self, v: &stream::VerseInputs<'_, '_>) {
-        // UAX #29 intentionally has no dictionary segmentation for Thai/Lao
-        // and can yield one token per grapheme there. Whitespace chunks are a
-        // stable, script-neutral normalization unit: word-like in spaced text,
-        // verse-span-like in scriptio continua. Word recurrence still uses the
-        // UAX tokens below because it applies only when one contains the run.
-        for span in scan_repeated_character_run(v.text, v.graphemes) {
-            if self.counting {
-                *self
-                    .out
-                    .cluster_runs
-                    .entry(repeated_run_cluster(span.slice(v.text)))
-                    .or_default() += 1;
-            }
-            self.sites.push(SiteAddr::pack(v.local_idx, span));
-        }
-        if !self.counting {
-            return;
-        }
-        self.out.lexical_units += v.text.split_whitespace().count() as u64;
-        for token in v.tokens {
-            let word = token.span.slice(v.text);
+        lexical_units += text.split_whitespace().count() as u64;
+        for token in &tokens {
+            let word = token.span.slice(text);
             if word.chars().take(3).count() < 3 {
                 continue;
             }
             let folded = word.to_lowercase();
-            segment(&folded, &mut self.word_graphemes);
-            if !scan_repeated_character_run(&folded, &self.word_graphemes).is_empty() {
-                *self.out.run_words.entry(folded).or_default() += 1;
+            segment(&folded, &mut word_graphemes);
+            if !scan_repeated_character_run(&folded, &word_graphemes).is_empty() {
+                *run_words.entry(Box::from(folded.as_str())).or_default() += 1;
             }
         }
     }
-
-    pub(crate) fn finish(self) -> (BookRepeatedCharacterRun, Vec<SiteAddr>) {
-        (self.out, self.sites)
+    RepeatChapterObs {
+        token: Box::from(chapter.chapter),
+        counts: Arc::new(RepeatCounts {
+            lexical_units,
+            clusters: clusters.into_iter().collect(),
+            run_words: run_words.into_iter().collect(),
+            keys: keys.into_boxed_slice(),
+            sites: sites.into_boxed_slice(),
+        }),
     }
+}
+
+/// Sum sorted `(key, count)` addends from several chapters into one ordered
+/// table — key-ordered without a sort, which is what the corpus merge-join and
+/// the deterministic `Eq` want.
+fn fold_repeat_counts(parts: impl Iterator<Item = (Box<str>, u64)>) -> Vec<(Box<str>, u64)> {
+    let mut acc: BTreeMap<Box<str>, u64> = BTreeMap::new();
+    for (k, n) in parts {
+        *acc.entry(k).or_default() += n;
+    }
+    acc.into_iter().collect()
+}
+
+/// Apply one book's replacement to a corpus count table: subtract the old
+/// addend, add the new, and drop a key whose total fell to zero so an absent key
+/// and a zeroed key are the same state.
+fn apply_repeat_delta(
+    totals: &mut BTreeMap<Box<str>, u64>,
+    old: &[(Box<str>, u64)],
+    new: &[(Box<str>, u64)],
+) {
+    let (mut i, mut j) = (0usize, 0usize);
+    while i < old.len() || j < new.len() {
+        let (key, o, n) = match (old.get(i), new.get(j)) {
+            (Some((a, o)), Some((b, n))) => match a.cmp(b) {
+                std::cmp::Ordering::Less => {
+                    i += 1;
+                    (a, *o, 0)
+                }
+                std::cmp::Ordering::Greater => {
+                    j += 1;
+                    (b, 0, *n)
+                }
+                std::cmp::Ordering::Equal => {
+                    i += 1;
+                    j += 1;
+                    (a, *o, *n)
+                }
+            },
+            (Some((a, o)), None) => {
+                i += 1;
+                (a, *o, 0)
+            }
+            (None, Some((b, n))) => {
+                j += 1;
+                (b, 0, *n)
+            }
+            (None, None) => unreachable!("loop guard"),
+        };
+        if o == n {
+            continue;
+        }
+        let e = totals.entry(key.clone()).or_default();
+        *e = *e + n - o;
+        if *e == 0 {
+            totals.remove(key);
+        }
+    }
+}
+
+impl crate::substrate::ObservationSubstrate for RepeatedRunSubstrate {
+    const ID: crate::substrate::SubstrateId = crate::substrate::SubstrateId::RepeatedRun;
+    // Bump on any observation/reduction schema change.
+    const SCHEMA_STAMP: u64 = 1;
+
+    type Key = RepeatKey;
+    // Proven from the listener — see `RepeatChapterObs`.
+    type BoundaryState = ();
+    type ChapterObservation = RepeatChapterObs;
+    type ReducedChapter = RepeatReduced;
+    type BookContribution = RepeatBookContribution;
+    type CorpusStats = RepeatCorpusStats;
+    // Every `RepeatedCharacterRunConfig` field (the convention rate, the
+    // confidence z, the word-recurrence knee, the floor) is read at judge, so a
+    // knob change maps and reduces nothing.
+    type ExtractorConfig = ();
+    // Clusters and folded words are their own text; nothing to name through a
+    // shared table. (They are *not* casing's word types — the fold and the token
+    // unit differ — so sharing the `WordInterner` would be a false identity.)
+    type Symbols = ();
+    type JudgeConfig = RepeatedCharacterRunConfig;
+    type EntryOutcome = RepeatOutcome;
+
+    fn extractor_fp(_extractor: &()) -> u64 {
+        0
+    }
+
+    fn map_chapter(
+        chapter: &crate::substrate::ChapterView<'_>,
+        _extractor: &(),
+        _symbols: &(),
+    ) -> RepeatChapterObs {
+        map_repeat_chapter(chapter)
+    }
+
+    fn pending_owner(_state: &()) -> Option<&str> {
+        None
+    }
+
+    fn reduce_chapter(
+        observation: &RepeatChapterObs,
+        _entering: &(),
+        _carry_out: &mut RepeatReduced,
+    ) -> (RepeatReduced, ()) {
+        (
+            RepeatReduced {
+                token: observation.token.clone(),
+                counts: Arc::clone(&observation.counts),
+            },
+            (),
+        )
+    }
+
+    fn finish_book(_leaving: &(), _carry_out: &mut RepeatReduced) {}
+
+    fn fold_book(reduced: &[RepeatReduced], _symbols: &()) -> RepeatBookContribution {
+        RepeatBookContribution {
+            lexical_units: reduced.iter().map(|r| r.counts.lexical_units).sum(),
+            clusters: Arc::new(fold_repeat_counts(
+                reduced
+                    .iter()
+                    .flat_map(|r| r.counts.clusters.iter().map(|(c, n)| (c.clone(), *n))),
+            )),
+            run_words: Arc::new(fold_repeat_counts(
+                reduced
+                    .iter()
+                    .flat_map(|r| r.counts.run_words.iter().map(|(w, n)| (w.clone(), *n))),
+            )),
+            chapters: reduced.to_vec(),
+        }
+    }
+
+    fn replace_book_in_corpus_stats(
+        stats: &mut RepeatCorpusStats,
+        slug: &str,
+        old: Option<&RepeatBookContribution>,
+        new: Option<&RepeatBookContribution>,
+    ) -> Vec<RepeatKey> {
+        let empty: Vec<(Box<str>, u64)> = Vec::new();
+        stats.lexical_units = stats.lexical_units + new.map_or(0, |c| c.lexical_units)
+            - old.map_or(0, |c| c.lexical_units);
+        apply_repeat_delta(
+            &mut stats.clusters,
+            old.map_or(&empty[..], |c| &c.clusters[..]),
+            new.map_or(&empty[..], |c| &c.clusters[..]),
+        );
+        apply_repeat_delta(
+            &mut stats.run_words,
+            old.map_or(&empty[..], |c| &c.run_words[..]),
+            new.map_or(&empty[..], |c| &c.run_words[..]),
+        );
+        match new {
+            Some(c) => {
+                stats.per_book.insert(
+                    Box::from(slug),
+                    (
+                        c.lexical_units,
+                        Arc::clone(&c.clusters),
+                        Arc::clone(&c.run_words),
+                    ),
+                );
+            }
+            None => {
+                stats.per_book.remove(slug);
+            }
+        }
+        // The stats delta is deliberately empty, for the same structural reason
+        // casing's is: this judge's cluster strength is scored against
+        // `lexical_units`, a CORPUS-GLOBAL denominator that moves whenever any
+        // verse's whitespace-chunk count moves — so the honest delta is either the
+        // empty set (nothing moved) or every key in the corpus, never a subset,
+        // and a subset is the one answer that is wrong. Naming "everything" would
+        // also mean materializing a corpus-wide key list, which this aggregate
+        // deliberately does not hold (keys live in the reduced chapters, where
+        // materialization reads them). Judging is whole-key-set today for every
+        // substrate (Entry 27's P2); WP8 is where that changes, and this row will
+        // need an aggregate generation counter then, exactly as casing has.
+        Vec::new()
+    }
+
+    fn judge(
+        cfg: &RepeatedCharacterRunConfig,
+        key: &RepeatKey,
+        stats: &RepeatCorpusStats,
+    ) -> RepeatOutcome {
+        // The config rate is "runs per 10k lexical units"; `strength` works in
+        // per-opportunity fractions, so divide at the boundary.
+        let convention_rate = evidence::clamp_rate(cfg.convention_rate_per_10k / 10_000.0);
+        let z = evidence::clamp_z(cfg.confidence_z);
+        let word_k = evidence::clamp_count(cfg.word_recurrence_k);
+        let floor = f64::from(evidence::clamp_unit(cfg.emit_score_min));
+
+        let runs = stats.clusters.get(&key.cluster).copied().unwrap_or(0);
+        let cluster_strength =
+            evidence::strength(runs, stats.lexical_units, convention_rate, z);
+        // Recurrence of the containing word is the second convention axis: a
+        // linear knee in the word's repeat count, not a rate. A run with no
+        // containing token — or one whose folded token never itself contains a
+        // run — contributes nothing here, exactly as before.
+        let word_strength = key
+            .word
+            .as_ref()
+            .and_then(|w| stats.run_words.get(w).copied())
+            .map_or(0.0, |frequency| {
+                (frequency.saturating_sub(1) as f64 / word_k).clamp(0.0, 1.0)
+            });
+        let ev = evidence::from_strengths(&[cluster_strength, word_strength]);
+        if ev < floor {
+            return RepeatOutcome::default();
+        }
+        RepeatOutcome {
+            score: Some(ev as f32),
+        }
+    }
+}
+
+impl RepeatBookContribution {
+    /// Emit this book's repeated-run findings: one per retained candidate whose
+    /// key survived judging, rebasing each chapter-local address to a global
+    /// `KeyIdx` via its chapter's current base.
+    ///
+    /// `ch` and `run` are re-derived from the retained span (plan §11): the run's
+    /// first scalar and its scalar count are a byte slice of the verse, so this
+    /// needs no segmentation at all.
+    fn materialize(
+        &self,
+        slug: &str,
+        corpus: &Corpus,
+        verdicts: &BTreeMap<RepeatKey, RepeatOutcome>,
+        out: &mut Vec<Finding>,
+    ) {
+        let texts = corpus.texts();
+        for chapter in &self.chapters {
+            let Some(range) = corpus.chapter_range(slug, &chapter.token) else {
+                continue;
+            };
+            let base = crate::corpus::KeyIdx::from_usize(range.start);
+            for site in chapter.counts.sites.iter() {
+                let key = &chapter.counts.keys[usize::from(site.key)];
+                // Every retained candidate's key was interned by the same chapter
+                // map that produced this address, and every chapter's keys are
+                // judged, so a missing verdict would mean the two came from
+                // different text.
+                let outcome = verdicts
+                    .get(key)
+                    .expect("every retained candidate's key is a judged key");
+                let Some(score) = outcome.score else {
+                    continue;
+                };
+                let (local, span) = site.addr.unpack();
+                let text = &texts[range.start + usize::from(local.get())];
+                let run_text = span.slice(text);
+                // The plain fact behind the score: which char repeated, how many
+                // times, in the flagged run (ADR 0048).
+                let ch = run_text.chars().next().unwrap_or('\u{FFFD}');
+                let run = run_text.chars().count().min(u32::MAX as usize) as u32;
+                out.push(Finding {
+                    key_idx: rebase(base, local),
+                    code: REPEATED_CHARACTER_RUN,
+                    severity: Severity::Info,
+                    range: span,
+                    score: Some(score),
+                    args: Some(FindingArgs::RepeatEvidence { ch, run }),
+                });
+            }
+        }
+    }
+}
+
+/// One chapter the substrate has to map this analysis, as the ordered map seam
+/// sees it: its caller-order `(book, chapter)` slot plus the view mapping reads.
+struct RepeatMapWork<'a> {
+    book: usize,
+    chapter: usize,
+    view: crate::substrate::ChapterView<'a>,
+}
+
+/// Drive the `lex.repeated-character-run` observation substrate for one analysis:
+/// map the dirty chapters through the ordered chapter-map seam, reduce (the
+/// identity), judge exactly the keys its retained candidates name, and
+/// materialize. When inactive, drop the cached products so an edit while it is
+/// disabled does no work for it.
+pub(crate) fn drive_repeated_run(
+    active: bool,
+    cache: &mut crate::substrate::SubstrateCache<RepeatedRunSubstrate>,
+    corpus: &Corpus,
+    cfg: &RepeatedCharacterRunConfig,
+    out: &mut Vec<Finding>,
+) {
+    use crate::substrate::{ChapterView, ObservationInputStamp, ObservationSubstrate};
+    #[cfg(any(test, feature = "test-probes"))]
+    cache.reset_probes();
+    if !active {
+        cache.clear();
+        return;
+    }
+    let texts = corpus.texts();
+    let layout = corpus.book_layout();
+    let mut stamped: Vec<Vec<(Box<str>, ObservationInputStamp)>> = Vec::with_capacity(layout.len());
+    let mut work: Vec<RepeatMapWork<'_>> = Vec::new();
+    let mut book_runs: Vec<std::ops::Range<usize>> = Vec::new();
+    let mut work_bytes = 0usize;
+    for (bi, book) in layout.iter().enumerate() {
+        let run_start = work.len();
+        let mut chapters = Vec::with_capacity(book.chapters.len());
+        for (ci, c) in book.chapters.iter().enumerate() {
+            let stamp = ObservationInputStamp {
+                schema_stamp: RepeatedRunSubstrate::SCHEMA_STAMP,
+                chapter_hash: c.hash,
+                extractor_fp: RepeatedRunSubstrate::extractor_fp(&()),
+            };
+            if !cache.observation_is_current(&book.slug, &c.chapter, &stamp) {
+                let verses = &texts[c.range.clone()];
+                work_bytes += verses.iter().map(String::len).sum::<usize>();
+                work.push(RepeatMapWork {
+                    book: bi,
+                    chapter: ci,
+                    view: ChapterView {
+                        chapter: &c.chapter,
+                        texts: verses,
+                    },
+                });
+            }
+            chapters.push((c.chapter.clone(), stamp));
+        }
+        if work.len() > run_start {
+            book_runs.push(run_start..work.len());
+        }
+        stamped.push(chapters);
+    }
+    let route = crate::rule::map_route(&book_runs, work.len(), work_bytes);
+    #[cfg(any(test, feature = "test-probes"))]
+    {
+        cache.map_route = route.label();
+    }
+    let fresh = crate::rule::map_chapter_work(&work, &book_runs, route, |w| {
+        RepeatedRunSubstrate::map_chapter(&w.view, &(), &())
+    });
+    // Back into caller-order `(book, chapter)` slots, so reduction reads them in
+    // corpus order and never in completion order.
+    let mut slots: Vec<Vec<Option<RepeatChapterObs>>> = layout
+        .iter()
+        .map(|b| (0..b.chapters.len()).map(|_| None).collect())
+        .collect();
+    for (w, obs) in work.iter().zip(fresh) {
+        slots[w.book][w.chapter] = Some(obs);
+    }
+    for (bi, book) in layout.iter().enumerate() {
+        cache.update_book(&book.slug, &stamped[bi], &(), |i| {
+            slots[bi][i].take().unwrap_or_else(|| {
+                let c = &book.chapters[i];
+                RepeatedRunSubstrate::map_chapter(
+                    &ChapterView {
+                        chapter: &c.chapter,
+                        texts: &texts[c.range.clone()],
+                    },
+                    &(),
+                    &(),
+                )
+            })
+        });
+    }
+    // The judge key set is exactly the keys the retained candidates name — the
+    // only keys that could ever emit. Collected before judging so a key shared by
+    // several sites is judged once.
+    let mut named: BTreeMap<RepeatKey, RepeatOutcome> = BTreeMap::new();
+    for book in layout {
+        if let Some(contrib) = cache.book_contribution(&book.slug) {
+            for chapter in &contrib.chapters {
+                for key in chapter.counts.keys.iter() {
+                    named.entry(key.clone()).or_default();
+                }
+            }
+        }
+    }
+    let stats = cache.corpus_stats();
+    for (key, outcome) in named.iter_mut() {
+        *outcome = RepeatedRunSubstrate::judge(cfg, key, stats);
+    }
+    #[cfg(any(test, feature = "test-probes"))]
+    {
+        cache.judged = named.len();
+    }
+    for book in layout {
+        if let Some(contrib) = cache.book_contribution(&book.slug) {
+            contrib.materialize(&book.slug, corpus, &named, out);
+        }
+    }
+}
+
+/// `lex.repeated-character-run` findings for a whole corpus at a given config, via
+/// the observation substrate over a fresh transient cache — the single
+/// repeated-run implementation, for tests and calibration callers. Findings are in
+/// the final stable order.
+pub fn repeated_run_findings(
+    corpus: &Corpus,
+    cfg: &RepeatedCharacterRunConfig,
+) -> Vec<Finding> {
+    let mut cache = crate::substrate::SubstrateCache::new();
+    let mut out = Vec::new();
+    drive_repeated_run(true, &mut cache, corpus, cfg, &mut out);
+    out.sort_by_key(|f| (f.key_idx, f.range.start, f.range.end));
+    out
 }
 
 fn containing_word<'a>(text: &'a str, tokens: &[Token], run: Span) -> Option<&'a str> {
@@ -1701,14 +2033,42 @@ mod tests {
         assert!(rc("الإيمــــــان").is_empty());
     }
 
-    fn repeat_rule(cfg: RepeatedCharacterRunConfig) -> RepeatedCharacterRun {
-        RepeatedCharacterRun { cfg }
+    /// Every repeated-run test runs the shipped substrate over a fresh transient
+    /// cache — the one repeated-run implementation.
+    fn repeat_findings(corpus: &Corpus, cfg: RepeatedCharacterRunConfig) -> Vec<Finding> {
+        repeated_run_findings(corpus, &cfg)
     }
 
-    fn repeat_findings(corpus: &Corpus, cfg: RepeatedCharacterRunConfig) -> Vec<Finding> {
-        let rule = repeat_rule(cfg);
-        let books = crate::corpus::by_book(corpus);
-        rule.judge(&rule.reduce(&books, None, None).0, &books, None, None)
+    /// A resident drive, findings in the final stable order — the incremental
+    /// path, as `analyze` runs it.
+    fn repeat_resident(
+        cache: &mut crate::substrate::SubstrateCache<RepeatedRunSubstrate>,
+        corpus: &Corpus,
+        cfg: &RepeatedCharacterRunConfig,
+    ) -> Vec<Finding> {
+        let mut out = Vec::new();
+        drive_repeated_run(true, cache, corpus, cfg, &mut out);
+        out.sort_by_key(|f| (f.key_idx, f.range.start, f.range.end));
+        out
+    }
+
+    /// Comparable rendering — key, span text, score and both arg values, so an
+    /// equal-length-but-wrong result cannot pass.
+    fn repeat_render(corpus: &Corpus, f: &[Finding]) -> Vec<String> {
+        f.iter()
+            .map(|f| {
+                let a = match &f.args {
+                    Some(FindingArgs::RepeatEvidence { ch, run }) => format!("{ch}/{run}"),
+                    _ => "-".to_string(),
+                };
+                format!(
+                    "{}|{}|{:?}|{a}",
+                    corpus.key(f.key_idx),
+                    f.range.slice(corpus.text(f.key_idx)),
+                    f.score
+                )
+            })
+            .collect()
     }
 
     #[test]
@@ -1820,66 +2180,154 @@ mod tests {
         );
     }
 
+    /// The incremental score is the CORPUS-wide one, not the edited book's local
+    /// rate: a resident cache that already saw GEN scores EXO's lone run against
+    /// GEN's 250,000 lexical units too, and matches a cold full-corpus analysis
+    /// exactly.
     #[test]
     fn incremental_score_uses_the_retained_corpus() {
         let cfg = RepeatedCharacterRunConfig::default();
-        let rule = repeat_rule(cfg);
         let gen_corpus = repeat_corpus("GEN", &["word ".repeat(50_000)]);
+        let exo_clean = repeat_corpus("EXO", &["word word".to_string()]);
+        let before = concat_corpus(&gen_corpus, &exo_clean);
         let exo = repeat_corpus("EXO", &["joyfullly".to_string()]);
         let full = concat_corpus(&gen_corpus, &exo);
 
-        let full_books = crate::corpus::by_book(&full);
-        let full_score = rule.judge(
-            &rule.reduce(&full_books, None, None).0,
-            &full_books,
-            None,
-            None,
-        )[0]
-        .score;
-        let gen_books = crate::corpus::by_book(&gen_corpus);
-        let exo_books = crate::corpus::by_book(&exo);
-        let merged = rule
-            .reduce(&gen_books, None, None)
-            .0
-            .merge(rule.reduce(&exo_books, None, None).0);
-        let incremental = rule.judge(&merged, &exo_books, None, None);
+        let mut cache = crate::substrate::SubstrateCache::new();
+        let seeded = repeat_resident(&mut cache, &before, &cfg);
+        assert!(seeded.is_empty(), "{seeded:?}");
+        cache.reset_probes();
+        let incremental = repeat_resident(&mut cache, &full, &cfg);
+        assert_eq!(cache.mapped, 1, "only EXO's changed chapter is remapped");
         assert_eq!(incremental.len(), 1);
-        assert_eq!(incremental[0].score, full_score);
+        assert_eq!(
+            repeat_render(&full, &incremental),
+            repeat_render(&full, &repeat_findings(&full, cfg)),
+            "incremental score/args are the corpus-wide ones"
+        );
     }
 
+    /// Removing a book drops its contribution to the corpus `lexical_units`
+    /// denominator, so the surviving book's lone run becomes *less* rare. Driven
+    /// residently, so the aggregate under test is the incrementally maintained
+    /// one — and the same claim as the retired `stats.remove_book` test.
     #[test]
     fn removing_a_book_drops_its_lexical_unit_denominator() {
-        let rule = repeat_rule(RepeatedCharacterRunConfig {
+        let cfg = RepeatedCharacterRunConfig {
             emit_score_min: 0.0,
             ..Default::default()
-        });
+        };
         let gen_corpus = repeat_corpus("GEN", &["word ".repeat(50_000)]);
         let exo = repeat_corpus("EXO", &["joyfullly".to_string()]);
         let full = concat_corpus(&gen_corpus, &exo);
-        let full_books = crate::corpus::by_book(&full);
-        let RuleStats::RepeatedCharacterRun(mut stats) = rule.reduce(&full_books, None, None).0
-        else {
-            unreachable!()
+
+        let mut cache = crate::substrate::SubstrateCache::new();
+        let with_gen = repeat_resident(&mut cache, &full, &cfg);
+        let before = with_gen
+            .iter()
+            .find(|f| full.key(f.key_idx).starts_with("EXO"))
+            .expect("EXO's run surfaces")
+            .score
+            .unwrap();
+
+        // The same resident cache, now answering for a corpus without GEN. Book
+        // REMOVAL is shell-driven (`Galley::remove_books` -> `cache.remove_book`),
+        // not inferred from a smaller layout — a book absent from this call's
+        // corpus is otherwise a book this call simply did not ask about.
+        cache.remove_book("GEN");
+        let after_findings = repeat_resident(&mut cache, &exo, &cfg);
+        let after = after_findings[0].score.unwrap();
+        assert!(
+            after < before,
+            "a smaller corpus makes the same run less rare: {after} !< {before}"
+        );
+        // And it equals a cold analysis of the smaller corpus.
+        assert_eq!(
+            repeat_render(&exo, &after_findings),
+            repeat_render(&exo, &repeat_findings(&exo, cfg))
+        );
+    }
+
+    /// An edit maps and reduces exactly its own chapter, and a judging-knob change
+    /// maps and reduces nothing (plan §12.4) — every config field is read at judge.
+    #[test]
+    fn repeat_edit_locality_and_knob_isolation() {
+        let clean: Vec<String> = (1..=12).map(|_| "word word word".to_string()).collect();
+        let mut texts = clean.clone();
+        let corpus = |t: &[String]| repeat_corpus("GEN", t);
+        let cfg = RepeatedCharacterRunConfig {
+            emit_score_min: 0.0,
+            ..Default::default()
         };
-        let exo_books = crate::corpus::by_book(&exo);
-        let before = rule.judge(
-            &RuleStats::RepeatedCharacterRun(stats.clone()),
-            &exo_books,
-            None,
-            None,
-        )[0]
-        .score
-        .unwrap();
-        stats.remove_book("GEN");
-        let after = rule.judge(
-            &RuleStats::RepeatedCharacterRun(stats),
-            &exo_books,
-            None,
-            None,
-        )[0]
-        .score
-        .unwrap();
-        assert!(after < before);
+        let mut cache = crate::substrate::SubstrateCache::new();
+        let seeded = repeat_resident(&mut cache, &corpus(&texts), &cfg);
+        assert!(seeded.is_empty(), "{seeded:?}");
+        let cold_chapters = cache.mapped;
+        assert!(cold_chapters >= 1);
+
+        texts[6] = "word joyfullly word".to_string();
+        let edited = corpus(&texts);
+        cache.reset_probes();
+        let inc = repeat_resident(&mut cache, &edited, &cfg);
+        assert_eq!(cache.mapped, 1, "one changed chapter maps one chapter");
+        assert_eq!(
+            cache.reduced, 1,
+            "an empty boundary state can never cascade past the changed chapter"
+        );
+        assert_eq!(
+            repeat_render(&edited, &inc),
+            repeat_render(&edited, &repeat_findings(&edited, cfg))
+        );
+
+        // A knob change re-judges from the cached observations and reductions.
+        let strict = RepeatedCharacterRunConfig {
+            emit_score_min: 1.0,
+            ..Default::default()
+        };
+        cache.reset_probes();
+        let none = repeat_resident(&mut cache, &edited, &strict);
+        assert_eq!(
+            (cache.mapped, cache.reduced),
+            (0, 0),
+            "a knob is not an extraction input"
+        );
+        assert!(none.len() <= inc.len());
+    }
+
+    /// Randomized edits: a resident cache's findings always equal a cold analysis
+    /// of the same corpus (plan §12.6).
+    #[test]
+    fn resident_repeated_run_equals_cold_under_randomized_edits() {
+        const SHAPES: &[&str] = &[
+            "word word",
+            "joyfullly word",
+            "word heeello",
+            "",
+            "aaa bbb",
+            "word joyfullly joyfullly",
+            "hmmmm",
+        ];
+        let mut texts: Vec<String> = (0..15).map(|i| SHAPES[i % SHAPES.len()].to_string()).collect();
+        let cfg = RepeatedCharacterRunConfig {
+            emit_score_min: 0.0,
+            ..Default::default()
+        };
+        let mut cache = crate::substrate::SubstrateCache::new();
+        let _ = repeat_resident(&mut cache, &repeat_corpus("GEN", &texts), &cfg);
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        for step in 0..24 {
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let vi = (state >> 33) as usize % texts.len();
+            let si = (state >> 11) as usize % SHAPES.len();
+            texts[vi] = SHAPES[si].to_string();
+            let corpus = repeat_corpus("GEN", &texts);
+            let inc = repeat_resident(&mut cache, &corpus, &cfg);
+            assert_eq!(
+                repeat_render(&corpus, &inc),
+                repeat_render(&corpus, &repeat_findings(&corpus, cfg)),
+                "step {step}: resident result diverged from cold"
+            );
+        }
     }
 
     #[test]

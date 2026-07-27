@@ -54,6 +54,8 @@ pub(crate) enum SubstrateId {
     Spacing,
     /// `punct.adjacency-anomaly`'s per-pattern / per-lead-glyph run counts.
     Adjacency,
+    /// `lex.repeated-character-run`'s per-cluster / per-word recurrence counts.
+    RepeatedRun,
     /// `struct.duplicate-word`'s adjacent-pair sites.
     DuplicateWord,
     /// The shared casing model: per-word case tables + lowercase flag
@@ -72,6 +74,7 @@ impl SubstrateId {
         &[
         SubstrateId::Spacing,
         SubstrateId::Adjacency,
+        SubstrateId::RepeatedRun,
         SubstrateId::DuplicateWord,
         SubstrateId::Casing,
         SubstrateId::MixedCase,
@@ -715,6 +718,7 @@ impl<S: ObservationSubstrate> SubstrateCache<S> {
 pub(crate) struct ActiveSubstrates {
     pub(crate) spacing: bool,
     pub(crate) adjacency: bool,
+    pub(crate) repeated_run: bool,
     pub(crate) duplicate_word: bool,
     pub(crate) casing: bool,
     pub(crate) mixed_case: bool,
@@ -728,6 +732,7 @@ impl ActiveSubstrates {
         Self {
             spacing: any(spacing_consumers()),
             adjacency: any(adjacency_consumers()),
+            repeated_run: any(repeated_run_consumers()),
             duplicate_word: any(duplicate_word_consumers()),
             casing: any(casing_consumers()),
             mixed_case: any(mixed_case_consumers()),
@@ -739,6 +744,7 @@ impl ActiveSubstrates {
         match id {
             SubstrateId::Spacing => self.spacing,
             SubstrateId::Adjacency => self.adjacency,
+            SubstrateId::RepeatedRun => self.repeated_run,
             SubstrateId::DuplicateWord => self.duplicate_word,
             SubstrateId::Casing => self.casing,
             SubstrateId::MixedCase => self.mixed_case,
@@ -756,6 +762,11 @@ pub(crate) fn spacing_consumers() -> &'static [RuleId] {
 /// The closed registry: the adjacency substrate's sole consumer.
 pub(crate) fn adjacency_consumers() -> &'static [RuleId] {
     &[RuleId::PunctuationAdjacencyAnomaly]
+}
+
+/// The closed registry: the repeated-run substrate's sole consumer.
+pub(crate) fn repeated_run_consumers() -> &'static [RuleId] {
+    &[RuleId::RepeatedCharacterRun]
 }
 
 /// The closed registry: the duplicate-word substrate's sole consumer.
@@ -784,6 +795,7 @@ pub(crate) fn consumers_of(id: SubstrateId) -> &'static [RuleId] {
     match id {
         SubstrateId::Spacing => spacing_consumers(),
         SubstrateId::Adjacency => adjacency_consumers(),
+        SubstrateId::RepeatedRun => repeated_run_consumers(),
         SubstrateId::DuplicateWord => duplicate_word_consumers(),
         SubstrateId::Casing => casing_consumers(),
         SubstrateId::MixedCase => mixed_case_consumers(),
@@ -805,6 +817,10 @@ mod tests {
         assert_eq!(
             <crate::signals::punctuation::AdjacencySubstrate as ObservationSubstrate>::ID,
             SubstrateId::Adjacency
+        );
+        assert_eq!(
+            <crate::signals::lexical::RepeatedRunSubstrate as ObservationSubstrate>::ID,
+            SubstrateId::RepeatedRun
         );
         assert_eq!(
             <crate::signals::lexical::DuplicateWordSubstrate as ObservationSubstrate>::ID,
@@ -834,6 +850,7 @@ mod tests {
             let all_on = ActiveSubstrates {
                 spacing: true,
                 adjacency: true,
+                repeated_run: true,
                 duplicate_word: true,
                 casing: true,
                 mixed_case: true,

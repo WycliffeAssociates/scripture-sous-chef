@@ -114,7 +114,6 @@ pub trait ProjectTokenRule: Sync {
 /// `reduce` (calibration/tests) produces a fully-owned `RuleSites<'static>`.
 pub enum RuleSites<'a> {
     Proportionality,
-    RepeatedCharacterRun(BTreeMap<Box<str>, Cow<'a, [SiteAddr]>>),
     PunctOnlyToken(BTreeMap<Box<str>, Cow<'a, [SiteAddr]>>),
     MixedScript(BTreeMap<Box<str>, Cow<'a, [signals::script_mixing::MixedScriptSite]>>),
     /// `uni.rare-glyph` carries no sites: surviving candidates are ultra-rare, so
@@ -447,9 +446,6 @@ pub fn stateful_rules(config: &Config) -> Vec<Box<dyn StatefulRule>> {
         // (`punct.spacing-anomaly` and `punct.adjacency-anomaly` are typed
         // observation substrates now — see `SpacingSubstrate` and
         // `AdjacencySubstrate` — driven outside this registry.)
-        Box::new(signals::lexical::RepeatedCharacterRun {
-            cfg: config.repeated_character_run,
-        }),
         Box::new(signals::lexical::PunctOnlyToken {
             cfg: config.punct_only_token,
         }),

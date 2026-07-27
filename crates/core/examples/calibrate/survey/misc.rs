@@ -7,7 +7,7 @@ use ssc_core::config::{
 };
 use ssc_core::rule::{ProjectRule, StatefulRule};
 use ssc_core::signals::bracket_balance::BracketBalance;
-use ssc_core::signals::lexical::{PunctOnlyToken, RepeatedCharacterRun};
+use ssc_core::signals::lexical::{PunctOnlyToken, repeated_run_findings};
 use ssc_core::signals::punctuation::adjacency_findings;
 use ssc_core::{
     BracketMeasure, Config, Corpus, Finding, FindingArgs, RuleId, analyze, analyze_with_config,
@@ -466,17 +466,14 @@ pub(crate) fn repeat_calib(dir: &Path, cfg: RepeatedCharacterRunConfig) {
         }
     }
 
-    let rule = RepeatedCharacterRun {
-        cfg: RepeatedCharacterRunConfig {
-            emit_score_min: 0.0,
-            ..cfg
-        },
+    let scoring = RepeatedCharacterRunConfig {
+        emit_score_min: 0.0,
+        ..cfg
     };
     let t0 = std::time::Instant::now();
-    let books = ssc_core::corpus::by_book(&target);
-    let repeat = rule.judge(&rule.reduce(&books, None, None).0, &books, None, None);
+    let repeat = repeated_run_findings(&target, &scoring);
     eprintln!(
-        "{corpus}: repeat reduce+judge {:?}; rate={} K={}",
+        "{corpus}: repeat map+reduce+judge {:?}; rate={} K={}",
         t0.elapsed(),
         cfg.convention_rate_per_10k,
         cfg.word_recurrence_k

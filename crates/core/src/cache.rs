@@ -143,6 +143,8 @@ pub(crate) struct SubstrateSection {
     pub(crate) casing_model: Option<casing::CasingModel>,
     /// `punct.adjacency-anomaly`'s substrate (Phase E).
     pub(crate) adjacency: SubstrateCache<punctuation::AdjacencySubstrate>,
+    /// `lex.repeated-character-run`'s substrate (Phase E).
+    pub(crate) repeated_run: SubstrateCache<lexical::RepeatedRunSubstrate>,
     /// `case.mixed-case-word`'s substrate (Phase E).
     pub(crate) mixed_case: SubstrateCache<crate::signals::mixed_case::MixedCaseSubstrate>,
     /// The shared folded-word table every word-keyed substrate names its word
@@ -164,6 +166,7 @@ impl SubstrateSection {
         SubstrateSection {
             spacing: SubstrateCache::new(),
             adjacency: SubstrateCache::new(),
+            repeated_run: SubstrateCache::new(),
             duplicate_word: SubstrateCache::new(),
             casing: SubstrateCache::new(),
             casing_model: None,
@@ -177,6 +180,7 @@ impl SubstrateSection {
     fn clear(&mut self) {
         self.spacing.clear();
         self.adjacency.clear();
+        self.repeated_run.clear();
         self.duplicate_word.clear();
         self.casing.clear();
         self.casing_model = None;
@@ -191,6 +195,7 @@ impl SubstrateSection {
     fn remove_book(&mut self, slug: &str) {
         self.spacing.remove_book(slug);
         self.adjacency.remove_book(slug);
+        self.repeated_run.remove_book(slug);
         self.duplicate_word.remove_book(slug);
         self.casing.remove_book(slug);
         self.mixed_case.remove_book(slug);
@@ -886,7 +891,6 @@ impl PrepSection {
 
     fn store_walk(&mut self, slug: &str, hash: u128, output: &BookOut) {
         let entry = self.entry_for_write(slug, hash);
-        entry.repeated_run = output.repeated_run.as_ref().map(|(_, sites)| sites.clone());
         entry.punct_only = output.punct_only.as_ref().map(|(_, sites)| sites.clone());
         entry.mixed_script = output.mixed_script.as_ref().map(|(_, sites)| sites.clone());
         entry.bracket = output.bracket.clone();
@@ -907,7 +911,6 @@ impl PrepSection {
 
 pub(crate) struct BookEntry {
     pub(crate) hash: u128,
-    pub(crate) repeated_run: Option<Vec<SiteAddr>>,
     pub(crate) punct_only: Option<Vec<SiteAddr>>,
     pub(crate) mixed_script: Option<Vec<script_mixing::MixedScriptSite>>,
     pub(crate) bracket: Option<bracket_balance::BookMatch>,
@@ -919,7 +922,6 @@ impl BookEntry {
     fn new(hash: u128) -> Self {
         Self {
             hash,
-            repeated_run: None,
             punct_only: None,
             mixed_script: None,
             bracket: None,
@@ -929,8 +931,7 @@ impl BookEntry {
     }
 
     fn has_walk_lanes(&self, plan: &WalkPlan) -> bool {
-(!plan.repeated_run || self.repeated_run.is_some())
-            && (!plan.punct_only || self.punct_only.is_some())
+(!plan.punct_only || self.punct_only.is_some())
             && (!plan.mixed_script || self.mixed_script.is_some())
             && (!plan.bracket || self.bracket.is_some())
             && (!plan.normalization || self.normalization.is_some())
@@ -970,7 +971,7 @@ mod tests {
     /// tell a reused entry from a rebuilt one.
     fn walk_with_lane() -> BookOut {
         BookOut {
-            repeated_run: Some((
+            punct_only: Some((
                 Default::default(),
                 vec![SiteAddr::pack(
                     LocalKeyIdx::from_usize(0),
@@ -1005,7 +1006,7 @@ mod tests {
         let mut cache = AnalysisCache::new();
         cache.ensure_fingerprint(&Config::v1_defaults());
         cache.store_walk("GEN", 1, &walk_with_lane());
-        assert!(cache.prep.books.get("GEN").unwrap().repeated_run.is_some());
+        assert!(cache.prep.books.get("GEN").unwrap().punct_only.is_some());
 
         // A new book hash replaces the entry outright: no lane from the old
         // content may survive into it.
@@ -1013,7 +1014,7 @@ mod tests {
         let entry = cache.prep.books.get("GEN").unwrap();
         assert_eq!(entry.hash, 2);
         assert!(
-            entry.repeated_run.is_none(),
+            entry.punct_only.is_none(),
             "old walk lane must not survive a hash change"
         );
     }

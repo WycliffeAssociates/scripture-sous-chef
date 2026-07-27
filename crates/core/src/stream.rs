@@ -132,7 +132,6 @@ fn fold_letter_tokens<'t>(text: &'t str, tokens: &[Token], buf: &mut Vec<Option<
 /// verse's tokens as the shared [`TokenCache`] for the judge phase.
 #[derive(Clone, Copy, Default)]
 pub(crate) struct WalkPlan {
-    pub repeated_run: bool,
     pub punct_only: bool,
     pub mixed_script: bool,
     pub rare_glyph: bool,
@@ -148,10 +147,6 @@ impl WalkPlan {
         let mut n = Needs::default();
         if self.punct_only {
             n.tape = true;
-        }
-        if self.repeated_run {
-            n.graphemes = true;
-            n.tokens = true;
         }
         if self.mixed_script || self.rare_glyph {
             n.tokens = true;
@@ -169,11 +164,6 @@ impl WalkPlan {
         if self.punct_only {
             n.tape = true;
         }
-        if self.repeated_run {
-            n.graphemes = true;
-        }
-        // Repeated-run's anchor mode skips its per-token word fold, so it
-        // needs no tokens on an uncounted book; mixed-script still reads them.
         if self.mixed_script {
             n.tokens = true;
         }
@@ -218,10 +208,6 @@ pub(crate) struct BookOut {
     /// flag and be caught.
     #[cfg(any(test, feature = "test-probes"))]
     pub counting_accs_ran: bool,
-    pub repeated_run: Option<(
-        lexical::BookRepeatedCharacterRun,
-        Vec<crate::corpus::SiteAddr>,
-    )>,
     pub punct_only: Option<(lexical::BookPunctOnlyToken, Vec<crate::corpus::SiteAddr>)>,
     pub mixed_script: Option<(
         script_mixing::BookMixedScript,
@@ -323,9 +309,6 @@ fn walk_book(
     // tokens at all.
     let delegate_tokens = needs.tokens && book_prefers_delegation(group.texts);
 
-    let mut repeated_acc = plan
-        .repeated_run
-        .then(|| lexical::RepeatedRunAcc::new(count));
     let mut punct_only_acc = plan.punct_only.then(|| lexical::PunctOnlyAcc::new(count));
     let mut mixed_script_acc = plan
         .mixed_script
@@ -375,9 +358,6 @@ fn walk_book(
             folds: if needs.folds { &folds_buf } else { &[] },
         };
 
-        if let Some(a) = &mut repeated_acc {
-            a.verse(&v);
-        }
         if let Some(a) = &mut punct_only_acc {
             a.verse(&v);
         }
@@ -412,7 +392,6 @@ fn walk_book(
         counted: count,
         #[cfg(any(test, feature = "test-probes"))]
         counting_accs_ran,
-        repeated_run: repeated_acc.map(lexical::RepeatedRunAcc::finish),
         punct_only: punct_only_acc.map(lexical::PunctOnlyAcc::finish),
         mixed_script: mixed_script_acc.map(script_mixing::MixedScriptAcc::finish),
         rare_glyph: rare_glyph_acc.map(rare_glyph::RareGlyphAcc::finish),
