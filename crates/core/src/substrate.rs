@@ -88,6 +88,33 @@ impl SubstrateId {
     }
 }
 
+/// The rebase base for one chapter of one book, during materialization: the
+/// global index its verse 0 sits at, taken from the layout position the
+/// contribution's chapter was folded from.
+///
+/// **Why the pairing is positional.** A drive hands `update_book` exactly the
+/// layout's ordered chapter tokens; `update_book` keeps one reduced result per
+/// position in that order, whether replayed or reused; `fold_book` folds those
+/// reduced chapters in that order into the book's contribution. So contribution
+/// position `i` is layout position `i`, for every substrate, by construction —
+/// and materialization runs only after the drive has brought every book in the
+/// current layout up to date, so there is no such thing as a contribution
+/// chapter the layout does not have.
+///
+/// The token equality is nonetheless *asserted*, not merely documented, because
+/// a mis-paired chapter would emit findings at wrong verse addresses — silent
+/// corruption, not a slowdown. One short `&str` compare per chapter is a few
+/// percent of the `(book, chapter)` linear scan this replaces, so the proof is
+/// affordable at full strength.
+pub(crate) fn chapter_base(layout: &crate::corpus::ChapterLayout, token: &str) -> crate::KeyIdx {
+    assert_eq!(
+        &*layout.chapter, token,
+        "materialization paired a contribution chapter with the wrong layout \
+         chapter — stop and report: the drive's ordered-token contract broke"
+    );
+    crate::KeyIdx::from_usize(layout.range.start)
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // The per-substrate × per-phase drive probe (`bench-probes` only).
 //

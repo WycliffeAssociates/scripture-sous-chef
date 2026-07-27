@@ -682,16 +682,12 @@ impl MixedCaseBookContribution {
     /// every word any site names, so this is a hash probe per site.
     fn materialize(
         &self,
-        slug: &str,
-        corpus: &Corpus,
+        layout: &[crate::corpus::ChapterLayout],
         verdicts: &FxHashMap<WordSym, (Arc<str>, MixedCaseOutcome)>,
         out: &mut Vec<Finding>,
     ) {
-        for chapter in &self.chapters {
-            let Some(range) = corpus.chapter_range(slug, &chapter.token) else {
-                continue;
-            };
-            let base = crate::corpus::KeyIdx::from_usize(range.start);
+        for (chapter, block) in self.chapters.iter().zip(layout) {
+            let base = crate::substrate::chapter_base(block, &chapter.token);
             for site in chapter.words.sites.iter() {
                 let Some((word, outcome)) = verdicts.get(&site.word) else {
                     continue;
@@ -862,7 +858,7 @@ pub(crate) fn drive_mixed_case(
     probe.mark(DrivePhase::Judge);
     for book in layout {
         if let Some(contrib) = cache.book_contribution(&book.slug) {
-            contrib.materialize(&book.slug, corpus, &verdicts, out);
+            contrib.materialize(&book.chapters, &verdicts, out);
         }
     }
     probe.mark(DrivePhase::Materialize);

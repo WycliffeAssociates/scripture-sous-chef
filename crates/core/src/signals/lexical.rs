@@ -297,7 +297,7 @@ impl DuplicateBookContribution {
     /// materialization.
     fn materialize(
         &self,
-        slug: &str,
+        layout: &[crate::corpus::ChapterLayout],
         corpus: &Corpus,
         verdict: DuplicateVerdict,
         out: &mut Vec<Finding>,
@@ -305,11 +305,8 @@ impl DuplicateBookContribution {
         if !verdict.emits {
             return;
         }
-        for chapter in &self.chapters {
-            let Some(range) = corpus.chapter_range(slug, &chapter.token) else {
-                continue;
-            };
-            let base = crate::corpus::KeyIdx::from_usize(range.start);
+        for (chapter, block) in self.chapters.iter().zip(layout) {
+            let base = crate::substrate::chapter_base(block, &chapter.token);
             for h in chapter.hits.iter() {
                 out.push(Finding {
                     key_idx: rebase(base, h.anchor_local),
@@ -430,7 +427,7 @@ pub(crate) fn drive_duplicate_word(
     probe.mark(DrivePhase::Judge);
     for book in layout {
         if let Some(contrib) = cache.book_contribution(&book.slug) {
-            contrib.materialize(&book.slug, corpus, verdict, out);
+            contrib.materialize(&book.chapters, corpus, verdict, out);
         }
     }
     probe.mark(DrivePhase::Materialize);
@@ -1240,17 +1237,14 @@ impl RepeatBookContribution {
     /// needs no segmentation at all.
     fn materialize(
         &self,
-        slug: &str,
+        layout: &[crate::corpus::ChapterLayout],
         corpus: &Corpus,
         verdicts: &BTreeMap<RepeatKey, RepeatOutcome>,
         out: &mut Vec<Finding>,
     ) {
         let texts = corpus.texts();
-        for chapter in &self.chapters {
-            let Some(range) = corpus.chapter_range(slug, &chapter.token) else {
-                continue;
-            };
-            let base = crate::corpus::KeyIdx::from_usize(range.start);
+        for (chapter, block) in self.chapters.iter().zip(layout) {
+            let base = crate::substrate::chapter_base(block, &chapter.token);
             for site in chapter.counts.sites.iter() {
                 let key = &chapter.counts.keys[usize::from(site.key)];
                 // Every retained candidate's key was interned by the same chapter
@@ -1264,7 +1258,7 @@ impl RepeatBookContribution {
                     continue;
                 };
                 let (local, span) = site.addr.unpack();
-                let text = &texts[range.start + usize::from(local.get())];
+                let text = &texts[block.range.start + usize::from(local.get())];
                 let run_text = span.slice(text);
                 // The plain fact behind the score: which char repeated, how many
                 // times, in the flagged run (ADR 0048).
@@ -1407,7 +1401,7 @@ pub(crate) fn drive_repeated_run(
     probe.mark(DrivePhase::Judge);
     for book in layout {
         if let Some(contrib) = cache.book_contribution(&book.slug) {
-            contrib.materialize(&book.slug, corpus, &named, out);
+            contrib.materialize(&book.chapters, corpus, &named, out);
         }
     }
     probe.mark(DrivePhase::Materialize);

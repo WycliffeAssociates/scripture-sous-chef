@@ -1861,8 +1861,7 @@ impl CasingBookContribution {
     /// off while the other keeps the shared substrate alive.
     fn materialize(
         &self,
-        slug: &str,
-        corpus: &Corpus,
+        layout: &[crate::corpus::ChapterLayout],
         judge: &CasingJudge,
         enabled: Consumers,
         out: &mut Vec<Finding>,
@@ -1873,11 +1872,8 @@ impl CasingBookContribution {
             intrinsic,
         } = enabled;
         let mut memo = VerdictMemo::new(self.words.len());
-        for (chapter, ids) in &self.chapters {
-            let Some(range) = corpus.chapter_range(slug, &chapter.token) else {
-                continue;
-            };
-            let base = crate::corpus::KeyIdx::from_usize(range.start);
+        for ((chapter, ids), block) in self.chapters.iter().zip(layout) {
+            let base = crate::substrate::chapter_base(block, &chapter.token);
             for site in chapter.sites() {
                 // Resolve the folded word through the BOOK's table, not the
                 // chapter's: one contiguous allocation per book keeps the judge's
@@ -2083,8 +2079,7 @@ pub(crate) fn drive_casing(
     for book in layout {
         if let Some(contrib) = cache.book_contribution(&book.slug) {
             contrib.materialize(
-                &book.slug,
-                corpus,
+                &book.chapters,
                 &judge,
                 Consumers {
                     positional,

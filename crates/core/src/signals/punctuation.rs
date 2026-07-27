@@ -444,20 +444,17 @@ impl AdjacencyBookContribution {
     /// chapter's bytes are the bytes its counts were taken from.
     fn materialize(
         &self,
-        slug: &str,
+        layout: &[crate::corpus::ChapterLayout],
         corpus: &Corpus,
         verdicts: &BTreeMap<AdjacencyKey, AdjacencyOutcome>,
         out: &mut Vec<Finding>,
     ) {
         let texts = corpus.texts();
-        for chapter in &self.chapters {
-            let Some(range) = corpus.chapter_range(slug, &chapter.token) else {
-                continue;
-            };
-            let base = KeyIdx::from_usize(range.start);
+        for (chapter, block) in self.chapters.iter().zip(layout) {
+            let base = crate::substrate::chapter_base(block, &chapter.token);
             for site in chapter.counts.sites.iter() {
                 let (local, span) = site.unpack();
-                let text = &texts[range.start + usize::from(local.get())];
+                let text = &texts[block.range.start + usize::from(local.get())];
                 let pattern = span.slice(text);
                 // Every candidate's pattern was counted by the same chapter map
                 // that produced this address, so it is in the aggregate and has a
@@ -605,7 +602,7 @@ pub(crate) fn drive_adjacency(
     probe.mark(DrivePhase::Judge);
     for book in layout {
         if let Some(contrib) = cache.book_contribution(&book.slug) {
-            contrib.materialize(&book.slug, corpus, &verdicts, out);
+            contrib.materialize(&book.chapters, corpus, &verdicts, out);
         }
     }
     probe.mark(DrivePhase::Materialize);
@@ -2042,7 +2039,7 @@ pub(crate) fn drive_spacing(
     probe.mark(DrivePhase::Judge);
     for book in corpus.book_layout() {
         if let Some(contrib) = cache.book_contribution(&book.slug) {
-            contrib.materialize(&book.slug, corpus, &verdicts, floor, out);
+            contrib.materialize(&book.chapters, &verdicts, floor, out);
         }
     }
     probe.mark(DrivePhase::Materialize);
@@ -2089,17 +2086,13 @@ impl SpacingBookContribution {
     /// aggregate-only path, so the two cannot drift.
     pub(crate) fn materialize(
         &self,
-        slug: &str,
-        corpus: &Corpus,
+        layout: &[crate::corpus::ChapterLayout],
         verdicts: &BTreeMap<char, MarkVerdict>,
         floor: f64,
         out: &mut Vec<Finding>,
     ) {
-        for (token, sites) in &self.chapters {
-            let Some(range) = corpus.chapter_range(slug, token) else {
-                continue;
-            };
-            let base = KeyIdx::from_usize(range.start);
+        for ((token, sites), block) in self.chapters.iter().zip(layout) {
+            let base = crate::substrate::chapter_base(block, token);
             for s in sites {
                 if let Some(v) = verdicts.get(&s.mark)
                     && let Some(f) = spacing_finding_for_site(
