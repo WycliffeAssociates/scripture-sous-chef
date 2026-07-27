@@ -633,6 +633,37 @@ impl<S: ObservationSubstrate> SubstrateCache<S> {
         mut map: impl FnMut(usize) -> S::ChapterObservation,
     ) -> Vec<S::Key> {
         let n = chapters.len();
+
+        // ── Step 0: the whole-book-unchanged early-out. Every position holds the
+        // same chapter token mapped from the same input stamp, so this is exactly
+        // the case step 2 below detects as `first_changed.is_none() && !structural`
+        // — same positional token/stamp comparison, decided before anything is
+        // disassembled instead of after. The existing path reaches the identical
+        // answer (`Vec::new()`, the book put back byte-for-byte as it was) but pays
+        // for it: the book is removed from the map, split into five parallel
+        // columns, every observation moved out through a token hash lookup, a
+        // token->position map built, and the whole book reassembled and re-inserted
+        // under a freshly allocated key. None of that survives the call, and 1,188
+        // of a resident Bible's 1,189 chapters take this path on a one-chapter
+        // edit, per substrate.
+        //
+        // Reuse cannot be a *positional* decision anywhere else in this driver —
+        // a chapter that merely moved must carry its observation with it, which is
+        // why step 1 is token-keyed. It is sound here only because nothing moved:
+        // equal length plus equal token at every position is the definition.
+        if let Some(book) = self.books.get(slug)
+            && book.chapters.len() == n
+            && book
+                .chapters
+                .iter()
+                .zip(chapters)
+                .all(|(cached, (token, stamp))| {
+                    *cached.token == **token && cached.input_stamp == *stamp
+                })
+        {
+            return Vec::new();
+        }
+
         let (mut old, old_contribution) = match self.books.remove(slug) {
             Some(book) => {
                 let (cols, contribution) = OldColumns::take_apart(book);
@@ -1349,7 +1380,10 @@ mod replay {
     }
 
     /// An unchanged re-drive does nothing at all: no map, no reduce. The
-    /// whole-book-unchanged path must put the book back byte-for-byte.
+    /// whole-book-unchanged path must leave the book byte-for-byte as it was —
+    /// this is the step-0 early-out's referee, and
+    /// [`a_moved_chapter_is_re_reduced_but_never_re_mapped`] is the proof that it
+    /// declines a book whose tokens all still match but sit at new positions.
     #[test]
     fn an_unchanged_book_maps_and_reduces_nothing() {
         let mut cache: SubstrateCache<Carry> = SubstrateCache::new();
