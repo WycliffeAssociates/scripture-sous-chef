@@ -4539,3 +4539,341 @@ any edit:**
 | `wp7c0.base.small.findings.all.tsv` | `d657dcff009565e509dcbd891c5f7bf50db5bc9f5c8d19dff316dd4aa6c539e2` |
 | `wp7c0.base.small.inc.default.tsv` | `10da8d93dd5c275f38925d726508fa43ba368d43f3ce4f1674652cc47e13661e` |
 | `wp7c0.base.small.inc.all.tsv` | `c3532af9a4efa7ec370ba5531b9332fb2c7a0f54b6a86aa8b79972d659f8855e` |
+
+### Per-step commits
+
+| step | commit | what landed |
+| --- | --- | --- |
+| pin | `5abba96` | The WA + `small` base pin above, recorded before any edit. |
+| 1 | `0968316` | `DriveProbe` / `DrivePhase` — the per-substrate × per-phase drive decomposition behind `bench-probes`, plus the warm ladder's `--drive-phases` mode. Instrumentation only. |
+| 2a | `0802e03` | Materialization addresses its chapters positionally (`chapter_base`) instead of scanning the layout per chapter. |
+| 2b | `a51f800` | `update_book` step 0: the whole-book-unchanged early-out, decided before the book is disassembled. |
+| 3 | `8af59d2` | The mixed-case `u16` chapter-count bound documented as an empirical Bible-domain constraint, not a `Corpus`-enforced invariant. |
+
+Every commit re-dumped **all eight** WA+`small` dumps and diffed **byte-identical**
+to the pin, first attempt in every case. Test counts at HEAD: core **497** serial /
+**498** `--features parallel`, galley 25, ssc-wire 25, ssc-wasm 14, xtask 1, doc 3;
+node 19. Green serial, `--features parallel`, and `--features parallel` under
+`RAYON_NUM_THREADS=1`. wasm32 checks clean for `ssc-core` and `ssc-wasm`. clippy:
+`ssc-core` lib at the documented 2-warning baseline, workspace `--all-targets` at
+12 and `spike-bench` at 15 — both re-measured on a stashed tree this session and
+identical, so no new warning. `git diff --check` clean. No `cargo fmt` sweep.
+
+---
+
+## THE DELIVERABLE: the per-substrate × per-phase decomposition
+
+### How it is measured
+
+`crate::substrate::DriveProbe` closes one phase and opens the next at six points
+inside every `drive_*`, accumulating into a thread-local `[substrate][phase]`
+table that `transition` zeroes at the judge boundary. Off `bench-probes` the
+probe is a ZST with empty inlined methods — no production timer, no branch. The
+warm ladder's new `--drive-phases` mode reports each cell's **median across the
+batch's 200 trials** (independent per cell, so a row total is a sum of medians,
+not the median of a sum — close enough to attribute a share, and stated rather
+than implied).
+
+Two drives fuse phases and the fusion is recorded rather than faked apart:
+spacing / adjacency / duplicate-word have **no key-discovery pass** (the
+aggregate's own key set already *is* the judge key set), and casing's model
+build IS its key phase with per-site verdicts drawn inside materialization
+(`judge` therefore reads 0 and `materialize` carries both).
+
+Corpus: WA-en-ulb resident whole Bible (66 books, 1,189 chapters, 31,086
+verses); one-chapter edit to the named book; warm steady state through a
+resident `Galley`; `--distinct-variants --variants 4`; 200 warm iterations per
+batch; §13 batching. Load 5.6–11 (1-min) across the runs — recorded because this
+machine is shared; every comparison below is BASE/CAND alternating one batch per
+invocation, which is what makes it sound under load.
+
+### BASE (`fc5766c` + the step-1 probe), 3JN/default — the two default-on substrates
+
+Only **two** of the six migrated substrates are enabled in `v1_defaults`:
+`Config::v1_defaults` disables `DuplicateWord`, `PunctuationSpacingAnomaly`,
+both casing consumers, `RareGlyph`, `MixedCaseWord` and `MixedNormalization`.
+Milliseconds:
+
+| substrate | plan | map | reduce | keys | judge | materialize | row |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| spacing | — | — | — | — | — | — | *off* |
+| adjacency | 0.0330 | 0.0091 | 0.1095 | 0.0000 | 0.0003 | **0.1820** | 0.3340 |
+| repeated-run | 0.0320 | 0.0523 | 0.1085 | 0.0029 | 0.0001 | **0.1820** | 0.3778 |
+| duplicate-word | — | — | — | — | — | — | *off* |
+| casing | — | — | — | — | — | — | *off* |
+| mixed-case | — | — | — | — | — | — | *off* |
+| **all substrates** | 0.065 | 0.061 | 0.218 | 0.003 | 0.000 | 0.364 | **0.712** |
+
+Coarse `judge` for the same batch was 0.768 ms, so the six-phase table accounts
+for 93% of it; the ~0.056 ms remainder is the judge window's non-substrate work
+(the still-batch rules' loop, provenance stamping).
+
+**This is Entry 28's 0.33–0.36 ms per-substrate fixed cost, separated.** Its
+shape, per substrate:
+
+| phase | ms | share | is it removable without WP8? |
+| --- | ---: | ---: | --- |
+| materialization | 0.182 | **52%** | **yes** — 0.176 of it is address lookup, not emission (below) |
+| `update_book` reduction | 0.109 | **31%** | **yes** — micro-timed at 0.117 ms for the 65 *unchanged* books alone |
+| planning / stamps | 0.033 | 9% | yes, but needs a shared or borrowed schedule — see the open lever |
+| map | 0.009–0.052 | — | not fixed: this is the edited chapter's genuine work |
+| judge-key discovery | 0.000–0.003 | <1% | n/a |
+| judging | ≤0.0003 | ~0% | n/a |
+
+### BASE, 3JN/all — all six substrates, for context
+
+| substrate | plan | map | reduce | keys | judge | materialize | row |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| spacing | 0.0621 | 0.0213 | 0.1488 | 0.0000 | 0.0016 | 1.0949 | 1.3287 |
+| adjacency | 0.0418 | 0.0110 | 0.1154 | 0.0000 | 0.0009 | 0.1821 | 0.3512 |
+| repeated-run | 0.0422 | 0.0562 | 0.1149 | 0.0038 | 0.0002 | 0.1814 | 0.3987 |
+| duplicate-word | 0.0408 | 0.0171 | 0.1186 | 0.0000 | 0.0000 | 0.1810 | 0.3575 |
+| casing | 0.0516 | 0.0462 | 0.1683 | **9.2248** | 0.0000 | **14.8903** | 24.3812 |
+| mixed-case | 0.0391 | 0.0457 | 0.1353 | 0.0039 | 0.0003 | 0.1807 | 0.4051 |
+| **total** | 0.278 | 0.198 | 0.801 | 9.233 | 0.003 | 16.610 | **27.22** |
+
+Three things this table says that the undecomposed measurement could not:
+
+1. **`plan` and `reduce` are near-identical across all six substrates** (0.039–0.062
+   and 0.115–0.168). That is the signature of a cost driven by the *layout*, not by
+   what the substrate observes — six drives each walking 1,189 chapters and each
+   calling `update_book` on 66 books.
+2. **`materialize` is 0.1807–0.1821 for four substrates whose retained-byte
+   footprints differ by two orders of magnitude** (duplicate-word 0.008 MiB vs
+   adjacency 0.46 MiB, Entry 28's dhat table). A cost independent of the sites is
+   not emission — it is addressing.
+3. **casing's 24.4 ms is 98% `keys` + `materialize`** — model build plus per-site
+   judging. *That* is genuinely WP8's delta-consumption share, and it is why the
+   `all` config's warm cost barely moves in this packet. The per-substrate fixed
+   constant and casing's judging cost are two different problems; only separating
+   the phases makes them distinguishable.
+
+### The two targeted micro-timings that named the levers
+
+The brief allowed per-phase counters converted to time via targeted micro-timing.
+Two throwaway instruments (built, measured, reverted before the step-1 commit —
+they are not in any commit):
+
+| what was timed | result | of a phase costing |
+| --- | ---: | ---: |
+| `Corpus::chapter_range` calls inside adjacency's materialize, summed per analyze | **0.176 ms** | 0.205 ms (probe-inflated from 0.182) |
+| `update_book` calls for books with **no dirty chapter**, summed per analyze | **0.117 ms** | 0.116 ms — i.e. all of it |
+
+`chapter_range` is `layout.iter().find(slug)` followed by
+`book.chapters.iter().find(token)` — a linear scan of 66 books then of that
+book's chapters, per chapter, per substrate, per analyze: ~54,000 string
+comparisons for a resident Bible. And `update_book`'s reduction phase is, on a
+one-chapter edit, ~100% work done for the 65 books that did not change.
+
+---
+
+## Step 2: the levers built, and why they are the smallest
+
+**DEVIATION, marked as the brief requires.** Entry 29 framed step 2 as a
+dichotomy — planning dominates → build a borrowed chapter schedule; judging or
+materialization dominates → that is WP8's, take only trivial early-outs. The
+decomposition supports **neither branch as written**. Planning is the *smallest*
+of the three fixed shares (9%), not the dominant one. And materialization does
+dominate (52%) — but its dominant sub-share is not emission at all; it is a
+redundant address lookup, i.e. precisely the "trivial win the stamps already
+prove" the second branch permits. So two levers were built, each the minimum for
+its share, each in its own gated commit, and **no new machinery**: no shared
+schedule struct, no shared traversal, nothing touched in judge or emission.
+
+### 2a — materialization addresses positionally (`0802e03`)
+
+A book's contribution chapters are position-aligned with the layout chapters
+they were folded from: the drive hands `update_book` the layout's ordered
+tokens, `update_book` keeps one reduced result per position in that order,
+`fold_book` folds them in that order. So the rebase base is a **zip**, not a
+search. `substrate::chapter_base` carries that proof and asserts the token
+equality at **full strength, not under `debug_assert`** — a mis-paired chapter
+emits findings at wrong verse addresses, which is corruption rather than a
+slowdown, and one short `&str` compare per chapter is a few percent of the scan
+it replaces. Three substrates stopped needing `&Corpus` in materialize entirely.
+
+### 2b — `update_book`'s whole-book-unchanged early-out (`a51f800`)
+
+The driver already detected this case — but only after removing the book from
+the map, splitting it into five parallel columns, moving every observation out
+through a token hash lookup, and building a token→position map; then it
+reassembled the book and re-inserted it under a freshly allocated key, all to
+return `Vec::new()`. Step 0 reaches the same answer from the same positional
+token/stamp comparison before any of that. Sound **only** because nothing moved:
+reuse stays token-keyed everywhere else in the driver precisely so a chapter that
+merely moves carries its observation with it, and
+`a_moved_chapter_is_re_reduced_but_never_re_mapped` is the standing proof that
+the early-out declines that case.
+
+### AFTER: the same tables at HEAD
+
+3JN/default:
+
+| substrate | plan | map | reduce | keys | judge | materialize | row | was |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| adjacency | 0.0325 | 0.0087 | **0.0083** | 0.0000 | 0.0003 | **0.0073** | **0.057** | 0.334 |
+| repeated-run | 0.0320 | 0.0485 | **0.0080** | 0.0030 | 0.0001 | **0.0064** | **0.098** | 0.378 |
+| **all substrates** | 0.065 | 0.057 | 0.016 | 0.003 | 0.000 | 0.014 | **0.155** | 0.712 |
+
+3JN/all:
+
+| substrate | plan | map | reduce | keys | judge | materialize | row | was |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| spacing | 0.0901 | 0.0255 | 0.0203 | 0.0000 | 0.0023 | 0.9527 | 1.091 | 1.329 |
+| adjacency | 0.0457 | 0.0150 | 0.0130 | 0.0000 | 0.0015 | 0.0101 | 0.085 | 0.351 |
+| repeated-run | 0.0434 | 0.0586 | 0.0119 | 0.0051 | 0.0003 | 0.0075 | 0.127 | 0.399 |
+| duplicate-word | 0.0453 | 0.0182 | 0.0108 | 0.0000 | 0.0000 | 0.0087 | 0.083 | 0.358 |
+| casing | 0.0790 | 0.0497 | 0.0396 | 10.689 | 0.0000 | 17.004 | 27.86 | 24.38 |
+| mixed-case | 0.0460 | 0.0562 | 0.0340 | 0.0056 | 0.0005 | 0.0067 | 0.149 | 0.405 |
+
+Reduce fell 92–93% and materialization 94–96% wherever materialization was
+addressing rather than emitting. Spacing's materialize (0.95 ms) and casing's
+`keys`+`materialize` (27.7 ms) are **real work over real sites** and are almost
+untouched — that is the honest boundary of this packet, and it is WP8's.
+(Casing's `all` row reads slightly higher than BASE's; that cell is 90% of the
+config's whole cost and swings with machine load. The §13 ladder below, which
+alternates arms, shows 3JN/all *improving* 5.0%.)
+
+### §13 ladder — BASE `fc5766c` vs CAND (HEAD)
+
+Protocol: same machine/session/build, alternating BASE/CAND **one batch per
+invocation**, five batches per cell, 200 warm iterations per batch, median of the
+five batch medians, `--distinct-variants --variants 4`. Load 10.5 → 5.8 (1-min)
+across the run.
+
+| cell | BASE | CAND | Δ | Δ% | map B→C | judge B→C | CAND faster |
+| --- | ---: | ---: | ---: | ---: | --- | --- | --- |
+| 3JN default | 1.404 | **0.819** | **−0.584** | **−41.6%** | 0.086→0.082 | 0.797→**0.220** | 5/5 |
+| 3JN all | 31.945 | **30.353** | −1.592 | −5.0% | 0.337→0.340 | 30.941→29.361 | 5/5 |
+| MAT default | 5.382 | **4.806** | −0.575 | −10.7% | 3.758→3.772 | 0.886→**0.322** | 5/5 |
+| MAT all | 41.460 | **40.177** | −1.282 | −3.1% | 9.356→9.423 | 31.326→29.918 | 4/5 |
+
+**The gate, on its own terms.** The share step 1 attributed to the two levers is
+(0.176 + 0.113) × 2 substrates = **0.578 ms**. Measured improvement on
+3JN/default: **0.584 ms**. Every cell improves; nothing regresses in any config
+(no cell is >5% and >0.25 ms slower in any of five paired batches, let alone
+three). `map` is unchanged everywhere, which is the control that says neither
+lever touched extraction.
+
+**The floor, honestly.** Plan §13's named target for 3JN/default is ≤ 2 ms fixed;
+CAND is **0.819 ms**, so **1.18 ms of headroom**. Entry 28's regression is not
+merely recovered relative to the 2 ms contract — the cell is now *faster than the
+0.66 ms pre-WP7b figure would have been with the two Phase E rows costing what
+they cost before*, though it is still 0.16 ms above that historical number. The
+brief was explicit that 0.66 ms is not the target, and this packet did not chase
+it.
+
+---
+
+## The revised WP7c projection
+
+Per-substrate **fixed** cost (the non-map, non-site-proportional floor) on
+3JN/default, after this packet: adjacency 0.057 − 0.009 map = **0.048 ms**,
+repeated-run 0.098 − 0.049 map = **0.049 ms**. Call it **0.05 ms**, down from
+**~0.33 ms**. Its composition is now: plan 0.033 (**~68%**), reduce 0.008,
+materialize-addressing residual 0.007, keys+judge 0.003.
+
+Entry 29's corrected arithmetic, redone. Six Phase E rows remain; **four** are
+in `v1_defaults` (punct-only, mixed-script, proportionality, bracket) and two are
+default-off (rare-glyph, mixed-normalization):
+
+| | per-row fixed | four defaults-on rows | 3JN/default projection |
+| --- | ---: | ---: | ---: |
+| Entry 29's projection (pre-decomposition) | ~0.34 | +1.36 | ~2.74 ms — over the floor |
+| after this packet | **~0.05** | **+0.20** | **~1.02 ms** — 0.98 ms under the floor |
+
+**Two caveats that must travel with that number.** (1) 0.05 ms is the *floor* a
+row adds, not its whole cost: each row also brings map work proportional to the
+edited chapter and judge/materialize work proportional to its own retained
+sites. Spacing is the cautionary case — its materialization alone is 0.95 ms
+because it genuinely emits over many sites. Bracket, with real convergence
+replay, is the row most likely to exceed the floor. (2) The equal-fixed-cost
+assumption Entry 29 flagged as unproven is now *measured* for six substrates
+(plan 0.039–0.090, reduce 0.011–0.040 in the `all` config), so it is a
+reasonable projection basis — but WP7c's per-row gate should still record each
+row's own measured fixed cost, and `--drive-phases` now makes that a one-command
+read.
+
+---
+
+## The remaining lever, measured and NOT built (for the owner's call)
+
+`plan` is now ~68% of what is left, at **0.033 ms per substrate** — six
+substrates re-walking the same 1,189-chapter layout, each building the same
+per-chapter stamp and, notably, each **cloning every chapter token into a fresh
+`Box<str>`** (`chapters.push((c.chapter.clone(), stamp))`) because `update_book`
+takes `&[(Box<str>, ObservationInputStamp)]`. That is 1,189 heap allocations per
+substrate per analyze whose contents are already owned by the layout and outlive
+the drive.
+
+Two candidate levers, smallest first:
+
+1. **Borrow the token instead of cloning it** — `&[(&str, ObservationInputStamp)]`.
+   No new machinery at all, no shared state, ~10 lines plus the driver's
+   signature. Expected to remove most of `plan`.
+2. Entry 29's borrowed once-per-analyze chapter schedule — strictly more
+   machinery (a struct threaded through six drives) for the same or a slightly
+   larger share.
+
+**Not built here, deliberately.** §16 says report the decomposition before adding
+another optimization, and this packet's §13 gate is already met with 1.18 ms of
+headroom; six substrates × 0.033 ms = 0.20 ms is a real but no longer urgent
+number, and option 1 changes a signature every future migration will touch —
+better decided once, with WP7c's rows in view, than bolted on here.
+
+---
+
+## Deviations / notes for the owner (clearly marked)
+
+1. **The step-2 dichotomy did not survive the decomposition** — see the deviation
+   marked under "Step 2" above. Two levers, not one; the dominant share was in
+   materialization but was addressing rather than emission, and planning (the
+   share Entry 29's proposal would have fixed) turned out to be the smallest of
+   the three.
+2. **`cache::assemble` has the same `chapter_range` scan and was left alone.**
+   The finding-partition rebase (`crates/core/src/cache.rs`) resolves each
+   partition chapter by slug+token the same linear way. It is *not* positionally
+   alignable — partitions are keyed maps, not layout-ordered — and it sits in the
+   coarse `reduce` window (a flat ~0.41 ms across BASE and CAND on 3JN/default),
+   not in the per-substrate drive cost this packet was chartered to attribute. It
+   also does real containment validation the substrate path does not need.
+   Flagged, not fixed.
+3. **A `bench-probes`-only casing site-eval helper still uses `chapter_range`**
+   (`casing.rs`'s fleet measurement path). Measurement code, not the warm path;
+   left as is.
+4. **The two micro-timing instruments were reverted, not committed.** They were
+   throwaway (a thread-local next to the probe table plus two inline timers) and
+   exist only as the numbers recorded above. If those splits are wanted
+   repeatedly, the clean version is a seventh `DrivePhase` for addressing, which
+   would mean threading the probe into six `materialize` signatures — deliberately
+   not paid for a one-off attribution.
+5. **`--drive-phases` cell medians are per-cell**, so row totals are sums of
+   medians. Stated in the harness comment and above.
+6. **Only two substrates are default-on**, which is worth stating plainly because
+   it reframes Entry 28's headline: the 3JN/default regression was two substrates
+   × one fixed cost, and the `all` config's 30 ms is ~92% casing alone.
+7. **One comment lost a progress-doc reference.** The mixed-case `expect` message
+   pointed at "granularity-spine Entry 28"; it now states the constraint itself.
+   Three other such references remain in `casing.rs` / `lexical.rs` (pre-existing,
+   not swept — plan §14 bars referencing *the plan*, and a sweep is not this
+   packet's business).
+8. **No rule was migrated.** The six remaining Phase E rows are untouched, as the
+   brief required.
+
+### Stop-safe next step
+
+The tree is clean and every commit is independently gated against the WA+`small`
+pin. Owed, in order: **(a)** the owner's call on the remaining `plan` lever
+(borrow-the-token vs. schedule vs. leave it); **(b)** WP7c's six migrations, one
+gated commit per row, each recording its own `--drive-phases` fixed cost against
+the ~0.05 ms expectation above; **(c)** WP8, delta consumption, which the
+decomposition now scopes precisely — casing's `keys` (10.7 ms) + `materialize`
+(17.0 ms) and spacing's `materialize` (0.95 ms) are the whole of it.
+
+**Full-fleet bookend not run.** This packet migrated no rule and changed no
+extraction; its four commits are one gated instrumentation commit, two
+addressing/early-out commits, and one comment. The WA+`small` eight-dump gate
+passed byte-identically on every commit, and the standing full-fleet pins
+(`a10cf5a4…`, `ddedee96…`, `ab9b0f96…`, `c8a1be69…`, Entry 28) were confirmed at
+`fc5766c`, which is this packet's base. Flagged for the owner: if a full-fleet
+bookend is wanted before WP7c starts regardless, it is ~1 hour and unblocked.
