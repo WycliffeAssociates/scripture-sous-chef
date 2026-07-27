@@ -29,7 +29,7 @@ pub use schema::{
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ssc_core::diagnostics::SpacingSide;
+    use ssc_core::diagnostics::{SpacingClass, SpacingForm, SpacingSide};
     use ssc_core::{
         analyze_with_config, AnalysisId, BracketMeasure, Config, Corpus, Finding, FindingArgs,
         LengthRatioScope, RuleId, Severity, Span, TargetContextId,
@@ -247,7 +247,12 @@ mod tests {
     // ---- digest round-trip for every §A.1.1 row --------------------------
 
     fn spacing_side(count: u32, total: u32) -> SpacingSide {
-        SpacingSide { form: "attached".into(), class: "letter".into(), count, total }
+        SpacingSide {
+            form: SpacingForm::Attached,
+            class: SpacingClass::Letter,
+            count,
+            total,
+        }
     }
 
     #[test]

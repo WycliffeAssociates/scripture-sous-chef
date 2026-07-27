@@ -12,7 +12,7 @@ use std::fs;
 use std::path::Path;
 
 use serde_json::{json, Value};
-use ssc_core::diagnostics::SpacingSide;
+use ssc_core::diagnostics::{SpacingClass, SpacingForm, SpacingSide};
 use ssc_core::{
     analyze_with_config, AnalysisId, BracketMeasure, Config, Corpus, Finding, FindingArgs,
     LengthRatioScope, RuleId, Severity, Span, TargetContextId,
@@ -137,7 +137,7 @@ pub fn run(out: &Path) {
         Finding { key_idx: idx(&base, 1), ..synth(&base, RuleId::RareGlyph, Severity::Info, r(0, 1), Some(0.61), Some(FindingArgs::RareGlyph { glyph: 'x', count: 70_000 })) },
         Finding { key_idx: idx(&base, 2), ..synth(&base, RuleId::BracketBalance, Severity::Error, r(0, 1), Some(0.99), Some(FindingArgs::BracketWindow { window: vec![], measure: BracketMeasure::Pairing, majority: 70_000, total: 5 })) },
         Finding { key_idx: idx(&base, 2), ..synth(&base, RuleId::ProjectLengthRatio, Severity::Info, r(1, 2), Some(0.5), Some(FindingArgs::LengthRatio { ratio_pct: 312.0, scope: LengthRatioScope::Book { z: 3.5 } })) },
-        Finding { key_idx: idx(&base, 2), ..synth(&base, RuleId::PunctuationSpacingAnomaly, Severity::Info, r(2, 3), Some(0.8), Some(FindingArgs::SpacingConvention { mark: ',', left: Some(SpacingSide { form: "attached".into(), class: "letter".into(), count: 1, total: 1053 }), right: None })) },
+        Finding { key_idx: idx(&base, 2), ..synth(&base, RuleId::PunctuationSpacingAnomaly, Severity::Info, r(2, 3), Some(0.8), Some(FindingArgs::SpacingConvention { mark: ',', left: Some(SpacingSide { form: SpacingForm::Attached, class: SpacingClass::Letter, count: 1, total: 1053 }), right: None })) },
     ];
 
     // The good "spread" buffer, reused as the base for malformed mutations.

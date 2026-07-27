@@ -12,7 +12,9 @@ use std::collections::BTreeMap;
 use crate::charclass::class_of;
 use crate::config::{PunctuationAdjacencyConfig, PunctuationSpacingConfig};
 use crate::corpus::{Books, Corpus, KeyIdx, LocalKeyIdx, SiteAddr, rebase};
-use crate::diagnostics::{Finding, FindingArgs, RuleId, Severity, SpacingSide};
+use crate::diagnostics::{
+    Finding, FindingArgs, RuleId, Severity, SpacingClass, SpacingForm, SpacingSide,
+};
 use crate::evidence::{
     clamp_count, clamp_rate, clamp_unit, clamp_z, dominance, from_strengths, odds_amplify, strength,
 };
@@ -476,65 +478,34 @@ fn is_spacing_ws(c: char) -> bool {
     matches!(c, ' ' | '\t' | '\u{00A0}' | '\u{202F}')
 }
 
-/// A separator mark's *judged* form on one side — the binary bit inside a class
-/// pool (ADR 0054 2nd amendment — pooled class-conditioned model):
-///
-/// - `Attached` — the mark clings directly to the neighbour (no whitespace).
-/// - `Spaced` — horizontal whitespace was crossed to reach the neighbour, **or**
-///   the verse/book seam was reached (the seam reads as whitespace, never its
-///   own category — repo `CLAUDE.md`; a terminal is never attached across a
-///   seam). The neighbour's *class* is still read across the seam, in book order.
-///
-/// The form is orthogonal to the neighbour's class: a `Number`-pool
-/// `.` can be `Attached` (`7.8`, a decimal) or `Spaced` (`verse. 3`, a
-/// cross-reference), and the pool learns which is the convention.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SideForm {
-    Attached,
-    Spaced,
-}
+// This rule's two vocabularies — a side's judged form and its neighbour's
+// content class — are the *same* closed sets the shipped finding args publish,
+// so they are one type each, defined on the public args surface
+// (`diagnostics::{SpacingForm, SpacingClass}`) and given their counter-layout
+// here. Keeping the layout local means the args module owns the published
+// vocabulary and this module owns how it packs; a separate rule-internal copy
+// would let the two drift.
 
-impl SideForm {
+/// Packed-counter slot for a judged form: `attached` is the low bit, which is
+/// what makes [`mark_attached_spaced`]'s "form is the low bit" split true by
+/// construction.
+impl SpacingForm {
     const fn index(self) -> usize {
         match self {
             Self::Attached => 0,
             Self::Spaced => 1,
         }
     }
-    const fn label(self) -> &'static str {
-        match self {
-            Self::Attached => "attached",
-            Self::Spaced => "spaced",
-        }
-    }
 }
 
-/// The content class of a mark's first non-whitespace neighbour — the **pool**
-/// its attached-vs-spaced binary is conditioned on (ADR 0054 2nd amendment).
-/// Quote is merged into `Punct` (user ruling). A `Number` neighbour is a
-/// (non-quote) numeric scalar; a `Letter` neighbour is any cluster containing an
-/// alphabetic scalar (a decomposed base + combining letter still counts);
-/// everything else — another mark, a quote, a bracket, a symbol — is `Punct`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum PoolClass {
-    Letter,
-    Number,
-    Punct,
-}
-
-impl PoolClass {
-    const fn index(self) -> usize {
+/// Pool slot for a neighbour class, indexing both the twelve packed counters and
+/// a [`SideVerdict`]'s `pools` array.
+impl SpacingClass {
+    pub(crate) const fn index(self) -> usize {
         match self {
             Self::Letter => 0,
             Self::Number => 1,
             Self::Punct => 2,
-        }
-    }
-    const fn label(self) -> &'static str {
-        match self {
-            Self::Letter => "letter",
-            Self::Number => "number",
-            Self::Punct => "punct",
         }
     }
 }
@@ -580,7 +551,7 @@ pub(crate) fn mark_attached_spaced(cells: &[u64; SIDE_CELLS]) -> (u64, u64) {
 }
 
 /// Packed-counter index for a `(side, class, form)` triple.
-const fn cell_index(side: Side, class: PoolClass, form: SideForm) -> usize {
+const fn cell_index(side: Side, class: SpacingClass, form: SpacingForm) -> usize {
     side.base() + class.index() * 2 + form.index()
 }
 
@@ -635,8 +606,8 @@ fn spacing_finding_for_site(
         return None;
     }
     let side_arg = |h: &PoolHit| SpacingSide {
-        form: h.form.label().to_string(),
-        class: h.class.label().to_string(),
+        form: h.form,
+        class: h.class,
         count: h.count.min(u64::from(u32::MAX)) as u32,
         total: h.n.min(u64::from(u32::MAX)) as u32,
     };
@@ -688,7 +659,7 @@ pub(crate) struct PoolVerdict {
 }
 
 /// One side's three class pools (`Letter`, `Number`, `Punct`), indexed by
-/// [`PoolClass::index`].
+/// [`SpacingClass::index`].
 pub(crate) struct SideVerdict {
     pools: [PoolVerdict; CLASS_COUNT],
 }
@@ -704,8 +675,8 @@ pub(crate) struct MarkVerdict {
 /// test to the finding args.
 pub(crate) struct PoolHit {
     score: f64,
-    class: PoolClass,
-    form: SideForm,
+    class: SpacingClass,
+    form: SpacingForm,
     count: u64,
     n: u64,
 }
@@ -802,8 +773,8 @@ fn mark_verdict(
 /// edge whose seam-cross found nothing) has no `SideRead` — it abstains.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct SideRead {
-    pub(crate) class: PoolClass,
-    pub(crate) form: SideForm,
+    pub(crate) class: SpacingClass,
+    pub(crate) form: SpacingForm,
 }
 
 /// One separator/dash-mark occurrence: the mark, its read on each side (or
@@ -842,29 +813,29 @@ fn is_candidate_mark(c: char) -> bool {
     is_separator_punct(c) || crate::unicode::is_dash_punctuation(c)
 }
 
-/// Classify a non-whitespace neighbour cluster into its content [`PoolClass`].
+/// Classify a non-whitespace neighbour cluster into its content [`SpacingClass`].
 /// A cluster containing an alphabetic scalar (incl. base + combining mark, so a
 /// decomposed word-final letter still counts) → `Letter`; a leading (non-quote)
 /// numeric scalar → `Number`; everything else — another mark, a quote, a
 /// bracket, a symbol — → `Punct` (quote merged into `Punct`, user ruling).
-fn neighbour_class(cluster: &str) -> PoolClass {
+fn neighbour_class(cluster: &str) -> SpacingClass {
     if cluster.chars().any(|c| class_of(c).is_alphabetic()) {
-        PoolClass::Letter
+        SpacingClass::Letter
     } else if cluster
         .chars()
         .next()
         .is_some_and(|c| class_of(c).is_numeric() && !class_of(c).is_quote())
     {
-        PoolClass::Number
+        SpacingClass::Number
     } else {
-        PoolClass::Punct
+        SpacingClass::Punct
     }
 }
 
-/// First / last non-whitespace grapheme's [`PoolClass`] in a verse — the edge a
+/// First / last non-whitespace grapheme's [`SpacingClass`] in a verse — the edge a
 /// neighbouring verse's mark reaches across the seam (book order). `None` when a
 /// verse is empty or all-whitespace.
-fn verse_edge_classes(text: &str, graphemes: &[GSpan]) -> (Option<PoolClass>, Option<PoolClass>) {
+fn verse_edge_classes(text: &str, graphemes: &[GSpan]) -> (Option<SpacingClass>, Option<SpacingClass>) {
     let nonws = |gs: &GSpan| {
         let s = gs.slice(text);
         (!s.is_empty() && !s.chars().all(is_spacing_ws)).then(|| neighbour_class(s))
@@ -891,7 +862,7 @@ fn for_each_spacing_opportunity(
         grapheme::segment(text, &mut g);
         per_verse.push(g);
     }
-    let edges: Vec<(Option<PoolClass>, Option<PoolClass>)> = group
+    let edges: Vec<(Option<SpacingClass>, Option<SpacingClass>)> = group
         .texts
         .iter()
         .zip(&per_verse)
@@ -923,8 +894,8 @@ fn for_each_spacing_opportunity(
 fn spacing_opportunities(
     text: &str,
     graphemes: &[GSpan],
-    left_cross: Option<PoolClass>,
-    right_cross: Option<PoolClass>,
+    left_cross: Option<SpacingClass>,
+    right_cross: Option<SpacingClass>,
 ) -> Vec<SpacingOpportunity> {
     walk_opportunities(text, graphemes, left_cross)
         .into_iter()
@@ -958,12 +929,12 @@ pub(crate) enum RightState {
 
 impl RawOpportunity {
     #[cfg(test)]
-    fn resolve(self, right_cross: Option<PoolClass>) -> SpacingOpportunity {
+    fn resolve(self, right_cross: Option<SpacingClass>) -> SpacingOpportunity {
         let right = match self.right {
             RightState::Resolved(r) => r,
             RightState::Seam => right_cross.map(|class| SideRead {
                 class,
-                form: SideForm::Spaced,
+                form: SpacingForm::Spaced,
             }),
         };
         SpacingOpportunity {
@@ -982,7 +953,7 @@ impl RawOpportunity {
 fn walk_opportunities(
     text: &str,
     graphemes: &[GSpan],
-    left_cross: Option<PoolClass>,
+    left_cross: Option<SpacingClass>,
 ) -> Vec<RawOpportunity> {
     let mut out = Vec::new();
     for (idx, gs) in graphemes.iter().enumerate() {
@@ -1015,7 +986,7 @@ fn walk_opportunities(
             (
                 left_cross.map(|class| SideRead {
                     class,
-                    form: SideForm::Spaced,
+                    form: SpacingForm::Spaced,
                 }),
                 mark_start,
             )
@@ -1023,9 +994,9 @@ fn walk_opportunities(
             let nb = graphemes[j - 1];
             let class = neighbour_class(nb.slice(text));
             let form = if left_ws {
-                SideForm::Spaced
+                SpacingForm::Spaced
             } else {
-                SideForm::Attached
+                SpacingForm::Attached
             };
             // Highlight the crossed ws run (spaced) or the attached neighbour.
             let span_start = if left_ws {
@@ -1054,9 +1025,9 @@ fn walk_opportunities(
             let nb = graphemes[k + 1];
             let class = neighbour_class(nb.slice(text));
             let form = if right_ws {
-                SideForm::Spaced
+                SpacingForm::Spaced
             } else {
-                SideForm::Attached
+                SpacingForm::Attached
             };
             let span_end = if right_ws {
                 graphemes[k].range().end
@@ -1097,7 +1068,7 @@ fn walk_opportunities(
 pub(crate) struct SpacingAcc {
     per_mark: BTreeMap<char, [u64; SIDE_CELLS]>,
     sites: Vec<SpacingSite>,
-    left_cross: Option<PoolClass>,
+    left_cross: Option<SpacingClass>,
     pending: Option<PendingSeam>,
 }
 
@@ -1147,11 +1118,11 @@ impl SpacingAcc {
         });
     }
 
-    fn resolve_pending(&mut self, right_cross: Option<PoolClass>) {
+    fn resolve_pending(&mut self, right_cross: Option<SpacingClass>) {
         if let Some(p) = self.pending.take() {
             let right = right_cross.map(|class| SideRead {
                 class,
-                form: SideForm::Spaced,
+                form: SpacingForm::Spaced,
             });
             self.record(
                 p.local_idx,
@@ -1252,8 +1223,8 @@ const _: crate::substrate::SubstrateId =
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct SpacingVerseObs {
     opps: Vec<RawOpportunity>,
-    first_edge: Option<PoolClass>,
-    last_edge: Option<PoolClass>,
+    first_edge: Option<SpacingClass>,
+    last_edge: Option<SpacingClass>,
 }
 
 /// One chapter's spacing observation: its opaque token (the carry owner tag) and
@@ -1271,7 +1242,7 @@ pub(crate) struct SpacingChapterObs {
 /// so a resolution folds into the right chapter even across an all-empty one.
 #[derive(Clone, Default, PartialEq, Eq)]
 pub(crate) struct SpacingBoundary {
-    left_cross: Option<PoolClass>,
+    left_cross: Option<SpacingClass>,
     pending: Option<(Box<str>, PendingSeam)>,
 }
 
@@ -1307,12 +1278,12 @@ pub(crate) struct SpacingCorpusStats {
 /// so it reads the entering `left_cross`; a `Some` was resolved within the verse
 /// and is independent of the carry.
 #[allow(dead_code)] // wired into the transition in Phase C step 2
-fn resolve_left(raw_left: Option<SideRead>, left_cross: Option<PoolClass>) -> Option<SideRead> {
+fn resolve_left(raw_left: Option<SideRead>, left_cross: Option<SpacingClass>) -> Option<SideRead> {
     match raw_left {
         Some(sr) => Some(sr),
         None => left_cross.map(|class| SideRead {
             class,
-            form: SideForm::Spaced,
+            form: SpacingForm::Spaced,
         }),
     }
 }
@@ -1435,7 +1406,7 @@ impl crate::substrate::ObservationSubstrate for SpacingSubstrate {
             {
                 let right = v.first_edge.map(|class| SideRead {
                     class,
-                    form: SideForm::Spaced,
+                    form: SpacingForm::Spaced,
                 });
                 // An owned (foreign) seam materializes into its OWNER's reduced
                 // result — never the resolving chapter's.
@@ -2462,14 +2433,14 @@ mod tests {
     /// resolves them from book neighbours), to unit-test seam behaviour.
     fn opps_cross(
         text: &str,
-        l: Option<PoolClass>,
-        r: Option<PoolClass>,
+        l: Option<SpacingClass>,
+        r: Option<SpacingClass>,
     ) -> Vec<SpacingOpportunity> {
         let mut g = Vec::new();
         grapheme::segment(text, &mut g);
         spacing_opportunities(text, &g, l, r)
     }
-    fn read(class: PoolClass, form: SideForm) -> Option<SideRead> {
+    fn read(class: SpacingClass, form: SpacingForm) -> Option<SideRead> {
         Some(SideRead { class, form })
     }
     /// Walk a single-book corpus's opportunities in book order (resolving
@@ -2488,14 +2459,14 @@ mod tests {
     /// keyed by class (letter, number, punct).
     fn tbl(l: [[u64; 2]; CLASS_COUNT], r: [[u64; 2]; CLASS_COUNT]) -> [u64; SIDE_CELLS] {
         let mut c = [0u64; SIDE_CELLS];
-        for (ci, cls) in [PoolClass::Letter, PoolClass::Number, PoolClass::Punct]
+        for (ci, cls) in [SpacingClass::Letter, SpacingClass::Number, SpacingClass::Punct]
             .iter()
             .enumerate()
         {
-            c[cell_index(Side::Left, *cls, SideForm::Attached)] = l[ci][0];
-            c[cell_index(Side::Left, *cls, SideForm::Spaced)] = l[ci][1];
-            c[cell_index(Side::Right, *cls, SideForm::Attached)] = r[ci][0];
-            c[cell_index(Side::Right, *cls, SideForm::Spaced)] = r[ci][1];
+            c[cell_index(Side::Left, *cls, SpacingForm::Attached)] = l[ci][0];
+            c[cell_index(Side::Left, *cls, SpacingForm::Spaced)] = l[ci][1];
+            c[cell_index(Side::Right, *cls, SpacingForm::Attached)] = r[ci][0];
+            c[cell_index(Side::Right, *cls, SpacingForm::Spaced)] = r[ci][1];
         }
         c
     }
@@ -2528,8 +2499,8 @@ mod tests {
         let o = opps_of("word, word");
         assert_eq!(o.len(), 1);
         assert_eq!(o[0].mark, ',');
-        assert_eq!(o[0].left, read(PoolClass::Letter, SideForm::Attached));
-        assert_eq!(o[0].right, read(PoolClass::Letter, SideForm::Spaced));
+        assert_eq!(o[0].left, read(SpacingClass::Letter, SpacingForm::Attached));
+        assert_eq!(o[0].right, read(SpacingClass::Letter, SpacingForm::Spaced));
     }
 
     #[test]
@@ -2537,11 +2508,11 @@ mod tests {
         // `7.8` decimal: attached to digits both sides ⇒ Number pool, attached.
         // `7. 8` cross-reference: attached-left, spaced-right, SAME Number pool.
         let dec = opps_of("7.8");
-        assert_eq!(dec[0].left, read(PoolClass::Number, SideForm::Attached));
-        assert_eq!(dec[0].right, read(PoolClass::Number, SideForm::Attached));
+        assert_eq!(dec[0].left, read(SpacingClass::Number, SpacingForm::Attached));
+        assert_eq!(dec[0].right, read(SpacingClass::Number, SpacingForm::Attached));
         let refr = opps_of("7. 8");
-        assert_eq!(refr[0].left, read(PoolClass::Number, SideForm::Attached));
-        assert_eq!(refr[0].right, read(PoolClass::Number, SideForm::Spaced));
+        assert_eq!(refr[0].left, read(SpacingClass::Number, SpacingForm::Attached));
+        assert_eq!(refr[0].right, read(SpacingClass::Number, SpacingForm::Spaced));
     }
 
     #[test]
@@ -2550,20 +2521,20 @@ mod tests {
         // Quote merged into Punct: `word."` reads Punct-attached on the right.
         let cluster = opps_of("word?!");
         let bang = cluster.iter().find(|x| x.mark == '!').unwrap();
-        assert_eq!(bang.left, read(PoolClass::Punct, SideForm::Attached));
+        assert_eq!(bang.left, read(SpacingClass::Punct, SpacingForm::Attached));
         let quote = opps_of("word.\" then");
         let p = quote.iter().find(|x| x.mark == '.').unwrap();
-        assert_eq!(p.left, read(PoolClass::Letter, SideForm::Attached));
-        assert_eq!(p.right, read(PoolClass::Punct, SideForm::Attached));
+        assert_eq!(p.left, read(SpacingClass::Letter, SpacingForm::Attached));
+        assert_eq!(p.right, read(SpacingClass::Punct, SpacingForm::Attached));
     }
 
     #[test]
     fn a_book_edge_side_abstains_but_a_cross_seam_side_reads_across() {
         let edge = opps_of("word.");
-        assert_eq!(edge[0].left, read(PoolClass::Letter, SideForm::Attached));
+        assert_eq!(edge[0].left, read(SpacingClass::Letter, SpacingForm::Attached));
         assert_eq!(edge[0].right, None, "book-edge trailing mark abstains");
-        let crossed = opps_cross("word.", None, Some(PoolClass::Letter));
-        assert_eq!(crossed[0].right, read(PoolClass::Letter, SideForm::Spaced));
+        let crossed = opps_cross("word.", None, Some(SpacingClass::Letter));
+        assert_eq!(crossed[0].right, read(SpacingClass::Letter, SpacingForm::Spaced));
         let mid = opps_of("word. word");
         assert_eq!(
             (crossed[0].left, crossed[0].right),
@@ -2582,14 +2553,14 @@ mod tests {
             .iter()
             .find(|(s, m, ..)| *s == LocalKeyIdx::from_usize(0) && *m == '.')
             .unwrap();
-        assert_eq!(v1_period.3, read(PoolClass::Number, SideForm::Spaced));
+        assert_eq!(v1_period.3, read(SpacingClass::Number, SpacingForm::Spaced));
         let vm2 = book("GEN", &[(1, "amen".to_string()), (2, ".word".to_string())]);
         let o2 = book_opps(&vm2);
         let lead = o2
             .iter()
             .find(|(s, m, ..)| *s == LocalKeyIdx::from_usize(1) && *m == '.')
             .unwrap();
-        assert_eq!(lead.2, read(PoolClass::Letter, SideForm::Spaced));
+        assert_eq!(lead.2, read(SpacingClass::Letter, SpacingForm::Spaced));
     }
 
     #[test]
@@ -2622,8 +2593,8 @@ mod tests {
         let hy = opps_of("co-operate");
         assert_eq!(hy.len(), 1);
         assert_eq!(hy[0].mark, '-');
-        assert_eq!(hy[0].left, read(PoolClass::Letter, SideForm::Attached));
-        assert_eq!(hy[0].right, read(PoolClass::Letter, SideForm::Attached));
+        assert_eq!(hy[0].left, read(SpacingClass::Letter, SpacingForm::Attached));
+        assert_eq!(hy[0].right, read(SpacingClass::Letter, SpacingForm::Attached));
         let maqaf = opps_of("\u{05D0}\u{05BE}\u{05D1}");
         assert_eq!(maqaf.len(), 1);
         assert_eq!(maqaf[0].mark, '\u{05BE}');
@@ -2635,7 +2606,7 @@ mod tests {
         let o = opps_of("cafe\u{0301}, then");
         assert_eq!(o.len(), 1);
         assert_eq!(o[0].mark, ',');
-        assert_eq!(o[0].left, read(PoolClass::Letter, SideForm::Attached));
+        assert_eq!(o[0].left, read(SpacingClass::Letter, SpacingForm::Attached));
     }
 
     // ── verdict units (pool dominance × rarity, no fallback) ──────────────
@@ -2694,11 +2665,11 @@ mod tests {
     fn mark_verdict_splits_the_twelve_counters_into_two_sides_and_three_pools() {
         let counts = tbl([[25, 75], [0, 0], [0, 0]], [[0, 0], [90, 10], [0, 0]]);
         let v = mark_verdict(&counts, 0.0, WIDE_K, 0.0, 0.5);
-        assert_eq!(v.left.pools[PoolClass::Letter.index()].n, 100);
-        assert_eq!(v.right.pools[PoolClass::Number.index()].n, 100);
-        assert!((v.left.pools[PoolClass::Letter.index()].scores[0] - 0.75).abs() < 1e-6);
-        assert!((v.right.pools[PoolClass::Number.index()].scores[1] - 0.90).abs() < 1e-6);
-        assert!(!v.left.pools[PoolClass::Number.index()].holds);
+        assert_eq!(v.left.pools[SpacingClass::Letter.index()].n, 100);
+        assert_eq!(v.right.pools[SpacingClass::Number.index()].n, 100);
+        assert!((v.left.pools[SpacingClass::Letter.index()].scores[0] - 0.75).abs() < 1e-6);
+        assert!((v.right.pools[SpacingClass::Number.index()].scores[1] - 0.90).abs() < 1e-6);
+        assert!(!v.left.pools[SpacingClass::Number.index()].holds);
     }
 
     // ── corpus behaviour ───────────────────────────────────────────────────
@@ -2728,8 +2699,8 @@ mod tests {
                     right: None,
                     ..
                 }) => {
-                    assert_eq!(s.form, "spaced");
-                    assert_eq!(s.class, "letter");
+                    assert_eq!(s.form, SpacingForm::Spaced);
+                    assert_eq!(s.class, SpacingClass::Letter);
                 }
                 other => panic!("expected a left-side spaced/letter violation, got {other:?}"),
             }
@@ -2756,8 +2727,8 @@ mod tests {
                 right: Some(s),
                 ..
             }) => {
-                assert_eq!(s.form, "attached");
-                assert_eq!(s.class, "letter");
+                assert_eq!(s.form, SpacingForm::Attached);
+                assert_eq!(s.class, SpacingClass::Letter);
             }
             other => panic!("expected a right-side attached violation, got {other:?}"),
         }
@@ -2796,8 +2767,8 @@ mod tests {
                 right: Some(r),
             }) => {
                 assert_eq!(*mark, '\u{00BF}');
-                assert_eq!((l.form.as_str(), l.class.as_str()), ("attached", "letter"));
-                assert_eq!((r.form.as_str(), r.class.as_str()), ("spaced", "letter"));
+                assert_eq!((l.form, l.class), (SpacingForm::Attached, SpacingClass::Letter));
+                assert_eq!((r.form, r.class), (SpacingForm::Spaced, SpacingClass::Letter));
             }
             other => panic!("expected a two-sided SpacingConvention, got {other:?}"),
         }
@@ -2884,7 +2855,7 @@ mod tests {
                 .iter()
                 .find_map(|x| match &x.args {
                     Some(FindingArgs::SpacingConvention { left: Some(s), .. })
-                        if s.form == "spaced" =>
+                        if s.form == SpacingForm::Spaced =>
                     {
                         x.score
                     }
@@ -2936,8 +2907,8 @@ mod tests {
                     right: None,
                 }) => {
                     assert_eq!(*mark, ',');
-                    assert_eq!(s.form, "spaced");
-                    assert_eq!(s.class, "letter");
+                    assert_eq!(s.form, SpacingForm::Spaced);
+                    assert_eq!(s.class, SpacingClass::Letter);
                     assert_eq!((s.count, s.total), (3, 103));
                 }
                 other => panic!("expected a left-side SpacingConvention, got {other:?}"),
@@ -3513,7 +3484,7 @@ mod tests {
         ]);
         let cells = spacing_corpus_cells(&corpus);
         let comma = cells.get(&',').expect("the comma has cells");
-        let left_letter_spaced = comma[cell_index(Side::Left, PoolClass::Letter, SideForm::Spaced)];
+        let left_letter_spaced = comma[cell_index(Side::Left, SpacingClass::Letter, SpacingForm::Spaced)];
         assert_eq!(
             left_letter_spaced, 1,
             "the chapter-leading comma's left must read the previous chapter's \

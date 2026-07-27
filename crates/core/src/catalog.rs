@@ -20,7 +20,7 @@
 //!   it", never "Wilson lower bound"; the advanced knobs stay documented in
 //!   `documentation/reference/config.md` for calibrators, not here.
 
-use crate::diagnostics::{BracketMeasure, FindingArgs, RuleId};
+use crate::diagnostics::{BracketMeasure, FindingArgs, RuleId, SpacingClass, SpacingForm};
 
 /// How a rule's findings are decided — drives which caption a UI shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -382,15 +382,14 @@ pub fn message(id: RuleId, args: Option<&FindingArgs>) -> String {
         RuleId::PunctuationSpacingAnomaly => match args {
             Some(FindingArgs::SpacingConvention { mark, left, right }) => {
                 let clause = |s: &crate::diagnostics::SpacingSide, side: &str| {
-                    let verb = if s.form == "attached" {
-                        "attached"
-                    } else {
-                        "spaced"
+                    let verb = match s.form {
+                        SpacingForm::Attached => "attached",
+                        SpacingForm::Spaced => "spaced",
                     };
-                    let nbr = match s.class.as_str() {
-                        "number" => "a number",
-                        "punct" => "a mark",
-                        _ => "a word",
+                    let nbr = match s.class {
+                        SpacingClass::Number => "a number",
+                        SpacingClass::Punct => "a mark",
+                        SpacingClass::Letter => "a word",
                     };
                     format!(
                         "{verb} on the {side} to {nbr} in only {} of {} places ({}%)",

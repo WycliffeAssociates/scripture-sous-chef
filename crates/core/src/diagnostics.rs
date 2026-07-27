@@ -186,19 +186,71 @@ pub struct DelimObservation {
     pub matched: bool,
 }
 
+/// A separator mark's *judged* form on one side of an occurrence (ADR 0054 2nd
+/// amendment — the binary bit inside a class pool):
+///
+/// - `Attached` — the mark clings directly to the neighbour (no whitespace).
+/// - `Spaced` — horizontal whitespace was crossed to reach the neighbour, **or**
+///   the verse/book seam was reached (the seam reads as whitespace, never its
+///   own category — repo `CLAUDE.md`; a terminal is never attached across a
+///   seam). The neighbour's *class* is still read across the seam, in book order.
+///
+/// The form is orthogonal to the neighbour's [`SpacingClass`]: a `Number`-pool
+/// `.` can be `Attached` (`7.8`, a decimal) or `Spaced` (`verse. 3`, a
+/// cross-reference), and the pool learns which is the convention.
+///
+/// This is the shipped wire/args vocabulary as well as the rule's internal one —
+/// deliberately one type, so the published JSON string and the counter the rule
+/// incremented cannot drift. Every variant carries an **explicit** `serde`
+/// rename: these strings are a published surface and must never depend on an
+/// inferred naming convention.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+pub enum SpacingForm {
+    #[cfg_attr(feature = "serde", serde(rename = "attached"))]
+    Attached,
+    #[cfg_attr(feature = "serde", serde(rename = "spaced"))]
+    Spaced,
+}
+
+/// The content class of a mark's first non-whitespace neighbour — the **pool**
+/// its attached-vs-spaced binary is conditioned on (ADR 0054 2nd amendment).
+/// Quote is merged into `Punct` (user ruling). A `Number` neighbour is a
+/// (non-quote) numeric scalar; a `Letter` neighbour is any cluster containing an
+/// alphabetic scalar (a decomposed base + combining letter still counts);
+/// everything else — another mark, a quote, a bracket, a symbol — is `Punct`.
+///
+/// Explicitly renamed per variant for the same reason as [`SpacingForm`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+pub enum SpacingClass {
+    #[cfg_attr(feature = "serde", serde(rename = "letter"))]
+    Letter,
+    #[cfg_attr(feature = "serde", serde(rename = "number"))]
+    Number,
+    #[cfg_attr(feature = "serde", serde(rename = "punct"))]
+    Punct,
+}
+
 /// One violated side of a `punct.spacing-anomaly` finding (ADR 0054 2nd
 /// amendment — the pooled class-conditioned model): the observed minority `form`
-/// (`"attached"` or `"spaced"`) against the neighbour-content pool `class`
-/// (`"letter"`, `"number"`, or `"punct"`) that judged it, how many of the mark's
-/// occurrences **in that pool** take this form (`count`), and the pool's judged
-/// occupancy `N_pool` (`total`). `count / total` is the descriptive rate the
-/// Wilson-bound `score` deliberately isn't (ADR 0048).
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// against the neighbour-content pool `class` that judged it, how many of the
+/// mark's occurrences **in that pool** take this form (`count`), and the pool's
+/// judged occupancy `N_pool` (`total`). `count / total` is the descriptive rate
+/// the Wilson-bound `score` deliberately isn't (ADR 0048).
+///
+/// `form`/`class` are closed vocabularies and are typed as such: they were
+/// `String` until 2026-07-27, which cost 48 bytes of heap-pointer weight per
+/// side and made `FindingArgs` the widest thing in a `Finding`. Field order is
+/// unchanged, so the serialized object's key order is unchanged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct SpacingSide {
-    pub form: String,
-    pub class: String,
+    pub form: SpacingForm,
+    pub class: SpacingClass,
     pub count: u32,
     pub total: u32,
 }
@@ -402,4 +454,98 @@ pub struct Finding {
     /// for rules whose message needs no interpolation.
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub args: Option<FindingArgs>,
+}
+
+#[cfg(all(test, feature = "serde"))]
+mod tests {
+    use super::*;
+
+    /// `SpacingSide`'s `form`/`class` were `String` until 2026-07-27, so their
+    /// JSON strings are a **shipped** surface with consumers already keying off
+    /// them (the editor's message layer, the packed-wire vectors, every pinned
+    /// oracle dump). Pin all six form × class combinations as exact bytes,
+    /// including field order: the fleet happens to exercise all six today, but
+    /// that is a property of the corpora, not a guarantee, and an inferred
+    /// rename convention must never be what keeps this surface stable.
+    #[test]
+    fn spacing_side_pins_all_six_form_class_combinations_as_exact_bytes() {
+        let cases = [
+            (
+                SpacingForm::Attached,
+                SpacingClass::Letter,
+                r#"{"form":"attached","class":"letter","count":1,"total":1053}"#,
+            ),
+            (
+                SpacingForm::Attached,
+                SpacingClass::Number,
+                r#"{"form":"attached","class":"number","count":1,"total":1053}"#,
+            ),
+            (
+                SpacingForm::Attached,
+                SpacingClass::Punct,
+                r#"{"form":"attached","class":"punct","count":1,"total":1053}"#,
+            ),
+            (
+                SpacingForm::Spaced,
+                SpacingClass::Letter,
+                r#"{"form":"spaced","class":"letter","count":1,"total":1053}"#,
+            ),
+            (
+                SpacingForm::Spaced,
+                SpacingClass::Number,
+                r#"{"form":"spaced","class":"number","count":1,"total":1053}"#,
+            ),
+            (
+                SpacingForm::Spaced,
+                SpacingClass::Punct,
+                r#"{"form":"spaced","class":"punct","count":1,"total":1053}"#,
+            ),
+        ];
+        for (form, class, want) in cases {
+            let side = SpacingSide {
+                form,
+                class,
+                count: 1,
+                total: 1053,
+            };
+            assert_eq!(
+                serde_json::to_string(&side).unwrap(),
+                want,
+                "{form:?}/{class:?} must serialize byte-for-byte as the shipped strings"
+            );
+            // Round-trip too: the args are `Deserialize` for the oracle/wire
+            // vectors, so a rename that only went one way would still be a bug.
+            assert_eq!(
+                serde_json::from_str::<SpacingSide>(want).unwrap(),
+                side,
+                "{form:?}/{class:?} must deserialize from the shipped strings"
+            );
+        }
+    }
+
+    /// The whole `spacing-convention` args object, both sides present, pinned as
+    /// exact bytes — the tagged-union `kind`, the `mark` scalar, and both nested
+    /// sides in field order. This is the shape the oracle dumps carry.
+    #[test]
+    fn spacing_convention_args_pin_the_full_object_bytes() {
+        let args = FindingArgs::SpacingConvention {
+            mark: ',',
+            left: Some(SpacingSide {
+                form: SpacingForm::Attached,
+                class: SpacingClass::Punct,
+                count: 3,
+                total: 97,
+            }),
+            right: Some(SpacingSide {
+                form: SpacingForm::Spaced,
+                class: SpacingClass::Number,
+                count: 2,
+                total: 41,
+            }),
+        };
+        assert_eq!(
+            serde_json::to_string(&args).unwrap(),
+            r#"{"kind":"spacing-convention","mark":",","left":{"form":"attached","class":"punct","count":3,"total":97},"right":{"form":"spaced","class":"number","count":2,"total":41}}"#
+        );
+    }
 }

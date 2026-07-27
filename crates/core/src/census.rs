@@ -24,13 +24,13 @@
 use std::collections::BTreeMap;
 
 use crate::corpus::{self, BookGroup, Corpus};
+use crate::diagnostics::SpacingForm;
 use crate::rule;
 use crate::signals::bracket_balance::{BookMatch, BracketAcc};
 use crate::signals::case_shape::{CaseShape, case_shape};
 use crate::signals::mixed_case::is_letter_token;
 use crate::signals::punctuation::{
-    SIDE_CELLS, SideForm, SpacingAcc, adjacency_runs_all, count_lead_opportunities,
-    mark_attached_spaced,
+    SIDE_CELLS, SpacingAcc, adjacency_runs_all, count_lead_opportunities, mark_attached_spaced,
 };
 use crate::signals::rare_glyph::{CensusPages, is_letter_scalar};
 use crate::span::Span;
@@ -409,10 +409,10 @@ impl BookCensusAcc {
         // the pick happens at assembly).
         let mut mark_form_first: Firsts<(char, u8)> = BTreeMap::new();
         for site in &spacing_sites {
-            let mut note = |form: SideForm, span: Span| {
+            let mut note = |form: SpacingForm, span: Span| {
                 let f = match form {
-                    SideForm::Attached => 0u8,
-                    SideForm::Spaced => 1u8,
+                    SpacingForm::Attached => 0u8,
+                    SpacingForm::Spaced => 1u8,
                 };
                 mark_form_first
                     .entry((site.mark, f))
