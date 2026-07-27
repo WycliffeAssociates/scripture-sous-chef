@@ -4151,3 +4151,43 @@ the migration commit, not to carry over from here.
   prefilled-interner egress equality test + scope-honest rename of
   `symbol_numbering_never_reaches_the_fold`; exhaustive exact-byte serde pins
   for all six SpacingSide form/class combinations + pkg regen.
+
+---
+
+## Entry 28 — Work Packet 7b: reviewed storage-compaction slate + Phase E rows 2–3
+
+- **Date:** 2026-07-27
+- **Branch:** `granularity-spine` (main tree). Base for this packet: `18b81c8`
+  (Entry 27, the external-review dispositions).
+- **Scope:** Entry 27's reshaped slate — (1) `SpacingSide` `form`/`class`
+  String→enum, (2) re-measure then encode `PosClass` into a deterministic
+  `u32` (no table, no interner, no lifecycle — the adopted P1 fix), (3) casing
+  `LowerSite` to Entry 26 option B (packed span), (4) `MixedCase` per-chapter
+  table compaction, (5–6) plan §8 Phase E rows 2–3 (punctuation adjacency,
+  repeated-character run), (7) the two review advisory tests. Design law for
+  every storage choice: plan §11's retain-vs-rederive principle.
+
+### WA + small oracle base pin (this packet's per-commit referee)
+
+Pinned at HEAD `18b81c8`, `RAYON_NUM_THREADS=4` — WA scope from
+`oracle-blobs/wa.blob` (251 corpora findings / 32 transcript), `small` from
+`oracle-blobs/small.blob` (15 / 2). All eight hashes are byte-identical to the
+standing WP1…WP7a contract. **Recorded before any edit:**
+
+| file | sha256 |
+| --- | --- |
+| `wp7b.base.wa.findings.default.tsv` | `38a0ceadcc792a6656905c7a0f9e2e4c2720c86f47f41f94c66e7a8ad1a9702c` |
+| `wp7b.base.wa.findings.all.tsv` | `128fdd933dc71cda0a4a6d9d9971ceb5648a5703f8b22ee798d30b09d2c15660` |
+| `wp7b.base.wa.inc.default.tsv` | `7b19caa79b284bfa16a56f300f5660591ffc58ffa183888451daf82778676dca` |
+| `wp7b.base.wa.inc.all.tsv` | `c951a758823629c6b6d2e1d558e92c59c1873ed17856b328a60c7ebdc4cee74f` |
+| `wp7b.base.small.findings.default.tsv` | `8d638a441bb654e00fc7fca6e7b0da10d7449a697d9663fdc5efb430bb50ff00` |
+| `wp7b.base.small.findings.all.tsv` | `d657dcff009565e509dcbd891c5f7bf50db5bc9f5c8d19dff316dd4aa6c539e2` |
+| `wp7b.base.small.inc.default.tsv` | `10da8d93dd5c275f38925d726508fa43ba368d43f3ce4f1674652cc47e13661e` |
+| `wp7b.base.small.inc.all.tsv` | `c3532af9a4efa7ec370ba5531b9332fb2c7a0f54b6a86aa8b79972d659f8855e` |
+
+Item 1 changes how `FindingArgs::SpacingConvention` *serializes*, so for that
+commit the dump's args JSON column is itself the referee: the WA `all` dump
+carries 7,124 `punct.spacing-anomaly` rows and exercises **all six**
+form × class combinations (attached/spaced × letter/number/punct), so an
+inferred-naming slip cannot pass the gate silently. The exhaustive unit pins
+Entry 27 asked for are belt-and-braces on top of that.
