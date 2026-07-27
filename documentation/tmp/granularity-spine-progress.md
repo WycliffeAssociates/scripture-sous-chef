@@ -4507,3 +4507,35 @@ recorded in its code).
 - **Advisory accepted:** the mixed-case u16 chapter-count bound is an
   empirical Bible-domain constraint (no word shape repeats 65k× in a chapter —
   owner-confirmed), not Corpus-enforced; documented as such at the checked add.
+
+---
+
+## Entry 30 — Work Packet 7c0: per-substrate drive decomposition + the smallest proven lever
+
+- **Date:** 2026-07-27
+- **Branch:** `granularity-spine` (main tree). Base for this packet: `fc5766c`
+  (Entry 29, the WP7c0 adjudication).
+- **Scope (Entry 29's charter):** attribution before prescription. Step 1
+  instruments every substrate's `drive_*` per phase behind the existing
+  `bench-probes` gate and reports the table; step 2 implements ONLY the share
+  that table names as dominant-and-removable; step 3 documents the mixed-case
+  `u16` chapter-count bound as an empirical Bible-domain constraint. **The six
+  remaining Phase E migrations are not in this packet.**
+
+### WA + small oracle base pin (this packet's per-commit referee)
+
+Pinned at HEAD `fc5766c`, `RAYON_NUM_THREADS=4` — WA scope from
+`oracle-blobs/wa.blob`, `small` from `oracle-blobs/small.blob`. All eight
+hashes are byte-identical to the standing WP1…WP7b contract. **Recorded before
+any edit:**
+
+| file | sha256 |
+| --- | --- |
+| `wp7c0.base.wa.findings.default.tsv` | `38a0ceadcc792a6656905c7a0f9e2e4c2720c86f47f41f94c66e7a8ad1a9702c` |
+| `wp7c0.base.wa.findings.all.tsv` | `128fdd933dc71cda0a4a6d9d9971ceb5648a5703f8b22ee798d30b09d2c15660` |
+| `wp7c0.base.wa.inc.default.tsv` | `7b19caa79b284bfa16a56f300f5660591ffc58ffa183888451daf82778676dca` |
+| `wp7c0.base.wa.inc.all.tsv` | `c951a758823629c6b6d2e1d558e92c59c1873ed17856b328a60c7ebdc4cee74f` |
+| `wp7c0.base.small.findings.default.tsv` | `8d638a441bb654e00fc7fca6e7b0da10d7449a697d9663fdc5efb430bb50ff00` |
+| `wp7c0.base.small.findings.all.tsv` | `d657dcff009565e509dcbd891c5f7bf50db5bc9f5c8d19dff316dd4aa6c539e2` |
+| `wp7c0.base.small.inc.default.tsv` | `10da8d93dd5c275f38925d726508fa43ba368d43f3ce4f1674652cc47e13661e` |
+| `wp7c0.base.small.inc.all.tsv` | `c3532af9a4efa7ec370ba5531b9332fb2c7a0f54b6a86aa8b79972d659f8855e` |
