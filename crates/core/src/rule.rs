@@ -114,7 +114,6 @@ pub trait ProjectTokenRule: Sync {
 /// `reduce` (calibration/tests) produces a fully-owned `RuleSites<'static>`.
 pub enum RuleSites<'a> {
     Proportionality,
-    PunctuationAdjacency(BTreeMap<Box<str>, Cow<'a, [SiteAddr]>>),
     RepeatedCharacterRun(BTreeMap<Box<str>, Cow<'a, [SiteAddr]>>),
     PunctOnlyToken(BTreeMap<Box<str>, Cow<'a, [SiteAddr]>>),
     MixedScript(BTreeMap<Box<str>, Cow<'a, [signals::script_mixing::MixedScriptSite]>>),
@@ -445,12 +444,9 @@ pub fn stateful_rules(config: &Config) -> Vec<Box<dyn StatefulRule>> {
         Box::new(signals::proportionality::ProjectLengthRatio {
             cfg: config.proportionality,
         }),
-        // Corpus-relative punctuation-adjacency rule, aggregate-only stateful.
-        // (`punct.spacing-anomaly` is a typed observation substrate now — see
-        // `SpacingSubstrate` — driven outside this registry.)
-        Box::new(signals::punctuation::PunctuationAdjacencyAnomaly {
-            cfg: config.punctuation_adjacency,
-        }),
+        // (`punct.spacing-anomaly` and `punct.adjacency-anomaly` are typed
+        // observation substrates now — see `SpacingSubstrate` and
+        // `AdjacencySubstrate` — driven outside this registry.)
         Box::new(signals::lexical::RepeatedCharacterRun {
             cfg: config.repeated_character_run,
         }),

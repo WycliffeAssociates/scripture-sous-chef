@@ -8,10 +8,11 @@
 //! slice the offending characters out of the verse text.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use crate::charclass::class_of;
 use crate::config::{PunctuationAdjacencyConfig, PunctuationSpacingConfig};
-use crate::corpus::{Books, Corpus, KeyIdx, LocalKeyIdx, SiteAddr, rebase};
+use crate::corpus::{Corpus, KeyIdx, LocalKeyIdx, SiteAddr, rebase};
 use crate::diagnostics::{
     Finding, FindingArgs, RuleId, Severity, SpacingClass, SpacingForm, SpacingSide,
 };
@@ -19,9 +20,7 @@ use crate::evidence::{
     clamp_count, clamp_rate, clamp_unit, clamp_z, dominance, from_strengths, odds_amplify, strength,
 };
 use crate::grapheme::{self, GSpan};
-use crate::rule::{self, StatefulRule, TokenCache};
 use crate::span::Span;
-use crate::stats::RuleStats;
 use crate::stream;
 use crate::tape::TapeEntry;
 
@@ -42,263 +41,579 @@ use crate::tape::TapeEntry;
 /// corpus counts alone cannot tell them apart (documented limitation).
 pub const PUNCTUATION_ADJACENCY_ANOMALY: RuleId = RuleId::PunctuationAdjacencyAnomaly;
 
-/// One book's aggregate contribution: per-lead-glyph run-start opportunity
-/// counts and per-exact-pattern occurrence counts. **No sites** — spans are
-/// re-derived from the text at `judge`, so this stays a few KB even on a
-/// ZWSP-/punctuation-pervasive corpus. Patterns keyed by their exact run string
-/// (`",,"`, `"?!?"`, `"፤፤"`), so `??`/`???`/`????` stay distinct.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub(crate) struct BookPunctuationAdjacency {
-    lead_opportunities: BTreeMap<char, u64>,
-    pattern_counts: BTreeMap<String, u64>,
+/// One chapter's input-independent adjacency observation: the counts and the
+/// candidate addresses, both pure functions of the chapter's own text.
+///
+/// Nothing crosses a chapter seam for this rule, and that is **proven from the
+/// listener**, not assumed: the retired `AdjacencyAcc::verse` read only the
+/// current verse's `tape` and `text`, and [`count_lead_opportunities`] starts its
+/// `prev` at `None` on every call — so a maximal same-glyph run is bounded by its
+/// verse in the shipped rule, and a chapter boundary is a verse boundary. The
+/// three accumulator fields were a book *tally*, never a carry. Hence
+/// `BoundaryState = ()` and reduction is the identity. (This is not the repo's
+/// verse-seam footgun in disguise: it says the shipped extraction is
+/// verse-scoped, which is a property of the extraction, not an assumption that
+/// discourse resets.)
+#[derive(Clone, Default, PartialEq, Eq)]
+pub(crate) struct AdjacencyChapterObs {
+    token: Box<str>,
+    /// Shared with the reduced chapter and the book contribution — reduction is
+    /// the identity, so the table is handed on by `Arc` rather than deep-copied.
+    counts: Arc<AdjacencyCounts>,
 }
 
-/// Cached punctuation-adjacency aggregates, keyed by book code so an edit
-/// supersedes only its book. Corpus-wide `k` and `N_start` are the sums over
-/// books, derived at `judge`.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct PunctuationAdjacencyStats {
-    pub(crate) per_book: BTreeMap<Box<str>, BookPunctuationAdjacency>,
+/// One chapter's adjacency evidence. The two count tables are sorted boxed
+/// slices, not maps: a chapter holds a few dozen glyphs and a handful of
+/// patterns, and sorted slices give a deterministic `Eq`, a merge-join fold, and
+/// no per-entry node.
+///
+/// Counts stay `u64` here. Narrowing them (as the mixed-case chapter table does)
+/// would buy nothing: this table has one entry per *glyph*, not per word type, so
+/// there is no scatter to halve — and a `u32`/`u16` bound would be a new
+/// stop-clause to maintain for no measured gain.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub(crate) struct AdjacencyCounts {
+    /// Per-lead-glyph run-start opportunities (`N_start(a)`), sorted by glyph.
+    lead: Box<[(char, u64)]>,
+    /// Per-exact-pattern occurrence counts, sorted by pattern.
+    patterns: Box<[(Box<str>, u64)]>,
+    /// Candidate addresses in scan order: verse order, then `(start, end)` within
+    /// a verse (`adjacency_runs` sorts its spans). That is exactly the retired
+    /// judge's `(key_idx, range.start, range.end)` order, which is what preserves
+    /// the within-rule emission order the final stable sort relies on (plan §6.4
+    /// as amended) — including the 43 equal-key collisions Entry 1 pinned.
+    ///
+    /// The **pattern text is not stored**: it is a byte slice of its own verse at
+    /// the retained span, so re-deriving it at materialization is plan §11's
+    /// indexed lookup, not a re-walk — no tape, no segmentation cache, no
+    /// tokenization. This is the principle's default case, and the row takes it.
+    sites: Box<[SiteAddr]>,
 }
 
-impl PunctuationAdjacencyStats {
-    /// Book-level supersede: books in `other` replace those in `self`.
-    pub(crate) fn merge(mut self, other: PunctuationAdjacencyStats) -> PunctuationAdjacencyStats {
-        for (book, b) in other.per_book {
-            self.per_book.insert(book, b);
+/// One chapter's reduced adjacency result — identical to its observation.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub(crate) struct AdjacencyReduced {
+    token: Box<str>,
+    counts: Arc<AdjacencyCounts>,
+}
+
+/// A book's folded adjacency contribution: its two ordered count tables (the
+/// corpus aggregate's addends) plus its chapters' reduced results, which own the
+/// candidate addresses materialization walks.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub(crate) struct AdjacencyBookContribution {
+    lead: Arc<Vec<(char, u64)>>,
+    patterns: Arc<Vec<(Box<str>, u64)>>,
+    chapters: Vec<AdjacencyReduced>,
+}
+
+/// The adjacency corpus aggregate. **Counts only** — no site ever enters it; the
+/// addresses live in the reduced chapters, where an untouched chapter keeps its
+/// own. Every sum is maintained incrementally and bit-exactly across book
+/// replacement, because the counts are integers.
+#[derive(Default)]
+pub(crate) struct AdjacencyCorpusStats {
+    /// Per-book addends, so a replacement can subtract exactly what it added.
+    /// Its `len()` is the breadth denominator `corpus` — books represented in the
+    /// aggregate, which is every book of the corpus (an empty book contributes an
+    /// empty pair, exactly as the retired per-book map held an empty entry).
+    per_book: BTreeMap<Box<str>, AdjacencyAddends>,
+    /// Corpus-wide `N_start(a)` per lead glyph.
+    lead: BTreeMap<char, u64>,
+    /// Corpus-wide per-pattern `(k, books)`: total occurrences, and how many books
+    /// contain the pattern at least once (its breadth support).
+    patterns: BTreeMap<Box<str>, (u64, u64)>,
+}
+
+/// One book's two addends as the corpus aggregate holds them: its lead-glyph
+/// table and its pattern table, shared by `Arc` with the book contribution they
+/// were folded into (the aggregate never needs its own copy).
+type AdjacencyAddends = (Arc<Vec<(char, u64)>>, Arc<Vec<(Box<str>, u64)>>);
+
+/// The judge key: the exact candidate run (`",,"`, `"?!?"`, `"፤፤"`), so
+/// `??`/`???`/`????` stay distinct keys as they always did.
+pub(crate) type AdjacencyKey = Box<str>;
+
+/// One pattern's verdict: the score and the raw counts behind it, or `None` when
+/// the pattern is an established convention (or below the floor) and stays
+/// silent. One outcome serves every site of that pattern, corpus-wide.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct AdjacencyOutcome {
+    /// `(score, k, lead_n, books, corpus)` — the descriptive counts ADR 0048
+    /// ships beside the score.
+    emit: Option<(f32, u32, u32, u32, u32)>,
+}
+
+/// The `punct.adjacency-anomaly` observation substrate. Sole consumer: the rule
+/// of the same name.
+pub(crate) struct AdjacencySubstrate;
+
+/// Pins the substrate's registry id at compile time.
+const _: crate::substrate::SubstrateId =
+    <AdjacencySubstrate as crate::substrate::ObservationSubstrate>::ID;
+
+/// One chapter's adjacency map, over the chapter's own tape.
+fn map_adjacency_chapter(chapter: &crate::substrate::ChapterView<'_>) -> AdjacencyChapterObs {
+    let mut lead: BTreeMap<char, u64> = BTreeMap::new();
+    let mut patterns: BTreeMap<Box<str>, u64> = BTreeMap::new();
+    let mut sites: Vec<SiteAddr> = Vec::new();
+    let mut tape = Vec::new();
+    for (vi, text) in chapter.texts.iter().enumerate() {
+        let local_idx = LocalKeyIdx::from_usize(vi);
+        crate::tape::build(text, &mut tape);
+        count_lead_opportunities(&tape, &mut lead);
+        for span in adjacency_candidates(&tape) {
+            *patterns.entry(Box::from(span.slice(text))).or_default() += 1;
+            sites.push(SiteAddr::pack(local_idx, span));
         }
-        self
     }
-
-    pub(crate) fn remove_book(&mut self, slug: &str) {
-        self.per_book.remove(slug);
+    AdjacencyChapterObs {
+        token: Box::from(chapter.chapter),
+        counts: Arc::new(AdjacencyCounts {
+            lead: lead.into_iter().collect(),
+            patterns: patterns.into_iter().collect(),
+            sites: sites.into_boxed_slice(),
+        }),
     }
 }
 
-pub struct PunctuationAdjacencyAnomaly {
-    pub cfg: PunctuationAdjacencyConfig,
+/// Sum sorted `(key, count)` addends from several chapters into one ordered
+/// table. `BTreeMap` for the accumulation so the result is key-ordered without a
+/// sort, which is what the corpus merge-join and the deterministic `Eq` want.
+fn fold_counts<K: Ord + Clone>(parts: impl Iterator<Item = (K, u64)>) -> Vec<(K, u64)> {
+    let mut acc: BTreeMap<K, u64> = BTreeMap::new();
+    for (k, n) in parts {
+        *acc.entry(k).or_default() += n;
+    }
+    acc.into_iter().collect()
 }
 
-impl StatefulRule for PunctuationAdjacencyAnomaly {
-    fn id(&self) -> RuleId {
-        PUNCTUATION_ADJACENCY_ANOMALY
+impl crate::substrate::ObservationSubstrate for AdjacencySubstrate {
+    const ID: crate::substrate::SubstrateId = crate::substrate::SubstrateId::Adjacency;
+    // Bump on any observation/reduction schema change.
+    const SCHEMA_STAMP: u64 = 1;
+
+    type Key = AdjacencyKey;
+    // Proven from the listener — see `AdjacencyChapterObs`.
+    type BoundaryState = ();
+    type ChapterObservation = AdjacencyChapterObs;
+    type ReducedChapter = AdjacencyReduced;
+    type BookContribution = AdjacencyBookContribution;
+    type CorpusStats = AdjacencyCorpusStats;
+    // Every `PunctuationAdjacencyConfig` field is read at judge (the two
+    // convention rates, the two z's, the breadth gate, the length slope, the
+    // floor), so a knob change maps and reduces nothing.
+    type ExtractorConfig = ();
+    // Candidate patterns are their own text; nothing to name through a table.
+    type Symbols = ();
+    type JudgeConfig = PunctuationAdjacencyConfig;
+    type EntryOutcome = AdjacencyOutcome;
+
+    fn extractor_fp(_extractor: &()) -> u64 {
+        0
     }
 
-    fn reduce(
-        &self,
-        books: &Books<'_>,
-        _source: Option<&Corpus>,
-        _tokens: Option<&TokenCache<'_>>,
-    ) -> (RuleStats, rule::RuleSites<'static>) {
-        // Thin driver over the shared listener (the fused walk feeds the same
-        // `AdjacencyAcc`); kept for calibration/tests — `analyze_stateful`
-        // walks all rules fused.
-        let mut per_book = BTreeMap::new();
-        let mut sites = BTreeMap::new();
-        for (group, (bc, book_sites)) in books.iter().zip(rule::map_books(books, |group| {
-            stream::drive_book(
-                group,
-                stream::Needs {
-                    tape: true,
-                    ..Default::default()
-                },
-                AdjacencyAcc::new(true),
-                |a, v| a.verse(v),
-                AdjacencyAcc::finish,
-            )
-        })) {
-            per_book.insert(Box::from(group.slug), bc);
-            sites.insert(Box::from(group.slug), book_sites);
-        }
+    fn map_chapter(
+        chapter: &crate::substrate::ChapterView<'_>,
+        _extractor: &(),
+        _symbols: &(),
+    ) -> AdjacencyChapterObs {
+        map_adjacency_chapter(chapter)
+    }
+
+    fn pending_owner(_state: &()) -> Option<&str> {
+        None
+    }
+
+    fn reduce_chapter(
+        observation: &AdjacencyChapterObs,
+        _entering: &(),
+        _carry_out: &mut AdjacencyReduced,
+    ) -> (AdjacencyReduced, ()) {
         (
-            RuleStats::PunctuationAdjacency(PunctuationAdjacencyStats { per_book }),
-            rule::RuleSites::PunctuationAdjacency(sites.into_iter().map(|(k, v)| (k, std::borrow::Cow::Owned(v))).collect()),
+            AdjacencyReduced {
+                token: observation.token.clone(),
+                counts: Arc::clone(&observation.counts),
+            },
+            (),
         )
+    }
+
+    fn finish_book(_leaving: &(), _carry_out: &mut AdjacencyReduced) {}
+
+    fn fold_book(reduced: &[AdjacencyReduced], _symbols: &()) -> AdjacencyBookContribution {
+        let lead = fold_counts(
+            reduced
+                .iter()
+                .flat_map(|r| r.counts.lead.iter().map(|&(c, n)| (c, n))),
+        );
+        let patterns = fold_counts(
+            reduced
+                .iter()
+                .flat_map(|r| r.counts.patterns.iter().map(|(p, n)| (p.clone(), *n))),
+        );
+        AdjacencyBookContribution {
+            lead: Arc::new(lead),
+            patterns: Arc::new(patterns),
+            chapters: reduced.to_vec(),
+        }
+    }
+
+    fn replace_book_in_corpus_stats(
+        stats: &mut AdjacencyCorpusStats,
+        slug: &str,
+        old: Option<&AdjacencyBookContribution>,
+        new: Option<&AdjacencyBookContribution>,
+    ) -> Vec<AdjacencyKey> {
+        let empty_lead: Vec<(char, u64)> = Vec::new();
+        let empty_pat: Vec<(Box<str>, u64)> = Vec::new();
+        let old_lead = old.map_or(&empty_lead[..], |c| &c.lead[..]);
+        let new_lead = new.map_or(&empty_lead[..], |c| &c.lead[..]);
+        let old_pat = old.map_or(&empty_pat[..], |c| &c.patterns[..]);
+        let new_pat = new.map_or(&empty_pat[..], |c| &c.patterns[..]);
+
+        // The book count is the breadth denominator, so a book entering or
+        // leaving the aggregate moves EVERY pattern's judge inputs.
+        let books_before = stats.per_book.len();
+
+        // Apply the replacement. Both sides are sorted, so this is a merge-join;
+        // the sums are integers, so subtract-then-add restores the identical
+        // value and the aggregate never needs re-folding whole.
+        let mut moved_glyphs: Vec<char> = Vec::new();
+        merge_join(old_lead, new_lead, |c, o, n| {
+            if o == n {
+                return;
+            }
+            let e = stats.lead.entry(*c).or_default();
+            *e = *e + n - o;
+            if *e == 0 {
+                stats.lead.remove(c);
+            }
+            moved_glyphs.push(*c);
+        });
+        let mut delta: Vec<AdjacencyKey> = Vec::new();
+        merge_join(old_pat, new_pat, |p, o, n| {
+            if o == n {
+                return;
+            }
+            let e = stats.patterns.entry(p.clone()).or_default();
+            e.0 = e.0 + n - o;
+            // Breadth support is a book count: presence in this book is worth
+            // exactly one, so a book gaining or losing the pattern moves it by
+            // one and a count change within a book leaves it alone.
+            if o == 0 {
+                e.1 += 1;
+            }
+            if n == 0 {
+                e.1 -= 1;
+            }
+            if e.0 == 0 {
+                stats.patterns.remove(p);
+            }
+            delta.push(p.clone());
+        });
+
+        match new {
+            Some(c) => {
+                stats.per_book.insert(
+                    Box::from(slug),
+                    (Arc::clone(&c.lead), Arc::clone(&c.patterns)),
+                );
+            }
+            None => {
+                stats.per_book.remove(slug);
+            }
+        }
+
+        // Widen the delta to every pattern whose judge inputs actually moved. A
+        // pattern is judged against its OWN `(k, books)`, its LEAD GLYPH's corpus
+        // opportunity count, and the corpus book count — so all three have to be
+        // honoured or the delta would be the one wrong answer, a subset.
+        if stats.per_book.len() != books_before {
+            return stats.patterns.keys().cloned().collect();
+        }
+        if !moved_glyphs.is_empty() {
+            for p in stats.patterns.keys() {
+                let a = p.chars().next().expect("candidate pattern is non-empty");
+                if moved_glyphs.contains(&a) && !delta.contains(p) {
+                    delta.push(p.clone());
+                }
+            }
+        }
+        delta
     }
 
     fn judge(
-        &self,
-        stats: &RuleStats,
-        books: &Books<'_>,
-        _tokens: Option<&TokenCache<'_>>,
-        sites: Option<&rule::RuleSites<'_>>,
-    ) -> Vec<Finding> {
-        let RuleStats::PunctuationAdjacency(stats) = stats else {
-            return Vec::new();
-        };
-
-        // Corpus-wide aggregates: sum the per-book run-start and pattern counts,
-        // and count in how many books each pattern occurs (its breadth support).
-        let mut lead: BTreeMap<char, u64> = BTreeMap::new();
-        let mut pattern_k: BTreeMap<&str, u64> = BTreeMap::new();
-        let mut pattern_books: BTreeMap<&str, u64> = BTreeMap::new();
-        for book in stats.per_book.values() {
-            for (&c, &n) in &book.lead_opportunities {
-                *lead.entry(c).or_default() += n;
-            }
-            for (p, &k) in &book.pattern_counts {
-                *pattern_k.entry(p.as_str()).or_default() += k;
-                // `pattern_counts` only holds patterns seen ≥1 time in the book,
-                // so presence is one book of breadth support.
-                *pattern_books.entry(p.as_str()).or_default() += 1;
-            }
-        }
-        // Nonempty books represented in the cache — the breadth denominator.
+        cfg: &PunctuationAdjacencyConfig,
+        key: &AdjacencyKey,
+        stats: &AdjacencyCorpusStats,
+    ) -> AdjacencyOutcome {
+        let rate = clamp_rate(cfg.convention_rate);
+        let z = clamp_z(cfg.confidence_z);
+        let breadth_rate = clamp_rate(cfg.breadth_convention_rate);
+        let breadth_z = clamp_z(cfg.breadth_z);
+        let slope = f64::from(cfg.length_gain_slope).max(0.0);
+        let floor = f64::from(clamp_unit(cfg.emit_score_min));
         let corpus_books = stats.per_book.len() as u64;
-
-        let rate = clamp_rate(self.cfg.convention_rate);
-        let z = clamp_z(self.cfg.confidence_z);
-        let breadth_rate = clamp_rate(self.cfg.breadth_convention_rate);
-        let breadth_z = clamp_z(self.cfg.breadth_z);
-        let slope = f64::from(self.cfg.length_gain_slope).max(0.0);
-        let floor = f64::from(clamp_unit(self.cfg.emit_score_min));
         // Breadth is a corpus-scale signal — meaningless below a handful of
         // books, where every pattern trivially spans "all" of them. Gate it.
-        let breadth_active = corpus_books >= u64::from(self.cfg.breadth_min_books);
+        let breadth_active = corpus_books >= u64::from(cfg.breadth_min_books);
 
-        // Evidence depends only on the pattern; compute it once per pattern.
-        // Frequency and breadth are *independent* convention evidence combined
-        // by noisy-OR (either fully establishing a convention zeroes the base);
-        // run length then amplifies the residual as an odds multiplier, so it
-        // can raise an anomaly toward 1 but never resurrect a convention (ADR
-        // 0031).
-        let evidence: BTreeMap<&str, f64> = pattern_k
-            .iter()
-            .map(|(&p, &k)| {
-                let a = p.chars().next().expect("candidate pattern is non-empty");
-                let n = lead.get(&a).copied().unwrap_or(0);
-                let books = pattern_books.get(p).copied().unwrap_or(0);
-                let freq_strength = strength(k, n, rate, z);
-                let breadth_strength = if breadth_active {
-                    strength(books, corpus_books, breadth_rate, breadth_z)
-                } else {
-                    0.0
-                };
-                let base = from_strengths(&[freq_strength, breadth_strength]);
-                let len = p.chars().count() as f64;
-                let gain = 1.0 + slope * (len - 2.0);
-                (p, odds_amplify(base, gain))
-            })
-            .collect();
+        let (k, books) = stats.patterns.get(key).copied().unwrap_or((0, 0));
+        let a = key.chars().next().expect("candidate pattern is non-empty");
+        let n = stats.lead.get(&a).copied().unwrap_or(0);
 
-        // The raw counts behind each pattern's score, for the descriptive
-        // message (ADR 0048): frequency `k / lead_n` among the lead glyph's
-        // runs, and breadth `books / corpus`.
+        // Frequency and breadth are *independent* convention evidence combined by
+        // noisy-OR (either fully establishing a convention zeroes the base); run
+        // length then amplifies the residual as an odds multiplier, so it can
+        // raise an anomaly toward 1 but never resurrect a convention (ADR 0031).
+        let freq_strength = strength(k, n, rate, z);
+        let breadth_strength = if breadth_active {
+            strength(books, corpus_books, breadth_rate, breadth_z)
+        } else {
+            0.0
+        };
+        let base = from_strengths(&[freq_strength, breadth_strength]);
+        let len = key.chars().count() as f64;
+        let gain = 1.0 + slope * (len - 2.0);
+        let ev = odds_amplify(base, gain);
+        if ev < floor {
+            return AdjacencyOutcome::default();
+        }
         let sat = |v: u64| v.min(u64::from(u32::MAX)) as u32;
-        let details: BTreeMap<&str, (u32, u32, u32, u32)> = pattern_k
-            .iter()
-            .map(|(&p, &k)| {
-                let a = p.chars().next().expect("candidate pattern is non-empty");
-                let n = lead.get(&a).copied().unwrap_or(0);
-                let books = pattern_books.get(p).copied().unwrap_or(0);
-                (p, (sat(k), sat(n), sat(books), sat(corpus_books)))
-            })
-            .collect();
+        AdjacencyOutcome {
+            emit: Some((
+                ev as f32,
+                sat(k),
+                sat(n),
+                sat(books),
+                sat(corpus_books),
+            )),
+        }
+    }
+}
 
-        // Recover spans (aggregate-only state holds none): from the forwarded
-        // reduce sites where this call scanned the book (ADR 0044), by
-        // re-scanning otherwise. Scores stay corpus-wide via `evidence`; both
-        // paths fan out per book (ADR 0042).
-        let forwarded = match sites {
-            Some(rule::RuleSites::PunctuationAdjacency(m)) => Some(m),
-            _ => None,
-        };
-        let score = |key_idx: KeyIdx, text: &str, span: Span, found: &mut Vec<Finding>| {
-            let pattern = span.slice(text);
-            let ev = evidence.get(pattern).copied().unwrap_or(1.0);
-            if ev < floor {
-                return;
-            }
-            let (k, lead_n, books, corpus) = details.get(pattern).copied().unwrap_or((0, 0, 0, 0));
-            found.push(Finding {
-                key_idx,
-                code: PUNCTUATION_ADJACENCY_ANOMALY,
-                severity: Severity::Info,
-                range: span,
-                score: Some(ev as f32),
-                args: Some(FindingArgs::AdjacencyEvidence {
-                    pattern: pattern.to_string(),
-                    k,
-                    lead_n,
-                    books,
-                    corpus,
-                }),
-            });
-        };
-        let mut out: Vec<Finding> = rule::map_books(books, |group| {
-            let mut found = Vec::new();
-            if let Some(book_sites) = forwarded.and_then(|m| m.get(group.slug)) {
-                rule::for_each_site_text(group, book_sites, |local, text, span| {
-                    score(rebase(group.base, local), text, span, &mut found);
-                });
-            } else {
-                let mut tape = Vec::new();
-                for (vi, text) in group.texts.iter().enumerate() {
-                    let key_idx = rebase(group.base, LocalKeyIdx::from_usize(vi));
-                    crate::tape::build(text, &mut tape);
-                    for span in adjacency_candidates(&tape) {
-                        score(key_idx, text, span, &mut found);
-                    }
+/// Walk two key-sorted `(key, count)` tables together, calling `f(key, old, new)`
+/// once per key present in either — with `0` standing for absence. The one place
+/// a book's adjacency replacement is applied, so the subtract and the add cannot
+/// disagree about which keys they touched.
+fn merge_join<K: Ord>(
+    old: &[(K, u64)],
+    new: &[(K, u64)],
+    mut f: impl FnMut(&K, u64, u64),
+) {
+    let (mut i, mut j) = (0usize, 0usize);
+    while i < old.len() || j < new.len() {
+        match (old.get(i), new.get(j)) {
+            (Some((a, o)), Some((b, n))) => match a.cmp(b) {
+                std::cmp::Ordering::Less => {
+                    f(a, *o, 0);
+                    i += 1;
                 }
-            }
-            found
-        })
-        .into_iter()
-        .flatten()
-        .collect();
-        // Total order (incl. `end`) so overlapping candidates that share a start
-        // (`..` and `..,`) are ordered deterministically.
-        out.sort_by_key(|f| (f.key_idx, f.range.start, f.range.end));
-        out
-    }
-}
-
-/// The adjacency counting listener: one book's aggregate counts plus the
-/// candidate sites (forwarded reduce→judge within a call — ADR 0044; the
-/// *stats* still carry no sites). Fed per verse by the fused walk.
-pub(crate) struct AdjacencyAcc {
-    lead_opportunities: BTreeMap<char, u64>,
-    pattern_counts: BTreeMap<String, u64>,
-    sites: Vec<SiteAddr>,
-    /// `false` on a prior-carried book (anchor mode): candidates still feed
-    /// the sites; the opportunity/pattern tallies are skipped.
-    counting: bool,
-}
-
-impl AdjacencyAcc {
-    pub(crate) fn new(counting: bool) -> Self {
-        AdjacencyAcc {
-            lead_opportunities: BTreeMap::new(),
-            pattern_counts: BTreeMap::new(),
-            sites: Vec::new(),
-            counting,
-        }
-    }
-
-    pub(crate) fn verse(&mut self, v: &stream::VerseInputs<'_, '_>) {
-        if self.counting {
-            count_lead_opportunities(v.tape, &mut self.lead_opportunities);
-        }
-        for span in adjacency_candidates(v.tape) {
-            if self.counting {
-                *self
-                    .pattern_counts
-                    .entry(span.slice(v.text).to_string())
-                    .or_default() += 1;
-            }
-            self.sites.push(SiteAddr::pack(v.local_idx, span));
-        }
-    }
-
-    pub(crate) fn finish(self) -> (BookPunctuationAdjacency, Vec<SiteAddr>) {
-        (
-            BookPunctuationAdjacency {
-                lead_opportunities: self.lead_opportunities,
-                pattern_counts: self.pattern_counts,
+                std::cmp::Ordering::Greater => {
+                    f(b, 0, *n);
+                    j += 1;
+                }
+                std::cmp::Ordering::Equal => {
+                    f(a, *o, *n);
+                    i += 1;
+                    j += 1;
+                }
             },
-            self.sites,
-        )
+            (Some((a, o)), None) => {
+                f(a, *o, 0);
+                i += 1;
+            }
+            (None, Some((b, n))) => {
+                f(b, 0, *n);
+                j += 1;
+            }
+            (None, None) => unreachable!("loop guard"),
+        }
     }
+}
+
+impl AdjacencyBookContribution {
+    /// Emit this book's adjacency findings: one per retained candidate whose
+    /// pattern survived judging, rebasing each chapter-local address to a global
+    /// `KeyIdx` via its chapter's current base.
+    ///
+    /// The pattern is sliced out of the verse text here rather than retained per
+    /// site (plan §11): the span is the address, and the address is all a byte
+    /// slice needs. The chapter's observation stamp is its text hash, so a cached
+    /// chapter's bytes are the bytes its counts were taken from.
+    fn materialize(
+        &self,
+        slug: &str,
+        corpus: &Corpus,
+        verdicts: &BTreeMap<AdjacencyKey, AdjacencyOutcome>,
+        out: &mut Vec<Finding>,
+    ) {
+        let texts = corpus.texts();
+        for chapter in &self.chapters {
+            let Some(range) = corpus.chapter_range(slug, &chapter.token) else {
+                continue;
+            };
+            let base = KeyIdx::from_usize(range.start);
+            for site in chapter.counts.sites.iter() {
+                let (local, span) = site.unpack();
+                let text = &texts[range.start + usize::from(local.get())];
+                let pattern = span.slice(text);
+                // Every candidate's pattern was counted by the same chapter map
+                // that produced this address, so it is in the aggregate and has a
+                // verdict — a missing one would mean the counts and the sites came
+                // from different text.
+                let outcome = verdicts
+                    .get(pattern)
+                    .expect("every retained candidate's pattern is a judged key");
+                let Some((score, k, lead_n, books, corpus_books)) = outcome.emit else {
+                    continue;
+                };
+                out.push(Finding {
+                    key_idx: rebase(base, local),
+                    code: PUNCTUATION_ADJACENCY_ANOMALY,
+                    severity: Severity::Info,
+                    range: span,
+                    score: Some(score),
+                    args: Some(FindingArgs::AdjacencyEvidence {
+                        pattern: pattern.to_string(),
+                        k,
+                        lead_n,
+                        books,
+                        corpus: corpus_books,
+                    }),
+                });
+            }
+        }
+    }
+}
+
+/// One chapter the substrate has to map this analysis, as the ordered map seam
+/// sees it: its caller-order `(book, chapter)` slot plus the view mapping reads.
+struct AdjacencyMapWork<'a> {
+    book: usize,
+    chapter: usize,
+    view: crate::substrate::ChapterView<'a>,
+}
+
+/// Drive the `punct.adjacency-anomaly` observation substrate for one analysis:
+/// map the dirty chapters through the ordered chapter-map seam, reduce (the
+/// identity), judge exactly the patterns its retained candidates name, and
+/// materialize. When inactive, drop the cached products so an edit while it is
+/// disabled does no work for it.
+pub(crate) fn drive_adjacency(
+    active: bool,
+    cache: &mut crate::substrate::SubstrateCache<AdjacencySubstrate>,
+    corpus: &Corpus,
+    cfg: &PunctuationAdjacencyConfig,
+    out: &mut Vec<Finding>,
+) {
+    use crate::substrate::{ChapterView, ObservationInputStamp, ObservationSubstrate};
+    #[cfg(any(test, feature = "test-probes"))]
+    cache.reset_probes();
+    if !active {
+        cache.clear();
+        return;
+    }
+    let texts = corpus.texts();
+    let layout = corpus.book_layout();
+    let mut stamped: Vec<Vec<(Box<str>, ObservationInputStamp)>> = Vec::with_capacity(layout.len());
+    let mut work: Vec<AdjacencyMapWork<'_>> = Vec::new();
+    let mut book_runs: Vec<std::ops::Range<usize>> = Vec::new();
+    let mut work_bytes = 0usize;
+    for (bi, book) in layout.iter().enumerate() {
+        let run_start = work.len();
+        let mut chapters = Vec::with_capacity(book.chapters.len());
+        for (ci, c) in book.chapters.iter().enumerate() {
+            let stamp = ObservationInputStamp {
+                schema_stamp: AdjacencySubstrate::SCHEMA_STAMP,
+                chapter_hash: c.hash,
+                extractor_fp: AdjacencySubstrate::extractor_fp(&()),
+            };
+            if !cache.observation_is_current(&book.slug, &c.chapter, &stamp) {
+                let verses = &texts[c.range.clone()];
+                work_bytes += verses.iter().map(String::len).sum::<usize>();
+                work.push(AdjacencyMapWork {
+                    book: bi,
+                    chapter: ci,
+                    view: ChapterView {
+                        chapter: &c.chapter,
+                        texts: verses,
+                    },
+                });
+            }
+            chapters.push((c.chapter.clone(), stamp));
+        }
+        if work.len() > run_start {
+            book_runs.push(run_start..work.len());
+        }
+        stamped.push(chapters);
+    }
+    let route = crate::rule::map_route(&book_runs, work.len(), work_bytes);
+    #[cfg(any(test, feature = "test-probes"))]
+    {
+        cache.map_route = route.label();
+    }
+    let fresh = crate::rule::map_chapter_work(&work, &book_runs, route, |w| {
+        AdjacencySubstrate::map_chapter(&w.view, &(), &())
+    });
+    // Back into caller-order `(book, chapter)` slots, so reduction reads them in
+    // corpus order and never in completion order.
+    let mut slots: Vec<Vec<Option<AdjacencyChapterObs>>> = layout
+        .iter()
+        .map(|b| (0..b.chapters.len()).map(|_| None).collect())
+        .collect();
+    for (w, obs) in work.iter().zip(fresh) {
+        slots[w.book][w.chapter] = Some(obs);
+    }
+    for (bi, book) in layout.iter().enumerate() {
+        cache.update_book(&book.slug, &stamped[bi], &(), |i| {
+            slots[bi][i].take().unwrap_or_else(|| {
+                let c = &book.chapters[i];
+                AdjacencySubstrate::map_chapter(
+                    &ChapterView {
+                        chapter: &c.chapter,
+                        texts: &texts[c.range.clone()],
+                    },
+                    &(),
+                    &(),
+                )
+            })
+        });
+    }
+    // Judge every pattern in the aggregate. Each is named by at least one
+    // retained candidate (a pattern is counted only where a candidate produced
+    // it), so this is exactly the key set that can emit — no wider.
+    let stats = cache.corpus_stats();
+    let verdicts: BTreeMap<AdjacencyKey, AdjacencyOutcome> = stats
+        .patterns
+        .keys()
+        .map(|p| (p.clone(), AdjacencySubstrate::judge(cfg, p, stats)))
+        .collect();
+    #[cfg(any(test, feature = "test-probes"))]
+    {
+        cache.judged = verdicts.len();
+    }
+    for book in layout {
+        if let Some(contrib) = cache.book_contribution(&book.slug) {
+            contrib.materialize(&book.slug, corpus, &verdicts, out);
+        }
+    }
+}
+
+/// `punct.adjacency-anomaly` findings for a whole corpus at a given config, via
+/// the observation substrate over a fresh transient cache — the single adjacency
+/// implementation, for tests and calibration callers. Findings are in the final
+/// stable order.
+pub fn adjacency_findings(corpus: &Corpus, cfg: &PunctuationAdjacencyConfig) -> Vec<Finding> {
+    let mut cache = crate::substrate::SubstrateCache::new();
+    let mut out = Vec::new();
+    drive_adjacency(true, &mut cache, corpus, cfg, &mut out);
+    // Total order (incl. `end`) so overlapping candidates that share a start
+    // (`..` and `..,`) are ordered deterministically — the retired rule's own
+    // final sort key.
+    out.sort_by_key(|f| (f.key_idx, f.range.start, f.range.end));
+    out
 }
 
 /// Count, per punctuation glyph, the number of positions where it **begins a
@@ -1973,11 +2288,13 @@ mod tests {
         }
         Corpus::try_from_parts(keys, texts).unwrap()
     }
-    fn rule(cfg: PunctuationAdjacencyConfig) -> PunctuationAdjacencyAnomaly {
-        PunctuationAdjacencyAnomaly { cfg }
+    /// The knobs, as the substrate's judge config. (`rule`/`default_rule` used
+    /// to build the retired `StatefulRule`; the config *is* the rule now.)
+    fn rule(cfg: PunctuationAdjacencyConfig) -> PunctuationAdjacencyConfig {
+        cfg
     }
-    fn default_rule() -> PunctuationAdjacencyAnomaly {
-        rule(PunctuationAdjacencyConfig::default())
+    fn default_rule() -> PunctuationAdjacencyConfig {
+        PunctuationAdjacencyConfig::default()
     }
     fn no_floor() -> PunctuationAdjacencyConfig {
         PunctuationAdjacencyConfig {
@@ -1985,9 +2302,10 @@ mod tests {
             ..Default::default()
         }
     }
-    fn run(corpus: &Corpus, r: &PunctuationAdjacencyAnomaly) -> Vec<Finding> {
-        let books = by_book(corpus);
-        r.judge(&r.reduce(&books, None, None).0, &books, None, None)
+    /// Every adjacency test runs the shipped substrate over a fresh transient
+    /// cache — the one adjacency implementation.
+    fn run(corpus: &Corpus, cfg: &PunctuationAdjacencyConfig) -> Vec<Finding> {
+        adjacency_findings(corpus, cfg)
     }
     /// The `N_start` count for one glyph over a verse (for structural asserts).
     fn n_start(text: &str, glyph: char) -> u64 {
@@ -2228,46 +2546,162 @@ mod tests {
         );
     }
 
+    /// A resident drive over one corpus, findings in the final stable order —
+    /// the incremental path, as `analyze` runs it.
+    fn resident(
+        cache: &mut crate::substrate::SubstrateCache<AdjacencySubstrate>,
+        corpus: &Corpus,
+        cfg: &PunctuationAdjacencyConfig,
+    ) -> Vec<Finding> {
+        let mut out = Vec::new();
+        drive_adjacency(true, cache, corpus, cfg, &mut out);
+        out.sort_by_key(|f| (f.key_idx, f.range.start, f.range.end));
+        out
+    }
+
+    /// Comparable rendering — key, span text, score, and all four arg counts, so
+    /// an equal-length-but-wrong result cannot pass.
+    fn render(corpus: &Corpus, f: &[Finding]) -> Vec<String> {
+        f.iter()
+            .map(|f| {
+                let a = match &f.args {
+                    Some(FindingArgs::AdjacencyEvidence {
+                        pattern,
+                        k,
+                        lead_n,
+                        books,
+                        corpus: c,
+                    }) => format!("{pattern}/{k}/{lead_n}/{books}/{c}"),
+                    _ => "-".to_string(),
+                };
+                format!(
+                    "{}|{}|{:?}|{a}",
+                    corpus.key(f.key_idx),
+                    f.range.slice(corpus.text(f.key_idx)),
+                    f.score
+                )
+            })
+            .collect()
+    }
+
     #[test]
-    fn incremental_scores_match_full_corpus_not_the_edited_book() {
-        // The point of aggregate-only state: judging the edited book alone
-        // (with the rest of the corpus in the merged prior) scores its `.,`
-        // against the *corpus-wide* period opportunities — identical to the full
-        // analysis, NOT the book-local rate a stateless project rule would give.
-        let r = default_rule();
+    fn incremental_scores_are_corpus_wide_not_book_local() {
+        // The point of the aggregate: an edit to EXO scores its `.,` against the
+        // CORPUS-wide period opportunities (mostly GEN's), not the book-local
+        // rate a stateless project rule would give. Driven residently, so the
+        // aggregate is the incrementally maintained one.
+        let cfg = default_rule();
         let gen_entries = periods_and_commas_entries(200, 0); // GEN: ~400 period starts
-        let exo_entries = vec![(1u16, "word., word".to_string())]; // one rare `.,`
-        let full = build_books(&[("GEN", gen_entries.clone()), ("EXO", exo_entries.clone())]);
-        let gen_only = book("GEN", &gen_entries);
-        let exo_only = book("EXO", &exo_entries);
+        let clean = vec![(1u16, "word word".to_string())];
+        let edited = vec![(1u16, "word., word".to_string())]; // one rare `.,`
+        let before = build_books(&[("GEN", gen_entries.clone()), ("EXO", clean)]);
+        let after = build_books(&[("GEN", gen_entries), ("EXO", edited)]);
 
-        let full_books = by_book(&full);
-        let full_score = r
-            .judge(
-                &r.reduce(&full_books, None, None).0,
-                &full_books,
-                None,
-                None,
-            )
-            .into_iter()
-            .find(|f| full.key(f.key_idx) == key_of("EXO", 1))
-            .unwrap()
-            .score;
+        let mut cache = crate::substrate::SubstrateCache::new();
+        let seeded = resident(&mut cache, &before, &cfg);
+        assert!(seeded.is_empty(), "{:?}", render(&before, &seeded));
 
-        // Incremental: GEN reduced earlier, EXO edited now.
-        let gen_books = by_book(&gen_only);
-        let exo_books = by_book(&exo_only);
-        let merged = r
-            .reduce(&gen_books, None, None)
-            .0
-            .merge(r.reduce(&exo_books, None, None).0);
-        let inc = r.judge(&merged, &exo_books, None, None);
-        assert_eq!(inc.len(), 1, "emits only for the target (EXO)");
-        assert_eq!(exo_only.key(inc[0].key_idx), key_of("EXO", 1));
+        cache.reset_probes();
+        let inc = resident(&mut cache, &after, &cfg);
         assert_eq!(
-            inc[0].score, full_score,
-            "incremental score is corpus-wide, not book-local"
+            cache.mapped, 1,
+            "only EXO's one changed chapter is remapped"
         );
+        assert_eq!(
+            cache.reduced, 1,
+            "an empty boundary state can never cascade past the changed chapter"
+        );
+        assert_eq!(inc.len(), 1, "{:?}", render(&after, &inc));
+        assert_eq!(after.key(inc[0].key_idx), key_of("EXO", 1));
+        // The whole claim: identical to a cold analysis of the same corpus,
+        // args and score included — a book-local rate would score far lower.
+        assert_eq!(render(&after, &inc), render(&after, &run(&after, &cfg)));
+        assert!(
+            inc[0].score.unwrap() > 0.9,
+            "corpus-wide rate keeps the lone `.,` anomalous"
+        );
+
+        // An unchanged re-drive maps and reduces nothing and says the same thing.
+        cache.reset_probes();
+        let again = resident(&mut cache, &after, &cfg);
+        assert_eq!((cache.mapped, cache.reduced), (0, 0));
+        assert_eq!(render(&after, &again), render(&after, &inc));
+    }
+
+    /// A judging-knob change maps and reduces ZERO chapters: every
+    /// `PunctuationAdjacencyConfig` field is read at judge, so the cached
+    /// observations and reductions are all still valid (plan §12.4).
+    #[test]
+    fn a_knob_change_maps_and_reduces_nothing() {
+        let vm = periods_and_commas(50, 5);
+        let mut cache = crate::substrate::SubstrateCache::new();
+        let strict = resident(&mut cache, &vm, &default_rule());
+        cache.reset_probes();
+        let loose = resident(&mut cache, &vm, &no_floor());
+        assert_eq!(
+            (cache.mapped, cache.reduced),
+            (0, 0),
+            "a knob is not an extraction input"
+        );
+        assert!(
+            loose.len() >= strict.len(),
+            "dropping the floor cannot lose findings"
+        );
+        assert_eq!(render(&vm, &loose), render(&vm, &run(&vm, &no_floor())));
+    }
+
+    /// Randomized edits: a resident cache's findings always equal a cold
+    /// analysis of the same corpus (plan §12.6).
+    #[test]
+    fn resident_adjacency_equals_cold_under_randomized_edits() {
+        const SHAPES: &[&str] = &[
+            "word, word",
+            "word,, word",
+            "word.. word",
+            "word ... word",
+            "word?! word",
+            "",
+            "word.,word",
+            "word; word",
+        ];
+        let books = ["GEN", "EXO", "LEV"];
+        let mut entries: Vec<(&str, Vec<(u16, String)>)> = books
+            .iter()
+            .map(|b| {
+                (
+                    *b,
+                    (1u16..=12)
+                        .map(|v| (v, SHAPES[(v as usize) % SHAPES.len()].to_string()))
+                        .collect(),
+                )
+            })
+            .collect();
+        let build = |e: &[(&str, Vec<(u16, String)>)]| {
+            build_books(
+                &e.iter()
+                    .map(|(b, v)| (*b, v.clone()))
+                    .collect::<Vec<_>>(),
+            )
+        };
+        let cfg = no_floor();
+        let mut cache = crate::substrate::SubstrateCache::new();
+        let _ = resident(&mut cache, &build(&entries), &cfg);
+        // A deterministic pseudo-random walk (no dev-dep on a RNG crate).
+        let mut state = 0x2545_F491_4F6C_DD1Du64;
+        for step in 0..24 {
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let bi = (state >> 33) as usize % entries.len();
+            let vi = (state >> 17) as usize % entries[bi].1.len();
+            let si = (state >> 5) as usize % SHAPES.len();
+            entries[bi].1[vi].1 = SHAPES[si].to_string();
+            let corpus = build(&entries);
+            let inc = resident(&mut cache, &corpus, &cfg);
+            assert_eq!(
+                render(&corpus, &inc),
+                render(&corpus, &run(&corpus, &cfg)),
+                "step {step}: resident result diverged from cold"
+            );
+        }
     }
 
     #[test]

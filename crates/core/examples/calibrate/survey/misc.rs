@@ -8,7 +8,7 @@ use ssc_core::config::{
 use ssc_core::rule::{ProjectRule, StatefulRule};
 use ssc_core::signals::bracket_balance::BracketBalance;
 use ssc_core::signals::lexical::{PunctOnlyToken, RepeatedCharacterRun};
-use ssc_core::signals::punctuation::PunctuationAdjacencyAnomaly;
+use ssc_core::signals::punctuation::adjacency_findings;
 use ssc_core::{
     BracketMeasure, Config, Corpus, Finding, FindingArgs, RuleId, analyze, analyze_with_config,
 };
@@ -781,16 +781,13 @@ pub(crate) fn bracket_calib(dir: &Path) {
 pub(crate) fn punct_calib(dir: &Path) {
     let target = load_corpus(dir);
     eprintln!("{} verses", target.len());
-    let rule = PunctuationAdjacencyAnomaly {
-        cfg: PunctuationAdjacencyConfig {
-            emit_score_min: 0.0,
-            ..Default::default()
-        },
+    let cfg = PunctuationAdjacencyConfig {
+        emit_score_min: 0.0,
+        ..Default::default()
     };
     let t0 = std::time::Instant::now();
-    let books = ssc_core::corpus::by_book(&target);
-    let findings = rule.judge(&rule.reduce(&books, None, None).0, &books, None, None);
-    eprintln!("punct reduce+judge: {:?}", t0.elapsed());
+    let findings = adjacency_findings(&target, &cfg);
+    eprintln!("punct map+reduce+judge: {:?}", t0.elapsed());
     report_scored("punct.adjacency-anomaly", &target, &findings);
 
     // How many the shipped default config surfaces (default-on rule).

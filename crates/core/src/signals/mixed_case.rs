@@ -227,6 +227,9 @@ impl ChapterShapeProfile {
         }
     }
 
+    /// Only the fleet probe and its tests need a chapter-width total; every
+    /// shipped total is taken after [`widen`](Self::widen).
+    #[cfg(any(test, feature = "bench-probes"))]
     fn total(self) -> u64 {
         u64::from(self.lower) + u64::from(self.title) + u64::from(self.allcaps)
             + u64::from(self.other)

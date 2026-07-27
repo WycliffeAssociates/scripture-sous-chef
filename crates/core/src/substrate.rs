@@ -52,6 +52,8 @@ use crate::diagnostics::RuleId;
 pub(crate) enum SubstrateId {
     /// `punct.spacing-anomaly`'s per-mark per-side attachment model.
     Spacing,
+    /// `punct.adjacency-anomaly`'s per-pattern / per-lead-glyph run counts.
+    Adjacency,
     /// `struct.duplicate-word`'s adjacent-pair sites.
     DuplicateWord,
     /// The shared casing model: per-word case tables + lowercase flag
@@ -69,6 +71,7 @@ impl SubstrateId {
     pub(crate) const ALL: &'static [SubstrateId] =
         &[
         SubstrateId::Spacing,
+        SubstrateId::Adjacency,
         SubstrateId::DuplicateWord,
         SubstrateId::Casing,
         SubstrateId::MixedCase,
@@ -711,6 +714,7 @@ impl<S: ObservationSubstrate> SubstrateCache<S> {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct ActiveSubstrates {
     pub(crate) spacing: bool,
+    pub(crate) adjacency: bool,
     pub(crate) duplicate_word: bool,
     pub(crate) casing: bool,
     pub(crate) mixed_case: bool,
@@ -723,6 +727,7 @@ impl ActiveSubstrates {
         let any = |rules: &[RuleId]| rules.iter().any(|&r| config.is_enabled(r));
         Self {
             spacing: any(spacing_consumers()),
+            adjacency: any(adjacency_consumers()),
             duplicate_word: any(duplicate_word_consumers()),
             casing: any(casing_consumers()),
             mixed_case: any(mixed_case_consumers()),
@@ -733,6 +738,7 @@ impl ActiveSubstrates {
     pub(crate) fn is_active(&self, id: SubstrateId) -> bool {
         match id {
             SubstrateId::Spacing => self.spacing,
+            SubstrateId::Adjacency => self.adjacency,
             SubstrateId::DuplicateWord => self.duplicate_word,
             SubstrateId::Casing => self.casing,
             SubstrateId::MixedCase => self.mixed_case,
@@ -745,6 +751,11 @@ impl ActiveSubstrates {
 /// added here and the completeness tests keep the registry honest.
 pub(crate) fn spacing_consumers() -> &'static [RuleId] {
     &[RuleId::PunctuationSpacingAnomaly]
+}
+
+/// The closed registry: the adjacency substrate's sole consumer.
+pub(crate) fn adjacency_consumers() -> &'static [RuleId] {
+    &[RuleId::PunctuationAdjacencyAnomaly]
 }
 
 /// The closed registry: the duplicate-word substrate's sole consumer.
@@ -772,6 +783,7 @@ pub(crate) fn mixed_case_consumers() -> &'static [RuleId] {
 pub(crate) fn consumers_of(id: SubstrateId) -> &'static [RuleId] {
     match id {
         SubstrateId::Spacing => spacing_consumers(),
+        SubstrateId::Adjacency => adjacency_consumers(),
         SubstrateId::DuplicateWord => duplicate_word_consumers(),
         SubstrateId::Casing => casing_consumers(),
         SubstrateId::MixedCase => mixed_case_consumers(),
@@ -789,6 +801,10 @@ mod tests {
         assert_eq!(
             <crate::signals::punctuation::SpacingSubstrate as ObservationSubstrate>::ID,
             SubstrateId::Spacing
+        );
+        assert_eq!(
+            <crate::signals::punctuation::AdjacencySubstrate as ObservationSubstrate>::ID,
+            SubstrateId::Adjacency
         );
         assert_eq!(
             <crate::signals::lexical::DuplicateWordSubstrate as ObservationSubstrate>::ID,
@@ -817,6 +833,7 @@ mod tests {
             // id is handled; assert every field reads through for its own id.
             let all_on = ActiveSubstrates {
                 spacing: true,
+                adjacency: true,
                 duplicate_word: true,
                 casing: true,
                 mixed_case: true,

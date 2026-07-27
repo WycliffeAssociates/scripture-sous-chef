@@ -365,7 +365,6 @@ fn transition(
     // cache after the stateful judge loop.
     let active = substrate::ActiveSubstrates::from_config(config);
     let plan = stream::WalkPlan {
-        adjacency: config.is_enabled(RuleId::PunctuationAdjacencyAnomaly),
         repeated_run: config.is_enabled(RuleId::RepeatedCharacterRun),
         punct_only: config.is_enabled(RuleId::PunctOnlyToken),
         mixed_script: config.is_enabled(RuleId::MixedScriptInToken),
@@ -672,34 +671,6 @@ fn transition(
     // ever count on walked books, so a clean book contributes nothing to them.
     // A book outside the `counted` scope contributes sites only, so the judge
     // phase stays site-driven for every supplied book (ADR 0044).
-    let mut adjacency_fresh = plan.adjacency.then(|| {
-        let mut pb = BTreeMap::new();
-        let mut st: BTreeMap<Box<str>, Cow<'_, [corpus::SiteAddr]>> = BTreeMap::new();
-        for (group, slot) in books.iter().zip(slots.iter_mut()) {
-            match slot {
-                BookProducts::Walked(o) => {
-                    if let Some((bc, s)) = o.adjacency.take() {
-                        if o.counted {
-                            pb.insert(Box::from(group.slug), bc);
-                        }
-                        st.insert(Box::from(group.slug), Cow::Owned(s));
-                    }
-                }
-                BookProducts::Clean(e) => {
-                    let e: &cache::BookEntry = e;
-                    if let Some(s) = e.adjacency.as_ref() {
-                        st.insert(Box::from(group.slug), Cow::Borrowed(s.as_slice()));
-                    }
-                }
-            }
-        }
-        (
-            RuleStats::PunctuationAdjacency(signals::punctuation::PunctuationAdjacencyStats {
-                per_book: pb,
-            }),
-            rule::RuleSites::PunctuationAdjacency(st),
-        )
-    });
     let mut repeated_fresh = plan.repeated_run.then(|| {
         let mut pb = BTreeMap::new();
         let mut st: BTreeMap<Box<str>, Cow<'_, [corpus::SiteAddr]>> = BTreeMap::new();
@@ -928,11 +899,6 @@ fn transition(
         // clone of the stats (the wire shape keeps one entry per rule id, as
         // before) and judges from the same site list.
         let (fresh, sites_ref): (RuleStats, &rule::RuleSites<'_>) = match id {
-            RuleId::PunctuationAdjacencyAnomaly => {
-                let (st, ss) = adjacency_fresh.take().expect("listener ran");
-                sites_slot = ss;
-                (st, &sites_slot)
-            }
             RuleId::RepeatedCharacterRun => {
                 let (st, ss) = repeated_fresh.take().expect("listener ran");
                 sites_slot = ss;
@@ -985,6 +951,13 @@ fn transition(
         &mut substrates.spacing,
         target,
         &config.punctuation_spacing,
+        &mut out,
+    );
+    signals::punctuation::drive_adjacency(
+        active.adjacency,
+        &mut substrates.adjacency,
+        target,
+        &config.punctuation_adjacency,
         &mut out,
     );
     signals::lexical::drive_duplicate_word(

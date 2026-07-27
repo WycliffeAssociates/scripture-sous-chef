@@ -38,7 +38,7 @@ use crate::corpus::{BookGroup, Books, Corpus, LocalKeyIdx};
 use crate::grapheme::{self, GSpan};
 use crate::rule::{self};
 use crate::signals::{
-    bracket_balance, lexical, mixed_normalization, proportionality, punctuation,
+    bracket_balance, lexical, mixed_normalization, proportionality,
     rare_glyph, script_mixing,
 };
 use crate::tape::{self, TapeEntry};
@@ -132,7 +132,6 @@ fn fold_letter_tokens<'t>(text: &'t str, tokens: &[Token], buf: &mut Vec<Option<
 /// verse's tokens as the shared [`TokenCache`] for the judge phase.
 #[derive(Clone, Copy, Default)]
 pub(crate) struct WalkPlan {
-    pub adjacency: bool,
     pub repeated_run: bool,
     pub punct_only: bool,
     pub mixed_script: bool,
@@ -147,7 +146,7 @@ impl WalkPlan {
     /// The products the counting listeners need.
     fn counting_needs(&self) -> Needs {
         let mut n = Needs::default();
-        if self.adjacency || self.punct_only {
+        if self.punct_only {
             n.tape = true;
         }
         if self.repeated_run {
@@ -167,7 +166,7 @@ impl WalkPlan {
     /// (anchor collection only — the site-free rules skip such books).
     fn anchor_needs(&self) -> Needs {
         let mut n = Needs::default();
-        if self.adjacency || self.punct_only {
+        if self.punct_only {
             n.tape = true;
         }
         if self.repeated_run {
@@ -219,10 +218,6 @@ pub(crate) struct BookOut {
     /// flag and be caught.
     #[cfg(any(test, feature = "test-probes"))]
     pub counting_accs_ran: bool,
-    pub adjacency: Option<(
-        punctuation::BookPunctuationAdjacency,
-        Vec<crate::corpus::SiteAddr>,
-    )>,
     pub repeated_run: Option<(
         lexical::BookRepeatedCharacterRun,
         Vec<crate::corpus::SiteAddr>,
@@ -328,9 +323,6 @@ fn walk_book(
     // tokens at all.
     let delegate_tokens = needs.tokens && book_prefers_delegation(group.texts);
 
-    let mut adjacency_acc = plan
-        .adjacency
-        .then(|| punctuation::AdjacencyAcc::new(count));
     let mut repeated_acc = plan
         .repeated_run
         .then(|| lexical::RepeatedRunAcc::new(count));
@@ -383,9 +375,6 @@ fn walk_book(
             folds: if needs.folds { &folds_buf } else { &[] },
         };
 
-        if let Some(a) = &mut adjacency_acc {
-            a.verse(&v);
-        }
         if let Some(a) = &mut repeated_acc {
             a.verse(&v);
         }
@@ -423,7 +412,6 @@ fn walk_book(
         counted: count,
         #[cfg(any(test, feature = "test-probes"))]
         counting_accs_ran,
-        adjacency: adjacency_acc.map(punctuation::AdjacencyAcc::finish),
         repeated_run: repeated_acc.map(lexical::RepeatedRunAcc::finish),
         punct_only: punct_only_acc.map(lexical::PunctOnlyAcc::finish),
         mixed_script: mixed_script_acc.map(script_mixing::MixedScriptAcc::finish),
