@@ -1935,10 +1935,11 @@ pub(crate) fn drive_spacing(
     cache: &mut crate::substrate::SubstrateCache<SpacingSubstrate>,
     corpus: &Corpus,
     cfg: &PunctuationSpacingConfig,
-    out: &mut Vec<Finding>,
+    lane: &mut crate::substrate::SubstrateLane,
 ) {
     use crate::substrate::{
         ChapterView, DrivePhase, DriveProbe, ObservationInputStamp, ObservationSubstrate,
+        SubstratePatch,
     };
     // Reset the per-analyze work probes up front so a disabled substrate reads as
     // zero work (not a stale count from a prior active analyze).
@@ -1946,6 +1947,16 @@ pub(crate) fn drive_spacing(
     cache.reset_probes();
     if !active {
         cache.clear();
+        // The partition must be dropped, not merely left unwritten: retained
+        // records would keep publishing for a disabled rule.
+        lane.patches.push(SubstratePatch {
+            substrate: crate::substrate::SubstrateId::Spacing,
+            rules: SPACING_CONSUMERS,
+            emitting: Vec::new(),
+            findings: Vec::new(),
+            dirty: Vec::new(),
+            all_dirty: true,
+        });
         return;
     }
     let mut probe = DriveProbe::new(crate::substrate::SubstrateId::Spacing);
@@ -2004,8 +2015,9 @@ pub(crate) fn drive_spacing(
         slots[w.book][w.chapter] = Some(obs);
     }
     probe.mark(DrivePhase::Map);
+    let mut stats_delta: std::collections::BTreeSet<char> = std::collections::BTreeSet::new();
     for (bi, book) in layout.iter().enumerate() {
-        cache.update_book(&book.slug, &stamped[bi], &(), |i| {
+        let delta = cache.update_book(&book.slug, &stamped[bi], &(), |i| {
             // Pre-mapped above. The planning pass asked the cache the same
             // question the driver asks, so this slot is filled whenever the driver
             // wants it; mapping in place is the correct answer if it ever is not.
@@ -2018,8 +2030,47 @@ pub(crate) fn drive_spacing(
                 )
             })
         });
+        stats_delta.extend(delta);
     }
     probe.mark(DrivePhase::Reduce);
+    // ── Aggregate half of the judge-dirty set. A mark whose corpus cells moved is
+    // judged differently at every site that names it, so every chapter naming one
+    // owes its records. Accumulated into `pending`, not consumed here: the move is
+    // already applied to the cache, so a retry after a failed attempt would see an
+    // empty stats-delta while the partition still described the previous input.
+    //
+    // A punctuation edit dirties the common marks and so most chapters — but an
+    // ordinary WORD edit moves no spacing cell at all, and that is the case this
+    // buys: the aggregate is untouched, every mark verdict stands, and only the
+    // edited chapter's own sites owe new records.
+    if !stats_delta.is_empty() {
+        let mut owed: Vec<(usize, usize)> = Vec::new();
+        for (bi, book) in layout.iter().enumerate() {
+            if let Some(contrib) = cache.book_contribution(&book.slug) {
+                for (ci, (_, sites)) in contrib.chapters.iter().enumerate() {
+                    if sites.iter().any(|s| stats_delta.contains(&s.mark)) {
+                        owed.push((bi, ci));
+                    }
+                }
+            }
+        }
+        for (bi, ci) in owed {
+            cache
+                .pending
+                .owe_chapter(&layout[bi].slug, &layout[bi].chapters[ci].chapter);
+        }
+    }
+    let emitting = vec![PUNCTUATION_SPACING_ANOMALY];
+    let (all_dirty, dirty) = cache.pending.plan(spacing_judging_fp(cfg), &emitting);
+    let dirty_by_book: Option<rustc_hash::FxHashMap<&str, std::collections::BTreeSet<&str>>> =
+        (!all_dirty).then(|| {
+            let mut m: rustc_hash::FxHashMap<&str, std::collections::BTreeSet<&str>> =
+                rustc_hash::FxHashMap::default();
+            for (slug, chapter) in &dirty {
+                m.entry(slug).or_default().insert(chapter);
+            }
+            m
+        });
     let floor = spacing_floor(cfg);
     let stats = cache.corpus_stats();
     // No key-discovery phase: spacing's judge key set IS the aggregate's key set
@@ -2035,12 +2086,43 @@ pub(crate) fn drive_spacing(
         cache.judged = verdicts.len();
     }
     probe.mark(DrivePhase::Judge);
+    let empty: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+    let mut findings: Vec<Finding> = Vec::new();
     for book in corpus.book_layout() {
+        let book_dirty = dirty_by_book
+            .as_ref()
+            .map(|m| m.get(&*book.slug).unwrap_or(&empty));
+        if book_dirty.is_some_and(std::collections::BTreeSet::is_empty) {
+            continue;
+        }
         if let Some(contrib) = cache.book_contribution(&book.slug) {
-            contrib.materialize(&book.chapters, &verdicts, floor, out);
+            contrib.materialize(&book.chapters, &verdicts, floor, book_dirty, &mut findings);
         }
     }
+    lane.patches.push(SubstratePatch {
+        substrate: crate::substrate::SubstrateId::Spacing,
+        rules: SPACING_CONSUMERS,
+        emitting,
+        findings,
+        dirty,
+        all_dirty,
+    });
     probe.mark(DrivePhase::Materialize);
+}
+
+/// The rules this substrate emits through — its complete consumer set.
+const SPACING_CONSUMERS: &[RuleId] = &[PUNCTUATION_SPACING_ANOMALY];
+
+/// This substrate's judging fingerprint — the committed partition's judging
+/// identity. Every field of [`PunctuationSpacingConfig`] must appear, and
+/// `spacing_judging_fp_moves_with_every_knob` pins that field-by-field: a knob
+/// missing here would retain a partition judged under its old value.
+fn spacing_judging_fp(cfg: &PunctuationSpacingConfig) -> u64 {
+    crate::substrate::judging_fp(&[
+        cfg.emit_score_min,
+        cfg.confidence_z,
+        cfg.minority_recurrence_k,
+    ])
 }
 
 /// `punct.spacing-anomaly` findings for a whole corpus at a given config, via
@@ -2051,8 +2133,9 @@ pub(crate) fn drive_spacing(
 /// returned them.
 pub fn spacing_findings(corpus: &Corpus, cfg: &PunctuationSpacingConfig) -> Vec<Finding> {
     let mut cache = crate::substrate::SubstrateCache::new();
-    let mut out = Vec::new();
-    drive_spacing(true, &mut cache, corpus, cfg, &mut out);
+    let mut lane = crate::substrate::SubstrateLane::default();
+    drive_spacing(true, &mut cache, corpus, cfg, &mut lane);
+    let mut out: Vec<Finding> = lane.patches.into_iter().flat_map(|p| p.findings).collect();
     out.sort_by_key(|f| (f.key_idx, f.range.start, f.range.end));
     out
 }
@@ -2064,13 +2147,13 @@ pub fn spacing_findings(corpus: &Corpus, cfg: &PunctuationSpacingConfig) -> Vec<
 pub(crate) fn spacing_corpus_cells(corpus: &Corpus) -> BTreeMap<char, [u64; SIDE_CELLS]> {
     let mut cache: crate::substrate::SubstrateCache<SpacingSubstrate> =
         crate::substrate::SubstrateCache::new();
-    let mut out = Vec::new();
+    let mut lane = crate::substrate::SubstrateLane::default();
     drive_spacing(
         true,
         &mut cache,
         corpus,
         &PunctuationSpacingConfig::default(),
-        &mut out,
+        &mut lane,
     );
     cache.corpus_stats().totals.clone()
 }
@@ -2082,11 +2165,19 @@ impl SpacingBookContribution {
     /// (the streaming-walk order), so the identical-span tie the final stable
     /// sort preserves is reproduced. Shares [`spacing_finding_for_site`] with the
     /// aggregate-only path, so the two cannot drift.
+    ///
+    /// `dirty` restricts emission to the chapters whose partition groups this call
+    /// replaces: `None` rewrites the whole partition, `Some(set)` emits only for
+    /// those chapter tokens and leaves every other chapter's committed records
+    /// standing (plan §6.4). The chapter walk itself is not skipped — the
+    /// cardinality assertion and the per-chapter token check are the alignment
+    /// proofs the emitted addresses rest on.
     pub(crate) fn materialize(
         &self,
         layout: &[crate::corpus::ChapterLayout],
         verdicts: &BTreeMap<char, MarkVerdict>,
         floor: f64,
+        dirty: Option<&std::collections::BTreeSet<&str>>,
         out: &mut Vec<Finding>,
     ) {
         // Positional zip is truncating: a missing or extra trailing chapter
@@ -2100,6 +2191,9 @@ impl SpacingBookContribution {
         );
         for ((token, sites), block) in self.chapters.iter().zip(layout) {
             let base = crate::substrate::chapter_base(block, token);
+            if dirty.is_some_and(|d| !d.contains(&**token)) {
+                continue;
+            }
             for s in sites {
                 if let Some(v) = verdicts.get(&s.mark)
                     && let Some(f) = spacing_finding_for_site(
@@ -2617,7 +2711,8 @@ mod tests {
         let before = build_books(&[("GEN", gen_entries.clone()), ("EXO", clean)]);
         let after = build_books(&[("GEN", gen_entries), ("EXO", edited)]);
 
-        let mut cache = crate::substrate::SubstrateCache::new();
+        let mut cache: crate::substrate::SubstrateCache<AdjacencySubstrate> =
+            crate::substrate::SubstrateCache::new();
         let seeded = resident(&mut cache, &before, &cfg);
         assert!(seeded.is_empty(), "{:?}", render(&before, &seeded));
 
@@ -2654,7 +2749,8 @@ mod tests {
     #[test]
     fn a_knob_change_maps_and_reduces_nothing() {
         let vm = periods_and_commas(50, 5);
-        let mut cache = crate::substrate::SubstrateCache::new();
+        let mut cache: crate::substrate::SubstrateCache<AdjacencySubstrate> =
+            crate::substrate::SubstrateCache::new();
         let strict = resident(&mut cache, &vm, &default_rule());
         cache.reset_probes();
         let loose = resident(&mut cache, &vm, &no_floor());
@@ -2704,7 +2800,8 @@ mod tests {
             )
         };
         let cfg = no_floor();
-        let mut cache = crate::substrate::SubstrateCache::new();
+        let mut cache: crate::substrate::SubstrateCache<AdjacencySubstrate> =
+            crate::substrate::SubstrateCache::new();
         let _ = resident(&mut cache, &build(&entries), &cfg);
         // A deterministic pseudo-random walk (no dev-dep on a RNG crate).
         let mut state = 0x2545_F491_4F6C_DD1Du64;
@@ -3379,19 +3476,15 @@ mod tests {
         // EXO's rare `word,word` on the SAME cache, and the EXO finding is scored
         // against the corpus-wide comma opportunities — byte-identical to a cold
         // analysis of the whole corpus.
-        use crate::substrate::SubstrateCache;
         let cfg = sp_default();
         let gen_entries = commas_entries(100, 0);
         let exo_entries = vec![(1u16, "word,word".to_string())];
         let gen_only = book("GEN", &gen_entries);
         let full = build_books(&[("GEN", gen_entries), ("EXO", exo_entries)]);
 
-        let mut cache: SubstrateCache<SpacingSubstrate> = SubstrateCache::new();
-        let mut seed = Vec::new();
-        drive_spacing(true, &mut cache, &gen_only, &cfg, &mut seed);
-        let mut inc = Vec::new();
-        drive_spacing(true, &mut cache, &full, &cfg, &mut inc);
-        inc.sort_by_key(|f| (f.key_idx, f.range.start, f.range.end));
+        let mut cache = Resident::new();
+        let _seed = cache.analyze(true, &gen_only, &cfg);
+        let inc = cache.analyze(true, &full, &cfg);
 
         let cold = spacing_findings(&full, &cfg);
         assert_eq!(inc, cold, "resident incremental == cold full analysis");
@@ -3407,7 +3500,6 @@ mod tests {
         // `word,word` anomalous; dropping GEN from the substrate cache removes
         // that convention, so EXO no longer fires — the corpus aggregate is
         // maintained through `SubstrateCache::remove_book`.
-        use crate::substrate::SubstrateCache;
         let cfg = sp_default();
         let gen_entries = commas_entries(100, 0);
         let exo_entries = vec![
@@ -3417,9 +3509,8 @@ mod tests {
         let exo = book("EXO", &exo_entries);
         let full = build_books(&[("GEN", gen_entries), ("EXO", exo_entries)]);
 
-        let mut cache: SubstrateCache<SpacingSubstrate> = SubstrateCache::new();
-        let mut before = Vec::new();
-        drive_spacing(true, &mut cache, &full, &cfg, &mut before);
+        let mut cache = Resident::new();
+        let before = cache.analyze(true, &full, &cfg);
         assert!(
             before.iter().any(|f| full.key(f.key_idx) == key_of("EXO", 1)),
             "EXO's attached comma fires against GEN's spaced-comma convention"
@@ -3427,8 +3518,7 @@ mod tests {
 
         cache.remove_book("GEN");
         // Re-judge EXO alone against the now GEN-free aggregate.
-        let mut after = Vec::new();
-        drive_spacing(true, &mut cache, &exo, &cfg, &mut after);
+        let after = cache.analyze(true, &exo, &cfg);
         assert!(
             after.iter().all(|f| exo.key(f.key_idx) != key_of("EXO", 1)),
             "with GEN's convention gone, EXO's comma no longer surfaces"
@@ -3477,7 +3567,7 @@ mod tests {
         let contrib = contribution_of("GEN", &[("1", &["a . b"]), ("2", &["c . d"])]);
         let book = &corpus.book_layout()[0];
         let mut out = Vec::new();
-        contrib.materialize(&book.chapters, &BTreeMap::new(), 0.0, &mut out);
+        contrib.materialize(&book.chapters, &BTreeMap::new(), 0.0, None, &mut out);
     }
 
     fn contribution_of(
@@ -3544,14 +3634,59 @@ mod tests {
     /// incremental path the transition drives (map only changed chapters,
     /// whole-book carry-reduce only a changed book), in final stable order.
     fn resident_findings(
-        cache: &mut crate::substrate::SubstrateCache<SpacingSubstrate>,
+        r: &mut Resident,
         corpus: &Corpus,
         cfg: &PunctuationSpacingConfig,
     ) -> Vec<Finding> {
-        let mut out = Vec::new();
-        drive_spacing(true, cache, corpus, cfg, &mut out);
-        out.sort_by_key(|f| (f.key_idx, f.range.start, f.range.end));
-        out
+        r.analyze(true, corpus, cfg)
+    }
+
+    /// The resident state one isolated spacing drive needs: its own cache plus the
+    /// finding partition its patches commit into. The drive publishes a PATCH, not
+    /// a complete finding set, so the complete answer only exists in the partition
+    /// — a helper that read the patch alone would test the delta, not the result.
+    struct Resident {
+        cache: crate::substrate::SubstrateCache<SpacingSubstrate>,
+        findings: crate::cache::FindingSection,
+    }
+
+    impl Resident {
+        fn new() -> Self {
+            Resident {
+                cache: crate::substrate::SubstrateCache::new(),
+                findings: crate::cache::FindingSection::standalone(),
+            }
+        }
+
+        /// Remove a book from every half of the resident state, as
+        /// `AnalysisCache::remove_book` does.
+        fn remove_book(&mut self, slug: &str) {
+            self.cache.remove_book(slug);
+            self.findings.remove_book(slug);
+        }
+
+        fn analyze(
+            &mut self,
+            active: bool,
+            corpus: &Corpus,
+            cfg: &PunctuationSpacingConfig,
+        ) -> Vec<Finding> {
+            let mut lane = crate::substrate::SubstrateLane::default();
+            drive_spacing(active, &mut self.cache, corpus, cfg, &mut lane);
+            let present: std::collections::BTreeSet<(&str, &str)> = corpus
+                .book_layout()
+                .iter()
+                .flat_map(|b| b.chapters.iter().map(|c| (&*b.slug, &*c.chapter)))
+                .collect();
+            self.findings
+                .commit_substrates(&lane, corpus, Some(&present));
+            for _ in &lane.patches {
+                self.cache.pending.promote();
+            }
+            let mut out = self.findings.assemble(corpus);
+            out.sort_by_key(|f| (f.key_idx, f.range.start, f.range.end));
+            out
+        }
     }
 
     /// The spacing substrate is byte-identical cold vs. incremental: a resident
@@ -3562,7 +3697,6 @@ mod tests {
     #[test]
     fn spacing_substrate_incremental_equals_cold_under_edits() {
         use crate::corpus::{BookBlock, ChapterBlock};
-        use crate::substrate::SubstrateCache;
         let cfg = sp_no_floor(); // widest finding set surfaces every holding pool
         let mut corpus = multi(&[
             ("GEN 1:1", "In the beginning, God created the heavens."),
@@ -3573,7 +3707,7 @@ mod tests {
             ("EXO 1:1", "Now these are the names, of the sons,"),
             ("EXO 1:2", "who came into Egypt,every man and his household."),
         ]);
-        let mut cache: SubstrateCache<SpacingSubstrate> = SubstrateCache::new();
+        let mut cache = Resident::new();
         assert_eq!(
             resident_findings(&mut cache, &corpus, &cfg),
             spacing_findings(&corpus, &cfg),
@@ -3651,7 +3785,6 @@ mod tests {
     #[test]
     fn spacing_substrate_work_probes_show_exact_work() {
         use crate::corpus::ChapterBlock;
-        use crate::substrate::SubstrateCache;
         let mut corpus = multi(&[
             ("GEN 1:1", "In the beginning, God created,the heavens."),
             ("GEN 1:2", "The earth was formless, and void, and dark,"),
@@ -3659,28 +3792,25 @@ mod tests {
             ("EXO 1:1", "Now these are the names, of the sons,"),
         ]); // GEN: chapters 1 (2 verses) + 2 (1 verse); EXO: chapter 1 — 3 chapters
         let cfg = sp_no_floor();
-        let mut cache: SubstrateCache<SpacingSubstrate> = SubstrateCache::new();
+        let mut cache = Resident::new();
 
         // Cold: every chapter mapped and reduced.
-        let mut out = Vec::new();
-        drive_spacing(true, &mut cache, &corpus, &cfg, &mut out);
-        assert_eq!(cache.mapped, 3, "cold maps every chapter");
-        assert_eq!(cache.reduced, 3, "cold reduces every chapter");
-        assert!(cache.judged >= 1, "cold judges the marks present");
+        let _out = cache.analyze(true, &corpus, &cfg);
+        assert_eq!(cache.cache.mapped, 3, "cold maps every chapter");
+        assert_eq!(cache.cache.reduced, 3, "cold reduces every chapter");
+        assert!(cache.cache.judged >= 1, "cold judges the marks present");
 
         // Judging-knob change (same corpus, different floor): zero map/reduce.
-        let mut out2 = Vec::new();
-        drive_spacing(true, &mut cache, &corpus, &sp_default(), &mut out2);
-        assert_eq!(cache.mapped, 0, "a knob change maps zero chapters");
-        assert_eq!(cache.reduced, 0, "a knob change reduces zero chapters");
-        assert!(cache.judged >= 1, "a knob change still re-judges spacing");
+        let _out2 = cache.analyze(true, &corpus, &sp_default());
+        assert_eq!(cache.cache.mapped, 0, "a knob change maps zero chapters");
+        assert_eq!(cache.cache.reduced, 0, "a knob change reduces zero chapters");
+        assert!(cache.cache.judged >= 1, "a knob change still re-judges spacing");
 
         // Edit-then-undo before analyze: the final corpus equals the cached one,
         // so re-analyze maps/reduces nothing.
-        let mut out3 = Vec::new();
-        drive_spacing(true, &mut cache, &corpus, &cfg, &mut out3);
-        assert_eq!(cache.mapped, 0, "an unchanged re-analyze maps zero chapters");
-        assert_eq!(cache.reduced, 0, "an unchanged re-analyze reduces zero chapters");
+        let _out3 = cache.analyze(true, &corpus, &cfg);
+        assert_eq!(cache.cache.mapped, 0, "an unchanged re-analyze maps zero chapters");
+        assert_eq!(cache.cache.reduced, 0, "an unchanged re-analyze reduces zero chapters");
 
         // Content edit to GEN chapter 2: maps ONLY that chapter, re-reduces ONLY
         // GEN's chapters (its owning book); EXO is untouched.
@@ -3692,11 +3822,10 @@ mod tests {
                 texts: vec![", and God saw the light,that it was good,".into()],
             })
             .unwrap();
-        let mut out4 = Vec::new();
-        drive_spacing(true, &mut cache, &corpus, &cfg, &mut out4);
-        assert_eq!(cache.mapped, 1, "a one-chapter edit maps exactly that chapter");
+        let _out4 = cache.analyze(true, &corpus, &cfg);
+        assert_eq!(cache.cache.mapped, 1, "a one-chapter edit maps exactly that chapter");
         assert_eq!(
-            cache.reduced, 2,
+            cache.cache.reduced, 2,
             "it re-reduces only the owning book's chapters (GEN has 2), not EXO"
         );
     }
@@ -3706,40 +3835,214 @@ mod tests {
     /// spacing substrate (plan §7.2 rule toggles / §12.4).
     #[test]
     fn spacing_substrate_toggle_drops_and_rebuilds() {
-        use crate::substrate::SubstrateCache;
         let corpus = multi(&[
             ("GEN 1:1", "In the beginning, God created,the heavens."),
             ("GEN 2:1", ", and God said, Let there be light,"),
         ]);
         let cfg = sp_no_floor();
-        let mut cache: SubstrateCache<SpacingSubstrate> = SubstrateCache::new();
-        let mut out = Vec::new();
-        drive_spacing(true, &mut cache, &corpus, &cfg, &mut out);
-        assert_eq!(cache.mapped, 2, "cold builds every chapter");
-        assert!(cache.book_contribution("GEN").is_some());
+        let mut cache = Resident::new();
+        let _out = cache.analyze(true, &corpus, &cfg);
+        assert_eq!(cache.cache.mapped, 2, "cold builds every chapter");
+        assert!(cache.cache.book_contribution("GEN").is_some());
 
         // Disable: the substrate drops its products.
-        let mut off = Vec::new();
-        drive_spacing(false, &mut cache, &corpus, &cfg, &mut off);
+        let off = cache.analyze(false, &corpus, &cfg);
         assert!(off.is_empty(), "disabled substrate emits nothing");
         assert!(
-            cache.book_contribution("GEN").is_none(),
+            cache.cache.book_contribution("GEN").is_none(),
             "disabling drops the substrate's cached products"
         );
         // Edit while disabled: still no spacing work.
-        let mut off2 = Vec::new();
-        drive_spacing(false, &mut cache, &corpus, &cfg, &mut off2);
+        let _off2 = cache.analyze(false, &corpus, &cfg);
         assert_eq!(
-            (cache.mapped, cache.reduced, cache.judged),
+            (cache.cache.mapped, cache.cache.reduced, cache.cache.judged),
             (0, 0, 0),
             "an edit while spacing is disabled does no spacing work"
         );
 
         // Re-enable: a cold rebuild of the substrate.
-        let mut on = Vec::new();
-        drive_spacing(true, &mut cache, &corpus, &cfg, &mut on);
-        assert_eq!(cache.mapped, 2, "re-enabling rebuilds the substrate");
+        let on = cache.analyze(true, &corpus, &cfg);
+        assert_eq!(cache.cache.mapped, 2, "re-enabling rebuilds the substrate");
         assert_eq!(on, spacing_findings(&corpus, &cfg), "rebuild equals cold");
+    }
+
+    /// Every knob of [`PunctuationSpacingConfig`] must move the judging
+    /// fingerprint. A knob missing from `spacing_judging_fp` would let a retained
+    /// partition survive a change to it.
+    #[test]
+    fn spacing_judging_fp_moves_with_every_knob() {
+        let base = PunctuationSpacingConfig::default();
+        let mutants: [(&str, PunctuationSpacingConfig); 3] = [
+            (
+                "emit_score_min",
+                PunctuationSpacingConfig {
+                    emit_score_min: base.emit_score_min + 0.125,
+                    ..base
+                },
+            ),
+            (
+                "confidence_z",
+                PunctuationSpacingConfig {
+                    confidence_z: base.confidence_z + 0.5,
+                    ..base
+                },
+            ),
+            (
+                "minority_recurrence_k",
+                PunctuationSpacingConfig {
+                    minority_recurrence_k: base.minority_recurrence_k + 1.0,
+                    ..base
+                },
+            ),
+        ];
+        for (knob, mutant) in mutants {
+            assert_ne!(
+                spacing_judging_fp(&base),
+                spacing_judging_fp(&mutant),
+                "{knob} does not reach the judging fingerprint"
+            );
+        }
+        assert_eq!(
+            spacing_judging_fp(&base),
+            spacing_judging_fp(&PunctuationSpacingConfig::default())
+        );
+    }
+
+    /// Plan §12.4's "equal aggregate with changed ordered sites still patches
+    /// partition records", end-to-end through the resident partition.
+    ///
+    /// `spacing_stats_delta_is_exact_when_sites_move_but_counts_do_not` proves the
+    /// aggregate half in isolation: swapping two verses leaves every per-mark cell
+    /// equal, so the stats-delta is EMPTY. This is the consequence — with the
+    /// stats-delta empty, only the site-delta can bring the moved spans to the
+    /// partition, and a full rebuild would mask a patch path that missed them.
+    #[test]
+    fn an_equal_aggregate_with_moved_sites_still_patches_the_partition() {
+        // The real floor, so only the RARE attached comma fires — the anomaly is
+        // then one identifiable site whose address the swap moves.
+        let cfg = sp_default();
+        // GEN's convention makes EXO's attached comma anomalous; the anomaly lives
+        // in a verse the edit MOVES within its chapter.
+        let build = |first: &str, second: &str| {
+            build_books(&[
+                ("GEN", commas_entries(60, 0)),
+                (
+                    "EXO",
+                    vec![(1u16, first.to_string()), (2u16, second.to_string())],
+                ),
+            ])
+        };
+        let before = build("alpha, beta,", "gamma,delta,");
+        let after = build("gamma,delta,", "alpha, beta,");
+
+        let mut cache = Resident::new();
+        let first = cache.analyze(true, &before, &cfg);
+        let first_keys: Vec<String> = first
+            .iter()
+            .filter(|f| before.key(f.key_idx).starts_with("EXO"))
+            .map(|f| before.key(f.key_idx).to_string())
+            .collect();
+        assert!(!first_keys.is_empty(), "the fixture must emit in EXO");
+        let cells = cache.cache.corpus_stats().totals.clone();
+
+        cache.cache.reset_probes();
+        let patched = cache.analyze(true, &after, &cfg);
+        // The precondition this witness rests on: the aggregate did NOT move, so
+        // the stats-delta was empty and the site-delta is the only thing that could
+        // have dirtied a chapter.
+        assert_eq!(
+            cache.cache.corpus_stats().totals,
+            cells,
+            "the fixture must leave every per-mark cell equal"
+        );
+        let after_keys: Vec<String> = patched
+            .iter()
+            .filter(|f| after.key(f.key_idx).starts_with("EXO"))
+            .map(|f| after.key(f.key_idx).to_string())
+            .collect();
+        assert_ne!(
+            first_keys, after_keys,
+            "the fixture must actually move the anomalous verse"
+        );
+        assert_eq!(
+            patched,
+            spacing_findings(&after, &cfg),
+            "patched partition must equal a cold rebuild"
+        );
+    }
+
+    /// Patch-equals-rebuild across a mutation script: an in-place edit, a verse
+    /// insertion, a verse deletion, a new chapter, a new book, and an
+    /// edit-then-undo. Spacing carries a pending seam mark across chapter
+    /// boundaries, so each step also exercises a site-delta wider than the edit.
+    #[test]
+    fn every_patched_step_equals_a_cold_rebuild() {
+        let cfg = sp_no_floor();
+        // (slug, chapter, verse, text)
+        let mut rows: Vec<(&str, u16, u16, String)> = Vec::new();
+        for ch in 1..=3u16 {
+            for v in 1..=4u16 {
+                rows.push(("GEN", ch, v, "alpha, beta, gamma,".to_string()));
+            }
+        }
+        rows.push(("EXO", 1, 1, "delta,epsilon,".to_string()));
+        let build = |rows: &[(&str, u16, u16, String)]| {
+            Corpus::try_from_parts(
+                rows.iter()
+                    .map(|(s, ch, v, _)| format!("{s} {ch}:{v}"))
+                    .collect(),
+                rows.iter().map(|(_, _, _, t)| t.clone()).collect(),
+            )
+            .unwrap()
+        };
+
+        let mut r = Resident::new();
+        let step = |r: &mut Resident, rows: &[(&str, u16, u16, String)], what: &str| {
+            let corpus = build(rows);
+            let patched = r.analyze(true, &corpus, &cfg);
+            assert_eq!(
+                patched,
+                spacing_findings(&corpus, &cfg),
+                "{what}: patched partition diverged from a cold rebuild"
+            );
+        };
+
+        step(&mut r, &rows, "cold seed");
+
+        // 1. a WORD-only edit: no spacing cell moves, so the stats-delta is empty
+        //    and only this chapter's own sites are dirty. This is the case the
+        //    conversion buys.
+        rows[0].3 = "alphaX, beta, gamma,".to_string();
+        step(&mut r, &rows, "word-only edit leaves the aggregate still");
+
+        // 2. a punctuation edit: the aggregate moves, and every chapter naming the
+        //    moved mark owes its records.
+        rows[1].3 = "alpha,beta, gamma,".to_string();
+        step(&mut r, &rows, "punctuation edit moves the aggregate");
+
+        // 3. a verse-final mark, which defers its right seam across the verse
+        //    boundary — the carry the site-delta has to catch.
+        rows[3].3 = "alpha, beta, gamma,".to_string();
+        rows.insert(4, ("GEN", 2, 0, "omega,".to_string()));
+        step(&mut r, &rows, "verse insertion shifts later KeyIdxs");
+
+        // 4. delete a verse.
+        rows.remove(4);
+        step(&mut r, &rows, "verse deletion");
+
+        // 5. a new chapter, entered from chapter 3's trailing state.
+        rows.insert(12, ("GEN", 4, 1, "zeta,eta,".to_string()));
+        step(&mut r, &rows, "new chapter inherits the carry");
+
+        // 6. a new book — a book this substrate has never folded.
+        rows.push(("LEV", 1, 1, "theta,iota,".to_string()));
+        step(&mut r, &rows, "new book");
+
+        // 7. edit then undo.
+        let undone = rows.clone();
+        rows[0].3 = "alpha ,beta, gamma,".to_string();
+        step(&mut r, &rows, "edit");
+        step(&mut r, &undone, "undo");
     }
 
     /// `replace_book_in_corpus_stats` returns EXACT stats-delta keys: replacing a
@@ -3969,7 +4272,6 @@ mod tests {
     #[test]
     fn editing_the_resolving_chapter_keeps_the_owners_cross_seam_cell() {
         use crate::corpus::ChapterBlock;
-        use crate::substrate::SubstrateCache;
         // GEN 1:2 ends with a trailing comma whose right neighbour lives in GEN 2
         // — a pending seam owned by chapter 1 and resolved by chapter 2.
         let mut corpus = multi(&[
@@ -3979,10 +4281,10 @@ mod tests {
             ("GEN 3:1", "and the day ended"),
         ]);
         let cfg = sp_no_floor();
-        let mut cache: SubstrateCache<SpacingSubstrate> = SubstrateCache::new();
+        let mut cache = Resident::new();
         let cold = resident_findings(&mut cache, &corpus, &cfg);
         assert_eq!(
-            cache.corpus_stats().totals,
+            cache.cache.corpus_stats().totals,
             batch_corpus_cells(&corpus),
             "cold cells equal the independent batch walk"
         );
@@ -4000,11 +4302,11 @@ mod tests {
                 texts: vec!["40 days it came to be".into()],
             })
             .unwrap();
-        cache.reset_probes();
+        cache.cache.reset_probes();
         let warm = resident_findings(&mut cache, &corpus, &cfg);
-        assert_eq!(cache.mapped, 1, "only the edited chapter is re-mapped");
+        assert_eq!(cache.cache.mapped, 1, "only the edited chapter is re-mapped");
         assert_eq!(
-            cache.corpus_stats().totals,
+            cache.cache.corpus_stats().totals,
             batch_corpus_cells(&corpus),
             "the owning chapter keeps exactly one cross-seam resolution"
         );

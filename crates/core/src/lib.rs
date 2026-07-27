@@ -811,12 +811,17 @@ fn transition(
     // reduction (maps/reduces zero) and re-judges from the cached corpus
     // aggregate. A disabled substrate (no active consumer) drops its products so
     // edits while it is inactive do no work for it.
+    // The converted substrates' patches (plan §6.4). They never enter `out`:
+    // their records go straight to their own partitions, and only after the judge
+    // boundary — so a failed attempt publishes nothing and leaves the previous
+    // partitions intact.
+    let mut substrate_lane = substrate::SubstrateLane::default();
     signals::punctuation::drive_spacing(
         active.spacing,
         &mut substrates.spacing,
         target,
         &config.punctuation_spacing,
-        &mut out,
+        &mut substrate_lane,
     );
     signals::punctuation::drive_adjacency(
         active.adjacency,
@@ -880,11 +885,6 @@ fn transition(
         target,
         &mut out,
     );
-    // The converted substrates' patches (plan §6.4). They never enter `out`:
-    // their records go straight to their own partitions, and only after the judge
-    // boundary — so a failed attempt publishes nothing and leaves the previous
-    // partitions intact.
-    let mut substrate_lane = substrate::SubstrateLane::default();
     signals::mixed_case::drive_mixed_case(
         active.mixed_case,
         signals::mixed_case::MixedCaseState {

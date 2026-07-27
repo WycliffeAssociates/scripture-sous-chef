@@ -3621,7 +3621,7 @@ mod tests {
         };
 
         let mut r = Resident::new();
-        let mut step = |r: &mut Resident, rows: &[(u16, u16, String)], what: &str| {
+        let step = |r: &mut Resident, rows: &[(u16, u16, String)], what: &str| {
             let corpus = build(rows);
             let patched = r.analyze(&symbols, &corpus, &c);
             assert_eq!(

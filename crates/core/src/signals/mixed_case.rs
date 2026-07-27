@@ -1674,7 +1674,7 @@ mod tests {
 
         let mut r = Resident::new();
         let mut rows = base.clone();
-        let mut step = |r: &mut Resident, rows: &[(u16, u16, String)], what: &str| {
+        let step = |r: &mut Resident, rows: &[(u16, u16, String)], what: &str| {
             let corpus = build(rows);
             let patched = r.analyze(&symbols, &corpus, &knobs);
             assert_eq!(
