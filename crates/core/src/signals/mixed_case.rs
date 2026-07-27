@@ -693,10 +693,19 @@ impl MixedCaseBookContribution {
     /// Emit this book's findings: one per retained OtherMixed occurrence whose
     /// word type survived judging. `verdicts` is resolved once per analyze for
     /// every word any site names, so this is a hash probe per site.
+    ///
+    /// `dirty` restricts emission to the chapters whose partition groups this call
+    /// replaces: `None` rewrites the whole partition, `Some(set)` emits only for
+    /// those chapter tokens and leaves every other chapter's committed records
+    /// standing (plan §6.4). The chapter walk itself is not skipped — the
+    /// contribution/layout cardinality assertion and the per-chapter token check
+    /// are alignment proofs, and a filtered walk that skipped them would stop
+    /// proving the pairing it emits addresses against.
     fn materialize(
         &self,
         layout: &[crate::corpus::ChapterLayout],
         verdicts: &FxHashMap<WordSym, (Arc<str>, MixedCaseOutcome)>,
+        dirty: Option<&std::collections::BTreeSet<&str>>,
         out: &mut Vec<Finding>,
     ) {
         // Positional zip is truncating: a missing or extra trailing chapter
@@ -710,6 +719,9 @@ impl MixedCaseBookContribution {
         );
         for (chapter, block) in self.chapters.iter().zip(layout) {
             let base = crate::substrate::chapter_base(block, &chapter.token);
+            if dirty.is_some_and(|d| !d.contains(&*chapter.token)) {
+                continue;
+            }
             for site in chapter.words.sites.iter() {
                 let Some((word, outcome)) = verdicts.get(&site.word) else {
                     continue;
@@ -753,26 +765,55 @@ struct MixedCaseMapWork<'a> {
     view: crate::substrate::ChapterView<'a>,
 }
 
+/// The rules this substrate emits through — its complete consumer set, used to
+/// drop the partition of a consumer that is off.
+const CONSUMERS: &[RuleId] = &[MIXED_CASE_WORD];
+
+/// This substrate's judging fingerprint. Every field of [`MixedCaseConfig`]
+/// appears: a knob missing here would retain a partition judged under its old
+/// value (`mixed_case_judging_fp_moves_with_every_knob` holds this).
+fn judging_fp(cfg: &MixedCaseConfig) -> u64 {
+    crate::substrate::judging_fp(&[cfg.emit_score_min, cfg.recurrence_k, cfg.confidence_z])
+}
+
 /// Drive the `case.mixed-case-word` observation substrate for one analysis: map
 /// the dirty chapters through the ordered chapter-map seam, reduce (the
-/// identity), judge exactly the word types its retained sites name, and
-/// materialize. When inactive, drop the cached products so an edit while it is
-/// disabled does no work for it.
+/// identity), judge exactly the word types its retained sites name, and patch its
+/// resident partition. When inactive, drop the cached products so an edit while it
+/// is disabled does no work for it.
+///
+/// The delta this drive consumes is the union of two independent sets (plan §6.2):
+/// the chapters whose ordered sites moved (accumulated by `update_book`), and the
+/// chapters naming a word whose corpus aggregate moved (this substrate's exact
+/// stats-delta, merge-joined out of `replace_book_in_corpus_stats`). Equal counts
+/// are never taken as proof of equal sites: the two sets are unioned, never
+/// substituted for one another.
 pub(crate) fn drive_mixed_case(
     active: bool,
     state: MixedCaseState<'_>,
     corpus: &Corpus,
     cfg: &MixedCaseConfig,
-    out: &mut Vec<Finding>,
+    lane: &mut crate::substrate::SubstrateLane,
 ) {
     use crate::substrate::{
         ChapterView, DrivePhase, DriveProbe, ObservationInputStamp, ObservationSubstrate,
+        SubstratePatch,
     };
     let MixedCaseState { cache, symbols } = state;
     #[cfg(any(test, feature = "test-probes"))]
     cache.reset_probes();
     if !active {
         cache.clear();
+        // The partition must be dropped, not merely left unwritten: retained
+        // records would keep publishing for a disabled rule.
+        lane.patches.push(SubstratePatch {
+            substrate: crate::substrate::SubstrateId::MixedCase,
+            rules: CONSUMERS,
+            emitting: Vec::new(),
+            findings: Vec::new(),
+            dirty: Vec::new(),
+            all_dirty: true,
+        });
         return;
     }
     let mut probe = DriveProbe::new(crate::substrate::SubstrateId::MixedCase);
@@ -825,8 +866,10 @@ pub(crate) fn drive_mixed_case(
         slots[w.book][w.chapter] = Some(obs);
     }
     probe.mark(DrivePhase::Map);
+    let mut stats_delta: std::collections::BTreeSet<MixedCaseKey> =
+        std::collections::BTreeSet::new();
     for (bi, book) in layout.iter().enumerate() {
-        cache.update_book(&book.slug, &stamped[bi], symbols, |i| {
+        let delta = cache.update_book(&book.slug, &stamped[bi], symbols, |i| {
             slots[bi][i].take().unwrap_or_else(|| {
                 let c = &book.chapters[i];
                 MixedCaseSubstrate::map_chapter(
@@ -836,16 +879,79 @@ pub(crate) fn drive_mixed_case(
                 )
             })
         });
+        stats_delta.extend(delta);
     }
 
     probe.mark(DrivePhase::Reduce);
-    // The judge key set is exactly the word types the retained sites name — the
-    // only words that could ever emit. Collected before judging so each word type
-    // is judged once however many occurrences it has.
+    // ── Aggregate half of the judge-dirty set. A word whose corpus sum moved is
+    // judged differently everywhere it occurs, so every chapter naming one owes
+    // its records. The delta words are turned back into symbols through the
+    // interner — every one of them came from it, so this resolves existing
+    // symbols and cannot grow the table — which makes the site scan an integer
+    // set probe instead of a per-site string resolve.
+    //
+    // Accumulated into `pending`, not consumed here: the aggregate move is
+    // already applied to the cache by `update_book`, so a retry after a failed
+    // attempt would see an empty stats-delta while the partition still described
+    // the previous input.
+    if !stats_delta.is_empty() {
+        let delta_syms: FxHashSet<WordSym> = symbols
+            .intern_all(stats_delta.iter().map(|w| w.to_string()).collect())
+            .into_iter()
+            .collect();
+        // Positions, not borrowed tokens: the tokens live in the contribution, and
+        // `owe_chapter` needs the cache mutably.
+        let mut owed: Vec<(usize, usize)> = Vec::new();
+        for (bi, book) in layout.iter().enumerate() {
+            if let Some(contrib) = cache.book_contribution(&book.slug) {
+                for (ci, chapter) in contrib.chapters.iter().enumerate() {
+                    if chapter
+                        .words
+                        .sites
+                        .iter()
+                        .any(|site| delta_syms.contains(&site.word))
+                    {
+                        owed.push((bi, ci));
+                    }
+                }
+            }
+        }
+        for (bi, ci) in owed {
+            cache
+                .pending
+                .owe_chapter(&layout[bi].slug, &layout[bi].chapters[ci].chapter);
+        }
+    }
+    let emitting = vec![MIXED_CASE_WORD];
+    let (all_dirty, dirty) = cache.pending.plan(judging_fp(cfg), &emitting);
+    // Per book, the chapter tokens whose groups this call replaces. `None` is the
+    // whole-partition rebuild.
+    let dirty_by_book: Option<FxHashMap<&str, std::collections::BTreeSet<&str>>> = (!all_dirty)
+        .then(|| {
+            let mut m: FxHashMap<&str, std::collections::BTreeSet<&str>> = FxHashMap::default();
+            for (slug, chapter) in &dirty {
+                m.entry(slug).or_default().insert(chapter);
+            }
+            m
+        });
+    // The judge key set is exactly the word types the sites in the chapters being
+    // rewritten name — the only words whose verdict this call can publish.
+    // Collected before judging so each word type is judged once however many
+    // occurrences it has.
+    let empty: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
     let mut named: FxHashSet<WordSym> = FxHashSet::default();
     for book in layout {
+        let book_dirty = dirty_by_book
+            .as_ref()
+            .map(|m| m.get(&*book.slug).unwrap_or(&empty));
+        if book_dirty.is_some_and(std::collections::BTreeSet::is_empty) {
+            continue;
+        }
         if let Some(contrib) = cache.book_contribution(&book.slug) {
             for chapter in &contrib.chapters {
+                if book_dirty.is_some_and(|d| !d.contains(&*chapter.token)) {
+                    continue;
+                }
                 for site in chapter.words.sites.iter() {
                     named.insert(site.word);
                 }
@@ -871,11 +977,26 @@ pub(crate) fn drive_mixed_case(
         cache.judged = verdicts.len();
     }
     probe.mark(DrivePhase::Judge);
+    let mut findings: Vec<Finding> = Vec::new();
     for book in layout {
+        let book_dirty = dirty_by_book
+            .as_ref()
+            .map(|m| m.get(&*book.slug).unwrap_or(&empty));
+        if book_dirty.is_some_and(std::collections::BTreeSet::is_empty) {
+            continue;
+        }
         if let Some(contrib) = cache.book_contribution(&book.slug) {
-            contrib.materialize(&book.chapters, &verdicts, out);
+            contrib.materialize(&book.chapters, &verdicts, book_dirty, &mut findings);
         }
     }
+    lane.patches.push(SubstratePatch {
+        substrate: crate::substrate::SubstrateId::MixedCase,
+        rules: CONSUMERS,
+        emitting,
+        findings,
+        dirty,
+        all_dirty,
+    });
     probe.mark(DrivePhase::Materialize);
 }
 
@@ -887,7 +1008,7 @@ pub(crate) fn drive_mixed_case(
 pub(crate) fn shape_totals(corpus: &Corpus) -> [u64; 4] {
     let mut cache = crate::substrate::SubstrateCache::new();
     let symbols = WordInterner::default();
-    let mut sink = Vec::new();
+    let mut lane = crate::substrate::SubstrateLane::default();
     drive_mixed_case(
         true,
         MixedCaseState {
@@ -896,7 +1017,7 @@ pub(crate) fn shape_totals(corpus: &Corpus) -> [u64; 4] {
         },
         corpus,
         &MixedCaseConfig::default(),
-        &mut sink,
+        &mut lane,
     );
     let mut totals = [0u64; 4];
     for p in cache.corpus_stats().merged.values() {
@@ -916,7 +1037,7 @@ pub(crate) fn shape_totals(corpus: &Corpus) -> [u64; 4] {
 pub fn mixed_case_findings(corpus: &Corpus, cfg: &MixedCaseConfig) -> Vec<Finding> {
     let mut cache = crate::substrate::SubstrateCache::new();
     let symbols = WordInterner::default();
-    let mut out = Vec::new();
+    let mut lane = crate::substrate::SubstrateLane::default();
     drive_mixed_case(
         true,
         MixedCaseState {
@@ -925,8 +1046,9 @@ pub fn mixed_case_findings(corpus: &Corpus, cfg: &MixedCaseConfig) -> Vec<Findin
         },
         corpus,
         cfg,
-        &mut out,
+        &mut lane,
     );
+    let mut out: Vec<Finding> = lane.patches.into_iter().flat_map(|p| p.findings).collect();
     out.sort_by_key(|f| (f.key_idx, f.range.start, f.range.end));
     out
 }
@@ -1249,17 +1371,76 @@ mod tests {
         (keys, texts)
     }
 
-    /// Drive the substrate over a resident cache, in `mixed_case_findings`' order.
-    fn resident(
-        cache: &mut crate::substrate::SubstrateCache<MixedCaseSubstrate>,
-        symbols: &WordInterner,
-        corpus: &Corpus,
-        cfg: &MixedCaseConfig,
-    ) -> Vec<Finding> {
-        let mut out = Vec::new();
-        drive_mixed_case(true, MixedCaseState { cache, symbols }, corpus, cfg, &mut out);
-        out.sort_by_key(|f| (f.key_idx, f.range.start, f.range.end));
-        out
+    /// The resident state one isolated substrate drive needs: its own cache plus
+    /// the finding partition its patches commit into. The drive publishes a PATCH,
+    /// not a complete finding set, so the complete answer only exists in the
+    /// partition — a helper that read the patch alone would silently test the
+    /// delta rather than the result.
+    struct Resident {
+        cache: crate::substrate::SubstrateCache<MixedCaseSubstrate>,
+        findings: crate::cache::FindingSection,
+    }
+
+    impl Resident {
+        fn new() -> Self {
+            Resident {
+                cache: crate::substrate::SubstrateCache::new(),
+                findings: crate::cache::FindingSection::standalone(),
+            }
+        }
+
+        /// Remove a book from both halves of the resident state, exactly as
+        /// `AnalysisCache::remove_book` does: the substrate aggregate AND the
+        /// finding partition. Dropping only the aggregate would leave the removed
+        /// book's records resident and republishing.
+        fn remove_book(&mut self, slug: &str) {
+            self.cache.remove_book(slug);
+            self.findings.remove_book(slug);
+        }
+
+        /// One analyze: drive, commit the patch, assemble the complete partition,
+        /// in `mixed_case_findings`' order.
+        fn analyze(
+            &mut self,
+            symbols: &WordInterner,
+            corpus: &Corpus,
+            cfg: &MixedCaseConfig,
+        ) -> Vec<Finding> {
+            self.analyze_active(true, symbols, corpus, cfg)
+        }
+
+        fn analyze_active(
+            &mut self,
+            active: bool,
+            symbols: &WordInterner,
+            corpus: &Corpus,
+            cfg: &MixedCaseConfig,
+        ) -> Vec<Finding> {
+            let mut lane = crate::substrate::SubstrateLane::default();
+            drive_mixed_case(
+                active,
+                MixedCaseState {
+                    cache: &mut self.cache,
+                    symbols,
+                },
+                corpus,
+                cfg,
+                &mut lane,
+            );
+            let present: std::collections::BTreeSet<(&str, &str)> = corpus
+                .book_layout()
+                .iter()
+                .flat_map(|b| b.chapters.iter().map(|c| (&*b.slug, &*c.chapter)))
+                .collect();
+            self.findings
+                .commit_substrates(&lane, corpus, Some(&present));
+            for _ in &lane.patches {
+                self.cache.pending.promote();
+            }
+            let mut out = self.findings.assemble(corpus);
+            out.sort_by_key(|f| (f.key_idx, f.range.start, f.range.end));
+            out
+        }
     }
 
     /// Comparable rendering — key, span text, score and both arg counts, so an
@@ -1310,8 +1491,8 @@ mod tests {
         let knobs = cfg(0.0, 32.0, 0.0);
 
         let fresh = WordInterner::default();
-        let mut cache_a = crate::substrate::SubstrateCache::new();
-        let a = resident(&mut cache_a, &fresh, &corpus, &knobs);
+        let mut cache_a = Resident::new();
+        let a = cache_a.analyze(&fresh, &corpus, &knobs);
         assert!(!a.is_empty(), "the fixture must actually emit");
 
         // Pre-populate the table with an unrelated vocabulary, so every word of
@@ -1320,13 +1501,13 @@ mod tests {
         let (pk, pt) = shaped(&["LEV"], 3, 3, &["wholly different vocabulary appears first"]);
         let primer =
             Corpus::try_from_parts(pk, pt.iter().map(|t| (*t).to_string()).collect()).unwrap();
-        let mut primer_cache = crate::substrate::SubstrateCache::new();
-        let _ = resident(&mut primer_cache, &warm, &primer, &knobs);
+        let mut primer_cache = Resident::new();
+        let _ = primer_cache.analyze(&warm, &primer, &knobs);
         let primed = warm.len();
         assert!(primed > 0, "the primer must have named some words");
 
-        let mut cache_b = crate::substrate::SubstrateCache::new();
-        let b = resident(&mut cache_b, &warm, &corpus, &knobs);
+        let mut cache_b = Resident::new();
+        let b = cache_b.analyze(&warm, &corpus, &knobs);
         assert!(
             warm.len() > primed,
             "the second corpus must have taken fresh symbols"
@@ -1351,29 +1532,184 @@ mod tests {
         };
         let knobs = cfg(0.5, 32.0, 0.0);
         let symbols = WordInterner::default();
-        let mut cache = crate::substrate::SubstrateCache::new();
-        let _ = resident(&mut cache, &symbols, &build(&texts), &knobs);
-        assert_eq!(cache.mapped, 8, "cold maps every chapter");
-        assert_eq!(cache.reduced, 8);
+        let mut cache = Resident::new();
+        let _ = cache.analyze(&symbols, &build(&texts), &knobs);
+        assert_eq!(cache.cache.mapped, 8, "cold maps every chapter");
+        assert_eq!(cache.cache.reduced, 8);
 
         // Introduce an interior-capital slip in chapter 5.
         texts[4 * 3 + 1] = "we praise DIos today";
         let e = build(&texts);
-        cache.reset_probes();
-        let inc = resident(&mut cache, &symbols, &e, &knobs);
-        assert_eq!(cache.mapped, 1, "one changed chapter maps one chapter");
+        cache.cache.reset_probes();
+        let inc = cache.analyze(&symbols, &e, &knobs);
+        assert_eq!(cache.cache.mapped, 1, "one changed chapter maps one chapter");
         assert_eq!(
-            cache.reduced, 1,
+            cache.cache.reduced, 1,
             "an empty boundary state can never cascade past the changed chapter"
         );
         assert_eq!(inc.len(), 1, "{:?}", render(&e, &inc));
         assert_eq!(render(&e, &inc), render(&e, &mixed_case_findings(&e, &knobs)));
 
         // An unchanged re-drive maps and reduces nothing, and says the same thing.
-        cache.reset_probes();
-        let again = resident(&mut cache, &symbols, &e, &knobs);
-        assert_eq!((cache.mapped, cache.reduced), (0, 0));
+        cache.cache.reset_probes();
+        let again = cache.analyze(&symbols, &e, &knobs);
+        assert_eq!((cache.cache.mapped, cache.cache.reduced), (0, 0));
         assert_eq!(render(&e, &again), render(&e, &inc));
+    }
+
+    /// Plan §12.4: "equal aggregate with changed ordered sites still patches
+    /// partition records". This is the witness the rebuild-everything engine could
+    /// not have: swapping two words inside a verse leaves every word type's shape
+    /// profile — and so the whole corpus aggregate, and so the stats-delta —
+    /// numerically identical, while moving the site's span. Only the site-delta
+    /// catches it. A patch path that inferred dirtiness from the aggregate (or from
+    /// equal counts) would publish the old span forever, and a full rebuild would
+    /// mask that: the record would be recomputed either way.
+    #[test]
+    fn an_equal_aggregate_with_moved_sites_still_patches_the_partition() {
+        let knobs = cfg(0.5, 32.0, 0.0);
+        let symbols = WordInterner::default();
+        let build = |slip: &str| {
+            let mut b = cycle("GEN", &["we praise Dios today"], 20);
+            b.push("GEN", 21, slip);
+            b.build()
+        };
+
+        let before = build("we praise DIos today");
+        let mut r = Resident::new();
+        let first = r.analyze(&symbols, &before, &knobs);
+        assert_eq!(first.len(), 1, "{:?}", render(&before, &first));
+        assert_eq!(first[0].range.start, 10, "the slip starts after `we praise `");
+
+        // Same word types, same shapes, same counts — a different order. The
+        // aggregate cannot move; the site must.
+        let after = build("we DIos praise today");
+        r.cache.reset_probes();
+        let patched = r.analyze(&symbols, &after, &knobs);
+        assert_eq!(
+            r.cache.site_dirty, 1,
+            "exactly the reordered chapter's sites moved"
+        );
+        assert_eq!(patched.len(), 1, "{:?}", render(&after, &patched));
+        assert_eq!(
+            patched[0].range.start, 3,
+            "the patched record carries the MOVED span, not the retained one"
+        );
+        assert_eq!(
+            render(&after, &patched),
+            render(&after, &mixed_case_findings(&after, &knobs)),
+            "patched partition must equal a cold rebuild"
+        );
+    }
+
+    /// Patch-equals-rebuild across a mutation script that exercises every shape a
+    /// chapter's records can move by: an in-place edit, a verse insertion, a verse
+    /// deletion, a whole extra chapter, and an edit-then-undo. After each step the
+    /// assembled partition is compared against a cold complete analysis of exactly
+    /// that corpus — the referee a patch path needs and a rebuild path cannot fail.
+    #[test]
+    fn every_patched_step_equals_a_cold_rebuild() {
+        let knobs = cfg(0.5, 32.0, 0.0);
+        let symbols = WordInterner::default();
+        // (chapter, verse, text) triples, so a step can insert or delete a verse.
+        let base: Vec<(u16, u16, String)> = (1..=3)
+            .flat_map(|ch| {
+                (1..=6).map(move |v| {
+                    let text = if ch == 2 && v == 3 {
+                        "we praise DIos today"
+                    } else {
+                        "we praise Dios today"
+                    };
+                    (ch, v, text.to_string())
+                })
+            })
+            .collect();
+        let build = |rows: &[(u16, u16, String)]| {
+            Corpus::try_from_parts(
+                rows.iter()
+                    .map(|(ch, v, _)| format!("GEN {ch}:{v}"))
+                    .collect(),
+                rows.iter().map(|(_, _, t)| t.clone()).collect(),
+            )
+            .unwrap()
+        };
+
+        let mut r = Resident::new();
+        let mut rows = base.clone();
+        let mut step = |r: &mut Resident, rows: &[(u16, u16, String)], what: &str| {
+            let corpus = build(rows);
+            let patched = r.analyze(&symbols, &corpus, &knobs);
+            assert_eq!(
+                render(&corpus, &patched),
+                render(&corpus, &mixed_case_findings(&corpus, &knobs)),
+                "{what}: patched partition diverged from a cold rebuild"
+            );
+        };
+
+        step(&mut r, &rows, "cold seed");
+
+        // 1. edit a clean verse into a second slip, in a DIFFERENT chapter.
+        rows[2].2 = "and MUngu spoke".to_string();
+        step(&mut r, &rows, "second slip in another chapter");
+
+        // 2. insert a verse into chapter 1 — every later chapter's global KeyIdx
+        //    shifts, and no retained chapter-local record may move.
+        rows.insert(3, (1, 7, "we praise Dios today".to_string()));
+        step(&mut r, &rows, "verse insertion shifts later KeyIdxs");
+
+        // 3. delete the verse carrying chapter 2's slip.
+        let slip = rows
+            .iter()
+            .position(|(ch, _, t)| *ch == 2 && t.contains("DIos"))
+            .expect("chapter 2 holds the slip");
+        rows.remove(slip);
+        step(&mut r, &rows, "verse deletion drops a site");
+
+        // 4. a whole new chapter, carrying its own slip.
+        rows.push((4, 1, "the HaElohim spoke".to_string()));
+        rows.push((4, 2, "the Haelohim spoke".to_string()));
+        rows.push((4, 3, "the Haelohim spoke".to_string()));
+        step(&mut r, &rows, "new chapter");
+
+        // 5. edit then undo: the aggregate and every site return to step 4's
+        //    state, and so must every published record.
+        let undone = rows.clone();
+        rows[0].2 = "we praise DiOS today".to_string();
+        step(&mut r, &rows, "edit");
+        step(&mut r, &undone, "undo");
+    }
+
+    /// Toggling the consumer off drops its partition, and toggling it back on
+    /// rebuilds it — plan §7.2's "enabled -> disabled: drop that partition" and
+    /// its inverse. The disabled call plans nothing, so it may not discharge what
+    /// the partition owes: a commit that cleared the owed flag would leave the
+    /// re-enable believing its empty partition was current, and the rule would go
+    /// permanently silent on an unedited corpus.
+    #[test]
+    fn a_disabled_then_reenabled_consumer_rebuilds_its_whole_partition() {
+        let knobs = cfg(0.5, 32.0, 0.0);
+        let symbols = WordInterner::default();
+        let corpus = {
+            let mut b = cycle("GEN", &["we praise Dios today"], 20);
+            b.push("GEN", 21, "we praise DIos today");
+            b.build()
+        };
+
+        let mut r = Resident::new();
+        let on = r.analyze(&symbols, &corpus, &knobs);
+        assert_eq!(on.len(), 1, "{:?}", render(&corpus, &on));
+
+        let off = r.analyze_active(false, &symbols, &corpus, &knobs);
+        assert!(off.is_empty(), "a disabled rule publishes nothing: {off:?}");
+
+        // The corpus did not move, so nothing is site-dirty. Only the owed-rebuild
+        // flag can bring the partition back.
+        let again = r.analyze(&symbols, &corpus, &knobs);
+        assert_eq!(
+            render(&corpus, &again),
+            render(&corpus, &on),
+            "re-enable must rebuild the whole partition from cached evidence"
+        );
     }
 
     /// A judging-knob change maps and reduces **nothing**: every knob is read at
@@ -1389,11 +1725,11 @@ mod tests {
         let corpus =
             Corpus::try_from_parts(keys, texts.iter().map(|t| (*t).to_string()).collect()).unwrap();
         let symbols = WordInterner::default();
-        let mut cache = crate::substrate::SubstrateCache::new();
-        let low = resident(&mut cache, &symbols, &corpus, &cfg(0.0, 32.0, 0.0));
-        cache.reset_probes();
-        let high = resident(&mut cache, &symbols, &corpus, &cfg(0.99, 32.0, 0.0));
-        assert_eq!((cache.mapped, cache.reduced), (0, 0));
+        let mut cache = Resident::new();
+        let low = cache.analyze(&symbols, &corpus, &cfg(0.0, 32.0, 0.0));
+        cache.cache.reset_probes();
+        let high = cache.analyze(&symbols, &corpus, &cfg(0.99, 32.0, 0.0));
+        assert_eq!((cache.cache.mapped, cache.cache.reduced), (0, 0));
         assert!(!low.is_empty(), "the low floor must actually emit");
         assert!(high.is_empty(), "the high floor must actually silence it");
         assert_eq!(
@@ -1426,8 +1762,8 @@ mod tests {
         };
         let knobs = cfg(0.5, 4.0, 0.0);
         let symbols = WordInterner::default();
-        let mut cache = crate::substrate::SubstrateCache::new();
-        let _ = resident(&mut cache, &symbols, &build(&texts), &knobs);
+        let mut cache = Resident::new();
+        let _ = cache.analyze(&symbols, &build(&texts), &knobs);
         let mut rng = 0x2545_F491_4F6C_DD1Du64;
         let next = |rng: &mut u64| {
             *rng ^= *rng << 13;
@@ -1440,9 +1776,9 @@ mod tests {
             let which = (next(&mut rng) % texts.len() as u64) as usize;
             texts[which] = SHAPES[(next(&mut rng) % SHAPES.len() as u64) as usize];
             let corpus = build(&texts);
-            let inc = resident(&mut cache, &symbols, &corpus, &knobs);
+            let inc = cache.analyze(&symbols, &corpus, &knobs);
             assert!(
-                cache.mapped <= 1 && cache.reduced <= 1,
+                cache.cache.mapped <= 1 && cache.cache.reduced <= 1,
                 "step {step}: one edited verse touches one chapter and converges there"
             );
             saw_findings |= !inc.is_empty();
@@ -1471,9 +1807,9 @@ mod tests {
         both.push("EXO", 1, "we praise DIos today");
         let both = both.build();
 
-        let mut cache = crate::substrate::SubstrateCache::new();
+        let mut cache = Resident::new();
         let symbols = WordInterner::default();
-        let out = resident(&mut cache, &symbols, &both, &knobs);
+        let out = cache.analyze(&symbols, &both, &knobs);
         assert_eq!(out.len(), 1, "corpus-wide dominance lifts the EXO slip");
         assert_eq!(both.key(out[0].key_idx), "EXO 1:1");
 
@@ -1485,7 +1821,7 @@ mod tests {
             cb.push("EXO", 1, "we praise DIos today");
             cb.build()
         };
-        let after = resident(&mut cache, &symbols, &exo, &knobs);
+        let after = cache.analyze(&symbols, &exo, &knobs);
         assert!(after.is_empty(), "{after:?}");
     }
 
@@ -1504,10 +1840,9 @@ mod tests {
         };
         let symbols = WordInterner::default();
         let fold = |corpus: &Corpus| {
-            let mut cache: crate::substrate::SubstrateCache<MixedCaseSubstrate> =
-                crate::substrate::SubstrateCache::new();
-            let _ = resident(&mut cache, &symbols, corpus, &cfg(0.5, 32.0, 0.0));
-            cache.book_contribution("GEN").expect("GEN folded").clone()
+            let mut r = Resident::new();
+            let _ = r.analyze(&symbols, corpus, &cfg(0.5, 32.0, 0.0));
+            r.cache.book_contribution("GEN").expect("GEN folded").clone()
         };
         let old = fold(&before);
         let new = fold(&after);

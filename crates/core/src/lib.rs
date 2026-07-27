@@ -880,6 +880,11 @@ fn transition(
         target,
         &mut out,
     );
+    // The converted substrates' patches (plan §6.4). They never enter `out`:
+    // their records go straight to their own partitions, and only after the judge
+    // boundary — so a failed attempt publishes nothing and leaves the previous
+    // partitions intact.
+    let mut substrate_lane = substrate::SubstrateLane::default();
     signals::mixed_case::drive_mixed_case(
         active.mixed_case,
         signals::mixed_case::MixedCaseState {
@@ -888,7 +893,7 @@ fn transition(
         },
         target,
         &config.mixed_case,
-        &mut out,
+        &mut substrate_lane,
     );
     signals::casing::drive_casing(
         config.is_enabled(RuleId::SentenceInitialLowercase),
@@ -944,7 +949,11 @@ fn transition(
     // judged findings into chapter-local records; the direct lane replaces the
     // records of exactly the chapters it re-derived and leaves every other
     // chapter's alone.
-    finding_lane.rebuild_batch(&out, target, &direct_ids);
+    // The batch rebuild must leave every lane-maintained partition alone: the
+    // direct (per-verse) rules' and every converted substrate's.
+    let mut retained_ids = direct_ids.clone();
+    retained_ids.extend(substrate_lane.owned_rules());
+    finding_lane.rebuild_batch(&out, target, &retained_ids);
     finding_lane.patch_direct(
         &direct_ids,
         prep,
@@ -952,6 +961,10 @@ fn transition(
         direct_dirty.len() == chapter_count,
         direct_present.as_ref(),
     );
+    finding_lane.commit_substrates(&substrate_lane, target, direct_present.as_ref());
+    for patch in &substrate_lane.patches {
+        substrates.ack_committed(patch.substrate);
+    }
 
     // Assemble the returned findings ONLY from the resident partitions, rebasing
     // each chapter-local record to a global `KeyIdx` against the current corpus.

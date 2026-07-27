@@ -233,6 +233,33 @@ impl SubstrateSection {
         self.casing.remove_book(slug);
         self.mixed_case.remove_book(slug);
     }
+
+    /// The finding lane committed `id`'s patch: its partition owes nothing and now
+    /// stands under the judging identity its drive planned under. The one place a
+    /// [`PendingPartition`](crate::substrate::PendingPartition) is cleared — a
+    /// drive accumulates, only a commit discharges, which is what makes a failed
+    /// attempt safe to retry.
+    ///
+    /// Exhaustive over [`SubstrateId`], so a new converted substrate is a compile
+    /// error here until it has an arm.
+    pub(crate) fn ack_committed(&mut self, id: crate::substrate::SubstrateId) {
+        use crate::substrate::SubstrateId as S;
+        let pending = match id {
+            S::Spacing => &mut self.spacing.pending,
+            S::Adjacency => &mut self.adjacency.pending,
+            S::RepeatedRun => &mut self.repeated_run.pending,
+            S::PunctOnly => &mut self.punct_only.pending,
+            S::MixedScript => &mut self.mixed_script.pending,
+            S::Glyph => &mut self.glyph.pending,
+            S::Proportionality => &mut self.proportionality.pending,
+            S::Normalization => &mut self.normalization.pending,
+            S::Bracket => &mut self.bracket.pending,
+            S::DuplicateWord => &mut self.duplicate_word.pending,
+            S::Casing => &mut self.casing.pending,
+            S::MixedCase => &mut self.mixed_case.pending,
+        };
+        pending.promote();
+    }
 }
 
 /// One chapter-local finding record in a rule's resident partition. It stores a
@@ -325,6 +352,15 @@ pub(crate) struct FindingSection {
 }
 
 impl FindingSection {
+    /// A standalone finding section, for driving one substrate in isolation: a
+    /// test or calibration caller commits its lane here and assembles from it,
+    /// so it exercises the same partition patch the transition commits rather
+    /// than a second, test-only reconstruction of it.
+    #[cfg(test)]
+    pub(crate) fn standalone() -> Self {
+        Self::new()
+    }
+
     fn new() -> Self {
         FindingSection {
             partitions: std::collections::BTreeMap::new(),
@@ -343,7 +379,7 @@ impl FindingSection {
     /// Drop a book's resident finding records from every partition — the
     /// finding-lane whole-book removal entry point, so a removed book cannot
     /// resurrect a partition record.
-    fn remove_book(&mut self, slug: &str) {
+    pub(crate) fn remove_book(&mut self, slug: &str) {
         for partition in self.partitions.values_mut() {
             partition.chapters.retain(|c| *c.slug != *slug);
         }
@@ -370,11 +406,12 @@ impl FindingSection {
     /// chapter-local record, preserving emission order within each
     /// (rule, chapter) — the stable-sort tie contract.
     ///
-    /// `direct_ids` are the rules the direct lane owns
-    /// ([`patch_direct`](Self::patch_direct) maintains those partitions per
-    /// chapter); their partitions are left alone here and `findings` never
-    /// contains one of their records. Every other rule still replaces its whole
-    /// partition each analyze, which is exactly the batch lane.
+    /// `retained_ids` are the rules whose partitions another lane maintains: the
+    /// direct (per-verse) lane's ([`patch_direct`](Self::patch_direct)) and every
+    /// converted substrate's ([`commit_substrates`](Self::commit_substrates)).
+    /// Their partitions are left alone here and `findings` never contains one of
+    /// their records. Every other rule still replaces its whole partition each
+    /// analyze, which is exactly the batch lane.
     ///
     /// Called only after map/reduce/judge succeed, so a failed analyze leaves the
     /// previous partitions intact and current.
@@ -382,12 +419,12 @@ impl FindingSection {
         &mut self,
         findings: &[Finding],
         corpus: &crate::corpus::Corpus,
-        direct_ids: &[RuleId],
+        retained_ids: &[RuleId],
     ) {
-        self.partitions.retain(|code, _| direct_ids.contains(code));
+        self.partitions.retain(|code, _| retained_ids.contains(code));
         debug_assert!(
-            findings.iter().all(|f| !direct_ids.contains(&f.code)),
-            "a direct-lane rule's findings must reach its partition through patch_direct"
+            findings.iter().all(|f| !retained_ids.contains(&f.code)),
+            "a patched-lane rule's findings must reach its partition through its own lane"
         );
         for f in findings {
             let addr = corpus.locate(f.key_idx);
@@ -402,6 +439,82 @@ impl FindingSection {
                     args: f.args.clone(),
                 },
             );
+        }
+    }
+
+    /// Commit this analyze's substrate-lane candidates (plan §6.4). Each patch
+    /// replaces exactly its own `(rule, chapter)` groups and leaves every other
+    /// chapter's records in place — the whole point of a chapter-local address is
+    /// that an unjudged chapter's findings stay correct *and* correctly addressed
+    /// after any number of verses moved elsewhere.
+    ///
+    /// A consumer that is off this call has its partition dropped, so a disabled
+    /// rule cannot keep publishing retained records.
+    ///
+    /// `present` is supplied only when a chapter has left the corpus (the direct
+    /// lane's own O(1) count check is the signal, and it is lane-independent — a
+    /// chapter either left the corpus or it did not). Stale groups are pruned
+    /// first, so a chapter dropped by a whole-book replacement cannot survive as a
+    /// partition record.
+    ///
+    /// Called only after map/reduce/judge succeed, alongside the other two lanes.
+    pub(crate) fn commit_substrates(
+        &mut self,
+        lane: &crate::substrate::SubstrateLane,
+        corpus: &crate::corpus::Corpus,
+        present: Option<&std::collections::BTreeSet<(&str, &str)>>,
+    ) {
+        for patch in &lane.patches {
+            for id in patch.rules {
+                if !patch.emitting.contains(id) {
+                    self.partitions.remove(id);
+                }
+            }
+            if patch.all_dirty {
+                for id in &patch.emitting {
+                    self.partitions.remove(id);
+                }
+            } else {
+                if let Some(present) = present {
+                    for id in &patch.emitting {
+                        if let Some(partition) = self.partitions.get_mut(id) {
+                            partition
+                                .chapters
+                                .retain(|c| present.contains(&(&*c.slug, &*c.chapter)));
+                        }
+                    }
+                }
+                for (slug, chapter) in &patch.dirty {
+                    for id in &patch.emitting {
+                        if let Some(partition) = self.partitions.get_mut(id) {
+                            partition
+                                .chapters
+                                .retain(|c| !(*c.slug == **slug && *c.chapter == **chapter));
+                        }
+                    }
+                }
+            }
+            debug_assert!(
+                patch
+                    .findings
+                    .iter()
+                    .all(|f| patch.emitting.contains(&f.code)),
+                "a substrate patch may only carry findings for a consumer it says it emitted for"
+            );
+            for f in &patch.findings {
+                let addr = corpus.locate(f.key_idx);
+                self.partitions.entry(f.code).or_default().push(
+                    addr.slug,
+                    addr.chapter,
+                    LocalFinding {
+                        local: addr.local,
+                        range: f.range,
+                        severity: f.severity,
+                        score: f.score,
+                        args: f.args.clone(),
+                    },
+                );
+            }
         }
     }
 

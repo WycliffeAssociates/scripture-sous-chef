@@ -563,6 +563,171 @@ pub(crate) trait ObservationSubstrate {
     ) -> Self::EntryOutcome;
 }
 
+/// What one substrate's partition owes: a whole-partition rebuild, or the
+/// `(slug, chapter)` groups whose records this call must replace.
+pub(crate) type PartitionOwed = (bool, Vec<(Box<str>, Box<str>)>);
+
+/// The un-committed half of one substrate's partition maintenance: what its
+/// resident finding records still owe, and what they were last judged under.
+///
+/// It lives in the substrate cache but is **only ever cleared by the finding
+/// lane's commit** (`SubstrateSection::ack_committed`), never by the drive that
+/// reads it. That asymmetry is the whole point (plan §16:
+/// "destructively draining dirty flags during an attempt"). A drive maps, reduces
+/// and materializes before the judge fault seam; if the attempt then fails,
+/// nothing was published, but the substrate cache is warm and would report every
+/// chapter clean on the retry. Accumulating here instead means the retry patches
+/// exactly what the failed attempt did not commit.
+#[derive(Default)]
+pub(crate) struct PendingPartition {
+    /// The whole partition owes a rebuild: a cold book, a judging-config change,
+    /// a consumer-set change, or an aggregate move that dirtied every key.
+    all: bool,
+    /// Chapters whose ordered sites moved since the last committed partition.
+    /// Ignored while `all`.
+    chapters: std::collections::BTreeSet<(Box<str>, Box<str>)>,
+    /// The judging fingerprint + consumer set the committed records were produced
+    /// under. `None` before the first commit.
+    judged_under: Option<(u64, Vec<RuleId>)>,
+    /// The identity THIS attempt's patch was built under, promoted to
+    /// `judged_under` only by a commit.
+    candidate: Option<(u64, Vec<RuleId>)>,
+}
+
+impl PendingPartition {
+    /// Mark the whole partition owing. Drops any accumulated chapter set: it is
+    /// subsumed, and keeping it would retain per-chapter allocations for a
+    /// rebuild that ignores them.
+    fn owe_all(&mut self) {
+        self.all = true;
+        self.chapters.clear();
+    }
+
+    pub(crate) fn owe_chapter(&mut self, slug: &str, chapter: &str) {
+        if !self.all {
+            self.chapters.insert((Box::from(slug), Box::from(chapter)));
+        }
+    }
+
+    /// What this substrate's partition owes, given the judging fingerprint and
+    /// consumer set this call publishes under, and record that identity as this
+    /// attempt's candidate.
+    ///
+    /// A move in either forces the whole rebuild: a judging knob maps and reduces
+    /// nothing but re-judges every key for that rule (plan §7.1/§6.3), and a
+    /// newly enabled consumer has no partition to patch.
+    pub(crate) fn plan(
+        &mut self,
+        judge_fp: u64,
+        emitting: &[RuleId],
+    ) -> PartitionOwed {
+        let judging_moved = self
+            .judged_under
+            .as_ref()
+            .is_none_or(|(fp, rules)| *fp != judge_fp || rules != emitting);
+        self.candidate = Some((judge_fp, emitting.to_vec()));
+        if self.all || judging_moved {
+            return (true, Vec::new());
+        }
+        (false, self.chapters.iter().cloned().collect())
+    }
+
+    /// The finding lane committed this substrate's patch: nothing is owed, and the
+    /// records now stand under the identity [`plan`](Self::plan) recorded.
+    ///
+    /// The ONLY place this state is discharged. A drive that cleared it itself
+    /// would leave the retry after a judge-phase failure believing every chapter
+    /// clean while the resident partition still described the previous input
+    /// (plan §16).
+    /// Gated on a candidate: an inactive substrate's drive commits a patch that
+    /// only DROPS its consumers' partitions, and plans nothing, so it has nothing
+    /// to discharge. Today that gate is belt-and-braces rather than load-bearing —
+    /// the inactive path also calls [`SubstrateCache::clear`], so the re-enable
+    /// finds no resident book and owes the rebuild through the cold route either
+    /// way. It stays because "promoting an identity nobody planned under" has no
+    /// meaning, not because a witness fails without it.
+    pub(crate) fn promote(&mut self) {
+        if let Some(identity) = self.candidate.take() {
+            self.all = false;
+            self.chapters.clear();
+            self.judged_under = Some(identity);
+        }
+    }
+}
+
+/// A judging-config fingerprint: the knobs' exact `f32` bit patterns, folded in
+/// declaration order. Two configs fingerprint equal iff every knob is
+/// bit-identical — the equality a retained partition needs, because a knob that
+/// moved by one bit can move a score across the emit floor.
+///
+/// **Every field of the config must appear at the call site.** A knob added to a
+/// converted substrate's config without a line there would silently retain a
+/// partition judged under the old value; the `*_judging_fp_moves_with_every_knob`
+/// witnesses are what hold that.
+pub(crate) fn judging_fp(knobs: &[f32]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = rustc_hash::FxHasher::default();
+    for k in knobs {
+        k.to_bits().hash(&mut h);
+    }
+    h.finish()
+}
+
+/// One converted substrate's finding-lane candidate for this analyze: the
+/// findings it materialized, and which of its consumers' `(slug, chapter)`
+/// partition groups those findings replace (plan §6.4 — "incremental rules patch
+/// changed keys/chapters").
+///
+/// Deliberately a candidate rather than a direct write. A drive that patched the
+/// resident partition in place would leave it half-written when a later drive, or
+/// the judge fault seam, failed; plan §3.3 requires a failed attempt to leave the
+/// previous publication intact and a retry to be safe, so every patch is held
+/// here and committed together after the judge boundary.
+///
+/// **Chapter granularity is what makes the patch order-safe.** A group replaces
+/// exactly one rule's records for exactly one chapter, in that rule's emission
+/// order for that chapter. Records in different chapters occupy disjoint
+/// `KeyIdx` ranges and so never tie on the final sort key, which is why a
+/// replaced group may land at a different position in the partition's chapter
+/// list without moving a single output byte (plan §6.4's order contract; the
+/// final sort is `(key_idx, range.start, code)` and stable).
+pub(crate) struct SubstratePatch {
+    /// Which substrate produced this patch — the cache slot whose
+    /// [`PendingPartition`] the commit discharges.
+    pub(crate) substrate: SubstrateId,
+    /// Every rule this substrate can emit through, enabled this call or not. A
+    /// consumer that is off must have its partition DROPPED rather than left
+    /// resident: retained records would keep publishing after the rule was
+    /// disabled (plan §7.2 "enabled -> disabled: drop that partition").
+    pub(crate) rules: &'static [RuleId],
+    /// The subset of `rules` this call emitted for.
+    pub(crate) emitting: Vec<RuleId>,
+    /// Findings for exactly the `dirty` chapters — global `KeyIdx`, decomposed to
+    /// chapter-local records at commit.
+    pub(crate) findings: Vec<crate::diagnostics::Finding>,
+    /// The `(slug, chapter)` groups `findings` replaces. Ignored when
+    /// `all_dirty`.
+    pub(crate) dirty: Vec<(Box<str>, Box<str>)>,
+    /// Every chapter is being rewritten — a cold build, a judging-config change,
+    /// a consumer-set change, or an aggregate move that dirtied every key. The
+    /// partitions are then replaced outright instead of group-by-group.
+    pub(crate) all_dirty: bool,
+}
+
+/// This analyze's substrate-lane candidates, in drive order.
+#[derive(Default)]
+pub(crate) struct SubstrateLane {
+    pub(crate) patches: Vec<SubstratePatch>,
+}
+
+impl SubstrateLane {
+    /// Every rule any converted substrate owns — the ids the batch rebuild must
+    /// leave alone, exactly as it already leaves the direct lane's alone.
+    pub(crate) fn owned_rules(&self) -> Vec<RuleId> {
+        self.patches.iter().flat_map(|p| p.rules).copied().collect()
+    }
+}
+
 /// The resident cache for one substrate `S` (plan §5). Holds, per book, every
 /// chapter's observation + reduced result behind their validity stamps, the
 /// book's folded contribution, and the corpus aggregate the judge reads.
@@ -574,6 +739,9 @@ pub(crate) trait ObservationSubstrate {
 pub(crate) struct SubstrateCache<S: ObservationSubstrate> {
     books: FxHashMap<Box<str>, SubstrateBook<S>>,
     corpus_stats: S::CorpusStats,
+    /// What this substrate's resident finding partition still owes. Written by
+    /// this cache, cleared only by the finding lane's commit.
+    pub(crate) pending: PendingPartition,
     /// Observability (`test-probes`): chapters mapped / reduced, and keys judged
     /// on the most recent analyze — the substrate half of the work probes Step 3
     /// asserts against.
@@ -583,6 +751,11 @@ pub(crate) struct SubstrateCache<S: ObservationSubstrate> {
     pub(crate) reduced: usize,
     #[cfg(any(test, feature = "test-probes"))]
     pub(crate) judged: usize,
+    /// Chapters whose ordered sites moved on the most recent analyze — the
+    /// site-delta half of plan §6.2, observable so a witness can prove a patch
+    /// path ran on exactly the chapters that moved.
+    #[cfg(any(test, feature = "test-probes"))]
+    pub(crate) site_dirty: usize,
     /// Which single map grain this substrate's chapter map used on the most
     /// recent analyze.
     #[cfg(any(test, feature = "test-probes"))]
@@ -698,12 +871,15 @@ impl<S: ObservationSubstrate> SubstrateCache<S> {
         Self {
             books: FxHashMap::default(),
             corpus_stats: S::CorpusStats::default(),
+            pending: PendingPartition::default(),
             #[cfg(any(test, feature = "test-probes"))]
             mapped: 0,
             #[cfg(any(test, feature = "test-probes"))]
             reduced: 0,
             #[cfg(any(test, feature = "test-probes"))]
             judged: 0,
+            #[cfg(any(test, feature = "test-probes"))]
+            site_dirty: 0,
             #[cfg(any(test, feature = "test-probes"))]
             map_route: "serial",
         }
@@ -715,18 +891,35 @@ impl<S: ObservationSubstrate> SubstrateCache<S> {
     pub(crate) fn clear(&mut self) {
         self.books.clear();
         self.corpus_stats = S::CorpusStats::default();
+        // A re-enable pays a one-time rule-local build (plan §7.2), so the
+        // partition owes everything and stands under no judging fingerprint.
+        self.pending = PendingPartition {
+            all: true,
+            chapters: std::collections::BTreeSet::new(),
+            judged_under: None,
+            candidate: None,
+        };
     }
 
     /// Drop one book's contribution and chapters, updating the corpus aggregate
     /// so a removed book cannot keep contributing (plan §7.1 "remove book").
     pub(crate) fn remove_book(&mut self, slug: &str) {
         if let Some(book) = self.books.remove(slug) {
-            S::replace_book_in_corpus_stats(
+            let delta = S::replace_book_in_corpus_stats(
                 &mut self.corpus_stats,
                 slug,
                 Some(&book.contribution),
                 None,
             );
+            // The removed book's own records go with it (the finding lane's
+            // `remove_book`), but withdrawing its contribution moves the corpus
+            // aggregate — so every SURVIVING book's records may now be judged
+            // against different evidence. A removal is rare enough that owing the
+            // whole partition is the right price for not having to name which
+            // chapters those are.
+            if !delta.is_empty() {
+                self.pending.owe_all();
+            }
         }
     }
 
@@ -739,6 +932,7 @@ impl<S: ObservationSubstrate> SubstrateCache<S> {
         self.mapped = 0;
         self.reduced = 0;
         self.judged = 0;
+        self.site_dirty = 0;
         self.map_route = "serial";
     }
 
@@ -766,8 +960,23 @@ impl<S: ObservationSubstrate> SubstrateCache<S> {
     }
 
     /// Bring one book up to date from its ordered chapters — the **ordered
-    /// reduction-to-convergence driver** (plan §5.4). Returns the stats-delta
-    /// keys the book's new contribution produced.
+    /// reduction-to-convergence driver** (plan §5.4).
+    ///
+    /// Returns the **stats-delta** keys the book's new contribution produced: the
+    /// keys whose corpus aggregate moved.
+    ///
+    /// The **site-delta** — the chapters whose ordered sites and materialization
+    /// inputs moved — is not returned. It accumulates into
+    /// [`pending`](SubstrateCache::pending) instead, because a delta that a drive
+    /// consumed and discarded would be lost if the attempt then failed at the
+    /// judge boundary: the cache would be warm and report every chapter clean
+    /// while the resident partition still described the previous input (plan §16).
+    ///
+    /// The two are deliberately independent and neither implies the other. Moving,
+    /// inserting, deleting, or reordering occurrences can leave a book's
+    /// contribution numerically equal while requiring partition findings to move,
+    /// so equal counts are never proof of equal sites; conversely a global
+    /// address-base shift dirties no local site, because final packing rebases.
     ///
     /// Five steps:
     ///
@@ -948,7 +1157,9 @@ impl<S: ObservationSubstrate> SubstrateCache<S> {
             .collect();
         let mut stamps: Vec<Option<ReducedChapterStamp<S::BoundaryState>>> = vec![None; n];
         let mut converged_at: Option<usize> = None;
+        let mut last_replayed: Option<usize> = None;
         for k in start..n {
+            last_replayed = Some(k);
             let entering = carry.clone();
             let owner = S::pending_owner(&entering)
                 .and_then(|t| new_pos.get(t).copied())
@@ -1011,6 +1222,54 @@ impl<S: ObservationSubstrate> SubstrateCache<S> {
             && let Some(carry_out) = reduced[owner].as_mut()
         {
             S::finish_book(&carry, carry_out);
+        }
+
+        // ── The site delta (plan §6.2). Only a replayed position can have moved:
+        // every other position kept its cached reduced result by move. A replayed
+        // position is clean iff the SAME chapter token reduced to the same value
+        // before — token-keyed, not positional, because a chapter that merely
+        // moved must be recognised as unchanged. The comparison happens here,
+        // after `finish_book`, because the book-edge resolution and every
+        // `carry_out` fold mutate an EARLIER chapter's reduced result: a chapter
+        // whose own reduction was value-identical can still have had a cross-seam
+        // contribution folded into it, and that moves its sites.
+        //
+        // A position whose token has no cached reduction — a new chapter, a cold
+        // book, or a chapter the structural replay moved out from under its own
+        // cached slot — reads as dirty, which is the conservative direction.
+        let sites: Vec<usize> = match last_replayed {
+            Some(end) => (start..=end)
+                .filter(|&k| {
+                    let cached = old
+                        .by_token
+                        .get(chapters[k].0)
+                        .and_then(|&j| old.reduced.get(j))
+                        .and_then(Option::as_ref);
+                    match (cached, reduced[k].as_ref()) {
+                        (Some(prev), Some(now)) => prev != now,
+                        _ => true,
+                    }
+                })
+                .collect(),
+            None => Vec::new(),
+        };
+        #[cfg(any(test, feature = "test-probes"))]
+        {
+            self.site_dirty += sites.len();
+        }
+        // Record what the resident partition now owes. A book this substrate has
+        // never folded owes the whole partition rather than one entry per
+        // chapter: on a cold analyze that is every chapter of every book, and
+        // naming them individually would allocate the corpus's chapter list per
+        // substrate to say what one flag says. A book newly *inserted* into a warm
+        // corpus takes the same route — a one-time whole-partition rebuild on book
+        // insert, which is the cheap side of the trade.
+        if old_contribution.is_none() {
+            self.pending.owe_all();
+        } else {
+            for &k in &sites {
+                self.pending.owe_chapter(slug, chapters[k].0);
+            }
         }
 
         // Past the convergence point every cached reduction stands.
