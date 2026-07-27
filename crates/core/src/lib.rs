@@ -378,7 +378,6 @@ fn transition(
     let active = substrate::ActiveSubstrates::from_config(config);
     let plan = stream::WalkPlan {
         bracket: config.is_enabled(RuleId::BracketBalance),
-        normalization: config.is_enabled(RuleId::MixedNormalization),
         // The shared token cache exists for the BATCH lane's `judge` calls, and
         // that lane is empty: every rule that used to read it (repeated-run,
         // rare-glyph, mixed-script) is an observation substrate now and tokenizes
@@ -724,19 +723,6 @@ fn transition(
             &config.bracket_balance,
         ));
     }
-    if plan.normalization {
-        let summaries: Vec<&signals::mixed_normalization::BookNormalization> = slots
-            .iter()
-            .map(|slot| {
-                match slot {
-                    BookProducts::Walked(o) => o.normalization.as_ref(),
-                    BookProducts::Clean(e) => e.normalization.as_ref(),
-                }
-                .expect("normalization listener ran on every book")
-            })
-            .collect();
-        out.extend(signals::mixed_normalization::emit(&books, &summaries));
-    }
 
     // REDUCE boundary. Every substrate's fresh book/corpus stats are folded and
     // the project findings are emitted into the local `out`; nothing resident is
@@ -886,6 +872,12 @@ fn transition(
         target,
         source,
         &config.proportionality,
+        &mut out,
+    );
+    signals::mixed_normalization::drive_normalization(
+        active.normalization,
+        &mut substrates.normalization,
+        target,
         &mut out,
     );
     signals::lexical::drive_duplicate_word(

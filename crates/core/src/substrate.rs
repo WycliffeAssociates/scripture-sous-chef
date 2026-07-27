@@ -65,6 +65,8 @@ pub(crate) enum SubstrateId {
     /// `proj.length-ratio`'s per-book target/reference ratio samples — the only
     /// substrate that declares a REFERENCE input (plan §5.2).
     Proportionality,
+    /// `uni.mixed-normalization`'s per-form grapheme-cluster counts.
+    Normalization,
     /// `struct.duplicate-word`'s adjacent-pair sites.
     DuplicateWord,
     /// The shared casing model: per-word case tables + lowercase flag
@@ -88,6 +90,7 @@ impl SubstrateId {
         SubstrateId::MixedScript,
         SubstrateId::Glyph,
         SubstrateId::Proportionality,
+        SubstrateId::Normalization,
         SubstrateId::DuplicateWord,
         SubstrateId::Casing,
         SubstrateId::MixedCase,
@@ -174,6 +177,7 @@ pub const SUBSTRATE_NAMES: [&str; SubstrateId::ALL.len()] = [
     "mixed-script",
     "glyph",
     "proportionality",
+    "normalization",
     "duplicate-word",
     "casing",
     "mixed-case",
@@ -996,6 +1000,7 @@ pub(crate) struct ActiveSubstrates {
     pub(crate) mixed_script: bool,
     pub(crate) glyph: bool,
     pub(crate) proportionality: bool,
+    pub(crate) normalization: bool,
     pub(crate) duplicate_word: bool,
     pub(crate) casing: bool,
     pub(crate) mixed_case: bool,
@@ -1014,6 +1019,7 @@ impl ActiveSubstrates {
             mixed_script: any(mixed_script_consumers()),
             glyph: any(glyph_consumers()),
             proportionality: any(proportionality_consumers()),
+            normalization: any(normalization_consumers()),
             duplicate_word: any(duplicate_word_consumers()),
             casing: any(casing_consumers()),
             mixed_case: any(mixed_case_consumers()),
@@ -1030,6 +1036,7 @@ impl ActiveSubstrates {
             SubstrateId::MixedScript => self.mixed_script,
             SubstrateId::Glyph => self.glyph,
             SubstrateId::Proportionality => self.proportionality,
+            SubstrateId::Normalization => self.normalization,
             SubstrateId::DuplicateWord => self.duplicate_word,
             SubstrateId::Casing => self.casing,
             SubstrateId::MixedCase => self.mixed_case,
@@ -1076,6 +1083,11 @@ pub(crate) fn proportionality_consumers() -> &'static [RuleId] {
     &[RuleId::ProjectLengthRatio]
 }
 
+/// The closed registry: the normalization substrate's sole consumer.
+pub(crate) fn normalization_consumers() -> &'static [RuleId] {
+    &[RuleId::MixedNormalization]
+}
+
 /// The closed registry: the duplicate-word substrate's sole consumer.
 pub(crate) fn duplicate_word_consumers() -> &'static [RuleId] {
     &[RuleId::DuplicateWord]
@@ -1107,6 +1119,7 @@ pub(crate) fn consumers_of(id: SubstrateId) -> &'static [RuleId] {
         SubstrateId::MixedScript => mixed_script_consumers(),
         SubstrateId::Glyph => glyph_consumers(),
         SubstrateId::Proportionality => proportionality_consumers(),
+        SubstrateId::Normalization => normalization_consumers(),
         SubstrateId::DuplicateWord => duplicate_word_consumers(),
         SubstrateId::Casing => casing_consumers(),
         SubstrateId::MixedCase => mixed_case_consumers(),
@@ -1150,6 +1163,10 @@ mod tests {
             SubstrateId::Proportionality
         );
         assert_eq!(
+            <crate::signals::mixed_normalization::NormalizationSubstrate as ObservationSubstrate>::ID,
+            SubstrateId::Normalization
+        );
+        assert_eq!(
             <crate::signals::lexical::DuplicateWordSubstrate as ObservationSubstrate>::ID,
             SubstrateId::DuplicateWord
         );
@@ -1182,6 +1199,7 @@ mod tests {
                 mixed_script: true,
                 glyph: true,
                 proportionality: true,
+                normalization: true,
                 duplicate_word: true,
                 casing: true,
                 mixed_case: true,

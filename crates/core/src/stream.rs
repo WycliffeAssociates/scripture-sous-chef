@@ -36,7 +36,7 @@ use crate::corpus::{BookGroup, Books, LocalKeyIdx};
 use crate::grapheme::{self, GSpan};
 use crate::rule::{self};
 use crate::signals::{
-    bracket_balance, mixed_normalization,
+    bracket_balance,
 };
 use crate::tape::{self, TapeEntry};
 use crate::token::{self, Token};
@@ -89,7 +89,6 @@ impl Needs {
 #[derive(Clone, Copy, Default)]
 pub(crate) struct WalkPlan {
     pub bracket: bool,
-    pub normalization: bool,
     pub collect_tokens: bool,
 }
 
@@ -109,9 +108,6 @@ impl WalkPlan {
         if self.collect_tokens {
             n.tokens = true;
         }
-        if self.normalization {
-            n.graphemes = true;
-        }
         n
     }
 }
@@ -125,7 +121,6 @@ impl WalkPlan {
 #[derive(Default)]
 pub(crate) struct BookOut {
     pub bracket: Option<bracket_balance::BookMatch>,
-    pub normalization: Option<mixed_normalization::BookNormalization>,
     pub tokens: Option<Vec<(LocalKeyIdx, Vec<Token>)>>,
 }
 
@@ -210,9 +205,6 @@ fn walk_book(group: &BookGroup<'_>, count: bool, plan: &WalkPlan) -> BookOut {
 
     // Project listeners (every supplied book — their emission scope).
     let mut bracket_acc = plan.bracket.then(bracket_balance::BracketAcc::new);
-    let mut normalization_acc = plan
-        .normalization
-        .then(mixed_normalization::NormalizationAcc::new);
 
     let mut tape_buf: Vec<TapeEntry> = Vec::new();
     let mut graphemes_buf: Vec<GSpan> = Vec::new();
@@ -248,9 +240,6 @@ fn walk_book(group: &BookGroup<'_>, count: bool, plan: &WalkPlan) -> BookOut {
         if let Some(a) = &mut bracket_acc {
             a.verse(&v);
         }
-        if let Some(a) = &mut normalization_acc {
-            a.verse(&v);
-        }
 
         if let Some(c) = &mut cache {
             c.push((local_idx, std::mem::take(&mut tokens_buf)));
@@ -259,7 +248,6 @@ fn walk_book(group: &BookGroup<'_>, count: bool, plan: &WalkPlan) -> BookOut {
 
     BookOut {
         bracket: bracket_acc.map(bracket_balance::BracketAcc::finish),
-        normalization: normalization_acc.map(mixed_normalization::NormalizationAcc::finish),
         tokens: cache,
     }
 }

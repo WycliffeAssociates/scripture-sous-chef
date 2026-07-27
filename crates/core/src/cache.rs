@@ -155,6 +155,8 @@ pub(crate) struct SubstrateSection {
     /// `proj.length-ratio`'s substrate (Phase E) — the reference-declaring one.
     pub(crate) proportionality:
         SubstrateCache<crate::signals::proportionality::ProportionalitySubstrate>,
+    /// `uni.mixed-normalization`'s substrate (Phase E).
+    pub(crate) normalization: SubstrateCache<mixed_normalization::NormalizationSubstrate>,
     /// `case.mixed-case-word`'s substrate (Phase E).
     pub(crate) mixed_case: SubstrateCache<crate::signals::mixed_case::MixedCaseSubstrate>,
     /// The shared folded-word table every word-keyed substrate names its word
@@ -181,6 +183,7 @@ impl SubstrateSection {
             mixed_script: SubstrateCache::new(),
             glyph: SubstrateCache::new(),
             proportionality: SubstrateCache::new(),
+            normalization: SubstrateCache::new(),
             duplicate_word: SubstrateCache::new(),
             casing: SubstrateCache::new(),
             casing_model: None,
@@ -199,6 +202,7 @@ impl SubstrateSection {
         self.mixed_script.clear();
         self.glyph.clear();
         self.proportionality.clear();
+        self.normalization.clear();
         self.duplicate_word.clear();
         self.casing.clear();
         self.casing_model = None;
@@ -218,6 +222,7 @@ impl SubstrateSection {
         self.mixed_script.remove_book(slug);
         self.glyph.remove_book(slug);
         self.proportionality.remove_book(slug);
+        self.normalization.remove_book(slug);
         self.duplicate_word.remove_book(slug);
         self.casing.remove_book(slug);
         self.mixed_case.remove_book(slug);
@@ -916,7 +921,6 @@ impl PrepSection {
     fn store_walk(&mut self, slug: &str, hash: u128, output: &BookOut) {
         let entry = self.entry_for_write(slug, hash);
         entry.bracket = output.bracket.clone();
-        entry.normalization = output.normalization.clone();
         entry.tokens = output.tokens.clone();
     }
 
@@ -934,7 +938,6 @@ impl PrepSection {
 pub(crate) struct BookEntry {
     pub(crate) hash: u128,
     pub(crate) bracket: Option<bracket_balance::BookMatch>,
-    pub(crate) normalization: Option<mixed_normalization::BookNormalization>,
     pub(crate) tokens: Option<Vec<(LocalKeyIdx, Vec<Token>)>>,
 }
 
@@ -943,14 +946,12 @@ impl BookEntry {
         Self {
             hash,
             bracket: None,
-            normalization: None,
             tokens: None,
         }
     }
 
     fn has_walk_lanes(&self, plan: &WalkPlan) -> bool {
 (!plan.bracket || self.bracket.is_some())
-            && (!plan.normalization || self.normalization.is_some())
             && (!plan.collect_tokens || self.tokens.is_some())
     }
 }

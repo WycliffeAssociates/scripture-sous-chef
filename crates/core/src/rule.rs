@@ -414,7 +414,6 @@ pub fn project_rules(config: &Config) -> Vec<Box<dyn ProjectRule>> {
         Box::new(signals::bracket_balance::BracketBalance {
             cfg: config.bracket_balance,
         }),
-        Box::new(signals::mixed_normalization::MixedNormalization),
     ]
 }
 
