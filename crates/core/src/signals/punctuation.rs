@@ -508,13 +508,16 @@ pub(crate) fn drive_adjacency(
     cfg: &PunctuationAdjacencyConfig,
     out: &mut Vec<Finding>,
 ) {
-    use crate::substrate::{ChapterView, ObservationInputStamp, ObservationSubstrate};
+    use crate::substrate::{
+        ChapterView, DrivePhase, DriveProbe, ObservationInputStamp, ObservationSubstrate,
+    };
     #[cfg(any(test, feature = "test-probes"))]
     cache.reset_probes();
     if !active {
         cache.clear();
         return;
     }
+    let mut probe = DriveProbe::new(crate::substrate::SubstrateId::Adjacency);
     let texts = corpus.texts();
     let layout = corpus.book_layout();
     let mut stamped: Vec<Vec<(Box<str>, ObservationInputStamp)>> = Vec::with_capacity(layout.len());
@@ -549,6 +552,7 @@ pub(crate) fn drive_adjacency(
         }
         stamped.push(chapters);
     }
+    probe.mark(DrivePhase::Plan);
     let route = crate::rule::map_route(&book_runs, work.len(), work_bytes);
     #[cfg(any(test, feature = "test-probes"))]
     {
@@ -566,6 +570,7 @@ pub(crate) fn drive_adjacency(
     for (w, obs) in work.iter().zip(fresh) {
         slots[w.book][w.chapter] = Some(obs);
     }
+    probe.mark(DrivePhase::Map);
     for (bi, book) in layout.iter().enumerate() {
         cache.update_book(&book.slug, &stamped[bi], &(), |i| {
             slots[bi][i].take().unwrap_or_else(|| {
@@ -581,9 +586,12 @@ pub(crate) fn drive_adjacency(
             })
         });
     }
+    probe.mark(DrivePhase::Reduce);
     // Judge every pattern in the aggregate. Each is named by at least one
     // retained candidate (a pattern is counted only where a candidate produced
-    // it), so this is exactly the key set that can emit — no wider.
+    // it), so this is exactly the key set that can emit — no wider. No
+    // key-discovery phase for the same reason: the aggregate's key set already
+    // IS the judge key set.
     let stats = cache.corpus_stats();
     let verdicts: BTreeMap<AdjacencyKey, AdjacencyOutcome> = stats
         .patterns
@@ -594,11 +602,13 @@ pub(crate) fn drive_adjacency(
     {
         cache.judged = verdicts.len();
     }
+    probe.mark(DrivePhase::Judge);
     for book in layout {
         if let Some(contrib) = cache.book_contribution(&book.slug) {
             contrib.materialize(&book.slug, corpus, &verdicts, out);
         }
     }
+    probe.mark(DrivePhase::Materialize);
 }
 
 /// `punct.adjacency-anomaly` findings for a whole corpus at a given config, via
@@ -1925,7 +1935,9 @@ pub(crate) fn drive_spacing(
     cfg: &PunctuationSpacingConfig,
     out: &mut Vec<Finding>,
 ) {
-    use crate::substrate::{ChapterView, ObservationInputStamp, ObservationSubstrate};
+    use crate::substrate::{
+        ChapterView, DrivePhase, DriveProbe, ObservationInputStamp, ObservationSubstrate,
+    };
     // Reset the per-analyze work probes up front so a disabled substrate reads as
     // zero work (not a stale count from a prior active analyze).
     #[cfg(any(test, feature = "test-probes"))]
@@ -1934,6 +1946,7 @@ pub(crate) fn drive_spacing(
         cache.clear();
         return;
     }
+    let mut probe = DriveProbe::new(crate::substrate::SubstrateId::Spacing);
     let texts = corpus.texts();
     let layout = corpus.book_layout();
     // Planning pass. Stamps are built once and handed to both the seam and the
@@ -1973,6 +1986,7 @@ pub(crate) fn drive_spacing(
         }
         stamped.push(chapters);
     }
+    probe.mark(DrivePhase::Plan);
     let route = crate::rule::map_route(&book_runs, work.len(), work_bytes);
     #[cfg(any(test, feature = "test-probes"))]
     {
@@ -1991,6 +2005,7 @@ pub(crate) fn drive_spacing(
     for (w, obs) in work.iter().zip(fresh) {
         slots[w.book][w.chapter] = Some(obs);
     }
+    probe.mark(DrivePhase::Map);
     for (bi, book) in layout.iter().enumerate() {
         cache.update_book(&book.slug, &stamped[bi], &(), |i| {
             // Pre-mapped above. The planning pass asked the cache the same
@@ -2009,8 +2024,11 @@ pub(crate) fn drive_spacing(
             })
         });
     }
+    probe.mark(DrivePhase::Reduce);
     let floor = spacing_floor(cfg);
     let stats = cache.corpus_stats();
+    // No key-discovery phase: spacing's judge key set IS the aggregate's key set
+    // (one mark per cell), so there is nothing to reconstruct from the sites.
     let verdicts: BTreeMap<char, MarkVerdict> = stats
         .totals
         .keys()
@@ -2021,11 +2039,13 @@ pub(crate) fn drive_spacing(
     {
         cache.judged = verdicts.len();
     }
+    probe.mark(DrivePhase::Judge);
     for book in corpus.book_layout() {
         if let Some(contrib) = cache.book_contribution(&book.slug) {
             contrib.materialize(&book.slug, corpus, &verdicts, floor, out);
         }
     }
+    probe.mark(DrivePhase::Materialize);
 }
 
 /// `punct.spacing-anomaly` findings for a whole corpus at a given config, via

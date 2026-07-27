@@ -85,6 +85,19 @@ pub mod bench {
     /// cannot change a finding — which is why an override is safe to expose to a
     /// measurement build and to nothing else.
     pub use crate::rule::{PARALLEL_MIN_CHAPTER_MAP_BYTES, set_chapter_map_min_bytes};
+
+    /// The per-substrate × per-phase split of the most recent `transition` on
+    /// this thread: `[substrate][phase]`, rows indexed by
+    /// [`SUBSTRATE_NAMES`] and columns by [`DRIVE_PHASE_NAMES`].
+    ///
+    /// The coarse `judge` figure above is one window covering every substrate's
+    /// whole `drive_*` — planning, mapping, ordered reduction, judge-key
+    /// discovery, judging, and materialization all land in it. This table is
+    /// that window separated, so a per-substrate fixed cost can be attributed
+    /// to a phase rather than to the drive as a whole.
+    pub use crate::substrate::{
+        DRIVE_PHASE_NAMES, SUBSTRATE_NAMES, drive_phase_table as drive_phases,
+    };
 }
 #[cfg(feature = "bench-probes")]
 pub use stream::{FloorNeeds, walk_floor};
@@ -823,6 +836,11 @@ fn transition(
     // rollback copy taken below is what makes that deep injection safe.)
     #[cfg(feature = "bench-probes")]
     let bench_judge_start = std::time::Instant::now();
+    // Every substrate drive runs inside the judge window, so its per-phase
+    // sub-split is zeroed here — a substrate this call did not drive then reads
+    // as zero rather than as the previous call's row.
+    #[cfg(feature = "bench-probes")]
+    substrate::reset_drive_phases();
 
     // Stateful rules: supersede the prior cache at book granularity, judge the
     // whole merged corpus from the cache.

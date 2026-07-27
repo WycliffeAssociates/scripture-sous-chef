@@ -1964,7 +1964,9 @@ pub(crate) fn drive_casing(
         retained,
         symbols,
     } = state;
-    use crate::substrate::{ChapterView, ObservationInputStamp, ObservationSubstrate};
+    use crate::substrate::{
+        ChapterView, DrivePhase, DriveProbe, ObservationInputStamp, ObservationSubstrate,
+    };
     #[cfg(any(test, feature = "test-probes"))]
     cache.reset_probes();
     if !positional && !intrinsic {
@@ -1972,6 +1974,7 @@ pub(crate) fn drive_casing(
         *retained = None;
         return;
     }
+    let mut probe = DriveProbe::new(crate::substrate::SubstrateId::Casing);
     let texts = corpus.texts();
     let layout = corpus.book_layout();
     // Planning pass. Stamps are built once and handed to both the seam and the
@@ -2009,6 +2012,7 @@ pub(crate) fn drive_casing(
         }
         stamped.push(chapters);
     }
+    probe.mark(DrivePhase::Plan);
     let route = crate::rule::map_route(&book_runs, work.len(), work_bytes);
     #[cfg(any(test, feature = "test-probes"))]
     {
@@ -2027,6 +2031,7 @@ pub(crate) fn drive_casing(
     for (w, obs) in work.iter().zip(fresh) {
         slots[w.book][w.chapter] = Some(obs);
     }
+    probe.mark(DrivePhase::Map);
     for (bi, book) in layout.iter().enumerate() {
         cache.update_book(&book.slug, &stamped[bi], symbols, |i| {
             // Pre-mapped above. The planning pass asked the cache the same
@@ -2047,6 +2052,7 @@ pub(crate) fn drive_casing(
         });
     }
 
+    probe.mark(DrivePhase::Reduce);
     let stats = cache.corpus_stats();
     // Emergent gate: no cased word-starts, no convention to violate.
     if !stats.any_cased() {
@@ -2069,6 +2075,10 @@ pub(crate) fn drive_casing(
     }
     let model = retained.as_ref().expect("just built or reused");
     let judge = CasingJudge::new(Arc::clone(&model.model), cfg);
+    // Casing's judge key set is the whole model: building or reusing it above IS
+    // the key phase, and the per-site verdicts are drawn inside materialization,
+    // so `judge` stays zero here and materialization carries both.
+    probe.mark(DrivePhase::Keys);
     let mut judged = 0usize;
     for book in layout {
         if let Some(contrib) = cache.book_contribution(&book.slug) {
@@ -2085,6 +2095,7 @@ pub(crate) fn drive_casing(
             );
         }
     }
+    probe.mark(DrivePhase::Materialize);
     #[cfg(any(test, feature = "test-probes"))]
     {
         cache.judged = judged;

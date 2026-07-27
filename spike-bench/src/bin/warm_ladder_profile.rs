@@ -186,6 +186,13 @@ fn main() {
     // Decompose each warm iteration into update_book (whole-corpus layout
     // rebuild + prior/prep bookkeeping) and analyze, and analyze further into
     // the map/reduce/judge phase split (`ssc_core::bench`, bench-probes only).
+    // `--drive-phases` additionally decomposes the judge window into the
+    // per-substrate × per-phase table (`ssc_core::bench::drive_phases`): the
+    // coarse `judge` figure is one window covering every substrate's whole
+    // `drive_*`, and a per-substrate FIXED cost can only be attributed to a
+    // phase — planning, mapping, ordered reduction, judge-key discovery,
+    // judging, materialization — by separating them.
+    let drive_phases = args.iter().any(|a| a == "--drive-phases");
     let mut rot = 0usize;
     let mut batch_totals: Vec<std::time::Duration> = Vec::new();
     for b in 0..batches {
@@ -196,6 +203,7 @@ fn main() {
         let mut red = Vec::with_capacity(trials);
         let mut jud = Vec::with_capacity(trials);
         let mut findings = 0usize;
+        let mut drives: Vec<[[std::time::Duration; 6]; 6]> = Vec::with_capacity(trials);
         for _ in 0..trials {
             rot = (rot + 1) % blocks.len();
             let block = blocks[rot].clone();
@@ -213,6 +221,9 @@ fn main() {
             map.push(ph.map);
             red.push(ph.reduce);
             jud.push(ph.judge);
+            if drive_phases {
+                drives.push(ssc_core::bench::drive_phases());
+            }
         }
         let med = |v: &mut Vec<std::time::Duration>| spike_bench::median(v);
         let bt = med(&mut total);
@@ -228,6 +239,31 @@ fn main() {
             med(&mut jud),
             variance_note(&total),
         );
+        if drive_phases {
+            // Per-cell median across the batch's trials, so one slow iteration
+            // cannot invent a phase cost. Cell medians are independent, so the
+            // row sums are medians of parts, not the median of the whole — close
+            // enough to attribute a share, and stated rather than implied.
+            println!(
+                "  {:<15} {:>9} {:>9} {:>9} {:>9} {:>9} {:>9} {:>10}",
+                "substrate", "plan", "map", "reduce", "keys", "judge", "materlz", "row total",
+            );
+            let mut grand = 0f64;
+            for (s, name) in ssc_core::bench::SUBSTRATE_NAMES.iter().enumerate() {
+                let mut cells = [0f64; 6];
+                for (p, cell) in cells.iter_mut().enumerate() {
+                    let mut v: Vec<std::time::Duration> = drives.iter().map(|t| t[s][p]).collect();
+                    *cell = spike_bench::median(&mut v).as_secs_f64() * 1e3;
+                }
+                let row: f64 = cells.iter().sum();
+                grand += row;
+                println!(
+                    "  {name:<15} {:>9.4} {:>9.4} {:>9.4} {:>9.4} {:>9.4} {:>9.4} {:>10.4}",
+                    cells[0], cells[1], cells[2], cells[3], cells[4], cells[5], row,
+                );
+            }
+            println!("  {:<15} all substrates, all phases: {grand:.4} ms", "");
+        }
     }
     if batches > 1 {
         batch_totals.sort();

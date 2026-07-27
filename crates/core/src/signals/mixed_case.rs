@@ -747,7 +747,9 @@ pub(crate) fn drive_mixed_case(
     cfg: &MixedCaseConfig,
     out: &mut Vec<Finding>,
 ) {
-    use crate::substrate::{ChapterView, ObservationInputStamp, ObservationSubstrate};
+    use crate::substrate::{
+        ChapterView, DrivePhase, DriveProbe, ObservationInputStamp, ObservationSubstrate,
+    };
     let MixedCaseState { cache, symbols } = state;
     #[cfg(any(test, feature = "test-probes"))]
     cache.reset_probes();
@@ -755,6 +757,7 @@ pub(crate) fn drive_mixed_case(
         cache.clear();
         return;
     }
+    let mut probe = DriveProbe::new(crate::substrate::SubstrateId::MixedCase);
     let texts = corpus.texts();
     let layout = corpus.book_layout();
     let mut stamped: Vec<Vec<(Box<str>, ObservationInputStamp)>> = Vec::with_capacity(layout.len());
@@ -789,6 +792,7 @@ pub(crate) fn drive_mixed_case(
         }
         stamped.push(chapters);
     }
+    probe.mark(DrivePhase::Plan);
     let route = crate::rule::map_route(&book_runs, work.len(), work_bytes);
     #[cfg(any(test, feature = "test-probes"))]
     {
@@ -806,6 +810,7 @@ pub(crate) fn drive_mixed_case(
     for (w, obs) in work.iter().zip(fresh) {
         slots[w.book][w.chapter] = Some(obs);
     }
+    probe.mark(DrivePhase::Map);
     for (bi, book) in layout.iter().enumerate() {
         cache.update_book(&book.slug, &stamped[bi], symbols, |i| {
             slots[bi][i].take().unwrap_or_else(|| {
@@ -822,6 +827,7 @@ pub(crate) fn drive_mixed_case(
         });
     }
 
+    probe.mark(DrivePhase::Reduce);
     // The judge key set is exactly the word types the retained sites name — the
     // only words that could ever emit. Collected before judging so each word type
     // is judged once however many occurrences it has.
@@ -835,6 +841,7 @@ pub(crate) fn drive_mixed_case(
             }
         }
     }
+    probe.mark(DrivePhase::Keys);
     let judge = MixedCaseJudge::new(cfg);
     let stats = cache.corpus_stats();
     let syms: Vec<WordSym> = named.into_iter().collect();
@@ -852,11 +859,13 @@ pub(crate) fn drive_mixed_case(
     {
         cache.judged = verdicts.len();
     }
+    probe.mark(DrivePhase::Judge);
     for book in layout {
         if let Some(contrib) = cache.book_contribution(&book.slug) {
             contrib.materialize(&book.slug, corpus, &verdicts, out);
         }
     }
+    probe.mark(DrivePhase::Materialize);
 }
 
 /// The corpus-wide shape-count totals this substrate observes, as

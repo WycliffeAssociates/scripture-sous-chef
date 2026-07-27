@@ -79,6 +79,131 @@ impl SubstrateId {
         SubstrateId::Casing,
         SubstrateId::MixedCase,
     ];
+
+    /// This id's row in the drive-phase probe table — its position in
+    /// [`ALL`](Self::ALL), which is declaration order.
+    #[cfg(feature = "bench-probes")]
+    const fn row(self) -> usize {
+        self as usize
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// The per-substrate × per-phase drive probe (`bench-probes` only).
+//
+// A drive's six phases are structurally distinct pieces of work with different
+// removability: planning and reduction are duplicated per substrate over the
+// whole layout and could in principle be shared or skipped, while judge-key
+// discovery, judging and materialization are whole-corpus by construction and
+// only a delta-consumption design removes them. Attributing a measured fixed
+// cost to the drive as a whole cannot tell those apart, so the probe separates
+// them. Off the feature every type here is a ZST and every method is an empty
+// inlined body — the shipped path carries no timers.
+// ─────────────────────────────────────────────────────────────────────
+
+/// The phases of one `drive_*` call, in the order a drive performs them.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum DrivePhase {
+    /// Walk the whole layout, build every chapter's `ObservationInputStamp`,
+    /// ask the cache which chapters are dirty, collect the map work.
+    Plan,
+    /// The ordered chapter-map seam: `map_chapter` over the dirty chapters plus
+    /// slotting the results back into caller order.
+    Map,
+    /// `update_book` for every book — the ordered reduction-to-convergence
+    /// replay, the book fold, and the corpus-aggregate replacement.
+    Reduce,
+    /// Discovering/reconstructing the judge key set (for a substrate that walks
+    /// its retained sites to name it, or builds a corpus model).
+    Keys,
+    /// The per-key `judge` calls.
+    Judge,
+    /// Walking every book's retained sites and emitting findings.
+    Materialize,
+}
+
+/// Row labels for [`drive_phase_table`] — `SubstrateId::ALL` order.
+#[cfg(feature = "bench-probes")]
+pub const SUBSTRATE_NAMES: [&str; 6] = [
+    "spacing",
+    "adjacency",
+    "repeated-run",
+    "duplicate-word",
+    "casing",
+    "mixed-case",
+];
+
+/// Column labels for [`drive_phase_table`] — [`DrivePhase`] declaration order.
+#[cfg(feature = "bench-probes")]
+pub const DRIVE_PHASE_NAMES: [&str; 6] = ["plan", "map", "reduce", "keys", "judge", "materialize"];
+
+#[cfg(feature = "bench-probes")]
+type DrivePhaseTable = [[std::time::Duration; 6]; 6];
+
+#[cfg(feature = "bench-probes")]
+thread_local! {
+    static DRIVE_PHASES: std::cell::Cell<DrivePhaseTable> =
+        const { std::cell::Cell::new([[std::time::Duration::ZERO; 6]; 6]) };
+}
+
+/// Zero the drive-phase table. `transition` calls this once per analyze so a
+/// substrate that did not run this call reads as zero rather than as a stale
+/// row from the previous one.
+#[cfg(feature = "bench-probes")]
+pub(crate) fn reset_drive_phases() {
+    DRIVE_PHASES.with(|t| t.set([[std::time::Duration::ZERO; 6]; 6]));
+}
+
+/// The most recent analyze's per-substrate × per-phase split on this thread.
+#[cfg(feature = "bench-probes")]
+pub fn drive_phase_table() -> DrivePhaseTable {
+    DRIVE_PHASES.with(std::cell::Cell::get)
+}
+
+/// One drive's phase timer: [`mark`](DriveProbe::mark) closes the phase that
+/// ended and opens the next. Accumulates rather than assigns, so a drive that
+/// interleaves a phase (casing judges inside materialization) can mark the same
+/// phase more than once.
+#[cfg(feature = "bench-probes")]
+pub(crate) struct DriveProbe {
+    row: usize,
+    last: std::time::Instant,
+}
+
+#[cfg(feature = "bench-probes")]
+impl DriveProbe {
+    pub(crate) fn new(id: SubstrateId) -> Self {
+        DriveProbe {
+            row: id.row(),
+            last: std::time::Instant::now(),
+        }
+    }
+
+    pub(crate) fn mark(&mut self, phase: DrivePhase) {
+        let now = std::time::Instant::now();
+        let elapsed = now - self.last;
+        self.last = now;
+        let row = self.row;
+        DRIVE_PHASES.with(|t| {
+            let mut table = t.get();
+            table[row][phase as usize] += elapsed;
+            t.set(table);
+        });
+    }
+}
+
+#[cfg(not(feature = "bench-probes"))]
+pub(crate) struct DriveProbe;
+
+#[cfg(not(feature = "bench-probes"))]
+impl DriveProbe {
+    #[inline(always)]
+    pub(crate) fn new(_id: SubstrateId) -> Self {
+        DriveProbe
+    }
+
+    #[inline(always)]
+    pub(crate) fn mark(&mut self, _phase: DrivePhase) {}
 }
 
 /// A verse-slice view of one chapter, handed to

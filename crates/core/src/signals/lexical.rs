@@ -344,13 +344,16 @@ pub(crate) fn drive_duplicate_word(
     corpus: &Corpus,
     out: &mut Vec<Finding>,
 ) {
-    use crate::substrate::{ChapterView, ObservationInputStamp, ObservationSubstrate};
+    use crate::substrate::{
+        ChapterView, DrivePhase, DriveProbe, ObservationInputStamp, ObservationSubstrate,
+    };
     #[cfg(any(test, feature = "test-probes"))]
     cache.reset_probes();
     if !active {
         cache.clear();
         return;
     }
+    let mut probe = DriveProbe::new(crate::substrate::SubstrateId::DuplicateWord);
     let texts = corpus.texts();
     let layout = corpus.book_layout();
     let mut stamped: Vec<Vec<(Box<str>, ObservationInputStamp)>> = Vec::with_capacity(layout.len());
@@ -385,6 +388,7 @@ pub(crate) fn drive_duplicate_word(
         }
         stamped.push(chapters);
     }
+    probe.mark(DrivePhase::Plan);
     let route = crate::rule::map_route(&book_runs, work.len(), work_bytes);
     #[cfg(any(test, feature = "test-probes"))]
     {
@@ -400,6 +404,7 @@ pub(crate) fn drive_duplicate_word(
     for (w, obs) in work.iter().zip(fresh) {
         slots[w.book][w.chapter] = Some(obs);
     }
+    probe.mark(DrivePhase::Map);
     for (bi, book) in layout.iter().enumerate() {
         cache.update_book(&book.slug, &stamped[bi], &(), |i| {
             slots[bi][i].take().unwrap_or_else(|| {
@@ -415,16 +420,20 @@ pub(crate) fn drive_duplicate_word(
             })
         });
     }
+    probe.mark(DrivePhase::Reduce);
+    // One key, one verdict — no key-discovery phase to separate.
     let verdict = DuplicateWordSubstrate::judge(&(), &(), cache.corpus_stats());
     #[cfg(any(test, feature = "test-probes"))]
     {
         cache.judged = 1;
     }
+    probe.mark(DrivePhase::Judge);
     for book in layout {
         if let Some(contrib) = cache.book_contribution(&book.slug) {
             contrib.materialize(&book.slug, corpus, verdict, out);
         }
     }
+    probe.mark(DrivePhase::Materialize);
 }
 
 /// `struct.duplicate-word` findings for a whole corpus, via the observation
@@ -1294,13 +1303,16 @@ pub(crate) fn drive_repeated_run(
     cfg: &RepeatedCharacterRunConfig,
     out: &mut Vec<Finding>,
 ) {
-    use crate::substrate::{ChapterView, ObservationInputStamp, ObservationSubstrate};
+    use crate::substrate::{
+        ChapterView, DrivePhase, DriveProbe, ObservationInputStamp, ObservationSubstrate,
+    };
     #[cfg(any(test, feature = "test-probes"))]
     cache.reset_probes();
     if !active {
         cache.clear();
         return;
     }
+    let mut probe = DriveProbe::new(crate::substrate::SubstrateId::RepeatedRun);
     let texts = corpus.texts();
     let layout = corpus.book_layout();
     let mut stamped: Vec<Vec<(Box<str>, ObservationInputStamp)>> = Vec::with_capacity(layout.len());
@@ -1335,6 +1347,7 @@ pub(crate) fn drive_repeated_run(
         }
         stamped.push(chapters);
     }
+    probe.mark(DrivePhase::Plan);
     let route = crate::rule::map_route(&book_runs, work.len(), work_bytes);
     #[cfg(any(test, feature = "test-probes"))]
     {
@@ -1352,6 +1365,7 @@ pub(crate) fn drive_repeated_run(
     for (w, obs) in work.iter().zip(fresh) {
         slots[w.book][w.chapter] = Some(obs);
     }
+    probe.mark(DrivePhase::Map);
     for (bi, book) in layout.iter().enumerate() {
         cache.update_book(&book.slug, &stamped[bi], &(), |i| {
             slots[bi][i].take().unwrap_or_else(|| {
@@ -1367,6 +1381,7 @@ pub(crate) fn drive_repeated_run(
             })
         });
     }
+    probe.mark(DrivePhase::Reduce);
     // The judge key set is exactly the keys the retained candidates name — the
     // only keys that could ever emit. Collected before judging so a key shared by
     // several sites is judged once.
@@ -1380,6 +1395,7 @@ pub(crate) fn drive_repeated_run(
             }
         }
     }
+    probe.mark(DrivePhase::Keys);
     let stats = cache.corpus_stats();
     for (key, outcome) in named.iter_mut() {
         *outcome = RepeatedRunSubstrate::judge(cfg, key, stats);
@@ -1388,11 +1404,13 @@ pub(crate) fn drive_repeated_run(
     {
         cache.judged = named.len();
     }
+    probe.mark(DrivePhase::Judge);
     for book in layout {
         if let Some(contrib) = cache.book_contribution(&book.slug) {
             contrib.materialize(&book.slug, corpus, &named, out);
         }
     }
+    probe.mark(DrivePhase::Materialize);
 }
 
 /// `lex.repeated-character-run` findings for a whole corpus at a given config, via
