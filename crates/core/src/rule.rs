@@ -409,11 +409,8 @@ pub(crate) fn per_verse_rules() -> Vec<Box<dyn PerVerseRule>> {
 /// Every project-scoped rule wired in by default. Knob-bearing rules are
 /// constructed from `config`'s typed sub-configs here, once per analyze
 /// call — `ProjectRule::check` itself never sees the `Config`.
-pub fn project_rules(config: &Config) -> Vec<Box<dyn ProjectRule>> {
+pub fn project_rules(_config: &Config) -> Vec<Box<dyn ProjectRule>> {
     vec![
-        Box::new(signals::bracket_balance::BracketBalance {
-            cfg: config.bracket_balance,
-        }),
     ]
 }
 

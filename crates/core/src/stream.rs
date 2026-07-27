@@ -35,9 +35,6 @@
 use crate::corpus::{BookGroup, Books, LocalKeyIdx};
 use crate::grapheme::{self, GSpan};
 use crate::rule::{self};
-use crate::signals::{
-    bracket_balance,
-};
 use crate::tape::{self, TapeEntry};
 use crate::token::{self, Token};
 
@@ -88,28 +85,7 @@ impl Needs {
 /// verse's tokens as the shared [`TokenCache`] for the judge phase.
 #[derive(Clone, Copy, Default)]
 pub(crate) struct WalkPlan {
-    pub bracket: bool,
     pub collect_tokens: bool,
-}
-
-impl WalkPlan {
-    /// The products the one remaining counting listener (proportionality) needs
-    /// — nothing but the verse text, which every walk has.
-    fn counting_needs(&self) -> Needs {
-        Needs::default()
-    }
-
-    /// The products the always-on (project) listeners need.
-    fn project_needs(&self) -> Needs {
-        let mut n = Needs::default();
-        if self.bracket {
-            n.tape = true;
-        }
-        if self.collect_tokens {
-            n.tokens = true;
-        }
-        n
-    }
 }
 
 /// One book's fused-walk outputs: each enabled counting listener's
@@ -120,7 +96,6 @@ impl WalkPlan {
 /// authoritative because nothing recounted them.
 #[derive(Default)]
 pub(crate) struct BookOut {
-    pub bracket: Option<bracket_balance::BookMatch>,
     pub tokens: Option<Vec<(LocalKeyIdx, Vec<Token>)>>,
 }
 
@@ -198,57 +173,31 @@ fn walk_book(group: &BookGroup<'_>, count: bool, plan: &WalkPlan) -> BookOut {
     // because the batch lane is permanent (plan §9) and the first batch rule to
     // land will need it back.
     let _ = count;
-    let needs = plan.counting_needs().union(plan.project_needs());
-    // Short-circuits (no sampling cost) when nothing on this walk needs
-    // tokens at all.
-    let delegate_tokens = needs.tokens && book_prefers_delegation(group.texts);
-
-    // Project listeners (every supplied book — their emission scope).
-    let mut bracket_acc = plan.bracket.then(bracket_balance::BracketAcc::new);
-
-    let mut tape_buf: Vec<TapeEntry> = Vec::new();
-    let mut graphemes_buf: Vec<GSpan> = Vec::new();
+    // THE FUSED WALK HAS NO LISTENER LEFT. Every rule that ever fed it — the
+    // counting listeners and the project listeners alike — is a typed observation
+    // substrate now, mapping its own chapters from its own stamp-derived cache.
+    // What survives is the token-cache lane, which exists for the batch lane's
+    // judges and is currently off (plan §9 keeps the lane; nothing occupies it).
+    // So the honest body is: build the token cache if asked, otherwise nothing.
+    let Some(mut cache) = plan
+        .collect_tokens
+        .then(|| Vec::with_capacity(group.len()))
+    else {
+        return BookOut::default();
+    };
+    let delegate_tokens = book_prefers_delegation(group.texts);
     let mut tokens_buf: Vec<Token> = Vec::new();
-    let mut cache: Option<Vec<(LocalKeyIdx, Vec<Token>)>> =
-        plan.collect_tokens.then(|| Vec::with_capacity(group.len()));
-
-    for (vi, (key, text)) in group.keys.iter().zip(group.texts.iter()).enumerate() {
+    for (vi, text) in group.texts.iter().enumerate() {
         let local_idx = LocalKeyIdx::from_usize(vi);
-        let text = text.as_str();
-        if needs.tape {
-            tape::build(text, &mut tape_buf);
+        if delegate_tokens {
+            token::tokenize_oracle_into(text, &mut tokens_buf);
+        } else {
+            token::tokenize_hand_rolled_into(text, &mut tokens_buf);
         }
-        if needs.graphemes {
-            grapheme::segment_tape(text, &tape_buf, &mut graphemes_buf);
-        }
-        if needs.tokens {
-            if delegate_tokens {
-                token::tokenize_oracle_into(text, &mut tokens_buf);
-            } else {
-                token::tokenize_hand_rolled_into(text, &mut tokens_buf);
-            }
-        }
-        let v = VerseInputs {
-            key,
-            local_idx,
-            text,
-            tape: if needs.tape { &tape_buf } else { &[] },
-            graphemes: if needs.graphemes { &graphemes_buf } else { &[] },
-            tokens: if needs.tokens { &tokens_buf } else { &[] },
-        };
-
-        if let Some(a) = &mut bracket_acc {
-            a.verse(&v);
-        }
-
-        if let Some(c) = &mut cache {
-            c.push((local_idx, std::mem::take(&mut tokens_buf)));
-        }
+        cache.push((local_idx, std::mem::take(&mut tokens_buf)));
     }
-
     BookOut {
-        bracket: bracket_acc.map(bracket_balance::BracketAcc::finish),
-        tokens: cache,
+        tokens: Some(cache),
     }
 }
 

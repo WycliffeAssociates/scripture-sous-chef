@@ -26,7 +26,7 @@ use std::collections::BTreeMap;
 use crate::corpus::{self, BookGroup, Corpus};
 use crate::diagnostics::SpacingForm;
 use crate::rule;
-use crate::signals::bracket_balance::{BookMatch, BracketAcc};
+use crate::signals::bracket_balance::{BookDelims, BracketAcc};
 use crate::signals::case_shape::{CaseShape, case_shape};
 use crate::signals::mixed_case::is_letter_token;
 use crate::signals::punctuation::{
@@ -225,7 +225,7 @@ struct BookCensus {
     per_mark: BTreeMap<char, [u64; SIDE_CELLS]>,
     mark_form_first: Firsts<(char, u8)>,
     mark_occurrences: u64,
-    brackets: BookMatch,
+    brackets: BookDelims,
     shape_counts: BTreeMap<String, u64>,
     shape_first: Firsts<String>,
     digit_tokens: u64,

@@ -377,7 +377,6 @@ fn transition(
     // cache after the stateful judge loop.
     let active = substrate::ActiveSubstrates::from_config(config);
     let plan = stream::WalkPlan {
-        bracket: config.is_enabled(RuleId::BracketBalance),
         // The shared token cache exists for the BATCH lane's `judge` calls, and
         // that lane is empty: every rule that used to read it (repeated-run,
         // rare-glyph, mixed-script) is an observation substrate now and tokenizes
@@ -706,23 +705,6 @@ fn transition(
     // Project findings, read by reference from each book's products (walked or
     // clean). `out` is sorted before return, so appending these before the
     // stateful judges below does not affect the final order.
-    if plan.bracket {
-        let matches: Vec<&signals::bracket_balance::BookMatch> = slots
-            .iter()
-            .map(|slot| {
-                match slot {
-                    BookProducts::Walked(o) => o.bracket.as_ref(),
-                    BookProducts::Clean(e) => e.bracket.as_ref(),
-                }
-                .expect("bracket listener ran on every book")
-            })
-            .collect();
-        out.extend(signals::bracket_balance::emit(
-            &books,
-            &matches,
-            &config.bracket_balance,
-        ));
-    }
 
     // REDUCE boundary. Every substrate's fresh book/corpus stats are folded and
     // the project findings are emitted into the local `out`; nothing resident is
@@ -793,6 +775,7 @@ fn transition(
     #[expect(
         unreachable_code,
         clippy::diverging_sub_expression,
+        clippy::never_loop,
         reason = "no batch rule remains; the lane's assembly is retained for the next one, and \
                   both lints fire only because `stateful_rules` is empty — the first batch rule \
                   to land makes these expectations unfulfilled and forces their removal"
@@ -878,6 +861,13 @@ fn transition(
         active.normalization,
         &mut substrates.normalization,
         target,
+        &mut out,
+    );
+    signals::bracket_balance::drive_bracket(
+        active.bracket,
+        &mut substrates.bracket,
+        target,
+        &config.bracket_balance,
         &mut out,
     );
     signals::lexical::drive_duplicate_word(

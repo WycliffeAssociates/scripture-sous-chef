@@ -67,6 +67,9 @@ pub(crate) enum SubstrateId {
     Proportionality,
     /// `uni.mixed-normalization`'s per-form grapheme-cluster counts.
     Normalization,
+    /// `punct.bracket-balance`'s per-family pairing tallies — the one substrate
+    /// whose boundary state is variable-size (the unmatched-opener stack).
+    Bracket,
     /// `struct.duplicate-word`'s adjacent-pair sites.
     DuplicateWord,
     /// The shared casing model: per-word case tables + lowercase flag
@@ -91,6 +94,7 @@ impl SubstrateId {
         SubstrateId::Glyph,
         SubstrateId::Proportionality,
         SubstrateId::Normalization,
+        SubstrateId::Bracket,
         SubstrateId::DuplicateWord,
         SubstrateId::Casing,
         SubstrateId::MixedCase,
@@ -178,6 +182,7 @@ pub const SUBSTRATE_NAMES: [&str; SubstrateId::ALL.len()] = [
     "glyph",
     "proportionality",
     "normalization",
+    "bracket",
     "duplicate-word",
     "casing",
     "mixed-case",
@@ -1001,6 +1006,7 @@ pub(crate) struct ActiveSubstrates {
     pub(crate) glyph: bool,
     pub(crate) proportionality: bool,
     pub(crate) normalization: bool,
+    pub(crate) bracket: bool,
     pub(crate) duplicate_word: bool,
     pub(crate) casing: bool,
     pub(crate) mixed_case: bool,
@@ -1020,6 +1026,7 @@ impl ActiveSubstrates {
             glyph: any(glyph_consumers()),
             proportionality: any(proportionality_consumers()),
             normalization: any(normalization_consumers()),
+            bracket: any(bracket_consumers()),
             duplicate_word: any(duplicate_word_consumers()),
             casing: any(casing_consumers()),
             mixed_case: any(mixed_case_consumers()),
@@ -1037,6 +1044,7 @@ impl ActiveSubstrates {
             SubstrateId::Glyph => self.glyph,
             SubstrateId::Proportionality => self.proportionality,
             SubstrateId::Normalization => self.normalization,
+            SubstrateId::Bracket => self.bracket,
             SubstrateId::DuplicateWord => self.duplicate_word,
             SubstrateId::Casing => self.casing,
             SubstrateId::MixedCase => self.mixed_case,
@@ -1088,6 +1096,11 @@ pub(crate) fn normalization_consumers() -> &'static [RuleId] {
     &[RuleId::MixedNormalization]
 }
 
+/// The closed registry: the bracket substrate's sole consumer.
+pub(crate) fn bracket_consumers() -> &'static [RuleId] {
+    &[RuleId::BracketBalance]
+}
+
 /// The closed registry: the duplicate-word substrate's sole consumer.
 pub(crate) fn duplicate_word_consumers() -> &'static [RuleId] {
     &[RuleId::DuplicateWord]
@@ -1120,6 +1133,7 @@ pub(crate) fn consumers_of(id: SubstrateId) -> &'static [RuleId] {
         SubstrateId::Glyph => glyph_consumers(),
         SubstrateId::Proportionality => proportionality_consumers(),
         SubstrateId::Normalization => normalization_consumers(),
+        SubstrateId::Bracket => bracket_consumers(),
         SubstrateId::DuplicateWord => duplicate_word_consumers(),
         SubstrateId::Casing => casing_consumers(),
         SubstrateId::MixedCase => mixed_case_consumers(),
@@ -1167,6 +1181,10 @@ mod tests {
             SubstrateId::Normalization
         );
         assert_eq!(
+            <crate::signals::bracket_balance::BracketSubstrate as ObservationSubstrate>::ID,
+            SubstrateId::Bracket
+        );
+        assert_eq!(
             <crate::signals::lexical::DuplicateWordSubstrate as ObservationSubstrate>::ID,
             SubstrateId::DuplicateWord
         );
@@ -1200,6 +1218,7 @@ mod tests {
                 glyph: true,
                 proportionality: true,
                 normalization: true,
+                bracket: true,
                 duplicate_word: true,
                 casing: true,
                 mixed_case: true,

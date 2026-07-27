@@ -5,8 +5,7 @@ use ssc_core::config::{
     BracketBalanceConfig, CasingConfig, MixedScriptConfig, PunctOnlyTokenConfig,
     PunctuationAdjacencyConfig, PunctuationSpacingConfig, RepeatedCharacterRunConfig,
 };
-use ssc_core::rule::ProjectRule;
-use ssc_core::signals::bracket_balance::BracketBalance;
+use ssc_core::signals::bracket_balance::bracket_findings;
 use ssc_core::signals::lexical::{punct_only_findings, repeated_run_findings};
 use ssc_core::signals::punctuation::adjacency_findings;
 use ssc_core::{
@@ -628,15 +627,14 @@ pub(crate) fn bracket_calib(dir: &Path) {
 
     // Floor-0 run of the production rule: every orphan and every long-span pair
     // surfaces, so the score distribution shows the sub-floor mass too.
-    let rule = BracketBalance {
-        cfg: BracketBalanceConfig {
+    let t0 = std::time::Instant::now();
+    let findings = bracket_findings(
+        &target,
+        &BracketBalanceConfig {
             emit_score_min: 0.0,
             ..Default::default()
         },
-    };
-    let books = ssc_core::corpus::by_book(&target);
-    let t0 = std::time::Instant::now();
-    let findings = rule.check(&books, None);
+    );
     eprintln!("bracket check: {:?}", t0.elapsed());
     report_scored("punct.bracket-balance", &target, &findings);
 

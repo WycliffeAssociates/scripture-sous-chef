@@ -34,6 +34,12 @@ fn main() {
     let mut worst_tokens = (0usize, String::new());
     let mut worst_chapter_tokens = (0usize, String::new());
     let mut worst_shape_count = (0usize, String::new());
+    // Bracket's boundary state (WP7c row 9): how deep the carried unmatched-opener
+    // stack really gets, and how many `PendingOpen`s a resident cache holds at once.
+    let mut worst_stack_depth = (0usize, String::new());
+    let mut worst_stack_total = (0usize, String::new());
+    let mut depth_hist: std::collections::BTreeMap<usize, usize> =
+        std::collections::BTreeMap::new();
 
     for (i, path) in files.iter().enumerate() {
         if i % 200 == 0 {
@@ -64,6 +70,15 @@ fn main() {
             worst_shape_count = (shape_count, name.clone());
         }
 
+        let (depth, total) = ssc_core::signals::bracket_balance::stack_depth_probe(&corpus);
+        if depth > worst_stack_depth.0 {
+            worst_stack_depth = (depth, name.clone());
+        }
+        if total > worst_stack_total.0 {
+            worst_stack_total = (total, name.clone());
+        }
+        *depth_hist.entry(depth).or_default() += 1;
+
         // Plain UAX #29 token counts, straight off the file's verse lines —
         // mixed-case's token unit, which does not hyphen-merge.
         let raw = std::fs::read_to_string(path).expect("read corpus file");
@@ -75,6 +90,12 @@ fn main() {
         }
     }
 
+    println!("max seam stack depth         : {:>7} ({})", worst_stack_depth.0, worst_stack_depth.1);
+    println!("max total retained openers   : {:>7} ({})", worst_stack_total.0, worst_stack_total.1);
+    println!("per-corpus max-depth histogram (depth: corpora)");
+    for (d, n) in &depth_hist {
+        println!("  {d:>4}: {n}");
+    }
     println!("max compound words per verse : {:>7} ({})", worst_words.0, worst_words.1);
     println!("max distinct types / chapter : {:>7} ({})", worst_types.0, worst_types.1);
     println!("max distinct classes / chap  : {:>7} ({})", worst_classes.0, worst_classes.1);
