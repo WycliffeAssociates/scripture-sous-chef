@@ -521,7 +521,7 @@ impl RareGlyphAcc {
             );
             let forced = !matches!(
                 casing::pos_of(self.book_initial, self.pending.take()),
-                PosClass::Midflow
+                PosClass::MIDFLOW
             );
             self.book_initial = false;
 

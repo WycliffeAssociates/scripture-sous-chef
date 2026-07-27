@@ -134,10 +134,67 @@ pub struct ClassKey {
 /// defined *before any casing knowledge*. Forced right after an attached
 /// terminal (bare, or with an intervening close-quote), or book-initial.
 /// Everything else — including a token after *non-quote* intervening
-/// punctuation (`...`) — is [`Midflow`](PosClass::Midflow). Verse-initial is
-/// NOT forced (`CLAUDE.md`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub enum PosClass {
+/// punctuation (`...`) — is [`PosKind::Midflow`]. Verse-initial is NOT forced
+/// (`CLAUDE.md`).
+///
+/// **One deterministic `u32`, not a tagged enum.** This is a *retained* field:
+/// it is the one bit of a [`LowerSite`] that genuinely needs discourse context
+/// to recompute (plan §11's retain-vs-rederive principle), so it is stored on
+/// every one of an English Bible's ~668k lowercase sites. As
+/// `enum { BookInitial, ForcedAfterTerminal(ClassKey { char, bool }), Midflow }`
+/// it cost 8 bytes — a 4-byte scalar/tag word plus a `bool` plus 3 bytes of
+/// padding; packed it costs 4, which is what lets a site record close at 12
+/// bytes instead of 16.
+///
+/// The encoding is a direct injection of the **complete** accepted domain, with
+/// no table, no interner and no lifecycle — deliberately, because an id assigned
+/// out of a side table would need a bound on how many distinct boundary classes
+/// a long-lived resident engine can ever see, and no such bound is measurable
+/// from a corpus fleet (that error class is what the 2026-07-26 review caught in
+/// the earlier mark-table design, and the same one WP7a's `ord: u8` stop clause
+/// hit). A Unicode scalar is 21 bits; `quoted` is one more; the two structural
+/// classes take explicit sentinel words above every representable scalar:
+///
+/// ```text
+///  bits  0..=20   Unicode scalar value of the terminal mark (0..=0x10FFFF)
+///  bit      21    quoted (a close-quote intervened before the next word)
+///  0xFFFF_FFFF    Midflow      (sentinel; no forced encoding can reach it)
+///  0xFFFF_FFFE    BookInitial  (sentinel)
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct PosClass(u32);
+
+/// Ordered by the *semantic* three-way class — `BookInitial` < a forced class
+/// (by `(mark, quoted)`) < `Midflow` — which is what the equivalent tagged enum
+/// derived before the packing. `Ord` exists only to satisfy the substrate
+/// contract's `Key: Ord` bound, and casing's stats-delta is always empty so no
+/// shipped order depends on it today; it is written out rather than derived so
+/// that if a key list ever *is* sorted, packing the field cannot silently have
+/// changed the order.
+impl Ord for PosClass {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        fn rank(p: PosClass) -> (u8, Option<(char, bool)>) {
+            match p.kind() {
+                PosKind::BookInitial => (0, None),
+                PosKind::ForcedAfterTerminal(ck) => (1, Some((ck.mark, ck.quoted))),
+                PosKind::Midflow => (2, None),
+            }
+        }
+        rank(*self).cmp(&rank(*other))
+    }
+}
+
+impl PartialOrd for PosClass {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+/// The decoded shape of a [`PosClass`] — the three-way case callers match on.
+/// Exhaustive, so the compiler still forces every consumer to handle all three;
+/// only the *storage* is packed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PosKind {
     /// The first word of the book — forced with no terminal glyph.
     BookInitial,
     /// A word whose first letter consumed an attached terminal (carried across
@@ -148,14 +205,53 @@ pub enum PosClass {
 }
 
 impl PosClass {
+    /// Bit 21 — set when a close-quote intervened between the terminal and the
+    /// next word (ADR 0052's distinct boundary class).
+    const QUOTED_BIT: u32 = 1 << 21;
+    /// Sentinels, chosen above `QUOTED_BIT | 0x10FFFF` so no forced class can
+    /// ever encode to either.
+    const MIDFLOW_BITS: u32 = u32::MAX;
+    const BOOK_INITIAL_BITS: u32 = u32::MAX - 1;
+
+    /// Not position-forced.
+    pub const MIDFLOW: Self = Self(Self::MIDFLOW_BITS);
+    /// The book's first word.
+    pub const BOOK_INITIAL: Self = Self(Self::BOOK_INITIAL_BITS);
+
+    /// The forced class after `mark`, with or without an intervening
+    /// close-quote. Total over the accepted domain: every `char` is a valid
+    /// Unicode scalar, so every `(mark, quoted)` pair encodes.
+    pub fn forced(ck: ClassKey) -> Self {
+        let mut bits = ck.mark as u32;
+        if ck.quoted {
+            bits |= Self::QUOTED_BIT;
+        }
+        Self(bits)
+    }
+
+    /// Decode. The `char` conversion cannot fail: bits 0..=20 are only ever
+    /// written from a `char` in [`PosClass::forced`], and neither sentinel is
+    /// reachable by that path.
+    pub fn kind(self) -> PosKind {
+        match self.0 {
+            Self::MIDFLOW_BITS => PosKind::Midflow,
+            Self::BOOK_INITIAL_BITS => PosKind::BookInitial,
+            bits => PosKind::ForcedAfterTerminal(ClassKey {
+                mark: char::from_u32(bits & !Self::QUOTED_BIT)
+                    .expect("PosClass forced bits always hold a Unicode scalar"),
+                quoted: bits & Self::QUOTED_BIT != 0,
+            }),
+        }
+    }
+
     pub(crate) fn is_forced(self) -> bool {
-        !matches!(self, PosClass::Midflow)
+        self.0 != Self::MIDFLOW_BITS
     }
 
     /// Descriptive `(glyph, quoted)` for the finding args (ADR 0048/0052).
     fn habit_glyph(self) -> (Option<char>, bool) {
-        match self {
-            PosClass::ForcedAfterTerminal(ck) => (Some(ck.mark), ck.quoted),
+        match self.kind() {
+            PosKind::ForcedAfterTerminal(ck) => (Some(ck.mark), ck.quoted),
             _ => (None, false),
         }
     }
@@ -289,13 +385,13 @@ impl WordStats {
     }
 
     fn record(&mut self, pos: PosClass, case: Case) {
-        match (pos, case) {
+        match (pos.kind(), case) {
             (_, Case::Uncased) => {}
-            (PosClass::Midflow, Case::Upper) => self.mid_upper += 1,
-            (PosClass::Midflow, Case::Lower) => self.mid_lower += 1,
-            (PosClass::BookInitial, Case::Upper) => self.book_initial.upper += 1,
-            (PosClass::BookInitial, Case::Lower) => self.book_initial.lower += 1,
-            (PosClass::ForcedAfterTerminal(ck), c) => {
+            (PosKind::Midflow, Case::Upper) => self.mid_upper += 1,
+            (PosKind::Midflow, Case::Lower) => self.mid_lower += 1,
+            (PosKind::BookInitial, Case::Upper) => self.book_initial.upper += 1,
+            (PosKind::BookInitial, Case::Lower) => self.book_initial.lower += 1,
+            (PosKind::ForcedAfterTerminal(ck), c) => {
                 let t = self.forced_slot(ck.mark, ck.quoted);
                 match c {
                     Case::Upper => t.upper += 1,
@@ -815,15 +911,15 @@ impl Model {
         if !pos.is_forced() {
             return None;
         }
-        let (habit_key, trust) = match pos {
-            PosClass::BookInitial => (None, 1.0),
-            PosClass::ForcedAfterTerminal(ck) => {
+        let (habit_key, trust) = match pos.kind() {
+            PosKind::BookInitial => (None, 1.0),
+            PosKind::ForcedAfterTerminal(ck) => {
                 if ck.quoted && !self.quote_promoted(ck.mark) {
                     return None; // folded back to mid-flow — not a forced site
                 }
                 (Some(ck), self.trust_class(ck))
             }
-            PosClass::Midflow => return None,
+            PosKind::Midflow => return None,
         };
         // Gate: verdicts gate. Below the trust gate the positional channel is
         // not scored (the discount already weighted the intrinsic channel).
@@ -956,19 +1052,19 @@ pub(crate) fn advance_gap(gap: &str, pending: &mut Option<Pending>, prev_letter:
 /// a terminal-then-close-quote becomes the boundary class (ADR 0052).
 pub(crate) fn pos_of(book_initial: bool, taken: Option<Pending>) -> PosClass {
     if book_initial {
-        return PosClass::BookInitial;
+        return PosClass::BOOK_INITIAL;
     }
     match taken {
-        Some(p) if p.other => PosClass::Midflow,
-        Some(p) if p.quote => PosClass::ForcedAfterTerminal(ClassKey {
+        Some(p) if p.other => PosClass::MIDFLOW,
+        Some(p) if p.quote => PosClass::forced(ClassKey {
             mark: p.mark,
             quoted: true,
         }),
-        Some(p) => PosClass::ForcedAfterTerminal(ClassKey {
+        Some(p) => PosClass::forced(ClassKey {
             mark: p.mark,
             quoted: false,
         }),
-        None => PosClass::Midflow,
+        None => PosClass::MIDFLOW,
     }
 }
 
@@ -1314,7 +1410,7 @@ impl ChapterAcc {
                         start: w.start,
                         end: w.end,
                         key: id,
-                        pos: PosClass::Midflow,
+                        pos: PosClass::MIDFLOW,
                     }),
                 });
             } else {
@@ -2131,6 +2227,66 @@ pub fn evaluate(corpus: &Corpus, cfg: &CasingConfig) -> Vec<SiteEval> {
 mod tests {
     use super::*;
 
+    /// `PosClass` is a packed `u32` retained on every lowercase site, so its
+    /// encoding is a storage contract: every accepted `(mark, quoted)` pair must
+    /// survive a round trip, and neither structural sentinel may be reachable
+    /// from a forced class. Astral-plane marks are included deliberately — a
+    /// 16-bit or BMP-only assumption is exactly the bug this encoding exists to
+    /// make impossible.
+    #[test]
+    fn pos_class_round_trips_every_variant_including_astral_marks() {
+        assert_eq!(PosClass::MIDFLOW.kind(), PosKind::Midflow);
+        assert_eq!(PosClass::BOOK_INITIAL.kind(), PosKind::BookInitial);
+        assert!(!PosClass::MIDFLOW.is_forced());
+        assert!(PosClass::BOOK_INITIAL.is_forced());
+
+        // Boundary of the scalar range, both quote contexts: ASCII terminals,
+        // non-BMP marks, and the two ends of the Unicode scalar space.
+        let marks = [
+            '\u{0}',
+            '.',
+            '?',
+            '\u{0589}',       // Armenian full stop
+            '\u{3002}',       // ideographic full stop
+            '\u{D7FF}',       // last scalar before the surrogate hole
+            '\u{E000}',       // first scalar after it
+            '\u{FFFF}',       // last BMP scalar
+            '\u{1F600}',      // astral plane
+            '\u{10FFFF}',     // the highest Unicode scalar
+        ];
+        for mark in marks {
+            for quoted in [false, true] {
+                let ck = ClassKey { mark, quoted };
+                let p = PosClass::forced(ck);
+                assert_eq!(
+                    p.kind(),
+                    PosKind::ForcedAfterTerminal(ck),
+                    "{mark:?}/{quoted} must round-trip"
+                );
+                assert!(p.is_forced());
+                assert_eq!(p.habit_glyph(), (Some(mark), quoted));
+                // A forced class can never collide with a structural sentinel.
+                assert_ne!(p, PosClass::MIDFLOW);
+                assert_ne!(p, PosClass::BOOK_INITIAL);
+                // The quote bit is the ONLY difference between the two contexts.
+                assert_ne!(p, PosClass::forced(ClassKey { mark, quoted: !quoted }));
+            }
+        }
+    }
+
+    /// The packed form keeps the semantic ordering the tagged enum derived:
+    /// `BookInitial` < forced (by `(mark, quoted)`) < `Midflow`.
+    #[test]
+    fn pos_class_ordering_is_semantic_not_bitwise() {
+        let bare = PosClass::forced(ClassKey { mark: '.', quoted: false });
+        let quoted = PosClass::forced(ClassKey { mark: '.', quoted: true });
+        let later = PosClass::forced(ClassKey { mark: '?', quoted: false });
+        assert!(PosClass::BOOK_INITIAL < bare);
+        assert!(bare < quoted);
+        assert!(quoted < later, "mark orders before the quote flag");
+        assert!(later < PosClass::MIDFLOW);
+    }
+
     /// Full config with an explicit trust gate (ADR 0052).
     fn cfg_g(
         emit_score_min: f32,
@@ -2746,7 +2902,7 @@ mod tests {
             ('?', false),
         ] {
             w.record(
-                PosClass::ForcedAfterTerminal(ClassKey { mark, quoted }),
+                PosClass::forced(ClassKey { mark, quoted }),
                 Case::Upper,
             );
         }
@@ -2769,14 +2925,14 @@ mod tests {
         // A merge preserves it, and does not duplicate a class already present.
         let mut other = WordStats::default();
         other.record(
-            PosClass::ForcedAfterTerminal(ClassKey {
+            PosClass::forced(ClassKey {
                 mark: ',',
                 quoted: false,
             }),
             Case::Lower,
         );
         other.record(
-            PosClass::ForcedAfterTerminal(ClassKey {
+            PosClass::forced(ClassKey {
                 mark: '.',
                 quoted: false,
             }),
@@ -2820,7 +2976,7 @@ mod tests {
         // capital opening 8:1.
         assert_eq!(
             reduce_one(&obs, &after_terminal('.')).0,
-            Some(PosClass::ForcedAfterTerminal(ClassKey {
+            Some(PosClass::forced(ClassKey {
                 mark: '.',
                 quoted: false,
             })),
@@ -2836,14 +2992,14 @@ mod tests {
                 }
             )
             .0,
-            Some(PosClass::Midflow),
+            Some(PosClass::MIDFLOW),
             "a chapter boundary is not a discourse reset — and not a forced position"
         );
         // The book's first word is forced with no glyph, whatever else is
         // pending — so `book_initial` is not derivable from the pending state.
         assert_eq!(
             reduce_one(&obs, &CasingBoundary::default()).0,
-            Some(PosClass::BookInitial)
+            Some(PosClass::BOOK_INITIAL)
         );
         assert_eq!(
             reduce_one(
@@ -2858,7 +3014,7 @@ mod tests {
                 }
             )
             .0,
-            Some(PosClass::BookInitial)
+            Some(PosClass::BOOK_INITIAL)
         );
     }
 
@@ -2870,7 +3026,7 @@ mod tests {
         let quoted = map_one("8", &["\u{201d} there he goes"]);
         assert_eq!(
             reduce_one(&quoted, &after_terminal('.')).0,
-            Some(PosClass::ForcedAfterTerminal(ClassKey {
+            Some(PosClass::forced(ClassKey {
                 mark: '.',
                 quoted: true,
             })),
@@ -2878,7 +3034,7 @@ mod tests {
         let dotted = map_one("8", &[".. there he goes"]);
         assert_eq!(
             reduce_one(&dotted, &after_terminal('.')).0,
-            Some(PosClass::Midflow),
+            Some(PosClass::MIDFLOW),
             "non-quote intervening punctuation collapses the boundary"
         );
     }

@@ -11,7 +11,7 @@
 use std::path::Path;
 
 use ssc_core::Corpus;
-use ssc_core::signals::casing::{PosClass, SiteEval, evaluate};
+use ssc_core::signals::casing::{PosClass, PosKind, SiteEval, evaluate};
 
 use super::shared::{PACKET_FLOORS, PACKET_KS, REF_FLOOR, REF_K, rarity_abs};
 use crate::vref_io::load_corpus;
@@ -55,8 +55,8 @@ fn site_quad(s: &SiteEval) -> Option<&'static str> {
 }
 
 fn pos_glyph(pos: PosClass) -> Option<char> {
-    match pos {
-        PosClass::ForcedAfterTerminal(ck) => Some(ck.mark),
+    match pos.kind() {
+        PosKind::ForcedAfterTerminal(ck) => Some(ck.mark),
         _ => None,
     }
 }
