@@ -777,7 +777,10 @@ pub(crate) fn drive_mixed_case(
     let mut probe = DriveProbe::new(crate::substrate::SubstrateId::MixedCase);
     let texts = corpus.texts();
     let layout = corpus.book_layout();
-    let mut stamped: Vec<Vec<(Box<str>, ObservationInputStamp)>> = Vec::with_capacity(layout.len());
+    // Borrowed chapter tokens: the layout owns them and outlives the drive, so
+    // the planning pass never allocates. `update_book` takes ownership only
+    // where it rebuilds a persistent cache entry.
+    let mut stamped: Vec<Vec<(&str, ObservationInputStamp)>> = Vec::with_capacity(layout.len());
     let mut work: Vec<MixedCaseMapWork<'_>> = Vec::new();
     let mut book_runs: Vec<std::ops::Range<usize>> = Vec::new();
     let mut work_bytes = 0usize;
@@ -802,7 +805,7 @@ pub(crate) fn drive_mixed_case(
                     },
                 });
             }
-            chapters.push((c.chapter.clone(), stamp));
+            chapters.push((&*c.chapter, stamp));
         }
         if work.len() > run_start {
             book_runs.push(run_start..work.len());

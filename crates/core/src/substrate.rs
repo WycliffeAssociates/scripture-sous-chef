@@ -625,10 +625,20 @@ impl<S: ObservationSubstrate> SubstrateCache<S> {
     ///
     /// `chapters` is the book's ordered `(opaque token, ObservationInputStamp)`
     /// pairs; `map` is called only for a chapter whose observation is stale.
+    ///
+    /// **The tokens are borrowed, not owned.** A drive's planning pass builds
+    /// this slice from the corpus layout, whose chapter tokens already outlive
+    /// the call; owning them here would allocate one `Box<str>` per chapter per
+    /// substrate per analyze (~1,189 × 6 for a resident Bible) purely to be
+    /// dropped at the end of the drive. Ownership is taken exactly once, and
+    /// only where the persistent cache entry is actually (re)built: the
+    /// `chapters_out`/`by_token` construction at the bottom of this function,
+    /// which the whole-book-unchanged early-out and the nothing-moved
+    /// reassembly both skip.
     pub(crate) fn update_book(
         &mut self,
         slug: &str,
-        chapters: &[(Box<str>, ObservationInputStamp)],
+        chapters: &[(&str, ObservationInputStamp)],
         symbols: &S::Symbols,
         mut map: impl FnMut(usize) -> S::ChapterObservation,
     ) -> Vec<S::Key> {
@@ -677,7 +687,7 @@ impl<S: ObservationSubstrate> SubstrateCache<S> {
         for (k, (token, stamp)) in chapters.iter().enumerate() {
             let reused = old
                 .by_token
-                .get(&**token)
+                .get(*token)
                 .copied()
                 .filter(|&i| old.input_stamps[i] == *stamp)
                 .and_then(|i| old.observations[i].take());
@@ -700,7 +710,7 @@ impl<S: ObservationSubstrate> SubstrateCache<S> {
         let new_pos: FxHashMap<&str, usize> = chapters
             .iter()
             .enumerate()
-            .map(|(i, (t, _))| (&**t, i))
+            .map(|(i, (t, _))| (*t, i))
             .collect();
 
         // ── Step 2: locate the replay window. A position is changed when the
@@ -869,7 +879,8 @@ impl<S: ObservationSubstrate> SubstrateCache<S> {
             .zip(stamps)
             .map(
                 |((((token, stamp), observation), reduced), reduced_stamp)| SubstrateChapter {
-                    token: token.clone(),
+                    // The one ownership point: this entry outlives the drive.
+                    token: Box::from(*token),
                     input_stamp: *stamp,
                     observation,
                     reduced_stamp,
@@ -1231,11 +1242,11 @@ mod replay {
     where
         S: ObservationSubstrate<ChapterObservation = String, ExtractorConfig = (), Symbols = ()>,
     {
-        let stamped: Vec<(Box<str>, ObservationInputStamp)> = chapters
+        let stamped: Vec<(&str, ObservationInputStamp)> = chapters
             .iter()
             .map(|(token, content)| {
                 (
-                    Box::from(*token),
+                    *token,
                     ObservationInputStamp {
                         schema_stamp: S::SCHEMA_STAMP,
                         chapter_hash: content
@@ -1276,6 +1287,33 @@ mod replay {
             resident.book_contribution(slug),
             cold.book_contribution(slug),
             "resident replay differs from a cold whole-book build"
+        );
+    }
+
+    /// The driver takes `&str` chapter tokens but the cache entry it builds must
+    /// own them: the planning pass's slice is a per-analyze temporary, while the
+    /// entry is resident across calls. Drive a book from tokens whose storage is
+    /// dropped immediately afterwards, then ask the cache the planning pass's own
+    /// question — a borrowed token in the entry could not answer it.
+    #[test]
+    fn the_cache_entry_owns_its_chapter_token_though_the_driver_borrows_it() {
+        let mut cache: SubstrateCache<Local> = SubstrateCache::new();
+        let stamp = {
+            let tokens: Vec<String> = vec!["1".to_string(), "2".to_string()];
+            let chapters: Vec<(&str, &str)> =
+                vec![(tokens[0].as_str(), "aa"), (tokens[1].as_str(), "bb")];
+            drive(&mut cache, "GEN", &chapters);
+            ObservationInputStamp {
+                schema_stamp: Local::SCHEMA_STAMP,
+                chapter_hash: "aa"
+                    .bytes()
+                    .fold(1u128, |h, b| h.wrapping_mul(31).wrapping_add(u128::from(b))),
+                extractor_fp: Local::extractor_fp(&()),
+            }
+        };
+        assert!(
+            cache.observation_is_current("GEN", "1", &stamp),
+            "the resident entry must answer for a token whose caller-side storage is gone"
         );
     }
 
@@ -1589,11 +1627,11 @@ mod replay {
 
     /// Drive one book of the owner-routed substrate.
     fn drive_owned(cache: &mut SubstrateCache<Owned>, slug: &str, chapters: &[(&str, &str)]) {
-        let stamped: Vec<(Box<str>, ObservationInputStamp)> = chapters
+        let stamped: Vec<(&str, ObservationInputStamp)> = chapters
             .iter()
             .map(|(token, content)| {
                 (
-                    Box::from(*token),
+                    *token,
                     ObservationInputStamp {
                         schema_stamp: Owned::SCHEMA_STAMP,
                         chapter_hash: content

@@ -526,7 +526,10 @@ pub(crate) fn drive_adjacency(
     let mut probe = DriveProbe::new(crate::substrate::SubstrateId::Adjacency);
     let texts = corpus.texts();
     let layout = corpus.book_layout();
-    let mut stamped: Vec<Vec<(Box<str>, ObservationInputStamp)>> = Vec::with_capacity(layout.len());
+    // Borrowed chapter tokens: the layout owns them and outlives the drive, so
+    // the planning pass never allocates. `update_book` takes ownership only
+    // where it rebuilds a persistent cache entry.
+    let mut stamped: Vec<Vec<(&str, ObservationInputStamp)>> = Vec::with_capacity(layout.len());
     let mut work: Vec<AdjacencyMapWork<'_>> = Vec::new();
     let mut book_runs: Vec<std::ops::Range<usize>> = Vec::new();
     let mut work_bytes = 0usize;
@@ -551,7 +554,7 @@ pub(crate) fn drive_adjacency(
                     },
                 });
             }
-            chapters.push((c.chapter.clone(), stamp));
+            chapters.push((&*c.chapter, stamp));
         }
         if work.len() > run_start {
             book_runs.push(run_start..work.len());
@@ -1958,7 +1961,10 @@ pub(crate) fn drive_spacing(
     // Planning pass. Stamps are built once and handed to both the seam and the
     // driver; the dirty question is put to the cache with the same predicate the
     // driver reuses by, so the two cannot disagree.
-    let mut stamped: Vec<Vec<(Box<str>, ObservationInputStamp)>> = Vec::with_capacity(layout.len());
+    // Borrowed chapter tokens: the layout owns them and outlives the drive, so
+    // the planning pass never allocates. `update_book` takes ownership only
+    // where it rebuilds a persistent cache entry.
+    let mut stamped: Vec<Vec<(&str, ObservationInputStamp)>> = Vec::with_capacity(layout.len());
     let mut work: Vec<SpacingMapWork<'_>> = Vec::new();
     let mut book_runs: Vec<std::ops::Range<usize>> = Vec::new();
     // The dirty work's size, for the seam's route decision only — summing string
@@ -1985,7 +1991,7 @@ pub(crate) fn drive_spacing(
                     },
                 });
             }
-            chapters.push((c.chapter.clone(), stamp));
+            chapters.push((&*c.chapter, stamp));
         }
         if work.len() > run_start {
             book_runs.push(run_start..work.len());
