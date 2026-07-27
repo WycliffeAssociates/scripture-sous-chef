@@ -1263,6 +1263,61 @@ mod tests {
             .collect()
     }
 
+    /// The egress form of casing's `symbol_numbering_never_reaches_the_book_fold`:
+    /// a word's symbol number must not reach a **finding**, either. The shared
+    /// `WordInterner` is append-only and long-lived, so by the time a corpus is
+    /// analyzed in a real session the table already holds another corpus's
+    /// vocabulary and hands out entirely different integers for the same words.
+    ///
+    /// Driven through the whole substrate — map, fold, judge, materialize — with a
+    /// fresh table and with a pre-populated one, and compared on the rendered
+    /// findings (key, span text, score, args), not on an internal table. Symbol
+    /// numbers also govern the fold's `FxHashMap<WordSym, _>` iteration, so a
+    /// numbering-dependent order anywhere in the lane would show up here.
+    #[test]
+    fn a_prefilled_interner_changes_no_finding() {
+        const SHAPES: &[&str] = &[
+            "we praise Dios today",
+            "we praise DIos today",
+            "and MUngu spoke here",
+            "and Mungu spoke here",
+            "HaElohim said so",
+            "TUHANlah is written thus",
+        ];
+        let (keys, texts) = shaped(&["GEN", "EXO"], 6, 4, SHAPES);
+        let corpus =
+            Corpus::try_from_parts(keys, texts.iter().map(|t| (*t).to_string()).collect()).unwrap();
+        let knobs = cfg(0.0, 32.0, 0.0);
+
+        let fresh = WordInterner::default();
+        let mut cache_a = crate::substrate::SubstrateCache::new();
+        let a = resident(&mut cache_a, &fresh, &corpus, &knobs);
+        assert!(!a.is_empty(), "the fixture must actually emit");
+
+        // Pre-populate the table with an unrelated vocabulary, so every word of
+        // `corpus` is numbered differently than it was above.
+        let warm = WordInterner::default();
+        let (pk, pt) = shaped(&["LEV"], 3, 3, &["wholly different vocabulary appears first"]);
+        let primer =
+            Corpus::try_from_parts(pk, pt.iter().map(|t| (*t).to_string()).collect()).unwrap();
+        let mut primer_cache = crate::substrate::SubstrateCache::new();
+        let _ = resident(&mut primer_cache, &warm, &primer, &knobs);
+        let primed = warm.len();
+        assert!(primed > 0, "the primer must have named some words");
+
+        let mut cache_b = crate::substrate::SubstrateCache::new();
+        let b = resident(&mut cache_b, &warm, &corpus, &knobs);
+        assert!(
+            warm.len() > primed,
+            "the second corpus must have taken fresh symbols"
+        );
+        assert_eq!(
+            render(&corpus, &a),
+            render(&corpus, &b),
+            "a word's symbol number must not reach a finding"
+        );
+    }
+
     /// An edit to one chapter maps and reduces exactly that chapter. The boundary
     /// state is empty — a token's case shape is a function of its own bytes — so
     /// no reduction can cascade past the chapter that changed.

@@ -1511,6 +1511,55 @@ mod replay {
         assert_owned_equals_cold(&cache, "GEN", &edited2);
     }
 
+    /// STRUCTURAL insertion between an owner and its resolver — the case the rest
+    /// of this module's owner coverage does not reach. Every other owner test
+    /// mutates a FIXED chapter set, and the insertion/removal tests use a
+    /// substrate with no owner routing at all; so the interaction between "a
+    /// carried item's owner is found by TOKEN, not by position" and "positions
+    /// shift under a structural edit" was untested.
+    ///
+    /// Chapter `1` buffers an item it owns; `2` resolves it. Inserting a
+    /// pass-through chapter between them moves the resolver from position 1 to
+    /// position 2 while the owner keeps its token — so a driver that remembered
+    /// the owner by index instead of by token would fold the resolution into the
+    /// wrong chapter, and one that skipped re-reducing the owner would lose it.
+    #[test]
+    fn a_chapter_inserted_between_an_owner_and_its_resolver_replays_correctly() {
+        let mut cache: SubstrateCache<Owned> = SubstrateCache::new();
+        let seed = [("1", "a!"), ("2", "+b"), ("3", "c")];
+        drive_owned(&mut cache, "GEN", &seed);
+        assert_owned_equals_cold(&cache, "GEN", &seed);
+
+        // Insert a chapter that neither buffers nor resolves. The carried item
+        // now crosses it, and `2` — the owner's resolver — is one slot later.
+        let inserted = [("1", "a!"), ("1b", "x"), ("2", "+b"), ("3", "c")];
+        cache.reset_probes();
+        drive_owned(&mut cache, "GEN", &inserted);
+        assert_eq!(
+            cache.mapped, 1,
+            "only the inserted chapter is new text; the rest are reused by token"
+        );
+        assert_owned_equals_cold(&cache, "GEN", &inserted);
+
+        // Insert a chapter that RESOLVES, ahead of the original resolver: the
+        // owner's item is now consumed earlier, and the later `+b` has nothing to
+        // resolve — a different book contribution, which cold agrees with.
+        let stealing = [("1", "a!"), ("1b", "+x"), ("2", "+b"), ("3", "c")];
+        drive_owned(&mut cache, "GEN", &stealing);
+        assert_owned_equals_cold(&cache, "GEN", &stealing);
+
+        // Insert a chapter that BUFFERS between owner and resolver: the first
+        // item now dangles to the book edge while the new chapter owns the one
+        // that `2` resolves.
+        let shadowing = [("1", "a!"), ("1b", "y!"), ("2", "+b"), ("3", "c")];
+        drive_owned(&mut cache, "GEN", &shadowing);
+        assert_owned_equals_cold(&cache, "GEN", &shadowing);
+
+        // And removing the interposed chapter again restores the original book.
+        drive_owned(&mut cache, "GEN", &seed);
+        assert_owned_equals_cold(&cache, "GEN", &seed);
+    }
+
     /// The owner-routed property test: randomized edits over a book whose
     /// chapters buffer, resolve, pass through, or do neither.
     #[test]

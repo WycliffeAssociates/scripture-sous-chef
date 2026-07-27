@@ -2906,13 +2906,19 @@ mod tests {
 
     /// Symbols are *naming*, not evidence: the same chapter text mapped against a
     /// word table that already holds other words gets different symbol numbers
-    /// and still folds to the byte-identical book contribution. This is the
+    /// and still folds to the byte-identical **book contribution**. This is the
     /// invariant that lets the shared table be append-only and lets chapter
     /// mapping fan out (symbols are assigned in map-completion order, which is
     /// not deterministic across thread counts — so nothing downstream may read
     /// them as anything but identity).
+    ///
+    /// Scope is exactly the book fold, which is what the name says: the equality
+    /// asserted here is `fold_book`'s output, not the emitted findings. The
+    /// end-to-end egress version of this claim is
+    /// `mixed_case::tests::a_prefilled_interner_changes_no_finding` (and the
+    /// oracle, which drives every corpus through one shared table).
     #[test]
-    fn symbol_numbering_never_reaches_the_fold() {
+    fn symbol_numbering_never_reaches_the_book_fold() {
         let verses = ["There we go there.", "there he goes"];
         let fresh = WordInterner::default();
         let a = map_one_with("1", &verses, &fresh);
