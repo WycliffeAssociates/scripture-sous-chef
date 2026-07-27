@@ -698,6 +698,15 @@ impl MixedCaseBookContribution {
         verdicts: &FxHashMap<WordSym, (Arc<str>, MixedCaseOutcome)>,
         out: &mut Vec<Finding>,
     ) {
+        // Positional zip is truncating: a missing or extra trailing chapter
+        // would silently DROP findings rather than fail. Chapter cardinality is
+        // the alignment precondition; the token check at each pair (inside
+        // `chapter_base`) proves the pairing, but only for pairs that exist.
+        assert_eq!(
+            self.chapters.len(),
+            layout.len(),
+            "materialize: contribution/layout chapter count mismatch"
+        );
         for (chapter, block) in self.chapters.iter().zip(layout) {
             let base = crate::substrate::chapter_base(block, &chapter.token);
             for site in chapter.words.sites.iter() {

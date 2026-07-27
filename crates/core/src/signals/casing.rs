@@ -1872,6 +1872,15 @@ impl CasingBookContribution {
             intrinsic,
         } = enabled;
         let mut memo = VerdictMemo::new(self.words.len());
+        // Positional zip is truncating: a missing or extra trailing chapter
+        // would silently DROP findings rather than fail. Chapter cardinality is
+        // the alignment precondition; the token check at each pair (inside
+        // `chapter_base`) proves the pairing, but only for pairs that exist.
+        assert_eq!(
+            self.chapters.len(),
+            layout.len(),
+            "materialize: contribution/layout chapter count mismatch"
+        );
         for ((chapter, ids), block) in self.chapters.iter().zip(layout) {
             let base = crate::substrate::chapter_base(block, &chapter.token);
             for site in chapter.sites() {
@@ -2053,6 +2062,12 @@ pub(crate) fn drive_casing(
     // Emergent gate: no cased word-starts, no convention to violate.
     if !stats.any_cased() {
         *retained = None;
+        // Complete the phase accounting even on the emergent early-out, so a
+        // probe reading over an uncased corpus still sums to the drive's cost
+        // (the probe is only exhaustive if every exit marks every phase).
+        probe.mark(DrivePhase::Keys);
+        probe.mark(DrivePhase::Judge);
+        probe.mark(DrivePhase::Materialize);
         return;
     }
     // Judge-dirty keys, per the substrate's own derivation: the model is a pure

@@ -4877,3 +4877,30 @@ passed byte-identically on every commit, and the standing full-fleet pins
 (`a10cf5a4…`, `ddedee96…`, `ab9b0f96…`, `c8a1be69…`, Entry 28) were confirmed at
 `fc5766c`, which is this packet's base. Flagged for the owner: if a full-fleet
 bookend is wanted before WP7c starts regardless, it is ~1 hour and unblocked.
+
+---
+
+## Entry 31 — Owner review of WP7c0: accepted; cardinality hardening + owed bookend paid
+
+- **Date:** 2026-07-27. WP7c0 accepted (decomposition validated: 0.578 ms
+  attributed vs 0.584 measured). Owner's pre-WP7c items, landed this commit:
+- **P2 — materializer zip cardinality:** every materializer's positional
+  `zip(layout)` is truncating, and `chapter_base`'s token check only proves
+  pairs that exist — a missing/extra trailing contribution chapter was silent
+  finding loss. Unconditional chapter-count equality asserts now precede all
+  six materializer zips; witness test
+  `materialize_panics_on_chapter_cardinality_mismatch` (two contribution
+  chapters vs one-chapter layout, should_panic). substrate.rs's reuse-check
+  zip was already length-guarded.
+- **Probe advisory:** casing's uncased-corpus early return now marks
+  Keys/Judge/Materialize before exiting, so the drive probe is exhaustive on
+  every path.
+- **The owed full-fleet bookend (CLAUDE.md rule; Entry 30 had skipped it):**
+  run at this commit — findings default/all byte-identical to the Gate-0 pins
+  (a10cf5a4… / ddedee96…), transcript default/all byte-identical to the WP2a
+  pins (ab9b0f9… / c8a1be6…). WP7c0's positional rebase + early-out are
+  fleet-proven. WA+small eight-dump gate also identical.
+- **Owner dispatch order confirmed:** WP7c item 0 = borrowed-token
+  `update_book` signature (planning passes `&str`; ownership only at the
+  persistent-cache boundary), own §13 + oracle gate; then the six rows, one
+  commit each, each recording its own drive-phase reading.

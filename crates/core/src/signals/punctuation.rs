@@ -450,6 +450,15 @@ impl AdjacencyBookContribution {
         out: &mut Vec<Finding>,
     ) {
         let texts = corpus.texts();
+        // Positional zip is truncating: a missing or extra trailing chapter
+        // would silently DROP findings rather than fail. Chapter cardinality is
+        // the alignment precondition; the token check at each pair (inside
+        // `chapter_base`) proves the pairing, but only for pairs that exist.
+        assert_eq!(
+            self.chapters.len(),
+            layout.len(),
+            "materialize: contribution/layout chapter count mismatch"
+        );
         for (chapter, block) in self.chapters.iter().zip(layout) {
             let base = crate::substrate::chapter_base(block, &chapter.token);
             for site in chapter.counts.sites.iter() {
@@ -2091,6 +2100,15 @@ impl SpacingBookContribution {
         floor: f64,
         out: &mut Vec<Finding>,
     ) {
+        // Positional zip is truncating: a missing or extra trailing chapter
+        // would silently DROP findings rather than fail. Chapter cardinality is
+        // the alignment precondition; the token check at each pair (inside
+        // `chapter_base`) proves the pairing, but only for pairs that exist.
+        assert_eq!(
+            self.chapters.len(),
+            layout.len(),
+            "materialize: contribution/layout chapter count mismatch"
+        );
         for ((token, sites), block) in self.chapters.iter().zip(layout) {
             let base = crate::substrate::chapter_base(block, token);
             for s in sites {
@@ -3455,6 +3473,24 @@ mod tests {
     /// Fold one book's spacing contribution straight from `(chapter token,
     /// verse texts)` specs — map each chapter, carry-reduce left to right, fold —
     /// so a test can compare contributions without going through a `Corpus`.
+    /// The materializer's positional zip is truncating, so without the
+    /// cardinality assert a missing or extra trailing contribution chapter is
+    /// SILENT finding loss, not an error. Witness: two contribution chapters
+    /// against a one-chapter layout must fail loud before any pairing.
+    #[test]
+    #[should_panic(expected = "contribution/layout chapter count mismatch")]
+    fn materialize_panics_on_chapter_cardinality_mismatch() {
+        let corpus = crate::Corpus::try_from_parts(
+            vec!["GEN 1:1".to_string()],
+            vec!["a . b".to_string()],
+        )
+        .unwrap();
+        let contrib = contribution_of("GEN", &[("1", &["a . b"]), ("2", &["c . d"])]);
+        let book = &corpus.book_layout()[0];
+        let mut out = Vec::new();
+        contrib.materialize(&book.chapters, &BTreeMap::new(), 0.0, &mut out);
+    }
+
     fn contribution_of(
         _slug: &str,
         chapters: &[(&str, &[&str])],
