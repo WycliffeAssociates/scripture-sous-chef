@@ -199,10 +199,21 @@ struct ChapterShapeProfile {
 }
 
 impl ChapterShapeProfile {
-    /// Count one occurrence. Checked, not saturating: the ceiling is 11.6x the
-    /// measured fleet maximum *chapter*, so reaching it means the corpus broke
-    /// the structural assumption and must stop and be reported — a silently
-    /// saturated count would corrupt every book and corpus total derived from it.
+    /// Count one occurrence. Checked, not saturating: a silently saturated count
+    /// would corrupt every book and corpus total derived from it, so a violation
+    /// stops and is reported rather than being absorbed.
+    ///
+    /// **What the ceiling actually rests on.** `Corpus` does not enforce any
+    /// bound on a chapter's length, and nothing here can make it: a chapter is
+    /// whatever contiguous run of verse keys the caller presented. The `u16` is
+    /// sound because of the *domain* — in Bible text no single word shape recurs
+    /// 65,535 times inside one chapter, and the widest the fleet's 1,504 corpora
+    /// come to it is 552 (`udu`) against a whole-chapter letter-token maximum of
+    /// 5,632 (`nabNT`), an 11.6x margin on the structural ceiling itself. That is
+    /// an empirical, owner-confirmed constraint on the content this engine is for,
+    /// not an invariant the type system or `Corpus` validation guarantees — which
+    /// is exactly why the add is checked and its failure is a stop-and-report
+    /// rather than a `debug_assert`.
     fn record(&mut self, shape: CaseShape) {
         let slot = match shape {
             CaseShape::Lower => &mut self.lower,
@@ -211,8 +222,9 @@ impl ChapterShapeProfile {
             CaseShape::OtherMixed => &mut self.other,
         };
         *slot = slot.checked_add(1).expect(
-            "one word type's shape count in one chapter fits u16 (fleet max 552, chapter \
-             token max 5,632 — a violation is a stop-and-report, see granularity-spine Entry 28)",
+            "one word type's shape count in one chapter fits u16 — an empirical \
+             Bible-domain bound (fleet max 552 against a 5,632 chapter-token ceiling), \
+             not a Corpus-enforced invariant: stop and report the corpus and chapter",
         );
     }
 
