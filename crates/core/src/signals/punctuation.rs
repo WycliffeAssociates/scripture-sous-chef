@@ -542,6 +542,7 @@ pub(crate) fn drive_adjacency(
                 schema_stamp: AdjacencySubstrate::SCHEMA_STAMP,
                 chapter_hash: c.hash,
                 extractor_fp: AdjacencySubstrate::extractor_fp(&()),
+                reference: crate::substrate::ReferenceStamp::NotDeclared,
             };
             if !cache.observation_is_current(&book.slug, &c.chapter, &stamp) {
                 let verses = &texts[c.range.clone()];
@@ -549,10 +550,7 @@ pub(crate) fn drive_adjacency(
                 work.push(AdjacencyMapWork {
                     book: bi,
                     chapter: ci,
-                    view: ChapterView {
-                        chapter: &c.chapter,
-                        texts: verses,
-                    },
+                    view: ChapterView::target(&c.chapter, verses),
                 });
             }
             chapters.push((&*c.chapter, stamp));
@@ -586,10 +584,7 @@ pub(crate) fn drive_adjacency(
             slots[bi][i].take().unwrap_or_else(|| {
                 let c = &book.chapters[i];
                 AdjacencySubstrate::map_chapter(
-                    &ChapterView {
-                        chapter: &c.chapter,
-                        texts: &texts[c.range.clone()],
-                    },
+                    &ChapterView::target(&c.chapter, &texts[c.range.clone()]),
                     &(),
                     &(),
                 )
@@ -1979,6 +1974,7 @@ pub(crate) fn drive_spacing(
                 schema_stamp: SpacingSubstrate::SCHEMA_STAMP,
                 chapter_hash: c.hash,
                 extractor_fp: SpacingSubstrate::extractor_fp(&()),
+                reference: crate::substrate::ReferenceStamp::NotDeclared,
             };
             if !cache.observation_is_current(&book.slug, &c.chapter, &stamp) {
                 let verses = &texts[c.range.clone()];
@@ -1986,10 +1982,7 @@ pub(crate) fn drive_spacing(
                 work.push(SpacingMapWork {
                     book: bi,
                     chapter: ci,
-                    view: ChapterView {
-                        chapter: &c.chapter,
-                        texts: verses,
-                    },
+                    view: ChapterView::target(&c.chapter, verses),
                 });
             }
             chapters.push((&*c.chapter, stamp));
@@ -2027,10 +2020,7 @@ pub(crate) fn drive_spacing(
             slots[bi][i].take().unwrap_or_else(|| {
                 let c = &book.chapters[i];
                 SpacingSubstrate::map_chapter(
-                    &ChapterView {
-                        chapter: &c.chapter,
-                        texts: &texts[c.range.clone()],
-                    },
+                    &ChapterView::target(&c.chapter, &texts[c.range.clone()]),
                     &(),
                     &(),
                 )
@@ -3508,10 +3498,7 @@ mod tests {
             .map(|(token, verses)| {
                 let texts: Vec<String> = verses.iter().map(|t| t.to_string()).collect();
                 SpacingSubstrate::map_chapter(
-                    &ChapterView {
-                        chapter: token,
-                        texts: &texts,
-                    },
+                    &ChapterView::target(token, &texts),
                     &(),
                     &(),
                 )

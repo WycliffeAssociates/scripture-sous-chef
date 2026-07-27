@@ -792,6 +792,7 @@ pub(crate) fn drive_mixed_case(
                 schema_stamp: MixedCaseSubstrate::SCHEMA_STAMP,
                 chapter_hash: c.hash,
                 extractor_fp: MixedCaseSubstrate::extractor_fp(&()),
+                reference: crate::substrate::ReferenceStamp::NotDeclared,
             };
             if !cache.observation_is_current(&book.slug, &c.chapter, &stamp) {
                 let verses = &texts[c.range.clone()];
@@ -799,10 +800,7 @@ pub(crate) fn drive_mixed_case(
                 work.push(MixedCaseMapWork {
                     book: bi,
                     chapter: ci,
-                    view: ChapterView {
-                        chapter: &c.chapter,
-                        texts: verses,
-                    },
+                    view: ChapterView::target(&c.chapter, verses),
                 });
             }
             chapters.push((&*c.chapter, stamp));
@@ -836,10 +834,7 @@ pub(crate) fn drive_mixed_case(
             slots[bi][i].take().unwrap_or_else(|| {
                 let c = &book.chapters[i];
                 MixedCaseSubstrate::map_chapter(
-                    &ChapterView {
-                        chapter: &c.chapter,
-                        texts: &texts[c.range.clone()],
-                    },
+                    &ChapterView::target(&c.chapter, &texts[c.range.clone()]),
                     &(),
                     symbols,
                 )

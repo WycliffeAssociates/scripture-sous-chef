@@ -37,9 +37,7 @@ use std::hint::black_box;
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use ssc_core::config::ProportionalityConfig;
 use ssc_core::key::parse_key;
-use ssc_core::rule::StatefulRule;
 use ssc_core::script::is_nt_book;
-use ssc_core::signals::proportionality::ProjectLengthRatio;
 use ssc_core::{Config, Corpus, analyze};
 
 #[path = "../dev/vref_io.rs"]
@@ -161,22 +159,16 @@ fn bench_proportionality(c: &mut Criterion) {
     let (Some(target), Some(source)) = (corpus("WA-bem-reg"), corpus("WA-en-ulb")) else {
         return;
     };
-    let rule = ProjectLengthRatio {
-        cfg: ProportionalityConfig::default(),
-    };
+    let cfg = ProportionalityConfig::default();
 
     let mut g = c.benchmark_group("proportionality");
     g.throughput(Throughput::Elements(target.len() as u64));
-    let books = ssc_core::corpus::by_book(&target);
     g.bench_function("nt_vs_bible", |b| {
         b.iter(|| {
-            rule.judge(
-                &rule
-                    .reduce(black_box(&books), Some(black_box(&source)), None)
-                    .0,
-                black_box(&books),
-                None,
-                None,
+            ssc_core::signals::proportionality::length_ratio_findings(
+                black_box(&target),
+                Some(black_box(&source)),
+                &cfg,
             )
         })
     });

@@ -111,14 +111,15 @@ pub(crate) struct PrepSection {
     walk_hits: usize,
     #[cfg(any(test, feature = "test-probes"))]
     walk_misses: usize,
+    /// Books this call actually re-walked, on the most recent call. Distinct from
+    /// `walk_misses`, which counts only books that were *offered* to the lane
+    /// check and failed it: a book inside the stale scope skips that check
+    /// entirely and is walked outright, so it is a walk without a miss.
+    #[cfg(any(test, feature = "test-probes"))]
+    walked: usize,
     /// The direct lane's map grain on the most recent call.
     #[cfg(any(test, feature = "test-probes"))]
     direct_route: &'static str,
-    /// Books re-tallied (entered the counting scope) on the most recent call —
-    /// the counting-side probe, distinct from walk reuse: a knob-only change
-    /// clears prep (so every book re-walks for sites) yet re-tallies nothing.
-    #[cfg(any(test, feature = "test-probes"))]
-    retallied: usize,
 }
 
 /// Substrate-chapter-products section (plan §5, Phase C). One explicit typed
@@ -151,6 +152,9 @@ pub(crate) struct SubstrateSection {
     pub(crate) mixed_script: SubstrateCache<script_mixing::MixedScriptSubstrate>,
     /// `uni.rare-glyph`'s substrate (Phase E).
     pub(crate) glyph: SubstrateCache<crate::signals::rare_glyph::GlyphSubstrate>,
+    /// `proj.length-ratio`'s substrate (Phase E) — the reference-declaring one.
+    pub(crate) proportionality:
+        SubstrateCache<crate::signals::proportionality::ProportionalitySubstrate>,
     /// `case.mixed-case-word`'s substrate (Phase E).
     pub(crate) mixed_case: SubstrateCache<crate::signals::mixed_case::MixedCaseSubstrate>,
     /// The shared folded-word table every word-keyed substrate names its word
@@ -176,6 +180,7 @@ impl SubstrateSection {
             punct_only: SubstrateCache::new(),
             mixed_script: SubstrateCache::new(),
             glyph: SubstrateCache::new(),
+            proportionality: SubstrateCache::new(),
             duplicate_word: SubstrateCache::new(),
             casing: SubstrateCache::new(),
             casing_model: None,
@@ -193,6 +198,7 @@ impl SubstrateSection {
         self.punct_only.clear();
         self.mixed_script.clear();
         self.glyph.clear();
+        self.proportionality.clear();
         self.duplicate_word.clear();
         self.casing.clear();
         self.casing_model = None;
@@ -211,6 +217,7 @@ impl SubstrateSection {
         self.punct_only.remove_book(slug);
         self.mixed_script.remove_book(slug);
         self.glyph.remove_book(slug);
+        self.proportionality.remove_book(slug);
         self.duplicate_word.remove_book(slug);
         self.casing.remove_book(slug);
         self.mixed_case.remove_book(slug);
@@ -512,9 +519,14 @@ impl FindingSection {
 }
 
 /// A snapshot of [`PrepSection`]'s observability counters (the `test-probes`
-/// feature). `walk_*` and `direct_*` accumulate across calls; `retallied` is the
-/// most recent call's counting scope. Lets a downstream crate (the shell) prove
-/// its no-work invariants — cache reuse and zero re-tally — directly.
+/// feature). `walk_*` and `direct_*` accumulate across calls. Lets a downstream
+/// crate (the shell) prove its no-work invariants — cache reuse and per-substrate
+/// zero-work — directly.
+///
+/// There is no counting-scope counter here any more: the fused walk has no
+/// counting listener left (every corpus aggregate is a typed observation
+/// substrate, probed on its own row), so `walked` — books whose fused walk
+/// actually ran — is the whole of the walk's work story.
 ///
 /// The two map lanes count different units, because their work units differ:
 /// `direct_*` counts **chapters** (the direct per-verse lane's unit — a
@@ -528,7 +540,7 @@ pub struct CacheProbe {
     pub direct_misses: usize,
     pub walk_hits: usize,
     pub walk_misses: usize,
-    pub retallied: usize,
+    pub walked: usize,
     /// Chapters whose direct-rule partition records were replaced on the most
     /// recent analyze. A chapter whose cached product was reused keeps its
     /// records untouched, so this equals that call's direct-lane miss count.
@@ -678,10 +690,6 @@ impl AnalysisCache {
 
     /// Record how many books were re-tallied (the counting scope) this call.
     #[cfg(any(test, feature = "test-probes"))]
-    pub(crate) fn note_retallied(&mut self, n: usize) {
-        self.prep.retallied = n;
-    }
-
     /// Assemble the findings the resident partitions currently describe, in the
     /// returned order — a witness for the atomic finding boundary. Assembling
     /// only from the lane (never the working `out`) is exactly what a failed
@@ -726,10 +734,11 @@ impl AnalysisCache {
         self.prep.walk_misses
     }
 
-    #[cfg(test)]
-    pub(crate) fn retallied_count(&self) -> usize {
-        self.prep.retallied
+    #[cfg(any(test, feature = "test-probes"))]
+    pub(crate) fn note_walked(&mut self, n: usize) {
+        self.prep.walked = n;
     }
+
 }
 
 impl PrepSection {
@@ -750,7 +759,7 @@ impl PrepSection {
             #[cfg(any(test, feature = "test-probes"))]
             walk_misses: 0,
             #[cfg(any(test, feature = "test-probes"))]
-            retallied: 0,
+            walked: 0,
         }
     }
 
@@ -761,7 +770,7 @@ impl PrepSection {
             direct_misses: self.direct_misses,
             walk_hits: self.walk_hits,
             walk_misses: self.walk_misses,
-            retallied: self.retallied,
+            walked: self.walked,
             direct_chapters_patched: 0,
             direct_map_route: "serial",
             spacing_map_route: "serial",

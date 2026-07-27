@@ -23,16 +23,14 @@
 //! additive (e.g. a verse a short book can't judge alone but the project can).
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use rustc_hash::FxHashMap;
 
 use crate::config::ProportionalityConfig;
-use crate::corpus::{Books, Corpus, LocalKeyIdx, rebase};
+use crate::corpus::{Corpus, LocalKeyIdx, rebase};
 use crate::diagnostics::{Finding, FindingArgs, LengthRatioScope, RuleId, Severity};
-use crate::rule::{self, StatefulRule, TokenCache};
 use crate::span::Span;
-use crate::stats::RuleStats;
-use crate::stream;
 
 pub const PROJECT_LENGTH_RATIO: RuleId = RuleId::ProjectLengthRatio;
 
@@ -40,38 +38,42 @@ pub const PROJECT_LENGTH_RATIO: RuleId = RuleId::ProjectLengthRatio;
 /// `z_threshold` reads in familiar z-score units.
 const MAD_TO_SIGMA: f64 = 0.6745;
 
-/// One verse's target/reference ratio, retained so `judge` can derive the
-/// distribution and emit findings without the text. `local_idx` is
-/// book-local (the per-book map already carries the slug); rebased to a
-/// global `KeyIdx` only at `judge` time, against the current call's
-/// `BookGroup::base`. `f32` ratio, `u32` byte length for the finding range.
-#[derive(Debug, Clone, PartialEq)]
+/// One verse's target/reference ratio, retained so materialization can emit
+/// without the text. `local_idx` is **chapter**-local (its chapter's layout block
+/// carries the rebase base), and `len` is the verse's byte length — the whole-verse
+/// anchor span. 12 bytes.
+///
+/// This is the retain-vs-rederive choice, and it is the one row where retention is
+/// not a judgement call: the ratio is a function of BOTH corpora, so re-deriving it
+/// at materialization would mean re-pairing and re-counting graphemes on both
+/// sides. `len` is retained with it because it is free (the same walk already has
+/// the text) and because materialization must not touch the target text at all —
+/// this rule has never scanned it at judge time.
+#[derive(Debug, Clone, Copy)]
 pub(crate) struct RatioObs {
     local_idx: LocalKeyIdx,
     ratio: f32,
     len: u32,
 }
 
-/// Cached proportionality statistics: the raw ratios keyed by book, so
-/// an edit supersedes only its book and the median/MAD is derived at `judge`.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct ProportionalityStats {
-    pub(crate) per_book: BTreeMap<Box<str>, Vec<RatioObs>>,
-}
-
-impl ProportionalityStats {
-    /// Book-level supersede: books in `other` replace those in `self`.
-    pub(crate) fn merge(mut self, other: ProportionalityStats) -> ProportionalityStats {
-        for (book, obs) in other.per_book {
-            self.per_book.insert(book, obs);
-        }
-        self
-    }
-
-    pub(crate) fn remove_book(&mut self, slug: &str) {
-        self.per_book.remove(slug);
+/// Bitwise equality on the ratio, which is what makes `RatioObs` (and so the
+/// cached observation) `Eq`.
+///
+/// `f32` is not `Eq` because of NaN, and a cache-validity comparison is exactly
+/// the case where bitwise is the RIGHT relation: the question is "would a
+/// recomputation produce the identical bits", not "are these numerically close".
+/// Bitwise equality is also reflexive whatever the payload, so `Eq`'s law holds
+/// even for a value the map cannot actually produce (a ratio is a quotient of two
+/// non-zero grapheme counts, hence always finite).
+impl PartialEq for RatioObs {
+    fn eq(&self, other: &Self) -> bool {
+        self.local_idx == other.local_idx
+            && self.len == other.len
+            && self.ratio.to_bits() == other.ratio.to_bits()
     }
 }
+
+impl Eq for RatioObs {}
 
 /// Index the reference corpus by key string, in presented order — pairing
 /// is by (exact key string, occurrence ordinal), never by array position,
@@ -79,152 +81,353 @@ impl ProportionalityStats {
 /// lengths and orderings.
 pub(crate) type SourceIndex<'a> = FxHashMap<&'a str, Vec<&'a str>>;
 
-pub(crate) fn index_source(source: &Corpus) -> SourceIndex<'_> {
-    let mut idx: SourceIndex<'_> = FxHashMap::default();
-    for (key, text) in source.keys().iter().zip(source.texts()) {
-        idx.entry(key.as_str()).or_default().push(text.as_str());
+/// One chapter's proportionality observation: its paired verses' ratios in verse
+/// order.
+///
+/// **Boundary state is `()`, and the proof is a `Corpus` invariant, not just a
+/// listener reading.** The retired `ProportionalityAcc` carried one piece of state
+/// across verses — `seen`, the per-key occurrence ordinal that disambiguates
+/// duplicate keys. That ordinal is CHAPTER-local: a key's chapter token is parsed
+/// from the key itself and a chapter run may not reopen, so every occurrence of a
+/// given key string lies inside a single chapter run. Counting occurrences from
+/// the book's start therefore gives the same ordinal as counting from the
+/// chapter's. Nothing else crossed a verse.
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct RatioChapterObs {
+    token: Box<str>,
+    /// Shared with the reduced chapter and the book contribution rather than
+    /// deep-copied per reduce.
+    obs: Arc<Vec<RatioObs>>,
+}
+
+/// One chapter's reduced proportionality result — identical to its observation.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub(crate) struct RatioReduced {
+    token: Box<str>,
+    obs: Arc<Vec<RatioObs>>,
+}
+
+/// A book's folded proportionality contribution: its ratios pooled in verse order
+/// (the corpus aggregate's addend) plus its chapters' reduced results, which own
+/// the addresses materialization rebases.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub(crate) struct RatioBookContribution {
+    /// Bit-comparable for the same reason `RatioObs` is: a `Vec<f32>` of ratios
+    /// compares by `PartialEq`, which is fine here because a NaN can never enter
+    /// it, and the wrapper only ever answers "is the cached contribution the one a
+    /// recomputation would produce".
+    ratios: Arc<Vec<RatioBits>>,
+    chapters: Vec<RatioReduced>,
+}
+
+/// A ratio in the pooled sample, wrapped so the pool is `Eq`.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct RatioBits(f32);
+
+impl PartialEq for RatioBits {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.to_bits() == other.0.to_bits()
     }
-    idx
 }
 
-pub struct ProjectLengthRatio {
-    pub cfg: ProportionalityConfig,
+impl Eq for RatioBits {}
+
+/// A median/MAD pair with the sample size it came from. Knob-FREE: `min_verses`
+/// and the zero-spread rule are judging gates, applied in
+/// [`judge`](ProportionalitySubstrate::judge), never here — which is what lets the
+/// aggregate be maintained without knowing any config.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub(crate) struct Spread {
+    count: usize,
+    med: f64,
+    mad: f64,
 }
 
-/// The proportionality counting listener: one book's target/reference ratio
-/// bucket. Needs no shared products — "length" is the grapheme count of both
-/// sides (the source has no tape), so it counts via the shared char walk.
-/// Pairs target and source by (exact key string, occurrence ordinal) via
-/// `seen`, never by array position — `source` and `target` are independent
-/// corpora with possibly different lengths and orderings.
-pub(crate) struct ProportionalityAcc<'v, 's> {
-    source_index: Option<&'s SourceIndex<'s>>,
-    seen: FxHashMap<&'v str, usize>,
-    bucket: Vec<RatioObs>,
+/// The proportionality corpus aggregate: every book's ratios, that book's spread,
+/// and the whole project's pooled spread (ADR 0017 §8's second scope).
+#[derive(Default)]
+pub(crate) struct RatioCorpusStats {
+    per_book: BTreeMap<Box<str>, Arc<Vec<RatioBits>>>,
+    book: BTreeMap<Box<str>, Spread>,
+    project: Spread,
 }
 
-impl<'v, 's> ProportionalityAcc<'v, 's> {
-    pub(crate) fn new(source_index: Option<&'s SourceIndex<'s>>) -> Self {
-        ProportionalityAcc {
-            source_index,
-            seen: FxHashMap::default(),
-            bucket: Vec::new(),
+/// The judge key: a book slug. Both distributions a verse is measured against are
+/// functions of the book it is in plus the corpus, so one outcome serves every
+/// verse of that book — and materialization turns it into each verse's own z.
+pub(crate) type RatioKey = Box<str>;
+
+/// One book's verdict: the two spreads its verses are measured against, already
+/// gated by `min_verses` and the zero-spread rule.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct RatioOutcome {
+    book: Option<(f64, f64)>,
+    project: Option<(f64, f64)>,
+}
+
+/// The `proj.length-ratio` observation substrate. Sole consumer: the rule of the
+/// same name. **The only substrate that declares a reference input** (plan §5.2);
+/// its consumer is also the only `InputDependency::TargetAndReferenceSilentWhenAbsent`
+/// rule, and the two facts are the same fact seen from the two ends.
+pub(crate) struct ProportionalitySubstrate;
+
+/// Pins the substrate's registry id at compile time.
+const _: crate::substrate::SubstrateId =
+    <ProportionalitySubstrate as crate::substrate::ObservationSubstrate>::ID;
+
+/// One chapter's proportionality map: the ratio of every target verse that pairs
+/// with a reference verse, by (exact key string, occurrence ordinal).
+fn map_ratio_chapter(chapter: &crate::substrate::ChapterView<'_>) -> RatioChapterObs {
+    let mut obs: Vec<RatioObs> = Vec::new();
+    // No declared reference chapter -> no ratios at all. The rule is
+    // `TargetAndReferenceSilentWhenAbsent`, so an empty observation is the correct
+    // answer, not a missing one: the chapter is still cached, still stamped
+    // `ReferenceStamp::Absent`, and re-maps the moment a reference appears.
+    if let Some(paired) = chapter.paired {
+        let mut index: SourceIndex<'_> = FxHashMap::default();
+        for (key, text) in paired
+            .reference_keys
+            .iter()
+            .zip(paired.reference_texts.iter())
+        {
+            index.entry(key.as_str()).or_default().push(text.as_str());
+        }
+        let mut seen: FxHashMap<&str, usize> = FxHashMap::default();
+        for (vi, (key, text)) in paired.keys.iter().zip(chapter.texts.iter()).enumerate() {
+            let ordinal = seen.entry(key.as_str()).or_insert(0);
+            let src_text = index
+                .get(key.as_str())
+                .and_then(|texts| texts.get(*ordinal))
+                .copied();
+            *ordinal += 1;
+            let Some(src_text) = src_text else {
+                continue;
+            };
+            let t = crate::grapheme::count(text);
+            let s = crate::grapheme::count(src_text);
+            // Empty sides carry no signal and would divide by zero.
+            if t == 0 || s == 0 {
+                continue;
+            }
+            obs.push(RatioObs {
+                local_idx: LocalKeyIdx::from_usize(vi),
+                ratio: (t as f64 / s as f64) as f32,
+                len: text.len() as u32,
+            });
         }
     }
-
-    pub(crate) fn verse(&mut self, v: &stream::VerseInputs<'v, '_>) {
-        let Some(index) = self.source_index else {
-            return;
-        };
-        let ordinal = self.seen.entry(v.key).or_insert(0);
-        let src_text = index
-            .get(v.key)
-            .and_then(|texts| texts.get(*ordinal))
-            .copied();
-        *ordinal += 1;
-        let Some(src_text) = src_text else {
-            return;
-        };
-        let t = crate::grapheme::count(v.text);
-        let s = crate::grapheme::count(src_text);
-        if t == 0 || s == 0 {
-            return;
-        }
-        self.bucket.push(RatioObs {
-            local_idx: v.local_idx,
-            ratio: (t as f64 / s as f64) as f32,
-            len: v.text.len() as u32,
-        });
-    }
-
-    pub(crate) fn finish(self) -> Vec<RatioObs> {
-        self.bucket
+    RatioChapterObs {
+        token: Box::from(chapter.chapter),
+        obs: Arc::new(obs),
     }
 }
 
-impl StatefulRule for ProjectLengthRatio {
-    fn id(&self) -> RuleId {
-        PROJECT_LENGTH_RATIO
+/// The median of `v`, destructively — `select_nth_unstable_by` rather than a full
+/// sort, so maintaining the pooled project spread on every book replacement is
+/// linear rather than `n log n`. Bit-identical to the sorting median it replaces:
+/// odd counts take the middle element, even counts average the two middles, and
+/// selection puts the `n/2`-th smallest at `n/2` with everything no greater than
+/// it before, so the prefix maximum IS the sorted `n/2 - 1`.
+fn median_in_place(v: &mut [f64]) -> f64 {
+    let cmp = |a: &f64, b: &f64| a.partial_cmp(b).expect("ratios are finite");
+    let n = v.len();
+    if n % 2 == 1 {
+        let (_, mid, _) = v.select_nth_unstable_by(n / 2, cmp);
+        *mid
+    } else {
+        let (lo, mid, _) = v.select_nth_unstable_by(n / 2, cmp);
+        let hi = *mid;
+        let lo_max = lo
+            .iter()
+            .copied()
+            .fold(f64::NEG_INFINITY, f64::max);
+        (lo_max + hi) / 2.0
+    }
+}
+
+/// The knob-free median + MAD of a ratio sample.
+fn spread_of<'a>(ratios: impl Iterator<Item = &'a RatioBits>) -> Spread {
+    let mut v: Vec<f64> = ratios.map(|r| f64::from(r.0)).collect();
+    let count = v.len();
+    if count == 0 {
+        return Spread::default();
+    }
+    let med = median_in_place(&mut v);
+    for x in v.iter_mut() {
+        *x = (*x - med).abs();
+    }
+    let mad = median_in_place(&mut v);
+    Spread { count, med, mad }
+}
+
+impl Spread {
+    /// Apply the judging gates: too small a sample cannot judge, and a zero MAD
+    /// would make every deviation infinite (a book of identical ratios has no
+    /// outliers). `min_verses` is caller-supplied, so the empty guard is
+    /// independent of it — `min_verses = 0` must not let an empty sample through.
+    fn gated(self, min_verses: usize) -> Option<(f64, f64)> {
+        if self.count == 0 || self.count < min_verses || self.mad == 0.0 {
+            return None;
+        }
+        Some((self.med, self.mad))
+    }
+}
+
+impl crate::substrate::ObservationSubstrate for ProportionalitySubstrate {
+    const ID: crate::substrate::SubstrateId = crate::substrate::SubstrateId::Proportionality;
+    // Bump on any observation/reduction schema change.
+    const SCHEMA_STAMP: u64 = 1;
+
+    type Key = RatioKey;
+    // Proven from the `Corpus` chapter-token invariant — see `RatioChapterObs`.
+    type BoundaryState = ();
+    type ChapterObservation = RatioChapterObs;
+    type ReducedChapter = RatioReduced;
+    type BookContribution = RatioBookContribution;
+    type CorpusStats = RatioCorpusStats;
+    // Both `ProportionalityConfig` fields (`z_threshold`, `min_verses`) are read
+    // at judge, so a knob change maps and reduces nothing. The REFERENCE is not
+    // config and does not appear here: it enters `ObservationInputStamp::reference`
+    // as declared evidence.
+    type ExtractorConfig = ();
+    type Symbols = ();
+    type JudgeConfig = ProportionalityConfig;
+    type EntryOutcome = RatioOutcome;
+
+    fn extractor_fp(_extractor: &()) -> u64 {
+        0
     }
 
-    fn reduce(
-        &self,
-        books: &Books<'_>,
-        source: Option<&Corpus>,
-        _tokens: Option<&TokenCache<'_>>,
-    ) -> (RuleStats, rule::RuleSites) {
-        // Ratios for target ∩ source, grouped by book ("length" is grapheme
-        // count — vision §12.5; empty sides carry no signal and would divide
-        // by zero). Every book present gets a (possibly empty) bucket, so on
-        // merge it *supersedes* any prior entry — even when it now has no
-        // usable ratios (source gone, or empty sides). Without this, an
-        // edited book that lost its ratios would keep re-emitting the prior
-        // reduction's stale findings.
-        let index = source.map(index_source);
-        let mut per_book = BTreeMap::new();
-        for (group, obs) in books.iter().zip(rule::map_books(books, |group| {
-            stream::drive_book(
-                group,
-                stream::Needs::default(),
-                ProportionalityAcc::new(index.as_ref()),
-                |a, v| a.verse(v),
-                ProportionalityAcc::finish,
-            )
-        })) {
-            per_book.insert(Box::from(group.slug), obs);
-        }
-        // No sites to forward (ADR 0044): judge emits from the cached ratios
-        // and never scans text.
+    fn map_chapter(
+        chapter: &crate::substrate::ChapterView<'_>,
+        _extractor: &(),
+        _symbols: &(),
+    ) -> RatioChapterObs {
+        map_ratio_chapter(chapter)
+    }
+
+    fn pending_owner(_state: &()) -> Option<&str> {
+        None
+    }
+
+    fn reduce_chapter(
+        observation: &RatioChapterObs,
+        _entering: &(),
+        _carry_out: &mut RatioReduced,
+    ) -> (RatioReduced, ()) {
         (
-            RuleStats::Proportionality(ProportionalityStats { per_book }),
-            rule::RuleSites::Proportionality,
+            RatioReduced {
+                token: observation.token.clone(),
+                obs: Arc::clone(&observation.obs),
+            },
+            (),
         )
     }
 
+    fn finish_book(_leaving: &(), _carry_out: &mut RatioReduced) {}
+
+    fn fold_book(reduced: &[RatioReduced], _symbols: &()) -> RatioBookContribution {
+        RatioBookContribution {
+            ratios: Arc::new(
+                reduced
+                    .iter()
+                    .flat_map(|r| r.obs.iter().map(|o| RatioBits(o.ratio)))
+                    .collect(),
+            ),
+            chapters: reduced.to_vec(),
+        }
+    }
+
+    fn replace_book_in_corpus_stats(
+        stats: &mut RatioCorpusStats,
+        slug: &str,
+        old: Option<&RatioBookContribution>,
+        new: Option<&RatioBookContribution>,
+    ) -> Vec<RatioKey> {
+        let before = stats.project;
+        match new {
+            Some(c) => {
+                stats
+                    .per_book
+                    .insert(Box::from(slug), Arc::clone(&c.ratios));
+                stats
+                    .book
+                    .insert(Box::from(slug), spread_of(c.ratios.iter()));
+            }
+            None => {
+                stats.per_book.remove(slug);
+                stats.book.remove(slug);
+            }
+        }
+        // A median is not a sum: there is no subtract-then-add for it, so the
+        // pooled spread is recomputed from the (unchanged) per-book samples. That
+        // is linear in the corpus's ratio count thanks to `median_in_place`, where
+        // the retired judge paid `n log n` for the same answer on every call.
+        let changed = old.map(|c| &c.ratios[..]) != new.map(|c| &c.ratios[..]);
+        if changed {
+            stats.project = spread_of(stats.per_book.values().flat_map(|v| v.iter()));
+        }
+
+        // The delta is EXACT and honours both of a verse's judge inputs. Its own
+        // book's spread moved -> that book. The POOLED spread moved -> every book,
+        // because the project scope measures every verse against it. Neither moved
+        // -> nothing, which is the case a knob-only or unrelated-book edit takes.
+        if stats.project != before {
+            return stats.book.keys().cloned().collect();
+        }
+        if changed {
+            return vec![Box::from(slug)];
+        }
+        Vec::new()
+    }
+
     fn judge(
+        cfg: &ProportionalityConfig,
+        key: &RatioKey,
+        stats: &RatioCorpusStats,
+    ) -> RatioOutcome {
+        RatioOutcome {
+            book: stats
+                .book
+                .get(key)
+                .copied()
+                .unwrap_or_default()
+                .gated(cfg.min_verses),
+            project: stats.project.gated(cfg.min_verses),
+        }
+    }
+}
+
+impl RatioBookContribution {
+    /// Emit this book's length-ratio findings from the retained ratios — this rule
+    /// has never scanned the target text at judge time and still does not.
+    fn materialize(
         &self,
-        stats: &RuleStats,
-        books: &Books<'_>,
-        _tokens: Option<&TokenCache<'_>>,
-        _sites: Option<&rule::RuleSites>,
-    ) -> Vec<Finding> {
-        // Proportionality caches its per-verse ratios (a sparse sufficient
-        // statistic), so it emits from them directly — no re-scan of `target`.
-        // One variant remains in `RuleStats`, so this destructures rather than
-        // matches; row 7's migration retires the enum with the rule.
-        let RuleStats::Proportionality(stats) = stats;
-        let t = f64::from(self.cfg.z_threshold);
-
-        // Two pooling scopes (ADR 0017 §8): the verse's own book, and the
-        // whole project (all books concatenated — the order statistic is
-        // derived here, late, from the superseded ratios).
-        let all: Vec<f64> = stats
-            .per_book
-            .values()
-            .flatten()
-            .map(|o| f64::from(o.ratio))
-            .collect();
-        let project = dist(&all, self.cfg.min_verses);
-
-        // Iterate the current call's book groups (never the retained
-        // observations directly): each `RatioObs.local_idx` is only
-        // meaningful rebased against *this* call's `BookGroup::base`.
-        let mut out: Vec<Finding> = rule::map_books(books, |group| {
-            let mut found = Vec::new();
-            let Some(obs) = stats.per_book.get(group.slug) else {
-                return found;
-            };
-            let book = dist(
-                &obs.iter().map(|o| f64::from(o.ratio)).collect::<Vec<_>>(),
-                self.cfg.min_verses,
-            );
-            for o in obs {
+        layout: &[crate::corpus::ChapterLayout],
+        cfg: &ProportionalityConfig,
+        outcome: RatioOutcome,
+        out: &mut Vec<Finding>,
+    ) {
+        // Positional zip is truncating: a missing or extra trailing chapter would
+        // silently DROP findings rather than fail. Chapter cardinality is the
+        // alignment precondition; the token check at each pair (inside
+        // `chapter_base`) proves the pairing, but only for pairs that exist.
+        assert_eq!(
+            self.chapters.len(),
+            layout.len(),
+            "materialize: contribution/layout chapter count mismatch"
+        );
+        let t = f64::from(cfg.z_threshold);
+        for (chapter, block) in self.chapters.iter().zip(layout) {
+            let base = crate::substrate::chapter_base(block, &chapter.token);
+            for o in chapter.obs.iter() {
                 let r = f64::from(o.ratio);
-                let book_z = book.map(|(med, mad)| MAD_TO_SIGMA * (r - med) / mad);
-                let project_z = project.map(|(med, mad)| MAD_TO_SIGMA * (r - med) / mad);
+                let book_z = outcome.book.map(|(med, mad)| MAD_TO_SIGMA * (r - med) / mad);
+                let project_z = outcome
+                    .project
+                    .map(|(med, mad)| MAD_TO_SIGMA * (r - med) / mad);
                 let book_fires = book_z.is_some_and(|z| z.abs() > t);
                 let project_fires = project_z.is_some_and(|z| z.abs() > t);
-
                 let scope = match (book_fires, project_fires) {
                     (true, true) => LengthRatioScope::Both {
                         book_z: book_z.unwrap() as f32,
@@ -244,8 +447,8 @@ impl StatefulRule for ProjectLengthRatio {
                     .into_iter()
                     .chain(project_fires.then(|| project_z.unwrap().abs()))
                     .fold(0.0_f64, f64::max);
-                found.push(Finding {
-                    key_idx: rebase(group.base, o.local_idx),
+                out.push(Finding {
+                    key_idx: rebase(base, o.local_idx),
                     code: PROJECT_LENGTH_RATIO,
                     severity: Severity::Warning,
                     // The finding anchors the whole verse; `key_idx` carries identity.
@@ -253,39 +456,205 @@ impl StatefulRule for ProjectLengthRatio {
                         start: 0,
                         end: o.len,
                     },
-                    score: Some(score_from_z(mag, self.cfg.z_threshold)),
+                    score: Some(score_from_z(mag, cfg.z_threshold)),
                     args: Some(FindingArgs::LengthRatio {
                         ratio_pct: r as f32 * 100.0,
                         scope,
                     }),
                 });
             }
-            found
-        })
-        .into_iter()
-        .flatten()
-        .collect();
-        out.sort_by_key(|f| (f.key_idx, f.range.start));
-        out
+        }
     }
 }
 
-/// Median + MAD of the ratios, or `None` when the sample is too small to
-/// judge (`< min_verses`) or has zero spread (a book of identical ratios has
-/// no outliers, and a zero MAD would make every deviation infinite).
-fn dist(ratios: &[f64], min_verses: usize) -> Option<(f64, f64)> {
-    // Guard empty independently of `min_verses`: that knob is caller-supplied
-    // (wasm config) and a `min_verses = 0` would otherwise let an empty slice
-    // through to `median([])`, which traps.
-    if ratios.is_empty() || ratios.len() < min_verses {
-        return None;
+/// One chapter the substrate has to map this analysis, as the ordered map seam
+/// sees it: its caller-order `(book, chapter)` slot plus the view mapping reads.
+struct RatioMapWork<'a> {
+    book: usize,
+    chapter: usize,
+    view: crate::substrate::ChapterView<'a>,
+}
+
+/// The reference corpus's chapters by `(slug, chapter token)` — the pairing index
+/// §5.2 requires a reference-declaring substrate to declare. Built once per
+/// analyze; `None` when there is no reference corpus at all.
+type ReferenceChapters<'a> = FxHashMap<(&'a str, &'a str), &'a crate::corpus::ChapterLayout>;
+
+fn index_reference_chapters(source: &Corpus) -> ReferenceChapters<'_> {
+    let mut idx: ReferenceChapters<'_> = FxHashMap::default();
+    for book in source.book_layout() {
+        for c in &book.chapters {
+            // A chapter run may not reopen, so this is a function, not a
+            // multimap — the same invariant that makes the per-key ordinal
+            // chapter-local.
+            idx.insert((&book.slug, &c.chapter), c);
+        }
     }
-    let med = median(ratios.iter().copied());
-    let mad = median(ratios.iter().map(|&r| (r - med).abs()));
-    if mad == 0.0 {
-        return None;
+    idx
+}
+
+/// Drive the `proj.length-ratio` observation substrate for one analysis. The one
+/// source-dependent drive: each chapter's stamp carries the paired reference
+/// chapter's hash (or the explicit absent tag), so a reference edit, a reference
+/// replacement, and a reference removal each invalidate exactly the chapters whose
+/// evidence moved — and a target-only substrate's stamps are untouched by all
+/// three.
+pub(crate) fn drive_proportionality(
+    active: bool,
+    cache: &mut crate::substrate::SubstrateCache<ProportionalitySubstrate>,
+    corpus: &Corpus,
+    source: Option<&Corpus>,
+    cfg: &ProportionalityConfig,
+    out: &mut Vec<Finding>,
+) {
+    use crate::substrate::{
+        ChapterView, DrivePhase, DriveProbe, ObservationInputStamp, ObservationSubstrate,
+        PairedView, ReferenceStamp,
+    };
+    #[cfg(any(test, feature = "test-probes"))]
+    cache.reset_probes();
+    if !active {
+        cache.clear();
+        return;
     }
-    Some((med, mad))
+    let mut probe = DriveProbe::new(crate::substrate::SubstrateId::Proportionality);
+    let keys = corpus.keys();
+    let texts = corpus.texts();
+    let layout = corpus.book_layout();
+    let reference = source.map(index_reference_chapters);
+    let src_keys = source.map(Corpus::keys);
+    let src_texts = source.map(Corpus::texts);
+    // Borrowed chapter tokens: the layout owns them and outlives the drive, so
+    // the planning pass never allocates. `update_book` takes ownership only
+    // where it rebuilds a persistent cache entry.
+    let mut stamped: Vec<Vec<(&str, ObservationInputStamp)>> = Vec::with_capacity(layout.len());
+    let mut work: Vec<RatioMapWork<'_>> = Vec::new();
+    let mut book_runs: Vec<std::ops::Range<usize>> = Vec::new();
+    let mut work_bytes = 0usize;
+    // The paired view for one target chapter: its own keys/texts plus the
+    // reference chapter carrying the same `(slug, token)`, if any.
+    let paired_view = |slug: &str, c: &crate::corpus::ChapterLayout| -> Option<PairedView<'_>> {
+        let rc = reference.as_ref()?.get(&(slug, &*c.chapter))?;
+        Some(PairedView {
+            keys: &keys[c.range.clone()],
+            reference_keys: &src_keys?[rc.range.clone()],
+            reference_texts: &src_texts?[rc.range.clone()],
+        })
+    };
+    for (bi, book) in layout.iter().enumerate() {
+        let run_start = work.len();
+        let mut chapters = Vec::with_capacity(book.chapters.len());
+        for (ci, c) in book.chapters.iter().enumerate() {
+            let paired = paired_view(&book.slug, c);
+            let stamp = ObservationInputStamp {
+                schema_stamp: ProportionalitySubstrate::SCHEMA_STAMP,
+                chapter_hash: c.hash,
+                extractor_fp: ProportionalitySubstrate::extractor_fp(&()),
+                reference: match reference
+                    .as_ref()
+                    .and_then(|idx| idx.get(&(&*book.slug, &*c.chapter)))
+                {
+                    Some(rc) => ReferenceStamp::Present(rc.hash),
+                    None => ReferenceStamp::Absent,
+                },
+            };
+            if !cache.observation_is_current(&book.slug, &c.chapter, &stamp) {
+                let verses = &texts[c.range.clone()];
+                work_bytes += verses.iter().map(String::len).sum::<usize>();
+                work.push(RatioMapWork {
+                    book: bi,
+                    chapter: ci,
+                    view: ChapterView {
+                        chapter: &c.chapter,
+                        texts: verses,
+                        paired,
+                    },
+                });
+            }
+            chapters.push((&*c.chapter, stamp));
+        }
+        if work.len() > run_start {
+            book_runs.push(run_start..work.len());
+        }
+        stamped.push(chapters);
+    }
+    probe.mark(DrivePhase::Plan);
+    let route = crate::rule::map_route(&book_runs, work.len(), work_bytes);
+    #[cfg(any(test, feature = "test-probes"))]
+    {
+        cache.map_route = route.label();
+    }
+    let fresh = crate::rule::map_chapter_work(&work, &book_runs, route, |w| {
+        ProportionalitySubstrate::map_chapter(&w.view, &(), &())
+    });
+    // Back into caller-order `(book, chapter)` slots, so reduction reads them in
+    // corpus order and never in completion order.
+    let mut slots: Vec<Vec<Option<RatioChapterObs>>> = layout
+        .iter()
+        .map(|b| (0..b.chapters.len()).map(|_| None).collect())
+        .collect();
+    for (w, obs) in work.iter().zip(fresh) {
+        slots[w.book][w.chapter] = Some(obs);
+    }
+    probe.mark(DrivePhase::Map);
+    for (bi, book) in layout.iter().enumerate() {
+        cache.update_book(&book.slug, &stamped[bi], &(), |i| {
+            slots[bi][i].take().unwrap_or_else(|| {
+                let c = &book.chapters[i];
+                ProportionalitySubstrate::map_chapter(
+                    &ChapterView {
+                        chapter: &c.chapter,
+                        texts: &texts[c.range.clone()],
+                        paired: paired_view(&book.slug, c),
+                    },
+                    &(),
+                    &(),
+                )
+            })
+        });
+    }
+    probe.mark(DrivePhase::Reduce);
+    // The judge key set is the aggregate's own book set — one verdict per book,
+    // serving every verse in it. No key-discovery phase.
+    let stats = cache.corpus_stats();
+    let verdicts: BTreeMap<RatioKey, RatioOutcome> = stats
+        .book
+        .keys()
+        .map(|slug| {
+            (
+                slug.clone(),
+                ProportionalitySubstrate::judge(cfg, slug, stats),
+            )
+        })
+        .collect();
+    #[cfg(any(test, feature = "test-probes"))]
+    {
+        cache.judged = verdicts.len();
+    }
+    probe.mark(DrivePhase::Judge);
+    for book in layout {
+        if let Some(contrib) = cache.book_contribution(&book.slug) {
+            let outcome = verdicts.get(&book.slug).copied().unwrap_or_default();
+            contrib.materialize(&book.chapters, cfg, outcome, out);
+        }
+    }
+    probe.mark(DrivePhase::Materialize);
+}
+
+/// `proj.length-ratio` findings for a whole corpus at a given config, via the
+/// observation substrate over a fresh transient cache — the single
+/// proportionality implementation, for tests and calibration callers. Findings are
+/// in the final stable order.
+pub fn length_ratio_findings(
+    corpus: &Corpus,
+    source: Option<&Corpus>,
+    cfg: &ProportionalityConfig,
+) -> Vec<Finding> {
+    let mut cache = crate::substrate::SubstrateCache::new();
+    let mut out = Vec::new();
+    drive_proportionality(true, &mut cache, corpus, source, cfg, &mut out);
+    out.sort_by_key(|f| (f.key_idx, f.range.start));
+    out
 }
 
 /// Map `|z|` to a bounded confidence: 0.5 at the firing threshold,
@@ -296,24 +665,10 @@ fn score_from_z(abs_z: f64, z_threshold: f32) -> f32 {
     (abs_z / (2.0 * f64::from(z_threshold))).min(1.0) as f32
 }
 
-/// Median of an unsorted sequence; even counts average the middle two.
-/// A book is a few hundred ratios, so the sort is microseconds (ADR 0011).
-fn median(values: impl Iterator<Item = f64>) -> f64 {
-    let mut v: Vec<f64> = values.collect();
-    v.sort_by(|a, b| a.partial_cmp(b).expect("ratios are finite"));
-    let n = v.len();
-    if n % 2 == 1 {
-        v[n / 2]
-    } else {
-        (v[n / 2 - 1] + v[n / 2]) / 2.0
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::ProportionalityConfig;
-    use crate::corpus::by_book;
 
     /// A key string for chapter 1, verse `verse` of `book` — the wire format
     /// (`"GEN 1:3"`) both target and source corpora key on. Pairing is by
@@ -362,25 +717,49 @@ mod tests {
         Corpus::try_from_parts(c.keys().to_vec(), texts).unwrap()
     }
 
-    fn rule() -> ProjectLengthRatio {
-        ProjectLengthRatio {
-            cfg: ProportionalityConfig::default(),
+    fn rule() -> ProportionalityConfig {
+        ProportionalityConfig::default()
+    }
+
+    fn small_book_rule() -> ProportionalityConfig {
+        ProportionalityConfig {
+            min_verses: 5,
+            ..Default::default()
         }
     }
 
-    fn small_book_rule() -> ProjectLengthRatio {
-        ProjectLengthRatio {
-            cfg: ProportionalityConfig {
-                min_verses: 5,
-                ..Default::default()
-            },
-        }
+    /// A cold whole-corpus analysis, in the final stable order.
+    fn run(cfg: &ProportionalityConfig, target: &Corpus, source: Option<&Corpus>) -> Vec<Finding> {
+        length_ratio_findings(target, source, cfg)
     }
 
-    /// Proportionality ignores the char table, so an empty one is fine here.
-    fn run(rule: &ProjectLengthRatio, target: &Corpus, source: Option<&Corpus>) -> Vec<Finding> {
-        let books = by_book(target);
-        rule.judge(&rule.reduce(&books, source, None).0, &books, None, None)
+    /// A resident drive, findings in the final stable order — the incremental
+    /// path, as `analyze` runs it.
+    fn resident(
+        cache: &mut crate::substrate::SubstrateCache<ProportionalitySubstrate>,
+        target: &Corpus,
+        source: Option<&Corpus>,
+        cfg: &ProportionalityConfig,
+    ) -> Vec<Finding> {
+        let mut out = Vec::new();
+        drive_proportionality(true, cache, target, source, cfg, &mut out);
+        out.sort_by_key(|f| (f.key_idx, f.range.start));
+        out
+    }
+
+    /// Comparable rendering — key, span, score and both arg values.
+    fn render(c: &Corpus, f: &[Finding]) -> Vec<String> {
+        f.iter()
+            .map(|f| {
+                let a = match &f.args {
+                    Some(FindingArgs::LengthRatio { ratio_pct, scope }) => {
+                        format!("{ratio_pct:?}/{scope:?}")
+                    }
+                    _ => "-".to_string(),
+                };
+                format!("{}|{}|{:?}|{a}", c.key(f.key_idx), f.range.end, f.score, a = a)
+            })
+            .collect()
     }
 
     /// Two duplicate keys on both sides pair first-with-first,
@@ -582,34 +961,34 @@ mod tests {
         // book-local (`LocalKeyIdx`), independent of GEN's size.
         let target60 = build_target(60);
         let source60 = build_source(60);
-        let books60 = by_book(&target60);
-        let stats = r.reduce(&books60, Some(&source60), None).0;
-        let findings60 = r.judge(&stats, &books60, None, None);
+        let mut cache = crate::substrate::SubstrateCache::new();
+        let findings60 = resident(&mut cache, &target60, Some(&source60), &r);
         assert_eq!(findings60.len(), 1);
         assert_eq!(target60.key(findings60[0].key_idx), key("EXO", 3));
 
-        // Judge the *same stored stats* against a call where GEN grew to 61
-        // verses — EXO's global base shifts by one, even though EXO's own
-        // content (and thus its stored `RatioObs`) is unchanged.
+        // The SAME resident cache, answering for a call where GEN grew to 61
+        // verses. EXO's chapter is untouched, so its observation is reused
+        // verbatim — its addresses are chapter-local and materialization rebases
+        // them through EXO's current layout block, whose global base has shifted.
         let target61 = build_target(61);
-        let books61 = by_book(&target61);
-        let findings_grown = r.judge(&stats, &books61, None, None);
-        assert_eq!(findings_grown.len(), 1);
+        let source61 = build_source(61);
+        let grown = resident(&mut cache, &target61, Some(&source61), &r);
+        assert_eq!(grown.len(), 1);
         assert_eq!(
-            target61.key(findings_grown[0].key_idx),
+            target61.key(grown[0].key_idx),
             key("EXO", 3),
-            "EXO's stored ratio must resolve to EXO 1:3 even after GEN grew"
+            "EXO's retained ratio must resolve to EXO 1:3 even after GEN grew"
         );
 
         // And shrank to 59 verses — EXO's base shifts the other way.
         let target59 = build_target(59);
-        let books59 = by_book(&target59);
-        let findings_shrunk = r.judge(&stats, &books59, None, None);
-        assert_eq!(findings_shrunk.len(), 1);
+        let source59 = build_source(59);
+        let shrunk = resident(&mut cache, &target59, Some(&source59), &r);
+        assert_eq!(shrunk.len(), 1);
         assert_eq!(
-            target59.key(findings_shrunk[0].key_idx),
+            target59.key(shrunk[0].key_idx),
             key("EXO", 3),
-            "EXO's stored ratio must resolve to EXO 1:3 even after GEN shrank"
+            "EXO's retained ratio must resolve to EXO 1:3 even after GEN shrank"
         );
     }
 
@@ -814,17 +1193,20 @@ mod tests {
                 t.push('x');
             }
         });
-        let books = by_book(&target);
-        let prior = r.reduce(&books, Some(&source), None).0;
-        assert_eq!(r.judge(&prior, &books, None, None).len(), 1);
+        let mut cache = crate::substrate::SubstrateCache::new();
+        assert_eq!(resident(&mut cache, &target, Some(&source), &r).len(), 1);
 
-        // Fix verse 3 to a normal length, re-reduce, merge (supersede GEN).
+        // Fix verse 3 to a normal length; the resident cache remaps that chapter
+        // and the outlier disappears.
         let mut texts = target.texts().to_vec();
         texts[2] = "abcdefghij ".repeat(4); // index 2 == "GEN 1:3"
         let fixed = Corpus::try_from_parts(target.keys().to_vec(), texts).unwrap();
-        let fixed_books = by_book(&fixed);
-        let merged = prior.merge(r.reduce(&fixed_books, Some(&source), None).0);
-        assert!(r.judge(&merged, &fixed_books, None, None).is_empty());
+        let after = resident(&mut cache, &fixed, Some(&source), &r);
+        assert!(after.is_empty(), "{after:?}");
+        assert_eq!(
+            render(&fixed, &after),
+            render(&fixed, &run(&r, &fixed, Some(&source)))
+        );
     }
 
     #[test]
@@ -838,33 +1220,207 @@ mod tests {
                 t.push('x');
             }
         });
-        let books = by_book(&target);
-        let prior = r.reduce(&books, Some(&source), None).0;
-        assert_eq!(r.judge(&prior, &books, None, None).len(), 1);
+        let mut cache = crate::substrate::SubstrateCache::new();
+        assert_eq!(resident(&mut cache, &target, Some(&source), &r).len(), 1);
 
-        // Re-supply the same book with the reference gone: the fresh reduction
-        // carries an empty GEN bucket, which supersedes the prior's ratios.
-        let merged = prior.merge(r.reduce(&books, None, None).0);
-        assert!(r.judge(&merged, &books, None, None).is_empty());
+        // THE REFERENCE-REMOVAL INVALIDATION (plan §7.1's source-replace row).
+        // The target text is byte-identical, so nothing in `chapter_hash` moved —
+        // only `ObservationInputStamp::reference`, from `Present(h)` to `Absent`.
+        // That must remap every chapter and empty the aggregate; a stamp that
+        // ignored the reference would silently keep emitting the stale outlier.
+        cache.reset_probes();
+        let after = resident(&mut cache, &target, None, &r);
+        assert!(after.is_empty(), "{after:?}");
+        assert!(
+            cache.mapped >= 1,
+            "losing the reference must invalidate the observations it produced"
+        );
+        // And a reference APPEARING again re-maps and restores the finding — the
+        // third stamp state, so `Absent` and `NotDeclared` cannot collapse.
+        cache.reset_probes();
+        let restored = resident(&mut cache, &target, Some(&source), &r);
+        assert_eq!(restored.len(), 1);
+        assert!(cache.mapped >= 1);
+    }
+
+    /// An edit maps and reduces exactly its own chapter, and a judging-knob change
+    /// maps and reduces nothing (plan §12.4) — both config fields are read at
+    /// judge, and the REFERENCE is not config.
+    #[test]
+    fn edit_locality_and_knob_isolation() {
+        let r = rule();
+        // Three chapters so an edit's locality is visible.
+        let base = "abcdefghij ".repeat(4);
+        let mut keys = Vec::new();
+        let mut texts = Vec::new();
+        let mut src_keys = Vec::new();
+        let mut src_texts = Vec::new();
+        for ch in 1..=3u16 {
+            for v in 1..=20u16 {
+                let k = format!("GEN {ch}:{v}");
+                keys.push(k.clone());
+                texts.push(if v % 2 == 0 {
+                    format!("{base}x")
+                } else {
+                    base.clone()
+                });
+                src_keys.push(k);
+                src_texts.push(base.clone());
+            }
+        }
+        let source = Corpus::try_from_parts(src_keys, src_texts).unwrap();
+        let mut cache = crate::substrate::SubstrateCache::new();
+        let seeded = resident(
+            &mut cache,
+            &Corpus::try_from_parts(keys.clone(), texts.clone()).unwrap(),
+            Some(&source),
+            &r,
+        );
+        assert!(seeded.is_empty(), "{seeded:?}");
+        assert_eq!(cache.mapped, 3, "a cold call maps every chapter");
+
+        // Blow up one verse of chapter 2.
+        texts[25] = base.repeat(5);
+        let edited = Corpus::try_from_parts(keys.clone(), texts.clone()).unwrap();
+        cache.reset_probes();
+        let inc = resident(&mut cache, &edited, Some(&source), &r);
+        assert_eq!(cache.mapped, 1, "one changed chapter maps one chapter");
+        assert_eq!(
+            cache.reduced, 1,
+            "an empty boundary state can never cascade past the changed chapter"
+        );
+        assert_eq!(
+            render(&edited, &inc),
+            render(&edited, &run(&r, &edited, Some(&source)))
+        );
+
+        // `min_verses` above the whole corpus gates BOTH distributions off, so the
+        // knob change is observable as silence without depending on how extreme a
+        // z-score the synthetic outlier happens to reach.
+        let strict = ProportionalityConfig {
+            min_verses: 100_000,
+            ..Default::default()
+        };
+        cache.reset_probes();
+        let none = resident(&mut cache, &edited, Some(&source), &strict);
+        assert_eq!(
+            (cache.mapped, cache.reduced),
+            (0, 0),
+            "a knob is not an extraction input"
+        );
+        assert!(none.is_empty());
+    }
+
+    /// The duplicate-key occurrence ordinal is CHAPTER-local, which is what makes
+    /// this substrate's boundary state `()`. Two `GEN 1:1`s and two `GEN 2:1`s: if
+    /// the ordinal leaked across the chapter seam, chapter 2's first verse would
+    /// pair with its SECOND source occurrence and its ratio would be wrong. The
+    /// chapter-grained resident answer must equal the cold whole-corpus one.
+    #[test]
+    fn the_duplicate_key_ordinal_is_chapter_local() {
+        let base = "abcdefghij ".repeat(4);
+        let mut keys = Vec::new();
+        let mut texts = Vec::new();
+        let mut src_keys = Vec::new();
+        let mut src_texts = Vec::new();
+        for ch in 1..=2u16 {
+            // The duplicated key first, twice, then ordinary verses so both
+            // chapters can carry a distribution.
+            for _ in 0..2 {
+                keys.push(format!("GEN {ch}:1"));
+                src_keys.push(format!("GEN {ch}:1"));
+                src_texts.push(base.clone());
+            }
+            // The two target duplicates differ in length, so pairing them to the
+            // wrong source occurrence is observable in the ratios.
+            texts.push(base.clone());
+            texts.push(base.repeat(5));
+            for v in 2..=30u16 {
+                let k = format!("GEN {ch}:{v}");
+                keys.push(k.clone());
+                texts.push(if v % 2 == 0 {
+                    format!("{base}x")
+                } else {
+                    base.clone()
+                });
+                src_keys.push(k);
+                src_texts.push(base.clone());
+            }
+        }
+        let target = Corpus::try_from_parts(keys, texts).unwrap();
+        let source = Corpus::try_from_parts(src_keys, src_texts).unwrap();
+        let r = rule();
+        let mut cache = crate::substrate::SubstrateCache::new();
+        let inc = resident(&mut cache, &target, Some(&source), &r);
+        let cold = run(&r, &target, Some(&source));
+        assert_eq!(render(&target, &inc), render(&target, &cold));
+        // Both chapters' 5x duplicates surface, which is the positive control:
+        // an ordinal that slid would have mispaired one of them.
+        assert_eq!(inc.len(), 2, "{:?}", render(&target, &inc));
+    }
+
+    /// Randomized edits on BOTH sides: a resident cache's findings always equal a
+    /// cold analysis of the same target/reference pair (plan §12.6). The reference
+    /// moves too, which is the half only a source-dependent substrate has.
+    #[test]
+    fn resident_proportionality_equals_cold_under_randomized_edits() {
+        let base = "abcdefghij ".repeat(4);
+        let shapes: Vec<String> = vec![
+            base.clone(),
+            format!("{base}x"),
+            base.repeat(5),
+            base.repeat(2),
+            String::new(),
+        ];
+        let r = ProportionalityConfig {
+            min_verses: 5,
+            ..Default::default()
+        };
+        let mut keys = Vec::new();
+        let mut texts = Vec::new();
+        for ch in 1..=3u16 {
+            for v in 1..=12u16 {
+                keys.push(format!("GEN {ch}:{v}"));
+                texts.push(base.clone());
+            }
+        }
+        let mut src_texts = texts.clone();
+        let mut cache = crate::substrate::SubstrateCache::new();
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        for step in 0..24 {
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let vi = (state >> 33) as usize % texts.len();
+            let si = (state >> 11) as usize % shapes.len();
+            // Alternate which side moves, and every fourth step drop the
+            // reference entirely and bring it back.
+            if step % 2 == 0 {
+                texts[vi] = shapes[si].clone();
+            } else {
+                src_texts[vi] = shapes[si].clone();
+            }
+            let target = Corpus::try_from_parts(keys.clone(), texts.clone()).unwrap();
+            let source = Corpus::try_from_parts(keys.clone(), src_texts.clone()).unwrap();
+            let src = if step % 4 == 3 { None } else { Some(&source) };
+            let inc = resident(&mut cache, &target, src, &r);
+            assert_eq!(
+                render(&target, &inc),
+                render(&target, &run(&r, &target, src)),
+                "step {step}: resident result diverged from cold"
+            );
+        }
     }
 
     #[test]
     fn min_verses_zero_does_not_panic_on_an_empty_book() {
         // `min_verses` is caller-supplied (wasm config); 0 must not let an
         // empty ratio set reach `median([])`.
-        let r = ProjectLengthRatio {
-            cfg: ProportionalityConfig {
-                min_verses: 0,
-                ..Default::default()
-            },
+        let r = ProportionalityConfig {
+            min_verses: 0,
+            ..Default::default()
         };
         let (target, _) = corpus(3, None, 1);
-        // No source ⇒ every book bucket is empty; judging must not trap.
-        let books = by_book(&target);
-        assert!(
-            r.judge(&r.reduce(&books, None, None).0, &books, None, None)
-                .is_empty()
-        );
+        // No source ⇒ every book's sample is empty; judging must not trap.
+        assert!(run(&r, &target, None).is_empty());
     }
 
     #[test]
@@ -874,9 +1430,37 @@ mod tests {
         assert_eq!(score_from_z(50.0, 2.5), 1.0);
     }
 
+    /// The selection median must agree with the sorting one it replaced, on both
+    /// parities and whatever order the input arrives in — the prefix-maximum step
+    /// is the part that would be wrong if `select_nth_unstable_by`'s partition
+    /// contract were misread.
     #[test]
     fn median_handles_even_and_odd() {
-        assert_eq!(median([3.0, 1.0, 2.0].into_iter()), 2.0);
-        assert_eq!(median([4.0, 1.0, 2.0, 3.0].into_iter()), 2.5);
+        assert_eq!(median_in_place(&mut [3.0, 1.0, 2.0]), 2.0);
+        assert_eq!(median_in_place(&mut [4.0, 1.0, 2.0, 3.0]), 2.5);
+        assert_eq!(median_in_place(&mut [1.0]), 1.0);
+        assert_eq!(median_in_place(&mut [2.0, 1.0]), 1.5);
+        // Duplicates around the split, and a reverse-sorted input.
+        assert_eq!(median_in_place(&mut [5.0, 5.0, 1.0, 1.0]), 3.0);
+        assert_eq!(median_in_place(&mut [9.0, 8.0, 7.0, 6.0, 5.0]), 7.0);
+        // Bit-for-bit against a sorting median over a pseudo-random sample, both
+        // parities — this is the equivalence the aggregate's correctness rests on.
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        for n in [7usize, 8, 63, 64, 255, 256] {
+            let mut v: Vec<f64> = (0..n)
+                .map(|_| {
+                    state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
+                    f64::from((state >> 40) as u32) / 1024.0
+                })
+                .collect();
+            let mut sorted = v.clone();
+            sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            let want = if n % 2 == 1 {
+                sorted[n / 2]
+            } else {
+                (sorted[n / 2 - 1] + sorted[n / 2]) / 2.0
+            };
+            assert_eq!(median_in_place(&mut v).to_bits(), want.to_bits(), "n = {n}");
+        }
     }
 }

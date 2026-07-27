@@ -62,6 +62,9 @@ pub(crate) enum SubstrateId {
     MixedScript,
     /// `uni.rare-glyph`'s scalar inventory + rare-letter word detail.
     Glyph,
+    /// `proj.length-ratio`'s per-book target/reference ratio samples — the only
+    /// substrate that declares a REFERENCE input (plan §5.2).
+    Proportionality,
     /// `struct.duplicate-word`'s adjacent-pair sites.
     DuplicateWord,
     /// The shared casing model: per-word case tables + lowercase flag
@@ -84,6 +87,7 @@ impl SubstrateId {
         SubstrateId::PunctOnly,
         SubstrateId::MixedScript,
         SubstrateId::Glyph,
+        SubstrateId::Proportionality,
         SubstrateId::DuplicateWord,
         SubstrateId::Casing,
         SubstrateId::MixedCase,
@@ -169,6 +173,7 @@ pub const SUBSTRATE_NAMES: [&str; SubstrateId::ALL.len()] = [
     "punct-only",
     "mixed-script",
     "glyph",
+    "proportionality",
     "duplicate-word",
     "casing",
     "mixed-case",
@@ -256,6 +261,40 @@ pub(crate) struct ChapterView<'a> {
     /// The chapter's verse texts in presented order; verse `i` is chapter-local
     /// index `i`.
     pub(crate) texts: &'a [String],
+    /// The paired reference view, present **only** for a substrate whose closed
+    /// registry entry declares a reference input (plan §5.2). The engine does not
+    /// hand a substrate source access it did not declare, which is why this is an
+    /// `Option` on the view rather than an always-available field: a target-only
+    /// mapper cannot read reference text even by accident.
+    pub(crate) paired: Option<PairedView<'a>>,
+}
+
+/// What a reference-declaring substrate reads beyond the target text: this
+/// chapter's own verse keys, and the paired reference chapter's keys and texts.
+///
+/// The pairing is by `(slug, chapter token)`, and that is sound because a key's
+/// chapter token is *parsed from the key* and a chapter run may not reopen: every
+/// occurrence of a key string therefore lies inside one chapter run, on both
+/// sides. So a target chapter's reference evidence is exactly the reference
+/// chapter carrying the same token in the same book — never a wider scope, and
+/// never a cross-slug read (plan §17's stop clause).
+#[derive(Clone, Copy)]
+pub(crate) struct PairedView<'a> {
+    pub(crate) keys: &'a [String],
+    pub(crate) reference_keys: &'a [String],
+    pub(crate) reference_texts: &'a [String],
+}
+
+impl<'a> ChapterView<'a> {
+    /// A target-only chapter view — the shape every substrate but
+    /// `ProportionalitySubstrate` maps from.
+    pub(crate) fn target(chapter: &'a str, texts: &'a [String]) -> Self {
+        ChapterView {
+            chapter,
+            texts,
+            paired: None,
+        }
+    }
 }
 
 /// Validity stamp for a cached [chapter observation](ObservationSubstrate::ChapterObservation).
@@ -275,6 +314,32 @@ pub(crate) struct ObservationInputStamp {
     /// absent by construction; a substrate with no extraction config (spacing)
     /// carries a constant here.
     pub(crate) extractor_fp: u64,
+    /// The paired reference chapter's content hash, or the explicit absent tag,
+    /// for a substrate that declares a reference input (plan §5.2). A target-only
+    /// substrate carries [`ReferenceStamp::NotDeclared`], so its observations
+    /// cannot be invalidated by reference movement — and a declared one's
+    /// observations invalidate when the reference chapter's *content* moves, when
+    /// the reference disappears, and when a reference appears where there was
+    /// none, because all three are distinct values here.
+    pub(crate) reference: ReferenceStamp,
+}
+
+/// The reference half of an [`ObservationInputStamp`] (plan §5.2's "relevant
+/// reference chapter/book hash or explicit absent tag (if declared)").
+///
+/// Three states, not two: "declared but absent" must be distinguishable from
+/// "not declared" so that a reference corpus being *removed* invalidates a
+/// source-dependent substrate's observations while leaving every target-only
+/// substrate's alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ReferenceStamp {
+    /// This substrate declares no reference input.
+    NotDeclared,
+    /// Declared, and no reference chapter pairs with this one (no reference
+    /// corpus, or none carrying this `(slug, chapter)`).
+    Absent,
+    /// Declared, and this is the paired reference chapter's content hash.
+    Present(u128),
 }
 
 /// Validity stamp for a cached [reduced chapter](ObservationSubstrate::ReducedChapter).
@@ -930,6 +995,7 @@ pub(crate) struct ActiveSubstrates {
     pub(crate) punct_only: bool,
     pub(crate) mixed_script: bool,
     pub(crate) glyph: bool,
+    pub(crate) proportionality: bool,
     pub(crate) duplicate_word: bool,
     pub(crate) casing: bool,
     pub(crate) mixed_case: bool,
@@ -947,6 +1013,7 @@ impl ActiveSubstrates {
             punct_only: any(punct_only_consumers()),
             mixed_script: any(mixed_script_consumers()),
             glyph: any(glyph_consumers()),
+            proportionality: any(proportionality_consumers()),
             duplicate_word: any(duplicate_word_consumers()),
             casing: any(casing_consumers()),
             mixed_case: any(mixed_case_consumers()),
@@ -962,6 +1029,7 @@ impl ActiveSubstrates {
             SubstrateId::PunctOnly => self.punct_only,
             SubstrateId::MixedScript => self.mixed_script,
             SubstrateId::Glyph => self.glyph,
+            SubstrateId::Proportionality => self.proportionality,
             SubstrateId::DuplicateWord => self.duplicate_word,
             SubstrateId::Casing => self.casing,
             SubstrateId::MixedCase => self.mixed_case,
@@ -1001,6 +1069,13 @@ pub(crate) fn glyph_consumers() -> &'static [RuleId] {
     &[RuleId::RareGlyph]
 }
 
+/// The closed registry: the proportionality substrate's sole consumer — and the
+/// only rule in the whole registry whose `InputDependency` is
+/// `TargetAndReferenceSilentWhenAbsent`.
+pub(crate) fn proportionality_consumers() -> &'static [RuleId] {
+    &[RuleId::ProjectLengthRatio]
+}
+
 /// The closed registry: the duplicate-word substrate's sole consumer.
 pub(crate) fn duplicate_word_consumers() -> &'static [RuleId] {
     &[RuleId::DuplicateWord]
@@ -1031,6 +1106,7 @@ pub(crate) fn consumers_of(id: SubstrateId) -> &'static [RuleId] {
         SubstrateId::PunctOnly => punct_only_consumers(),
         SubstrateId::MixedScript => mixed_script_consumers(),
         SubstrateId::Glyph => glyph_consumers(),
+        SubstrateId::Proportionality => proportionality_consumers(),
         SubstrateId::DuplicateWord => duplicate_word_consumers(),
         SubstrateId::Casing => casing_consumers(),
         SubstrateId::MixedCase => mixed_case_consumers(),
@@ -1070,6 +1146,10 @@ mod tests {
             SubstrateId::Glyph
         );
         assert_eq!(
+            <crate::signals::proportionality::ProportionalitySubstrate as ObservationSubstrate>::ID,
+            SubstrateId::Proportionality
+        );
+        assert_eq!(
             <crate::signals::lexical::DuplicateWordSubstrate as ObservationSubstrate>::ID,
             SubstrateId::DuplicateWord
         );
@@ -1101,6 +1181,7 @@ mod tests {
                 punct_only: true,
                 mixed_script: true,
                 glyph: true,
+                proportionality: true,
                 duplicate_word: true,
                 casing: true,
                 mixed_case: true,
@@ -1321,6 +1402,7 @@ mod replay {
                             .bytes()
                             .fold(1u128, |h, b| h.wrapping_mul(31).wrapping_add(u128::from(b))),
                         extractor_fp: S::extractor_fp(&()),
+                        reference: ReferenceStamp::NotDeclared,
                     },
                 )
             })
@@ -1331,10 +1413,7 @@ mod replay {
             .collect();
         cache.update_book(slug, &stamped, &(), |i| {
             S::map_chapter(
-                &ChapterView {
-                    chapter: chapters[i].0,
-                    texts: &texts[i],
-                },
+                &ChapterView::target(chapters[i].0, &texts[i]),
                 &(),
                 &(),
             )
@@ -1377,6 +1456,7 @@ mod replay {
                     .bytes()
                     .fold(1u128, |h, b| h.wrapping_mul(31).wrapping_add(u128::from(b))),
                 extractor_fp: Local::extractor_fp(&()),
+                reference: ReferenceStamp::NotDeclared,
             }
         };
         assert!(
@@ -1706,6 +1786,7 @@ mod replay {
                             .bytes()
                             .fold(1u128, |h, b| h.wrapping_mul(31).wrapping_add(u128::from(b))),
                         extractor_fp: 0,
+                        reference: ReferenceStamp::NotDeclared,
                     },
                 )
             })
@@ -1716,10 +1797,7 @@ mod replay {
             .collect();
         cache.update_book(slug, &stamped, &(), |i| {
             Owned::map_chapter(
-                &ChapterView {
-                    chapter: chapters[i].0,
-                    texts: &texts[i],
-                },
+                &ChapterView::target(chapters[i].0, &texts[i]),
                 &(),
                 &(),
             )

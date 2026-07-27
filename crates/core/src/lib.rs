@@ -377,12 +377,15 @@ fn transition(
     // cache after the stateful judge loop.
     let active = substrate::ActiveSubstrates::from_config(config);
     let plan = stream::WalkPlan {
-        proportionality: config.is_enabled(RuleId::ProjectLengthRatio),
         bracket: config.is_enabled(RuleId::BracketBalance),
         normalization: config.is_enabled(RuleId::MixedNormalization),
-        collect_tokens: config.is_enabled(RuleId::RepeatedCharacterRun)
-            || config.is_enabled(RuleId::RareGlyph)
-            || config.is_enabled(RuleId::MixedScriptInToken),
+        // The shared token cache exists for the BATCH lane's `judge` calls, and
+        // that lane is empty: every rule that used to read it (repeated-run,
+        // rare-glyph, mixed-script) is an observation substrate now and tokenizes
+        // inside its own chapter map. Building it would be pure waste, so it is
+        // off until a batch rule asks for it — at which point this reads that
+        // rule's enablement.
+        collect_tokens: false,
     };
 
     // The book view is shared by both analysis lanes. `source` is intentionally
@@ -597,7 +600,7 @@ fn transition(
     // ONE walk per verse per book (the event-stream engine): tape, graphemes
     // and tokens are each built once per verse and every enabled listener is
     // fed in-pass. Fan-out per book under `parallel` (ADR 0042).
-    let walked = stream::walk_fused(&books_to_walk, counted, source, &plan);
+    let walked = stream::walk_fused(&books_to_walk, counted, &plan);
 
     // Warm each freshly walked book into the (self-validating) cache BEFORE any
     // clean book is borrowed out of it: after this loop the cache is read-only
@@ -611,13 +614,11 @@ fn transition(
         cache.store_walk(group.slug, hashes[i], output);
     }
 
-    // Counting-side probe: count the books whose site-free counting
-    // accumulators actually ran (`counting_accs_ran`), observed from the
-    // accumulators — not from the `counted` decision flag. Only a freshly
-    // walked book can count; a clean cache-hit book did no counting work.
-    // Recorded before the shared cache reborrow below (the last `&mut cache`).
+    // Walk-side work probe: how many books this call actually re-walked. A clean
+    // cache-hit book is not walked at all. Recorded before the shared cache
+    // reborrow below (the last `&mut cache`).
     #[cfg(any(test, feature = "test-probes"))]
-    cache.note_retallied(walked.iter().filter(|o| o.counting_accs_ran).count());
+    cache.note_walked(walked.len());
 
     // MAP boundary. Mapping is complete: per-verse findings plus every book's
     // fused walk products — freshly walked books owned in `walked`, clean books
@@ -658,7 +659,7 @@ fn transition(
     for &pos in &clean_positions {
         slots[pos] = Some(BookProducts::Clean(prep.walk_entry(books[pos].slug)));
     }
-    let mut slots: Vec<BookProducts<'_>> = slots
+    let slots: Vec<BookProducts<'_>> = slots
         .into_iter()
         .map(|s| s.expect("every book walked or clean-reused"))
         .collect();
@@ -679,29 +680,15 @@ fn transition(
     // ever count on walked books, so a clean book contributes nothing to them.
     // A book outside the `counted` scope contributes sites only, so the judge
     // phase stays site-driven for every supplied book (ADR 0044).
-    let mut proportionality_fresh = plan.proportionality.then(|| {
-        let mut pb = BTreeMap::new();
-        for (group, slot) in books.iter().zip(slots.iter_mut()) {
-            if let BookProducts::Walked(o) = slot
-                && let Some(bucket) = o.proportionality.take()
-            {
-                pb.insert(Box::from(group.slug), bucket);
-            }
-        }
-        (
-            RuleStats::Proportionality(signals::proportionality::ProportionalityStats {
-                per_book: pb,
-            }),
-            rule::RuleSites::Proportionality,
-        )
-    });
 
     // The shared token cache is assembled by BORROWING each book's per-verse
     // token slices — a walked book's owned `BookOut`, a clean book's resident
     // `BookEntry` — and rebasing the local index to this call's global `KeyIdx`.
     // Nothing is copied out of the cache: the cache holds
     // `&[Token]` views. Built after site extraction so it can share `slots`.
-    let token_cache: Option<rule::TokenCache> = plan.collect_tokens.then(|| {
+    // Consumed only by the batch lane's judge calls, which no rule reaches today
+    // (see the `expect` below). Kept with the lane.
+    let _token_cache: Option<rule::TokenCache> = plan.collect_tokens.then(|| {
         let mut tc = rule::TokenCache::default();
         for (group, slot) in books.iter().zip(slots.iter()) {
             let toks = match slot {
@@ -809,21 +796,28 @@ fn transition(
         stats.remove_book(slug);
     }
 
+    // The batch lane's assembly (plan §9). `stateful_rules` is EMPTY today —
+    // every rule that was ever in it is a typed observation substrate — so this
+    // loop does not run and everything after the diverging match below is
+    // unreachable. It stays, under an `expect` rather than an `allow`, because the
+    // batch lane is permanent: a labs rule starts here and a rule whose verdict
+    // cannot be incrementally maintained ends here. The `expect` is the
+    // self-maintaining part — the first batch rule to land makes it unfulfilled,
+    // so the compiler demands it be removed at exactly the right moment.
+    #[expect(
+        unreachable_code,
+        clippy::diverging_sub_expression,
+        reason = "no batch rule remains; the lane's assembly is retained for the next one, and \
+                  both lints fire only because `stateful_rules` is empty — the first batch rule \
+                  to land makes these expectations unfulfilled and forces their removal"
+    )]
     for r in &stateful {
         let id = r.id();
-        let sites_slot;
-        // The fused walk's fresh stats + forwarded sites for this rule (ADR
-        // 0044). Both casing rules share the one word-table walk: each takes a
-        // clone of the stats (the wire shape keeps one entry per rule id, as
-        // before) and judges from the same site list.
-        let (fresh, sites_ref): (RuleStats, &rule::RuleSites) = match id {
-            RuleId::ProjectLengthRatio => {
-                let (st, ss) = proportionality_fresh.take().expect("listener ran");
-                sites_slot = ss;
-                (st, &sites_slot)
-            }
-            other => unreachable!("{other:?} is not a stateful rule"),
-        };
+        // The `match id { .. }` that used to dispatch per rule id lives here. With
+        // the registry empty there is nothing to match, and the arm a new batch
+        // rule adds is exactly this shape.
+        let (fresh, sites_ref): (RuleStats, &rule::RuleSites) =
+            unreachable!("{id:?} is not a stateful rule — `stateful_rules` is empty");
         let merged = match stats.take(id) {
             Some(prev) => prev.merge(fresh),
             None => fresh,
@@ -833,7 +827,7 @@ fn transition(
         // against the text the caller supplied this call. `judge` itself
         // iterates the current call's `books`, so its emission is already
         // scoped to `target`; there is no prior-call index to filter by.
-        out.extend(r.judge(&merged, &books, token_cache.as_ref(), Some(sites_ref)));
+        out.extend(r.judge(&merged, &books, _token_cache.as_ref(), Some(sites_ref)));
         stats.insert(id, merged);
     }
 
@@ -884,6 +878,14 @@ fn transition(
         &mut substrates.glyph,
         target,
         &config.rare_glyph,
+        &mut out,
+    );
+    signals::proportionality::drive_proportionality(
+        active.proportionality,
+        &mut substrates.proportionality,
+        target,
+        source,
+        &config.proportionality,
         &mut out,
     );
     signals::lexical::drive_duplicate_word(
@@ -2076,23 +2078,21 @@ mod tests {
         );
     }
 
-    /// A knob-only config change re-tallies nothing while findings track the
-    /// new knobs — judging moves, counting doesn't. `Config::all` so a site-free
-    /// counting rule backs the probe, which observes actual counting-accumulator
-    /// runs (not the decision flag): a listener that counted a clean book would
-    /// make it read nonzero.
+    /// A knob-only config change leaves provenance untouched and moves findings to
+    /// the new knobs. What it does NOT re-do is now proven per substrate (each
+    /// row's knob-isolation test asserts it maps and reduces zero), so this test
+    /// keeps the part that is still the batch lane's: the `Tally` provenance is
+    /// unchanged and the incremental result equals a cold one at the new config.
     #[test]
-    fn tally_knob_only_change_retallies_nothing() {
+    fn knob_only_change_keeps_provenance_and_tracks_the_new_knobs() {
         let target = mk("GEN", &["a  b", "A1 α qQx joyfullly"]);
         let cfg1 = Config::all();
         let mut cfg2 = Config::all();
         cfg2.casing.emit_score_min = 0.9; // knob-only: same enabled set, stricter knob
         let mut cache = AnalysisCache::new();
         let (_, prior) = analyze_stateful(&target, None, &cfg1, None, Some(&mut cache));
-        assert_eq!(cache.retallied_count(), 1, "the cold call counts the one book");
         let (f_inc, s_inc) =
             analyze_stateful(&target, None, &cfg2, Some(prior.clone()), Some(&mut cache));
-        assert_eq!(cache.retallied_count(), 0, "knob-only change did no counting work");
         assert_eq!(s_inc.tallied, prior.tallied, "provenance unchanged");
         let (f_cold, _) = analyze_stateful(&target, None, &cfg2, None, None);
         assert_eq!(f_inc, f_cold, "findings track the new knobs (judging moved, counting didn't)");
@@ -2351,7 +2351,7 @@ mod tests {
             "exactly one chapter's direct-rule partition records are replaced"
         );
         assert_eq!(
-            after.retallied, 1,
+            after.walked, 1,
             "the fused walk is book-grained: the edited book — and only it — re-walks"
         );
         assert_eq!(

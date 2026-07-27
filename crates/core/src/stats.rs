@@ -17,7 +17,6 @@
 use std::collections::BTreeMap;
 
 use crate::diagnostics::RuleId;
-use crate::signals::proportionality::ProportionalityStats;
 
 /// Per-rule cached statistics — a **closed** union like `FindingArgs`, one
 /// variant per stateful rule. The orchestration treats it opaquely; each
@@ -28,31 +27,29 @@ use crate::signals::proportionality::ProportionalityStats;
 /// its own [`SubstrateCache`](crate::substrate::SubstrateCache) behind typed
 /// validity stamps rather than in this shared, book-superseded enum.
 #[derive(Debug, Clone, PartialEq)]
-pub enum RuleStats {
-    Proportionality(ProportionalityStats),
-}
+pub enum RuleStats {}
 
 impl RuleStats {
-    /// Combine a prior cache with a freshly-reduced one. Supersedes at book
-    /// granularity — books present in `other` replace those in `self`,
-    /// other books carry forward — so an edit re-reduces only its book.
-    pub(crate) fn merge(self, other: RuleStats) -> RuleStats {
-        match (self, other) {
-            (RuleStats::Proportionality(a), RuleStats::Proportionality(b)) => {
-                RuleStats::Proportionality(a.merge(b))
-            }
-            // With one variant left the same-type arm above is total. A second
-            // variant makes this match non-exhaustive again, which is the point:
-            // it must be given its own same-type merge arm, and mismatched pairs
-            // must resolve to the FRESH reduction, never the stale prior.
-        }
+    /// Combine a prior cache with a freshly-reduced one, superseding at book
+    /// granularity.
+    ///
+    /// **This enum is currently uninhabited**: every stateful rule is a typed
+    /// observation substrate now, whose aggregate lives in its own
+    /// [`SubstrateCache`](crate::substrate::SubstrateCache) behind typed validity
+    /// stamps. The batch lane is permanent by design, so the type stays for the
+    /// next rule that needs it — a labs/experimental rule starts here — and the
+    /// two operations it must supply are recorded as unreachable matches rather
+    /// than deleted, so a new variant gets a compile error instead of a silently
+    /// missing merge. The contract a new variant must honour: same-type variants
+    /// merge, and a MISMATCHED pair resolves to the FRESH reduction, never the
+    /// stale prior.
+    pub(crate) fn merge(self, _other: RuleStats) -> RuleStats {
+        match self {}
     }
 
     /// Drop a book's contribution from this rule's cache.
-    fn remove_book(&mut self, slug: &str) {
-        match self {
-            RuleStats::Proportionality(p) => p.remove_book(slug),
-        }
+    fn remove_book(&mut self, _slug: &str) {
+        match *self {}
     }
 }
 

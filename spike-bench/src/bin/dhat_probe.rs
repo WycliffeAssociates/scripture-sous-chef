@@ -92,6 +92,11 @@ fn build_config(name: &str) -> Config {
             cfg.rules.insert(RuleId::RareGlyph, false);
             cfg
         }
+        "all-no-proportionality" => {
+            let mut cfg = build_config("all");
+            cfg.rules.insert(RuleId::ProjectLengthRatio, false);
+            cfg
+        }
         "all-no-duplicate" => {
             let mut cfg = build_config("all");
             cfg.rules.insert(RuleId::DuplicateWord, false);
@@ -109,7 +114,7 @@ fn build_config(name: &str) -> Config {
             cfg
         }
         other => panic!(
-            "unknown config {other:?} (want default|all|all-no-spacing|all-no-adjacency|all-no-repeat|all-no-punct-only|all-no-mixed-script|all-no-glyph|all-no-duplicate|all-no-casing|all-no-mixed-case)"
+            "unknown config {other:?} (want default|all|all-no-spacing|all-no-adjacency|all-no-repeat|all-no-punct-only|all-no-mixed-script|all-no-glyph|all-no-proportionality|all-no-duplicate|all-no-casing|all-no-mixed-case)"
         ),
     }
 }
@@ -118,7 +123,7 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let (Some(mode), Some(config_name)) = (args.first().map(String::as_str), args.get(1)) else {
         eprintln!(
-            "usage: dhat_probe <testing|profile|warm-profile> <default|all|all-no-spacing|all-no-adjacency|all-no-repeat|all-no-punct-only|all-no-mixed-script|all-no-glyph|all-no-duplicate|all-no-casing|all-no-mixed-case> [corpus-path]"
+            "usage: dhat_probe <testing|profile|warm-profile> <default|all|all-no-spacing|all-no-adjacency|all-no-repeat|all-no-punct-only|all-no-mixed-script|all-no-glyph|all-no-proportionality|all-no-duplicate|all-no-casing|all-no-mixed-case> [corpus-path]"
         );
         std::process::exit(2);
     };

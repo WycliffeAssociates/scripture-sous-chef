@@ -32,11 +32,11 @@
 //! accumulator implementation per rule, so they cannot drift.
 
 
-use crate::corpus::{BookGroup, Books, Corpus, LocalKeyIdx};
+use crate::corpus::{BookGroup, Books, LocalKeyIdx};
 use crate::grapheme::{self, GSpan};
 use crate::rule::{self};
 use crate::signals::{
-    bracket_balance, mixed_normalization, proportionality,
+    bracket_balance, mixed_normalization,
 };
 use crate::tape::{self, TapeEntry};
 use crate::token::{self, Token};
@@ -88,7 +88,6 @@ impl Needs {
 /// verse's tokens as the shared [`TokenCache`] for the judge phase.
 #[derive(Clone, Copy, Default)]
 pub(crate) struct WalkPlan {
-    pub proportionality: bool,
     pub bracket: bool,
     pub normalization: bool,
     pub collect_tokens: bool,
@@ -125,15 +124,6 @@ impl WalkPlan {
 /// authoritative because nothing recounted them.
 #[derive(Default)]
 pub(crate) struct BookOut {
-    /// Test observability (`test-probes`): whether this book's count-gated
-    /// site-free accumulators (rare-glyph / proportionality) were
-    /// actually instantiated and run. A witness of real counting work read from
-    /// the accumulators themselves, not from the walk's `count` decision — so a
-    /// listener that counted a clean book would diverge from the decision and be
-    /// caught.
-    #[cfg(any(test, feature = "test-probes"))]
-    pub counting_accs_ran: bool,
-    pub proportionality: Option<Vec<proportionality::RatioObs>>,
     pub bracket: Option<bracket_balance::BookMatch>,
     pub normalization: Option<mixed_normalization::BookNormalization>,
     pub tokens: Option<Vec<(LocalKeyIdx, Vec<Token>)>>,
@@ -148,16 +138,11 @@ pub(crate) struct BookOut {
 pub(crate) fn walk_fused(
     books: &Books<'_>,
     counted: Option<&[&str]>,
-    source: Option<&Corpus>,
     plan: &WalkPlan,
 ) -> Vec<BookOut> {
-    // Built once per analysis (never per book): proportionality pairs by
-    // (key string, occurrence ordinal), not position, across independent
-    // corpora.
-    let source_index = source.map(proportionality::index_source);
     rule::map_books(books, |group| {
         let count = counted.is_none_or(|list| list.contains(&group.slug));
-        walk_book(group, count, source_index.as_ref(), plan)
+        walk_book(group, count, plan)
     })
 }
 
@@ -209,28 +194,20 @@ fn book_prefers_delegation(texts: &[String]) -> bool {
 }
 
 /// Walk one book's verses once, feeding every listener the plan enables.
-fn walk_book(
-    group: &BookGroup<'_>,
-    count: bool,
-    source_index: Option<&proportionality::SourceIndex<'_>>,
-    plan: &WalkPlan,
-) -> BookOut {
-    // Every remaining counting listener is site-FREE (rare-glyph re-scans at
-    // judge, proportionality never scans), so an uncounted book needs only the
-    // project listeners' products. The site-bearing anchor lane is gone with the
-    // stateful rules that had sites — they are observation substrates now, and a
-    // substrate reads its own chapter cache rather than this walk.
-    let needs = if count {
-        plan.counting_needs().union(plan.project_needs())
-    } else {
-        plan.project_needs()
-    };
+fn walk_book(group: &BookGroup<'_>, count: bool, plan: &WalkPlan) -> BookOut {
+    // NO COUNTING LISTENER REMAINS in this walk: every corpus-aggregate rule is a
+    // typed observation substrate now, reading its own stamp-derived chapter cache
+    // instead of this per-book pass. So `counting_needs()` is empty and the
+    // `counted` scope changes nothing here — the walk runs the project listeners
+    // and the token cache for every supplied book. The `count` distinction is kept
+    // because the batch lane is permanent (plan §9) and the first batch rule to
+    // land will need it back.
+    let _ = count;
+    let needs = plan.counting_needs().union(plan.project_needs());
     // Short-circuits (no sampling cost) when nothing on this walk needs
     // tokens at all.
     let delegate_tokens = needs.tokens && book_prefers_delegation(group.texts);
 
-    let mut prop_acc = (count && plan.proportionality)
-        .then(|| proportionality::ProportionalityAcc::new(source_index));
     // Project listeners (every supplied book — their emission scope).
     let mut bracket_acc = plan.bracket.then(bracket_balance::BracketAcc::new);
     let mut normalization_acc = plan
@@ -268,9 +245,6 @@ fn walk_book(
             tokens: if needs.tokens { &tokens_buf } else { &[] },
         };
 
-        if let Some(a) = &mut prop_acc {
-            a.verse(&v);
-        }
         if let Some(a) = &mut bracket_acc {
             a.verse(&v);
         }
@@ -283,16 +257,7 @@ fn walk_book(
         }
     }
 
-    // Witness actual counting-accumulator setup (test-probes) from the accs,
-    // before `finish` consumes them — independent of the `count` flag below.
-    #[cfg(any(test, feature = "test-probes"))]
-    let counting_accs_ran =
-        prop_acc.is_some();
-
     BookOut {
-        #[cfg(any(test, feature = "test-probes"))]
-        counting_accs_ran,
-        proportionality: prop_acc.map(proportionality::ProportionalityAcc::finish),
         bracket: bracket_acc.map(bracket_balance::BracketAcc::finish),
         normalization: normalization_acc.map(mixed_normalization::NormalizationAcc::finish),
         tokens: cache,

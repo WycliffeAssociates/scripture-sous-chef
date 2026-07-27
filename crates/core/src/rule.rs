@@ -418,18 +418,16 @@ pub fn project_rules(config: &Config) -> Vec<Box<dyn ProjectRule>> {
     ]
 }
 
-/// Every stateful (observe-then-judge) rule wired in, constructed from
-/// `config`'s typed sub-configs (ADR 0017). Like the project registry, this
-/// is complete — including rules `v1_defaults` disables.
-pub fn stateful_rules(config: &Config) -> Vec<Box<dyn StatefulRule>> {
-    vec![
-        Box::new(signals::proportionality::ProjectLengthRatio {
-            cfg: config.proportionality,
-        }),
-        // (`punct.spacing-anomaly` and `punct.adjacency-anomaly` are typed
-        // observation substrates now — see `SpacingSubstrate` and
-        // `AdjacencySubstrate` — driven outside this registry.)
-    ]
+/// Every stateful (observe-then-judge) rule wired in (ADR 0017). Like the project
+/// registry, this is complete — including rules `v1_defaults` disables.
+///
+/// **It is currently empty**: every rule that was ever in it is a typed
+/// observation substrate now, driven from its own stamp-derived cache outside this
+/// registry. The batch lane it feeds is permanent by design (plan §9) — a
+/// labs/experimental rule starts here, and a rule whose verdict cannot be
+/// incrementally maintained stays here — so the registry and its trait remain.
+pub fn stateful_rules(_config: &Config) -> Vec<Box<dyn StatefulRule>> {
+    Vec::new()
 }
 
 #[cfg(test)]

@@ -2007,6 +2007,7 @@ pub(crate) fn drive_casing(
                 schema_stamp: CasingSubstrate::SCHEMA_STAMP,
                 chapter_hash: c.hash,
                 extractor_fp: CasingSubstrate::extractor_fp(&()),
+                reference: crate::substrate::ReferenceStamp::NotDeclared,
             };
             if !cache.observation_is_current(&book.slug, &c.chapter, &stamp) {
                 let verses = &texts[c.range.clone()];
@@ -2014,10 +2015,7 @@ pub(crate) fn drive_casing(
                 work.push(CasingMapWork {
                     book: bi,
                     chapter: ci,
-                    view: ChapterView {
-                        chapter: &c.chapter,
-                        texts: verses,
-                    },
+                    view: ChapterView::target(&c.chapter, verses),
                 });
             }
             chapters.push((&*c.chapter, stamp));
@@ -2056,10 +2054,7 @@ pub(crate) fn drive_casing(
             slots[bi][i].take().unwrap_or_else(|| {
                 let c = &book.chapters[i];
                 CasingSubstrate::map_chapter(
-                    &ChapterView {
-                        chapter: &c.chapter,
-                        texts: &texts[c.range.clone()],
-                    },
+                    &ChapterView::target(&c.chapter, &texts[c.range.clone()]),
                     &(),
                     symbols,
                 )
@@ -2926,10 +2921,7 @@ mod tests {
     fn map_one_with(token: &str, verses: &[&str], symbols: &WordInterner) -> CasingChapterObs {
         let texts: Vec<String> = verses.iter().map(|v| (*v).to_string()).collect();
         CasingSubstrate::map_chapter(
-            &ChapterView {
-                chapter: token,
-                texts: &texts,
-            },
+            &ChapterView::target(token, &texts),
             &(),
             symbols,
         )

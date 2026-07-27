@@ -444,7 +444,7 @@ mod tests {
         let b = g.analyze();
         let after = g.cache.probe();
         assert_eq!(a, b, "identical findings");
-        assert_eq!(after.retallied, 0, "the no-edit re-analyze re-tallies nothing");
+        assert_eq!(after.walked, 0, "the no-edit re-analyze re-walks nothing");
         assert_eq!(after.walk_hits - before.walk_hits, 2, "both books reuse their walk products");
         assert_eq!(after.walk_misses, before.walk_misses, "no re-walk");
         assert_eq!(
@@ -570,7 +570,7 @@ mod tests {
         let b = g.analyze();
         let after = g.cache.probe();
         assert_eq!(a, b, "identical findings");
-        assert_eq!(after.retallied, 0, "prior survived: nothing stale");
+        assert_eq!(after.walked, 0, "prior survived: nothing stale");
         assert_eq!(after.walk_hits - before.walk_hits, 2, "cache survived: both books reused");
         assert_eq!(after.walk_misses, before.walk_misses, "no re-walk");
     }
@@ -631,7 +631,6 @@ mod tests {
         g.update_config(cfg2.clone());
         let findings = g.analyze();
         let probe = g.cache.probe();
-        assert_eq!(probe.retallied, 0, "knob-only change did no counting work");
         assert_eq!(
             (probe.spacing_mapped, probe.spacing_reduced),
             (0, 0),

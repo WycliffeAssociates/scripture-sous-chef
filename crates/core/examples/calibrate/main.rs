@@ -44,8 +44,6 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use ssc_core::config::{ProportionalityConfig, RepeatedCharacterRunConfig};
-use ssc_core::rule::StatefulRule;
-use ssc_core::signals::proportionality::ProjectLengthRatio;
 use ssc_core::{Corpus, FindingArgs, LengthRatioScope};
 
 #[path = "../../dev/vref_io.rs"]
@@ -345,19 +343,14 @@ fn main() {
         source.len()
     );
 
-    let rule = ProjectLengthRatio {
-        cfg: ProportionalityConfig {
+    let t0 = std::time::Instant::now();
+    let findings = ssc_core::signals::proportionality::length_ratio_findings(
+        &target,
+        Some(&source),
+        &ProportionalityConfig {
             z_threshold,
             ..Default::default()
         },
-    };
-    let t0 = std::time::Instant::now();
-    let books = ssc_core::corpus::by_book(&target);
-    let findings = rule.judge(
-        &rule.reduce(&books, Some(&source), None).0,
-        &books,
-        None,
-        None,
     );
     eprintln!("proportionality check: {:?}", t0.elapsed());
 

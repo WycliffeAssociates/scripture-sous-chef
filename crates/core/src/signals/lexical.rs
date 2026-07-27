@@ -374,6 +374,7 @@ pub(crate) fn drive_duplicate_word(
                 schema_stamp: DuplicateWordSubstrate::SCHEMA_STAMP,
                 chapter_hash: c.hash,
                 extractor_fp: DuplicateWordSubstrate::extractor_fp(&()),
+                reference: crate::substrate::ReferenceStamp::NotDeclared,
             };
             if !cache.observation_is_current(&book.slug, &c.chapter, &stamp) {
                 let verses = &texts[c.range.clone()];
@@ -381,10 +382,7 @@ pub(crate) fn drive_duplicate_word(
                 work.push(DuplicateMapWork {
                     book: bi,
                     chapter: ci,
-                    view: ChapterView {
-                        chapter: &c.chapter,
-                        texts: verses,
-                    },
+                    view: ChapterView::target(&c.chapter, verses),
                 });
             }
             chapters.push((&*c.chapter, stamp));
@@ -416,10 +414,7 @@ pub(crate) fn drive_duplicate_word(
             slots[bi][i].take().unwrap_or_else(|| {
                 let c = &book.chapters[i];
                 DuplicateWordSubstrate::map_chapter(
-                    &ChapterView {
-                        chapter: &c.chapter,
-                        texts: &texts[c.range.clone()],
-                    },
+                    &ChapterView::target(&c.chapter, &texts[c.range.clone()]),
                     &(),
                     &(),
                 )
@@ -868,6 +863,7 @@ pub(crate) fn drive_punct_only(
                 schema_stamp: PunctOnlySubstrate::SCHEMA_STAMP,
                 chapter_hash: c.hash,
                 extractor_fp: PunctOnlySubstrate::extractor_fp(&()),
+                reference: crate::substrate::ReferenceStamp::NotDeclared,
             };
             if !cache.observation_is_current(&book.slug, &c.chapter, &stamp) {
                 let verses = &texts[c.range.clone()];
@@ -875,10 +871,7 @@ pub(crate) fn drive_punct_only(
                 work.push(PunctOnlyMapWork {
                     book: bi,
                     chapter: ci,
-                    view: ChapterView {
-                        chapter: &c.chapter,
-                        texts: verses,
-                    },
+                    view: ChapterView::target(&c.chapter, verses),
                 });
             }
             chapters.push((&*c.chapter, stamp));
@@ -912,10 +905,7 @@ pub(crate) fn drive_punct_only(
             slots[bi][i].take().unwrap_or_else(|| {
                 let c = &book.chapters[i];
                 PunctOnlySubstrate::map_chapter(
-                    &ChapterView {
-                        chapter: &c.chapter,
-                        texts: &texts[c.range.clone()],
-                    },
+                    &ChapterView::target(&c.chapter, &texts[c.range.clone()]),
                     &(),
                     &(),
                 )
@@ -1607,6 +1597,7 @@ pub(crate) fn drive_repeated_run(
                 schema_stamp: RepeatedRunSubstrate::SCHEMA_STAMP,
                 chapter_hash: c.hash,
                 extractor_fp: RepeatedRunSubstrate::extractor_fp(&()),
+                reference: crate::substrate::ReferenceStamp::NotDeclared,
             };
             if !cache.observation_is_current(&book.slug, &c.chapter, &stamp) {
                 let verses = &texts[c.range.clone()];
@@ -1614,10 +1605,7 @@ pub(crate) fn drive_repeated_run(
                 work.push(RepeatMapWork {
                     book: bi,
                     chapter: ci,
-                    view: ChapterView {
-                        chapter: &c.chapter,
-                        texts: verses,
-                    },
+                    view: ChapterView::target(&c.chapter, verses),
                 });
             }
             chapters.push((&*c.chapter, stamp));
@@ -1651,10 +1639,7 @@ pub(crate) fn drive_repeated_run(
             slots[bi][i].take().unwrap_or_else(|| {
                 let c = &book.chapters[i];
                 RepeatedRunSubstrate::map_chapter(
-                    &ChapterView {
-                        chapter: &c.chapter,
-                        texts: &texts[c.range.clone()],
-                    },
+                    &ChapterView::target(&c.chapter, &texts[c.range.clone()]),
                     &(),
                     &(),
                 )
