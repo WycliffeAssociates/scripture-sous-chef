@@ -58,6 +58,8 @@ pub(crate) enum SubstrateId {
     RepeatedRun,
     /// `lex.punct-only-token`'s per-pattern candidate counts.
     PunctOnly,
+    /// `uni.mixed-script-in-token`'s per-signature / per-script token counts.
+    MixedScript,
     /// `struct.duplicate-word`'s adjacent-pair sites.
     DuplicateWord,
     /// The shared casing model: per-word case tables + lowercase flag
@@ -78,6 +80,7 @@ impl SubstrateId {
         SubstrateId::Adjacency,
         SubstrateId::RepeatedRun,
         SubstrateId::PunctOnly,
+        SubstrateId::MixedScript,
         SubstrateId::DuplicateWord,
         SubstrateId::Casing,
         SubstrateId::MixedCase,
@@ -161,6 +164,7 @@ pub const SUBSTRATE_NAMES: [&str; SubstrateId::ALL.len()] = [
     "adjacency",
     "repeated-run",
     "punct-only",
+    "mixed-script",
     "duplicate-word",
     "casing",
     "mixed-case",
@@ -920,6 +924,7 @@ pub(crate) struct ActiveSubstrates {
     pub(crate) adjacency: bool,
     pub(crate) repeated_run: bool,
     pub(crate) punct_only: bool,
+    pub(crate) mixed_script: bool,
     pub(crate) duplicate_word: bool,
     pub(crate) casing: bool,
     pub(crate) mixed_case: bool,
@@ -935,6 +940,7 @@ impl ActiveSubstrates {
             adjacency: any(adjacency_consumers()),
             repeated_run: any(repeated_run_consumers()),
             punct_only: any(punct_only_consumers()),
+            mixed_script: any(mixed_script_consumers()),
             duplicate_word: any(duplicate_word_consumers()),
             casing: any(casing_consumers()),
             mixed_case: any(mixed_case_consumers()),
@@ -948,6 +954,7 @@ impl ActiveSubstrates {
             SubstrateId::Adjacency => self.adjacency,
             SubstrateId::RepeatedRun => self.repeated_run,
             SubstrateId::PunctOnly => self.punct_only,
+            SubstrateId::MixedScript => self.mixed_script,
             SubstrateId::DuplicateWord => self.duplicate_word,
             SubstrateId::Casing => self.casing,
             SubstrateId::MixedCase => self.mixed_case,
@@ -975,6 +982,11 @@ pub(crate) fn repeated_run_consumers() -> &'static [RuleId] {
 /// The closed registry: the punct-only substrate's sole consumer.
 pub(crate) fn punct_only_consumers() -> &'static [RuleId] {
     &[RuleId::PunctOnlyToken]
+}
+
+/// The closed registry: the mixed-script substrate's sole consumer.
+pub(crate) fn mixed_script_consumers() -> &'static [RuleId] {
+    &[RuleId::MixedScriptInToken]
 }
 
 /// The closed registry: the duplicate-word substrate's sole consumer.
@@ -1005,6 +1017,7 @@ pub(crate) fn consumers_of(id: SubstrateId) -> &'static [RuleId] {
         SubstrateId::Adjacency => adjacency_consumers(),
         SubstrateId::RepeatedRun => repeated_run_consumers(),
         SubstrateId::PunctOnly => punct_only_consumers(),
+        SubstrateId::MixedScript => mixed_script_consumers(),
         SubstrateId::DuplicateWord => duplicate_word_consumers(),
         SubstrateId::Casing => casing_consumers(),
         SubstrateId::MixedCase => mixed_case_consumers(),
@@ -1036,6 +1049,10 @@ mod tests {
             SubstrateId::PunctOnly
         );
         assert_eq!(
+            <crate::signals::script_mixing::MixedScriptSubstrate as ObservationSubstrate>::ID,
+            SubstrateId::MixedScript
+        );
+        assert_eq!(
             <crate::signals::lexical::DuplicateWordSubstrate as ObservationSubstrate>::ID,
             SubstrateId::DuplicateWord
         );
@@ -1065,6 +1082,7 @@ mod tests {
                 adjacency: true,
                 repeated_run: true,
                 punct_only: true,
+                mixed_script: true,
                 duplicate_word: true,
                 casing: true,
                 mixed_case: true,

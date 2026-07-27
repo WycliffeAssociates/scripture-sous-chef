@@ -19,7 +19,6 @@ use std::collections::BTreeMap;
 use crate::diagnostics::RuleId;
 use crate::signals::proportionality::ProportionalityStats;
 use crate::signals::rare_glyph::RareGlyphStats;
-use crate::signals::script_mixing::MixedScriptStats;
 
 /// Per-rule cached statistics — a **closed** union like `FindingArgs`, one
 /// variant per stateful rule. The orchestration treats it opaquely; each
@@ -37,7 +36,6 @@ use crate::signals::script_mixing::MixedScriptStats;
 #[derive(Debug, Clone, PartialEq)]
 pub enum RuleStats {
     Proportionality(ProportionalityStats),
-    MixedScript(MixedScriptStats),
     /// `uni.rare-glyph` (ADR 0053): per book, the full scalar inventory (the
     /// census substrate) plus word-level detail confined to locally-rare
     /// letters. Named for its dual role as the future glyph census accumulator.
@@ -53,9 +51,6 @@ impl RuleStats {
             (RuleStats::Proportionality(a), RuleStats::Proportionality(b)) => {
                 RuleStats::Proportionality(a.merge(b))
             }
-            (RuleStats::MixedScript(a), RuleStats::MixedScript(b)) => {
-                RuleStats::MixedScript(a.merge(b))
-            }
             (RuleStats::GlyphInventory(a), RuleStats::GlyphInventory(b)) => {
                 RuleStats::GlyphInventory(a.merge(b))
             }
@@ -67,7 +62,6 @@ impl RuleStats {
             // same-type merge arm is added above.
             (
                 RuleStats::Proportionality(_)
-                | RuleStats::MixedScript(_)
                 | RuleStats::GlyphInventory(_),
                 fresh,
             ) => fresh,
@@ -78,7 +72,6 @@ impl RuleStats {
     fn remove_book(&mut self, slug: &str) {
         match self {
             RuleStats::Proportionality(p) => p.remove_book(slug),
-            RuleStats::MixedScript(m) => m.remove_book(slug),
             RuleStats::GlyphInventory(g) => g.remove_book(slug),
         }
     }

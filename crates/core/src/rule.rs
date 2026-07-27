@@ -17,8 +17,6 @@
 //! execution cadence (every keystroke vs on save) is the orchestrator's.
 //! There is deliberately no hot/cold tier in the type system.
 
-use std::borrow::Cow;
-use std::collections::BTreeMap;
 
 use rustc_hash::FxHashMap;
 
@@ -111,10 +109,12 @@ pub trait ProjectTokenRule: Sync {
 /// entry). A clean book's sites are therefore never cloned out of the cache to
 /// be judged — the judge consumes the view directly. The
 /// lifetime is that of the resident cache borrow held across the judge phase;
-/// `reduce` (calibration/tests) produces a fully-owned `RuleSites<'static>`.
-pub enum RuleSites<'a> {
+/// With the site-bearing stateful rules migrated to observation substrates, the
+/// two remaining variants are deliberately site-FREE: proportionality never
+/// scans, and rare-glyph re-scans by design (ADR 0053). The enum survives so the
+/// judge signature stays uniform across the batch lane.
+pub enum RuleSites {
     Proportionality,
-    MixedScript(BTreeMap<Box<str>, Cow<'a, [signals::script_mixing::MixedScriptSite]>>),
     /// `uni.rare-glyph` carries no sites: surviving candidates are ultra-rare, so
     /// its judge re-scans the supplied books (the `sites`-free path) rather than
     /// forward every letter occurrence (ADR 0044, ADR 0053).
@@ -145,7 +145,7 @@ pub trait StatefulRule: Sync {
         books: &Books<'_>,
         source: Option<&Corpus>,
         tokens: Option<&TokenCache<'_>>,
-    ) -> (RuleStats, RuleSites<'static>);
+    ) -> (RuleStats, RuleSites);
     /// Emit findings from the merged corpus `stats`. `books` holds the verses
     /// of the current call — a rule whose observations are *sparse* ignores it
     /// and emits from cached sites (proportionality); a rule with a *dense*
@@ -160,7 +160,7 @@ pub trait StatefulRule: Sync {
         stats: &RuleStats,
         books: &Books<'_>,
         tokens: Option<&TokenCache<'_>>,
-        sites: Option<&RuleSites<'_>>,
+        sites: Option<&RuleSites>,
     ) -> Vec<Finding>;
 }
 
@@ -429,9 +429,6 @@ pub fn stateful_rules(config: &Config) -> Vec<Box<dyn StatefulRule>> {
         // (`punct.spacing-anomaly` and `punct.adjacency-anomaly` are typed
         // observation substrates now — see `SpacingSubstrate` and
         // `AdjacencySubstrate` — driven outside this registry.)
-        Box::new(signals::script_mixing::MixedScriptInToken {
-            cfg: config.mixed_script,
-        }),
         Box::new(signals::rare_glyph::RareGlyph {
             cfg: config.rare_glyph,
         }),

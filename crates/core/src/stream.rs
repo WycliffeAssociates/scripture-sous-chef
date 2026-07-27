@@ -39,7 +39,7 @@ use crate::grapheme::{self, GSpan};
 use crate::rule::{self};
 use crate::signals::{
     bracket_balance, mixed_normalization, proportionality,
-    rare_glyph, script_mixing,
+    rare_glyph,
 };
 use crate::tape::{self, TapeEntry};
 use crate::token::{self, Token};
@@ -132,7 +132,6 @@ fn fold_letter_tokens<'t>(text: &'t str, tokens: &[Token], buf: &mut Vec<Option<
 /// verse's tokens as the shared [`TokenCache`] for the judge phase.
 #[derive(Clone, Copy, Default)]
 pub(crate) struct WalkPlan {
-    pub mixed_script: bool,
     pub rare_glyph: bool,
     pub proportionality: bool,
     pub bracket: bool,
@@ -144,21 +143,11 @@ impl WalkPlan {
     /// The products the counting listeners need.
     fn counting_needs(&self) -> Needs {
         let mut n = Needs::default();
-        if self.mixed_script || self.rare_glyph {
+        if self.rare_glyph {
             n.tokens = true;
         }
         if self.rare_glyph {
             n.folds = true;
-        }
-        n
-    }
-
-    /// The products the site-bearing listeners need on an *uncounted* book
-    /// (anchor collection only — the site-free rules skip such books).
-    fn anchor_needs(&self) -> Needs {
-        let mut n = Needs::default();
-        if self.mixed_script {
-            n.tokens = true;
         }
         n
     }
@@ -181,30 +170,20 @@ impl WalkPlan {
 
 /// One book's fused-walk outputs: each enabled counting listener's
 /// `(book stats, sites)`, the project listeners' outputs, and the book's
-/// token cache slice. For a book outside the `counted` scope (the
-/// provenance-derived stale set) the walk still runs the site-bearing
-/// listeners — the judge phase consumes the
-/// sites (ADR 0044) instead of re-scanning the book per rule — but the
-/// assembly discards the stats half (`counted == false`), so the carried
-/// prior counts stay authoritative. Site-free rules (proportionality,
-/// rare-glyph, mixed-case) skip uncounted books entirely.
+/// token cache slice. Every remaining counting listener is site-free, so a book
+/// outside the `counted` scope (the provenance-derived stale set) runs only the
+/// project listeners and the token cache; its carried prior counts stay
+/// authoritative because nothing recounted them.
 #[derive(Default)]
 pub(crate) struct BookOut {
-    /// Whether the counting listeners' stats are valid for the supersede
-    /// merge (the book was in the reduce scope).
-    pub counted: bool,
     /// Test observability (`test-probes`): whether this book's count-gated
     /// site-free accumulators (rare-glyph / proportionality) were
     /// actually instantiated and run. A witness of real counting work read from
-    /// the accumulators themselves, not from `counted` above — so a listener
-    /// that counted an anchor-mode (clean) book would diverge from the decision
-    /// flag and be caught.
+    /// the accumulators themselves, not from the walk's `count` decision — so a
+    /// listener that counted a clean book would diverge from the decision and be
+    /// caught.
     #[cfg(any(test, feature = "test-probes"))]
     pub counting_accs_ran: bool,
-    pub mixed_script: Option<(
-        script_mixing::BookMixedScript,
-        Vec<script_mixing::MixedScriptSite>,
-    )>,
     pub rare_glyph: Option<rare_glyph::BookGlyphs>,
     pub proportionality: Option<Vec<proportionality::RatioObs>>,
     pub bracket: Option<bracket_balance::BookMatch>,
@@ -288,22 +267,20 @@ fn walk_book(
     source_index: Option<&proportionality::SourceIndex<'_>>,
     plan: &WalkPlan,
 ) -> BookOut {
-    // Site-bearing listeners run on every book — for an uncounted book their
-    // stats are discarded but their sites feed the judge (the anchor
-    // collection of the port's phase 2); site-free listeners run only where
-    // they count.
+    // Every remaining counting listener is site-FREE (rare-glyph re-scans at
+    // judge, proportionality never scans), so an uncounted book needs only the
+    // project listeners' products. The site-bearing anchor lane is gone with the
+    // stateful rules that had sites — they are observation substrates now, and a
+    // substrate reads its own chapter cache rather than this walk.
     let needs = if count {
         plan.counting_needs().union(plan.project_needs())
     } else {
-        plan.anchor_needs().union(plan.project_needs())
+        plan.project_needs()
     };
     // Short-circuits (no sampling cost) when nothing on this walk needs
     // tokens at all.
     let delegate_tokens = needs.tokens && book_prefers_delegation(group.texts);
 
-    let mut mixed_script_acc = plan
-        .mixed_script
-        .then(|| script_mixing::MixedScriptAcc::new(count));
     let mut rare_glyph_acc = (count && plan.rare_glyph).then(rare_glyph::RareGlyphAcc::new);
     let mut prop_acc = (count && plan.proportionality)
         .then(|| proportionality::ProportionalityAcc::new(source_index));
@@ -349,9 +326,6 @@ fn walk_book(
             folds: if needs.folds { &folds_buf } else { &[] },
         };
 
-        if let Some(a) = &mut mixed_script_acc {
-            a.verse(&v);
-        }
         if let Some(a) = &mut rare_glyph_acc {
             a.verse(&v);
         }
@@ -377,10 +351,8 @@ fn walk_book(
         rare_glyph_acc.is_some() || prop_acc.is_some();
 
     BookOut {
-        counted: count,
         #[cfg(any(test, feature = "test-probes"))]
         counting_accs_ran,
-        mixed_script: mixed_script_acc.map(script_mixing::MixedScriptAcc::finish),
         rare_glyph: rare_glyph_acc.map(rare_glyph::RareGlyphAcc::finish),
         proportionality: prop_acc.map(proportionality::ProportionalityAcc::finish),
         bracket: bracket_acc.map(bracket_balance::BracketAcc::finish),

@@ -395,9 +395,10 @@ impl crate::substrate::ObservationSubstrate for AdjacencySubstrate {
 
 /// Walk two key-sorted `(key, count)` tables together, calling `f(key, old, new)`
 /// once per key present in either — with `0` standing for absence. The one place
-/// a book's adjacency replacement is applied, so the subtract and the add cannot
-/// disagree about which keys they touched.
-fn merge_join<K: Ord>(
+/// a book's count-table replacement is applied, so the subtract and the add
+/// cannot disagree about which keys they touched. Shared by every substrate whose
+/// aggregate is a sorted count table.
+pub(crate) fn merge_join<K: Ord>(
     old: &[(K, u64)],
     new: &[(K, u64)],
     mut f: impl FnMut(&K, u64, u64),

@@ -147,6 +147,8 @@ pub(crate) struct SubstrateSection {
     pub(crate) repeated_run: SubstrateCache<lexical::RepeatedRunSubstrate>,
     /// `lex.punct-only-token`'s substrate (Phase E).
     pub(crate) punct_only: SubstrateCache<lexical::PunctOnlySubstrate>,
+    /// `uni.mixed-script-in-token`'s substrate (Phase E).
+    pub(crate) mixed_script: SubstrateCache<script_mixing::MixedScriptSubstrate>,
     /// `case.mixed-case-word`'s substrate (Phase E).
     pub(crate) mixed_case: SubstrateCache<crate::signals::mixed_case::MixedCaseSubstrate>,
     /// The shared folded-word table every word-keyed substrate names its word
@@ -170,6 +172,7 @@ impl SubstrateSection {
             adjacency: SubstrateCache::new(),
             repeated_run: SubstrateCache::new(),
             punct_only: SubstrateCache::new(),
+            mixed_script: SubstrateCache::new(),
             duplicate_word: SubstrateCache::new(),
             casing: SubstrateCache::new(),
             casing_model: None,
@@ -185,6 +188,7 @@ impl SubstrateSection {
         self.adjacency.clear();
         self.repeated_run.clear();
         self.punct_only.clear();
+        self.mixed_script.clear();
         self.duplicate_word.clear();
         self.casing.clear();
         self.casing_model = None;
@@ -201,6 +205,7 @@ impl SubstrateSection {
         self.adjacency.remove_book(slug);
         self.repeated_run.remove_book(slug);
         self.punct_only.remove_book(slug);
+        self.mixed_script.remove_book(slug);
         self.duplicate_word.remove_book(slug);
         self.casing.remove_book(slug);
         self.mixed_case.remove_book(slug);
@@ -896,7 +901,6 @@ impl PrepSection {
 
     fn store_walk(&mut self, slug: &str, hash: u128, output: &BookOut) {
         let entry = self.entry_for_write(slug, hash);
-        entry.mixed_script = output.mixed_script.as_ref().map(|(_, sites)| sites.clone());
         entry.bracket = output.bracket.clone();
         entry.normalization = output.normalization.clone();
         entry.tokens = output.tokens.clone();
@@ -915,7 +919,6 @@ impl PrepSection {
 
 pub(crate) struct BookEntry {
     pub(crate) hash: u128,
-    pub(crate) mixed_script: Option<Vec<script_mixing::MixedScriptSite>>,
     pub(crate) bracket: Option<bracket_balance::BookMatch>,
     pub(crate) normalization: Option<mixed_normalization::BookNormalization>,
     pub(crate) tokens: Option<Vec<(LocalKeyIdx, Vec<Token>)>>,
@@ -925,7 +928,6 @@ impl BookEntry {
     fn new(hash: u128) -> Self {
         Self {
             hash,
-            mixed_script: None,
             bracket: None,
             normalization: None,
             tokens: None,
@@ -933,8 +935,7 @@ impl BookEntry {
     }
 
     fn has_walk_lanes(&self, plan: &WalkPlan) -> bool {
-(!plan.mixed_script || self.mixed_script.is_some())
-            && (!plan.bracket || self.bracket.is_some())
+(!plan.bracket || self.bracket.is_some())
             && (!plan.normalization || self.normalization.is_some())
             && (!plan.collect_tokens || self.tokens.is_some())
     }
@@ -972,14 +973,12 @@ mod tests {
     /// tell a reused entry from a rebuilt one.
     fn walk_with_lane() -> BookOut {
         BookOut {
-            mixed_script: Some((
-                Default::default(),
-                vec![script_mixing::MixedScriptSite {
-                    local_idx: LocalKeyIdx::from_usize(0),
-                    sig: "Latn+Cyrl".to_string(),
+            tokens: Some(vec![(
+                LocalKeyIdx::from_usize(0),
+                vec![crate::token::Token {
                     span: Span { start: 0, end: 1 },
                 }],
-            )),
+            )]),
             ..Default::default()
         }
     }
@@ -1008,7 +1007,7 @@ mod tests {
         let mut cache = AnalysisCache::new();
         cache.ensure_fingerprint(&Config::v1_defaults());
         cache.store_walk("GEN", 1, &walk_with_lane());
-        assert!(cache.prep.books.get("GEN").unwrap().mixed_script.is_some());
+        assert!(cache.prep.books.get("GEN").unwrap().tokens.is_some());
 
         // A new book hash replaces the entry outright: no lane from the old
         // content may survive into it.
@@ -1016,7 +1015,7 @@ mod tests {
         let entry = cache.prep.books.get("GEN").unwrap();
         assert_eq!(entry.hash, 2);
         assert!(
-            entry.mixed_script.is_none(),
+            entry.tokens.is_none(),
             "old walk lane must not survive a hash change"
         );
     }

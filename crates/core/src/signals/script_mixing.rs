@@ -42,17 +42,14 @@
 //! (ADR 0044), or by re-scanning any book carried from the prior.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use crate::config::MixedScriptConfig;
-use crate::corpus::{Books, Corpus, KeyIdx, LocalKeyIdx, rebase};
+use crate::corpus::{Corpus, LocalKeyIdx, SiteAddr, rebase};
 use crate::diagnostics::{Finding, FindingArgs, RuleId, Severity};
 use crate::evidence::{clamp_rate, clamp_unit, clamp_z, from_strengths, strength};
-use crate::rule::{self, StatefulRule, TokenCache};
 use crate::script::{ScriptTag, script_of};
-use crate::span::Span;
-use crate::stats::RuleStats;
-use crate::stream;
-use crate::token::{Token, tokenize};
+use crate::token::tokenize;
 
 pub const MIXED_SCRIPT_IN_TOKEN: RuleId = RuleId::MixedScriptInToken;
 
@@ -93,302 +90,560 @@ fn signature(scripts: &[ScriptTag]) -> String {
         .join("+")
 }
 
-/// One mixed token, forwarded reduce→judge within a call (ADR 0044). Carries
-/// the signature so judge's per-signature verdict needs no re-derivation, and
-/// the token span to highlight. Clean-book products may be retained by the
-/// content-keyed analysis cache between calls.
-#[derive(Clone)]
-pub struct MixedScriptSite {
-    pub(crate) local_idx: LocalKeyIdx,
-    pub(crate) sig: String,
-    pub(crate) span: Span,
+/// One chapter's mixed-script observation: the per-signature mixed-token counts,
+/// the per-script token counts, and the mixed tokens' addresses. Behind one `Arc`
+/// so a book's fold and the corpus aggregate share it rather than copying it.
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct MixedScriptChapterObs {
+    token: Box<str>,
+    counts: Arc<MixedScriptCounts>,
 }
 
-/// One book's aggregate contribution: per-signature mixed-token counts and
-/// per-script token counts (how many tokens contain each script at all — the
-/// dominant-script denominator's raw material). **No sites.**
-#[derive(Debug, Clone, Default, PartialEq)]
-pub(crate) struct BookMixedScript {
-    signature_counts: BTreeMap<String, u64>,
-    script_tokens: BTreeMap<String, u64>,
+/// One chapter's mixed-script counts and candidate addresses.
+///
+/// **Boundary state is `()`, and this is where that is proven.** The retired
+/// `MixedScriptAcc::verse` read only the current verse's `tokens`, `text` and
+/// `local_idx`; a token is classified from its own bytes alone
+/// ([`token_scripts`] is a fold over the token's chars), and the accumulator's
+/// three fields were a book *tally*, not a carry. A chapter boundary is a verse
+/// boundary, so nothing crosses it. (The claim is about this rule's extraction
+/// being verse-scoped, not that discourse resets at a verse.)
+#[derive(Default, PartialEq, Eq)]
+pub(crate) struct MixedScriptCounts {
+    /// Per-signature mixed-token counts, key-ordered. Its key set is exactly the
+    /// set of judge keys this chapter's candidates name.
+    signature_counts: Box<[(Box<str>, u64)]>,
+    /// Per-script token counts — how many tokens contain each script at all, the
+    /// dominant-script denominator's raw material. Keyed by the ISO 15924 short
+    /// name, which is what the signature is built from, so the judge's
+    /// `sig.split('+')` lookup is the same one the retired judge did.
+    script_tokens: Box<[(Box<str>, u64)]>,
+    /// Mixed-token addresses in scan order: verse order, then ascending token
+    /// start within a verse. That is exactly the retired judge's
+    /// `(key_idx, range.start, range.end)` order, so §6.4's within-rule equal-key
+    /// order is reproduced by construction.
+    ///
+    /// The **signature is not stored** — the retired `MixedScriptSite` carried a
+    /// `String` copy of it per site. It is `signature(token_scripts(..))` of a
+    /// byte slice of the verse at the retained token span: a per-char script-table
+    /// lookup with no tape, no segmentation and no re-tokenization, which is plan
+    /// §11's indexed lookup rather than a re-walk. So this row takes the
+    /// principle's default case, and it drops a heap string per mixed token.
+    sites: Box<[SiteAddr]>,
 }
 
-/// Cached mixed-script aggregates, keyed by book so an edit supersedes only its
-/// book. Corpus-wide counts are the sums over books, derived at `judge`.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct MixedScriptStats {
-    pub(crate) per_book: BTreeMap<Box<str>, BookMixedScript>,
+/// One chapter's reduced mixed-script result — identical to its observation.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub(crate) struct MixedScriptReduced {
+    token: Box<str>,
+    counts: Arc<MixedScriptCounts>,
 }
 
-impl MixedScriptStats {
-    /// Book-level supersede: books in `other` replace those in `self`.
-    pub(crate) fn merge(mut self, other: MixedScriptStats) -> MixedScriptStats {
-        for (book, b) in other.per_book {
-            self.per_book.insert(book, b);
+/// A book's folded mixed-script contribution: its two ordered count tables (the
+/// corpus aggregate's addends) plus its chapters' reduced results, which own the
+/// candidate addresses materialization walks.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub(crate) struct MixedScriptBookContribution {
+    signature_counts: Arc<Vec<(Box<str>, u64)>>,
+    script_tokens: Arc<Vec<(Box<str>, u64)>>,
+    chapters: Vec<MixedScriptReduced>,
+}
+
+/// One book's two addends as the corpus aggregate holds them, shared by `Arc`
+/// with the contribution they were folded into.
+type MixedScriptAddends = (Arc<Vec<(Box<str>, u64)>>, Arc<Vec<(Box<str>, u64)>>);
+
+/// The mixed-script corpus aggregate. **Counts only** — no site ever enters it;
+/// the addresses live in the reduced chapters, where an untouched chapter keeps
+/// its own. Every sum is maintained incrementally and bit-exactly across book
+/// replacement, because the counts are integers.
+#[derive(Default)]
+pub(crate) struct MixedScriptCorpusStats {
+    /// Per-book addends, so a replacement can subtract exactly what it added. Its
+    /// `len()` is the breadth denominator — books represented in the aggregate,
+    /// which is every book of the corpus (an empty book contributes an empty
+    /// pair, exactly as the retired per-book map held an empty entry).
+    per_book: BTreeMap<Box<str>, MixedScriptAddends>,
+    /// Corpus-wide per-signature `(k, books)`: total mixed tokens, and how many
+    /// books contain the signature at least once (its breadth support).
+    signatures: BTreeMap<Box<str>, (u64, u64)>,
+    /// Corpus-wide per-script token counts.
+    script_tokens: BTreeMap<Box<str>, u64>,
+}
+
+/// The judge key: the canonical script signature (`"Cyrl+Latn"`), which is what
+/// both convention axes are functions of.
+pub(crate) type MixedScriptKey = Box<str>;
+
+/// One signature's verdict: the score and the four descriptive counts behind it,
+/// or `None` when the signature is an established convention (or below the floor)
+/// and stays silent. One outcome serves every site of that signature,
+/// corpus-wide.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct MixedScriptOutcome {
+    /// `(score, k, n, books, corpus)` — the raw numbers ADR 0048 ships beside the
+    /// score.
+    emit: Option<(f32, u32, u32, u32, u32)>,
+}
+
+/// The `uni.mixed-script-in-token` observation substrate. Sole consumer: the rule
+/// of the same name.
+pub(crate) struct MixedScriptSubstrate;
+
+/// Pins the substrate's registry id at compile time.
+const _: crate::substrate::SubstrateId =
+    <MixedScriptSubstrate as crate::substrate::ObservationSubstrate>::ID;
+
+/// One chapter's mixed-script map: the same per-verse, per-token extraction the
+/// retired listener ran.
+fn map_mixed_script_chapter(
+    chapter: &crate::substrate::ChapterView<'_>,
+) -> MixedScriptChapterObs {
+    let mut signature_counts: BTreeMap<Box<str>, u64> = BTreeMap::new();
+    let mut script_tokens: BTreeMap<Box<str>, u64> = BTreeMap::new();
+    let mut sites: Vec<SiteAddr> = Vec::new();
+    for (vi, text) in chapter.texts.iter().enumerate() {
+        let local_idx = LocalKeyIdx::from_usize(vi);
+        for tok in tokenize(text) {
+            let scripts = token_scripts(tok.span.slice(text));
+            for &s in &scripts {
+                *script_tokens
+                    .entry(Box::from(tag_key(s).as_str()))
+                    .or_default() += 1;
+            }
+            if scripts.len() >= 2 {
+                *signature_counts
+                    .entry(Box::from(signature(&scripts).as_str()))
+                    .or_default() += 1;
+                sites.push(SiteAddr::pack(local_idx, tok.span));
+            }
         }
-        self
     }
-
-    pub(crate) fn remove_book(&mut self, slug: &str) {
-        self.per_book.remove(slug);
+    MixedScriptChapterObs {
+        token: Box::from(chapter.chapter),
+        counts: Arc::new(MixedScriptCounts {
+            signature_counts: signature_counts.into_iter().collect(),
+            script_tokens: script_tokens.into_iter().collect(),
+            sites: sites.into_boxed_slice(),
+        }),
     }
 }
 
-pub struct MixedScriptInToken {
-    pub cfg: MixedScriptConfig,
+/// Sum sorted `(key, count)` addends from several chapters into one ordered
+/// table — key-ordered without a sort, which is what the corpus merge-join and
+/// the deterministic `Eq` want.
+fn fold_script_counts(parts: impl Iterator<Item = (Box<str>, u64)>) -> Vec<(Box<str>, u64)> {
+    let mut acc: BTreeMap<Box<str>, u64> = BTreeMap::new();
+    for (k, n) in parts {
+        *acc.entry(k).or_default() += n;
+    }
+    acc.into_iter().collect()
 }
 
-impl StatefulRule for MixedScriptInToken {
-    fn id(&self) -> RuleId {
-        MIXED_SCRIPT_IN_TOKEN
+impl crate::substrate::ObservationSubstrate for MixedScriptSubstrate {
+    const ID: crate::substrate::SubstrateId = crate::substrate::SubstrateId::MixedScript;
+    // Bump on any observation/reduction schema change.
+    const SCHEMA_STAMP: u64 = 1;
+
+    type Key = MixedScriptKey;
+    // Proven from the listener — see `MixedScriptCounts`.
+    type BoundaryState = ();
+    type ChapterObservation = MixedScriptChapterObs;
+    type ReducedChapter = MixedScriptReduced;
+    type BookContribution = MixedScriptBookContribution;
+    type CorpusStats = MixedScriptCorpusStats;
+    // Every `MixedScriptConfig` field (the two convention rates, the two z's, the
+    // breadth gate, the floor) is read at judge, so a knob change maps and
+    // reduces nothing.
+    type ExtractorConfig = ();
+    // Signatures and script names are their own text; nothing to name through a
+    // shared table.
+    type Symbols = ();
+    type JudgeConfig = MixedScriptConfig;
+    type EntryOutcome = MixedScriptOutcome;
+
+    fn extractor_fp(_extractor: &()) -> u64 {
+        0
     }
 
-    fn reduce(
-        &self,
-        books: &Books<'_>,
-        _source: Option<&Corpus>,
-        tokens: Option<&TokenCache<'_>>,
-    ) -> (RuleStats, rule::RuleSites<'static>) {
-        // Thin driver over the shared listener (the fused walk feeds the same
-        // `MixedScriptAcc`); kept for calibration/tests. The shared token
-        // cache is ignored — the driver tokenizes each verse once, which is
-        // exactly what the cache would supply.
-        let _ = tokens;
-        let mut per_book = BTreeMap::new();
-        let mut sites = BTreeMap::new();
-        for (group, (counts, book_sites)) in books.iter().zip(rule::map_books(books, |group| {
-            stream::drive_book(
-                group,
-                stream::Needs {
-                    tokens: true,
-                    ..Default::default()
-                },
-                MixedScriptAcc::new(true),
-                |a, v| a.verse(v),
-                MixedScriptAcc::finish,
-            )
-        })) {
-            per_book.insert(Box::from(group.slug), counts);
-            sites.insert(Box::from(group.slug), book_sites);
-        }
+    fn map_chapter(
+        chapter: &crate::substrate::ChapterView<'_>,
+        _extractor: &(),
+        _symbols: &(),
+    ) -> MixedScriptChapterObs {
+        map_mixed_script_chapter(chapter)
+    }
+
+    fn pending_owner(_state: &()) -> Option<&str> {
+        None
+    }
+
+    fn reduce_chapter(
+        observation: &MixedScriptChapterObs,
+        _entering: &(),
+        _carry_out: &mut MixedScriptReduced,
+    ) -> (MixedScriptReduced, ()) {
         (
-            RuleStats::MixedScript(MixedScriptStats { per_book }),
-            rule::RuleSites::MixedScript(sites.into_iter().map(|(k, v)| (k, std::borrow::Cow::Owned(v))).collect()),
+            MixedScriptReduced {
+                token: observation.token.clone(),
+                counts: Arc::clone(&observation.counts),
+            },
+            (),
         )
     }
 
-    fn judge(
-        &self,
-        stats: &RuleStats,
-        books: &Books<'_>,
-        tokens: Option<&TokenCache<'_>>,
-        sites: Option<&rule::RuleSites<'_>>,
-    ) -> Vec<Finding> {
-        let RuleStats::MixedScript(stats) = stats else {
-            return Vec::new();
-        };
+    fn finish_book(_leaving: &(), _carry_out: &mut MixedScriptReduced) {}
 
-        // Corpus-wide aggregates: sum per-book signature counts + script token
-        // counts, and count in how many books each signature occurs (breadth).
-        let mut sig_k: BTreeMap<&str, u64> = BTreeMap::new();
-        let mut sig_books: BTreeMap<&str, u64> = BTreeMap::new();
-        let mut script_n: BTreeMap<&str, u64> = BTreeMap::new();
-        for book in stats.per_book.values() {
-            for (sig, &k) in &book.signature_counts {
-                *sig_k.entry(sig.as_str()).or_default() += k;
-                *sig_books.entry(sig.as_str()).or_default() += 1;
-            }
-            for (sc, &n) in &book.script_tokens {
-                *script_n.entry(sc.as_str()).or_default() += n;
-            }
+    fn fold_book(
+        reduced: &[MixedScriptReduced],
+        _symbols: &(),
+    ) -> MixedScriptBookContribution {
+        MixedScriptBookContribution {
+            signature_counts: Arc::new(fold_script_counts(
+                reduced
+                    .iter()
+                    .flat_map(|r| r.counts.signature_counts.iter().map(|(s, n)| (s.clone(), *n))),
+            )),
+            script_tokens: Arc::new(fold_script_counts(
+                reduced
+                    .iter()
+                    .flat_map(|r| r.counts.script_tokens.iter().map(|(s, n)| (s.clone(), *n))),
+            )),
+            chapters: reduced.to_vec(),
         }
-        let corpus_books = stats.per_book.len() as u64;
+    }
 
-        let rate = clamp_rate(self.cfg.convention_rate);
-        let z = clamp_z(self.cfg.confidence_z);
-        let breadth_rate = clamp_rate(self.cfg.breadth_convention_rate);
-        let breadth_z = clamp_z(self.cfg.breadth_z);
-        let floor = f64::from(clamp_unit(self.cfg.emit_score_min));
-        let breadth_active = corpus_books >= u64::from(self.cfg.breadth_min_books);
+    fn replace_book_in_corpus_stats(
+        stats: &mut MixedScriptCorpusStats,
+        slug: &str,
+        old: Option<&MixedScriptBookContribution>,
+        new: Option<&MixedScriptBookContribution>,
+    ) -> Vec<MixedScriptKey> {
+        let empty: Vec<(Box<str>, u64)> = Vec::new();
+        let old_sig = old.map_or(&empty[..], |c| &c.signature_counts[..]);
+        let new_sig = new.map_or(&empty[..], |c| &c.signature_counts[..]);
+        let old_sc = old.map_or(&empty[..], |c| &c.script_tokens[..]);
+        let new_sc = new.map_or(&empty[..], |c| &c.script_tokens[..]);
 
-        // Evidence depends only on the signature; compute it once each.
-        // Frequency (share of the DOMINANT script's tokens — the max
-        // denominator that fixes the exclusive-intruder pathology) and breadth
-        // are independent convention axes combined by noisy-OR (ADR 0031).
-        let evidence: BTreeMap<&str, f64> = sig_k
-            .iter()
-            .map(|(&sig, &k)| {
-                let n = sig
-                    .split('+')
-                    .map(|sc| script_n.get(sc).copied().unwrap_or(0))
-                    .max()
-                    .unwrap_or(0);
-                let freq = strength(k, n, rate, z);
-                let breadth = if breadth_active {
-                    let b = sig_books.get(sig).copied().unwrap_or(0);
-                    strength(b, corpus_books, breadth_rate, breadth_z)
-                } else {
-                    0.0
-                };
-                (sig, from_strengths(&[freq, breadth]))
-            })
-            .collect();
+        // The book count is the breadth denominator, so a book entering or
+        // leaving the aggregate moves EVERY signature's judge inputs.
+        let books_before = stats.per_book.len();
 
-        // The raw counts behind each signature's score, for the descriptive
-        // message (ADR 0048): frequency `k / n` and breadth `books / corpus`.
-        let sat = |v: u64| v.min(u64::from(u32::MAX)) as u32;
-        let details: BTreeMap<&str, (u32, u32, u32, u32)> = sig_k
-            .iter()
-            .map(|(&sig, &k)| {
-                let n = sig
-                    .split('+')
-                    .map(|sc| script_n.get(sc).copied().unwrap_or(0))
-                    .max()
-                    .unwrap_or(0);
-                let b = sig_books.get(sig).copied().unwrap_or(0);
-                (sig, (sat(k), sat(n), sat(b), sat(corpus_books)))
-            })
-            .collect();
-
-        // Recover spans (aggregate-only state holds none): from the forwarded
-        // reduce sites where this call scanned the book (ADR 0044), by
-        // re-scanning otherwise. Scores stay corpus-wide via `evidence`; both
-        // paths fan out per book (ADR 0042).
-        let forwarded = match sites {
-            Some(rule::RuleSites::MixedScript(m)) => Some(m),
-            _ => None,
-        };
-        let score = |key_idx: KeyIdx, sig: &str, span: Span, found: &mut Vec<Finding>| {
-            let ev = evidence.get(sig).copied().unwrap_or(1.0);
-            if ev < floor {
+        // Both sides are sorted, so this is a merge-join; the sums are integers,
+        // so subtract-then-add restores the identical value and the aggregate
+        // never needs re-folding whole.
+        let mut moved_scripts: Vec<Box<str>> = Vec::new();
+        crate::signals::punctuation::merge_join(old_sc, new_sc, |sc, o, n| {
+            if o == n {
                 return;
             }
-            let (k, n, books, corpus) = details.get(sig).copied().unwrap_or((0, 0, 0, 0));
-            found.push(Finding {
-                key_idx,
-                code: MIXED_SCRIPT_IN_TOKEN,
-                severity: Severity::Info,
-                range: span,
-                score: Some(ev as f32),
-                args: Some(FindingArgs::ScriptMixEvidence {
-                    k,
-                    n,
-                    books,
-                    corpus,
-                }),
-            });
+            let e = stats.script_tokens.entry(sc.clone()).or_default();
+            *e = *e + n - o;
+            if *e == 0 {
+                stats.script_tokens.remove(sc);
+            }
+            moved_scripts.push(sc.clone());
+        });
+        let mut delta: Vec<MixedScriptKey> = Vec::new();
+        crate::signals::punctuation::merge_join(old_sig, new_sig, |sig, o, n| {
+            if o == n {
+                return;
+            }
+            let e = stats.signatures.entry(sig.clone()).or_default();
+            e.0 = e.0 + n - o;
+            // Breadth support is a book count: presence in this book is worth
+            // exactly one, so a book gaining or losing the signature moves it by
+            // one and a count change within a book leaves it alone.
+            if o == 0 {
+                e.1 += 1;
+            }
+            if n == 0 {
+                e.1 -= 1;
+            }
+            if e.0 == 0 {
+                stats.signatures.remove(sig);
+            }
+            delta.push(sig.clone());
+        });
+
+        match new {
+            Some(c) => {
+                stats.per_book.insert(
+                    Box::from(slug),
+                    (
+                        Arc::clone(&c.signature_counts),
+                        Arc::clone(&c.script_tokens),
+                    ),
+                );
+            }
+            None => {
+                stats.per_book.remove(slug);
+            }
+        }
+
+        // Widen the delta to every signature whose judge inputs actually moved. A
+        // signature is judged against its OWN `(k, books)`, the corpus token count
+        // of EVERY script it names (the denominator is the max over them), and the
+        // corpus book count — so all three have to be honoured or the delta would
+        // be the one wrong answer, a subset.
+        if stats.per_book.len() != books_before {
+            return stats.signatures.keys().cloned().collect();
+        }
+        if !moved_scripts.is_empty() {
+            for sig in stats.signatures.keys() {
+                if sig.split('+').any(|sc| moved_scripts.iter().any(|m| **m == *sc))
+                    && !delta.contains(sig)
+                {
+                    delta.push(sig.clone());
+                }
+            }
+        }
+        delta
+    }
+
+    fn judge(
+        cfg: &MixedScriptConfig,
+        key: &MixedScriptKey,
+        stats: &MixedScriptCorpusStats,
+    ) -> MixedScriptOutcome {
+        let rate = clamp_rate(cfg.convention_rate);
+        let z = clamp_z(cfg.confidence_z);
+        let breadth_rate = clamp_rate(cfg.breadth_convention_rate);
+        let breadth_z = clamp_z(cfg.breadth_z);
+        let floor = f64::from(clamp_unit(cfg.emit_score_min));
+        let corpus_books = stats.per_book.len() as u64;
+        // Breadth is a corpus-scale signal — meaningless below a handful of books,
+        // where every signature trivially spans "all" of them. Gate it.
+        let breadth_active = corpus_books >= u64::from(cfg.breadth_min_books);
+
+        let (k, books) = stats.signatures.get(key).copied().unwrap_or((0, 0));
+        // The DOMINANT script's token count — the max denominator that fixes the
+        // exclusive-intruder pathology (see this module's header).
+        let n = key
+            .split('+')
+            .map(|sc| stats.script_tokens.get(sc).copied().unwrap_or(0))
+            .max()
+            .unwrap_or(0);
+
+        let freq = strength(k, n, rate, z);
+        let breadth = if breadth_active {
+            strength(books, corpus_books, breadth_rate, breadth_z)
+        } else {
+            0.0
         };
-        let mut out: Vec<Finding> = rule::map_books(books, |group| {
-            let mut found = Vec::new();
-            if let Some(book_sites) = forwarded.and_then(|m| m.get(group.slug)) {
-                for s in book_sites.iter() {
-                    score(rebase(group.base, s.local_idx), &s.sig, s.span, &mut found);
-                }
-            } else {
-                for (vi, text) in group.texts.iter().enumerate() {
-                    let key_idx = rebase(group.base, LocalKeyIdx::from_usize(vi));
-                    for (sig, span) in
-                        mixed_tokens(text, verse_tokens(key_idx, text, tokens).as_ref())
-                    {
-                        score(key_idx, &sig, span, &mut found);
-                    }
-                }
-            }
-            found
-        })
-        .into_iter()
-        .flatten()
-        .collect();
-        out.sort_by_key(|f| (f.key_idx, f.range.start, f.range.end));
-        out
-    }
-}
-
-/// The verse's shared tokens when the runner built a cache, else a fresh
-/// tokenization owned by the caller — the single-consumer fallback.
-fn verse_tokens<'a>(
-    key_idx: KeyIdx,
-    text: &str,
-    cache: Option<&'a TokenCache<'a>>,
-) -> std::borrow::Cow<'a, [Token]> {
-    match cache.and_then(|c| c.get(&key_idx)).copied() {
-        Some(t) => std::borrow::Cow::Borrowed(t),
-        None => std::borrow::Cow::Owned(tokenize(text)),
-    }
-}
-
-/// The mixed tokens of a verse: each token whose distinct non-`None` scripts
-/// number ≥2, paired with its signature and span.
-fn mixed_tokens(text: &str, tokens: &[Token]) -> Vec<(String, Span)> {
-    let mut out = Vec::new();
-    for tok in tokens {
-        let scripts = token_scripts(tok.span.slice(text));
-        if scripts.len() >= 2 {
-            out.push((signature(&scripts), tok.span));
+        let ev = from_strengths(&[freq, breadth]);
+        if ev < floor {
+            return MixedScriptOutcome::default();
+        }
+        let sat = |v: u64| v.min(u64::from(u32::MAX)) as u32;
+        MixedScriptOutcome {
+            emit: Some((ev as f32, sat(k), sat(n), sat(books), sat(corpus_books))),
         }
     }
-    out
 }
 
-/// The mixed-script counting listener: one book's aggregate counts plus the
-/// candidate sites (forwarded reduce→judge within a call, ADR 0044; the
-/// *stats* carry no sites). Fed per verse by the fused walk.
-pub(crate) struct MixedScriptAcc {
-    signature_counts: BTreeMap<String, u64>,
-    script_tokens: BTreeMap<String, u64>,
-    sites: Vec<MixedScriptSite>,
-    /// `false` on a prior-carried book (anchor mode): mixed tokens still
-    /// feed the sites; the signature/script tallies are skipped.
-    counting: bool,
-}
-
-impl MixedScriptAcc {
-    pub(crate) fn new(counting: bool) -> Self {
-        MixedScriptAcc {
-            signature_counts: BTreeMap::new(),
-            script_tokens: BTreeMap::new(),
-            sites: Vec::new(),
-            counting,
-        }
-    }
-
-    pub(crate) fn verse(&mut self, v: &stream::VerseInputs<'_, '_>) {
-        for tok in v.tokens {
-            let scripts = token_scripts(tok.span.slice(v.text));
-            if self.counting {
-                for &s in &scripts {
-                    *self.script_tokens.entry(tag_key(s)).or_default() += 1;
-                }
-            }
-            if scripts.len() >= 2 {
-                let sig = signature(&scripts);
-                if self.counting {
-                    *self.signature_counts.entry(sig.clone()).or_default() += 1;
-                }
-                self.sites.push(MixedScriptSite {
-                    local_idx: v.local_idx,
-                    sig,
-                    span: tok.span,
+impl MixedScriptBookContribution {
+    /// Emit this book's mixed-script findings: one per retained mixed token whose
+    /// signature survived judging, rebasing each chapter-local address to a global
+    /// `KeyIdx` via its chapter's current base.
+    ///
+    /// The signature is re-derived from the retained token span (plan §11): the
+    /// token is a byte slice of its own verse and the signature is a fold over its
+    /// chars through the fused script table, so this needs no re-tokenization. The
+    /// chapter's observation stamp is its text hash, so a cached chapter's bytes
+    /// are the bytes its counts came from.
+    fn materialize(
+        &self,
+        layout: &[crate::corpus::ChapterLayout],
+        corpus: &Corpus,
+        verdicts: &BTreeMap<MixedScriptKey, MixedScriptOutcome>,
+        out: &mut Vec<Finding>,
+    ) {
+        let texts = corpus.texts();
+        // Positional zip is truncating: a missing or extra trailing chapter would
+        // silently DROP findings rather than fail. Chapter cardinality is the
+        // alignment precondition; the token check at each pair (inside
+        // `chapter_base`) proves the pairing, but only for pairs that exist.
+        assert_eq!(
+            self.chapters.len(),
+            layout.len(),
+            "materialize: contribution/layout chapter count mismatch"
+        );
+        for (chapter, block) in self.chapters.iter().zip(layout) {
+            let base = crate::substrate::chapter_base(block, &chapter.token);
+            for site in chapter.counts.sites.iter() {
+                let (local, span) = site.unpack();
+                let text = &texts[block.range.start + usize::from(local.get())];
+                let sig = signature(&token_scripts(span.slice(text)));
+                // Every mixed token's signature was counted by the same chapter map
+                // that produced this address, so it is in the aggregate and has a
+                // verdict — a missing one would mean the counts and the sites came
+                // from different text.
+                let outcome = verdicts
+                    .get(sig.as_str())
+                    .expect("every retained mixed token's signature is a judged key");
+                let Some((score, k, n, books, corpus_books)) = outcome.emit else {
+                    continue;
+                };
+                out.push(Finding {
+                    key_idx: rebase(base, local),
+                    code: MIXED_SCRIPT_IN_TOKEN,
+                    severity: Severity::Info,
+                    range: span,
+                    score: Some(score),
+                    args: Some(FindingArgs::ScriptMixEvidence {
+                        k,
+                        n,
+                        books,
+                        corpus: corpus_books,
+                    }),
                 });
             }
         }
     }
+}
 
-    pub(crate) fn finish(self) -> (BookMixedScript, Vec<MixedScriptSite>) {
-        (
-            BookMixedScript {
-                signature_counts: self.signature_counts,
-                script_tokens: self.script_tokens,
-            },
-            self.sites,
-        )
+/// One chapter the substrate has to map this analysis, as the ordered map seam
+/// sees it: its caller-order `(book, chapter)` slot plus the view mapping reads.
+struct MixedScriptMapWork<'a> {
+    book: usize,
+    chapter: usize,
+    view: crate::substrate::ChapterView<'a>,
+}
+
+/// Drive the `uni.mixed-script-in-token` observation substrate for one analysis:
+/// map the dirty chapters through the ordered chapter-map seam, reduce (the
+/// identity), judge every signature the aggregate holds, and materialize. When
+/// inactive, drop the cached products so an edit while it is disabled does no
+/// work for it.
+pub(crate) fn drive_mixed_script(
+    active: bool,
+    cache: &mut crate::substrate::SubstrateCache<MixedScriptSubstrate>,
+    corpus: &Corpus,
+    cfg: &MixedScriptConfig,
+    out: &mut Vec<Finding>,
+) {
+    use crate::substrate::{
+        ChapterView, DrivePhase, DriveProbe, ObservationInputStamp, ObservationSubstrate,
+    };
+    #[cfg(any(test, feature = "test-probes"))]
+    cache.reset_probes();
+    if !active {
+        cache.clear();
+        return;
     }
+    let mut probe = DriveProbe::new(crate::substrate::SubstrateId::MixedScript);
+    let texts = corpus.texts();
+    let layout = corpus.book_layout();
+    // Borrowed chapter tokens: the layout owns them and outlives the drive, so
+    // the planning pass never allocates. `update_book` takes ownership only
+    // where it rebuilds a persistent cache entry.
+    let mut stamped: Vec<Vec<(&str, ObservationInputStamp)>> = Vec::with_capacity(layout.len());
+    let mut work: Vec<MixedScriptMapWork<'_>> = Vec::new();
+    let mut book_runs: Vec<std::ops::Range<usize>> = Vec::new();
+    let mut work_bytes = 0usize;
+    for (bi, book) in layout.iter().enumerate() {
+        let run_start = work.len();
+        let mut chapters = Vec::with_capacity(book.chapters.len());
+        for (ci, c) in book.chapters.iter().enumerate() {
+            let stamp = ObservationInputStamp {
+                schema_stamp: MixedScriptSubstrate::SCHEMA_STAMP,
+                chapter_hash: c.hash,
+                extractor_fp: MixedScriptSubstrate::extractor_fp(&()),
+            };
+            if !cache.observation_is_current(&book.slug, &c.chapter, &stamp) {
+                let verses = &texts[c.range.clone()];
+                work_bytes += verses.iter().map(String::len).sum::<usize>();
+                work.push(MixedScriptMapWork {
+                    book: bi,
+                    chapter: ci,
+                    view: ChapterView {
+                        chapter: &c.chapter,
+                        texts: verses,
+                    },
+                });
+            }
+            chapters.push((&*c.chapter, stamp));
+        }
+        if work.len() > run_start {
+            book_runs.push(run_start..work.len());
+        }
+        stamped.push(chapters);
+    }
+    probe.mark(DrivePhase::Plan);
+    let route = crate::rule::map_route(&book_runs, work.len(), work_bytes);
+    #[cfg(any(test, feature = "test-probes"))]
+    {
+        cache.map_route = route.label();
+    }
+    let fresh = crate::rule::map_chapter_work(&work, &book_runs, route, |w| {
+        MixedScriptSubstrate::map_chapter(&w.view, &(), &())
+    });
+    // Back into caller-order `(book, chapter)` slots, so reduction reads them in
+    // corpus order and never in completion order.
+    let mut slots: Vec<Vec<Option<MixedScriptChapterObs>>> = layout
+        .iter()
+        .map(|b| (0..b.chapters.len()).map(|_| None).collect())
+        .collect();
+    for (w, obs) in work.iter().zip(fresh) {
+        slots[w.book][w.chapter] = Some(obs);
+    }
+    probe.mark(DrivePhase::Map);
+    for (bi, book) in layout.iter().enumerate() {
+        cache.update_book(&book.slug, &stamped[bi], &(), |i| {
+            slots[bi][i].take().unwrap_or_else(|| {
+                let c = &book.chapters[i];
+                MixedScriptSubstrate::map_chapter(
+                    &ChapterView {
+                        chapter: &c.chapter,
+                        texts: &texts[c.range.clone()],
+                    },
+                    &(),
+                    &(),
+                )
+            })
+        });
+    }
+    probe.mark(DrivePhase::Reduce);
+    // Judge every signature in the aggregate. Each is named by at least one
+    // retained mixed token (a signature is counted only where a mixed token
+    // produced it), so this is exactly the key set that can emit — no wider. No
+    // key-discovery phase for the same reason: the aggregate's key set already IS
+    // the judge key set.
+    let stats = cache.corpus_stats();
+    let verdicts: BTreeMap<MixedScriptKey, MixedScriptOutcome> = stats
+        .signatures
+        .keys()
+        .map(|s| (s.clone(), MixedScriptSubstrate::judge(cfg, s, stats)))
+        .collect();
+    #[cfg(any(test, feature = "test-probes"))]
+    {
+        cache.judged = verdicts.len();
+    }
+    probe.mark(DrivePhase::Judge);
+    for book in layout {
+        if let Some(contrib) = cache.book_contribution(&book.slug) {
+            contrib.materialize(&book.chapters, corpus, &verdicts, out);
+        }
+    }
+    probe.mark(DrivePhase::Materialize);
+}
+
+/// `uni.mixed-script-in-token` findings for a whole corpus at a given config, via
+/// the observation substrate over a fresh transient cache — the single
+/// mixed-script implementation, for tests and calibration callers. Findings are
+/// in the final stable order.
+pub fn mixed_script_findings(corpus: &Corpus, cfg: &MixedScriptConfig) -> Vec<Finding> {
+    let mut cache = crate::substrate::SubstrateCache::new();
+    let mut out = Vec::new();
+    drive_mixed_script(true, &mut cache, corpus, cfg, &mut out);
+    out.sort_by_key(|f| (f.key_idx, f.range.start, f.range.end));
+    out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::corpus::by_book;
 
     /// A corpus key: `"{book} {chapter}:{v}"`. Chapter is fixed at 1 —
     /// these tests never exercise chapter-boundary behavior, only
@@ -399,16 +654,43 @@ mod tests {
     fn corpus(keys: Vec<String>, texts: Vec<String>) -> Corpus {
         Corpus::try_from_parts(keys, texts).unwrap()
     }
-    fn rule(cfg: MixedScriptConfig) -> MixedScriptInToken {
-        MixedScriptInToken { cfg }
+    /// A cold whole-corpus analysis at `cfg`, in the final stable order.
+    fn run(c: &Corpus, cfg: &MixedScriptConfig) -> Vec<Finding> {
+        mixed_script_findings(c, cfg)
     }
-    fn default_rule() -> MixedScriptInToken {
-        rule(MixedScriptConfig::default())
+
+    /// A resident drive, findings in the final stable order — the incremental
+    /// path, as `analyze` runs it.
+    fn resident(
+        cache: &mut crate::substrate::SubstrateCache<MixedScriptSubstrate>,
+        c: &Corpus,
+        cfg: &MixedScriptConfig,
+    ) -> Vec<Finding> {
+        let mut out = Vec::new();
+        drive_mixed_script(true, cache, c, cfg, &mut out);
+        out.sort_by_key(|f| (f.key_idx, f.range.start, f.range.end));
+        out
     }
-    fn run(c: &Corpus, r: &MixedScriptInToken) -> Vec<Finding> {
-        let books = by_book(c);
-        let (stats, sites) = r.reduce(&books, None, None);
-        r.judge(&stats, &books, None, Some(&sites))
+
+    /// Comparable rendering — key, span text, score and all four arg values, so
+    /// an equal-length-but-wrong result cannot pass.
+    fn render(c: &Corpus, f: &[Finding]) -> Vec<String> {
+        f.iter()
+            .map(|f| {
+                let a = match &f.args {
+                    Some(FindingArgs::ScriptMixEvidence { k, n, books, corpus }) => {
+                        format!("{k}/{n}/{books}/{corpus}")
+                    }
+                    _ => "-".to_string(),
+                };
+                format!(
+                    "{}|{}|{:?}|{a}",
+                    c.key(f.key_idx),
+                    f.range.slice(c.text(f.key_idx)),
+                    f.score
+                )
+            })
+            .collect()
     }
 
     // ── extraction ──────────────────────────────────────────────────────
@@ -445,7 +727,7 @@ mod tests {
         keys.push(key("GEN", 900));
         texts.push("c\u{0430}t here".to_string()); // Latin+Cyrillic homoglyph
         let c = corpus(keys, texts);
-        let f = run(&c, &default_rule());
+        let f = run(&c, &MixedScriptConfig::default());
         assert_eq!(f.len(), 1, "the lone homoglyph surfaces");
         assert_eq!(f[0].severity, Severity::Info);
         assert!(f[0].score.unwrap() > 0.8, "score {:?}", f[0].score);
@@ -472,7 +754,7 @@ mod tests {
         }
         let c = corpus(keys, texts);
         assert!(
-            run(&c, &default_rule()).is_empty(),
+            run(&c, &MixedScriptConfig::default()).is_empty(),
             "a pervasive borrowed letter must be learned as convention"
         );
     }
@@ -496,7 +778,7 @@ mod tests {
         }
         let c = corpus(keys, texts);
         assert!(
-            run(&c, &default_rule()).is_empty(),
+            run(&c, &MixedScriptConfig::default()).is_empty(),
             "a pair spanning all books suppresses on breadth alone"
         );
     }
@@ -524,69 +806,148 @@ mod tests {
         }
         let c = corpus(keys, texts);
         assert!(
-            !run(&c, &default_rule()).is_empty(),
+            !run(&c, &MixedScriptConfig::default()).is_empty(),
             "concentrated pair (1/10 books) must still surface"
         );
     }
 
     // ── stateful plumbing ───────────────────────────────────────────────
 
+    /// The incremental score is the CORPUS-wide one, not the edited book's local
+    /// rate: a resident cache that already saw GEN scores EXO's lone homoglyph
+    /// against GEN's Latin token count too, and matches a cold full-corpus
+    /// analysis exactly.
     #[test]
     fn incremental_score_is_corpus_wide_not_book_local() {
-        let r = default_rule();
-        // GEN establishes a dominant-Latin corpus; EXO edited later carries one
-        // homoglyph. Its score must reflect the corpus, not EXO alone.
+        let cfg = MixedScriptConfig::default();
+        let mut keys: Vec<String> = (1..=200).map(|i| key("GEN", i)).collect();
+        let mut texts: Vec<String> = (1..=200).map(|_| "the word is here".to_string()).collect();
+        keys.push(key("EXO", 1));
+        texts.push("plain here".to_string());
+        let before = corpus(keys.clone(), texts.clone());
+        texts[200] = "c\u{0430}t here".to_string();
+        let full = corpus(keys, texts);
+
+        let mut cache = crate::substrate::SubstrateCache::new();
+        let seeded = resident(&mut cache, &before, &cfg);
+        assert!(seeded.is_empty(), "{seeded:?}");
+        cache.reset_probes();
+        let inc = resident(&mut cache, &full, &cfg);
+        assert_eq!(cache.mapped, 1, "only EXO's changed chapter is remapped");
+        assert_eq!(inc.len(), 1);
+        assert_eq!(full.key(inc[0].key_idx), "EXO 1:1");
+        assert_eq!(
+            render(&full, &inc),
+            render(&full, &run(&full, &cfg)),
+            "incremental score/args are the corpus-wide ones"
+        );
+    }
+
+    /// Removing a book drops its contribution to the dominant-script denominator
+    /// and to the breadth book count. Driven residently, so the aggregate under
+    /// test is the incrementally maintained one.
+    #[test]
+    fn removing_a_book_drops_its_contribution() {
+        let cfg = MixedScriptConfig::default();
         let mut keys: Vec<String> = (1..=200).map(|i| key("GEN", i)).collect();
         let mut texts: Vec<String> = (1..=200).map(|_| "the word is here".to_string()).collect();
         keys.push(key("EXO", 1));
         texts.push("c\u{0430}t here".to_string());
         let full = corpus(keys.clone(), texts.clone());
-        let gen_only = corpus(keys[..200].to_vec(), texts[..200].to_vec());
-        let exo_only = corpus(keys[200..].to_vec(), texts[200..].to_vec());
+        let exo = corpus(keys[200..].to_vec(), texts[200..].to_vec());
 
-        let full_score = run(&full, &r)
-            .into_iter()
-            .find(|f| full.key(f.key_idx) == "EXO 1:1")
-            .unwrap()
-            .score;
+        let mut cache = crate::substrate::SubstrateCache::new();
+        let with_gen = resident(&mut cache, &full, &cfg);
+        assert!(with_gen.iter().any(|f| full.key(f.key_idx) == "EXO 1:1"));
 
-        let gen_books = by_book(&gen_only);
-        let exo_books = by_book(&exo_only);
-        let merged = r
-            .reduce(&gen_books, None, None)
-            .0
-            .merge(r.reduce(&exo_books, None, None).0);
-        let inc = r.judge(&merged, &exo_books, None, None);
-        assert_eq!(inc.len(), 1);
-        assert_eq!(exo_only.key(inc[0].key_idx), "EXO 1:1");
-        assert_eq!(inc[0].score, full_score, "incremental score is corpus-wide");
+        // Book REMOVAL is shell-driven (`Galley::remove_books` ->
+        // `cache.remove_book`), not inferred from a smaller layout.
+        cache.remove_book("GEN");
+        let after = resident(&mut cache, &exo, &cfg);
+        assert_eq!(
+            render(&exo, &after),
+            render(&exo, &run(&exo, &cfg)),
+            "the aggregate after removal equals a cold analysis of what is left"
+        );
     }
 
+    /// An edit maps and reduces exactly its own chapter, and a judging-knob change
+    /// maps and reduces nothing (plan §12.4) — every config field is read at judge.
     #[test]
-    fn removing_a_book_drops_its_contribution() {
-        let r = default_rule();
-        let mut keys: Vec<String> = (1..=200).map(|i| key("GEN", i)).collect();
-        let mut texts: Vec<String> = (1..=200).map(|_| "the word is here".to_string()).collect();
-        keys.push(key("EXO", 1));
-        texts.push("c\u{0430}t here".to_string());
-        let full = corpus(keys, texts);
-        let full_books = by_book(&full);
-        let RuleStats::MixedScript(mut stats) = r.reduce(&full_books, None, None).0 else {
-            unreachable!()
+    fn edit_locality_and_knob_isolation() {
+        let cfg = MixedScriptConfig {
+            emit_score_min: 0.0,
+            ..Default::default()
         };
-        // With GEN present, EXO's homoglyph is rare corpus-wide → surfaces.
-        let before = r.judge(
-            &RuleStats::MixedScript(stats.clone()),
-            &full_books,
-            None,
-            None,
+        let keys: Vec<String> = (1..=12).map(|i| key("GEN", i)).collect();
+        let mut texts: Vec<String> = (1..=12).map(|_| "the word is here".to_string()).collect();
+        let mut cache = crate::substrate::SubstrateCache::new();
+        let seeded = resident(&mut cache, &corpus(keys.clone(), texts.clone()), &cfg);
+        assert!(seeded.is_empty(), "{seeded:?}");
+        assert!(cache.mapped >= 1);
+
+        texts[6] = "c\u{0430}t here".to_string();
+        let edited = corpus(keys.clone(), texts.clone());
+        cache.reset_probes();
+        let inc = resident(&mut cache, &edited, &cfg);
+        assert_eq!(cache.mapped, 1, "one changed chapter maps one chapter");
+        assert_eq!(
+            cache.reduced, 1,
+            "an empty boundary state can never cascade past the changed chapter"
         );
-        assert!(before.iter().any(|f| full.key(f.key_idx) == "EXO 1:1"));
-        // Drop GEN: EXO alone is 1 Latin+Cyrillic of 1 Latin token → rate 1.0,
-        // and a single-book corpus (breadth inactive) → still rare → surfaces.
-        // Removing simply drops GEN's counts; assert the aggregate shrank.
-        stats.remove_book("GEN");
-        assert!(!stats.per_book.contains_key("GEN"));
+        assert_eq!(render(&edited, &inc), render(&edited, &run(&edited, &cfg)));
+
+        let strict = MixedScriptConfig {
+            emit_score_min: 1.0,
+            ..Default::default()
+        };
+        cache.reset_probes();
+        let none = resident(&mut cache, &edited, &strict);
+        assert_eq!(
+            (cache.mapped, cache.reduced),
+            (0, 0),
+            "a knob is not an extraction input"
+        );
+        assert!(none.len() <= inc.len());
+    }
+
+    /// Randomized edits: a resident cache's findings always equal a cold analysis
+    /// of the same corpus (plan §12.6).
+    #[test]
+    fn resident_mixed_script_equals_cold_under_randomized_edits() {
+        const SHAPES: &[&str] = &[
+            "the word is here",
+            "c\u{0430}t here",
+            "",
+            "\u{0430}bc word",
+            "\u{03c0}i word",
+            "\u{0ca8}o\u{0ca8} word",
+            "plain plain",
+        ];
+        let keys: Vec<String> = (1..=15).map(|i| key("GEN", i)).collect();
+        let mut texts: Vec<String> = (0..15)
+            .map(|i| SHAPES[i % SHAPES.len()].to_string())
+            .collect();
+        let cfg = MixedScriptConfig {
+            emit_score_min: 0.0,
+            ..Default::default()
+        };
+        let mut cache = crate::substrate::SubstrateCache::new();
+        let _ = resident(&mut cache, &corpus(keys.clone(), texts.clone()), &cfg);
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        for step in 0..24 {
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let vi = (state >> 33) as usize % texts.len();
+            let si = (state >> 11) as usize % SHAPES.len();
+            texts[vi] = SHAPES[si].to_string();
+            let c = corpus(keys.clone(), texts.clone());
+            let inc = resident(&mut cache, &c, &cfg);
+            assert_eq!(
+                render(&c, &inc),
+                render(&c, &run(&c, &cfg)),
+                "step {step}: resident result diverged from cold"
+            );
+        }
     }
 
     #[test]
@@ -604,7 +965,7 @@ mod tests {
             breadth_min_books: 0,
             emit_score_min: f32::NAN,
         };
-        for f in run(&c, &rule(bad)) {
+        for f in run(&c, &bad) {
             let s = f.score.unwrap();
             assert!(s.is_finite() && (0.0..=1.0).contains(&s), "score {s}");
         }

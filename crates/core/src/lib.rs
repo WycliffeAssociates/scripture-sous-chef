@@ -343,7 +343,6 @@ fn transition(
     prior: Option<Stats>,
     cache: &mut AnalysisCache,
 ) -> Result<(Vec<Finding>, Stats), (AnalyzeError, Option<Stats>)> {
-    use std::borrow::Cow;
     use std::collections::BTreeMap;
 
     let all_per_verse = rule::per_verse_rules();
@@ -378,7 +377,6 @@ fn transition(
     // cache after the stateful judge loop.
     let active = substrate::ActiveSubstrates::from_config(config);
     let plan = stream::WalkPlan {
-        mixed_script: config.is_enabled(RuleId::MixedScriptInToken),
         rare_glyph: config.is_enabled(RuleId::RareGlyph),
         proportionality: config.is_enabled(RuleId::ProjectLengthRatio),
         bracket: config.is_enabled(RuleId::BracketBalance),
@@ -682,33 +680,6 @@ fn transition(
     // ever count on walked books, so a clean book contributes nothing to them.
     // A book outside the `counted` scope contributes sites only, so the judge
     // phase stays site-driven for every supplied book (ADR 0044).
-    let mut mixed_script_fresh = plan.mixed_script.then(|| {
-        let mut pb = BTreeMap::new();
-        let mut st: BTreeMap<Box<str>, Cow<'_, [signals::script_mixing::MixedScriptSite]>> =
-            BTreeMap::new();
-        for (group, slot) in books.iter().zip(slots.iter_mut()) {
-            match slot {
-                BookProducts::Walked(o) => {
-                    if let Some((bc, s)) = o.mixed_script.take() {
-                        if o.counted {
-                            pb.insert(Box::from(group.slug), bc);
-                        }
-                        st.insert(Box::from(group.slug), Cow::Owned(s));
-                    }
-                }
-                BookProducts::Clean(e) => {
-                    let e: &cache::BookEntry = e;
-                    if let Some(s) = e.mixed_script.as_ref() {
-                        st.insert(Box::from(group.slug), Cow::Borrowed(s.as_slice()));
-                    }
-                }
-            }
-        }
-        (
-            RuleStats::MixedScript(signals::script_mixing::MixedScriptStats { per_book: pb }),
-            rule::RuleSites::MixedScript(st),
-        )
-    });
     let mut rare_glyph_fresh = plan.rare_glyph.then(|| {
         let mut pb = BTreeMap::new();
         for (group, slot) in books.iter().zip(slots.iter_mut()) {
@@ -860,12 +831,7 @@ fn transition(
         // 0044). Both casing rules share the one word-table walk: each takes a
         // clone of the stats (the wire shape keeps one entry per rule id, as
         // before) and judges from the same site list.
-        let (fresh, sites_ref): (RuleStats, &rule::RuleSites<'_>) = match id {
-            RuleId::MixedScriptInToken => {
-                let (st, ss) = mixed_script_fresh.take().expect("listener ran");
-                sites_slot = ss;
-                (st, &sites_slot)
-            }
+        let (fresh, sites_ref): (RuleStats, &rule::RuleSites) = match id {
             RuleId::RareGlyph => {
                 let (st, ss) = rare_glyph_fresh.take().expect("listener ran");
                 sites_slot = ss;
@@ -924,6 +890,13 @@ fn transition(
         &mut substrates.punct_only,
         target,
         &config.punct_only_token,
+        &mut out,
+    );
+    signals::script_mixing::drive_mixed_script(
+        active.mixed_script,
+        &mut substrates.mixed_script,
+        target,
+        &config.mixed_script,
         &mut out,
     );
     signals::lexical::drive_duplicate_word(

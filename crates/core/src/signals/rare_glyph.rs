@@ -198,7 +198,7 @@ impl StatefulRule for RareGlyph {
         books: &Books<'_>,
         _source: Option<&Corpus>,
         tokens: Option<&TokenCache<'_>>,
-    ) -> (RuleStats, rule::RuleSites<'static>) {
+    ) -> (RuleStats, rule::RuleSites) {
         // Thin driver over the shared listener (the fused walk feeds the same
         // `RareGlyphAcc`); kept for calibration/tests. The shared token cache
         // is ignored — the driver tokenizes each verse once, which is exactly
@@ -235,7 +235,7 @@ impl StatefulRule for RareGlyph {
         stats: &RuleStats,
         books: &Books<'_>,
         tokens: Option<&TokenCache<'_>>,
-        _sites: Option<&rule::RuleSites<'_>>,
+        _sites: Option<&rule::RuleSites>,
     ) -> Vec<Finding> {
         let RuleStats::GlyphInventory(stats) = stats else {
             return Vec::new();
