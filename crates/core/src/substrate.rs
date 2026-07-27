@@ -598,7 +598,7 @@ impl PendingPartition {
     /// Mark the whole partition owing. Drops any accumulated chapter set: it is
     /// subsumed, and keeping it would retain per-chapter allocations for a
     /// rebuild that ignores them.
-    fn owe_all(&mut self) {
+    pub(crate) fn owe_all(&mut self) {
         self.all = true;
         self.chapters.clear();
     }

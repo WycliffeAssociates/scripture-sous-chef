@@ -905,7 +905,7 @@ fn transition(
         },
         target,
         &config.casing,
-        &mut out,
+        &mut substrate_lane,
     );
 
     // Stamp per-book provenance for every supplied book: a freshly-counted book

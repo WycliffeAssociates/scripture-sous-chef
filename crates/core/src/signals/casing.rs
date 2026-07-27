@@ -1807,6 +1807,27 @@ impl crate::substrate::ObservationSubstrate for CasingSubstrate {
     }
 }
 
+/// The rules this substrate emits through — its complete consumer set, in the
+/// fixed order the committed identity compares in.
+const CONSUMERS: &[RuleId] = &[SENTENCE_INITIAL_LOWERCASE, INCONSISTENT_WORD_CASING];
+
+/// This substrate's judging fingerprint — the committed partition's judging
+/// identity. Every field of [`CasingConfig`] must appear, and
+/// `casing_judging_fp_moves_with_every_knob` pins that field-by-field.
+///
+/// For casing specifically this is a SECOND guard, not the only one: any knob
+/// change also fails the retained model's own `cfg` comparison, which rebuilds the
+/// model and owes the whole partition. The uniform fingerprint is kept because the
+/// partition's identity should not depend on a memo that is free to be dropped.
+fn judging_fp(cfg: &CasingConfig) -> u64 {
+    crate::substrate::judging_fp(&[
+        cfg.emit_score_min,
+        cfg.recurrence_k,
+        cfg.confidence_z,
+        cfg.trust_gate,
+    ])
+}
+
 /// Which of the substrate's two consumers this analysis emits for. Either may be
 /// off while the other keeps the shared substrate alive.
 #[derive(Clone, Copy)]
@@ -1867,11 +1888,19 @@ impl CasingBookContribution {
     /// Emit both consumers' findings for this book, in one pass over its sites.
     /// `positional`/`intrinsic` are the two rules' enabled bits: either may be
     /// off while the other keeps the shared substrate alive.
+    ///
+    /// `dirty` restricts emission to the chapters whose partition groups this call
+    /// replaces: `None` rewrites the whole partition, `Some(set)` emits only for
+    /// those chapter tokens and leaves every other chapter's committed records
+    /// standing (plan §6.4). The chapter walk itself is not skipped — the
+    /// cardinality assertion and the per-chapter token check are the alignment
+    /// proofs the emitted addresses rest on.
     fn materialize(
         &self,
         layout: &[crate::corpus::ChapterLayout],
         judge: &CasingJudge,
         enabled: Consumers,
+        dirty: Option<&std::collections::BTreeSet<&str>>,
         out: &mut Vec<Finding>,
         judged: &mut usize,
     ) {
@@ -1891,6 +1920,9 @@ impl CasingBookContribution {
         );
         for ((chapter, ids), block) in self.chapters.iter().zip(layout) {
             let base = crate::substrate::chapter_base(block, &chapter.token);
+            if dirty.is_some_and(|d| !d.contains(&*chapter.token)) {
+                continue;
+            }
             for site in chapter.sites() {
                 // Resolve the folded word through the BOOK's table, not the
                 // chapter's: one contiguous allocation per book keeps the judge's
@@ -1970,7 +2002,7 @@ pub(crate) fn drive_casing(
     state: CasingState<'_>,
     corpus: &Corpus,
     cfg: &CasingConfig,
-    out: &mut Vec<Finding>,
+    lane: &mut crate::substrate::SubstrateLane,
 ) {
     let CasingState {
         cache,
@@ -1979,12 +2011,29 @@ pub(crate) fn drive_casing(
     } = state;
     use crate::substrate::{
         ChapterView, DrivePhase, DriveProbe, ObservationInputStamp, ObservationSubstrate,
+        SubstratePatch,
     };
     #[cfg(any(test, feature = "test-probes"))]
     cache.reset_probes();
-    if !positional && !intrinsic {
+    // Fixed order, so the committed consumer set compares equal across calls.
+    let emitting: Vec<RuleId> = [
+        (positional, SENTENCE_INITIAL_LOWERCASE),
+        (intrinsic, INCONSISTENT_WORD_CASING),
+    ]
+    .into_iter()
+    .filter_map(|(on, id)| on.then_some(id))
+    .collect();
+    if emitting.is_empty() {
         cache.clear();
         *retained = None;
+        lane.patches.push(SubstratePatch {
+            substrate: crate::substrate::SubstrateId::Casing,
+            rules: CONSUMERS,
+            emitting,
+            findings: Vec::new(),
+            dirty: Vec::new(),
+            all_dirty: true,
+        });
         return;
     }
     let mut probe = DriveProbe::new(crate::substrate::SubstrateId::Casing);
@@ -2059,10 +2108,20 @@ pub(crate) fn drive_casing(
     }
 
     probe.mark(DrivePhase::Reduce);
-    let stats = cache.corpus_stats();
     // Emergent gate: no cased word-starts, no convention to violate.
-    if !stats.any_cased() {
+    if !cache.corpus_stats().any_cased() {
         *retained = None;
+        // No convention means no finding, so the partition is replaced with
+        // nothing — not left unwritten, which would republish whatever the last
+        // cased corpus said.
+        lane.patches.push(SubstratePatch {
+            substrate: crate::substrate::SubstrateId::Casing,
+            rules: CONSUMERS,
+            emitting,
+            findings: Vec::new(),
+            dirty: Vec::new(),
+            all_dirty: true,
+        });
         // Complete the phase accounting even on the emergent early-out, so a
         // probe reading over an uncased corpus still sums to the drive's cost
         // (the probe is only exhaustive if every exit marks every phase).
@@ -2075,14 +2134,30 @@ pub(crate) fn drive_casing(
     // function of the corpus aggregate and the judging knobs, and every key's
     // verdict is a function of the whole model. So either nothing moved and
     // every retained verdict stands, or the model moved and every key is dirty.
+    //
+    // This is the whole of casing's delta consumption, and its limit. When the
+    // aggregate moved, `Model::build` re-derives corpus-global terms — the
+    // per-class trust map and the lexicon-restricted habit — over EVERY word
+    // type, and both move even when a single word's tallies did (measured:
+    // 1 of 13,097 word types moves on a one-chapter edit, and `trust` and
+    // `habit` both move with it). So the model is rebuilt and every key is
+    // genuinely dirty; nothing here is a missed optimisation. When the aggregate
+    // did NOT move, every key's verdict is bit-identical to the committed one,
+    // and only the chapters whose own sites moved owe new records.
+    let generation = cache.corpus_stats().generation;
     let reusable = retained
         .as_ref()
-        .is_some_and(|m| m.generation == stats.generation && m.cfg == *cfg);
+        .is_some_and(|m| m.generation == generation && m.cfg == *cfg);
     if !reusable {
+        // Owed in the cache, not decided from `reusable`: the model is a memo in
+        // a section a failed attempt does not roll back, so a retry would find it
+        // current and patch only the site-delta over a partition judged against
+        // the old model.
+        cache.pending.owe_all();
         *retained = Some(CasingModel {
-            generation: stats.generation,
+            generation,
             cfg: *cfg,
-            model: Arc::new(Model::build(stats, cfg)),
+            model: Arc::new(Model::build(cache.corpus_stats(), cfg)),
         });
     }
     let model = retained.as_ref().expect("just built or reused");
@@ -2090,9 +2165,26 @@ pub(crate) fn drive_casing(
     // Casing's judge key set is the whole model: building or reusing it above IS
     // the key phase, and the per-site verdicts are drawn inside materialization,
     // so `judge` stays zero here and materialization carries both.
+    let (all_dirty, dirty) = cache.pending.plan(judging_fp(cfg), &emitting);
+    let dirty_by_book: Option<FxHashMap<&str, std::collections::BTreeSet<&str>>> =
+        (!all_dirty).then(|| {
+            let mut m: FxHashMap<&str, std::collections::BTreeSet<&str>> = FxHashMap::default();
+            for (slug, chapter) in &dirty {
+                m.entry(slug).or_default().insert(chapter);
+            }
+            m
+        });
     probe.mark(DrivePhase::Keys);
+    let empty: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
     let mut judged = 0usize;
+    let mut findings: Vec<Finding> = Vec::new();
     for book in layout {
+        let book_dirty = dirty_by_book
+            .as_ref()
+            .map(|m| m.get(&*book.slug).unwrap_or(&empty));
+        if book_dirty.is_some_and(std::collections::BTreeSet::is_empty) {
+            continue;
+        }
         if let Some(contrib) = cache.book_contribution(&book.slug) {
             contrib.materialize(
                 &book.chapters,
@@ -2101,11 +2193,20 @@ pub(crate) fn drive_casing(
                     positional,
                     intrinsic,
                 },
-                out,
+                book_dirty,
+                &mut findings,
                 &mut judged,
             );
         }
     }
+    lane.patches.push(SubstratePatch {
+        substrate: crate::substrate::SubstrateId::Casing,
+        rules: CONSUMERS,
+        emitting,
+        findings,
+        dirty,
+        all_dirty,
+    });
     probe.mark(DrivePhase::Materialize);
     #[cfg(any(test, feature = "test-probes"))]
     {
@@ -2127,7 +2228,7 @@ pub(crate) fn casing_findings(
     let mut cache = crate::substrate::SubstrateCache::new();
     let mut retained = None;
     let symbols = WordInterner::default();
-    let mut out = Vec::new();
+    let mut lane = crate::substrate::SubstrateLane::default();
     drive_casing(
         positional,
         intrinsic,
@@ -2138,8 +2239,9 @@ pub(crate) fn casing_findings(
         },
         corpus,
         cfg,
-        &mut out,
+        &mut lane,
     );
+    let mut out: Vec<Finding> = lane.patches.into_iter().flat_map(|p| p.findings).collect();
     out.sort_by_key(|f| (f.key_idx, f.range.start, f.range.end));
     out
 }
@@ -2226,7 +2328,7 @@ pub fn evaluate(corpus: &Corpus, cfg: &CasingConfig) -> Vec<SiteEval> {
     let mut cache: crate::substrate::SubstrateCache<CasingSubstrate> =
         crate::substrate::SubstrateCache::new();
     let mut retained = None;
-    let mut sink = Vec::new();
+    let mut lane = crate::substrate::SubstrateLane::default();
     let symbols = WordInterner::default();
     drive_casing(
         true,
@@ -2238,7 +2340,7 @@ pub fn evaluate(corpus: &Corpus, cfg: &CasingConfig) -> Vec<SiteEval> {
         },
         corpus,
         cfg,
-        &mut sink,
+        &mut lane,
     );
     let Some(retained) = retained else {
         return Vec::new();
@@ -2426,28 +2528,78 @@ mod tests {
 
     /// Drive one corpus through a resident substrate cache, returning both
     /// consumers' findings in the final stable order.
-    fn resident(
-        cache: &mut crate::substrate::SubstrateCache<CasingSubstrate>,
-        retained: &mut Option<CasingModel>,
-        symbols: &WordInterner,
-        corpus: &Corpus,
-        cfg: &CasingConfig,
-    ) -> Vec<Finding> {
-        let mut out = Vec::new();
-        drive_casing(
-            true,
-            true,
-            CasingState {
-                cache,
-                retained,
-                symbols,
-            },
-            corpus,
-            cfg,
-            &mut out,
-        );
-        out.sort_by_key(|f| (f.key_idx, f.range.start, f.code));
-        out
+    /// The resident state one isolated casing drive needs: its own substrate
+    /// cache, the retained model memo, and the finding partition its patches
+    /// commit into. The drive publishes a PATCH, not a complete finding set, so
+    /// the complete answer only exists in the partition — a helper that read the
+    /// patch alone would test the delta rather than the result.
+    struct Resident {
+        cache: crate::substrate::SubstrateCache<CasingSubstrate>,
+        retained: Option<CasingModel>,
+        findings: crate::cache::FindingSection,
+    }
+
+    impl Resident {
+        fn new() -> Self {
+            Resident {
+                cache: crate::substrate::SubstrateCache::new(),
+                retained: None,
+                findings: crate::cache::FindingSection::standalone(),
+            }
+        }
+
+        /// Remove a book from every half of the resident state, as
+        /// `AnalysisCache::remove_book` does.
+        #[allow(dead_code)]
+        fn remove_book(&mut self, slug: &str) {
+            self.cache.remove_book(slug);
+            self.findings.remove_book(slug);
+        }
+
+        fn analyze(
+            &mut self,
+            symbols: &WordInterner,
+            corpus: &Corpus,
+            cfg: &CasingConfig,
+        ) -> Vec<Finding> {
+            self.analyze_consumers(true, true, symbols, corpus, cfg)
+        }
+
+        fn analyze_consumers(
+            &mut self,
+            positional: bool,
+            intrinsic: bool,
+            symbols: &WordInterner,
+            corpus: &Corpus,
+            cfg: &CasingConfig,
+        ) -> Vec<Finding> {
+            let mut lane = crate::substrate::SubstrateLane::default();
+            drive_casing(
+                positional,
+                intrinsic,
+                CasingState {
+                    cache: &mut self.cache,
+                    retained: &mut self.retained,
+                    symbols,
+                },
+                corpus,
+                cfg,
+                &mut lane,
+            );
+            let present: std::collections::BTreeSet<(&str, &str)> = corpus
+                .book_layout()
+                .iter()
+                .flat_map(|b| b.chapters.iter().map(|c| (&*b.slug, &*c.chapter)))
+                .collect();
+            self.findings
+                .commit_substrates(&lane, corpus, Some(&present));
+            for _ in &lane.patches {
+                self.cache.pending.promote();
+            }
+            let mut out = self.findings.assemble(corpus);
+            out.sort_by_key(|f| (f.key_idx, f.range.start, f.code));
+            out
+        }
     }
 
     /// Comparable rendering: key string, code, span text, score, args.
@@ -2518,25 +2670,11 @@ mod tests {
 
     /// The corpus-wide trust for one class (test introspection over the model).
     fn class_trust(corpus: &Corpus, mark: char, quoted: bool) -> f64 {
-        let mut cache: crate::substrate::SubstrateCache<CasingSubstrate> =
-            crate::substrate::SubstrateCache::new();
-        let mut retained = None;
+        let mut r = Resident::new();
         let cfg = CasingConfig::default();
-        let mut sink = Vec::new();
         let symbols = WordInterner::default();
-        drive_casing(
-        true,
-        true,
-        CasingState {
-            cache: &mut cache,
-            retained: &mut retained,
-            symbols: &symbols,
-        },
-        corpus,
-        &cfg,
-        &mut sink,
-    );
-        retained
+        let _ = r.analyze(&symbols, corpus, &cfg);
+        r.retained
             .expect("a cased corpus builds a model")
             .model
             .trust_class(ClassKey { mark, quoted })
@@ -2679,14 +2817,13 @@ mod tests {
     #[test]
     fn book_supersede_over_a_resident_cache() {
         let c = cfg(0.5, 32.0, 0.0);
-        let mut cache = crate::substrate::SubstrateCache::new();
-        let mut retained = None;
+        let mut cache = Resident::new();
         let symbols = WordInterner::default();
 
         let dirty = cycle("GEN", &["we saw Jesus"], 20);
         let dirty = push_verse(dirty, "GEN", 100, "we saw jesus");
         assert_eq!(
-            resident(&mut cache, &mut retained, &symbols, &dirty, &c)
+            cache.analyze(&symbols, &dirty, &c)
                 .iter()
                 .filter(|f| f.code == INCONSISTENT_WORD_CASING)
                 .count(),
@@ -2696,13 +2833,13 @@ mod tests {
         // Same book, fixed content: the old contribution must not survive.
         let fixed = cycle("GEN", &["we saw Jesus"], 20);
         let fixed = push_verse(fixed, "GEN", 100, "we saw Jesus");
-        assert!(resident(&mut cache, &mut retained, &symbols, &fixed, &c).is_empty());
+        assert!(cache.analyze(&symbols, &fixed, &c).is_empty());
 
         // A second book carries the slip; dropping the first leaves it alone.
         let two = cycle("GEN", &["we saw Jesus"], 20);
         let two = extend_corpus(two, book("EXO", &[(1, "we saw jesus")]));
         assert_eq!(
-            resident(&mut cache, &mut retained, &symbols, &two, &c)
+            cache.analyze(&symbols, &two, &c)
                 .iter()
                 .filter(|f| f.code == INCONSISTENT_WORD_CASING)
                 .count(),
@@ -2712,7 +2849,7 @@ mod tests {
         let exo = book("EXO", &[(1, "we saw jesus")]);
         // GEN carried the capital-dominant evidence; without it `jesus` has no
         // convention to violate.
-        assert!(resident(&mut cache, &mut retained, &symbols, &exo, &c).is_empty());
+        assert!(cache.analyze(&symbols, &exo, &c).is_empty());
     }
 
     #[test]
@@ -2886,7 +3023,7 @@ mod tests {
 
     // ── The observation substrate: boundary state, replay, and work. ─────────
 
-    use crate::substrate::{ChapterView, ObservationSubstrate, SubstrateCache};
+    use crate::substrate::{ChapterView, ObservationSubstrate};
 
     /// A multi-chapter single-book corpus: `chapters[i]` holds chapter `i + 1`'s
     /// verse texts, numbered from 1 within the chapter.
@@ -3249,32 +3386,31 @@ mod tests {
         chapters[7].push("there he goes".to_string());
         let vm = chaptered("GEN", &chapters);
         let c = cfg(0.5, 32.0, 0.0);
-        let mut cache = SubstrateCache::new();
-        let mut retained = None;
+        let mut cache = Resident::new();
         let symbols = WordInterner::default();
-        let cold = resident(&mut cache, &mut retained, &symbols, &vm, &c);
-        assert_eq!(cache.mapped, 10, "cold maps every chapter");
-        assert_eq!(cache.reduced, 10);
+        let cold = cache.analyze(&symbols, &vm, &c);
+        assert_eq!(cache.cache.mapped, 10, "cold maps every chapter");
+        assert_eq!(cache.cache.reduced, 10);
 
         let mut edited = chapters.clone();
         edited[5][0] = "There we went there.".to_string();
         let ev = chaptered("GEN", &edited);
-        let inc = resident(&mut cache, &mut retained, &symbols, &ev, &c);
-        assert_eq!(cache.mapped, 1, "one changed chapter maps one chapter");
+        let inc = cache.analyze(&symbols, &ev, &c);
+        assert_eq!(cache.cache.mapped, 1, "one changed chapter maps one chapter");
         assert!(
-            cache.reduced <= 2,
+            cache.cache.reduced <= 2,
             "the changed chapter leaves its own trailing context, so the replay \
              converges at it or its successor; reduced={}",
-            cache.reduced
+            cache.cache.reduced
         );
         assert!(!cold.is_empty(), "the fixture must have findings to preserve");
         assert_eq!(render(&ev, &inc), render(&ev, &run_both(&ev, &c)));
 
         // Unchanged re-drive: no map, no reduce, and the model is reused.
-        let before = retained.as_ref().map(|m| m.generation);
-        let again = resident(&mut cache, &mut retained, &symbols, &ev, &c);
-        assert_eq!((cache.mapped, cache.reduced), (0, 0));
-        assert_eq!(retained.as_ref().map(|m| m.generation), before);
+        let before = cache.retained.as_ref().map(|m| m.generation);
+        let again = cache.analyze(&symbols, &ev, &c);
+        assert_eq!((cache.cache.mapped, cache.cache.reduced), (0, 0));
+        assert_eq!(cache.retained.as_ref().map(|m| m.generation), before);
         assert_eq!(render(&ev, &again), render(&ev, &inc));
     }
 
@@ -3292,15 +3428,14 @@ mod tests {
         let bulk = lines(&["There we go there.", "There it is there."], 8);
         let chapters: Vec<Vec<String>> = (0..4).map(|_| bulk.clone()).collect();
         let vm = chaptered("GEN", &chapters);
-        let mut cache = SubstrateCache::new();
-        let mut retained = None;
+        let mut cache = Resident::new();
         let symbols = WordInterner::default();
-        let _ = resident(&mut cache, &mut retained, &symbols, &vm, &cfg(0.5, 32.0, 0.0));
+        let _ = cache.analyze(&symbols, &vm, &cfg(0.5, 32.0, 0.0));
 
         let loose = cfg(0.0, 32.0, 0.0);
-        let after = resident(&mut cache, &mut retained, &symbols, &vm, &loose);
-        assert_eq!((cache.mapped, cache.reduced), (0, 0));
-        assert!(cache.judged >= 1, "the knob change re-judges");
+        let after = cache.analyze(&symbols, &vm, &loose);
+        assert_eq!((cache.cache.mapped, cache.cache.reduced), (0, 0));
+        assert!(cache.cache.judged >= 1, "the knob change re-judges");
         assert_eq!(render(&vm, &after), render(&vm, &run_both(&vm, &loose)));
     }
 
@@ -3313,22 +3448,9 @@ mod tests {
             push_verse(base, "GEN", 200, "there we go there")
         };
         let c = cfg(0.5, 32.0, 0.0);
-        let mut cache = SubstrateCache::new();
-        let mut retained = None;
-        let mut both = Vec::new();
+        let mut cache = Resident::new();
         let symbols = WordInterner::default();
-        drive_casing(
-        true,
-        true,
-        CasingState {
-            cache: &mut cache,
-            retained: &mut retained,
-            symbols: &symbols,
-        },
-        &vm,
-        &c,
-        &mut both,
-    );
+        let both = cache.analyze_consumers(true, true, &symbols, &vm, &c);
         assert!(
             both.iter().any(|f| f.code == SENTENCE_INITIAL_LOWERCASE),
             "{both:?}"
@@ -3336,20 +3458,8 @@ mod tests {
 
         // Positional only: the substrate is reused (nothing re-mapped) and the
         // intrinsic consumer's findings are simply not materialized.
-        let mut only_pos = Vec::new();
-        drive_casing(
-        true,
-        false,
-        CasingState {
-            cache: &mut cache,
-            retained: &mut retained,
-            symbols: &symbols,
-        },
-        &vm,
-        &c,
-        &mut only_pos,
-    );
-        assert_eq!(cache.mapped, 0, "a consumer toggle re-maps nothing");
+        let only_pos = cache.analyze_consumers(true, false, &symbols, &vm, &c);
+        assert_eq!(cache.cache.mapped, 0, "a consumer toggle re-maps nothing");
         assert!(only_pos.iter().all(|f| f.code == SENTENCE_INITIAL_LOWERCASE));
         assert_eq!(
             only_pos.len(),
@@ -3359,36 +3469,235 @@ mod tests {
         );
 
         // Both off: the last consumer leaving drops the substrate's products.
-        let mut off = Vec::new();
-        drive_casing(
-        false,
-        false,
-        CasingState {
-            cache: &mut cache,
-            retained: &mut retained,
-            symbols: &symbols,
-        },
-        &vm,
-        &c,
-        &mut off,
-    );
+        let off = cache.analyze_consumers(false, false, &symbols, &vm, &c);
         assert!(off.is_empty());
-        assert!(retained.is_none(), "the model memo goes with the substrate");
-        let mut back = Vec::new();
-        drive_casing(
-        true,
-        true,
-        CasingState {
-            cache: &mut cache,
-            retained: &mut retained,
-            symbols: &symbols,
-        },
-        &vm,
-        &c,
-        &mut back,
-    );
-        assert!(cache.mapped > 0, "re-enabling rebuilds the substrate");
+        assert!(cache.retained.is_none(), "the model memo goes with the substrate");
+        let back = cache.analyze_consumers(true, true, &symbols, &vm, &c);
+        assert!(cache.cache.mapped > 0, "re-enabling rebuilds the substrate");
         assert_eq!(render(&vm, &back), render(&vm, &both));
+    }
+
+    /// Every knob of [`CasingConfig`] must move the judging fingerprint. A knob
+    /// missing from `judging_fp` would let a retained partition survive a change
+    /// to it; casing's model memo happens to catch that too, so only a direct
+    /// field-by-field witness can hold the fingerprint itself honest.
+    #[test]
+    fn casing_judging_fp_moves_with_every_knob() {
+        let base = CasingConfig::default();
+        let mutants: [(&str, CasingConfig); 4] = [
+            (
+                "emit_score_min",
+                CasingConfig {
+                    emit_score_min: base.emit_score_min + 0.125,
+                    ..base
+                },
+            ),
+            (
+                "recurrence_k",
+                CasingConfig {
+                    recurrence_k: base.recurrence_k + 1.0,
+                    ..base
+                },
+            ),
+            (
+                "confidence_z",
+                CasingConfig {
+                    confidence_z: base.confidence_z + 0.5,
+                    ..base
+                },
+            ),
+            (
+                "trust_gate",
+                CasingConfig {
+                    trust_gate: base.trust_gate * 0.5,
+                    ..base
+                },
+            ),
+        ];
+        for (knob, mutant) in mutants {
+            assert_ne!(
+                judging_fp(&base),
+                judging_fp(&mutant),
+                "{knob} does not reach the judging fingerprint"
+            );
+        }
+        assert_eq!(judging_fp(&base), judging_fp(&CasingConfig::default()));
+    }
+
+    /// Plan §12.4's "equal aggregate with changed ordered sites still patches
+    /// partition records", for casing — the case a rebuild path cannot fail and a
+    /// patch path can.
+    ///
+    /// The edit moves a lowercase site WITHIN its verse without changing any
+    /// word's case tallies or position classes: two mid-flow lowercase words swap
+    /// places. The corpus aggregate is then bit-identical, so `generation` does not
+    /// move, so the model is reused and every key's verdict stands — and the only
+    /// thing that can bring the moved span to the partition is the site-delta.
+    #[test]
+    fn an_equal_aggregate_with_moved_sites_still_patches_the_partition() {
+        let c = cfg(0.5, 32.0, 0.0);
+        let symbols = WordInterner::default();
+        // `jesus` is dominantly capitalized, so the lone lowercase occurrence is an
+        // intrinsic finding wherever it sits in its verse.
+        let build = |slip: &str| {
+            let base = cycle("GEN", &["we saw Jesus"], 30);
+            push_verse(base, "GEN", 200, slip)
+        };
+
+        let before = build("we saw jesus");
+        let mut r = Resident::new();
+        let first = r.analyze(&symbols, &before, &c);
+        assert_eq!(first.len(), 1, "{:?}", render(&before, &first));
+        let first_start = first[0].range.start;
+        let generation = r
+            .retained
+            .as_ref()
+            .expect("a cased corpus builds a model")
+            .generation;
+
+        // Same words, same cases, same mid-flow positions — a different order.
+        let after = build("we jesus saw");
+        r.cache.reset_probes();
+        let patched = r.analyze(&symbols, &after, &c);
+        // The precondition this witness rests on: the aggregate did NOT move, so
+        // the model was reused and the whole-partition rebuild was NOT taken. If
+        // this ever fails the test has stopped exercising the patch path and would
+        // pass for the wrong reason.
+        assert_eq!(
+            r.retained.as_ref().map(|m| m.generation),
+            Some(generation),
+            "the fixture must leave the corpus aggregate bit-identical"
+        );
+        assert_eq!(
+            r.cache.site_dirty, 1,
+            "exactly the reordered chapter's sites moved"
+        );
+        assert_eq!(patched.len(), 1, "{:?}", render(&after, &patched));
+        assert_ne!(
+            patched[0].range.start, first_start,
+            "the fixture must actually move the span"
+        );
+        assert_eq!(
+            render(&after, &patched),
+            render(&after, &run_both(&after, &c)),
+            "patched partition must equal a cold rebuild"
+        );
+    }
+
+    /// Patch-equals-rebuild across a mutation script covering every way a casing
+    /// chapter's records can move: an in-place edit, a verse insertion, a verse
+    /// deletion, a new chapter, and an edit-then-undo. Casing carries a pending
+    /// terminal across chapter seams, so each step also exercises the replay
+    /// reaching past the chapter that changed — and therefore a site-delta wider
+    /// than the edit.
+    #[test]
+    fn every_patched_step_equals_a_cold_rebuild() {
+        let c = cfg(0.5, 32.0, 0.0);
+        let symbols = WordInterner::default();
+        // (chapter, verse, text). Chapter-final terminals are what make a later
+        // chapter's first word forced, so an edit to one moves the NEXT chapter's
+        // sites — the carry the site-delta has to catch.
+        let mut rows: Vec<(u16, u16, String)> = Vec::new();
+        for ch in 1..=4u16 {
+            for v in 1..=5u16 {
+                let text = if v == 5 {
+                    "There we go there."
+                } else if ch == 3 && v == 2 {
+                    "there we go there"
+                } else {
+                    "There we go there"
+                };
+                rows.push((ch, v, text.to_string()));
+            }
+        }
+        let build = |rows: &[(u16, u16, String)]| {
+            Corpus::try_from_parts(
+                rows.iter()
+                    .map(|(ch, v, _)| format!("GEN {ch}:{v}"))
+                    .collect(),
+                rows.iter().map(|(_, _, t)| t.clone()).collect(),
+            )
+            .unwrap()
+        };
+
+        let mut r = Resident::new();
+        let mut step = |r: &mut Resident, rows: &[(u16, u16, String)], what: &str| {
+            let corpus = build(rows);
+            let patched = r.analyze(&symbols, &corpus, &c);
+            assert_eq!(
+                render(&corpus, &patched),
+                render(&corpus, &run_both(&corpus, &c)),
+                "{what}: patched partition diverged from a cold rebuild"
+            );
+        };
+
+        step(&mut r, &rows, "cold seed");
+
+        // 1. drop chapter 1's closing terminal: chapter 2's opener stops being
+        //    forced, so a LATER chapter's sites move.
+        rows[4].2 = "There we go there".to_string();
+        step(&mut r, &rows, "chapter-final terminal removed (carry moves)");
+
+        // 2. put it back and add one in chapter 2 instead.
+        rows[4].2 = "There we go there.".to_string();
+        rows[9].2 = "There we go there.".to_string();
+        step(&mut r, &rows, "terminal moved to the next chapter");
+
+        // 3. insert a verse in chapter 1 — every later chapter's global KeyIdx
+        //    shifts, and no retained chapter-local record may move with it.
+        rows.insert(5, (1, 6, "there it went".to_string()));
+        step(&mut r, &rows, "verse insertion shifts later KeyIdxs");
+
+        // 4. delete the verse holding chapter 3's lowercase opener.
+        let slip = rows
+            .iter()
+            .position(|(ch, _, t)| *ch == 3 && t.starts_with("there"))
+            .expect("chapter 3 holds the slip");
+        rows.remove(slip);
+        step(&mut r, &rows, "verse deletion drops a site");
+
+        // 5. a whole new chapter, entered from chapter 4's trailing state.
+        rows.push((5, 1, "there we go there".to_string()));
+        rows.push((5, 2, "There we go there.".to_string()));
+        step(&mut r, &rows, "new chapter inherits the carry");
+
+        // 6. edit then undo.
+        let undone = rows.clone();
+        rows[0].2 = "there we go there.".to_string();
+        step(&mut r, &rows, "edit");
+        step(&mut r, &undone, "undo");
+    }
+
+    /// A judging-knob change re-judges every key for this rule and rebuilds its
+    /// partition, while mapping and reducing nothing (plan §7.1). The partition is
+    /// retained across calls now, so without the judging fingerprint in the
+    /// committed identity a knob change would publish the old verdicts.
+    #[test]
+    fn a_knob_change_rebuilds_the_partition_without_mapping() {
+        let symbols = WordInterner::default();
+        let vm = {
+            let base = cycle("GEN", &["There we go there."], 30);
+            push_verse(base, "GEN", 200, "there we go there")
+        };
+        let mut r = Resident::new();
+        let loose = r.analyze(&symbols, &vm, &cfg(0.0, 32.0, 0.0));
+        r.cache.reset_probes();
+        let tight = r.analyze(&symbols, &vm, &cfg(0.999, 32.0, 0.0));
+        assert_eq!(
+            (r.cache.mapped, r.cache.reduced),
+            (0, 0),
+            "a knob is read at judge; no observation stamp can move"
+        );
+        assert_ne!(
+            render(&vm, &loose),
+            render(&vm, &tight),
+            "the fixture must actually be knob-sensitive"
+        );
+        assert_eq!(
+            render(&vm, &tight),
+            render(&vm, &run_both(&vm, &cfg(0.999, 32.0, 0.0))),
+            "a knob change must rebuild the partition, not retain the old verdicts"
+        );
     }
 
     /// Property test (plan §12.6 shape): a resident cache driven through a
@@ -3430,10 +3739,9 @@ mod tests {
             Corpus::try_from_parts(keys, out).unwrap()
         };
         let c = cfg(0.0, 32.0, 0.0);
-        let mut cache = SubstrateCache::new();
-        let mut retained = None;
+        let mut cache = Resident::new();
         let symbols = WordInterner::default();
-        let _ = resident(&mut cache, &mut retained, &symbols, &build(&texts), &c);
+        let _ = cache.analyze(&symbols, &build(&texts), &c);
         let mut rng = 0x9E37_79B9_7F4A_7C15u64;
         let next = |rng: &mut u64| {
             *rng ^= *rng << 13;
@@ -3445,9 +3753,9 @@ mod tests {
             let which = (next(&mut rng) % texts.len() as u64) as usize;
             texts[which] = (next(&mut rng) % shapes.len() as u64) as usize;
             let corpus = build(&texts);
-            let inc = resident(&mut cache, &mut retained, &symbols, &corpus, &c);
+            let inc = cache.analyze(&symbols, &corpus, &c);
             assert!(
-                cache.mapped <= 1,
+                cache.cache.mapped <= 1,
                 "step {step}: one edited verse maps at most one chapter"
             );
             assert_eq!(

@@ -769,9 +769,10 @@ struct MixedCaseMapWork<'a> {
 /// drop the partition of a consumer that is off.
 const CONSUMERS: &[RuleId] = &[MIXED_CASE_WORD];
 
-/// This substrate's judging fingerprint. Every field of [`MixedCaseConfig`]
-/// appears: a knob missing here would retain a partition judged under its old
-/// value (`mixed_case_judging_fp_moves_with_every_knob` holds this).
+/// This substrate's judging fingerprint — the committed partition's judging
+/// identity. Every field of [`MixedCaseConfig`] must appear, and
+/// `mixed_case_judging_fp_moves_with_every_knob` pins that field-by-field: a knob
+/// missing here would retain a partition judged under its old value.
 fn judging_fp(cfg: &MixedCaseConfig) -> u64 {
     crate::substrate::judging_fp(&[cfg.emit_score_min, cfg.recurrence_k, cfg.confidence_z])
 }
@@ -1555,6 +1556,43 @@ mod tests {
         let again = cache.analyze(&symbols, &e, &knobs);
         assert_eq!((cache.cache.mapped, cache.cache.reduced), (0, 0));
         assert_eq!(render(&e, &again), render(&e, &inc));
+    }
+
+    /// Every knob of [`MixedCaseConfig`] must move the judging fingerprint.
+    #[test]
+    fn mixed_case_judging_fp_moves_with_every_knob() {
+        let base = MixedCaseConfig::default();
+        let mutants: [(&str, MixedCaseConfig); 3] = [
+            (
+                "emit_score_min",
+                MixedCaseConfig {
+                    emit_score_min: base.emit_score_min + 0.125,
+                    ..base
+                },
+            ),
+            (
+                "recurrence_k",
+                MixedCaseConfig {
+                    recurrence_k: base.recurrence_k + 1.0,
+                    ..base
+                },
+            ),
+            (
+                "confidence_z",
+                MixedCaseConfig {
+                    confidence_z: base.confidence_z + 0.5,
+                    ..base
+                },
+            ),
+        ];
+        for (knob, mutant) in mutants {
+            assert_ne!(
+                judging_fp(&base),
+                judging_fp(&mutant),
+                "{knob} does not reach the judging fingerprint"
+            );
+        }
+        assert_eq!(judging_fp(&base), judging_fp(&MixedCaseConfig::default()));
     }
 
     /// Plan §12.4: "equal aggregate with changed ordered sites still patches
