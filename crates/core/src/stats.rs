@@ -17,7 +17,6 @@
 use std::collections::BTreeMap;
 
 use crate::diagnostics::RuleId;
-use crate::signals::lexical::PunctOnlyTokenStats;
 use crate::signals::proportionality::ProportionalityStats;
 use crate::signals::rare_glyph::RareGlyphStats;
 use crate::signals::script_mixing::MixedScriptStats;
@@ -38,7 +37,6 @@ use crate::signals::script_mixing::MixedScriptStats;
 #[derive(Debug, Clone, PartialEq)]
 pub enum RuleStats {
     Proportionality(ProportionalityStats),
-    PunctOnlyToken(PunctOnlyTokenStats),
     MixedScript(MixedScriptStats),
     /// `uni.rare-glyph` (ADR 0053): per book, the full scalar inventory (the
     /// census substrate) plus word-level detail confined to locally-rare
@@ -55,9 +53,6 @@ impl RuleStats {
             (RuleStats::Proportionality(a), RuleStats::Proportionality(b)) => {
                 RuleStats::Proportionality(a.merge(b))
             }
-            (RuleStats::PunctOnlyToken(a), RuleStats::PunctOnlyToken(b)) => {
-                RuleStats::PunctOnlyToken(a.merge(b))
-            }
             (RuleStats::MixedScript(a), RuleStats::MixedScript(b)) => {
                 RuleStats::MixedScript(a.merge(b))
             }
@@ -72,7 +67,6 @@ impl RuleStats {
             // same-type merge arm is added above.
             (
                 RuleStats::Proportionality(_)
-                | RuleStats::PunctOnlyToken(_)
                 | RuleStats::MixedScript(_)
                 | RuleStats::GlyphInventory(_),
                 fresh,
@@ -84,7 +78,6 @@ impl RuleStats {
     fn remove_book(&mut self, slug: &str) {
         match self {
             RuleStats::Proportionality(p) => p.remove_book(slug),
-            RuleStats::PunctOnlyToken(p) => p.remove_book(slug),
             RuleStats::MixedScript(m) => m.remove_book(slug),
             RuleStats::GlyphInventory(g) => g.remove_book(slug),
         }

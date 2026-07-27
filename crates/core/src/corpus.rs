@@ -915,10 +915,6 @@ impl<'a> BookGroup<'a> {
         &self.keys[usize::from(local.0)]
     }
 
-    pub(crate) fn text(&self, local: LocalKeyIdx) -> &'a str {
-        &self.texts[usize::from(local.0)]
-    }
-
     pub(crate) fn len(&self) -> usize {
         self.keys.len()
     }

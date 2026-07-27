@@ -9,14 +9,11 @@ use unicode_segmentation::UnicodeSegmentation;
 
 use crate::charclass::class_of;
 use crate::config::RepeatedCharacterRunConfig;
-use crate::corpus::{Books, Corpus, LocalKeyIdx, SiteAddr, rebase};
+use crate::corpus::{Corpus, LocalKeyIdx, SiteAddr, rebase};
 use crate::diagnostics::{Finding, FindingArgs, RuleId, Severity};
 use crate::evidence;
 use crate::grapheme::{GSpan, segment, segment_tape};
-use crate::rule::{self, StatefulRule, TokenCache};
 use crate::span::Span;
-use crate::stats::RuleStats;
-use crate::stream;
 use crate::tape::TapeEntry;
 use crate::token::{Token, tokenize};
 
@@ -503,201 +500,466 @@ fn scan_verse(text: &str, tokens: &[crate::token::Token]) -> Vec<Span> {
 /// normal typography.
 pub const PUNCT_ONLY_TOKEN: RuleId = RuleId::PunctOnlyToken;
 
-/// One book's aggregate contribution: whitespace-unit count and per-chunk
-/// candidate counts, keyed by the exact chunk text.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub(crate) struct BookPunctOnlyToken {
+/// One chapter's punct-only observation: the whitespace-unit count, the
+/// per-pattern candidate counts, and the candidate addresses. Behind one `Arc`
+/// so a book's fold and the corpus aggregate share it rather than copying it.
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct PunctOnlyChapterObs {
+    token: Box<str>,
+    counts: Arc<PunctOnlyCounts>,
+}
+
+/// One chapter's punct-only counts and candidate addresses.
+///
+/// **Boundary state is `()`, and this is where that is proven.** The retired
+/// `PunctOnlyAcc::verse` read only the current verse's `text` and `tape`;
+/// `ws_chunks` starts its cursor at the tape's first entry on every call, so a
+/// whitespace-separated chunk is bounded by its verse in the shipped
+/// extraction; and the accumulator's other fields were a book *tally*, not a
+/// carry. A chapter boundary is a verse boundary, so nothing crosses it. (This
+/// is not the verse-seam footgun in disguise: the claim is that this rule's
+/// extraction is verse-scoped, not that discourse resets at a verse.)
+#[derive(Default, PartialEq, Eq)]
+pub(crate) struct PunctOnlyCounts {
+    /// Whitespace-separated units in this chapter — the corpus rate's
+    /// denominator addend.
     lexical_units: u64,
-    chunks: BTreeMap<String, u64>,
+    /// Per-pattern candidate counts, key-ordered. Its key set is exactly the set
+    /// of judge keys this chapter's candidates name, which is why the drive needs
+    /// no separate key-discovery pass.
+    chunks: Box<[(Box<str>, u64)]>,
+    /// Candidate addresses in scan order: verse order, then ascending start
+    /// within a verse (`ws_chunks` walks the tape forward and the chunks do not
+    /// overlap). That is exactly the retired judge's
+    /// `(key_idx, range.start, range.end)` order, so §6.4's within-rule equal-key
+    /// order is reproduced by construction.
+    ///
+    /// The **pattern key is not stored**: it is [`punct_only_pattern_key`] of a
+    /// byte slice of its own verse at the retained span — a filter over the
+    /// chunk's chars, with no tape, segmentation or tokenization needed. So
+    /// re-deriving it at materialization is plan §11's indexed lookup rather than
+    /// a re-walk, which is the principle's default case, and this row takes it.
+    /// The retired judge re-derived the same key the same way on every site it
+    /// scored.
+    sites: Box<[SiteAddr]>,
 }
 
-/// Cached punct-only-token aggregates, partitioned by book so incremental
-/// analysis can supersede one book without retaining occurrence sites.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct PunctOnlyTokenStats {
-    pub(crate) per_book: BTreeMap<Box<str>, BookPunctOnlyToken>,
+/// One chapter's reduced punct-only result — identical to its observation.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub(crate) struct PunctOnlyReduced {
+    token: Box<str>,
+    counts: Arc<PunctOnlyCounts>,
 }
 
-impl PunctOnlyTokenStats {
-    pub(crate) fn merge(mut self, other: PunctOnlyTokenStats) -> PunctOnlyTokenStats {
-        for (book, stats) in other.per_book {
-            self.per_book.insert(book, stats);
+/// A book's folded punct-only contribution: its two addends (the corpus
+/// aggregate's) plus its chapters' reduced results, which own the candidate
+/// addresses materialization walks.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub(crate) struct PunctOnlyBookContribution {
+    lexical_units: u64,
+    chunks: Arc<Vec<(Box<str>, u64)>>,
+    chapters: Vec<PunctOnlyReduced>,
+}
+
+/// A book's addends as the corpus aggregate holds them, shared by `Arc` with the
+/// contribution they were folded into.
+type PunctOnlyAddends = (u64, Arc<Vec<(Box<str>, u64)>>);
+
+/// The punct-only corpus aggregate. **Counts only** — no site ever enters it;
+/// the addresses live in the reduced chapters, where an untouched chapter keeps
+/// its own. Every sum is maintained incrementally and bit-exactly across book
+/// replacement, because the counts are integers.
+#[derive(Default)]
+pub(crate) struct PunctOnlyCorpusStats {
+    /// Per-book addends, so a replacement can subtract exactly what it added.
+    per_book: BTreeMap<Box<str>, PunctOnlyAddends>,
+    /// Corpus-wide whitespace-unit count — the rate's denominator.
+    lexical_units: u64,
+    /// Corpus-wide per-pattern candidate counts.
+    chunks: BTreeMap<Box<str>, u64>,
+}
+
+/// The judge key: the chunk minus riding quotes and closing brackets — the same
+/// core the scan's verdict uses, so `۔!` and `۔!)` pool as one convention.
+pub(crate) type PunctOnlyKey = Box<str>;
+
+/// One pattern's verdict: the score and the two descriptive counts behind it, or
+/// `None` when the pattern is an established convention (or below the floor) and
+/// stays silent. One outcome serves every site of that pattern, corpus-wide.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct PunctOnlyOutcome {
+    /// `(score, count, units)` — the raw numbers ADR 0048 ships beside the score.
+    emit: Option<(f32, u32, u32)>,
+}
+
+/// The `lex.punct-only-token` observation substrate. Sole consumer: the rule of
+/// the same name.
+pub(crate) struct PunctOnlySubstrate;
+
+/// Pins the substrate's registry id at compile time.
+const _: crate::substrate::SubstrateId =
+    <PunctOnlySubstrate as crate::substrate::ObservationSubstrate>::ID;
+
+/// One chapter's punct-only map: the same per-verse extraction the retired
+/// listener ran, over the chapter's own tape.
+fn map_punct_only_chapter(chapter: &crate::substrate::ChapterView<'_>) -> PunctOnlyChapterObs {
+    let mut lexical_units = 0u64;
+    let mut chunks: BTreeMap<Box<str>, u64> = BTreeMap::new();
+    let mut sites: Vec<SiteAddr> = Vec::new();
+    let mut tape = Vec::new();
+    for (vi, text) in chapter.texts.iter().enumerate() {
+        let local_idx = LocalKeyIdx::from_usize(vi);
+        lexical_units += text.split_whitespace().count() as u64;
+        crate::tape::build(text, &mut tape);
+        for span in scan_punct_only_token_tape(text, &tape) {
+            *chunks
+                .entry(Box::from(punct_only_pattern_key(span.slice(text)).as_str()))
+                .or_default() += 1;
+            sites.push(SiteAddr::pack(local_idx, span));
         }
-        self
     }
-
-    pub(crate) fn remove_book(&mut self, slug: &str) {
-        self.per_book.remove(slug);
+    PunctOnlyChapterObs {
+        token: Box::from(chapter.chapter),
+        counts: Arc::new(PunctOnlyCounts {
+            lexical_units,
+            chunks: chunks.into_iter().collect(),
+            sites: sites.into_boxed_slice(),
+        }),
     }
 }
 
-pub struct PunctOnlyToken {
-    pub cfg: crate::config::PunctOnlyTokenConfig,
+/// Sum sorted `(key, count)` addends from several chapters into one ordered
+/// table — key-ordered without a sort, which is what the corpus merge-join and
+/// the deterministic `Eq` want.
+fn fold_punct_only_counts(parts: impl Iterator<Item = (Box<str>, u64)>) -> Vec<(Box<str>, u64)> {
+    let mut acc: BTreeMap<Box<str>, u64> = BTreeMap::new();
+    for (k, n) in parts {
+        *acc.entry(k).or_default() += n;
+    }
+    acc.into_iter().collect()
 }
 
-impl StatefulRule for PunctOnlyToken {
-    fn id(&self) -> RuleId {
-        PUNCT_ONLY_TOKEN
+impl crate::substrate::ObservationSubstrate for PunctOnlySubstrate {
+    const ID: crate::substrate::SubstrateId = crate::substrate::SubstrateId::PunctOnly;
+    // Bump on any observation/reduction schema change.
+    const SCHEMA_STAMP: u64 = 1;
+
+    type Key = PunctOnlyKey;
+    // Proven from the listener — see `PunctOnlyCounts`.
+    type BoundaryState = ();
+    type ChapterObservation = PunctOnlyChapterObs;
+    type ReducedChapter = PunctOnlyReduced;
+    type BookContribution = PunctOnlyBookContribution;
+    type CorpusStats = PunctOnlyCorpusStats;
+    // Every `PunctOnlyTokenConfig` field (the convention rate, the confidence z,
+    // the floor) is read at judge, so a knob change maps and reduces nothing.
+    type ExtractorConfig = ();
+    // Patterns are their own text; nothing to name through a shared table.
+    type Symbols = ();
+    type JudgeConfig = crate::config::PunctOnlyTokenConfig;
+    type EntryOutcome = PunctOnlyOutcome;
+
+    fn extractor_fp(_extractor: &()) -> u64 {
+        0
     }
 
-    fn reduce(
-        &self,
-        books: &Books<'_>,
-        _source: Option<&Corpus>,
-        _tokens: Option<&TokenCache<'_>>,
-    ) -> (RuleStats, rule::RuleSites<'static>) {
-        // Thin driver over the shared listener (the fused walk feeds the same
-        // `PunctOnlyAcc`); kept for calibration/tests.
-        let mut per_book = BTreeMap::new();
-        let mut sites = BTreeMap::new();
-        for (group, (counts, book_sites)) in books.iter().zip(rule::map_books(books, |group| {
-            stream::drive_book(
-                group,
-                stream::Needs {
-                    tape: true,
-                    ..Default::default()
-                },
-                PunctOnlyAcc::new(true),
-                |a, v| a.verse(v),
-                PunctOnlyAcc::finish,
-            )
-        })) {
-            per_book.insert(Box::from(group.slug), counts);
-            sites.insert(Box::from(group.slug), book_sites);
-        }
+    fn map_chapter(
+        chapter: &crate::substrate::ChapterView<'_>,
+        _extractor: &(),
+        _symbols: &(),
+    ) -> PunctOnlyChapterObs {
+        map_punct_only_chapter(chapter)
+    }
+
+    fn pending_owner(_state: &()) -> Option<&str> {
+        None
+    }
+
+    fn reduce_chapter(
+        observation: &PunctOnlyChapterObs,
+        _entering: &(),
+        _carry_out: &mut PunctOnlyReduced,
+    ) -> (PunctOnlyReduced, ()) {
         (
-            RuleStats::PunctOnlyToken(PunctOnlyTokenStats { per_book }),
-            rule::RuleSites::PunctOnlyToken(sites.into_iter().map(|(k, v)| (k, std::borrow::Cow::Owned(v))).collect()),
+            PunctOnlyReduced {
+                token: observation.token.clone(),
+                counts: Arc::clone(&observation.counts),
+            },
+            (),
         )
     }
 
-    fn judge(
-        &self,
-        stats: &RuleStats,
-        books: &Books<'_>,
-        _tokens: Option<&TokenCache<'_>>,
-        sites: Option<&rule::RuleSites<'_>>,
-    ) -> Vec<Finding> {
-        let RuleStats::PunctOnlyToken(stats) = stats else {
-            return Vec::new();
-        };
+    fn finish_book(_leaving: &(), _carry_out: &mut PunctOnlyReduced) {}
 
-        let mut lexical_units = 0u64;
-        let mut chunks: BTreeMap<&str, u64> = BTreeMap::new();
-        for book in stats.per_book.values() {
-            lexical_units += book.lexical_units;
-            for (chunk, &count) in &book.chunks {
-                *chunks.entry(chunk.as_str()).or_default() += count;
+    fn fold_book(reduced: &[PunctOnlyReduced], _symbols: &()) -> PunctOnlyBookContribution {
+        PunctOnlyBookContribution {
+            lexical_units: reduced.iter().map(|r| r.counts.lexical_units).sum(),
+            chunks: Arc::new(fold_punct_only_counts(
+                reduced
+                    .iter()
+                    .flat_map(|r| r.counts.chunks.iter().map(|(c, n)| (c.clone(), *n))),
+            )),
+            chapters: reduced.to_vec(),
+        }
+    }
+
+    fn replace_book_in_corpus_stats(
+        stats: &mut PunctOnlyCorpusStats,
+        slug: &str,
+        old: Option<&PunctOnlyBookContribution>,
+        new: Option<&PunctOnlyBookContribution>,
+    ) -> Vec<PunctOnlyKey> {
+        let empty: Vec<(Box<str>, u64)> = Vec::new();
+        stats.lexical_units = stats.lexical_units + new.map_or(0, |c| c.lexical_units)
+            - old.map_or(0, |c| c.lexical_units);
+        apply_repeat_delta(
+            &mut stats.chunks,
+            old.map_or(&empty[..], |c| &c.chunks[..]),
+            new.map_or(&empty[..], |c| &c.chunks[..]),
+        );
+        match new {
+            Some(c) => {
+                stats
+                    .per_book
+                    .insert(Box::from(slug), (c.lexical_units, Arc::clone(&c.chunks)));
+            }
+            None => {
+                stats.per_book.remove(slug);
             }
         }
+        // The stats delta is deliberately empty, for the same structural reason
+        // repeated-run's and casing's are: this judge scores a pattern against
+        // `lexical_units`, a CORPUS-GLOBAL denominator that moves whenever any
+        // verse's whitespace-chunk count moves — so the honest delta is either the
+        // empty set (nothing moved) or every key in the corpus, never a subset,
+        // and a subset is the one answer that is wrong. Judging is whole-key-set
+        // today for every substrate; WP8 is where that changes, and this row will
+        // need an aggregate generation counter then.
+        Vec::new()
+    }
 
+    fn judge(
+        cfg: &crate::config::PunctOnlyTokenConfig,
+        key: &PunctOnlyKey,
+        stats: &PunctOnlyCorpusStats,
+    ) -> PunctOnlyOutcome {
         // The config rate is "occurrences per 10k lexical units"; `strength`
         // works in per-opportunity fractions, so divide at the boundary.
-        let convention_rate = evidence::clamp_rate(self.cfg.convention_rate_per_10k / 10_000.0);
-        let z = evidence::clamp_z(self.cfg.confidence_z);
-        let floor = f64::from(evidence::clamp_unit(self.cfg.emit_score_min));
+        let convention_rate = evidence::clamp_rate(cfg.convention_rate_per_10k / 10_000.0);
+        let z = evidence::clamp_z(cfg.confidence_z);
+        let floor = f64::from(evidence::clamp_unit(cfg.emit_score_min));
 
-        // Recover spans: from the forwarded reduce sites where this call
-        // scanned the book (ADR 0044) — slicing the chunk at a known span,
-        // no re-scan — by re-scanning otherwise. Fans out per book (ADR 0042).
-        let forwarded = match sites {
-            Some(rule::RuleSites::PunctOnlyToken(m)) => Some(m),
-            _ => None,
-        };
-        let score =
-            |key_idx: crate::corpus::KeyIdx, text: &str, span: Span, found: &mut Vec<Finding>| {
-                let chunk = span.slice(text);
-                let count = chunks
-                    .get(punct_only_pattern_key(chunk).as_str())
-                    .copied()
-                    .unwrap_or(0);
-                let evidence = evidence::from_strengths(&[evidence::strength(
-                    count,
-                    lexical_units,
-                    convention_rate,
-                    z,
-                )]);
-                if evidence < floor {
-                    return;
-                }
-                found.push(Finding {
-                    key_idx,
+        let count = stats.chunks.get(key).copied().unwrap_or(0);
+        let ev = evidence::from_strengths(&[evidence::strength(
+            count,
+            stats.lexical_units,
+            convention_rate,
+            z,
+        )]);
+        if ev < floor {
+            return PunctOnlyOutcome::default();
+        }
+        let sat = |v: u64| v.min(u64::from(u32::MAX)) as u32;
+        PunctOnlyOutcome {
+            emit: Some((ev as f32, sat(count), sat(stats.lexical_units))),
+        }
+    }
+}
+
+impl PunctOnlyBookContribution {
+    /// Emit this book's punct-only findings: one per retained candidate whose
+    /// pattern survived judging, rebasing each chapter-local address to a global
+    /// `KeyIdx` via its chapter's current base.
+    ///
+    /// The pattern key is re-derived from the retained span (plan §11): the chunk
+    /// is a byte slice of its own verse and the key is a char filter over it, so
+    /// this needs no segmentation at all. The chapter's observation stamp is its
+    /// text hash, so a cached chapter's bytes are the bytes its counts came from.
+    fn materialize(
+        &self,
+        layout: &[crate::corpus::ChapterLayout],
+        corpus: &Corpus,
+        verdicts: &BTreeMap<PunctOnlyKey, PunctOnlyOutcome>,
+        out: &mut Vec<Finding>,
+    ) {
+        let texts = corpus.texts();
+        // Positional zip is truncating: a missing or extra trailing chapter
+        // would silently DROP findings rather than fail. Chapter cardinality is
+        // the alignment precondition; the token check at each pair (inside
+        // `chapter_base`) proves the pairing, but only for pairs that exist.
+        assert_eq!(
+            self.chapters.len(),
+            layout.len(),
+            "materialize: contribution/layout chapter count mismatch"
+        );
+        for (chapter, block) in self.chapters.iter().zip(layout) {
+            let base = crate::substrate::chapter_base(block, &chapter.token);
+            for site in chapter.counts.sites.iter() {
+                let (local, span) = site.unpack();
+                let text = &texts[block.range.start + usize::from(local.get())];
+                let key = punct_only_pattern_key(span.slice(text));
+                // Every candidate's pattern was counted by the same chapter map
+                // that produced this address, so it is in the aggregate and has a
+                // verdict — a missing one would mean the counts and the sites came
+                // from different text.
+                let outcome = verdicts
+                    .get(key.as_str())
+                    .expect("every retained candidate's pattern is a judged key");
+                let Some((score, count, units)) = outcome.emit else {
+                    continue;
+                };
+                out.push(Finding {
+                    key_idx: rebase(base, local),
                     code: PUNCT_ONLY_TOKEN,
                     severity: Severity::Warning,
                     range: span,
-                    score: Some(evidence as f32),
-                    args: Some(FindingArgs::PunctOnlyRate {
-                        count: count.min(u64::from(u32::MAX)) as u32,
-                        units: lexical_units.min(u64::from(u32::MAX)) as u32,
-                    }),
+                    score: Some(score),
+                    args: Some(FindingArgs::PunctOnlyRate { count, units }),
                 });
+            }
+        }
+    }
+}
+
+/// One chapter the substrate has to map this analysis, as the ordered map seam
+/// sees it: its caller-order `(book, chapter)` slot plus the view mapping reads.
+struct PunctOnlyMapWork<'a> {
+    book: usize,
+    chapter: usize,
+    view: crate::substrate::ChapterView<'a>,
+}
+
+/// Drive the `lex.punct-only-token` observation substrate for one analysis: map
+/// the dirty chapters through the ordered chapter-map seam, reduce (the
+/// identity), judge every pattern the aggregate holds, and materialize. When
+/// inactive, drop the cached products so an edit while it is disabled does no
+/// work for it.
+pub(crate) fn drive_punct_only(
+    active: bool,
+    cache: &mut crate::substrate::SubstrateCache<PunctOnlySubstrate>,
+    corpus: &Corpus,
+    cfg: &crate::config::PunctOnlyTokenConfig,
+    out: &mut Vec<Finding>,
+) {
+    use crate::substrate::{
+        ChapterView, DrivePhase, DriveProbe, ObservationInputStamp, ObservationSubstrate,
+    };
+    #[cfg(any(test, feature = "test-probes"))]
+    cache.reset_probes();
+    if !active {
+        cache.clear();
+        return;
+    }
+    let mut probe = DriveProbe::new(crate::substrate::SubstrateId::PunctOnly);
+    let texts = corpus.texts();
+    let layout = corpus.book_layout();
+    // Borrowed chapter tokens: the layout owns them and outlives the drive, so
+    // the planning pass never allocates. `update_book` takes ownership only
+    // where it rebuilds a persistent cache entry.
+    let mut stamped: Vec<Vec<(&str, ObservationInputStamp)>> = Vec::with_capacity(layout.len());
+    let mut work: Vec<PunctOnlyMapWork<'_>> = Vec::new();
+    let mut book_runs: Vec<std::ops::Range<usize>> = Vec::new();
+    let mut work_bytes = 0usize;
+    for (bi, book) in layout.iter().enumerate() {
+        let run_start = work.len();
+        let mut chapters = Vec::with_capacity(book.chapters.len());
+        for (ci, c) in book.chapters.iter().enumerate() {
+            let stamp = ObservationInputStamp {
+                schema_stamp: PunctOnlySubstrate::SCHEMA_STAMP,
+                chapter_hash: c.hash,
+                extractor_fp: PunctOnlySubstrate::extractor_fp(&()),
             };
-        let mut out: Vec<Finding> = rule::map_books(books, |group| {
-            let mut found = Vec::new();
-            if let Some(book_sites) = forwarded.and_then(|m| m.get(group.slug)) {
-                rule::for_each_site_text(group, book_sites, |local, text, span| {
-                    score(rebase(group.base, local), text, span, &mut found);
+            if !cache.observation_is_current(&book.slug, &c.chapter, &stamp) {
+                let verses = &texts[c.range.clone()];
+                work_bytes += verses.iter().map(String::len).sum::<usize>();
+                work.push(PunctOnlyMapWork {
+                    book: bi,
+                    chapter: ci,
+                    view: ChapterView {
+                        chapter: &c.chapter,
+                        texts: verses,
+                    },
                 });
-            } else {
-                let mut tape = Vec::new();
-                for (vi, text) in group.texts.iter().enumerate() {
-                    let local = LocalKeyIdx::from_usize(vi);
-                    crate::tape::build(text, &mut tape);
-                    for span in scan_punct_only_token_tape(text, &tape) {
-                        score(rebase(group.base, local), text, span, &mut found);
-                    }
-                }
             }
-            found
-        })
-        .into_iter()
-        .flatten()
+            chapters.push((&*c.chapter, stamp));
+        }
+        if work.len() > run_start {
+            book_runs.push(run_start..work.len());
+        }
+        stamped.push(chapters);
+    }
+    probe.mark(DrivePhase::Plan);
+    let route = crate::rule::map_route(&book_runs, work.len(), work_bytes);
+    #[cfg(any(test, feature = "test-probes"))]
+    {
+        cache.map_route = route.label();
+    }
+    let fresh = crate::rule::map_chapter_work(&work, &book_runs, route, |w| {
+        PunctOnlySubstrate::map_chapter(&w.view, &(), &())
+    });
+    // Back into caller-order `(book, chapter)` slots, so reduction reads them in
+    // corpus order and never in completion order.
+    let mut slots: Vec<Vec<Option<PunctOnlyChapterObs>>> = layout
+        .iter()
+        .map(|b| (0..b.chapters.len()).map(|_| None).collect())
         .collect();
-        out.sort_by_key(|finding| (finding.key_idx, finding.range.start, finding.range.end));
-        out
+    for (w, obs) in work.iter().zip(fresh) {
+        slots[w.book][w.chapter] = Some(obs);
     }
+    probe.mark(DrivePhase::Map);
+    for (bi, book) in layout.iter().enumerate() {
+        cache.update_book(&book.slug, &stamped[bi], &(), |i| {
+            slots[bi][i].take().unwrap_or_else(|| {
+                let c = &book.chapters[i];
+                PunctOnlySubstrate::map_chapter(
+                    &ChapterView {
+                        chapter: &c.chapter,
+                        texts: &texts[c.range.clone()],
+                    },
+                    &(),
+                    &(),
+                )
+            })
+        });
+    }
+    probe.mark(DrivePhase::Reduce);
+    // Judge every pattern in the aggregate. Each is named by at least one
+    // retained candidate (a pattern is counted only where a candidate produced
+    // it), so this is exactly the key set that can emit — no wider. No
+    // key-discovery phase for the same reason: the aggregate's key set already
+    // IS the judge key set.
+    let stats = cache.corpus_stats();
+    let verdicts: BTreeMap<PunctOnlyKey, PunctOnlyOutcome> = stats
+        .chunks
+        .keys()
+        .map(|p| (p.clone(), PunctOnlySubstrate::judge(cfg, p, stats)))
+        .collect();
+    #[cfg(any(test, feature = "test-probes"))]
+    {
+        cache.judged = verdicts.len();
+    }
+    probe.mark(DrivePhase::Judge);
+    for book in layout {
+        if let Some(contrib) = cache.book_contribution(&book.slug) {
+            contrib.materialize(&book.chapters, corpus, &verdicts, out);
+        }
+    }
+    probe.mark(DrivePhase::Materialize);
 }
 
-/// The punct-only-token counting listener: one book's whitespace-unit count
-/// and per-chunk candidate counts, plus the forwarded sites. Fed per verse by
-/// the fused walk.
-pub(crate) struct PunctOnlyAcc {
-    out: BookPunctOnlyToken,
-    sites: Vec<SiteAddr>,
-    /// `false` on a prior-carried book (anchor mode): the extraction still
-    /// runs — the judge needs the sites — but the aggregate tallies are
-    /// skipped, since the assembly discards them (ADR 0057 phase 2).
-    counting: bool,
-}
-
-impl PunctOnlyAcc {
-    pub(crate) fn new(counting: bool) -> Self {
-        PunctOnlyAcc {
-            out: BookPunctOnlyToken::default(),
-            sites: Vec::new(),
-            counting,
-        }
-    }
-
-    pub(crate) fn verse(&mut self, v: &stream::VerseInputs<'_, '_>) {
-        if self.counting {
-            self.out.lexical_units += v.text.split_whitespace().count() as u64;
-        }
-        for span in scan_punct_only_token_tape(v.text, v.tape) {
-            if self.counting {
-                *self
-                    .out
-                    .chunks
-                    .entry(punct_only_pattern_key(span.slice(v.text)))
-                    .or_default() += 1;
-            }
-            self.sites.push(SiteAddr::pack(v.local_idx, span));
-        }
-    }
-
-    pub(crate) fn finish(self) -> (BookPunctOnlyToken, Vec<SiteAddr>) {
-        (self.out, self.sites)
-    }
+/// `lex.punct-only-token` findings for a whole corpus at a given config, via the
+/// observation substrate over a fresh transient cache — the single punct-only
+/// implementation, for tests and calibration callers. Findings are in the final
+/// stable order.
+pub fn punct_only_findings(
+    corpus: &Corpus,
+    cfg: &crate::config::PunctOnlyTokenConfig,
+) -> Vec<Finding> {
+    let mut cache = crate::substrate::SubstrateCache::new();
+    let mut out = Vec::new();
+    drive_punct_only(true, &mut cache, corpus, cfg, &mut out);
+    out.sort_by_key(|f| (f.key_idx, f.range.start, f.range.end));
+    out
 }
 
 /// The recurrence key: the chunk minus riding quotes and closing brackets —
@@ -1933,9 +2195,39 @@ mod tests {
     }
 
     fn pot_findings(corpus: &Corpus, cfg: crate::config::PunctOnlyTokenConfig) -> Vec<Finding> {
-        let rule = PunctOnlyToken { cfg };
-        let books = crate::corpus::by_book(corpus);
-        rule.judge(&rule.reduce(&books, None, None).0, &books, None, None)
+        punct_only_findings(corpus, &cfg)
+    }
+
+    /// A resident drive, findings in the final stable order — the incremental
+    /// path, as `analyze` runs it.
+    fn punct_only_resident(
+        cache: &mut crate::substrate::SubstrateCache<PunctOnlySubstrate>,
+        corpus: &Corpus,
+        cfg: &crate::config::PunctOnlyTokenConfig,
+    ) -> Vec<Finding> {
+        let mut out = Vec::new();
+        drive_punct_only(true, cache, corpus, cfg, &mut out);
+        out.sort_by_key(|f| (f.key_idx, f.range.start, f.range.end));
+        out
+    }
+
+    /// Comparable rendering — key, span text, score and both arg values, so an
+    /// equal-length-but-wrong result cannot pass.
+    fn punct_only_render(corpus: &Corpus, f: &[Finding]) -> Vec<String> {
+        f.iter()
+            .map(|f| {
+                let a = match &f.args {
+                    Some(FindingArgs::PunctOnlyRate { count, units }) => format!("{count}/{units}"),
+                    _ => "-".to_string(),
+                };
+                format!(
+                    "{}|{}|{:?}|{a}",
+                    corpus.key(f.key_idx),
+                    f.range.slice(corpus.text(f.key_idx)),
+                    f.score
+                )
+            })
+            .collect()
     }
 
     #[test]
@@ -2009,31 +2301,151 @@ mod tests {
 
     #[test]
     fn punct_only_incremental_score_uses_the_retained_corpus() {
-        let rule = PunctOnlyToken {
-            cfg: Default::default(),
+        // The incremental score is the CORPUS-wide one, not the edited book's
+        // local rate: a resident cache that already saw GEN scores EXO's lone
+        // candidate against GEN's 250,000 lexical units too, and matches a cold
+        // full-corpus analysis exactly.
+        let cfg = crate::config::PunctOnlyTokenConfig::default();
+        let gen_corpus = repeat_corpus("GEN", &["word ".repeat(50_000)]);
+        let exo_clean = repeat_corpus("EXO", &["word word".to_string()]);
+        let before = concat_corpus(&gen_corpus, &exo_clean);
+        let exo = repeat_corpus("EXO", &["word ,; word".to_string()]);
+        let full = concat_corpus(&gen_corpus, &exo);
+
+        let mut cache = crate::substrate::SubstrateCache::new();
+        let seeded = punct_only_resident(&mut cache, &before, &cfg);
+        assert!(seeded.is_empty(), "{seeded:?}");
+        cache.reset_probes();
+        let incremental = punct_only_resident(&mut cache, &full, &cfg);
+        assert_eq!(cache.mapped, 1, "only EXO's changed chapter is remapped");
+        assert_eq!(incremental.len(), 1);
+        assert_eq!(full.key(incremental[0].key_idx), "EXO 1:1");
+        assert_eq!(
+            punct_only_render(&full, &incremental),
+            punct_only_render(&full, &pot_findings(&full, cfg)),
+            "incremental score/args are the corpus-wide ones"
+        );
+    }
+
+    /// Removing a book drops its contribution to the corpus `lexical_units`
+    /// denominator, so the surviving book's lone candidate becomes *less* rare.
+    /// Driven residently, so the aggregate under test is the incrementally
+    /// maintained one.
+    #[test]
+    fn punct_only_removing_a_book_drops_its_lexical_unit_denominator() {
+        let cfg = crate::config::PunctOnlyTokenConfig {
+            emit_score_min: 0.0,
+            ..Default::default()
         };
         let gen_corpus = repeat_corpus("GEN", &["word ".repeat(50_000)]);
         let exo = repeat_corpus("EXO", &["word ,; word".to_string()]);
         let full = concat_corpus(&gen_corpus, &exo);
 
-        let full_books = crate::corpus::by_book(&full);
-        let full_score = rule.judge(
-            &rule.reduce(&full_books, None, None).0,
-            &full_books,
-            None,
-            None,
-        )[0]
-        .score;
-        let gen_books = crate::corpus::by_book(&gen_corpus);
-        let exo_books = crate::corpus::by_book(&exo);
-        let merged = rule
-            .reduce(&gen_books, None, None)
-            .0
-            .merge(rule.reduce(&exo_books, None, None).0);
-        let incremental = rule.judge(&merged, &exo_books, None, None);
-        assert_eq!(incremental.len(), 1);
-        assert_eq!(exo.key(incremental[0].key_idx), "EXO 1:1");
-        assert_eq!(incremental[0].score, full_score);
+        let mut cache = crate::substrate::SubstrateCache::new();
+        let with_gen = punct_only_resident(&mut cache, &full, &cfg);
+        let before = with_gen
+            .iter()
+            .find(|f| full.key(f.key_idx).starts_with("EXO"))
+            .expect("EXO's candidate surfaces")
+            .score
+            .unwrap();
+
+        // Book REMOVAL is shell-driven (`Galley::remove_books` ->
+        // `cache.remove_book`), not inferred from a smaller layout — a book absent
+        // from this call's corpus is otherwise a book this call did not ask about.
+        cache.remove_book("GEN");
+        let after_findings = punct_only_resident(&mut cache, &exo, &cfg);
+        let after = after_findings[0].score.unwrap();
+        assert!(
+            after < before,
+            "a smaller corpus makes the same candidate less rare: {after} !< {before}"
+        );
+        assert_eq!(
+            punct_only_render(&exo, &after_findings),
+            punct_only_render(&exo, &pot_findings(&exo, cfg))
+        );
+    }
+
+    /// An edit maps and reduces exactly its own chapter, and a judging-knob change
+    /// maps and reduces nothing (plan §12.4) — every config field is read at judge.
+    #[test]
+    fn punct_only_edit_locality_and_knob_isolation() {
+        let clean: Vec<String> = (1..=12).map(|_| "word word word".to_string()).collect();
+        let mut texts = clean.clone();
+        let cfg = crate::config::PunctOnlyTokenConfig {
+            emit_score_min: 0.0,
+            ..Default::default()
+        };
+        let mut cache = crate::substrate::SubstrateCache::new();
+        let seeded = punct_only_resident(&mut cache, &repeat_corpus("GEN", &texts), &cfg);
+        assert!(seeded.is_empty(), "{seeded:?}");
+        assert!(cache.mapped >= 1);
+
+        texts[6] = "word ,; word".to_string();
+        let edited = repeat_corpus("GEN", &texts);
+        cache.reset_probes();
+        let inc = punct_only_resident(&mut cache, &edited, &cfg);
+        assert_eq!(cache.mapped, 1, "one changed chapter maps one chapter");
+        assert_eq!(
+            cache.reduced, 1,
+            "an empty boundary state can never cascade past the changed chapter"
+        );
+        assert_eq!(
+            punct_only_render(&edited, &inc),
+            punct_only_render(&edited, &pot_findings(&edited, cfg))
+        );
+
+        // A knob change re-judges from the cached observations and reductions.
+        let strict = crate::config::PunctOnlyTokenConfig {
+            emit_score_min: 1.0,
+            ..Default::default()
+        };
+        cache.reset_probes();
+        let none = punct_only_resident(&mut cache, &edited, &strict);
+        assert_eq!(
+            (cache.mapped, cache.reduced),
+            (0, 0),
+            "a knob is not an extraction input"
+        );
+        assert!(none.len() <= inc.len());
+    }
+
+    /// Randomized edits: a resident cache's findings always equal a cold analysis
+    /// of the same corpus (plan §12.6).
+    #[test]
+    fn resident_punct_only_equals_cold_under_randomized_edits() {
+        const SHAPES: &[&str] = &[
+            "word word",
+            "word ,; word",
+            "",
+            "word .., word",
+            "word | word",
+            "word ,;) word",
+            "word ?? word",
+        ];
+        let mut texts: Vec<String> = (0..15)
+            .map(|i| SHAPES[i % SHAPES.len()].to_string())
+            .collect();
+        let cfg = crate::config::PunctOnlyTokenConfig {
+            emit_score_min: 0.0,
+            ..Default::default()
+        };
+        let mut cache = crate::substrate::SubstrateCache::new();
+        let _ = punct_only_resident(&mut cache, &repeat_corpus("GEN", &texts), &cfg);
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        for step in 0..24 {
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let vi = (state >> 33) as usize % texts.len();
+            let si = (state >> 11) as usize % SHAPES.len();
+            texts[vi] = SHAPES[si].to_string();
+            let corpus = repeat_corpus("GEN", &texts);
+            let inc = punct_only_resident(&mut cache, &corpus, &cfg);
+            assert_eq!(
+                punct_only_render(&corpus, &inc),
+                punct_only_render(&corpus, &pot_findings(&corpus, cfg)),
+                "step {step}: resident result diverged from cold"
+            );
+        }
     }
 
     fn rc(text: &str) -> Vec<&str> {

@@ -5,9 +5,9 @@ use ssc_core::config::{
     BracketBalanceConfig, CasingConfig, MixedScriptConfig, PunctOnlyTokenConfig,
     PunctuationAdjacencyConfig, PunctuationSpacingConfig, RepeatedCharacterRunConfig,
 };
-use ssc_core::rule::{ProjectRule, StatefulRule};
+use ssc_core::rule::ProjectRule;
 use ssc_core::signals::bracket_balance::BracketBalance;
-use ssc_core::signals::lexical::{PunctOnlyToken, repeated_run_findings};
+use ssc_core::signals::lexical::{punct_only_findings, repeated_run_findings};
 use ssc_core::signals::punctuation::adjacency_findings;
 use ssc_core::{
     BracketMeasure, Config, Corpus, Finding, FindingArgs, RuleId, analyze, analyze_with_config,
@@ -598,14 +598,13 @@ pub(crate) fn punct_only_calib(dir: &Path) {
     );
 
     // Production score distribution at floor 0, and the shipped-floor count.
-    let rule = PunctOnlyToken {
-        cfg: PunctOnlyTokenConfig {
+    let findings = punct_only_findings(
+        &target,
+        &PunctOnlyTokenConfig {
             emit_score_min: 0.0,
             ..Default::default()
         },
-    };
-    let books = ssc_core::corpus::by_book(&target);
-    let findings = rule.judge(&rule.reduce(&books, None, None).0, &books, None, None);
+    );
     report_scored("lex.punct-only-token", &target, &findings);
     let shipped = PunctOnlyTokenConfig::default().emit_score_min;
     let surfaced = findings

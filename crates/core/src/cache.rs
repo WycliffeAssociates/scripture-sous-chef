@@ -27,7 +27,7 @@ use rustc_hash::FxHashMap;
 use xxhash_rust::xxh3::xxh3_64;
 
 use crate::config::Config;
-use crate::corpus::{KeyIdx, LocalKeyIdx, SiteAddr, rebase};
+use crate::corpus::{KeyIdx, LocalKeyIdx, rebase};
 use crate::diagnostics::{Finding, RuleId, Severity};
 use crate::signals::{
     bracket_balance, casing, lexical, mixed_normalization, punctuation, script_mixing,
@@ -145,6 +145,8 @@ pub(crate) struct SubstrateSection {
     pub(crate) adjacency: SubstrateCache<punctuation::AdjacencySubstrate>,
     /// `lex.repeated-character-run`'s substrate (Phase E).
     pub(crate) repeated_run: SubstrateCache<lexical::RepeatedRunSubstrate>,
+    /// `lex.punct-only-token`'s substrate (Phase E).
+    pub(crate) punct_only: SubstrateCache<lexical::PunctOnlySubstrate>,
     /// `case.mixed-case-word`'s substrate (Phase E).
     pub(crate) mixed_case: SubstrateCache<crate::signals::mixed_case::MixedCaseSubstrate>,
     /// The shared folded-word table every word-keyed substrate names its word
@@ -167,6 +169,7 @@ impl SubstrateSection {
             spacing: SubstrateCache::new(),
             adjacency: SubstrateCache::new(),
             repeated_run: SubstrateCache::new(),
+            punct_only: SubstrateCache::new(),
             duplicate_word: SubstrateCache::new(),
             casing: SubstrateCache::new(),
             casing_model: None,
@@ -181,6 +184,7 @@ impl SubstrateSection {
         self.spacing.clear();
         self.adjacency.clear();
         self.repeated_run.clear();
+        self.punct_only.clear();
         self.duplicate_word.clear();
         self.casing.clear();
         self.casing_model = None;
@@ -196,6 +200,7 @@ impl SubstrateSection {
         self.spacing.remove_book(slug);
         self.adjacency.remove_book(slug);
         self.repeated_run.remove_book(slug);
+        self.punct_only.remove_book(slug);
         self.duplicate_word.remove_book(slug);
         self.casing.remove_book(slug);
         self.mixed_case.remove_book(slug);
@@ -891,7 +896,6 @@ impl PrepSection {
 
     fn store_walk(&mut self, slug: &str, hash: u128, output: &BookOut) {
         let entry = self.entry_for_write(slug, hash);
-        entry.punct_only = output.punct_only.as_ref().map(|(_, sites)| sites.clone());
         entry.mixed_script = output.mixed_script.as_ref().map(|(_, sites)| sites.clone());
         entry.bracket = output.bracket.clone();
         entry.normalization = output.normalization.clone();
@@ -911,7 +915,6 @@ impl PrepSection {
 
 pub(crate) struct BookEntry {
     pub(crate) hash: u128,
-    pub(crate) punct_only: Option<Vec<SiteAddr>>,
     pub(crate) mixed_script: Option<Vec<script_mixing::MixedScriptSite>>,
     pub(crate) bracket: Option<bracket_balance::BookMatch>,
     pub(crate) normalization: Option<mixed_normalization::BookNormalization>,
@@ -922,7 +925,6 @@ impl BookEntry {
     fn new(hash: u128) -> Self {
         Self {
             hash,
-            punct_only: None,
             mixed_script: None,
             bracket: None,
             normalization: None,
@@ -931,8 +933,7 @@ impl BookEntry {
     }
 
     fn has_walk_lanes(&self, plan: &WalkPlan) -> bool {
-(!plan.punct_only || self.punct_only.is_some())
-            && (!plan.mixed_script || self.mixed_script.is_some())
+(!plan.mixed_script || self.mixed_script.is_some())
             && (!plan.bracket || self.bracket.is_some())
             && (!plan.normalization || self.normalization.is_some())
             && (!plan.collect_tokens || self.tokens.is_some())
@@ -971,12 +972,13 @@ mod tests {
     /// tell a reused entry from a rebuilt one.
     fn walk_with_lane() -> BookOut {
         BookOut {
-            punct_only: Some((
+            mixed_script: Some((
                 Default::default(),
-                vec![SiteAddr::pack(
-                    LocalKeyIdx::from_usize(0),
-                    Span { start: 0, end: 1 },
-                )],
+                vec![script_mixing::MixedScriptSite {
+                    local_idx: LocalKeyIdx::from_usize(0),
+                    sig: "Latn+Cyrl".to_string(),
+                    span: Span { start: 0, end: 1 },
+                }],
             )),
             ..Default::default()
         }
@@ -1006,7 +1008,7 @@ mod tests {
         let mut cache = AnalysisCache::new();
         cache.ensure_fingerprint(&Config::v1_defaults());
         cache.store_walk("GEN", 1, &walk_with_lane());
-        assert!(cache.prep.books.get("GEN").unwrap().punct_only.is_some());
+        assert!(cache.prep.books.get("GEN").unwrap().mixed_script.is_some());
 
         // A new book hash replaces the entry outright: no lane from the old
         // content may survive into it.
@@ -1014,7 +1016,7 @@ mod tests {
         let entry = cache.prep.books.get("GEN").unwrap();
         assert_eq!(entry.hash, 2);
         assert!(
-            entry.punct_only.is_none(),
+            entry.mixed_script.is_none(),
             "old walk lane must not survive a hash change"
         );
     }

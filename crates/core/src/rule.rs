@@ -23,7 +23,7 @@ use std::collections::BTreeMap;
 use rustc_hash::FxHashMap;
 
 use crate::config::Config;
-use crate::corpus::{BookGroup, Books, Corpus, KeyIdx, LocalKeyIdx, SiteAddr};
+use crate::corpus::{BookGroup, Books, Corpus, KeyIdx};
 use crate::diagnostics::{Finding, RuleId, Severity};
 use crate::signals;
 use crate::span::Span;
@@ -114,28 +114,11 @@ pub trait ProjectTokenRule: Sync {
 /// `reduce` (calibration/tests) produces a fully-owned `RuleSites<'static>`.
 pub enum RuleSites<'a> {
     Proportionality,
-    PunctOnlyToken(BTreeMap<Box<str>, Cow<'a, [SiteAddr]>>),
     MixedScript(BTreeMap<Box<str>, Cow<'a, [signals::script_mixing::MixedScriptSite]>>),
     /// `uni.rare-glyph` carries no sites: surviving candidates are ultra-rare, so
     /// its judge re-scans the supplied books (the `sites`-free path) rather than
     /// forward every letter occurrence (ADR 0044, ADR 0053).
     RareGlyph,
-}
-
-/// Pair each packed pure-location site (adjacency / repeated-run /
-/// punct-only) with its verse's text by direct indexing into the owning
-/// `BookGroup` — a site's `LocalKeyIdx` **is** its position in `group.texts`,
-/// so unlike the old `Sid`-sorted merge-walk this never needs to search.
-/// `f(local, text, span)`.
-pub(crate) fn for_each_site_text<'a>(
-    group: &BookGroup<'a>,
-    sites: &[SiteAddr],
-    mut f: impl FnMut(LocalKeyIdx, &'a str, Span),
-) {
-    for &addr in sites {
-        let (local, span) = addr.unpack();
-        f(local, group.text(local), span);
-    }
 }
 
 /// A rule that **observes** the corpus into `RuleStats`, then **judges** from
@@ -446,9 +429,6 @@ pub fn stateful_rules(config: &Config) -> Vec<Box<dyn StatefulRule>> {
         // (`punct.spacing-anomaly` and `punct.adjacency-anomaly` are typed
         // observation substrates now — see `SpacingSubstrate` and
         // `AdjacencySubstrate` — driven outside this registry.)
-        Box::new(signals::lexical::PunctOnlyToken {
-            cfg: config.punct_only_token,
-        }),
         Box::new(signals::script_mixing::MixedScriptInToken {
             cfg: config.mixed_script,
         }),

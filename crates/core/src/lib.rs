@@ -378,7 +378,6 @@ fn transition(
     // cache after the stateful judge loop.
     let active = substrate::ActiveSubstrates::from_config(config);
     let plan = stream::WalkPlan {
-        punct_only: config.is_enabled(RuleId::PunctOnlyToken),
         mixed_script: config.is_enabled(RuleId::MixedScriptInToken),
         rare_glyph: config.is_enabled(RuleId::RareGlyph),
         proportionality: config.is_enabled(RuleId::ProjectLengthRatio),
@@ -683,32 +682,6 @@ fn transition(
     // ever count on walked books, so a clean book contributes nothing to them.
     // A book outside the `counted` scope contributes sites only, so the judge
     // phase stays site-driven for every supplied book (ADR 0044).
-    let mut punct_only_fresh = plan.punct_only.then(|| {
-        let mut pb = BTreeMap::new();
-        let mut st: BTreeMap<Box<str>, Cow<'_, [corpus::SiteAddr]>> = BTreeMap::new();
-        for (group, slot) in books.iter().zip(slots.iter_mut()) {
-            match slot {
-                BookProducts::Walked(o) => {
-                    if let Some((bc, s)) = o.punct_only.take() {
-                        if o.counted {
-                            pb.insert(Box::from(group.slug), bc);
-                        }
-                        st.insert(Box::from(group.slug), Cow::Owned(s));
-                    }
-                }
-                BookProducts::Clean(e) => {
-                    let e: &cache::BookEntry = e;
-                    if let Some(s) = e.punct_only.as_ref() {
-                        st.insert(Box::from(group.slug), Cow::Borrowed(s.as_slice()));
-                    }
-                }
-            }
-        }
-        (
-            RuleStats::PunctOnlyToken(signals::lexical::PunctOnlyTokenStats { per_book: pb }),
-            rule::RuleSites::PunctOnlyToken(st),
-        )
-    });
     let mut mixed_script_fresh = plan.mixed_script.then(|| {
         let mut pb = BTreeMap::new();
         let mut st: BTreeMap<Box<str>, Cow<'_, [signals::script_mixing::MixedScriptSite]>> =
@@ -888,11 +861,6 @@ fn transition(
         // clone of the stats (the wire shape keeps one entry per rule id, as
         // before) and judges from the same site list.
         let (fresh, sites_ref): (RuleStats, &rule::RuleSites<'_>) = match id {
-            RuleId::PunctOnlyToken => {
-                let (st, ss) = punct_only_fresh.take().expect("listener ran");
-                sites_slot = ss;
-                (st, &sites_slot)
-            }
             RuleId::MixedScriptInToken => {
                 let (st, ss) = mixed_script_fresh.take().expect("listener ran");
                 sites_slot = ss;
@@ -949,6 +917,13 @@ fn transition(
         &mut substrates.repeated_run,
         target,
         &config.repeated_character_run,
+        &mut out,
+    );
+    signals::lexical::drive_punct_only(
+        active.punct_only,
+        &mut substrates.punct_only,
+        target,
+        &config.punct_only_token,
         &mut out,
     );
     signals::lexical::drive_duplicate_word(

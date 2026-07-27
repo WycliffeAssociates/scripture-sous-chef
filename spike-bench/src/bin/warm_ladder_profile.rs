@@ -203,7 +203,8 @@ fn main() {
         let mut red = Vec::with_capacity(trials);
         let mut jud = Vec::with_capacity(trials);
         let mut findings = 0usize;
-        let mut drives: Vec<[[std::time::Duration; 6]; 6]> = Vec::with_capacity(trials);
+        let mut drives: Vec<[[std::time::Duration; 6]; ssc_core::bench::SUBSTRATE_NAMES.len()]> =
+            Vec::with_capacity(trials);
         for _ in 0..trials {
             rot = (rot + 1) % blocks.len();
             let block = blocks[rot].clone();

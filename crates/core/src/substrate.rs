@@ -56,6 +56,8 @@ pub(crate) enum SubstrateId {
     Adjacency,
     /// `lex.repeated-character-run`'s per-cluster / per-word recurrence counts.
     RepeatedRun,
+    /// `lex.punct-only-token`'s per-pattern candidate counts.
+    PunctOnly,
     /// `struct.duplicate-word`'s adjacent-pair sites.
     DuplicateWord,
     /// The shared casing model: per-word case tables + lowercase flag
@@ -75,6 +77,7 @@ impl SubstrateId {
         SubstrateId::Spacing,
         SubstrateId::Adjacency,
         SubstrateId::RepeatedRun,
+        SubstrateId::PunctOnly,
         SubstrateId::DuplicateWord,
         SubstrateId::Casing,
         SubstrateId::MixedCase,
@@ -149,12 +152,15 @@ pub(crate) enum DrivePhase {
     Materialize,
 }
 
-/// Row labels for [`drive_phase_table`] — `SubstrateId::ALL` order.
+/// Row labels for [`drive_phase_table`] — `SubstrateId::ALL` order. Sized from
+/// `SubstrateId::ALL` so a new substrate cannot silently fall off the table's
+/// bottom row; `substrate_names_cover_every_id` pins the pairing.
 #[cfg(feature = "bench-probes")]
-pub const SUBSTRATE_NAMES: [&str; 6] = [
+pub const SUBSTRATE_NAMES: [&str; SubstrateId::ALL.len()] = [
     "spacing",
     "adjacency",
     "repeated-run",
+    "punct-only",
     "duplicate-word",
     "casing",
     "mixed-case",
@@ -165,12 +171,12 @@ pub const SUBSTRATE_NAMES: [&str; 6] = [
 pub const DRIVE_PHASE_NAMES: [&str; 6] = ["plan", "map", "reduce", "keys", "judge", "materialize"];
 
 #[cfg(feature = "bench-probes")]
-type DrivePhaseTable = [[std::time::Duration; 6]; 6];
+type DrivePhaseTable = [[std::time::Duration; 6]; SubstrateId::ALL.len()];
 
 #[cfg(feature = "bench-probes")]
 thread_local! {
     static DRIVE_PHASES: std::cell::Cell<DrivePhaseTable> =
-        const { std::cell::Cell::new([[std::time::Duration::ZERO; 6]; 6]) };
+        const { std::cell::Cell::new([[std::time::Duration::ZERO; 6]; SubstrateId::ALL.len()]) };
 }
 
 /// Zero the drive-phase table. `transition` calls this once per analyze so a
@@ -178,7 +184,7 @@ thread_local! {
 /// row from the previous one.
 #[cfg(feature = "bench-probes")]
 pub(crate) fn reset_drive_phases() {
-    DRIVE_PHASES.with(|t| t.set([[std::time::Duration::ZERO; 6]; 6]));
+    DRIVE_PHASES.with(|t| t.set([[std::time::Duration::ZERO; 6]; SubstrateId::ALL.len()]));
 }
 
 /// The most recent analyze's per-substrate × per-phase split on this thread.
@@ -913,6 +919,7 @@ pub(crate) struct ActiveSubstrates {
     pub(crate) spacing: bool,
     pub(crate) adjacency: bool,
     pub(crate) repeated_run: bool,
+    pub(crate) punct_only: bool,
     pub(crate) duplicate_word: bool,
     pub(crate) casing: bool,
     pub(crate) mixed_case: bool,
@@ -927,6 +934,7 @@ impl ActiveSubstrates {
             spacing: any(spacing_consumers()),
             adjacency: any(adjacency_consumers()),
             repeated_run: any(repeated_run_consumers()),
+            punct_only: any(punct_only_consumers()),
             duplicate_word: any(duplicate_word_consumers()),
             casing: any(casing_consumers()),
             mixed_case: any(mixed_case_consumers()),
@@ -939,6 +947,7 @@ impl ActiveSubstrates {
             SubstrateId::Spacing => self.spacing,
             SubstrateId::Adjacency => self.adjacency,
             SubstrateId::RepeatedRun => self.repeated_run,
+            SubstrateId::PunctOnly => self.punct_only,
             SubstrateId::DuplicateWord => self.duplicate_word,
             SubstrateId::Casing => self.casing,
             SubstrateId::MixedCase => self.mixed_case,
@@ -961,6 +970,11 @@ pub(crate) fn adjacency_consumers() -> &'static [RuleId] {
 /// The closed registry: the repeated-run substrate's sole consumer.
 pub(crate) fn repeated_run_consumers() -> &'static [RuleId] {
     &[RuleId::RepeatedCharacterRun]
+}
+
+/// The closed registry: the punct-only substrate's sole consumer.
+pub(crate) fn punct_only_consumers() -> &'static [RuleId] {
+    &[RuleId::PunctOnlyToken]
 }
 
 /// The closed registry: the duplicate-word substrate's sole consumer.
@@ -990,6 +1004,7 @@ pub(crate) fn consumers_of(id: SubstrateId) -> &'static [RuleId] {
         SubstrateId::Spacing => spacing_consumers(),
         SubstrateId::Adjacency => adjacency_consumers(),
         SubstrateId::RepeatedRun => repeated_run_consumers(),
+        SubstrateId::PunctOnly => punct_only_consumers(),
         SubstrateId::DuplicateWord => duplicate_word_consumers(),
         SubstrateId::Casing => casing_consumers(),
         SubstrateId::MixedCase => mixed_case_consumers(),
@@ -1015,6 +1030,10 @@ mod tests {
         assert_eq!(
             <crate::signals::lexical::RepeatedRunSubstrate as ObservationSubstrate>::ID,
             SubstrateId::RepeatedRun
+        );
+        assert_eq!(
+            <crate::signals::lexical::PunctOnlySubstrate as ObservationSubstrate>::ID,
+            SubstrateId::PunctOnly
         );
         assert_eq!(
             <crate::signals::lexical::DuplicateWordSubstrate as ObservationSubstrate>::ID,
@@ -1045,6 +1064,7 @@ mod tests {
                 spacing: true,
                 adjacency: true,
                 repeated_run: true,
+                punct_only: true,
                 duplicate_word: true,
                 casing: true,
                 mixed_case: true,
@@ -1052,6 +1072,18 @@ mod tests {
             assert!(all_on.is_active(id), "{id:?} has no active-set field");
             assert!(!ActiveSubstrates::default().is_active(id));
         }
+    }
+
+    /// The drive-probe row labels pair with `SubstrateId::ALL` position for
+    /// position — the table is indexed by `SubstrateId as usize`, so a mislabeled
+    /// row would attribute one substrate's cost to another.
+    #[cfg(feature = "bench-probes")]
+    #[test]
+    fn substrate_names_cover_every_id() {
+        for (i, &id) in SubstrateId::ALL.iter().enumerate() {
+            assert_eq!(i, id as usize, "{id:?} is not at its own ALL position");
+        }
+        assert_eq!(SUBSTRATE_NAMES.len(), SubstrateId::ALL.len());
     }
 
     /// Every consumer maps to exactly one substrate — no rule consumes two
