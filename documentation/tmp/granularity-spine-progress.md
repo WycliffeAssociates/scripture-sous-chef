@@ -4942,3 +4942,359 @@ re-confirmed at `b7fd67f` in Entry 31): findings `a10cf5a4c17492bf9771d77ea4daac
 (default) / `ddedee96571b2e8bff082ec45bdaa7723cd188fc911f21e1d633b19f6e65b986` (all);
 transcript `ab9b0f966a3b310dc0b37f5832a7f6f1c0dcd2618205f3343519f09b3848090b`
 (default) / `c8a1be69a9b88f13d299d06fd916a370395efe9f9261e1d26c25d645912128c9` (all).
+
+### Per-step commits
+
+| step | commit | what landed |
+| --- | --- | --- |
+| pin | `0d9717e` | The WA + `small` base pin above, recorded before any edit. |
+| 0 | `ca98b25` | `update_book` borrows its chapter tokens; ownership only at the persistent-cache rebuild. |
+| 1 | `78abb19` | `PunctOnlySubstrate` (Phase E row 4); the whole old punct-only path deleted. |
+| 2 | `3fefc77` | `MixedScriptSubstrate` (row 5); `RuleSites` loses its lifetime; the anchor lane retires. |
+| 3 | `d8ef93e` | `GlyphSubstrate` (row 6); `CasingBoundary` → shared `PositionBoundary`; the walk's fold lane retires. |
+| 4 | `0404e41` | `ProportionalitySubstrate` (row 7); `ReferenceStamp` + `PairedView`; the last `StatefulRule`. |
+| 4-fix | `4a567f0` | The full-fleet bookend catch: rare-glyph's attribution key is lowered unconditionally. |
+| 5 | `da0e157` | `NormalizationSubstrate` (row 8); the corpus-wide compact outcome. |
+| 6 | `f3bc0eb` | `BracketSubstrate` (row 9); the variable opener stack. **Phase E complete.** |
+
+Every commit re-dumped **all eight** WA+`small` dumps and diffed **byte-identical**
+to the pin. Test counts at HEAD: core **522** serial / **523** `--features
+parallel`, galley 25, ssc-wire 25, ssc-wasm 14, xtask 1, doc 3; node 19. Green
+serial, `--features parallel`, and `--features parallel` under
+`RAYON_NUM_THREADS=1`. wasm32 checks clean for `ssc-core` and `ssc-wasm`. clippy:
+`ssc-core` lib at **1** warning (down from the documented 2 — the second lived in
+deleted code), workspace `--all-targets` at 11, every one pre-existing and none in
+migrated code. `git diff --check` clean. No `cargo fmt` sweep.
+
+---
+
+## Item 0 — the borrowed-token `update_book` (its own §13 gate)
+
+`update_book` took `&[(Box<str>, ObservationInputStamp)]`; the planning pass built
+that from the corpus layout, which already owns every chapter token and outlives
+the call. One heap copy per chapter per substrate per analyze — ~1,189 × 6 for a
+resident Bible — allocated only to be dropped at the end of the drive. It now
+takes `&str`, and ownership is taken at the ONE place the value must outlive the
+call: the `chapters_out`/`by_token` construction that rebuilds a persistent cache
+entry. Both no-op paths (the whole-book-unchanged early-out and the nothing-moved
+reassembly) skip that construction, so an unchanged book allocates nothing.
+
+§13 protocol: same machine/session/build, alternating BASE/CAND one batch per
+invocation, five batches per cell, 200 warm iterations, median of the five batch
+medians. Milliseconds.
+
+| cell | BASE `b7fd67f` | CAND | Δ | Δ% | CAND faster | judge B→C |
+| --- | ---: | ---: | ---: | ---: | --- | --- |
+| 3JN default | 0.806 | **0.754** | −0.052 | −6.4% | 5/5 | 0.214 → 0.169 |
+| MAT default | 4.817 | **4.763** | −0.054 | −1.1% | 4/5 | 0.321 → 0.274 |
+| 3JN all | 30.070 | 30.123 | +0.053 | +0.2% | 0/5 | — |
+
+Nothing regresses by the §13 rule (>5% **and** >0.25 ms in ≥3/5). The `all` cell is
+~92% casing, where a 0.05 ms planning share is invisible. The witness
+`the_cache_entry_owns_its_chapter_token_though_the_driver_borrows_it` drives a book
+from token storage dropped immediately afterwards and then asks the cache the
+planning pass's own reuse question — which a borrowed token in the entry could not
+answer.
+
+---
+
+## THE §11 LEDGER: all six rows, as finalized
+
+| field | `lex.punct-only-token` | `uni.mixed-script-in-token` | `uni.rare-glyph` |
+| --- | --- | --- | --- |
+| **substrate / consumers** | `PunctOnlySubstrate`; sole consumer of the same name | `MixedScriptSubstrate`; sole consumer | `GlyphSubstrate`; sole consumer |
+| **shared prep** | none — maps its own chapter tape | none — tokenizes its own chapter | none — its own census + tokens; shares casing's pure position machine, not its evidence |
+| **key** | the pattern (chunk minus riding quotes/closers) | the script signature (`Cyrl+Latn`) | a candidate letter scalar |
+| **boundary state** | `()` — **proven from the listener** | `()` — **proven from the listener** | `casing::PositionBoundary` — **required**, the shared `(pending terminal, book_initial)` carry |
+| **chapter observation** | lexical units + per-pattern counts + `SiteAddr`s in scan order, behind one `Arc` | per-signature + per-script counts + `SiteAddr`s, behind one `Arc` | chapter census + word rows (`tokens`, last-seen `titlecase`, `forced: Option<bool>`) + eligible surfaces + `GapEffect` lead + `tail` pending |
+| **reduced chapter** | identity | identity | identity + the one resolved `forced` bit |
+| **book contribution** | lexical units + ordered pattern table + reduced chapters | two ordered count tables + reduced chapters | pruned inventory / `(glyph, word)` / word tables + reduced chapters |
+| **corpus stats** | per-book addends + corpus lexical units and pattern counts | per-book addends + per-signature `(k, books)` + per-script token counts | inventory + maintained `letter_scalars`/`hapax_letter_types` + `(glyph, word)` + word tokens + per-book word shapes |
+| **stats-delta** | deliberately empty — corpus-global `lexical_units` denominator | **exact**: signatures whose own `(k, books)` moved ∪ those naming a moved script ∪ every signature when the book count moved | deliberately empty — the closure gate is one corpus-global ratio deciding every key |
+| **retain vs rederive** | default case: bare 6-byte `SiteAddr`, key re-derived by char filter | default case, and it pays best here — the retired site carried a heap `String` signature per mixed token | site-FREE by design (ADR 0044/0053); materialization re-scans, and the drive skips it when nothing survives |
+| **retained bytes** (ulb `all`, paired) | 0.38 MiB | 0.43 MiB | **16.37 MiB** — see the RAM watch |
+| **fixed cost** (3JN, `--drive-phases`) | **0.037 ms** | **0.040 ms** | **~0.27 ms** in `all`; 0 in default (ships off) |
+| **verdict** | **migrate** | **migrate** | **migrate** |
+
+| field | `prop.length-ratio` | `uni.mixed-normalization` | `punct.bracket-balance` |
+| --- | --- | --- | --- |
+| **substrate / consumers** | `ProportionalitySubstrate`; sole consumer — the only `TargetAndReferenceSilentWhenAbsent` rule | `NormalizationSubstrate`; sole consumer | `BracketSubstrate`; sole consumer |
+| **shared prep** | none; **declares a REFERENCE input** — `PairedView` (own keys + the paired reference chapter) | none — its own tape + graphemes | none — its own chapter tape |
+| **key** | book slug (one verdict per book, materialized per verse) | `()` — one key for the whole corpus | bracket family (its open glyph) |
+| **boundary state** | `()` — **proven from a `Corpus` invariant**: a key's chapter token is parsed from the key and a run may not reopen, so the duplicate-key ordinal is chapter-local | `()` — the first-deviant summary is a MINIMUM, which folds associatively | **the unmatched-opener stack** — variable size, **uncapped** (ADR 0037) |
+| **chapter observation** | the chapter's paired ratios (`local`, `ratio`, `len`) behind one `Arc` | distinct raw grapheme forms with count + first chapter-local site | the chapter's delimiter events + its verse count |
+| **reduced chapter** | identity | identity | + resolutions (closer order), orphan closers, and the leaving stack |
+| **book contribution** | pooled ratios + reduced chapters | `((NFC key, raw), count)` addend + reduced chapters | the folded `BookMatch` (book-local events/matched/orphans/pairs) + per-family addend + reduced chapters |
+| **corpus stats** | per-book ratios + per-book knob-free `(count, med, mad)` + the pooled one | per-book addends + corpus `(NFC key, raw)` counts | per-book addends + per-family `events`/`matched_events`/**distance histogram** |
+| **stats-delta** | **exact and useful**: that book when its own spread moved; EVERY book when the pooled spread moved; nothing otherwise | **exact**, trivially — the one key when any count moved | **exact and narrow** — only the families whose counts moved |
+| **retain vs rederive** | the ratio is retained, the one row where that is forced: it is a function of BOTH corpora | first-sites retained chapter-locally; the ORDER is resolved at materialization, where the layout is in hand | 24-byte `PendingOpen` per carried opener; everything else read from the owner's cached observation |
+| **retained bytes** (ulb `all`, paired) | 0.37 MiB | 0.41 MiB | 0.72 MiB |
+| **fixed cost** (3JN, `--drive-phases`) | **0.053 ms** | **0.048 ms** (in `all`; 0 in default) | **0.040 ms** |
+| **verdict** | **migrate** | **migrate** | **migrate** |
+
+### The bracket stack-depth distribution, measured on the full fleet
+
+`stack_depth_probe` over all 1,504 corpora (via `spike-bench/field_extents`), the
+maximum unmatched-opener stack carried across any chapter seam, per corpus:
+
+| max seam depth | corpora | | max seam depth | corpora |
+| ---: | ---: | --- | ---: | ---: |
+| **0** | **982** | | 6 | 1 |
+| 1 | 390 | | 9, 10, 12, 14, 16 | 1 each |
+| 2 | 87 | | 25, 27 | 1 each |
+| 3 | 18 | | **71** | 1 (`eng-asv`) |
+| 4 | 12 | | | |
+| 5 | 6 | | | |
+
+Two thirds of the fleet carry an **empty** stack at every seam. The worst corpus's
+total across every seam is 6,488 pending openers — 152 KiB at 24 bytes each for a
+whole Bible. Entry 30 named bracket as the row likeliest to exceed the ~0.05 ms
+floor; it does not (0.040 ms), and this distribution is why. Clone is a refcount
+bump; equality is at most 71 three-field compares; the whole drive's `reduce`
+phase — every clone and every equality over 66 books and 1,189 chapters — is
+0.009 ms.
+
+### Proportionality's reference-pairing design
+
+Pairing is by `(slug, chapter token)`, and the soundness argument is a `Corpus`
+invariant rather than a convention: a key's chapter token is **parsed from the
+key**, and a chapter run may not reopen, so every occurrence of a given key string
+lies inside one chapter run — on both sides. A target chapter's reference evidence
+is therefore exactly the reference chapter carrying the same token in the same
+book: never wider, and never the cross-slug read plan §17 makes a stop clause.
+
+`ObservationInputStamp::reference` has **three** states, not two —
+`NotDeclared` / `Absent` / `Present(hash)` — so a reference being removed
+invalidates this substrate's observations while leaving every target-only
+substrate's stamps untouched, and a reference *appearing* where there was none is
+also a distinct value. `ChapterView` grows an `Option<PairedView>` handed only to a
+declaring substrate, so a target-only mapper cannot read reference text by
+accident. `re_reducing_a_book_with_no_usable_ratios_clears_stale_findings` is the
+witness: the target text is byte-identical (nothing in `chapter_hash` moves) and
+the findings must still vanish, then return.
+
+---
+
+## §13 ladder — three lanes, WA-en-ulb, BASE `b7fd67f` vs FINAL `f3bc0eb`
+
+Protocol as above; five batches per cell, 200 warm iterations, median of batch
+medians. Load 4.9 → 7.4 (1-min) across the run. Entry 27's three lanes:
+**forced-rebuild** (`--distinct-variants --variants 4`), **stable-aggregate**
+(default variants), **undo-recurrence** (`--distinct-variants --variants 2`).
+
+| lane | cell | BASE | FINAL | Δ | Δ% | FINAL faster | map B→F |
+| --- | --- | ---: | ---: | ---: | ---: | --- | --- |
+| forced | 3JN default | 0.831 | **0.538** | **−0.293** | **−35.3%** | 5/5 | 0.084 → 0.034 |
+| forced | 3JN all | 30.513 | 30.719 | +0.206 | +0.7% | 0/5 | 0.338 → 0.055 |
+| forced | MAT default | 4.832 | **0.807** | **−4.025** | **−83.3%** | 5/5 | 3.803 → 0.042 |
+| forced | MAT all | 40.521 | **36.255** | **−4.266** | **−10.5%** | 5/5 | 9.578 → 0.061 |
+| forced | PSA default | 7.915 | **0.923** | **−6.992** | **−88.3%** | 5/5 | 6.721 → 0.032 |
+| stable | 3JN default | 0.835 | **0.554** | −0.281 | −33.7% | 5/5 | 0.085 → 0.034 |
+| undo | 3JN default | 0.827 | **0.530** | −0.297 | −35.9% | 5/5 | 0.084 → 0.033 |
+
+**Nothing regresses.** 3JN/`all` is +0.206 ms, which fails BOTH halves of §13's
+regression test (it is neither >5% nor >0.25 ms); that config is ~92% casing, whose
+`keys`+`materialize` is WP8's, not this packet's. Every other cell improves, and
+the three lanes agree cell for cell on 3JN/default — none of the six new
+substrates carries a content-keyed memo for the forced/stable/undo distinction to
+bite on.
+
+**The headline is the `map` column.** It collapses on every cell, most starkly off
+the larger books: the fused walk no longer re-walks the whole edited book for
+anything, because nothing is left in it. PSA/default falls 7.92 → 0.92 ms and
+MAT/default 4.83 → 0.81 ms — the granularity spine's actual purpose, arriving.
+
+**The floor.** Plan §13's named target for 3JN/default is ≤ 2 ms; FINAL is
+**0.538 ms**, 1.46 ms of headroom, and now BELOW the 0.66 ms pre-WP7b historical
+figure rather than merely inside the contract.
+
+### The per-row fixed-cost table vs Entry 30's ~0.05 ms projection
+
+| row | measured fixed cost | vs projection |
+| --- | ---: | --- |
+| punct-only | 0.037 ms | under |
+| mixed-script | 0.040 ms | under |
+| rare-glyph | ~0.27 ms (`all` only; 0 in default) | over — see below |
+| proportionality | 0.053 ms | on |
+| normalization | 0.048 ms (`all` only; 0 in default) | on |
+| bracket | 0.040 ms | under — **not** the projected exceeder |
+| **four defaults-on rows** | **0.170 ms** | Entry 30 projected +0.20 ms |
+
+Entry 30's projection was sound: the four `v1_defaults` rows add 0.170 ms of fixed
+cost against a +0.20 ms forecast. Two corrections to its caveats: bracket was
+named the likeliest exceeder and is the *cheapest* of the six, while
+**rare-glyph** is the one that exceeds — its `fold_book` re-does the whole book's
+glyph attribution (plan §6.2's explicitly-accepted "fold all chapters in that
+book"), 4.5 ms on MAT. That is not a regression — MAT/`all` is 4.3 ms faster
+overall, because the same work used to run in the fused walk over the whole edited
+book — and rare-glyph ships off. It is the row a Fenwick/tree fold would be for,
+if profiles ever ask.
+
+---
+
+## RAM watch — dhat, WA-en-ulb, `curr_bytes` after the cold seed
+
+| lane (paired `all` minus `all-no-*`) | retained |
+| --- | ---: |
+| punct-only | 0.38 MiB |
+| mixed-script | 0.43 MiB |
+| **rare-glyph** | **16.37 MiB** |
+| proportionality | 0.37 MiB |
+| normalization | 0.41 MiB |
+| bracket | 0.72 MiB |
+| **whole `all` config** | **74.20 MiB** (Entry 28: 62.41 → **+11.79**) |
+| **whole `default` config** | **8.93 MiB** |
+
+**The RAM watch fires, and it fires on ONE row.** The six new lanes sum to 18.68
+MiB while the whole `all` config grew only 11.79 — the difference is the retired
+prep-cache lanes (per-book bracket matches, normalization form tables, mixed-script
+sites, punct-only sites, and the token cache) coming out. Of the 18.68, rare-glyph
+is **16.37**: its per-chapter census inventory, word rows and eligible surfaces,
+scattered across 1,189 chapters where one per-book table used to sit. Structurally
+the same cause Entry 26 named for mixed-case and Entry 28 for adjacency, two orders
+of magnitude larger because the retained elements are strings.
+
+Three things that bound the concern, stated rather than assumed: the rule ships
+**default-off**, so the default config's resident cost is 8.93 MiB; the growth is
+per-chapter scatter of data the old path recomputed each analyze, so it is a
+deliberate trade, not a leak; and it is the obvious first target if the owner wants
+the number down (the census inventory is a dense per-chapter `(char, u32)` table
+that could be a page-indexed array, and the surfaces could be interned).
+
+---
+
+## Phase E is COMPLETE, and the batch-lane census is EMPTY
+
+Both batch registries now return `Vec::new()`, and `grep` finds **zero**
+`impl ProjectRule for` and **zero** `impl StatefulRule for` in the crate. Every one
+of `RuleId::ALL`'s 26 members is accounted for:
+
+- **12 rules** on the direct per-verse lane, chapter-local partitions since Phase C
+  (excess whitespace, tab, controls, zero-width misuse, empty verse, invalid
+  codepoint, replacement run, combining mark, mixed numerals, redundant ZWSP,
+  source marker, merge conflict) — 12 `PerVerseRule` impls, matching exactly.
+- **14 rules** across **12 typed observation substrates**: spacing, adjacency,
+  repeated-run, punct-only, mixed-script, glyph, proportionality, normalization,
+  bracket, duplicate-word, mixed-case (one consumer each) and casing (two).
+
+**No rule remains in the batch lane, and none was left there by default.** Plan §8
+Phase F item 1's "not attempted is not a final classification" has nothing to
+adjudicate: there is no row whose migration was declined, deferred, or left
+unexamined. The lane itself is retained — plan §9 makes it permanent, a labs rule
+starts there, and a rule whose verdict cannot be incrementally maintained ends
+there — so `ProjectRule`, `StatefulRule`, `RuleStats` (now an uninhabited enum),
+`RuleSites` and the assembly in `transition` all stay, the last under an `#[expect]`
+whose reason says the first batch rule to land makes the expectation unfulfilled
+and forces its own arm to be written.
+
+### FULL-FLEET bookends (remote quiet-box lane)
+
+Run on the remote Linux box via `scripts/bench-remote.sh` (owner-authorized this
+session), diffed **remote-vs-remote** against the box's own base pin
+`wp5a-4397068`, whose four shasums are byte-identical to the standing Mac pins —
+so this lane is not a cross-platform comparison. WA+`small` per-commit gates,
+the ladder and every dhat figure stayed local.
+
+| tag | when | result |
+| --- | --- | --- |
+| `wp7c-prop-0404e41` | after row 4 (the owed source-dependent bookend) | **findings.all DIFF** — 2 added rows, see below |
+| `wp7c-prop-fix` | after `4a567f0` | all four OK |
+| `wp7c-norm` | after row 5 | all four OK |
+| `wp7c-final-f3bc0eb` | packet end | all four OK |
+
+Final hashes, all matching the standing contract: findings
+`a10cf5a4c17492bf9771d77ea4daace337e1042d66b83dcea8042eceb6748e29` (default) /
+`ddedee96571b2e8bff082ec45bdaa7723cd188fc911f21e1d633b19f6e65b986` (all);
+transcript `ab9b0f966a3b310dc0b37f5832a7f6f1c0dcd2618205f3343519f09b3848090b`
+(default) / `c8a1be69a9b88f13d299d06fd916a370395efe9f9261e1d26c25d645912128c9`
+(all).
+
+**THE BOOKEND EARNED ITS KEEP.** Row 3's rare-glyph migration passed all eight
+WA+`small` dumps byte-identically and was wrong at fleet scope: two added rows,
+Brenton LXX LEV 19:6 and LXX EXO 6:28, both the glyph `ᾟ` (U+1F9F). The cause was a
+"consistency" introduced without evidence — the retired listener keyed its
+glyph→word attribution by an UNCONDITIONAL `to_lowercase()` while the word table
+keys by the conditional fold, and I made both conditional. The two differ for
+exactly one class of word: one whose only cased letters are general-category
+**Lt**, which `is_uppercase` does not see but `to_lowercase` still lowers. `ᾟ`
+stands alone as a one-letter word; its lowercase type `ᾗ` has 79 tokens in Brenton
+(48 in LXX), so lowering the key pools them and the lexical-concentration discount
+correctly reads the capital as an orthographic habit. Fixed in `4a567f0` with a
+synthetic regression test that was checked to FAIL against the unfixed key.
+
+**The lesson, for the record:** the WA+`small` gate is a fast inner loop, not a
+substitute for the fleet on a row whose verdict turns on Unicode case-class
+distinctions. Because the remote lane costs ~2 minutes, rows 5 and 6 were
+bookended on the full fleet too rather than only at packet end.
+
+---
+
+## Deviations / notes for the owner (clearly marked)
+
+1. **Rare-glyph's boundary state is NOT `()` — the ledger's hedge resolved to
+   required.** The brief flagged a possible stop clause (rare-glyph reads casing's
+   `PosClass`). It is not one: what it reads are `casing::advance_gap`,
+   `casing::pos_of` and `casing::Pending` — pure functions over text that define
+   "forced position" in one place (ADR 0053 already said so). No rule verdict, no
+   substrate cache, no enabled bit; nothing in plan §5.3 or §16 is touched. But it
+   does mean the substrate carries `casing::PositionBoundary` (renamed from
+   `CasingBoundary`, since two substrates now share it), making this the packet's
+   second convergence-replaying substrate. Its witness test asserts the two
+   verdicts DIFFER as well as matching cold, so it cannot rot into a tautology.
+2. **`ObservationInputStamp` and `ChapterView` grew fields.** §5.2 describes the
+   reference half of the stamp, so this is the plan arriving rather than a
+   deviation — but it changed 22 view constructions (now
+   `ChapterView::target(..)`) and 12 stamp literals, and it is the packet's one
+   change to a shared contract.
+3. **`WalkPlan::collect_tokens` is now `false`, and that alone was worth 0.4 ms.**
+   The shared token cache existed for batch judges; every rule that read it
+   tokenizes inside its own chapter map. It was being assembled over the whole
+   resident corpus on every analyze for a lane with no rules in it. Found while
+   chasing an unexplained 0.4 ms drop between two rows, confirmed by re-measuring
+   the earlier commit in a clean worktree — the stale harness binary, not the new
+   row, was the difference. Recorded because the wrong attribution was tempting.
+4. **The `retallied` probe is gone.** It measured "books that entered the counting
+   scope", and there is no counting scope: the fused walk has no counting listener.
+   `walked` (books whose walk actually ran) replaces it, `walk_misses` covers reuse,
+   and the per-substrate probes cover per-rule work. Three galley assertions and two
+   core ones were repointed; one core test lost a probe assertion it no longer had a
+   subject for and was renamed to what it still proves.
+5. **The fused walk's `folds` lane is deleted**, with `FloorNeeds::folds` and the
+   floor bench's `tape_tokens_folds` tier. Rare-glyph was its last consumer. Entry
+   28 flagged the grapheme lane's emptiness for the Phase F audit; the same
+   collapse has now taken the fold lane, and `walk_book` itself is down to the
+   token-cache lane. `drive_book`, `VerseInputs` and `Needs` all STAY — the census
+   and the spacing calibration path drive them, and the floor bench measures
+   through them.
+6. **`RuleStats` is an uninhabited enum and both rule registries are empty.** Kept,
+   documented, and guarded by `#[expect]` rather than deleted, because plan §9 makes
+   the batch lane permanent. `Stats` remains a public type carrying an
+   always-empty map; retiring it is a public-surface change across galley and wasm,
+   which is Phase F's, not this packet's.
+7. **The census keeps its own whole-book bracket matcher.** It walks each book once
+   for many lanes, so it cannot use per-chapter observations. Narrowed to the
+   `BookDelims { events, matched }` it actually reads, and
+   `census_matching_agrees_with_the_substrate_fold` pins it against the substrate's
+   chapter-wise reduction event for event so the two cannot drift.
+8. **Harness additions committed** (measurement instruments, not engine):
+   `bracket_balance::stack_depth_probe` + its `field_extents` half (which reports
+   the fleet depth histogram), six new `dhat_probe` paired arms
+   (`all-no-punct-only`, `-mixed-script`, `-glyph`, `-proportionality`,
+   `-normalization`, `-bracket`), and `SUBSTRATE_NAMES`/the drive-phase table sized
+   from `SubstrateId::ALL` with `substrate_names_cover_every_id` pinning row order.
+9. **`pkg:` was NOT regenerated.** No public TS surface changed this packet (the
+   `FindingArgs` union, the wire schema and the code tables are all untouched — the
+   oracle's args column is byte-identical), so republishing the wasm packages would
+   only churn `*_bg.wasm`. Phase F's step 5 regenerates them anyway.
+
+### Stop-safe next step
+
+The tree is clean and every commit is independently gated. **Phase E is complete.**
+Owed, in order: **(a)** the owner's call on rare-glyph's 16.4 MiB retained
+footprint — accept (it ships off) or take the dense-census/interned-surfaces fix;
+**(b)** WP8, delta consumption, which the ladder now scopes precisely — casing's
+`keys` (10.7 ms) + `materialize` (17.0 ms) and spacing's `materialize` (0.95 ms)
+are ~92% of the `all` config and the only cells this packet did not move; **(c)**
+Phase F — the ledger is already complete and the batch census empty, so what
+remains there is the ADRs, the `Stats`/`RuleStats` public-surface retirement, the
+`pkg:` regeneration, and moving the plan to `completed/`.

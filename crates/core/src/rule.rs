@@ -409,9 +409,13 @@ pub(crate) fn per_verse_rules() -> Vec<Box<dyn PerVerseRule>> {
 /// Every project-scoped rule wired in by default. Knob-bearing rules are
 /// constructed from `config`'s typed sub-configs here, once per analyze
 /// call — `ProjectRule::check` itself never sees the `Config`.
+///
+/// **It is currently empty**, for the same reason `stateful_rules` is: both of its
+/// members — `punct.bracket-balance` and `uni.mixed-normalization` — are typed
+/// observation substrates now. The registry and its trait remain because the batch
+/// lane is permanent (plan §9).
 pub fn project_rules(_config: &Config) -> Vec<Box<dyn ProjectRule>> {
-    vec![
-    ]
+    Vec::new()
 }
 
 /// Every stateful (observe-then-judge) rule wired in (ADR 0017). Like the project
