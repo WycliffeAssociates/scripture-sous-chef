@@ -4111,3 +4111,43 @@ proven from their listeners before anything is written; a first read of
 `AdjacencyAcc::verse` and `RepeatedRunAcc::verse` shows neither holds any
 cross-verse field, which would make both `()`, but that is a claim to prove in
 the migration commit, not to carry over from here.
+
+---
+
+## Entry 27 — External review of db7858a..a92b64f: dispositions
+
+- **Date:** 2026-07-27 (review received 07-26). No landed output-corruption
+  found; seam doctrine clean; ownership convergence sound. Five findings, all
+  accepted:
+- **P1 (WP7b design blocker, mark-table lifetime):** a per-corpus mark-table id
+  measured from the fleet's *simultaneous live* maximum has no valid bound for
+  an append-only long-lived table (same error class as WP7a's ord:u8 — wrong
+  population). ADOPTED FIX: no table at all — encode casing's `(char, quoted)`
+  directly into a deterministic u32 (scalar + quoted bit + Midflow/BookInitial
+  tags), PosClass 8→4 bytes, domain-complete, zero lifecycle. Spacing's
+  standalone `mark: char` stays unless post-enumification type sizes still
+  name it. WP7b reordered: enumify SpacingSide first, re-measure, then decide.
+- **P2 (MixedCase delta produced, not consumed):** `drive_mixed_case` discards
+  the exact stats-delta and judges every retained word type; the transition
+  batch-rebuilds partitions. Correct but conservative. The WP7a claim
+  "genuinely per-key stats-delta" described data produced, not work avoided —
+  CORRECTED here, and the §11 MixedCase ledger row is amended to: "aggregate
+  incrementally maintained bit-exactly; judging/materialization deliberately
+  whole-site pending WP8." **WP8 named: the delta-consumption packet** —
+  judge-dirty = stats-delta ∪ site-delta, partitions patched not rebuilt,
+  per-substrate patch≡rebuild witnesses built fresh (current tests cannot
+  validate a patch path the full rebuild masks). Sequenced after WP7b/7c.
+- **P2 (ladder methodology):** `--distinct-variants` is the sound
+  forced-rebuild lane, not a complete like-for-like verdict; the ladder
+  protocol is now THREE lanes — forced-rebuild / stable-aggregate /
+  undo-recurrence (A↔B) — none alone "the editor workload". Entry 24's
+  "only like-for-like comparison" wording is softened accordingly. The undo
+  lane is where a two-generation model memo would legitimately win; the
+  owner's LRU decline stands but that lane's future measurement is the
+  evidence that would reopen it. HARNESS BUG FIXED this commit: `--variants N`
+  built N blocks but the timed loop only alternated two; it now rotates all N.
+- **Advisories (folded into WP7b):** owner-routed structural-insertion replay
+  test (chapter inserted between a pending owner and its resolver); MixedCase
+  prefilled-interner egress equality test + scope-honest rename of
+  `symbol_numbering_never_reaches_the_fold`; exhaustive exact-byte serde pins
+  for all six SpacingSide form/class combinations + pkg regen.

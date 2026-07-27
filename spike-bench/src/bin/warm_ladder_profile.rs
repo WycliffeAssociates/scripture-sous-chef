@@ -95,8 +95,10 @@ fn main() {
             }
         })
         .collect();
-    let block_a = blocks[0].clone();
-    let block_b = blocks[1].clone();
+    // The timed loop rotates through ALL variants — `--variants N` above 2
+    // must create genuine N-way cache pressure, not build blocks the loop
+    // never presents (that trap silently reduced every N>2 run to the
+    // two-block alternation it was trying to defeat).
 
     // Same construction as the calibrate oracle's configs (`oracle_config` in
     // crates/core/examples/calibrate/oracle.rs): "all" = v1 defaults with
@@ -145,10 +147,10 @@ fn main() {
     let _ = galley.analyze();
     eprintln!("cold seed: {:?}", seed_start.elapsed());
 
-    let mut flip = false;
+    let mut rotation = 0usize;
     let do_work = || {
-        flip = !flip;
-        let block = if flip { block_a.clone() } else { block_b.clone() };
+        rotation += 1;
+        let block = blocks[rotation % blocks.len()].clone();
         galley
             .update_book(block)
             .expect("valid complete-book replacement");
