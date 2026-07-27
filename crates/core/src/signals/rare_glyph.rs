@@ -651,13 +651,21 @@ impl crate::substrate::ObservationSubstrate for GlyphSubstrate {
         let mut rare: BTreeMap<(char, Cow<'_, str>), u64> = BTreeMap::new();
         let mut per_glyph: BTreeMap<char, u64> = BTreeMap::new();
         for (surface, &n) in &surfaces {
-            // The same conditional fold the chapter map took for its word keys, so
-            // the attribution and the word table cannot key the same type two ways.
-            let key: Cow<'_, str> = if surface.chars().any(|c| class_of(c).is_uppercase()) {
-                Cow::Owned(surface.to_lowercase())
-            } else {
-                Cow::Borrowed(*surface)
-            };
+            // UNCONDITIONAL `to_lowercase`, deliberately NOT the conditional fold the
+            // word table keys by. The two differ for exactly one class of word: one
+            // whose only cased letters are general-category **Lt**, which
+            // `is_uppercase` (an Lu/Uppercase property) does not see but
+            // `to_lowercase` still lowers. Greek's "capital with prosgegrammeni"
+            // letters are that class, and the asymmetry is load-bearing there:
+            // Brenton's LXX opens LEV 19:6 with the one-letter word `ᾟ`, whose
+            // lowercase type `ᾗ` has 79 tokens in the corpus — so lowering the
+            // attribution key pools the capital's single occurrence with them and the
+            // lexical-concentration discount correctly reads it as an orthographic
+            // habit rather than a stray glyph. Keying it by the unlowered surface
+            // instead makes it a one-token hapax and surfaces a false positive.
+            // (The capital's own word-table row is then dropped by `keep` below,
+            // which is exactly what the retired listener did.)
+            let key: Cow<'_, str> = Cow::Owned(surface.to_lowercase());
             for g in surface.chars().filter(|&g| is_letter_scalar(g)) {
                 let e = rare.entry((g, key.clone())).or_default();
                 *e = e.saturating_add(u64::from(n));
@@ -1445,6 +1453,50 @@ mod tests {
             render(&gen_only, &after),
             render(&gen_only, &run(&gen_only, &c)),
             "the aggregate after removal equals a cold analysis of what is left"
+        );
+    }
+
+    /// The attribution key is lowered UNCONDITIONALLY, and this is the fleet case
+    /// that proves it must be. `ᾟ` (U+1F9F) is general-category Lt: `is_uppercase`
+    /// does not see it, so the word-table fold leaves the one-letter word `ᾟ`
+    /// unchanged, while `to_lowercase` still lowers it to `ᾗ`. Pooling the
+    /// capital's single occurrence with the many-token lowercase type is what makes
+    /// the lexical-concentration discount fire. Keying the attribution by the
+    /// unlowered surface instead reads it as a hapax and emits — a false positive
+    /// this reproduces on two Greek fleet corpora (Brenton LXX LEV 19:6, LXX
+    /// EXO 6:28).
+    #[test]
+    fn a_titlecase_only_capital_pools_with_its_lowercase_word_type() {
+        let c = cfg();
+        // The alphabet: the lowercase word `ᾗ` many times over, plus enough other
+        // Greek letters that the inventory reads as closed.
+        let mut keys = Vec::new();
+        let mut texts = Vec::new();
+        let mut v = 1u16;
+        for _ in 0..40 {
+            for t in ["\u{1F97} \u{3B1}\u{3BD} \u{3B7}\u{3BC}\u{3B5}\u{3C1}\u{3B1}", "\u{1F97} \u{3BA}\u{3B1}\u{3B9} \u{3C4}\u{3B7}"] {
+                keys.push(format!("GEN 1:{v}"));
+                texts.push(t.to_string());
+                v += 1;
+            }
+        }
+        // The capital, once, as its own one-letter word.
+        keys.push(format!("GEN 1:{v}"));
+        texts.push("\u{1F9F} \u{3B1}\u{3BD}".to_string());
+        let map = Corpus::try_from_parts(keys, texts).unwrap();
+
+        // Sanity: the two forms really are the pair this test is about.
+        assert!(!crate::charclass::class_of('\u{1F9F}').is_uppercase());
+        assert_eq!("\u{1F9F}".to_lowercase(), "\u{1F97}");
+
+        let found = run(&map, &c);
+        assert!(
+            !found.iter().any(|f| matches!(
+                f.args,
+                Some(FindingArgs::RareGlyph { glyph: '\u{1F9F}', .. })
+            )),
+            "the capital pools with its lowercase type and is discounted: {:?}",
+            render(&map, &found)
         );
     }
 
