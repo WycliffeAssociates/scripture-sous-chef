@@ -4477,3 +4477,33 @@ drive-overhead work; **(b)** WP7c / the remaining Phase E rows; **(c)** WP8, the
 delta-consumption packet, which both rows above are written to expect (adjacency
 already produces an exact delta; repeated-run will need a generation counter, as
 recorded in its code).
+
+---
+
+## Entry 29 — Owner review of WP7b + the WP7c proposal: accepted / redirected
+
+- **Date:** 2026-07-27. WP7b accepted as landed (storage compaction, both
+  migrations, ordering, seam handling — no correctness blocker; owner reran
+  the owner/resolver insertion, interner-egress, and astral PosClass tests).
+- **P1 (the steward's own error, owned):** the "shared planning pass" proposal
+  prescribed a solution from an undecomposed measurement — the ~0.35 ms was
+  attributed to the whole `drive_*` call (planning/stamps, update_book/
+  reduction, judge-key reconstruction, judging, materialization, unseparated).
+  A shared outer traversal can only remove the duplicated-walk share; the
+  judge/materialization share belongs to WP8's delta consumption. Attribution
+  before prescription.
+- **P2:** the projection was wrong twice — SIX Phase E rows remain (not five),
+  and only FOUR are in v1_defaults (punct-only, mixed-script, proportionality,
+  bracket; rare-glyph and mixed-normalization are default-off). Corrected
+  naive default-path projection: ~2.74 ms, itself resting on an unproven
+  equal-fixed-cost assumption. The contractual target is the ≤2 ms gate, not
+  the historical 0.66 ms.
+- **Decision (owner): WP7c0** — a narrow decomposition/remediation packet with
+  its own §13 gate: instrument the drive internals per phase per substrate,
+  then implement the SMALLEST demonstrated lever (a borrowed chapter schedule
+  if planning dominates; pull delta-consumption forward if judging/
+  materialization dominates). Only then WP7c's six migrations, one per commit,
+  each recording its own measured fixed cost.
+- **Advisory accepted:** the mixed-case u16 chapter-count bound is an
+  empirical Bible-domain constraint (no word shape repeats 65k× in a chapter —
+  owner-confirmed), not Corpus-enforced; documented as such at the checked add.
