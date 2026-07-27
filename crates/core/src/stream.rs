@@ -88,23 +88,24 @@ pub(crate) struct WalkPlan {
     pub collect_tokens: bool,
 }
 
-/// One book's fused-walk outputs: each enabled counting listener's
-/// `(book stats, sites)`, the project listeners' outputs, and the book's
-/// token cache slice. Every remaining counting listener is site-free, so a book
-/// outside the `counted` scope (the provenance-derived stale set) runs only the
-/// project listeners and the token cache; its carried prior counts stay
-/// authoritative because nothing recounted them.
+/// One book's fused-walk output. **It is down to the token-cache lane**: no
+/// counting listener and no project listener remains — every one of them is a typed
+/// observation substrate now, mapping its own chapters from its own stamp-derived
+/// cache. The token cache exists for the batch lane's judges, which no rule reaches
+/// (see `rule::stateful_rules`), so in practice this is empty on every call.
 #[derive(Default)]
 pub(crate) struct BookOut {
     pub tokens: Option<Vec<(LocalKeyIdx, Vec<Token>)>>,
 }
 
-/// The fused walk over every supplied book, fan-out per book (ADR 0042).
-/// Output is index-aligned with `books` (its presented order — see
-/// `Corpus`), not keyed by book identity. `counted` says which book *slugs*
-/// the counting listeners run for (the provenance-derived stale set narrows
-/// counting, never the project listeners or the token cache); `None` counts
-/// every book.
+/// The fused walk over every supplied book, fan-out per book (ADR 0042). Output is
+/// index-aligned with `books` (its presented order — see `Corpus`), not keyed by
+/// book identity.
+///
+/// `counted` — the provenance-derived stale set — used to narrow which books the
+/// counting listeners ran for. There are no counting listeners left, so it narrows
+/// nothing today; it is threaded through because the batch lane is permanent (plan
+/// §9) and the first batch rule to land will need it back.
 pub(crate) fn walk_fused(
     books: &Books<'_>,
     counted: Option<&[&str]>,

@@ -18,14 +18,17 @@ use std::collections::BTreeMap;
 
 use crate::diagnostics::RuleId;
 
-/// Per-rule cached statistics — a **closed** union like `FindingArgs`, one
-/// variant per stateful rule. The orchestration treats it opaquely; each
-/// rule reduces into / judges from its own variant.
+/// Per-rule cached statistics — a **closed** union like `FindingArgs`, one variant
+/// per batch (`StatefulRule`) rule. The orchestration treats it opaquely; each rule
+/// reduces into / judges from its own variant.
 ///
-/// One variant remains: proportionality's sparse per-verse ratios. Every other
-/// stateful rule is a typed observation substrate now, whose aggregate lives in
-/// its own [`SubstrateCache`](crate::substrate::SubstrateCache) behind typed
-/// validity stamps rather than in this shared, book-superseded enum.
+/// **It is UNINHABITED.** Every rule that ever had a variant here is a typed
+/// observation substrate now, whose aggregate lives in its own
+/// [`SubstrateCache`](crate::substrate::SubstrateCache) behind typed validity
+/// stamps rather than in this shared, book-superseded enum — proportionality, the
+/// last of them, migrated with the rest of Phase E. Retiring the type is a
+/// public-surface change across `ssc-galley` and `ssc-wasm` (`Stats` is the
+/// resident prior), which is a Phase F decision alongside the batch lane's API.
 #[derive(Debug, Clone, PartialEq)]
 pub enum RuleStats {}
 

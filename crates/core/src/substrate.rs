@@ -275,7 +275,11 @@ pub(crate) struct ChapterView<'a> {
     /// hand a substrate source access it did not declare, which is why this is an
     /// `Option` on the view rather than an always-available field: a target-only
     /// mapper cannot read reference text even by accident.
-    pub(crate) paired: Option<PairedView<'a>>,
+    ///
+    /// PRIVATE to this module on purpose. Outside it the only way to obtain a
+    /// non-`None` value is [`ChapterView::paired`], which will not compile for a
+    /// substrate whose registry entry says `TargetOnly`.
+    paired: Option<PairedView<'a>>,
 }
 
 /// What a reference-declaring substrate reads beyond the target text: this
@@ -296,13 +300,39 @@ pub(crate) struct PairedView<'a> {
 
 impl<'a> ChapterView<'a> {
     /// A target-only chapter view — the shape every substrate but
-    /// `ProportionalitySubstrate` maps from.
+    /// `ProportionalitySubstrate` maps from. Deliberately NOT generic: a
+    /// reference-declaring substrate may legitimately map a chapter with no paired
+    /// reference (the `Absent` case), so this constructor has to stay open to it.
     pub(crate) fn target(chapter: &'a str, texts: &'a [String]) -> Self {
         ChapterView {
             chapter,
             texts,
             paired: None,
         }
+    }
+
+    /// A chapter view carrying its declared paired reference. The
+    /// `S::Pairing: DeclaresReference` bound means a substrate declaring
+    /// [`NoReference`] cannot call this at all: a target-only driver reaching for
+    /// reference text does not typecheck.
+    pub(crate) fn paired<S: ObservationSubstrate>(
+        chapter: &'a str,
+        texts: &'a [String],
+        paired: Option<PairedView<'a>>,
+    ) -> Self
+    where
+        S::Pairing: DeclaresReference,
+    {
+        ChapterView {
+            chapter,
+            texts,
+            paired,
+        }
+    }
+
+    /// The declared paired reference view, if this chapter has one.
+    pub(crate) fn paired_view(&self) -> Option<PairedView<'a>> {
+        self.paired
     }
 }
 
@@ -330,7 +360,52 @@ pub(crate) struct ObservationInputStamp {
     /// observations invalidate when the reference chapter's *content* moves, when
     /// the reference disappears, and when a reference appears where there was
     /// none, because all three are distinct values here.
-    pub(crate) reference: ReferenceStamp,
+    ///
+    /// PRIVATE to this module on purpose: which of the three values is legal is a
+    /// property of the substrate's registry entry, so the two constructors below
+    /// own the choice and check it at compile time.
+    reference: ReferenceStamp,
+}
+
+impl ObservationInputStamp {
+    /// The stamp of a TARGET-ONLY substrate. The `Pairing = NoReference` bound
+    /// means a reference-declaring substrate cannot call this — it must stamp its
+    /// reference.
+    pub(crate) fn target_only<S: ObservationSubstrate<Pairing = NoReference>>(
+        chapter_hash: u128,
+        extractor: &S::ExtractorConfig,
+    ) -> Self {
+        ObservationInputStamp {
+            schema_stamp: S::SCHEMA_STAMP,
+            chapter_hash,
+            extractor_fp: S::extractor_fp(extractor),
+            reference: ReferenceStamp::NotDeclared,
+        }
+    }
+
+    /// The stamp of a REFERENCE-DECLARING substrate: `Some(hash)` for the paired
+    /// reference chapter's content, `None` when nothing pairs with this chapter.
+    /// The `S::Pairing: DeclaresReference` bound means a target-only substrate
+    /// cannot call this — which is what stops its observations from ever being
+    /// invalidated by reference movement, or from silently ignoring it.
+    pub(crate) fn with_reference<S: ObservationSubstrate>(
+        chapter_hash: u128,
+        extractor: &S::ExtractorConfig,
+        reference_hash: Option<u128>,
+    ) -> Self
+    where
+        S::Pairing: DeclaresReference,
+    {
+        ObservationInputStamp {
+            schema_stamp: S::SCHEMA_STAMP,
+            chapter_hash,
+            extractor_fp: S::extractor_fp(extractor),
+            reference: match reference_hash {
+                Some(h) => ReferenceStamp::Present(h),
+                None => ReferenceStamp::Absent,
+            },
+        }
+    }
 }
 
 /// The reference half of an [`ObservationInputStamp`] (plan §5.2's "relevant
@@ -377,6 +452,12 @@ pub(crate) trait ObservationSubstrate {
     /// changes — folded into every [`ObservationInputStamp`] so a schema change
     /// invalidates cached observations.
     const SCHEMA_STAMP: u64;
+    /// What this substrate's map consumes, and how a reference (if any) pairs —
+    /// the closed declaration plan §5.2 requires, as a type so the stamp and view
+    /// constructors can be gated by a trait bound. It must agree with
+    /// [`input_of`]`(Self::ID)`, which
+    /// `substrate_pairing_types_pair_with_the_registry` pins.
+    type Pairing: ReferencePairing;
 
     /// The judge key — one aggregate/verdict per key (spacing: the mark).
     type Key: Clone + Eq + Ord;
@@ -1120,6 +1201,95 @@ pub(crate) fn mixed_case_consumers() -> &'static [RuleId] {
     &[RuleId::MixedCaseWord]
 }
 
+/// What semantic inputs a substrate's MAP consumes, and — when it consumes a
+/// reference — how the target and reference regions PAIR. Plan §5.2 requires the
+/// closed registry to declare both; this is that declaration, and
+/// [`ObservationInputStamp`]'s and [`ChapterView`]'s constructors are gated on it
+/// so a driver cannot quietly disagree with its own registry entry.
+///
+/// The engine does not assume every source-dependent substrate is same-slug
+/// granular (plan §17). A substrate that needed to read across slugs, or
+/// corpus-wide reference input, would add a variant here — and that variant would
+/// have to state its own invalidation superset before it could be used, which is
+/// exactly the stop-and-amend the plan asks for rather than a silent reuse of a
+/// same-slug stamp.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SubstrateInput {
+    /// Target text only. Its observations can never be invalidated by reference
+    /// movement, and its stamps carry [`ReferenceStamp::NotDeclared`].
+    TargetOnly,
+    /// Target text plus the reference corpus's chapter carrying the SAME
+    /// `(slug, chapter token)`.
+    ///
+    /// That pairing is sound because a key's chapter token is parsed from the key
+    /// and a chapter run may not reopen, so every occurrence of a given key string
+    /// lies inside one chapter run on both sides. Its stamps carry
+    /// [`ReferenceStamp::Present`] or [`ReferenceStamp::Absent`], never
+    /// `NotDeclared`.
+    SameSlugSameChapterReference,
+}
+
+/// The TYPED half of §5.2's declaration: a marker type naming what a substrate
+/// consumes and how its reference (if any) pairs. It is a type rather than only an
+/// enum value so the stamp and view constructors can be gated by a TRAIT BOUND —
+/// which the compiler checks at `cargo check` time, where a
+/// post-monomorphization `const` assertion would only fire at codegen.
+pub(crate) trait ReferencePairing {
+    /// This pairing's registry value. The bound-checked TYPE is what production
+    /// code uses; this const exists so
+    /// `substrate_pairing_types_pair_with_the_registry` can prove the type and
+    /// [`input_of`] agree, which is the only thing that keeps the compile-time gate
+    /// and the runtime registry from drifting apart.
+    #[allow(dead_code)] // read by the registry-alignment test
+    const INPUT: SubstrateInput;
+}
+
+/// Target text only.
+pub(crate) struct NoReference;
+
+impl ReferencePairing for NoReference {
+    const INPUT: SubstrateInput = SubstrateInput::TargetOnly;
+}
+
+/// Target text plus the reference chapter carrying the same `(slug, chapter token)`.
+pub(crate) struct SameSlugSameChapter;
+
+impl ReferencePairing for SameSlugSameChapter {
+    const INPUT: SubstrateInput = SubstrateInput::SameSlugSameChapterReference;
+}
+
+/// Implemented only by a pairing that actually names a reference region. This is
+/// the bound [`ObservationInputStamp::with_reference`] and [`ChapterView::paired`]
+/// require, so a substrate declaring [`NoReference`] cannot reach either — a
+/// `cargo check` failure, not a review catch.
+pub(crate) trait DeclaresReference: ReferencePairing {}
+
+impl DeclaresReference for SameSlugSameChapter {}
+
+/// The closed registry: what each substrate consumes. Exhaustive over
+/// [`SubstrateId`], and pinned against every consumer rule's public
+/// [`InputDependency`](crate::diagnostics::InputDependency) by
+/// `substrate_input_agrees_with_every_consumers_input_dependency`.
+#[allow(dead_code)] // read by the registry-alignment tests and by future orchestration
+pub(crate) fn input_of(id: SubstrateId) -> SubstrateInput {
+    match id {
+        // `proj.length-ratio` is the only reference-consuming rule in the engine,
+        // and therefore this the only reference-declaring substrate.
+        SubstrateId::Proportionality => SubstrateInput::SameSlugSameChapterReference,
+        SubstrateId::Spacing
+        | SubstrateId::Adjacency
+        | SubstrateId::RepeatedRun
+        | SubstrateId::PunctOnly
+        | SubstrateId::MixedScript
+        | SubstrateId::Glyph
+        | SubstrateId::Normalization
+        | SubstrateId::Bracket
+        | SubstrateId::DuplicateWord
+        | SubstrateId::Casing
+        | SubstrateId::MixedCase => SubstrateInput::TargetOnly,
+    }
+}
+
 /// The consumers of a substrate by id — the exhaustive closed match the
 /// completeness tests walk.
 #[allow(dead_code)] // registry-completeness tests + future multi-substrate iteration
@@ -1228,6 +1398,103 @@ mod tests {
         }
     }
 
+    /// Every substrate type's declared `Pairing` matches its closed registry entry,
+    /// so the trait-bound gates on the stamp/view constructors and the runtime
+    /// registry cannot disagree about what a substrate consumes.
+    #[test]
+    fn substrate_pairing_types_pair_with_the_registry() {
+        fn check<S: ObservationSubstrate>() {
+            assert_eq!(
+                <S::Pairing as ReferencePairing>::INPUT,
+                input_of(S::ID),
+                "{:?}'s Pairing type disagrees with the registry",
+                S::ID
+            );
+        }
+        check::<crate::signals::punctuation::SpacingSubstrate>();
+        check::<crate::signals::punctuation::AdjacencySubstrate>();
+        check::<crate::signals::lexical::RepeatedRunSubstrate>();
+        check::<crate::signals::lexical::PunctOnlySubstrate>();
+        check::<crate::signals::script_mixing::MixedScriptSubstrate>();
+        check::<crate::signals::rare_glyph::GlyphSubstrate>();
+        check::<crate::signals::proportionality::ProportionalitySubstrate>();
+        check::<crate::signals::mixed_normalization::NormalizationSubstrate>();
+        check::<crate::signals::bracket_balance::BracketSubstrate>();
+        check::<crate::signals::lexical::DuplicateWordSubstrate>();
+        check::<crate::signals::casing::CasingSubstrate>();
+        check::<crate::signals::mixed_case::MixedCaseSubstrate>();
+    }
+
+    /// THE SEAM PLAN §5.2 ASKS FOR, both directions. A substrate's declared input
+    /// and every one of its consumers' public `InputDependency` must agree:
+    ///
+    /// - a `TargetOnly` substrate may only feed `TargetOnly` rules — otherwise a
+    ///   reference-dependent rule's findings would be served from a cache that
+    ///   reference movement cannot invalidate;
+    /// - a reference-declaring substrate may only feed
+    ///   `TargetAndReferenceSilentWhenAbsent` rules — otherwise a rule that claims
+    ///   to be target-only would have its persisted identity invalidated by
+    ///   reference movement it says cannot affect it.
+    ///
+    /// Both halves matter: the first catches a new source-dependent rule bolted
+    /// onto a target-only substrate, the second catches a substrate gaining a
+    /// reference its consumer never declared.
+    #[test]
+    fn substrate_input_agrees_with_every_consumers_input_dependency() {
+        use crate::diagnostics::InputDependency;
+        for &id in SubstrateId::ALL {
+            for &rule in consumers_of(id) {
+                let want = match input_of(id) {
+                    SubstrateInput::TargetOnly => InputDependency::TargetOnly,
+                    SubstrateInput::SameSlugSameChapterReference => {
+                        InputDependency::TargetAndReferenceSilentWhenAbsent
+                    }
+                };
+                assert_eq!(
+                    rule.input_dependency(),
+                    want,
+                    "{id:?} declares {:?} but its consumer {rule:?} declares {:?}",
+                    input_of(id),
+                    rule.input_dependency()
+                );
+            }
+        }
+    }
+
+    /// The other direction, over the RULE set rather than the substrate set: every
+    /// rule that declares a reference dependency must be consumed by a
+    /// reference-declaring substrate. A reference-dependent rule that no substrate
+    /// serves — or that only a target-only substrate serves — would read stale
+    /// findings after a reference edit, which is silent wrongness rather than a
+    /// failure.
+    #[test]
+    fn every_reference_dependent_rule_is_served_by_a_reference_declaring_substrate() {
+        use crate::diagnostics::InputDependency;
+        for &rule in RuleId::ALL {
+            if rule.input_dependency() != InputDependency::TargetAndReferenceSilentWhenAbsent {
+                continue;
+            }
+            let serving: Vec<SubstrateId> = SubstrateId::ALL
+                .iter()
+                .copied()
+                .filter(|&id| consumers_of(id).contains(&rule))
+                .collect();
+            assert_eq!(
+                serving.len(),
+                1,
+                "{rule:?} is reference-dependent and must be served by exactly one \
+                 substrate, found {serving:?}"
+            );
+            assert_eq!(
+                input_of(serving[0]),
+                SubstrateInput::SameSlugSameChapterReference,
+                "{rule:?} is reference-dependent but {:?} declares {:?}",
+                serving[0],
+                input_of(serving[0])
+            );
+        }
+    }
+
     /// The drive-probe row labels pair with `SubstrateId::ALL` position for
     /// position — the table is indexed by `SubstrateId as usize`, so a mislabeled
     /// row would attribute one substrate's cost to another.
@@ -1315,6 +1582,7 @@ mod replay {
     impl ObservationSubstrate for Local {
         const ID: SubstrateId = SubstrateId::Spacing;
         const SCHEMA_STAMP: u64 = 1;
+    type Pairing = crate::substrate::NoReference;
         type Key = String;
         type BoundaryState = ();
         type ChapterObservation = String;
@@ -1366,6 +1634,7 @@ mod replay {
     impl ObservationSubstrate for Carry {
         const ID: SubstrateId = SubstrateId::Spacing;
         const SCHEMA_STAMP: u64 = 2;
+    type Pairing = crate::substrate::NoReference;
         type Key = String;
         type BoundaryState = Option<char>;
         type ChapterObservation = String;
@@ -1740,6 +2009,7 @@ mod replay {
     impl ObservationSubstrate for Owned {
         const ID: SubstrateId = SubstrateId::Spacing;
         const SCHEMA_STAMP: u64 = 3;
+    type Pairing = crate::substrate::NoReference;
         type Key = String;
         type BoundaryState = Option<Box<str>>;
         type ChapterObservation = TokenedObs;

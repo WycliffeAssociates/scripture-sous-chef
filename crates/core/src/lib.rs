@@ -386,9 +386,13 @@ fn transition(
         collect_tokens: false,
     };
 
-    // The book view is shared by both analysis lanes. `source` is intentionally
-    // not part of the cache fingerprint: it feeds only proportionality counting,
-    // counting never reads the cache, and no cached lane depends on source.
+    // The book view is shared by both analysis lanes. `source` is intentionally not
+    // part of the PREP cache fingerprint — no prep lane reads it. It is emphatically
+    // NOT source-independent overall: `ProportionalitySubstrate` declares a
+    // reference input, and its chapter observations are stamped with the paired
+    // reference chapter's content hash (or the explicit absent tag), so reference
+    // movement invalidates exactly those observations and nothing else. That
+    // per-substrate stamp is the source-validity seam; this fingerprint is not.
     let books = corpus::by_book(target);
     cache.ensure_fingerprint(config);
     // Every supplied book's content hash, read from the corpus's OWNED layout
@@ -1827,6 +1831,37 @@ mod tests {
         assert_eq!(hits[0].severity, Severity::Info);
     }
 
+    /// THE BATCH REGISTRIES ARE EMPTY, AND MEMBERSHIP IN THEM IS NOT EXECUTION.
+    ///
+    /// `transition` no longer calls `project_rules` at all, and its `stateful_rules`
+    /// loop cannot run because that registry is empty too. So a rule added to either
+    /// registry today would be counted as "wired" by the completeness test below and
+    /// still never emit — the exact ADR-0031 failure that test exists to prevent,
+    /// re-opened from the other side.
+    ///
+    /// This pins the registries empty so that the moment anyone adds a member, the
+    /// build fails here rather than shipping a silently dead rule. It is a tripwire,
+    /// not a design: the batch lane's API is a mandatory Phase F decision (either one
+    /// genuinely executable batch path with an execution-witness test, or these
+    /// registries retired to a reserved design instantiated with their first real
+    /// adopter). Whoever adds the first batch rule must make that decision, and this
+    /// assertion is what forces them to.
+    #[test]
+    fn the_batch_registries_are_empty_and_membership_would_not_mean_execution() {
+        let cfg = Config::all();
+        assert!(
+            rule::project_rules(&cfg).is_empty(),
+            "a ProjectRule was registered, but `transition` does not execute this \
+             registry — resolve the Phase F batch-lane decision before adding one"
+        );
+        assert!(
+            rule::stateful_rules(&cfg).is_empty(),
+            "a StatefulRule was registered, but `transition`'s batch loop is retained \
+             only as an unreachable skeleton — resolve the Phase F batch-lane decision \
+             before adding one"
+        );
+    }
+
     /// Registry completeness: every declared `RuleId` must be produced by
     /// exactly one runner registry OR consumed by exactly one typed observation
     /// substrate. A rule that is implemented but never wired in — the ADR-0031
@@ -1834,6 +1869,11 @@ mod tests {
     /// `stateful_rules`, so it never fired through `analyze` — surfaces here as a
     /// count of zero. `punct.spacing-anomaly` and `struct.duplicate-word` are
     /// claimed by their substrates (each its sole consumer), not a rule registry.
+    ///
+    /// **Counting a batch registry's members as "wired" is only honest while those
+    /// registries are empty**, which
+    /// `the_batch_registries_are_empty_and_membership_would_not_mean_execution`
+    /// above is what guarantees. Read the two together.
     #[test]
     fn every_rule_id_is_claimed_by_exactly_one_registry_or_substrate() {
         use std::collections::BTreeMap;

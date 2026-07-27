@@ -192,6 +192,7 @@ impl crate::substrate::ObservationSubstrate for AdjacencySubstrate {
     const ID: crate::substrate::SubstrateId = crate::substrate::SubstrateId::Adjacency;
     // Bump on any observation/reduction schema change.
     const SCHEMA_STAMP: u64 = 1;
+    type Pairing = crate::substrate::NoReference;
 
     type Key = AdjacencyKey;
     // Proven from the listener — see `AdjacencyChapterObs`.
@@ -538,12 +539,7 @@ pub(crate) fn drive_adjacency(
         let run_start = work.len();
         let mut chapters = Vec::with_capacity(book.chapters.len());
         for (ci, c) in book.chapters.iter().enumerate() {
-            let stamp = ObservationInputStamp {
-                schema_stamp: AdjacencySubstrate::SCHEMA_STAMP,
-                chapter_hash: c.hash,
-                extractor_fp: AdjacencySubstrate::extractor_fp(&()),
-                reference: crate::substrate::ReferenceStamp::NotDeclared,
-            };
+            let stamp = ObservationInputStamp::target_only::<AdjacencySubstrate>(c.hash, &());
             if !cache.observation_is_current(&book.slug, &c.chapter, &stamp) {
                 let verses = &texts[c.range.clone()];
                 work_bytes += verses.iter().map(String::len).sum::<usize>();
@@ -1651,6 +1647,7 @@ impl crate::substrate::ObservationSubstrate for SpacingSubstrate {
     const ID: crate::substrate::SubstrateId = crate::substrate::SubstrateId::Spacing;
     // Bump on any observation/reduction schema change.
     const SCHEMA_STAMP: u64 = 1;
+    type Pairing = crate::substrate::NoReference;
 
     type Key = char;
     type BoundaryState = SpacingBoundary;
@@ -1970,12 +1967,7 @@ pub(crate) fn drive_spacing(
         let run_start = work.len();
         let mut chapters = Vec::with_capacity(book.chapters.len());
         for (ci, c) in book.chapters.iter().enumerate() {
-            let stamp = ObservationInputStamp {
-                schema_stamp: SpacingSubstrate::SCHEMA_STAMP,
-                chapter_hash: c.hash,
-                extractor_fp: SpacingSubstrate::extractor_fp(&()),
-                reference: crate::substrate::ReferenceStamp::NotDeclared,
-            };
+            let stamp = ObservationInputStamp::target_only::<SpacingSubstrate>(c.hash, &());
             if !cache.observation_is_current(&book.slug, &c.chapter, &stamp) {
                 let verses = &texts[c.range.clone()];
                 work_bytes += verses.iter().map(String::len).sum::<usize>();

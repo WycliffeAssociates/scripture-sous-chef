@@ -109,15 +109,15 @@ pub trait ProjectTokenRule: Sync {
 /// entry). A clean book's sites are therefore never cloned out of the cache to
 /// be judged — the judge consumes the view directly. The
 /// lifetime is that of the resident cache borrow held across the judge phase;
-/// With the site-bearing stateful rules migrated to observation substrates, the
-/// two remaining variants are deliberately site-FREE: proportionality never
-/// scans, and rare-glyph re-scans by design (ADR 0053). The enum survives so the
-/// judge signature stays uniform across the batch lane.
+/// **No rule uses either variant any more**: proportionality and rare-glyph both
+/// migrated to observation substrates in Phase E, and the batch registry that
+/// consumed this type is empty. The two variants remain only as the site-FREE
+/// shape a future batch rule would start from (they carry no sites at all — one
+/// never scanned, the other re-scanned by design, ADR 0044/0053), and the enum
+/// survives so `StatefulRule::judge`'s signature stays uniform. Retiring it is part
+/// of the same Phase F batch-lane decision as `RuleStats`.
 pub enum RuleSites {
     Proportionality,
-    /// `uni.rare-glyph` carries no sites: surviving candidates are ultra-rare, so
-    /// its judge re-scans the supplied books (the `sites`-free path) rather than
-    /// forward every letter occurrence (ADR 0044, ADR 0053).
     RareGlyph,
 }
 

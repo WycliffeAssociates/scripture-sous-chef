@@ -197,6 +197,7 @@ impl crate::substrate::ObservationSubstrate for DuplicateWordSubstrate {
     const ID: crate::substrate::SubstrateId = crate::substrate::SubstrateId::DuplicateWord;
     // Bump on any observation/reduction schema change.
     const SCHEMA_STAMP: u64 = 1;
+    type Pairing = crate::substrate::NoReference;
 
     // There is no corpus aggregate to key: the extraction predicate (two
     // adjacent word tokens that fold equal across a whitespace-only gap) is
@@ -370,12 +371,7 @@ pub(crate) fn drive_duplicate_word(
         let run_start = work.len();
         let mut chapters = Vec::with_capacity(book.chapters.len());
         for (ci, c) in book.chapters.iter().enumerate() {
-            let stamp = ObservationInputStamp {
-                schema_stamp: DuplicateWordSubstrate::SCHEMA_STAMP,
-                chapter_hash: c.hash,
-                extractor_fp: DuplicateWordSubstrate::extractor_fp(&()),
-                reference: crate::substrate::ReferenceStamp::NotDeclared,
-            };
+            let stamp = ObservationInputStamp::target_only::<DuplicateWordSubstrate>(c.hash, &());
             if !cache.observation_is_current(&book.slug, &c.chapter, &stamp) {
                 let verses = &texts[c.range.clone()];
                 work_bytes += verses.iter().map(String::len).sum::<usize>();
@@ -638,6 +634,7 @@ impl crate::substrate::ObservationSubstrate for PunctOnlySubstrate {
     const ID: crate::substrate::SubstrateId = crate::substrate::SubstrateId::PunctOnly;
     // Bump on any observation/reduction schema change.
     const SCHEMA_STAMP: u64 = 1;
+    type Pairing = crate::substrate::NoReference;
 
     type Key = PunctOnlyKey;
     // Proven from the listener — see `PunctOnlyCounts`.
@@ -859,12 +856,7 @@ pub(crate) fn drive_punct_only(
         let run_start = work.len();
         let mut chapters = Vec::with_capacity(book.chapters.len());
         for (ci, c) in book.chapters.iter().enumerate() {
-            let stamp = ObservationInputStamp {
-                schema_stamp: PunctOnlySubstrate::SCHEMA_STAMP,
-                chapter_hash: c.hash,
-                extractor_fp: PunctOnlySubstrate::extractor_fp(&()),
-                reference: crate::substrate::ReferenceStamp::NotDeclared,
-            };
+            let stamp = ObservationInputStamp::target_only::<PunctOnlySubstrate>(c.hash, &());
             if !cache.observation_is_current(&book.slug, &c.chapter, &stamp) {
                 let verses = &texts[c.range.clone()];
                 work_bytes += verses.iter().map(String::len).sum::<usize>();
@@ -1339,6 +1331,7 @@ impl crate::substrate::ObservationSubstrate for RepeatedRunSubstrate {
     const ID: crate::substrate::SubstrateId = crate::substrate::SubstrateId::RepeatedRun;
     // Bump on any observation/reduction schema change.
     const SCHEMA_STAMP: u64 = 1;
+    type Pairing = crate::substrate::NoReference;
 
     type Key = RepeatKey;
     // Proven from the listener — see `RepeatChapterObs`.
@@ -1593,12 +1586,7 @@ pub(crate) fn drive_repeated_run(
         let run_start = work.len();
         let mut chapters = Vec::with_capacity(book.chapters.len());
         for (ci, c) in book.chapters.iter().enumerate() {
-            let stamp = ObservationInputStamp {
-                schema_stamp: RepeatedRunSubstrate::SCHEMA_STAMP,
-                chapter_hash: c.hash,
-                extractor_fp: RepeatedRunSubstrate::extractor_fp(&()),
-                reference: crate::substrate::ReferenceStamp::NotDeclared,
-            };
+            let stamp = ObservationInputStamp::target_only::<RepeatedRunSubstrate>(c.hash, &());
             if !cache.observation_is_current(&book.slug, &c.chapter, &stamp) {
                 let verses = &texts[c.range.clone()];
                 work_bytes += verses.iter().map(String::len).sum::<usize>();

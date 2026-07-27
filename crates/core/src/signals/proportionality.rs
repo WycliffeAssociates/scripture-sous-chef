@@ -183,7 +183,7 @@ fn map_ratio_chapter(chapter: &crate::substrate::ChapterView<'_>) -> RatioChapte
     // `TargetAndReferenceSilentWhenAbsent`, so an empty observation is the correct
     // answer, not a missing one: the chapter is still cached, still stamped
     // `ReferenceStamp::Absent`, and re-maps the moment a reference appears.
-    if let Some(paired) = chapter.paired {
+    if let Some(paired) = chapter.paired_view() {
         let mut index: SourceIndex<'_> = FxHashMap::default();
         for (key, text) in paired
             .reference_keys
@@ -277,6 +277,10 @@ impl crate::substrate::ObservationSubstrate for ProportionalitySubstrate {
     const ID: crate::substrate::SubstrateId = crate::substrate::SubstrateId::Proportionality;
     // Bump on any observation/reduction schema change.
     const SCHEMA_STAMP: u64 = 1;
+    // The ONE reference-declaring substrate in the engine, and the declaration —
+    // not this driver's code — is what makes its reference stamps and paired views
+    // constructible at all.
+    type Pairing = crate::substrate::SameSlugSameChapter;
 
     type Key = RatioKey;
     // Proven from the `Corpus` chapter-token invariant — see `RatioChapterObs`.
@@ -509,7 +513,7 @@ pub(crate) fn drive_proportionality(
 ) {
     use crate::substrate::{
         ChapterView, DrivePhase, DriveProbe, ObservationInputStamp, ObservationSubstrate,
-        PairedView, ReferenceStamp,
+        PairedView,
     };
     #[cfg(any(test, feature = "test-probes"))]
     cache.reset_probes();
@@ -546,29 +550,27 @@ pub(crate) fn drive_proportionality(
         let mut chapters = Vec::with_capacity(book.chapters.len());
         for (ci, c) in book.chapters.iter().enumerate() {
             let paired = paired_view(&book.slug, c);
-            let stamp = ObservationInputStamp {
-                schema_stamp: ProportionalitySubstrate::SCHEMA_STAMP,
-                chapter_hash: c.hash,
-                extractor_fp: ProportionalitySubstrate::extractor_fp(&()),
-                reference: match reference
+            // The declared reference half of the stamp (plan §5.2). `with_reference`
+            // will not compile for a substrate whose registry entry is `TargetOnly`,
+            // and `target_only` will not compile here — the declaration, not this
+            // driver, decides which stamp shape is legal.
+            let stamp = ObservationInputStamp::with_reference::<ProportionalitySubstrate>(
+                c.hash,
+                &(),
+                reference
                     .as_ref()
                     .and_then(|idx| idx.get(&(&*book.slug, &*c.chapter)))
-                {
-                    Some(rc) => ReferenceStamp::Present(rc.hash),
-                    None => ReferenceStamp::Absent,
-                },
-            };
+                    .map(|rc| rc.hash),
+            );
             if !cache.observation_is_current(&book.slug, &c.chapter, &stamp) {
                 let verses = &texts[c.range.clone()];
                 work_bytes += verses.iter().map(String::len).sum::<usize>();
                 work.push(RatioMapWork {
                     book: bi,
                     chapter: ci,
-                    view: ChapterView {
-                        chapter: &c.chapter,
-                        texts: verses,
-                        paired,
-                    },
+                    view: ChapterView::paired::<ProportionalitySubstrate>(
+                        &c.chapter, verses, paired,
+                    ),
                 });
             }
             chapters.push((&*c.chapter, stamp));
@@ -602,11 +604,11 @@ pub(crate) fn drive_proportionality(
             slots[bi][i].take().unwrap_or_else(|| {
                 let c = &book.chapters[i];
                 ProportionalitySubstrate::map_chapter(
-                    &ChapterView {
-                        chapter: &c.chapter,
-                        texts: &texts[c.range.clone()],
-                        paired: paired_view(&book.slug, c),
-                    },
+                    &ChapterView::paired::<ProportionalitySubstrate>(
+                        &c.chapter,
+                        &texts[c.range.clone()],
+                        paired_view(&book.slug, c),
+                    ),
                     &(),
                     &(),
                 )

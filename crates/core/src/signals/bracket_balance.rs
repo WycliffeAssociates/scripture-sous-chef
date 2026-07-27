@@ -251,6 +251,7 @@ impl crate::substrate::ObservationSubstrate for BracketSubstrate {
     const ID: crate::substrate::SubstrateId = crate::substrate::SubstrateId::Bracket;
     // Bump on any observation/reduction schema change.
     const SCHEMA_STAMP: u64 = 1;
+    type Pairing = crate::substrate::NoReference;
 
     type Key = BracketKey;
     /// The unmatched-opener stack — variable size, uncapped (see
@@ -854,12 +855,7 @@ pub(crate) fn drive_bracket(
         let run_start = work.len();
         let mut chapters = Vec::with_capacity(book.chapters.len());
         for (ci, c) in book.chapters.iter().enumerate() {
-            let stamp = ObservationInputStamp {
-                schema_stamp: BracketSubstrate::SCHEMA_STAMP,
-                chapter_hash: c.hash,
-                extractor_fp: BracketSubstrate::extractor_fp(&()),
-                reference: crate::substrate::ReferenceStamp::NotDeclared,
-            };
+            let stamp = ObservationInputStamp::target_only::<BracketSubstrate>(c.hash, &());
             if !cache.observation_is_current(&book.slug, &c.chapter, &stamp) {
                 let verses = &texts[c.range.clone()];
                 work_bytes += verses.iter().map(String::len).sum::<usize>();

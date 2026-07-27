@@ -513,6 +513,7 @@ impl crate::substrate::ObservationSubstrate for GlyphSubstrate {
     const ID: crate::substrate::SubstrateId = crate::substrate::SubstrateId::Glyph;
     // Bump on any observation/reduction schema change.
     const SCHEMA_STAMP: u64 = 1;
+    type Pairing = crate::substrate::NoReference;
 
     type Key = GlyphKey;
     /// The forced-position carry, shared with the casing substrate: a chapter's
@@ -1002,12 +1003,7 @@ pub(crate) fn drive_rare_glyph(
         let run_start = work.len();
         let mut chapters = Vec::with_capacity(book.chapters.len());
         for (ci, c) in book.chapters.iter().enumerate() {
-            let stamp = ObservationInputStamp {
-                schema_stamp: GlyphSubstrate::SCHEMA_STAMP,
-                chapter_hash: c.hash,
-                extractor_fp: GlyphSubstrate::extractor_fp(&()),
-                reference: crate::substrate::ReferenceStamp::NotDeclared,
-            };
+            let stamp = ObservationInputStamp::target_only::<GlyphSubstrate>(c.hash, &());
             if !cache.observation_is_current(&book.slug, &c.chapter, &stamp) {
                 let verses = &texts[c.range.clone()];
                 work_bytes += verses.iter().map(String::len).sum::<usize>();

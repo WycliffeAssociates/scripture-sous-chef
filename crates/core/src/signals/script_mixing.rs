@@ -244,6 +244,7 @@ impl crate::substrate::ObservationSubstrate for MixedScriptSubstrate {
     const ID: crate::substrate::SubstrateId = crate::substrate::SubstrateId::MixedScript;
     // Bump on any observation/reduction schema change.
     const SCHEMA_STAMP: u64 = 1;
+    type Pairing = crate::substrate::NoReference;
 
     type Key = MixedScriptKey;
     // Proven from the listener — see `MixedScriptCounts`.
@@ -546,12 +547,7 @@ pub(crate) fn drive_mixed_script(
         let run_start = work.len();
         let mut chapters = Vec::with_capacity(book.chapters.len());
         for (ci, c) in book.chapters.iter().enumerate() {
-            let stamp = ObservationInputStamp {
-                schema_stamp: MixedScriptSubstrate::SCHEMA_STAMP,
-                chapter_hash: c.hash,
-                extractor_fp: MixedScriptSubstrate::extractor_fp(&()),
-                reference: crate::substrate::ReferenceStamp::NotDeclared,
-            };
+            let stamp = ObservationInputStamp::target_only::<MixedScriptSubstrate>(c.hash, &());
             if !cache.observation_is_current(&book.slug, &c.chapter, &stamp) {
                 let verses = &texts[c.range.clone()];
                 work_bytes += verses.iter().map(String::len).sum::<usize>();
