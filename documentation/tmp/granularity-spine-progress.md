@@ -4191,3 +4191,268 @@ carries 7,124 `punct.spacing-anomaly` rows and exercises **all six**
 form × class combinations (attached/spaced × letter/number/punct), so an
 inferred-naming slip cannot pass the gate silently. The exhaustive unit pins
 Entry 27 asked for are belt-and-braces on top of that.
+
+### Per-step commits
+
+| step | commit | what landed |
+| --- | --- | --- |
+| pin | `7787a91` | The WA + `small` base pin above, recorded before any edit. |
+| 1 | `4c216e2` | `SpacingSide.form`/`.class` `String` → `SpacingForm`/`SpacingClass`, one vocabulary shared with the rule's own counters, explicit per-variant serde renames, exhaustive six-combination byte pins. |
+| 1-pkg | `c9c9463` | `pkg:` regeneration — the only TS change is `form`/`class` becoming string unions. |
+| 2 | `6ae8b6c` | `PosClass` → one deterministic `u32` (scalar + quoted bit + two sentinels); `PosKind` keeps the three-way match exhaustive; hand-written semantic `Ord`. |
+| 3 | `bb2c5b3` | `LowerSite` → 12 bytes (Entry 26 option B: packed `SiteAddr` + `u16` checked chapter word id + 4-byte pos). |
+| 4 | `e1de596` | `ChapterShapeProfile` (`4 × u16`) as mixed-case's per-chapter element; fleet `chapter_extent_probe` for its bound. |
+| 5 | `9040593` | `AdjacencySubstrate` (Phase E row 2); the whole old adjacency path deleted. |
+| 6 | `776b20a` | `RepeatedRunSubstrate` (Phase E row 3); the whole old repeated-run path deleted. |
+| 7 | `48ee37b` | The two Entry 27 advisory tests + the scope-honest rename. |
+
+Every commit re-dumped **all eight** dumps and diffed **byte-identical** to the
+pin, first attempt in every case. Test counts at HEAD: core **497** serial /
+**498** `--features parallel`, galley 25, ssc-wire 25, ssc-wasm 14, xtask 1;
+node 19 (including the real-wasm `galley.test.mjs`). Green serial, `--features
+parallel`, and `--features parallel` under `RAYON_NUM_THREADS=1`. wasm32 checks
+clean for `ssc-core` and `ssc-wasm`. clippy: `ssc-core` lib at the documented
+2-warning baseline, workspace `--all-targets` at its pre-existing inventory
+(no new warning). `git diff --check` clean. No `cargo fmt` sweep.
+
+### The type-size table item 2 was gated on (`-Zprint-type-sizes`, release)
+
+| type | base `18b81c8` | after item 1 | after items 2–3 |
+| --- | ---: | ---: | ---: |
+| `FindingArgs` | 120 | **48** | 48 |
+| `Finding` | 144 | **72** | 72 |
+| `cache::LocalFinding` | 144 | **72** | 72 |
+| `SpacingSide` | 56 | **12** | 12 |
+| `Option<SpacingSide>` | 56 | **12** | 12 |
+| `casing::PosClass` | 8 | 8 | **4** |
+| `casing::LowerSite` | 24 | 24 | **12** |
+| `mixed_case::MixedCaseSite` | 12 | 12 | 12 |
+| `mixed_case::ShapeProfile` | 16 | 16 | 16 (+ `ChapterShapeProfile` **8**) |
+
+After item 1 the widest `FindingArgs` variant is `AdjacencyEvidence` at 47 B,
+and every one of the four widest variants is wide **only** because it owns a
+`String`/`Vec` (24 B). `SpacingConvention`'s payload fell 116 → 31 B.
+
+**The spacing-mark decision, recorded either way as the brief requires: `mark:
+char` is NOT touched.** Post-enumification `SpacingConvention` is 31 B and no
+longer the widest variant — it is 16 B clear of `AdjacencyEvidence` — so the
+`char` is not material and narrowing it would buy nothing but a new encoding to
+maintain. Entry 27's condition ("stays unless post-enumification type sizes
+still name it") is not met.
+
+### PosClass as landed
+
+```text
+ bits  0..=20   Unicode scalar value of the terminal mark (0..=0x10FFFF)
+ bit      21    quoted (a close-quote intervened before the next word)
+ 0xFFFF_FFFF    Midflow      (sentinel; no forced encoding can reach it)
+ 0xFFFF_FFFE    BookInitial  (sentinel)
+```
+
+No table, no interner, no lifecycle — a total injection of the complete accepted
+domain, which is the whole point of the adopted fix: a side-table id needs a
+bound on how many distinct boundary classes a long-lived resident engine can
+accumulate, and a corpus fleet cannot measure that bound (it gives the
+simultaneous-live maximum of an append-only population). `PosKind` + `kind()`
+keep the three-way case exhaustively matchable, so no consumer lost its compiler
+check; `Ord` is hand-written to reproduce the tagged enum's semantic order
+(`BookInitial` < forced by `(mark, quoted)` < `Midflow`) rather than the bitwise
+one. Round-trip pinned over both quote contexts at `\u{0}`, `.`, `?`, U+0589,
+U+3002, U+D7FF, U+E000, U+FFFF, U+1F600 and U+10FFFF, plus sentinel
+non-collision and the ordering property.
+
+### Fleet bounds measured for this packet's checked constructors
+
+| extent | fleet max | worst corpus | margin under `u16` |
+| --- | ---: | --- | ---: |
+| distinct word types in one chapter (`LowerSite::key`) | 1,125 | `swe` | 58× |
+| letter tokens in one chapter (mixed-case's structural ceiling) | **5,632** | `nabNT` | 11.6× |
+| one shape count for one word type in one chapter | **552** | `udu` | 118× |
+
+The last two are new this packet (`mixed_case::chapter_extent_probe`, driven by
+`spike-bench/field_extents`, over all 1,504 corpora through the exact
+tokenization and shape classification `ChapterAcc::verse` uses). The first is
+WP7a's, re-used. Every one is *enforced* by a checked constructor that panics
+with a stop-and-report pointer, never saturates or truncates.
+
+### Retained bytes — dhat, paired configs, both arms measured this session
+
+`curr_bytes` after the cold seed, `all` minus the lane's `all-no-*` arm. The base
+arm is `18b81c8`, re-measured here rather than taken from Entry 26: `a92b64f`
+changed the `test-probes` judge-fault clone that spike-bench builds with, so
+Entry 26's casing figures are not comparable. The mixed-case lane reproduces
+Entry 26 **to the byte** (8.37 / 15.98 MiB), which is the control that says the
+harness is otherwise unchanged.
+
+| lane | corpus | base `18b81c8` | after WP7b | delta |
+| --- | --- | ---: | ---: | ---: |
+| casing | WA-en-ulb | 34.97 MiB | **27.27** | −7.70 (−22%) |
+| casing | qub | 42.30 MiB | **38.32** | −3.98 (−9%) |
+| mixed-case | WA-en-ulb | 8.37 MiB | **6.36** | −2.01 (−24%) |
+| mixed-case | qub | 15.98 MiB | **13.57** | −2.41 (−15%) |
+| adjacency | WA-en-ulb | 0.03 MiB | 0.46 | **+0.43** |
+| adjacency | qub | 0.04 MiB | 0.51 | **+0.47** |
+| repeated-run | WA-en-ulb | 0.008 MiB | 0.35 | **+0.35** |
+| repeated-run | qub | 0.007 MiB | 0.35 | **+0.35** |
+| **whole `all` config** | WA-en-ulb | **71.36 MiB** | **62.41** | **−8.95** |
+| **whole `all` config** | qub | **90.73 MiB** | **85.15** | **−5.58** |
+
+The two migrations' `+0.4 MiB` each is the per-chapter count-table scatter — the
+same structural cause Entry 26 named for mixed-case, two orders of magnitude
+smaller here because a chapter's adjacency/repeat table has one entry per
+*glyph/cluster*, not per word type. That is why their counts are deliberately
+left at `u64`: narrowing them would add a stop clause to maintain for no
+measurable gain, and the decision is recorded rather than assumed.
+
+### Migration ledger rows (plan §11), as finalized this packet
+
+| field | `punct.adjacency-anomaly` | `lex.repeated-character-run` |
+| --- | --- | --- |
+| **substrate / consumers** | `AdjacencySubstrate`; sole consumer `punct.adjacency-anomaly` | `RepeatedRunSubstrate`; sole consumer `lex.repeated-character-run` |
+| **shared prep** | none — maps its own chapter tape | none — maps its own tape, graphemes and tokens |
+| **key** | the exact candidate run (`",,"`, `"?!?"`, `"፤፤"`) | `(recurrence cluster, folded containing token)`; the word half is `None` when no token contains the run |
+| **boundary state** | `()` — **proven from the listener** | `()` — **proven from the listener** |
+| **chapter observation** | per-lead-glyph opportunity counts + per-pattern counts (sorted boxed slices) + candidate `SiteAddr`s in scan order, behind one `Arc` | `lexical_units` + per-cluster counts + per-folded-word counts + the chapter's distinct keys + `{addr, key: u16}` sites, behind one `Arc` |
+| **reduced chapter** | identical (identity reduction) | identical (identity reduction) |
+| **book contribution** | the book's two ordered count tables + its reduced chapters | the book's three addends + its reduced chapters |
+| **corpus stats** | per-book addends + incrementally maintained corpus `lead` and per-pattern `(k, books)` | per-book addends + incrementally maintained corpus `lexical_units`, cluster counts and word counts |
+| **stats-delta** | exact, honouring all three judge inputs: patterns whose own `(k, books)` moved, ∪ patterns whose lead glyph's corpus count moved, and **every** pattern when the corpus book count moved | deliberately empty, per casing's precedent: the cluster rate's denominator (`lexical_units`) is corpus-global, so the honest answer is empty-or-everything and a subset is the one wrong answer |
+| **extractor config** | `()` — every knob read at judge; pinned by a knob-isolation test (maps/reduces 0) | `()` — same, same test |
+| **retained bytes** | 0.46 MiB (ulb) / 0.51 (qub) | 0.35 MiB (ulb) / 0.35 (qub) |
+| **verdict** | **migrate** — a 33% warm win on MAT/default; cost is a fixed per-analyze drive term (below) | **migrate** — same, same cost |
+
+**Boundary-state proofs, from the code.** `AdjacencyAcc::verse` read only the
+current verse's `tape` and `text`, and `count_lead_opportunities` starts its
+`prev` at `None` on *every* call — so a maximal same-glyph run is bounded by its
+verse in the shipped extraction. `RepeatedRunAcc::verse` read only the current
+verse's `text`/`graphemes`/`tokens`, with `word_graphemes` a per-token scratch
+buffer, and `scan_repeated_character_run` is handed one verse's graphemes. In
+both, the accumulator's other fields are a book *tally*, not a carry. A chapter
+boundary is a verse boundary, so `()` is honest and no stop-and-report was
+warranted. **This is not the repo's verse-seam footgun in disguise:** the claim
+is that the shipped *extraction* is verse-scoped, not that discourse resets.
+
+**Retain-vs-rederive, recorded per row.** Adjacency retains only the 6-byte
+address and re-derives the pattern by slicing the verse — the principle's default
+case, taken. Repeated-run retains the address plus a `u16` key id and re-derives
+the args (`ch`, `run`) by slicing — the key is retained *because* its second half
+needs the verse's UAX #29 tokenization, and no cached segmentation exists at
+materialization to make that a lookup. Casing (item 3) and mixed-case (Entry 26)
+declined the default for their spans on measurement; these two rows take it
+where it is genuinely a byte slice.
+
+**Order.** Both substrates retain candidates in scan order — verse order, then
+`(start, end)` within a verse — which is exactly the retired judges' own
+`(key_idx, range.start, range.end)` sort, so §6.4's contractual within-rule
+equal-key order is reproduced by construction. Entry 1's adjacency collisions
+are the case that proves it: the WA subset holds **34** of the fleet's 43, all
+still end-ascending, all dumps byte-identical.
+
+### §13 ladder — three lanes, WA-en-ulb, BASE `18b81c8` vs CAND (HEAD)
+
+Protocol: same machine/session/build, alternating BASE/CAND **one batch per
+invocation**, five batches per cell, 200 warm iterations per batch, median of the
+five batch medians. Load 4.4 → 2.0 (1-min) across the run. Entry 27's three
+lanes: **forced-rebuild** (`--distinct-variants --variants 4` — four distinct
+word aggregates, so no small content-keyed memo can hit), **stable-aggregate**
+(default variants: punctuation-only edits leave the word aggregate unchanged),
+**undo-recurrence** (`--distinct-variants --variants 2` — an A↔B edit-then-undo
+cycle, the lane where a two-generation memo would legitimately win).
+
+| lane | cell | BASE | CAND | Δ | Δ% | map B→C | judge B→C |
+| --- | --- | ---: | ---: | ---: | ---: | --- | --- |
+| forced | 3JN default | 0.670 | 1.361 | **+0.691** | **+103%** | 0.120→0.080 | 0.041→0.772 |
+| forced | 3JN all | 30.386 | 30.133 | −0.253 | −0.8% | 0.373→0.324 | 29.379→29.217 |
+| forced | MAT default | 7.810 | **5.224** | −2.586 | **−33.1%** | 7.080→**3.734** | 0.055→0.848 |
+| forced | MAT all | 42.924 | **40.025** | −2.899 | −6.8% | 12.339→**9.168** | 29.770→30.077 |
+| stable | 3JN default | 0.672 | 1.395 | **+0.723** | **+108%** | 0.120→0.083 | 0.041→0.791 |
+| stable | 3JN all | 30.815 | 29.991 | −0.823 | −2.7% | 0.375→0.322 | 29.789→29.117 |
+| stable | MAT default | 7.804 | **5.209** | −2.595 | **−33.3%** | 7.071→**3.707** | 0.055→0.847 |
+| stable | MAT all | 44.392 | **41.250** | −3.142 | −7.1% | 12.418→**9.289** | 31.092→31.169 |
+| undo | 3JN default | 0.677 | 1.372 | **+0.695** | **+103%** | 0.122→0.082 | 0.041→0.779 |
+| undo | 3JN all | 29.328 | 29.267 | −0.061 | −0.2% | 0.359→0.312 | 28.383→28.370 |
+| undo | MAT default | 7.696 | **5.137** | −2.559 | **−33.3%** | 6.995→**3.667** | 0.049→0.829 |
+| undo | MAT all | 42.209 | **38.852** | −3.357 | −8.0% | 12.181→**9.063** | 29.237→29.026 |
+
+**The three lanes agree, cell for cell** — which is itself a finding worth
+recording: neither new substrate has a content-keyed memo, so the
+forced/stable/undo distinction has nothing to bite on here. That distinction
+remains real for casing's model memo (Entry 24/27) and should keep being run for
+any row that adds one.
+
+### STOP CLAUSE — a §13 gate fails on 3JN/default (plan §16: report decomposition)
+
+`3JN default` is a **§13 regression in all three lanes**: candidate is both >5%
+and >0.25 ms slower in **5/5** paired batches. It is not measurement noise and it
+is not hidden inside anything. Decomposed by re-measuring the intermediate
+commits on that exact cell (five alternating batches each, same session):
+
+| arm | commit | total | judge | map |
+| --- | --- | ---: | ---: | ---: |
+| BASE | `18b81c8` | 0.660 ms | 0.0385 | 0.117 |
+| items 1–4 only | `e1de596` | **0.659 ms** | 0.0383 | 0.116 |
+| + adjacency | `9040593` | 0.989 ms | 0.371 | 0.115 |
+| + repeated-run | `776b20a`…HEAD | 1.344 ms | 0.762 | 0.079 |
+
+So: **the whole storage-compaction slate (items 1–4) is performance-neutral to
+the microsecond**, and each Phase E migration adds ≈**0.33–0.36 ms of FIXED
+per-analyze cost** on this corpus — a per-substrate constant, not a function of
+the edit. The phase probe attributes it to `judge` because a substrate's entire
+`drive_*` (planning pass, whole-book reduction bookkeeping, judging, and
+materializing every book's retained sites) runs in that window; its internal
+split was not separated in this packet, deliberately, because §16 says report the
+decomposition before adding another optimization.
+
+Three things the owner should weigh:
+
+1. **The floor still holds.** Plan §13's named target for this cell is the
+   default 3JN fixed floor **≤ 2 ms**; CAND is 1.34 ms.
+2. **The trade is size-dependent and favourable off the smallest book in the
+   Bible.** The same change makes MAT/default **33% faster** (7.81 → 5.22 ms) and
+   MAT/all 7–8% faster, because the removed re-walk scales with the edited book
+   while the new cost is fixed per corpus. 3JN is 1 chapter of 1,189; MAT is 28.
+3. **This is the substrate architecture's per-migration constant, now measured in
+   isolation for the first time** — every already-migrated substrate pays it too
+   (Entry 26 named the ~1,189 chapter-token `Box<str>` planning-pass allocation
+   as one component). Six substrates now pay it. If it is worth removing, the
+   lever is shared across all of them (one planning pass, one reduction
+   bookkeeping walk, hoisted out of the per-substrate drives) — which is a named
+   piece of work, not something to bolt onto this packet.
+
+### Deviations / notes for the owner (clearly marked)
+
+1. **The §13 stop clause above is this packet's headline.** Nothing else in the
+   ladder regresses; the two Phase E rows buy a 33% warm win on a normal book and
+   cost a fixed 0.7 ms on the smallest one.
+2. **`pkg:` regeneration republishes more than item 1.** The checked-in packages
+   were last built at `aefbed8`, before all of Phase B/C/D/E, so `*_bg.wasm` grew
+   1,440,719 → 1,539,082 bytes. That growth is the accumulated engine work, not
+   the type change; the only TS shape change is `form`/`class` becoming string
+   unions. `cargo xtask wire-js` reports zero changed files (the generated wire
+   surface renders from `ssc-wire`'s schema, which carries digest lanes and code
+   tables, not the args union).
+3. **`ShapeProfile::record` was deleted** — with per-chapter counting moved to
+   `ChapterShapeProfile`, the corpus-width profile no longer counts single
+   occurrences at all. Not a compat shim removal; it was genuinely dead.
+4. **A repeated-run test now drives `cache.remove_book` explicitly.** The retired
+   test reached into `stats.remove_book`; the substrate equivalent must too,
+   because book removal is shell-driven (`Galley::remove_books`) and a book absent
+   from one call's corpus is otherwise a book that call simply did not ask about.
+   Worth stating because it looked at first like a substrate bug and is not.
+5. **Harness additions committed** (measurement instruments, not engine):
+   `mixed_case::chapter_extent_probe` + its `field_extents` half, and
+   `dhat_probe`'s `all-no-adjacency` / `all-no-repeat` paired arms.
+6. **`WalkPlan`'s grapheme counting lane is now empty.** With both Phase E rows
+   migrated, no counting listener asks the fused walk for graphemes. Not cleaned
+   up here (it is still wanted by the anchor/project lanes); flagged for the
+   Phase F audit.
+
+### Stop-safe next step
+
+The tree is clean and every commit is independently gated. Owed, in order:
+**(a)** the owner's call on the 3JN/default §13 regression — accept (the floor
+holds, the trade favours every larger book) or open the shared per-substrate
+drive-overhead work; **(b)** WP7c / the remaining Phase E rows; **(c)** WP8, the
+delta-consumption packet, which both rows above are written to expect (adjacency
+already produces an exact delta; repeated-run will need a generation counter, as
+recorded in its code).
