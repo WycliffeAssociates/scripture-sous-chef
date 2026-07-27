@@ -4904,3 +4904,41 @@ bookend is wanted before WP7c starts regardless, it is ~1 hour and unblocked.
   `update_book` signature (planning passes `&str`; ownership only at the
   persistent-cache boundary), own §13 + oracle gate; then the six rows, one
   commit each, each recording its own drive-phase reading.
+
+---
+
+## Entry 32 — Work Packet 7c: borrowed-token `update_book` + the final six Phase E migrations
+
+- **Date:** 2026-07-27
+- **Branch:** `granularity-spine` (main tree). Base for this packet: `b7fd67f`
+  (Entry 31, the cardinality hardening + owed bookend).
+- **Scope:** item 0, the borrowed-token `update_book` signature (Entry 30's
+  remaining `plan` lever, owner-dispatched in Entry 31), landed **before** any
+  migration so all six new call sites are born borrowed; then plan §8 Phase E
+  rows 4–9 — `PunctOnlyToken`, `MixedScriptInToken`, `RareGlyph`,
+  `ProjectLengthRatio`, `MixedNormalization`, `BracketBalance` — one gated
+  commit each. **After this packet Phase E is complete.**
+
+### WA + small oracle base pin (this packet's per-commit referee)
+
+Pinned at HEAD `b7fd67f`, `RAYON_NUM_THREADS=4` — WA scope from
+`oracle-blobs/wa.blob` (251 corpora findings / 32 transcript), `small` from
+`oracle-blobs/small.blob` (15 / 2). All eight hashes are byte-identical to the
+standing WP1…WP7c0 contract. **Recorded before any edit:**
+
+| file | sha256 |
+| --- | --- |
+| `wp7c.base.wa.findings.default.tsv` | `38a0ceadcc792a6656905c7a0f9e2e4c2720c86f47f41f94c66e7a8ad1a9702c` |
+| `wp7c.base.wa.findings.all.tsv` | `128fdd933dc71cda0a4a6d9d9971ceb5648a5703f8b22ee798d30b09d2c15660` |
+| `wp7c.base.wa.inc.default.tsv` | `7b19caa79b284bfa16a56f300f5660591ffc58ffa183888451daf82778676dca` |
+| `wp7c.base.wa.inc.all.tsv` | `c951a758823629c6b6d2e1d558e92c59c1873ed17856b328a60c7ebdc4cee74f` |
+| `wp7c.base.small.findings.default.tsv` | `8d638a441bb654e00fc7fca6e7b0da10d7449a697d9663fdc5efb430bb50ff00` |
+| `wp7c.base.small.findings.all.tsv` | `d657dcff009565e509dcbd891c5f7bf50db5bc9f5c8d19dff316dd4aa6c539e2` |
+| `wp7c.base.small.inc.default.tsv` | `10da8d93dd5c275f38925d726508fa43ba368d43f3ce4f1674652cc47e13661e` |
+| `wp7c.base.small.inc.all.tsv` | `c3532af9a4efa7ec370ba5531b9332fb2c7a0f54b6a86aa8b79972d659f8855e` |
+
+The standing full-fleet pins this packet's bookends must reproduce (Entry 28,
+re-confirmed at `b7fd67f` in Entry 31): findings `a10cf5a4c17492bf9771d77ea4daace337e1042d66b83dcea8042eceb6748e29`
+(default) / `ddedee96571b2e8bff082ec45bdaa7723cd188fc911f21e1d633b19f6e65b986` (all);
+transcript `ab9b0f966a3b310dc0b37f5832a7f6f1c0dcd2618205f3343519f09b3848090b`
+(default) / `c8a1be69a9b88f13d299d06fd916a370395efe9f9261e1d26c25d645912128c9` (all).
