@@ -12,6 +12,8 @@
 //! (repo CLAUDE.md: verse markers are addressing, not discourse).
 //!
 use crate::corpus::{BookGroup, LocalKeyIdx};
+#[cfg(feature = "bench-probes")]
+use crate::corpus::Books;
 use crate::grapheme::{self, GSpan};
 use crate::tape::{self, TapeEntry};
 use crate::token::{self, Token};
