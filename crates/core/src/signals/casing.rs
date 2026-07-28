@@ -1867,9 +1867,12 @@ impl ChapterAcc {
         }
     }
 
-    fn verse(&mut self, local_idx: LocalKeyIdx, text: &str) {
-        self.tokens_buf.clear();
-        crate::token::tokenize_into(text, &mut self.tokens_buf);
+    /// One verse, from the chapter's shared token stream: the same
+    /// `tokenize_into` result the private per-verse walk produced, decoded into
+    /// this accumulator's own buffer.
+    fn verse(&mut self, vi: usize, text: &str, shared: &crate::prep::ChapterTokens) {
+        let local_idx = LocalKeyIdx::from_usize(vi);
+        shared.verse(vi, &mut self.tokens_buf);
         compound_words(text, &self.tokens_buf, &mut self.words_buf);
         let mut prev_letter = false;
         let mut cursor = 0usize;
@@ -2145,8 +2148,9 @@ impl crate::substrate::ObservationSubstrate for CasingSubstrate {
         symbols: &WordInterner,
     ) -> CasingChapterObs {
         let mut acc = ChapterAcc::new();
+        let shared = chapter.tokens();
         for (vi, text) in chapter.texts.iter().enumerate() {
-            acc.verse(LocalKeyIdx::from_usize(vi), text);
+            acc.verse(vi, text, shared);
         }
         acc.finish(chapter.chapter, symbols)
     }
@@ -2706,10 +2710,9 @@ pub(crate) struct CasingState<'a> {
 
 /// One chapter the substrate has to map this analysis, as the ordered map seam
 /// sees it: its caller-order `(book, chapter)` slot plus the view mapping reads.
-struct CasingMapWork<'a> {
+struct CasingMapWork {
     book: usize,
     chapter: usize,
-    view: crate::substrate::ChapterView<'a>,
 }
 
 /// Drive the casing observation substrate and both its consumer judges for one
@@ -2724,6 +2727,7 @@ pub(crate) fn drive_casing(
     positional: bool,
     intrinsic: bool,
     state: CasingState<'_>,
+    shared: &mut crate::prep::SharedTokens,
     corpus: &Corpus,
     cfg: &CasingConfig,
     lane: &mut crate::substrate::SubstrateLane,
@@ -2770,7 +2774,7 @@ pub(crate) fn drive_casing(
     // the planning pass never allocates. `update_book` takes ownership only
     // where it rebuilds a persistent cache entry.
     let mut stamped: Vec<Vec<(&str, ObservationInputStamp)>> = Vec::with_capacity(layout.len());
-    let mut work: Vec<CasingMapWork<'_>> = Vec::new();
+    let mut work: Vec<CasingMapWork> = Vec::new();
     let mut book_runs: Vec<std::ops::Range<usize>> = Vec::new();
     let mut work_bytes = 0usize;
     for (bi, book) in layout.iter().enumerate() {
@@ -2779,12 +2783,13 @@ pub(crate) fn drive_casing(
         for (ci, c) in book.chapters.iter().enumerate() {
             let stamp = ObservationInputStamp::target_only::<CasingSubstrate>(c.hash, &());
             if !cache.observation_is_current(&book.slug, &c.chapter, &stamp) {
-                let verses = &texts[c.range.clone()];
-                work_bytes += verses.iter().map(String::len).sum::<usize>();
+                work_bytes += texts[c.range.clone()]
+                    .iter()
+                    .map(String::len)
+                    .sum::<usize>();
                 work.push(CasingMapWork {
                     book: bi,
                     chapter: ci,
-                    view: ChapterView::target(&c.chapter, verses),
                 });
             }
             chapters.push((&*c.chapter, stamp));
@@ -2795,13 +2800,29 @@ pub(crate) fn drive_casing(
         stamped.push(chapters);
     }
     probe.mark(DrivePhase::Plan);
+    // Fill the shared token lane for exactly this drive's work set before the map
+    // seam opens. Separate from the seam, not nested inside it: one Rayon grain is
+    // live at a time, and a chapter already streamed by an earlier drive is not
+    // rebuilt.
+    let wanted: Vec<(usize, usize)> = work.iter().map(|w| (w.book, w.chapter)).collect();
+    shared.ensure(layout, texts, &wanted);
+    let shared: &crate::prep::SharedTokens = shared;
     let route = crate::rule::map_route(&book_runs, work.len(), work_bytes);
     #[cfg(any(test, feature = "test-probes"))]
     {
         cache.map_route = route.label();
     }
     let fresh = crate::rule::map_chapter_work(&work, &book_runs, route, |w| {
-        CasingSubstrate::map_chapter(&w.view, &(), symbols)
+        let c = &layout[w.book].chapters[w.chapter];
+        CasingSubstrate::map_chapter(
+            &ChapterView::tokened(
+                &c.chapter,
+                &texts[c.range.clone()],
+                shared.get(w.book, w.chapter),
+            ),
+            &(),
+            symbols,
+        )
     });
     // Back into caller-order `(book, chapter)` slots. Reduction reads them in
     // corpus order, never completion order, so serial and parallel builds — and
@@ -2822,8 +2843,10 @@ pub(crate) fn drive_casing(
             // is not.
             slots[bi][i].take().unwrap_or_else(|| {
                 let c = &book.chapters[i];
+                let verses = &texts[c.range.clone()];
+                let tokens = crate::prep::ChapterTokens::build(verses);
                 CasingSubstrate::map_chapter(
-                    &ChapterView::target(&c.chapter, &texts[c.range.clone()]),
+                    &ChapterView::tokened(&c.chapter, verses, Some(&tokens)),
                     &(),
                     symbols,
                 )
@@ -2986,6 +3009,7 @@ pub(crate) fn casing_findings(
             retained: &mut retained,
             symbols: &symbols,
         },
+        &mut crate::prep::SharedTokens::default(),
         corpus,
         cfg,
         &mut lane,
@@ -3087,6 +3111,7 @@ pub fn evaluate(corpus: &Corpus, cfg: &CasingConfig) -> Vec<SiteEval> {
             retained: &mut retained,
             symbols: &symbols,
         },
+        &mut crate::prep::SharedTokens::default(),
         corpus,
         cfg,
         &mut lane,
@@ -3337,6 +3362,7 @@ mod tests {
                     retained: &mut self.retained,
                     symbols,
                 },
+                &mut crate::prep::SharedTokens::default(),
                 corpus,
                 cfg,
                 &mut lane,
@@ -3809,12 +3835,72 @@ mod tests {
         map_one_with(token, verses, &WordInterner::default())
     }
 
+    /// casing's map reads exactly the tokens its private per-verse walk read.
+    ///
+    /// Both sides map the same chapter through the shared lane, but from two
+    /// independent encodings of one `tokenize_into` result: the shipped packed
+    /// form, and a form that stores every span verbatim. A packed-path defect
+    /// therefore shows up as a value-unequal observation rather than being read
+    /// back correctly by the same code that wrote it wrong.
+    ///
+    /// The token spans do more here than name words: `compound_words` splits them
+    /// further, and the gap BETWEEN consecutive spans is what drives the
+    /// pending-terminal machine that decides every site's position class. So a
+    /// span whose start moved by one byte moves a verdict's position, not just a
+    /// tally — which is why `lead`, `first` and `tail` are compared too (they are
+    /// fields of the observation, so the value comparison covers them).
+    #[test]
+    fn the_shared_stream_maps_what_a_private_casing_token_walk_mapped() {
+        let texts: Vec<String> = [
+            // No word at all: the whole verse becomes the chapter's lead gap.
+            "  \u{201c}\u{2014}  ".to_string(),
+            String::new(),
+            "In the beginning God created the heavens.".to_string(),
+            // Terminals, quotes and a forced position after each.
+            "He said, \u{201c}let there be light.\u{201d} then there was light.".to_string(),
+            "Cafe\u{0301} noir. e\u{0301}lan vital".to_string(),
+            "परमेश्वर ने कहा। उजियाला हो".to_string(),
+            // Han: adjacent tokens with no gap between them at all, so the gap
+            // machine sees an empty gap.
+            "神說要有光。就有了光".to_string(),
+            "…—!!! ?? 40 ४५ don't first-born McDonald's".to_string(),
+            format!("alpha{}omega.", " ".repeat(40)),
+            format!("{}x tail.", "x".repeat(200)),
+        ]
+        .to_vec();
+        let symbols = WordInterner::default();
+        let packed = crate::prep::ChapterTokens::build(&texts);
+        let verbatim = crate::prep::ChapterTokens::escaped_only(&texts);
+        let map = |t: &crate::prep::ChapterTokens| {
+            CasingSubstrate::map_chapter(&ChapterView::tokened("1", &texts, Some(t)), &(), &symbols)
+        };
+        let packed_obs = map(&packed);
+        assert!(
+            packed_obs == map(&verbatim),
+            "the packed shared stream mapped a different observation than the same \
+             tokenizer output stored verbatim"
+        );
+        // Not vacuous: a populated word table, a resolved first word, and a
+        // pending terminal left at the chapter's end — all three token-positioned.
+        assert!(
+            packed_obs.words.keys.len() >= 10,
+            "battery produced only {} word types",
+            packed_obs.words.keys.len()
+        );
+        assert!(packed_obs.first.is_some(), "battery never resolved a first word");
+        assert!(
+            packed_obs.tail.is_some(),
+            "battery left no pending terminal at the chapter end"
+        );
+    }
+
     /// The same, against a caller-owned symbol table — for a test that maps two
     /// chapters and needs their symbols to be comparable.
     fn map_one_with(token: &str, verses: &[&str], symbols: &WordInterner) -> CasingChapterObs {
         let texts: Vec<String> = verses.iter().map(|v| (*v).to_string()).collect();
+        let tokens = crate::prep::ChapterTokens::build(&texts);
         CasingSubstrate::map_chapter(
-            &ChapterView::target(token, &texts),
+            &ChapterView::tokened(token, &texts, Some(&tokens)),
             &(),
             symbols,
         )

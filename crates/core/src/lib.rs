@@ -656,6 +656,7 @@ fn transition(
             retained: &mut substrates.casing_model,
             symbols: &substrates.words,
         },
+        &mut shared_tokens,
         target,
         &config.casing,
         &mut substrate_lane,
