@@ -384,6 +384,38 @@ impl WordStats {
         }
     }
 
+    /// Withdraw another book's counts for the same word from this corpus-wide
+    /// aggregate — the inverse of [`WordStats::add`], used to patch the merged
+    /// table when a book's table is replaced.
+    ///
+    /// Exact, because every count here is an integer: withdraw-then-deposit
+    /// reproduces a fresh merge bit-for-bit, which is precisely what the `f64`
+    /// accumulations in [`build_trust`] may never do. Every count withdrawn was
+    /// deposited by a matching `add`, so an absent class or an underflow is a
+    /// maintenance bug, not an input, and says so loudly.
+    fn sub(&mut self, o: &WordStats) {
+        fn dec(a: u32, b: u32) -> u32 {
+            a.checked_sub(b)
+                .expect("withdrawing a casing tally that was never deposited")
+        }
+        self.mid_upper = dec(self.mid_upper, o.mid_upper);
+        self.mid_lower = dec(self.mid_lower, o.mid_lower);
+        self.book_initial.upper = dec(self.book_initial.upper, o.book_initial.upper);
+        self.book_initial.lower = dec(self.book_initial.lower, o.book_initial.lower);
+        for f in &o.forced {
+            let i = self
+                .forced
+                .binary_search_by(|g| (g.quoted, g.mark).cmp(&(f.quoted, f.mark)))
+                .expect("withdrawing a boundary class that was never deposited");
+            self.forced[i].tally.upper = dec(self.forced[i].tally.upper, f.tally.upper);
+            self.forced[i].tally.lower = dec(self.forced[i].tally.lower, f.tally.lower);
+        }
+        // A class with no remaining occurrence is ABSENT from a freshly merged
+        // table, and the panel's class set is derived from presence — so an
+        // emptied slot must go, not linger at zero.
+        self.forced.retain(|f| f.tally.total() > 0);
+    }
+
     fn record(&mut self, pos: PosClass, case: Case) {
         match (pos.kind(), case) {
             (_, Case::Uncased) => {}
@@ -574,6 +606,222 @@ impl Panel {
         let n = self.jurors.len();
         &self.after[class * n..(class + 1) * n]
     }
+
+    /// Patch the panel onto a merged table that moved at `moved`, given the
+    /// signed per-class event delta the same swap produced. `true` iff the panel
+    /// now equals [`Panel::build`] over that table.
+    ///
+    /// `false` means the move changed panel *membership* — a word crossing
+    /// [`JUROR_MIN`] in either direction, or a boundary class entering or leaving
+    /// the corpus. Either reshapes the canonical order, and with it the order the
+    /// `f64` witnesses sum in, so the caller rebuilds. Membership moves are rare;
+    /// this seam only has to be *correct* about them, not quick.
+    ///
+    /// Both membership tests run before any write, so a rejected patch leaves the
+    /// panel untouched rather than half-written.
+    fn patch(
+        &mut self,
+        words: &CorpusWords,
+        moved: &[Arc<str>],
+        class_delta: &[(ClassKey, i64)],
+    ) -> bool {
+        for &(ck, d) in class_delta {
+            match self.classes.binary_search(&ck) {
+                // Presence in `classes` is `events > 0`, so a class emptied by
+                // this swap has to leave.
+                Ok(c) => {
+                    let events = self.events[c] as i64 + d;
+                    debug_assert!(events >= 0, "class events went negative");
+                    if events == 0 {
+                        return false;
+                    }
+                }
+                Err(_) => {
+                    if d != 0 {
+                        return false;
+                    }
+                }
+            }
+        }
+        let mut rows: Vec<(usize, &WordStats)> = Vec::with_capacity(moved.len());
+        for key in moved {
+            let stats = words.get(&**key);
+            let total = stats.map_or(0, WordStats::all_total);
+            match self.jurors.binary_search_by(|j| (**j).cmp(key)) {
+                Ok(j) => {
+                    if total < JUROR_MIN {
+                        return false;
+                    }
+                    rows.push((j, stats.expect("a juror is in the merged table")));
+                }
+                Err(_) => {
+                    if total >= JUROR_MIN {
+                        return false;
+                    }
+                }
+            }
+        }
+
+        for &(ck, d) in class_delta {
+            let c = self
+                .classes
+                .binary_search(&ck)
+                .expect("every delta's class was resolved above");
+            self.events[c] = (self.events[c] as i64 + d) as u64;
+        }
+        // Each juror's columns are rewritten from the merged table's absolute
+        // counts, never adjusted by a delta, so a word named twice by two book
+        // swaps lands on the same values a rebuild would give it.
+        let n = self.jurors.len();
+        for (j, w) in rows {
+            self.base[j] = w.all_total();
+            for c in 0..self.classes.len() {
+                self.after[c * n + j] = 0;
+            }
+            for f in &w.forced {
+                let t = f.tally.total();
+                if t == 0 {
+                    continue;
+                }
+                let c = self
+                    .classes
+                    .binary_search(&ClassKey {
+                        mark: f.mark,
+                        quoted: f.quoted,
+                    })
+                    .expect("a juror's boundary class is in the panel's class set");
+                self.after[c * n + j] = t;
+            }
+        }
+        true
+    }
+}
+
+/// The merged corpus word table: every word with at least one cased word-start
+/// somewhere in the corpus, with its corpus-wide raw tallies.
+type CorpusWords = FxHashMap<Arc<str>, WordStats>;
+
+/// Merge the whole aggregate from scratch — the cold build, and the fallback
+/// whenever no previous model is resident to patch.
+fn merge_books(stats: &CasingCorpusStats) -> CorpusWords {
+    let mut words = CorpusWords::default();
+    for (book_words, _) in stats.per_book.values() {
+        // An uncased-only word is the sole per-book-safe prune (ADR 0051): it
+        // yields no candidate site and enters neither the lexicon-lowercase habit
+        // nor the (bicameral) witnesses.
+        for (key, w) in book_words.iter().filter(|(_, w)| w.has_case()) {
+            words.entry(key.clone()).or_default().add(w);
+        }
+    }
+    words
+}
+
+/// Add `d` to a class's entry in a sorted flat signed-delta list.
+fn bump_class(delta: &mut Vec<(ClassKey, i64)>, ck: ClassKey, d: i64) {
+    match delta.binary_search_by_key(&ck, |&(c, _)| c) {
+        Ok(i) => delta[i].1 += d,
+        Err(i) => delta.insert(i, (ck, d)),
+    }
+}
+
+/// Patch the merged corpus table by one book-table swap: withdraw the book's old
+/// tallies and deposit its new ones, naming every word whose corpus tallies moved
+/// and the signed per-class event delta the panel needs.
+///
+/// Both tables are sorted by word, so one merge walk visits only the entries that
+/// actually differ — a one-chapter edit of a whole book touches a handful of the
+/// book's thousands of word types, and the identical rest cost one comparison
+/// each.
+fn apply_swap(
+    words: &mut CorpusWords,
+    old: Option<&BookWords>,
+    new: Option<&BookWords>,
+    moved: &mut Vec<Arc<str>>,
+    class_delta: &mut Vec<(ClassKey, i64)>,
+) {
+    fn classes_of(w: &WordStats, class_delta: &mut Vec<(ClassKey, i64)>, sign: i64) {
+        for f in &w.forced {
+            let t = f.tally.total();
+            if t == 0 {
+                continue;
+            }
+            bump_class(
+                class_delta,
+                ClassKey {
+                    mark: f.mark,
+                    quoted: f.quoted,
+                },
+                sign * t as i64,
+            );
+        }
+    }
+    fn withdraw(
+        words: &mut CorpusWords,
+        key: &Arc<str>,
+        w: &WordStats,
+        class_delta: &mut Vec<(ClassKey, i64)>,
+    ) {
+        let cur = words
+            .get_mut(&**key)
+            .expect("a book's cased word is in the merged table");
+        cur.sub(w);
+        if cur.all_total() == 0 {
+            words.remove(&**key);
+        }
+        classes_of(w, class_delta, -1);
+    }
+    fn deposit(
+        words: &mut CorpusWords,
+        key: &Arc<str>,
+        w: &WordStats,
+        class_delta: &mut Vec<(ClassKey, i64)>,
+    ) {
+        words.entry(Arc::clone(key)).or_default().add(w);
+        classes_of(w, class_delta, 1);
+    }
+
+    let empty: BookWords = Vec::new();
+    let old = old.unwrap_or(&empty);
+    let new = new.unwrap_or(&empty);
+    // The merged table never saw an uncased-only entry, so neither side's
+    // uncased entries take part in the walk.
+    let cased = |v: &BookWords, mut k: usize| {
+        while k < v.len() && !v[k].1.has_case() {
+            k += 1;
+        }
+        k
+    };
+    let (mut i, mut j) = (cased(old, 0), cased(new, 0));
+    loop {
+        use std::cmp::Ordering;
+        let order = match (old.get(i), new.get(j)) {
+            (Some(o), Some(n)) => (*o.0).cmp(&*n.0),
+            (Some(_), None) => Ordering::Less,
+            (None, Some(_)) => Ordering::Greater,
+            (None, None) => return,
+        };
+        match order {
+            Ordering::Equal => {
+                if old[i].1 != new[j].1 {
+                    withdraw(words, &old[i].0, &old[i].1, class_delta);
+                    deposit(words, &new[j].0, &new[j].1, class_delta);
+                    moved.push(Arc::clone(&new[j].0));
+                }
+                i = cased(old, i + 1);
+                j = cased(new, j + 1);
+            }
+            Ordering::Less => {
+                withdraw(words, &old[i].0, &old[i].1, class_delta);
+                moved.push(Arc::clone(&old[i].0));
+                i = cased(old, i + 1);
+            }
+            Ordering::Greater => {
+                deposit(words, &new[j].0, &new[j].1, class_delta);
+                moved.push(Arc::clone(&new[j].0));
+                j = cased(new, j + 1);
+            }
+        }
+    }
 }
 
 /// Aggregate per-juror 2×2 association (Dunning G² / Fisher) of a class's
@@ -756,13 +1004,17 @@ fn build_trust(
 /// The lexicon-restricted per-class habit, plus the corpus trust map (ADR
 /// 0052). Built corpus-wide at judge over the merged table.
 ///
-/// Owns its word table so the built model can be retained across analyze calls
-/// independent of any borrow of the aggregate it was built from (see
+/// Holds the word table it was built from, so the built model can be retained
+/// across analyze calls independent of any borrow of the aggregate (see
 /// [`CasingModel`]).
 pub(crate) struct Model {
     /// Keyed by shared arena words, so this table's keys cost a refcount bump
     /// each instead of a fresh allocation per corpus word type per build.
-    words: FxHashMap<Arc<str>, WordStats>,
+    ///
+    /// Shared rather than owned so [`CasingModel::build`] can hand the *same*
+    /// table to the next model after patching it in place: the judge's view is
+    /// released first, which is what makes the handle unique.
+    words: Arc<CorpusWords>,
     /// Per class trust; `None`-keyed book-initial is always fully trusted.
     trust: FxHashMap<ClassKey, f64>,
     /// Lexicon-restricted capitalize-after-class counts (up, total). `None` =
@@ -784,26 +1036,16 @@ pub struct Factors {
 }
 
 impl Model {
-    fn build(stats: &CasingCorpusStats, cfg: &CasingConfig) -> Model {
+    /// Judge the merged table and its panel into the corpus model. The table's
+    /// own iteration order reaches no order-sensitive accumulation — the
+    /// reshuffle witnesses sum over the [`Panel`]'s canonical juror order (ADR
+    /// 0066), and the W1/habit tallies are integer sums — so it is a set, not a
+    /// sequence, and an incrementally patched table judges identically to a
+    /// freshly merged one.
+    fn build(words: Arc<CorpusWords>, panel: &Panel, cfg: &CasingConfig) -> Model {
         let z = clamp_z(cfg.confidence_z);
         let gate = f64::from(clamp_unit(cfg.trust_gate));
-        // Corpus-wide word table: sum each book's raw tallies. Its iteration
-        // order reaches no order-sensitive accumulation — the reshuffle
-        // witness sums over the [`Panel`]'s canonical juror order (ADR 0066),
-        // and the W1/habit tallies below are integer sums — so this table is a
-        // set, not a sequence.
-        let mut words: FxHashMap<Arc<str>, WordStats> = FxHashMap::default();
-        for (book_words, _) in stats.per_book.values() {
-            // An uncased-only word is the sole per-book-safe prune (ADR 0051):
-            // it yields no candidate site and enters neither the lexicon-
-            // lowercase habit nor the (bicameral) witnesses.
-            for (key, w) in book_words.iter().filter(|(_, w)| w.has_case()) {
-                words.entry(key.clone()).or_default().add(w);
-            }
-        }
-
-        let panel = Panel::build(&words);
-        let trust = build_trust(&words, &panel, z);
+        let trust = build_trust(&words, panel, z);
 
         // Lexicon-restricted per-class habit over the words the (baseline)
         // lexicon calls intrinsically lowercase. Bare glyphs and book-initial
@@ -1390,6 +1632,15 @@ pub(crate) struct CasingBookContribution {
 #[derive(Default)]
 pub(crate) struct CasingCorpusStats {
     per_book: BTreeMap<Box<str>, (Arc<BookWords>, u32)>,
+    /// Every book-table swap `per_book` has taken since a judge model last
+    /// consumed them, oldest first — the exact word-level delta the resident
+    /// model's merged table and juror panel are patched by. One entry per
+    /// `generation` bump.
+    ///
+    /// Drained by [`CasingModel::build`]. A build with no previous model to patch
+    /// merges from `per_book` and drops them, so a drive that never reaches the
+    /// build (the uncased early-out) cannot strand a delta.
+    swaps: Vec<(Option<Arc<BookWords>>, Option<Arc<BookWords>>)>,
     /// Bumped whenever `per_book` changes. The judge model is a pure function of
     /// this aggregate and the judging knobs, so this counter is the whole memo
     /// key — no content fingerprint, no deep equality.
@@ -1401,14 +1652,117 @@ impl CasingCorpusStats {
     fn any_cased(&self) -> bool {
         self.per_book.values().any(|&(_, starts)| starts > 0)
     }
+
+    fn take_swaps(&mut self) -> Vec<(Option<Arc<BookWords>>, Option<Arc<BookWords>>)> {
+        std::mem::take(&mut self.swaps)
+    }
 }
 
 /// The retained judge model: the corpus model plus the aggregate generation and
-/// judging knobs it was built from. Rebuilt only when one of those moved.
+/// judging knobs it was built from. Rebuilt only when one of those moved — and
+/// the rebuild *patches* rather than re-derives (see [`CasingModel::build`]).
 pub(crate) struct CasingModel {
     generation: u64,
     cfg: CasingConfig,
     model: Arc<Model>,
+    /// The juror panel `model`'s trust was summed over, retained OUTSIDE the
+    /// `Arc` so the next build can patch it in place. The judge never reads it.
+    panel: Panel,
+    /// Which route this build took, so a witness can prove it exercised the path
+    /// it claims to: whether the merged table was patched (rather than merged
+    /// from every book) and whether the panel was patched (rather than rebuilt
+    /// because membership moved).
+    #[cfg(any(test, feature = "test-probes"))]
+    route: (bool, bool),
+}
+
+impl CasingModel {
+    /// Build the model for `generation`, patching the previous model's merged
+    /// word table and juror panel through the aggregate's pending book swaps
+    /// instead of re-deriving them over the whole vocabulary.
+    ///
+    /// The patched result is bit-identical to a from-scratch build, and that is
+    /// the contract this seam rests on, not an optimisation of it:
+    ///
+    /// - the merged table and the panel's counts are integers, so
+    ///   withdraw-then-deposit is exact;
+    /// - the `f64` witnesses are re-summed in full over the canonical juror order
+    ///   (ADR 0066) from those counts — never adjusted by a difference of sums;
+    /// - a change of panel membership rejects the patch and rebuilds the panel,
+    ///   because membership *is* the canonical order.
+    fn build(
+        prev: Option<CasingModel>,
+        stats: &CasingCorpusStats,
+        swaps: Vec<(Option<Arc<BookWords>>, Option<Arc<BookWords>>)>,
+        generation: u64,
+        cfg: &CasingConfig,
+    ) -> CasingModel {
+        let (mut words, panel) = match prev {
+            Some(prev) => {
+                assert_eq!(
+                    prev.generation + swaps.len() as u64,
+                    generation,
+                    "casing swap log does not account for every aggregate generation"
+                );
+                let CasingModel { model, panel, .. } = prev;
+                // Releasing the judge's view of the model FIRST is what leaves
+                // this handle unique, so the patch below writes the resident
+                // table in place instead of deep-copying the vocabulary.
+                let words = Arc::clone(&model.words);
+                drop(model);
+                debug_assert_eq!(
+                    Arc::strong_count(&words),
+                    1,
+                    "the previous model's word table outlived it"
+                );
+                (words, Some(panel))
+            }
+            None => (Arc::new(CorpusWords::default()), None),
+        };
+        #[cfg(any(test, feature = "test-probes"))]
+        let mut route = (panel.is_some(), panel.is_some());
+        let panel = match panel {
+            // A judging-knob change moves neither the table nor the panel: both
+            // are functions of the aggregate alone.
+            Some(panel) if swaps.is_empty() => panel,
+            Some(mut panel) => {
+                let mut moved: Vec<Arc<str>> = Vec::new();
+                let mut class_delta: Vec<(ClassKey, i64)> = Vec::new();
+                let table = Arc::make_mut(&mut words);
+                for (old, new) in &swaps {
+                    apply_swap(
+                        table,
+                        old.as_deref(),
+                        new.as_deref(),
+                        &mut moved,
+                        &mut class_delta,
+                    );
+                }
+                if panel.patch(&words, &moved, &class_delta) {
+                    panel
+                } else {
+                    #[cfg(any(test, feature = "test-probes"))]
+                    {
+                        route.1 = false;
+                    }
+                    Panel::build(&words)
+                }
+            }
+            None => {
+                *Arc::make_mut(&mut words) = merge_books(stats);
+                Panel::build(&words)
+            }
+        };
+        let model = Arc::new(Model::build(Arc::clone(&words), &panel, cfg));
+        CasingModel {
+            generation,
+            cfg: *cfg,
+            model,
+            panel,
+            #[cfg(any(test, feature = "test-probes"))]
+            route,
+        }
+    }
 }
 
 /// One chapter's casing map: the same per-verse walk the rules always ran, with
@@ -1860,6 +2214,14 @@ impl crate::substrate::ObservationSubstrate for CasingSubstrate {
             }
         }
         if moved {
+            // One swap per generation bump, so the resident model can patch its
+            // merged table forward from whichever generation it was built at.
+            // A value-equal replacement is not logged and does not bump: the
+            // merged table it would produce is the same one.
+            stats.swaps.push((
+                old.map(|o| Arc::clone(&o.words)),
+                new.map(|n| Arc::clone(&n.words)),
+            ));
             stats.generation += 1;
         }
         // The stats delta is deliberately empty, and the driver derives
@@ -2225,13 +2587,19 @@ pub(crate) fn drive_casing(
         // Owed in the cache, not decided from `reusable`: the model is a memo in
         // a section a failed attempt does not roll back, so a retry would find it
         // current and patch only the site-delta over a partition judged against
-        // the old model.
+        // the old model. The swap log is drained under the same asymmetry — the
+        // model that consumed it is retained beside it, so a retry finds both
+        // moved together.
         cache.pending.owe_all();
-        *retained = Some(CasingModel {
+        let swaps = cache.corpus_stats_mut().take_swaps();
+        let prev = retained.take();
+        *retained = Some(CasingModel::build(
+            prev,
+            cache.corpus_stats(),
+            swaps,
             generation,
-            cfg: *cfg,
-            model: Arc::new(Model::build(cache.corpus_stats(), cfg)),
-        });
+            cfg,
+        ));
     }
     let model = retained.as_ref().expect("just built or reused");
     let judge = CasingJudge::new(Arc::clone(&model.model), cfg);
@@ -3770,6 +4138,192 @@ mod tests {
             render(&vm, &tight),
             render(&vm, &run_both(&vm, &cfg(0.999, 32.0, 0.0))),
             "a knob change must rebuild the partition, not retain the old verdicts"
+        );
+    }
+
+    /// Assert an incrementally patched judge model is what a from-scratch build
+    /// over the same corpus produces — every merged tally, the whole juror panel
+    /// in its canonical order, and every judged `f64` compared by its bits.
+    ///
+    /// Findings are a lossy view of the model (a score has to cross the floor to
+    /// be visible at all), so a findings comparison cannot hold this seam: the
+    /// patch has to reproduce the model itself.
+    fn assert_model_identical(patched: &CasingModel, rebuilt: &CasingModel, what: &str) {
+        let (pw, rw) = (&patched.model.words, &rebuilt.model.words);
+        fn sorted(t: &CorpusWords) -> Vec<&str> {
+            let mut v: Vec<&str> = t.keys().map(|k| &**k).collect();
+            v.sort_unstable();
+            v
+        }
+        assert_eq!(sorted(pw), sorted(rw), "{what}: merged table key set");
+        for k in sorted(pw) {
+            assert_eq!(pw.get(k), rw.get(k), "{what}: merged tallies for {k:?}");
+        }
+
+        let (p, r) = (&patched.panel, &rebuilt.panel);
+        assert_eq!(p.jurors, r.jurors, "{what}: juror panel and its order");
+        assert_eq!(p.base, r.base, "{what}: baseline column");
+        assert_eq!(p.classes, r.classes, "{what}: class set and its order");
+        assert_eq!(p.after, r.after, "{what}: per-juror aftermath rows");
+        assert_eq!(p.events, r.events, "{what}: per-class events");
+
+        let trust = |m: &FxHashMap<ClassKey, f64>| {
+            let mut v: Vec<(ClassKey, u64)> = m.iter().map(|(&c, &t)| (c, t.to_bits())).collect();
+            v.sort_unstable();
+            v
+        };
+        assert_eq!(
+            trust(&patched.model.trust),
+            trust(&rebuilt.model.trust),
+            "{what}: per-class trust, bit for bit"
+        );
+        let habit = |m: &FxHashMap<Option<ClassKey>, (u64, u64)>| {
+            let mut v: Vec<(Option<ClassKey>, (u64, u64))> =
+                m.iter().map(|(&c, &t)| (c, t)).collect();
+            v.sort_unstable();
+            v
+        };
+        assert_eq!(
+            habit(&patched.model.habit),
+            habit(&rebuilt.model.habit),
+            "{what}: lexicon habit"
+        );
+        assert_eq!(
+            (patched.model.z.to_bits(), patched.model.gate.to_bits()),
+            (rebuilt.model.z.to_bits(), rebuilt.model.gate.to_bits()),
+            "{what}: judging scalars"
+        );
+    }
+
+    /// The incrementally maintained judge model equals a from-scratch build after
+    /// every shape of edit that can reach it: a juror's count moving, a word
+    /// appearing and disappearing, a word crossing [`JUROR_MIN`] in both
+    /// directions, a boundary class crossing [`CLASS_MIN_EVENTS`] in both
+    /// directions, a class entering and leaving the corpus outright, and a book
+    /// removal.
+    ///
+    /// The comparison is the MODEL, not the findings — see
+    /// [`assert_model_identical`]. Each step also records which route the build
+    /// took, and the test asserts at the end that both the panel-patch and the
+    /// panel-rebuild routes were exercised, so it cannot pass by quietly
+    /// rebuilding everything.
+    #[test]
+    fn a_patched_model_equals_a_rebuilt_model_bit_for_bit() {
+        let c = cfg(0.5, 32.0, 0.0);
+        let symbols = WordInterner::default();
+        // (key, text). Two books so one can be removed; `.`-terminated verses so
+        // the bare-`.` class carries most of the corpus's forced events.
+        let mut rows: Vec<(String, String)> = Vec::new();
+        let push = |rows: &mut Vec<(String, String)>, slug: &str, ch: u16, v: u16, t: &str| {
+            rows.push((format!("{slug} {ch}:{v}"), t.to_string()));
+        };
+        for v in 1..=20u16 {
+            push(&mut rows, "GEN", 1, v, "There we go there.");
+        }
+        for v in 1..=20u16 {
+            push(&mut rows, "GEN", 2, v, "Alpha beta gamma delta.");
+        }
+        for v in 1..=20u16 {
+            push(&mut rows, "EXO", 1, v, "There we go there.");
+        }
+        let build = |rows: &[(String, String)]| {
+            Corpus::try_from_parts(
+                rows.iter().map(|(k, _)| k.clone()).collect(),
+                rows.iter().map(|(_, t)| t.clone()).collect(),
+            )
+            .unwrap()
+        };
+
+        let mut routes: Vec<(&str, (bool, bool))> = Vec::new();
+        let mut step = |r: &mut Resident, rows: &[(String, String)], what: &'static str| {
+            let corpus = build(rows);
+            let _ = r.analyze(&symbols, &corpus, &c);
+            let mut cold = Resident::new();
+            let cold_symbols = WordInterner::default();
+            let _ = cold.analyze(&cold_symbols, &corpus, &c);
+            let patched = r.retained.as_ref().expect("a cased corpus builds a model");
+            let rebuilt = cold.retained.as_ref().expect("cold builds a model");
+            assert_model_identical(patched, rebuilt, what);
+            routes.push((what, patched.route));
+            assert_eq!(rebuilt.route, (false, false), "{what}: cold must not patch");
+        };
+
+        let mut r = Resident::new();
+        step(&mut r, &rows, "cold seed");
+
+        // A juror's count moves without any membership crossing: `there` loses one
+        // of its ~40 occurrences.
+        rows[0].1 = "There we go.".to_string();
+        step(&mut r, &rows, "a juror's count moves");
+        rows[0].1 = "There we go there.".to_string();
+        step(&mut r, &rows, "and moves back");
+
+        // A word appears (count 1, far below JUROR_MIN) and then disappears.
+        rows[1].1 = "There we go there quixotic.".to_string();
+        step(&mut r, &rows, "a non-juror word appears");
+        rows[1].1 = "There we go there.".to_string();
+        step(&mut r, &rows, "the word disappears");
+
+        // A class enters the corpus outright (no `!` anywhere before), which moves
+        // the panel's class set and therefore its canonical row order.
+        rows[2].1 = "There we go! There.".to_string();
+        step(&mut r, &rows, "a boundary class enters the corpus");
+        rows[2].1 = "There we go there.".to_string();
+        step(&mut r, &rows, "the class leaves the corpus");
+
+        // A word crosses JUROR_MIN upward: `zeta` reaches exactly ten word starts
+        // across ten verses, then falls back to nine.
+        for v in 3..13u16 {
+            rows[usize::from(v)].1 = "There we go there zeta.".to_string();
+        }
+        step(&mut r, &rows, "a word crosses JUROR_MIN upward");
+        rows[3].1 = "There we go there.".to_string();
+        step(&mut r, &rows, "and crosses back downward");
+
+        // A class crosses CLASS_MIN_EVENTS: `?` appears often enough to be kept,
+        // then falls back below the floor. The panel's class SET does not move
+        // here, so this is the patch route deciding a `kept` change correctly.
+        for v in 3..13u16 {
+            rows[usize::from(v)].1 = "There we go there? Yes.".to_string();
+        }
+        step(&mut r, &rows, "a class approaches CLASS_MIN_EVENTS");
+        for v in 13..40u16 {
+            rows[usize::from(v)].1 = "There we go there? Yes.".to_string();
+        }
+        step(&mut r, &rows, "the class crosses CLASS_MIN_EVENTS upward");
+        for v in 13..40u16 {
+            rows[usize::from(v)].1 = "There we go there.".to_string();
+        }
+        step(&mut r, &rows, "and crosses back downward");
+
+        // The same floor crossed upward on the PATCH route: `?` gains events
+        // without any word entering or leaving the panel, so `kept` grows under a
+        // patched panel rather than a rebuilt one.
+        for v in 13..34u16 {
+            rows[usize::from(v)].1 = "There we go there? Yes.".to_string();
+        }
+        step(
+            &mut r,
+            &rows,
+            "the class crosses CLASS_MIN_EVENTS upward under a patched panel",
+        );
+
+        // Book removal: the surviving book's words are judged against a smaller
+        // aggregate, so the whole panel has to withdraw EXO's contribution.
+        r.remove_book("EXO");
+        rows.retain(|(k, _)| !k.starts_with("EXO"));
+        step(&mut r, &rows, "a book is removed");
+
+        let patched_panel = routes.iter().filter(|(_, (_, p))| *p).count();
+        let rebuilt_panel = routes.iter().filter(|(w, (_, p))| !*p && *w != "cold seed").count();
+        assert!(
+            patched_panel > 0 && rebuilt_panel > 0,
+            "the script must exercise both the panel-patch and the panel-rebuild \
+             route, got {routes:?}"
+        );
+        assert!(
+            routes.iter().skip(1).all(|(_, (t, _))| *t),
+            "every warm build must have patched the merged table, got {routes:?}"
         );
     }
 

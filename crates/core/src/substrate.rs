@@ -935,6 +935,15 @@ impl<S: ObservationSubstrate> SubstrateCache<S> {
         &self.corpus_stats
     }
 
+    /// Mutable access to the aggregate, for a substrate that maintains its judge
+    /// model incrementally and must therefore *drain* the aggregate's record of
+    /// what moved (casing's book-table swaps). Book contributions are still
+    /// written only by
+    /// [`replace_book_in_corpus_stats`](ObservationSubstrate::replace_book_in_corpus_stats).
+    pub(crate) fn corpus_stats_mut(&mut self) -> &mut S::CorpusStats {
+        &mut self.corpus_stats
+    }
+
     #[cfg(any(test, feature = "test-probes"))]
     pub(crate) fn reset_probes(&mut self) {
         self.mapped = 0;
