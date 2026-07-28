@@ -6561,3 +6561,255 @@ claimed.
   bracket            0.0139   12.3219    0.6187    0.0000    0.0149    0.0078    12.9772
                   cold: all substrates, all phases: 303.2127 ms
 ```
+
+### Execution log — the shared per-chapter token lane
+
+- **Date:** 2026-07-28. Base `a087705` / pin commit `cbfee62`. Commits `73a36e0`
+  (lane + mixed-script), `246cb7e` (repeated-run), `a270063` (duplicate-word),
+  `e8e7aa0` (mixed-case), `421b686` (glyph), `c98cff8` (casing), plus this
+  entry's own commit. Branch `granularity-spine`, main tree, no worktree. Every
+  commit gated on all eight WA+small dumps; the packet closes with a four-dump
+  FULL-fleet bookend. **No dump moved a byte at any point.**
+
+#### What the code says the shareable product actually is
+
+The packet's premise was one shared "raw walk". The code says there are three,
+with different consumers and wildly different retained sizes. Measured over
+WA-en-ulb (31,086 verses, 4.04 MB) through the production per-verse builds
+(`stream::walk_floor`, so these are the costs a drive really pays, not a
+standalone iterator's — `cold_walk_probe`'s 34.4 ms / 90.6 ms figures were a
+fresh-`Vec` `tokenize` and `unicode-segmentation`'s own grapheme iterator, and
+neither is what a substrate map runs):
+
+| product | corpus-wide build | count | consuming substrates |
+| --- | ---: | ---: | --- |
+| tape (`tape::build`) | 8.96 ms | 4,033,627 entries | punct-only, adjacency, bracket, spacing, normalization, repeated-run |
+| + graphemes (`grapheme::segment_tape`) | 17.16 ms total | 4,033,627 clusters | repeated-run, spacing, normalization, glyph |
+| tokens (`tokenize_into`) | 17.75 ms | 773,496 tokens | repeated-run, mixed-script, duplicate-word, mixed-case, glyph, casing |
+
+Only the token lane is retainable. A `TapeEntry` is 12 B and a `GSpan` is 8 B,
+so a whole-corpus tape is ~48 MB and a whole-corpus grapheme product ~32 MB
+against a transient budget of ~2 MB (default) / ~4 MB (`all`). Sharing the tape
+across its six consumers would recover roughly 45 ms of the `all` cold drives
+and is the larger prize, but not at 48 MB — **that is the packet's memory stop
+clause, reported rather than decided.** See the open items below.
+
+Six substrates tokenize, and all six call `tokenize_into` (three of them via
+`tokenize`, which is that function). Not an equivalent tokenizer, not
+`stream.rs`'s per-book adaptive variant, not `tokenize_oracle_into` directly:
+the same function on the same text. So the equivalence question the packet
+flagged has a construction answer for every migrated row, and the witnesses hold
+the codec rather than the tokenizer.
+
+#### Design as built
+
+- **`crates/core/src/prep.rs`** — `ChapterTokens` (one chapter's encoded
+  per-verse token streams) and `SharedTokens` (the analyze-scoped store).
+- **The store is layout-positional and content-stamped.** `books[bi][ci]` mirrors
+  `Corpus::book_layout`, which every caller already walks, so a lookup costs no
+  hash and no key allocation. Each slot remembers the chapter hash it was built
+  from, which is what makes the lane a genuine cache rather than merely a fresh
+  one: transience is then a memory choice, not a correctness precondition.
+- **It is an input, not evidence.** `ChapterView` gained a `tokens` field beside
+  `paired` — plan §5.1's "borrowed immutable views to every active mapper". It
+  carries no rule state, no judging knob, no enabled bit. No drive was reordered,
+  no map fused, no listener walk reintroduced; each substrate still plans its own
+  dirty set and calls its own `map_chapter`.
+- **Filling is a separate seam call, before the map seam.** A drive plans, calls
+  `shared.ensure(layout, texts, &wanted)` for exactly its own work set, then
+  re-borrows the store immutably for the map. `ensure` selects its own Rayon
+  grain through `rule::map_route`/`map_chapter_work` and finishes before the
+  substrate's grain opens, so exactly one fan-out is ever live and the
+  nested-fan-out guard stays green. Under `parallel` the map closure holds only
+  `&SharedTokens`.
+- **The encoding.** One byte per token in the common case: the gap from the
+  previous token's end in the top two bits, the token's length in the low six. A
+  packed byte's length field is at least 1, so a zero byte unambiguously
+  introduces an escape, which stores the span's `start` and `len` as two
+  little-endian `u32`s. The escape is total, so the codec is **lossless for any
+  token sequence**, not a best-effort compaction — measured escape rate on a real
+  corpus 0.072%.
+- **Reuse of the reduce-phase fallback.** `update_book` can in principle demand
+  an observation the planning pass did not name (it never does — both ask the
+  cache the same predicate), and that chapter has no lane entry. Each migrated
+  drive's fallback builds a stream for that chapter alone through the same
+  encoder, so the fallback cannot observe anything the lane would not.
+
+#### Per-row map cells — measured, interleaved
+
+The remote quiet box was used for the first two rows and then became
+unavailable mid-packet (its ssh agent refused signing). The table below is
+therefore local, and taken by **interleaving** all seven build states
+round-robin over nine rounds rather than measuring them in blocks: load drifted
+between 5 and 17 during the session, and interleaving makes that drift hit every
+state equally. The unchanged rows are the control, and they hold flat to ~2%
+across all seven states, which is what licenses reading the changed ones.
+
+`warm_ladder_profile corpora/vref/WA-en-ulb.txt 3JN --config <cfg>
+--drive-phases --batches 1`, cold-seed `map` cell, ms, median of 9:
+
+| row | base | +mixscript | +repeat | +dupword | +mixcase | +glyph | +casing |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| adjacency (control) | 17.69 | 17.77 | 17.74 | 17.96 | 18.00 | 17.71 | 17.70 |
+| punct-only (control) | 25.41 | 25.87 | 26.00 | 25.84 | 26.25 | 26.13 | 26.20 |
+| spacing (control) | 41.03 | 41.71 | 41.68 | 42.09 | 41.18 | 41.53 | 41.45 |
+| bracket (control) | 11.72 | 11.40 | 11.37 | 13.88 | 11.46 | 11.50 | 11.41 |
+| **mixed-script** | 103.67 | **100.64** | **80.79** | 80.37 | 80.59 | 80.85 | 80.83 |
+| **repeated-run** | 125.44 | 128.70 | **125.39** | 122.35 | 122.41 | 122.06 | 123.47 |
+| **duplicate-word** | 34.70 | 34.51 | 34.50 | **11.87** | 11.81 | 11.95 | 11.98 |
+| **mixed-case** | 78.22 | 78.75 | 78.80 | 80.23 | **60.72** | 60.40 | 61.33 |
+| **glyph** | 204.32 | 204.42 | 201.73 | 204.69 | 203.11 | **187.71** | 187.32 |
+| **casing** | 90.49 | 90.92 | 90.58 | 91.90 | 91.86 | 91.09 | **72.51** |
+| cold drives total, `all` | 988.94 | 991.36 | 966.64 | 947.74 | 927.47 | 916.41 | **896.19** |
+| cold drives total, default | 289.56 | 286.05 | 264.46 | 263.61 | 264.07 | 264.95 | **264.51** |
+
+Read the bold cells as each row's own before/after:
+
+| row | before | after | delta |
+| --- | ---: | ---: | ---: |
+| mixed-script (its own commit; pays the build alone) | 103.67 | 100.64 | −3.03 |
+| mixed-script (once repeated-run builds instead) | 100.64 | 80.79 | −19.85 |
+| repeated-run (becomes the builder) | 128.70 | 125.39 | −3.31 |
+| duplicate-word | 34.50 | 11.87 | −22.63 |
+| mixed-case | 80.23 | 60.72 | −19.51 |
+| glyph | 204.69 | 187.71 | −16.98 |
+| casing | 91.09 | 72.51 | −18.58 |
+
+Two shapes, and the split is the whole mechanism. A row that **builds** the lane
+trades a fresh-`Vec`-per-verse `tokenize` for a buffered one plus the encode, and
+gains only the buffer reuse (~3 ms). Every row that **reads** it trades the whole
+17.75 ms token walk for a 0.85 ms decode, and gains ~17-22 ms. mixed-script is
+in the table twice because it was the first row migrated and so was briefly the
+builder; `246cb7e` handed that job to repeated-run, which drives earlier.
+
+Totals: cold drives **289.56 → 264.51 ms (−25.05, −8.7%)** default and
+**988.94 → 896.19 ms (−92.75, −9.4%)** on `all`.
+
+#### Rows NOT migrated, and why
+
+| row | why not |
+| --- | --- |
+| punct-only, adjacency, bracket | Never tokenize. Their shared raw material is the **tape**, whose whole-corpus product is ~48 MB — 24× the transient budget. Not a private-compute story: their maps are 26.2 / 17.7 / 11.4 ms against a shared 8.96 ms tape build, so there is a real ~27 ms (`all`) sitting behind a memory wall. |
+| spacing, normalization | Same, plus graphemes (~32 MB). normalization's map is 19.4 ms against a 17.16 ms tape+grapheme build — almost entirely shareable raw walk, and entirely unreachable at this budget. |
+| repeated-run's tape + grapheme walks | Its token walk migrated; its other two did not, for the reason above. That is why its cell is 125 ms and not 20: the ~17 ms of tape+graphemes plus a per-token `to_lowercase` + re-segmentation are private compute the lane cannot touch. |
+| `GlyphBookContribution::materialize`'s `tokenize_into` | Runs in the materialize phase, after the map, with no lane in scope; and it walks only when a rare glyph survived judging (cold `materialize` measures 0.0002 ms). |
+| `casing::field_extent_probe`, `mixed_case::chapter_extent_probe` | Measurement walks with no drive around them, so there is no lane to read. Both call the same `tokenize_into`/encoder, so neither can drift from what the drive observes. |
+
+#### Transient memory: +0.902 MB, measured
+
+`ssc_core::bench::shared_prep_bytes()`, read at the end of the analyze that owns
+the lane — the moment it is largest, holding every chapter any substrate mapped.
+
+| quantity | value |
+| --- | ---: |
+| tokens, WA-en-ulb | 773,496 |
+| encoded bytes | 777,894 |
+| verse-end index (31,086 × 4 B) | 124,344 |
+| **lane retained, cold, both configs** | **902,238 B = 0.86 MiB** |
+| for comparison: `Vec<Token>` at 8 B/token | 6.19 MB |
+| for comparison: `u16` start+len at 4 B/token | 3.09 MB |
+
+0.90 MB against a ~2 MB (default) / ~4 MB (`all`) allowance, and
+configuration-independent because the lane holds chapters, not rules. Well
+inside the budget; no dhat was run (deliberately light, per the packet), so
+Entry 41's 10.85 MB / 80.2 MB peaks are not re-derived here — this is the lane's
+own contribution to them.
+
+#### Witness inventory (all fresh, synthetic corpora only)
+
+| witness | what only a defective lane can fail |
+| --- | --- |
+| `prep::a_decoded_chapter_equals_the_tokenizer_it_encoded` | decode ≡ `tokenize_into`, verse by verse, span for span AND word for word, over multi-byte graphemes, combining marks (attached and bare), empty and whitespace-only verses, Han (adjacent tokens, zero gap), a 40-byte gap and a 200-byte token (both escape), punctuation-only/numeric/apostrophe/hyphen shapes. Asserts the battery reached the escape path at all, so it cannot pass vacuously. |
+| `prep::a_second_consumer_of_a_chapter_builds_nothing` | the point of the lane: a second `ensure` over the same unchanged chapters encodes nothing. |
+| `prep::an_edited_chapter_is_re_encoded_and_its_neighbours_are_not` | reuse is decided by chapter CONTENT, not position: exactly the edited chapter is re-encoded, the untouched neighbour's stream is unchanged, and the edited one now decodes the new text. |
+| `prep::every_map_grain_fills_the_slot_its_chapter_came_from` | the parallel-soundness witness. A 3-book × 12-chapter corpus sized past the fan-out threshold, run once as a single-book work set (chapter grain) and once whole (book grain); every chapter's every verse compared against the same encoder run serially. Green serially and under `--features parallel`. |
+| `script_mixing::the_shared_stream_maps_what_a_private_token_walk_mapped` | per-row observation equality, mixed-script. |
+| `lexical::the_shared_stream_maps_what_a_private_repeat_token_walk_mapped` | per-row, repeated-run; battery additionally reaches a repeated-letter run spanning several tokens (Thai, scriptio continua) so `containing_word`'s `None` branch is exercised, and asserts both branches occur. |
+| `lexical::the_shared_stream_maps_what_a_private_duplicate_token_walk_mapped` | per-row, duplicate-word; battery includes a doubling straddling a verse seam, asserted present, so the carried `Tail` is exercised from the shared stream. |
+| `mixed_case::the_shared_stream_maps_what_a_private_mixed_case_token_walk_mapped` | per-row, mixed-case, against one shared interner so the word symbols are comparable; asserts real shape profiles and a retained interior-capital occurrence. |
+| `rare_glyph::the_shared_stream_maps_what_a_private_glyph_token_walk_mapped` | per-row, glyph — the row with the most token-positioned state; asserts `has_letter_token` and that the first-letter-token resolution was actually left for reduction. |
+| `casing::the_shared_stream_maps_what_a_private_casing_token_walk_mapped` | per-row, casing; the gap BETWEEN spans drives the pending-terminal machine, so `lead`/`first`/`tail` are compared (they are observation fields) and `first`/`tail` asserted present. |
+| existing suites | 522 core + 3 spike + 25 galley + 14 wasm + 25 wire + 1 xtask, green serially, under `--features parallel`, and under `--features "bench-probes test-probes"`; `cargo check -p ssc-wasm --target wasm32-unknown-unknown` clean; zero new warnings in any feature combination; no new rustfmt deviation in any touched file (`prep.rs` is fully clean; `casing.rs` 25, `mixed_case.rs` 11, `rare_glyph.rs` 9 — down one, `lexical.rs` 3, `script_mixing.rs` 4, all as at base). |
+
+**The two-encoding trick is what makes the per-row witnesses load-bearing.** Each
+compares the same chapter mapped from the shipped packed stream against the same
+chapter mapped from `ChapterTokens::escaped_only` — a second, deliberately dumb
+encoding of the identical `tokenize_into` output. Reading a stream back with the
+code that wrote it proves nothing about the packed representation; comparing two
+independent encodings does.
+
+#### Mutation verification (5 mutations, each reverted immediately)
+
+| mutation | caught by |
+| --- | --- |
+| the packed path drops the gap bits | all six per-row witnesses AND `a_decoded_chapter_equals…` AND `an_edited_chapter…` |
+| the escape stores `end` where `len` belongs | `a_decoded_chapter_equals…` and every per-row witness (`escaped_only` does not share the bug, which is the point) |
+| `ensure` reuses a slot without checking the chapter hash | `an_edited_chapter_is_re_encoded_and_its_neighbours_are_not`, and **only** that witness |
+| decode does not reset the previous-token end per verse | `a_decoded_chapter_equals…` and every per-row witness |
+| `ensure` writes built streams into reversed slots | `every_map_grain_fills_the_slot_its_chapter_came_from`, and **only** that witness |
+
+#### Warm directional reading (one, not a ladder)
+
+`warm_ladder_profile corpora/vref/WA-en-ulb.txt 3JN --config <cfg>`, base
+`cbfee62` and final `c98cff8` interleaved five times each. Load 5.3 throughout.
+
+| config | base | after | delta |
+| --- | ---: | ---: | ---: |
+| default | 501.46 µs | 501.38 µs | −0.02% |
+| `all` | 5.0095 ms | 5.0181 ms | +0.17% |
+
+Flat, as required: warm maps one chapter, so the lane builds one chapter's stream
+and the plumbing is one grid shape-check plus one lookup per drive. The §13
+default warm floor holds.
+
+#### Full-fleet behavioral bookend — PASS
+
+| oracle | config | sha256 |
+| --- | --- | --- |
+| findings | default | `a10cf5a4c17492bf9771d77ea4daace337e1042d66b83dcea8042eceb6748e29` |
+| findings | all | `ddedee96571b2e8bff082ec45bdaa7723cd188fc911f21e1d633b19f6e65b986` |
+| resident transcript | default | `ab9b0f966a3b310dc0b37f5832a7f6f1c0dcd2618205f3343519f09b3848090b` |
+| resident transcript | all | `c8a1be69a9b88f13d299d06fd916a370395efe9f9261e1d26c25d645912128c9` |
+
+All four byte-identical to the standing pins (Entry 38 / Entry 32). No re-pin, no
+drift adjudication: nothing moved. The eight WA+small dumps were byte-identical
+to this entry's base pin at each of the six code commits.
+
+#### Deviations and open items
+
+- **Deviation: two rows were implemented before either was gated.** glyph and
+  casing were written back to back, then split into `421b686` and `c98cff8` by
+  saving casing's diff aside, gating and committing glyph alone, and re-applying
+  casing. Both commits are individually gated landed states; no gate was
+  weakened. The other four rows were implemented, gated and committed one at a
+  time.
+- **Deviation: the packet's "machinery" commit carries mixed-script too.** A
+  commit holding `prep.rs` and the `ChapterView` field with no consumer is dead
+  code, which is against house rules; the same reasoning Entry 43 recorded.
+  Isolation was available by reverting the row's own hunks, and no dump moved.
+- **Deviation: the measurement box changed mid-packet.** The remote quiet box
+  produced the first two rows' figures and then stopped accepting connections
+  (ssh agent refused signing — an environment fault, not a repo one). The
+  per-row table was re-taken locally end-to-end with interleaving and a control
+  row, which is a weaker box but a stronger experimental design than the
+  blocked remote runs it replaces; the remote figures are not mixed into it.
+- **Open item, the packet's largest finding: the tape lane is worth ~27-45 ms of
+  the `all` cold drives and cannot be shared at 48 MB.** Six substrates rebuild
+  the tape and four re-segment graphemes on top of it. Two shapes could reach it,
+  and both are owner adjudications rather than packet decisions: (a) hoist the
+  map phase out of the drives so a chapter's tape is built once and every
+  substrate's `map_chapter` for that chapter runs against it before it is
+  dropped — substrates stay independent observers, but the drive structure moves;
+  or (b) a compact grapheme/tape encoding, which for a tape means encoding the
+  `Class` bits and is a much harder codec than 773k token spans were.
+- **Open item: `repeated-run` is now the lane's builder purely because it drives
+  first.** That is fine but incidental. If the drive order ever changes, the
+  ~3 ms build cost moves to whichever token-consuming row leads; nothing else
+  changes.
+- **Open item: a CJK corpus's lane is larger.** Han tokenizes one token per
+  character, so a CJK corpus of the same byte size holds roughly twice the
+  tokens. Still under 2 MB at this corpus size, but it is the lane's scaling
+  axis and worth a number if the budget is ever tightened.
+- `spike-bench/src/bin/shared_prep_probe.rs` is new (the product-cost and codec
+  decomposition above). `spike-bench/src/bin/replay_distance.rs` still does not
+  build (stale spike, Entry 42) — untouched, as instructed.
