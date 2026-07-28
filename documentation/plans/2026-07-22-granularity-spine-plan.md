@@ -143,8 +143,9 @@ These are settled. An implementer must not reopen them.
    strongly typed evidence. Rules never inspect another rule's enabled state or
    verdict. Shared evidence is represented once as a typed substrate.
 10. **Closed registry, no `dyn Any`.** Substrate cache slots and consumer
-    wiring are explicit and compile-time checked. A truly exceptional rule uses
-    the permanent batch lane and pays its visible cost.
+    wiring are explicit and compile-time checked. No executable batch lane
+    ships: a truly exceptional future rule stops for its own plan/ADR rather
+    than reviving a latent fallback by adding a registry member.
 11. **One chapter correctness mechanism.** Chapter mapping is independent of
     predecessor state. A substrate's ordered reducer exposes equality-comparable
     boundary state and replays cached chapter observations until the leaving
@@ -162,9 +163,10 @@ These are settled. An implementer must not reopen them.
 14. **Complete packed snapshots in v1.** There is no Galley delta/tombstone
     protocol. The official JS decoder/reconciler preserves unchanged object
     identity; a Rust delta is measured follow-up work only.
-15. **Migrate as many shipped rules as honestly fit.** Every rule is classified
-    in the migration ledger (§11); it either migrates or records evidence for
-    remaining on the permanent batch lane.
+15. **Migrate as many shipped rules as honestly fit.** Every shipped rule is
+    classified in the migration ledger (§11). A future rule that cannot fit the
+    substrate contract is a separately planned adopter, not a silently retained
+    fallback row.
 16. **One engine path.** `ssc-core` defines the pure map/reduce/judge transition
     and cache types. One-shot analysis invokes it with fresh transient state;
     `Galley` invokes the same path with resident state. `ssc-galley` orchestrates
@@ -511,7 +513,7 @@ dirty:
 
 No mapper independently re-tokenizes/re-segments the same chapter during one
 analysis. Conversely, do not eagerly build an expensive prep lane merely
-because some disabled or batch rule could use it. Mechanical preparation that
+because some disabled or hypothetical future rule could use it. Mechanical preparation that
 needs cross-chapter semantic carry is misclassified: map the chapter's raw
 typed events independently, then carry state in ordered substrate reduction
 rather than hiding it in shared prep.
@@ -649,13 +651,12 @@ for event in chapter_walk:
 ```
 
 Do not perform a `RuleId`/`SubstrateId` hash lookup, virtual call, registry
-search, or `dyn` dispatch for every grapheme/token/event. The explicit batch
-lane runs outside this typed fused mapper.
+search, or `dyn` dispatch for every grapheme/token/event. No alternate
+corpus-aware lane runs beside this typed fused mapper in v1.
 
 A future rule needing a shared model introduces a named typed substrate. It may
 not inspect another rule's partition or enabled bit. A rule that cannot fit
-this contract remains an explicit batch rule and replaces only its own
-partition.
+this contract stops for the reserved exceptional-rule design in §9.
 
 ### 5.4 Ordered reduction replay
 
@@ -837,8 +838,9 @@ optimization.
 
 ### 6.4 Resident partitions and order
 
-Each rule owns one partition of chapter-local semantic findings. Batch rules
-replace their partition; incremental rules patch changed keys/chapters.
+Each shipped rule owns one partition of chapter-local semantic findings. Its
+substrate either patches changed keys/chapters or performs its recorded full
+rebuild; no batch partition exists in v1.
 
 The complete returned order remains byte-identical to the pre-plan oracle:
 
@@ -999,8 +1001,8 @@ partition.
    contract**). Complete judge/partition isolation — unrelated rules not
    rewalking/rejudging, `FindingSection` not rebuilding, the shared-prep
    fingerprint not clearing on a config change — lands per rule as each
-   migrates in Phases D/E; do not build a premature invalidation planner to
-   satisfy the stronger wording while most rules remain on the batch lane.
+   migrates in Phases D/E; do not build a premature invalidation planner while
+   the migration is incomplete.
 4. Convert the direct per-verse lane to chapter-local cached products and patch
    only the replaced chapter's direct-rule partitions.
 5. Add one order-preserving native chapter-map seam beside `map_books`. Route
@@ -1009,7 +1011,7 @@ partition.
    serial mapping for one chapter. Calibrate and record the named minimum-work
    threshold on 3JN/MAT/PSA; never nest the two Rayon grains.
 
-Gate: spacing and direct-rule partitions equal full batch rebuild under
+Gate: spacing and direct-rule partitions equal a full cold rebuild under
 randomized synthetic edits; full oracle identical; map/reduce/judge probes show
 the exact intended work.
 
@@ -1056,48 +1058,38 @@ change.
 
 ### Phase F — remaining-rule audit, bookend, and records
 
-1. Complete the §11 ledger for every `RuleId::ALL` member. A remaining batch row
-   names the exact failed correctness/performance gate; “not attempted” is not
-   a final classification.
+1. Complete the §11 ledger for every `RuleId::ALL` member. “Not attempted” is
+   not a final classification; a real future exception requires a separately
+   adjudicated execution design, not membership in a dormant registry.
 2. Full-fleet findings default/everything and complete mutation transcript vs
    Gate-0 pins: byte-identical, shasums recorded.
 3. Record map/reduce/judge/pack/reconcile before/after tables in the warm-path
    calibration doc.
-4. ADRs (next free numbers): typed observation substrates/invalidation;
-   complete-snapshot Galley + independent chapter map/ordered reduction replay;
-   shared packed wire/reconciliation
-   if not already recorded in Phase A-W. Update ADRs 0042/0043/0060/0062
+4. Record the typed-observation/invalidation and complete-snapshot Galley /
+   independent-chapter-map / ordered-reduction-replay decisions in ADRs (next
+   free numbers); the shared packed wire/reconciliation record is already ADR
+   0065. Retire the disconnected batch implementation rather than preserving a
+   speculative executable API. Update ADRs 0017/0042/0043/0044/0057/0060/0062
    status/supersession text rather than leaving contradictory accepted prose.
 5. Regenerate wasm packages and declarations; update durable reference docs and
    editor integration notes; move this plan to `completed/` only after all
    ledger rows are resolved.
 
-## 9. Exceptional batch lane
+## 9. Reserved exceptional-rule design
 
-The batch lane is permanent and explicit:
+No executable batch lane ships in v1. The typed substrate registry is the only
+current corpus-aware execution path; `ProjectRule`/`StatefulRule` registries,
+their aggregate carrier, and their fused-walk scaffolding are retired in Phase
+F rather than kept privately as a speculative API.
 
-```text
-Batch rule enabled
-    compares explicit target/reference/config/schema fingerprint
-    if unaffected: reuses its existing partition
-    if affected: receives complete current Corpus/shared read-only prep as declared
-                 rebuilds only its own finding partition
-    does not use dyn Any
-    does not weaken typed substrate caches
-    exposes its measured full-corpus cost
-```
-
-Labs/experimental rules may start here. A rule graduates only when its real
-profile and semantics justify a substrate/key/boundary-state design. The batch
-lane is also the honest terminal state for a rule whose verdict cannot be
-incrementally maintained without disproportionate complexity.
-
-A batch rule may retain only its partition and the explicit fingerprint proving
-which complete inputs/config/schema produced it. It may not add opaque private
-cross-call map products to `AnalysisCache`; reusable evidence either becomes a
-named typed substrate or remains recomputed batch work. Enable builds once,
-disable drops the partition, and an unrelated judging knob belonging to another
-rule does not rerun it.
+A future rule that cannot be expressed as an independent chapter observation
+plus ordered reduction must stop and supply a dedicated plan/ADR before code.
+That proposal must prove the exact complete target/reference/config/schema
+fingerprint, its resident finding-partition commit and retry behavior, its
+interaction with the closed substrate registry, and an end-to-end execution
+witness. It may introduce a batch path for that real adopter then; it may not
+revive a latent registry by adding a variant. `dyn Any`, runtime downcasts, and
+opaque private cross-call products remain forbidden.
 
 ## 10. Packed wire and JS reconciliation
 
@@ -1312,17 +1304,19 @@ decision, not an omission.
 | mixed-case word | patch | exact per-word stats-delta ∪ site-delta | — (was 0.008 ms materialize) |
 | adjacency; repeated-run; punct-only; mixed-script; glyph; proportionality; normalization; bracket; duplicate-word | rebuild retained | none | 0.07–0.55 ms per whole row, of which `materialize` is 0.000–0.014 ms — below the ~0.05 ms per-substrate fixed floor, so a patch path would add branch and state for no measurable gain |
 
-**Casing's `keys` phase cannot be delta-scoped without a semantic change**, and
-that is a §16 stop clause rather than a deferral. `Model::build` (measured split:
+**Casing's `keys` phase cannot yet be delta-scoped**, and remains separately
+scheduled work rather than a Phase F task. `Model::build` (measured split:
 words-sum 2.7 ms, `build_trust` 6.8 ms, habit 0.3 ms) re-derives two corpus-global
 terms — the per-class trust map and the lexicon-restricted habit — from EVERY word
 type. On a one-chapter edit 1 of 13,097 word types moves, and both terms move with
 it, so every key is genuinely dirty and re-materialization is required, not wasted.
-Patching either term would need an incremental float sum (subtract-then-add is not
-bit-identical to a re-sum) or an insertion-order-preserving incremental hash map
-(`build_trust`'s juror order is hash-iteration order and its TV-distance sums are
-order-sensitive by the code's own comment). Both change the model's verdicts in
-their last bits. Owner adjudication required; see progress Entry 35.
+ADR 0066 / progress Entry 36 closed the prerequisite that was genuinely blocked:
+`build_trust` now sorts jurors at construction, so rebuild order is a property of
+corpus content rather than hash insertion history, with zero measured fleet drift.
+The remaining future design must retain per-juror terms and re-sum them in that
+canonical order; subtract-then-add float updates remain unsound for the required
+patch-equals-rebuild bit identity. Entry 35 records the superseded historical
+stop-clause reasoning.
 
 For every row, the implementer records:
 
@@ -1331,7 +1325,7 @@ For every row, the implementer records:
   contribution, corpus stats;
 - delta-key derivation and entry-outcome equality;
 - retained bytes and cold/warm timing;
-- migration verdict or evidence-backed batch fallback.
+- migration verdict or a separately adjudicated future-adopter proposal.
 
 ## 12. Test inventory
 
@@ -1496,8 +1490,8 @@ Required scenarios:
 Phase A targets the default 3JN fixed floor <=2 ms. Later phases must improve
 their named work term without regressing cold complete analysis or unrelated
 config scenarios by the rule above. A migration that adds complexity and shows
-no measurable benefit returns to the batch lane unless it is prerequisite to a
-subsequent named adopter; record that dependency explicitly.
+no measurable benefit is removed unless it is prerequisite to a subsequent
+named adopter; record that dependency explicitly.
 
 ## 14. Documentation and comments
 
@@ -1555,7 +1549,7 @@ These are the failure modes most likely to produce fast-but-wrong code:
 | Feeding predecessor state into `map_chapter` | Map an input-independent typed observation; apply boundary state only in ordered reduction. |
 | Resetting discourse state at a chapter boundary | Boundary state enters ordered reduction for every chapter explicitly. |
 | Nesting book and chapter Rayon fan-out | Select exactly one outer grain from dirty map scope; collect indexed results in caller order. |
-| Letting a rule read another rule's enabled bit/verdict | Extract a shared typed substrate or keep the rule in batch. |
+| Letting a rule read another rule's enabled bit/verdict | Extract a shared typed substrate or stop for a separately planned exceptional-rule design. |
 | Putting knobs/toggles in a global cache fingerprint | Classify judging vs extraction config per typed registry entry. |
 | Hash/virtual registry lookup inside the event loop | Resolve active typed accumulators before the fused walk. |
 | Merging parallel results in completion/hash-map order | Merge in canonical corpus, registry, and local-site order. |
@@ -1575,10 +1569,11 @@ Stop and return to the owner when any of the following occurs:
   rule-enabled dependency.
 - A mapper needs another rule's verdict rather than typed evidence.
 - A mapper needs predecessor boundary state and cannot instead emit a self-
-  contained exact chapter observation for ordered reduction; keep that rule in
-  the explicit batch lane and report the concrete missing summary.
+  contained exact chapter observation for ordered reduction; stop and propose
+  the concrete missing summary in a separately adjudicated future-rule plan.
 - Boundary state cannot be made complete/equality-comparable without an
-  arbitrary correctness cap; keep that rule batch and report it.
+  arbitrary correctness cap; stop and propose a separately adjudicated
+  future-rule design.
 - Config/toggle probes show unrelated substrate map/reduce work.
 - A chapter update is ambiguous or would require canonical numeric ordering;
   reject/use whole-book replacement.
@@ -1614,8 +1609,8 @@ Stop and return to the owner when any of the following occurs:
 - No assumption that every source-dependent rule is same-slug-granular; each
   substrate declares its source dependency, and unexpected cross-slug access
   stops implementation for a safe invalidation amendment.
-- No forced migration of a rule that fails a recorded correctness/cost gate;
-  the explicit batch lane remains permanent.
+- No latent executable batch lane. A future rule that fails the typed-substrate
+  correctness/cost gate requires its own planned, measured execution design.
 - No allocator arena, interning, or token-cache duplication without a new
   profile clearing its separate gate.
 

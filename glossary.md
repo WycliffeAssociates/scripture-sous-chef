@@ -222,15 +222,15 @@ verse-local span, optional score, and optional structured detail args.
 
 The resident findings owned by one rule. A substrate delta rejudges changed
 keys and patches only affected records. A newly enabled rule builds its whole
-partition; a disabled rule drops it. The permanent batch lane may replace a
-whole partition each analysis.
+partition; a disabled rule drops it. No batch partition is resident in v1.
 
-### Batch lane
+### Reserved batch design
 
-The explicit fallback for a rule that cannot or should not use typed
-substrates/incremental judging. It receives the complete corpus and rebuilds
-its partition. It never uses `dyn Any` or weakens the typed substrate model;
-its enabled cost is deliberate and measurable.
+There is no executable batch lane in v1. A future rule that cannot honestly
+use typed substrates/incremental judging must first receive its own plan/ADR:
+complete-input validity, resident partition commit/retry safety, closed-registry
+interaction, and an execution witness are all specified before a batch path is
+introduced. It never uses `dyn Any` or weakens the typed substrate model.
 
 ## Wire and consumer state
 

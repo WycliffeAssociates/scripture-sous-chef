@@ -5728,3 +5728,26 @@ order a function of edit history, and patch≡rebuild bit-identity witnesses
 cannot hold against a history-dependent rebuild. Canonical order is the
 prerequisite; the incremental design itself (re-sum from retained per-juror
 terms, never subtract-then-add) remains future work, queued behind Phase F.
+
+---
+
+## Entry 37 — Phase F decision preamble: retire the disconnected batch implementation
+
+- **Date:** 2026-07-27. **Owner decision:** v1 ships no executable batch lane.
+  Every current `RuleId` is already owned by the direct lane or a typed
+  observation substrate; the empty `ProjectRule`/`StatefulRule` registries,
+  their uninhabited aggregate carrier, and their fused-walk scaffolding are not
+  retained privately as a speculative API.
+- **Future contract:** a rule that cannot fit independent chapter observation
+  plus ordered reduction stops for a dedicated plan/ADR. That design must name
+  complete target/reference/config/schema validity, resident finding-partition
+  commit/retry behavior, closed-registry interaction, and an end-to-end
+  execution witness before it introduces any batch path. `dyn Any`, runtime
+  downcasts, and opaque private cross-call products remain forbidden.
+- **This commit is decision-only.** The following Phase F core packet deletes
+  the disconnected lane and legacy prior/aggregate scaffolding, then records
+  ADR supersessions, allocation audit, package regeneration, and the full-fleet
+  bookend. The casing-keys optimization is explicitly outside that packet:
+  ADR 0066 / Entry 36 made canonical rebuild order its prerequisite; future
+  work still re-sums retained per-juror terms in that order rather than using
+  subtract-then-add float updates.
