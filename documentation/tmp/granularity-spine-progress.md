@@ -6813,3 +6813,45 @@ to this entry's base pin at each of the six code commits.
 - `spike-bench/src/bin/shared_prep_probe.rs` is new (the product-cost and codec
   decomposition above). `spike-bench/src/bin/replay_distance.rs` still does not
   build (stale spike, Entry 42) — untouched, as instructed.
+
+## Entry 45 — steward verification of the two post-plan packets; final dhat; plan closed
+
+**Packet verification (steward).** Verdict-delta packet (Entry 43, four
+commits to `a087705`) and shared-token-lane packet (Entry 44, eight commits
+to `f328ecc`): tree clean after each; zero compiler warnings and full test
+suites green in all feature states (default, `bench-probes test-probes`,
+`parallel test-probes`); both packet full-fleet bookends byte-identical to
+the standing pins; every intermediate eight-dump gate matched its base pin.
+
+**Final dhat (Mac series, `dhat_probe testing`, WA-en-ulb; load-immune):**
+
+| config | retained | peak | vs Entry 41 |
+| --- | ---: | ---: | ---: |
+| default | 9,350,519 B | 11,175,370 B | +4,849 retained / +327,168 peak |
+| all | 79,545,549 B | 82,585,485 B | +1,074,728 retained / +2,389,984 peak |
+
+The `all` retained delta is Packet A's verdict table (predicted 1.02 MiB —
+matched); the peak deltas are that table plus Packet B's transient token
+lane (budgeted ≤2 MB default / ≤4 MB all — both inside). Pre-spine peak
+reference: ~111 MB (`all`).
+
+**Cold, end state (x86 serial, packet-local interleaved readings):** drives
+415→265 ms default across the two packets' span… correction: 289.6→264.5 ms
+default and 988.9→896.2 ms `all` across Packet B alone (the 415 ms figure
+in Entry 42 was the pre-verdict-delta, pre-lane state measured with probes
+under a different trial harness; the packet's own before/after is the
+comparable pair). Parallel cold seed (24 cores): 83 ms default / 764 ms all.
+
+**Instrument notes.** The remote box began refusing ssh auth mid-Packet-B
+(`Permission denied (publickey)`) and remains unreachable — the final
+pre-spine-vs-HEAD criterion A/B re-run (now including the two packets) is
+PENDING an instrument: either the box returning or a quiet Mac. The Entry 42
+A/B stands as the adjudicated cold measurement; the pending re-run can only
+improve it (both packets shrink cold). Recorded, not blocking.
+
+**Closeout.** ADR 0068 records the cold trade and its mitigations; the plan's
+completion note is updated and the plan moves to
+`documentation/plans/completed/`. Open adjudications recorded for future
+packets, none blocking: (a) tape/grapheme walk sharing behind the memory
+wall (ADR 0068 §3); (b) casing `keys` refresh narrowing (Entry 43); (c) the
+stale `spike-bench/src/bin/replay_distance.rs` cleanup.

@@ -1085,6 +1085,18 @@ therefore remains here rather than moving to `completed/`. Casing's future
 canonical-order keys optimization is separately scheduled work, not a Phase F
 reopen.
 
+**Completion note (2026-07-28) — plan closed.** Item 3's allocation audit
+completed: dhat tables recorded in progress Entries 41 and 45 (final:
+9,350,519 B retained / 11,175,370 B peak default; 79,545,549 B retained /
+82,585,485 B peak `all`, vs the 111 MB pre-spine peak). The one behavioral
+number the plan never gated — cold whole-corpus analyze — regressed 16–35%
+(same-box criterion A/B, progress Entry 42) and is adjudicated as an accepted
+trade in ADR 0068, with two mitigations landed post-plan (the casing
+verdict-level materialize delta, Entry 43; the shared per-chapter token lane,
+Entry 44) and the native chapter-parallel fan-out measured over the cold seed.
+Every §13 warm gate holds; the final warm floor is below the Phase A floor.
+Moved to `completed/` 2026-07-28.
+
 ## 9. Reserved exceptional-rule design
 
 No executable batch lane ships in v1. The typed substrate registry is the only
