@@ -1672,7 +1672,7 @@ pub(crate) struct CasingModel {
     /// it claims to: whether the merged table was patched (rather than merged
     /// from every book) and whether the panel was patched (rather than rebuilt
     /// because membership moved).
-    #[cfg(any(test, feature = "test-probes"))]
+    #[cfg(test)]
     route: (bool, bool),
 }
 
@@ -1719,7 +1719,7 @@ impl CasingModel {
             }
             None => (Arc::new(CorpusWords::default()), None),
         };
-        #[cfg(any(test, feature = "test-probes"))]
+        #[cfg(test)]
         let mut route = (panel.is_some(), panel.is_some());
         let panel = match panel {
             // A judging-knob change moves neither the table nor the panel: both
@@ -1741,7 +1741,7 @@ impl CasingModel {
                 if panel.patch(&words, &moved, &class_delta) {
                     panel
                 } else {
-                    #[cfg(any(test, feature = "test-probes"))]
+                    #[cfg(test)]
                     {
                         route.1 = false;
                     }
@@ -1759,7 +1759,7 @@ impl CasingModel {
             cfg: *cfg,
             model,
             panel,
-            #[cfg(any(test, feature = "test-probes"))]
+            #[cfg(test)]
             route,
         }
     }
@@ -2271,39 +2271,82 @@ pub(crate) struct Consumers {
     pub(crate) intrinsic: bool,
 }
 
-/// Per-book verdict memo: for each book-word id, the chain of position classes
-/// judged for it so far. A frequent word genuinely appears at several position
-/// classes (`the` sits mid-flow and after a terminal, interleaved), so a
-/// one-entry-per-word cache thrashes on exactly the words that matter; a chain
-/// keeps every pair while still costing an array index plus one or two `PosClass`
-/// compares per site, instead of the hash probe per site that was ~half the
-/// whole casing judge on an all-rules corpus.
+/// Corpus-scoped verdict memo. [`CasingJudge::outcome`] reads only `(word, pos)`
+/// — both corpus-global — so a memo scoped to one book re-judges every frequent
+/// word once per book. This one spans a whole materialization pass.
+///
+/// It is built fresh for each pass and never outlives one, so there is no
+/// invalidation question: a moved model or a moved judging knob cannot be
+/// observed through it.
+///
+/// Two levels, because the per-site path has to stay an array index — a hash
+/// probe per site was ~half the whole casing judge on an all-rules corpus:
+///
+/// - `slots` maps the CURRENT book's word index to a corpus memo slot, filled on
+///   the word's first site in that book;
+/// - each slot holds a chain of `(pos, outcome)`. A frequent word genuinely
+///   appears at several position classes (`the` sits mid-flow and after a
+///   terminal, interleaved), so a one-entry-per-word cache thrashes on exactly
+///   the words that matter, while a chain costs one or two `PosClass` compares.
 struct VerdictMemo {
-    /// book-word id → first node index, or `NIL`.
+    /// Corpus word identity → memo slot. Keyed by the address of the shared
+    /// interner's `Arc<str>` for the word, which is one allocation per word type
+    /// for the whole session, so the same word in two books hashes to the same
+    /// slot. This is a *performance* assumption, never a correctness one: two
+    /// distinct `Arc`s for one word would cost a duplicate slot and a second
+    /// identical verdict, never a wrong one.
+    slot_of: FxHashMap<usize, u32>,
+    /// Per book-word id, the slot it resolved to, or `NIL`.
+    slots: Vec<u32>,
+    /// Per slot, the head of its `(pos, outcome)` chain, or `NIL`.
     head: Vec<u32>,
     nodes: Vec<(PosClass, CasingOutcome, u32)>,
+    /// Verdicts actually computed — the drive's `judged` probe. It is the memo's
+    /// own miss count, so nothing else has to keep it.
+    judged: usize,
 }
 
 const NIL: u32 = u32::MAX;
 
 impl VerdictMemo {
-    fn new(words: usize) -> Self {
+    fn new() -> Self {
         VerdictMemo {
-            head: vec![NIL; words],
+            slot_of: FxHashMap::default(),
+            slots: Vec::new(),
+            head: Vec::new(),
             nodes: Vec::new(),
+            judged: 0,
         }
     }
 
-    /// The verdict for `(book-word id, pos)`, computing and linking it on a miss.
-    /// Returns `true` alongside it when it was computed (the `judged` probe).
+    /// Start a book: the previous book's word ids mean nothing here, but every
+    /// verdict they resolved to still stands.
+    fn enter_book(&mut self, words: usize) {
+        self.slots.clear();
+        self.slots.resize(words, NIL);
+    }
+
+    /// The verdict for `(word, pos)`, computing and linking it on a miss. `bid` is
+    /// the word's index in the current book's table and `word` its shared key.
     fn get(
         &mut self,
-        id: usize,
+        bid: usize,
+        word: &Arc<str>,
         pos: PosClass,
-        judged: &mut usize,
         compute: impl FnOnce() -> CasingOutcome,
     ) -> CasingOutcome {
-        let mut n = self.head[id];
+        let mut slot = self.slots[bid];
+        if slot == NIL {
+            let id = Arc::as_ptr(word) as *const u8 as usize;
+            slot = *self.slot_of.entry(id).or_insert_with(|| {
+                let next = self.head.len() as u32;
+                self.head.push(NIL);
+                next
+            });
+            self.slots[bid] = slot;
+        }
+        let slot = slot as usize;
+        let mut n = self.head[slot];
         while n != NIL {
             let node = &self.nodes[n as usize];
             if node.0 == pos {
@@ -2312,9 +2355,9 @@ impl VerdictMemo {
             n = node.2;
         }
         let outcome = compute();
-        self.nodes.push((pos, outcome, self.head[id]));
-        self.head[id] = (self.nodes.len() - 1) as u32;
-        *judged += 1;
+        self.nodes.push((pos, outcome, self.head[slot]));
+        self.head[slot] = (self.nodes.len() - 1) as u32;
+        self.judged += 1;
         outcome
     }
 }
@@ -2337,13 +2380,13 @@ impl CasingBookContribution {
         enabled: Consumers,
         dirty: Option<&std::collections::BTreeSet<&str>>,
         out: &mut Vec<Finding>,
-        judged: &mut usize,
+        memo: &mut VerdictMemo,
     ) {
         let Consumers {
             positional,
             intrinsic,
         } = enabled;
-        let mut memo = VerdictMemo::new(self.words.len());
+        memo.enter_book(self.words.len());
         // Positional zip is truncating: a missing or extra trailing chapter
         // would silently DROP findings rather than fail. Chapter cardinality is
         // the alignment precondition; the token check at each pair (inside
@@ -2365,7 +2408,7 @@ impl CasingBookContribution {
                 // would scatter them.
                 let bid = ids[usize::from(site.key)] as usize;
                 let word = &self.words[bid].0;
-                let outcome = memo.get(bid, site.pos, judged, || judge.outcome(word, site.pos));
+                let outcome = memo.get(bid, word, site.pos, || judge.outcome(word, site.pos));
                 if positional
                     && let Some((score, glyph, quoted, upper, total)) = outcome.positional
                 {
@@ -2617,8 +2660,10 @@ pub(crate) fn drive_casing(
         });
     probe.mark(DrivePhase::Keys);
     let empty: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
-    let mut judged = 0usize;
     let mut findings: Vec<Finding> = Vec::new();
+    // One memo for the whole pass: a verdict is a function of the word and the
+    // position class alone, so a word shared by two books is judged once.
+    let mut memo = VerdictMemo::new();
     for book in layout {
         let book_dirty = dirty_by_book
             .as_ref()
@@ -2636,7 +2681,7 @@ pub(crate) fn drive_casing(
                 },
                 book_dirty,
                 &mut findings,
-                &mut judged,
+                &mut memo,
             );
         }
     }
@@ -2651,9 +2696,8 @@ pub(crate) fn drive_casing(
     probe.mark(DrivePhase::Materialize);
     #[cfg(any(test, feature = "test-probes"))]
     {
-        cache.judged = judged;
+        cache.judged = memo.judged;
     }
-    let _ = judged;
 }
 
 /// Casing findings for a whole corpus at a given config, via the observation
@@ -4139,6 +4183,102 @@ mod tests {
             render(&vm, &run_both(&vm, &cfg(0.999, 32.0, 0.0))),
             "a knob change must rebuild the partition, not retain the old verdicts"
         );
+    }
+
+    /// The corpus-scoped verdict memo answers exactly what recomputing would, and
+    /// actually spans books: a word shared by two books is computed once, not once
+    /// per book. The site sequence deliberately interleaves position classes for
+    /// the same word, which is what the per-slot chain exists for.
+    ///
+    /// The second pass is the invalidation witness. The memo never outlives one
+    /// materialization pass, so a moved model or judging knob simply cannot be
+    /// read through it — the fresh memo answers with the new verdicts.
+    #[test]
+    fn the_verdict_memo_is_corpus_scoped_and_answers_what_recomputing_would() {
+        // One `Arc` per word type for the whole session, as the shared interner
+        // hands them out; the two books index the same words at different local
+        // ids, exactly as two book tables in sorted order do.
+        let vocab: Vec<Arc<str>> = ["alpha", "beta", "gamma"]
+            .iter()
+            .map(|w| Arc::from(*w))
+            .collect();
+        let books: [Vec<usize>; 2] = [vec![0, 1, 2], vec![2, 0, 1]];
+        let positions = [
+            PosClass::MIDFLOW,
+            PosClass::BOOK_INITIAL,
+            PosClass::forced(ClassKey {
+                mark: '.',
+                quoted: false,
+            }),
+        ];
+        // (book, local id, position index) — every word revisited at several
+        // classes, and book 1 repeating book 0's pairs.
+        let sites: [(usize, usize, usize); 14] = [
+            (0, 0, 0),
+            (0, 1, 0),
+            (0, 0, 2),
+            (0, 2, 1),
+            (0, 0, 0),
+            (0, 1, 2),
+            (0, 2, 1),
+            (1, 0, 1),
+            (1, 1, 0),
+            (1, 2, 2),
+            (1, 0, 1),
+            (1, 1, 2),
+            (1, 2, 0),
+            (1, 0, 2),
+        ];
+
+        for era in [1.0f32, 100.0] {
+            // A verdict distinguishable per (word, position) AND per era, so a
+            // stale answer from either axis is visible.
+            let verdict = |word: &str, pos: usize| CasingOutcome {
+                positional: None,
+                intrinsic: Some((era + word.len() as f32 + pos as f32 / 8.0, 0, 0)),
+            };
+            let mut computed: Vec<(usize, usize)> = Vec::new();
+            let mut memo = VerdictMemo::new();
+            let mut book = usize::MAX;
+            for &(b, local, pi) in &sites {
+                if b != book {
+                    memo.enter_book(books[b].len());
+                    book = b;
+                }
+                let wi = books[b][local];
+                let word = &vocab[wi];
+                let got = memo.get(local, word, positions[pi], || {
+                    computed.push((wi, pi));
+                    verdict(word, pi)
+                });
+                assert_eq!(
+                    got.intrinsic.map(|(s, _, _)| s.to_bits()),
+                    verdict(word, pi).intrinsic.map(|(s, _, _)| s.to_bits()),
+                    "era {era}: memo answered differently from recomputing"
+                );
+            }
+            // Every distinct (word, class) computed once — across BOTH books.
+            let mut distinct: Vec<(usize, usize)> = sites
+                .iter()
+                .map(|&(b, local, pi)| (books[b][local], pi))
+                .collect();
+            distinct.sort_unstable();
+            distinct.dedup();
+            let mut order = computed.clone();
+            order.sort_unstable();
+            assert_eq!(order, distinct, "era {era}: computed set");
+            assert_eq!(memo.judged, distinct.len(), "era {era}: judged count");
+            // The precondition: a book-scoped memo would have judged strictly
+            // more, or this witness proves nothing about corpus scope.
+            let mut per_book: Vec<(usize, usize, usize)> =
+                sites.iter().map(|&(b, l, pi)| (b, books[b][l], pi)).collect();
+            per_book.sort_unstable();
+            per_book.dedup();
+            assert!(
+                per_book.len() > distinct.len(),
+                "the fixture must share (word, class) pairs across books"
+            );
+        }
     }
 
     /// Assert an incrementally patched judge model is what a from-scratch build
