@@ -5871,3 +5871,216 @@ claimed by this packet.
 casing   plan 0.0703  map 0.0485  reduce 0.0408  keys 10.9951  judge 0.0000  materlz 16.9106
                                        all substrates, all phases: 29.4645 ms
 ```
+
+---
+
+## Entry 40 — casing-keys packet: the `keys` cell incrementalized, plus a corpus-scoped verdict memo
+
+- **Date:** 2026-07-28. Base `fef9893` / pin commit `6bb3695` (Entry 39). Branch
+  `granularity-spine`, main tree, no worktree. Commits `caa2d64` (dense canonical
+  panel), `226814f` (incremental table + panel), `b06042a` (corpus-scoped memo).
+  Every commit gated on all eight WA+small dumps; the packet closes with a
+  four-dump full-fleet bookend. **No dump moved a byte at any point.**
+
+### What Entry 35's stop clause actually cost, measured
+
+A temporary `SSC_KEYS_PROBE` (added, measured, reverted before the first commit)
+split `Model::build` on the 3JN forced-rebuild lane over a resident WA-en-ulb,
+`all` config — 13,097 corpus word types, 3,846 jurors, 19 boundary classes:
+
+| part of `Model::build` | ms | what it is |
+| --- | ---: | --- |
+| merge every book's table | 2.69 | re-derived from `per_book` on every aggregate move |
+| reindex to `word_start_total` + `after` | 0.99 | `FxHashMap<&str, u64>` per class |
+| W1 case-follow | 0.19 | one pass over the table |
+| G² deviate loop | 3.60 | 19 x 3,846 association scores |
+| TV agreement loop | 2.10 | 19 x 3,846 total-variation terms |
+| lexicon habit | 0.31 | one pass over the table |
+| **total** | **10.03** | the 10.4–13.1 ms `keys` cell |
+
+That split is what shaped the packet: **57% of the cell was string hashing, not
+statistics**, and it needed no retention at all to remove.
+
+### Step 1 (`caa2d64`) — the dense canonical juror panel
+
+Both f64 accumulations visited every (class, juror) pair and looked the juror up
+by string *twice* per pair — 108k string hashes in each loop. They now walk a
+`Panel`: jurors in canonical sorted order (ADR 0066), a dense baseline column, and
+one dense aftermath row per class. Position indexing costs no hash, and the
+position *is* the canonical order, so the sums keep their order and every trust
+value is bit-identical by construction.
+
+`build_trust` 7.03 → 1.73 ms; the panel derivation (0.57 ms) replaced the 0.99 ms
+reindex. `Model::build` 10.03 → 5.33 ms with no retention whatsoever.
+
+Two comments were corrected while doing this, because they had become false: the
+merged table's *insertion order* is no longer load-bearing anywhere (the trust
+math sums over the panel; W1 and habit are integer sums), so the table is a set,
+not a sequence. `WordStats`'s `(quoted, mark)` flat-list order remains
+load-bearing for `Model::effective_upper`, and still says so.
+
+One order-independence proof this step rests on, recorded because it is not
+obvious: `reference` (the agreement guard's anchor terminal) is selected by
+`max_by`, which returns the *last* maximum on a tie — so its result would depend
+on visit order if any comparator could tie. None can. The primary filter and the
+first fallback both restrict to bare classes, where `mark` alone is already
+unique; the second fallback is reached only when no bare class was kept at all,
+leaving quote classes whose marks are likewise unique. Every comparator is
+therefore a strict total order over its candidates, and the class visit order is
+free. That is what let the class list become canonical (sorted) rather than
+hash-incidental.
+
+### Step 2 (`226814f`) — incremental merged table and panel
+
+The aggregate now logs **one book-table swap per `generation` bump**
+(`CasingCorpusStats::swaps`), and the retained model drains it:
+
+- `apply_swap` merge-walks the swapped book's old and new sorted tables and
+  withdraws/deposits **only the entries that differ**, so a one-chapter edit of a
+  whole book touches a handful of its thousands of word types. `WordStats::sub` is
+  the exact inverse of `add`, with `checked_sub` on every field and emptied
+  boundary-class slots dropped (a freshly merged table has no zero-total slot, and
+  the panel's class set is derived from slot *presence*).
+- `Panel::patch` rewrites the moved jurors' columns from the table's **absolute**
+  counts, never by a delta, so a word named by two swaps lands where a rebuild
+  would put it. Per-class `events` is patched by a signed integer delta the same
+  merge walk produced.
+- **Membership rejects the patch.** A word crossing `JUROR_MIN` or a boundary
+  class entering/leaving the corpus reshapes the canonical order itself, so
+  `patch` returns false and the panel is rebuilt. Both membership tests run before
+  any write, so a rejected patch leaves the panel untouched rather than
+  half-written.
+- **The f64 witnesses are never patched.** They re-sum in full over the canonical
+  juror order from the retained counts. Integer counts get withdraw-then-deposit;
+  float aggregates get a fresh sum. That asymmetry is the whole contract and the
+  code says so where it matters.
+
+The ownership seam worth naming: the merged table lives in an `Arc<CorpusWords>`
+shared with the judge's `Model`. `CasingModel::build` takes the previous model by
+value and **drops the `Arc<Model>` first**, which is what leaves the table handle
+unique, so the patch writes in place instead of deep-copying the vocabulary. A
+`debug_assert` on the strong count pins that, and an `assert!` that
+`prev.generation + swaps.len() == generation` pins that the swap log accounts for
+every aggregate move — the invariant the entire patch rests on. A drive that never
+reaches the build (the uncased early-out) cannot strand a delta, because a build
+with no previous model merges from `per_book` and drops the log.
+
+`keys` **10.995 → 2.082 ms** on the 3JN forced-rebuild lane.
+
+### Item B (`b06042a`) — corpus-scoped verdict memo
+
+`judge.outcome` reads only `(word, pos)`, both corpus-global, but the memo was
+per book. Measured on the same lane: **82,920 verdicts computed for 12,461
+distinct `(word, class)` pairs**. One memo now spans the materialization pass;
+per-site lookup stays an array index (a hash probe per site was ~half the casing
+judge, Entry 26) by resolving the current book's word ids to corpus memo slots on
+first sight, keyed by the shared interner's `Arc` address. That address is a
+*performance* assumption only — duplicate `Arc`s for one word would cost a
+duplicate slot and a second identical verdict, never a wrong one.
+
+Verdicts computed: **82,920 → 12,461 (6.65x)**. The memo is built fresh per pass
+and never outlives one, so there is no invalidation question at all: a moved model
+or judging knob cannot be observed through it.
+
+Honest note: the `materialize` cell did **not** visibly move (17.16 → 16.76 → 17.67
+ms across readings at load 23/39/72). At ~25 ns per site over 668,257 sites, that
+cell is the site walk, not the judging — so the 70,000 verdicts this removes were
+cheaper than the walk that reaches them. The count is the hardware-independent
+result; the ms belong to the measurement session. Two transient-allocation wins
+come with it (memo nodes ~2.65 MB → ~0.40 MB per pass).
+
+### Retained memory: +661 KiB, and nothing else
+
+The one new retained structure is the `Panel`, on WA-en-ulb `all`
+(3,846 jurors x 19 classes):
+
+| field | bytes |
+| --- | ---: |
+| `jurors: Vec<Arc<str>>` | 61,536 |
+| `base: Vec<u64>` | 30,768 |
+| `after: Vec<u64>` (19 x 3,846) | 584,592 |
+| `classes` + `events` | 304 |
+| **total** | **677,200 B = 661 KiB (0.65 MiB)** |
+
+That is 0.87% of the 77,808,537 B `all` retained baseline, and below the 1 MiB
+threshold that would have made it a reportable regression on its own. `u32` rows
+would halve it; `u64` was kept because a silent narrowing on a count that feeds a
+bit-identity contract is the wrong trade for 292 KiB, and the house rule is to
+panic rather than truncate. The merged word table is **not** new retention — it
+was already resident in `Model`; it is now patched in place instead of
+reallocated per build, so its churn went down. The swap log holds `Arc` clones
+(16 B per entry, no table copy) only between a mutation and the next analyze.
+
+### Witness inventory (all fresh, synthetic `VerseMap`s only)
+
+| witness | what only a patch path can fail |
+| --- | --- |
+| `a_patched_model_equals_a_rebuilt_model_bit_for_bit` | the packet's core contract. Compares the MODEL against a cold build over the same corpus — every merged tally, the whole panel (jurors and their order, baseline column, class set and order, aftermath rows, per-class events), and `trust`/`habit`/`z`/`gate` by **float bits**. Findings are a lossy view of the model (a score must clear the floor to be visible), so only a model comparison can hold this seam. |
+| — its script | a juror's count moving both ways; a non-juror word appearing and disappearing; a boundary class entering and leaving the corpus; `JUROR_MIN` crossed upward and downward; `CLASS_MIN_EVENTS` crossed upward and downward **on both routes** (once with the panel rebuilt, once with it patched); a book removal. |
+| — its preconditions | every step records which route the build took, and the test asserts that both the panel-patch and the panel-rebuild routes were exercised, and that every warm build patched the merged table. It cannot pass by quietly rebuilding everything. |
+| `the_verdict_memo_is_corpus_scoped_and_answers_what_recomputing_would` | the memo answers exactly what recomputing would, for an interleaved `(word, class)` sequence across two books sharing vocabulary; computes each distinct pair exactly once *across* books; and asserts the fixture genuinely shares pairs across books, so corpus scope is what is being proven. A second era re-runs it with different verdicts through a fresh memo — the invalidation half. |
+| existing suites | 507 core + 25 galley + 14 wasm + 25 wire, green serially and with `--features parallel`; `cargo check -p ssc-wasm --target wasm32-unknown-unknown` clean; clippy warning count unchanged from base (the one new `too many arguments` was removed by giving the memo its own `judged` counter, which is its miss count anyway). |
+
+### Mutation verification (5 mutations, each reverted immediately)
+
+| mutation | caught by |
+| --- | --- |
+| `Panel::patch` never rejects a juror-membership crossing | `…bit_for_bit`, at "and crosses back downward" — juror panel and its order |
+| a moved juror's baseline column is not rewritten (a stale retained term) | `…bit_for_bit`, at "a juror's count moves" — baseline column, 80 vs 79 |
+| `WordStats::sub` leaves emptied class slots at zero instead of dropping them | `…bit_for_bit`, at "the class leaves the corpus" — merged tallies for `"there"` |
+| the verdict memo clears its slot map per book (book-scoped again) | `the_verdict_memo_…` — computed set, 11 entries vs 6 |
+| a memo slot's chain returns its first node regardless of position class | `the_verdict_memo_…` — memo answered differently from recomputing |
+
+### Directional sanity reading (one, not a ladder)
+
+`warm_ladder_profile ../corpora/vref/WA-en-ulb.txt 3JN --config all
+--drive-phases --distinct-variants --batches 1`. The box was heavily and
+increasingly loaded throughout (load 23 at the baseline, 39 after step 2, 72 at
+the final reading), so only the `keys` cell's direction is claimed:
+
+| reading | load | casing `keys` |
+| --- | ---: | ---: |
+| base `fef9893` (Entry 39) | 23.1 | 10.9951 ms |
+| after step 1 (`Model::build` probe) | — | 5.33 ms |
+| after step 2 (`226814f`) | 39.7 | **2.0822 ms** |
+| packet end (`b06042a`) | 72.4 | **2.1601 ms** |
+
+The cell moved in the right direction: **10.995 → 2.08 ms, ~5.3x**, measured at a
+*higher* load than the baseline. No §13 ladder, criterion or dhat was run — the
+dedicated measurement session that follows this packet owns those numbers.
+
+### Full-fleet behavioral bookend — PASS
+
+All four outputs byte-identical to the standing pins (Entry 38 / Entry 32):
+
+| oracle | config | sha256 |
+| --- | --- | --- |
+| findings | default | `a10cf5a4c17492bf9771d77ea4daace337e1042d66b83dcea8042eceb6748e29` |
+| findings | all | `ddedee96571b2e8bff082ec45bdaa7723cd188fc911f21e1d633b19f6e65b986` |
+| resident transcript | default | `ab9b0f966a3b310dc0b37f5832a7f6f1c0dcd2618205f3343519f09b3848090b` |
+| resident transcript | all | `c8a1be69a9b88f13d299d06fd916a370395efe9f9261e1d26c25d645912128c9` |
+
+No re-pin, no drift adjudication: nothing moved. The eight WA+small dumps
+remained byte-identical to the Entry 39 pin at each of the three code commits.
+
+### Deviations and open items
+
+- **One new machinery surface**: `SubstrateCache::corpus_stats_mut`. Casing is the
+  first substrate whose judge model is incrementally maintained, so it is the
+  first that has to *drain* something from the aggregate. Book contributions are
+  still written only by `replace_book_in_corpus_stats`; the accessor's doc comment
+  says exactly that.
+- **`keys` is now 2.08 ms, not 0.** What remains is W1 (0.19), the deviate/agree
+  loops (~1.5) and the habit pass (0.31). The deviate and agree terms are
+  genuinely all dirty on any aggregate move — every term reads panel-global
+  `n_after`/`n_base`, so one word's count moving dirties every juror's column in
+  every class. That is why this packet retains *counts* and re-derives *terms*,
+  and why the remaining 1.5 ms is required work rather than a missed
+  optimisation. W1 and habit are per-word integer accumulations and could be
+  retained the same way if 0.5 ms ever matters; habit's quote channel depends on
+  `trust`, so only its bare/book-initial half is retainable.
+- **`materialize` (17 ms) is now the whole casing row** and is a site-walk cost,
+  not a judging cost — item B proved that by removing 70,000 verdicts without
+  moving the cell. Anything further there is about the 668,257-site walk itself.
+- The allocation audit blocked in Entry 38 is still blocked; this packet adds a
+  measured +661 KiB to whatever that audit eventually re-baselines.
