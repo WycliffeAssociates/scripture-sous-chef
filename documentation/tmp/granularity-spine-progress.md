@@ -5823,3 +5823,51 @@ post-seed statistics. The last valid retained-byte baseline therefore remains
 syncing this private repository, which requires explicit user approval. Until
 that authority is granted and a comparable post-seed dhat result is recorded,
 the allocation audit and the move of this plan to `completed/` remain open.
+
+---
+
+## Entry 39 — casing-keys packet: the eight-dump referee pinned at base `fef9893`
+
+- **Date:** 2026-07-28. Packet: incrementalize casing's `keys` phase (Entry 35's
+  stop clause, unlocked by ADR 0066) plus a corpus-scoped verdict memo (Entry 35
+  open item 2). Base `fef9893`, tree clean, main tree, branch
+  `granularity-spine`. This commit contains **no code change** — it records the
+  per-commit referee before the first edit, per repo `CLAUDE.md` step 1.
+
+### The WA+small eight-dump pin (local, this Mac)
+
+Findings + incremental transcript × {default, all} × {`oracle-blobs/wa.blob`,
+`oracle-blobs/small.blob`}. All eight are byte-identical to the Entry 34 pin
+table, re-verified at this base; every commit in this packet re-dumps all eight
+and must match.
+
+| dump | sha256 |
+| --- | --- |
+| `findings.default.wa.tsv` | `38a0ceadcc792a6656905c7a0f9e2e4c2720c86f47f41f94c66e7a8ad1a9702c` |
+| `findings.all.wa.tsv` | `128fdd933dc71cda0a4a6d9d9971ceb5648a5703f8b22ee798d30b09d2c15660` |
+| `findings.default.small.tsv` | `8d638a441bb654e00fc7fca6e7b0da10d7449a697d9663fdc5efb430bb50ff00` |
+| `findings.all.small.tsv` | `d657dcff009565e509dcbd891c5f7bf50db5bc9f5c8d19dff316dd4aa6c539e2` |
+| `transcript.default.wa.tsv` | `7b19caa79b284bfa16a56f300f5660591ffc58ffa183888451daf82778676dca` |
+| `transcript.all.wa.tsv` | `c951a758823629c6b6d2e1d558e92c59c1873ed17856b328a60c7ebdc4cee74f` |
+| `transcript.default.small.tsv` | `10da8d93dd5c275f38925d726508fa43ba368d43f3ce4f1674652cc47e13661e` |
+| `transcript.all.small.tsv` | `c3532af9a4efa7ec370ba5531b9332fb2c7a0f54b6a86aa8b79972d659f8855e` |
+
+Standing FULL-fleet bookend targets (Entry 38, unchanged since Entry 32):
+findings `a10cf5a4c17492bf9771d77ea4daace337e1042d66b83dcea8042eceb6748e29`
+(default) / `ddedee96571b2e8bff082ec45bdaa7723cd188fc911f21e1d633b19f6e65b986`
+(all); transcript
+`ab9b0f966a3b310dc0b37f5832a7f6f1c0dcd2618205f3343519f09b3848090b` (default) /
+`c8a1be69a9b88f13d299d06fd916a370395efe9f9261e1d26c25d645912128c9` (all).
+
+### Directional sanity baseline (one reading, not a ladder)
+
+`warm_ladder_profile ../corpora/vref/WA-en-ulb.txt 3JN --config all
+--drive-phases --distinct-variants --batches 1` (the forced-rebuild lane, which
+is the one that pays `keys`). Load average 23.1 at start / 19.9 at end — high, so
+the absolute milliseconds are soft; only the direction of the `keys` cell is
+claimed by this packet.
+
+```
+casing   plan 0.0703  map 0.0485  reduce 0.0408  keys 10.9951  judge 0.0000  materlz 16.9106
+                                       all substrates, all phases: 29.4645 ms
+```
