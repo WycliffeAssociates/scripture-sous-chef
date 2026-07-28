@@ -581,6 +581,7 @@ fn transition(
     signals::lexical::drive_repeated_run(
         active.repeated_run,
         &mut substrates.repeated_run,
+        &mut shared_tokens,
         target,
         &config.repeated_character_run,
         &mut out,

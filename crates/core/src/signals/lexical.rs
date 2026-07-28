@@ -1217,11 +1217,16 @@ fn map_repeat_chapter(chapter: &crate::substrate::ChapterView<'_>) -> RepeatChap
     let mut tape = Vec::new();
     let mut graphemes = Vec::new();
     let mut word_graphemes = Vec::new();
+    // The chapter's tokens come from the shared prep lane rather than a private
+    // per-verse walk: the same `tokenize_into` result, decoded instead of
+    // recomputed, and into one reused buffer instead of a fresh `Vec` a verse.
+    let shared = chapter.tokens();
+    let mut tokens: Vec<crate::token::Token> = Vec::new();
     for (vi, text) in chapter.texts.iter().enumerate() {
         let local_idx = LocalKeyIdx::from_usize(vi);
         crate::tape::build(text, &mut tape);
         segment_tape(text, &tape, &mut graphemes);
-        let tokens = tokenize(text);
+        shared.verse(vi, &mut tokens);
         for span in scan_repeated_character_run(text, &graphemes) {
             let cluster = repeated_run_cluster(span.slice(text));
             *clusters.entry(Box::from(cluster.as_str())).or_default() += 1;
@@ -1545,10 +1550,9 @@ impl RepeatBookContribution {
 
 /// One chapter the substrate has to map this analysis, as the ordered map seam
 /// sees it: its caller-order `(book, chapter)` slot plus the view mapping reads.
-struct RepeatMapWork<'a> {
+struct RepeatMapWork {
     book: usize,
     chapter: usize,
-    view: crate::substrate::ChapterView<'a>,
 }
 
 /// Drive the `lex.repeated-character-run` observation substrate for one analysis:
@@ -1559,6 +1563,7 @@ struct RepeatMapWork<'a> {
 pub(crate) fn drive_repeated_run(
     active: bool,
     cache: &mut crate::substrate::SubstrateCache<RepeatedRunSubstrate>,
+    shared: &mut crate::prep::SharedTokens,
     corpus: &Corpus,
     cfg: &RepeatedCharacterRunConfig,
     out: &mut Vec<Finding>,
@@ -1579,7 +1584,7 @@ pub(crate) fn drive_repeated_run(
     // the planning pass never allocates. `update_book` takes ownership only
     // where it rebuilds a persistent cache entry.
     let mut stamped: Vec<Vec<(&str, ObservationInputStamp)>> = Vec::with_capacity(layout.len());
-    let mut work: Vec<RepeatMapWork<'_>> = Vec::new();
+    let mut work: Vec<RepeatMapWork> = Vec::new();
     let mut book_runs: Vec<std::ops::Range<usize>> = Vec::new();
     let mut work_bytes = 0usize;
     for (bi, book) in layout.iter().enumerate() {
@@ -1588,12 +1593,13 @@ pub(crate) fn drive_repeated_run(
         for (ci, c) in book.chapters.iter().enumerate() {
             let stamp = ObservationInputStamp::target_only::<RepeatedRunSubstrate>(c.hash, &());
             if !cache.observation_is_current(&book.slug, &c.chapter, &stamp) {
-                let verses = &texts[c.range.clone()];
-                work_bytes += verses.iter().map(String::len).sum::<usize>();
+                work_bytes += texts[c.range.clone()]
+                    .iter()
+                    .map(String::len)
+                    .sum::<usize>();
                 work.push(RepeatMapWork {
                     book: bi,
                     chapter: ci,
-                    view: ChapterView::target(&c.chapter, verses),
                 });
             }
             chapters.push((&*c.chapter, stamp));
@@ -1604,13 +1610,29 @@ pub(crate) fn drive_repeated_run(
         stamped.push(chapters);
     }
     probe.mark(DrivePhase::Plan);
+    // Fill the shared token lane for exactly this drive's work set before the map
+    // seam opens. Separate from the seam, not nested inside it: one Rayon grain is
+    // live at a time, and a chapter already streamed by an earlier drive is not
+    // rebuilt.
+    let wanted: Vec<(usize, usize)> = work.iter().map(|w| (w.book, w.chapter)).collect();
+    shared.ensure(layout, texts, &wanted);
+    let shared: &crate::prep::SharedTokens = shared;
     let route = crate::rule::map_route(&book_runs, work.len(), work_bytes);
     #[cfg(any(test, feature = "test-probes"))]
     {
         cache.map_route = route.label();
     }
     let fresh = crate::rule::map_chapter_work(&work, &book_runs, route, |w| {
-        RepeatedRunSubstrate::map_chapter(&w.view, &(), &())
+        let c = &layout[w.book].chapters[w.chapter];
+        RepeatedRunSubstrate::map_chapter(
+            &ChapterView::tokened(
+                &c.chapter,
+                &texts[c.range.clone()],
+                shared.get(w.book, w.chapter),
+            ),
+            &(),
+            &(),
+        )
     });
     // Back into caller-order `(book, chapter)` slots, so reduction reads them in
     // corpus order and never in completion order.
@@ -1625,9 +1647,14 @@ pub(crate) fn drive_repeated_run(
     for (bi, book) in layout.iter().enumerate() {
         cache.update_book(&book.slug, &stamped[bi], &(), |i| {
             slots[bi][i].take().unwrap_or_else(|| {
+                // The reduction demanded an observation the planning pass did not
+                // name, so this chapter has no shared stream: build one for it
+                // alone, from the same encoder the lane uses.
                 let c = &book.chapters[i];
+                let verses = &texts[c.range.clone()];
+                let tokens = crate::prep::ChapterTokens::build(verses);
                 RepeatedRunSubstrate::map_chapter(
-                    &ChapterView::target(&c.chapter, &texts[c.range.clone()]),
+                    &ChapterView::tokened(&c.chapter, verses, Some(&tokens)),
                     &(),
                     &(),
                 )
@@ -1675,8 +1702,9 @@ pub fn repeated_run_findings(
     cfg: &RepeatedCharacterRunConfig,
 ) -> Vec<Finding> {
     let mut cache = crate::substrate::SubstrateCache::new();
+    let mut shared = crate::prep::SharedTokens::default();
     let mut out = Vec::new();
-    drive_repeated_run(true, &mut cache, corpus, cfg, &mut out);
+    drive_repeated_run(true, &mut cache, &mut shared, corpus, cfg, &mut out);
     out.sort_by_key(|f| (f.key_idx, f.range.start, f.range.end));
     out
 }
@@ -1747,6 +1775,86 @@ pub fn scan_repeated_character_run(text: &str, graphemes: &[GSpan]) -> Vec<Span>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// One chapter of text shaped to reach every corner the shared token lane
+    /// has: multi-byte graphemes, combining marks, an empty verse, repeated-letter
+    /// runs both inside and outside words, script-continua characters that
+    /// tokenize adjacent with no gap between them, and spans wide and long enough
+    /// to leave the packed encoding for the escape path.
+    fn tricky_chapter() -> Vec<String> {
+        [
+            "In the beginning God created the heeeavens and the earth.".to_string(),
+            String::new(),
+            "   ".to_string(),
+            "heeello there aaand yesss".to_string(),
+            // Combining marks, both attached and free-standing.
+            "cafe\u{0301}e\u{0301}e\u{0301} noir \u{0301}bare mark".to_string(),
+            "परमेश्वर ने कहाााा उजियाला".to_string(),
+            // Han: Word_Break=Other, so each character is its own token and
+            // consecutive tokens share a boundary with no gap at all.
+            "神說要有光就有了光".to_string(),
+            "…—!!! ?? 40 ४५ 3.14 don't first-born".to_string(),
+            // Thai is scriptio continua, so UAX #29 splits it roughly one
+            // grapheme at a time: a repeated-letter run there spans several
+            // tokens and `containing_word` cannot name one.
+            "\u{0e01}\u{0e01}\u{0e01} word ????? end".to_string(),
+            // A gap wider than the packed field can hold.
+            format!("alpha{}ommmega", " ".repeat(40)),
+            // A token longer than the packed field can hold.
+            format!("{} tail", "x".repeat(200)),
+        ]
+        .to_vec()
+    }
+
+    /// The migrated map reads exactly the tokens its private per-verse walk read.
+    ///
+    /// Both sides map the same chapter through the shared lane, but from two
+    /// independent encodings of one `tokenize_into` result: the shipped packed
+    /// form, and a form that stores every span verbatim. A packed-path defect
+    /// therefore shows up as a value-unequal observation rather than being read
+    /// back correctly by the same code that wrote it wrong.
+    #[test]
+    fn the_shared_stream_maps_what_a_private_repeat_token_walk_mapped() {
+        let texts = tricky_chapter();
+        let packed = crate::prep::ChapterTokens::build(&texts);
+        let verbatim = crate::prep::ChapterTokens::escaped_only(&texts);
+        let packed_obs = map_repeat_chapter(&crate::substrate::ChapterView::tokened(
+            "1",
+            &texts,
+            Some(&packed),
+        ));
+        let verbatim_obs = map_repeat_chapter(&crate::substrate::ChapterView::tokened(
+            "1",
+            &texts,
+            Some(&verbatim),
+        ));
+        assert!(
+            packed_obs == verbatim_obs,
+            "the packed shared stream mapped a different observation than the same \
+             tokenizer output stored verbatim"
+        );
+        // Not vacuous: the tokens are what name a run's containing word and what
+        // the `run_words` tally is built from, so both must be non-trivial or an
+        // observation that lost them could compare equal by being empty twice.
+        assert!(
+            packed_obs.counts.sites.len() >= 5,
+            "battery produced only {} runs",
+            packed_obs.counts.sites.len()
+        );
+        assert!(
+            packed_obs.counts.run_words.len() >= 4,
+            "battery produced only {} run words",
+            packed_obs.counts.run_words.len()
+        );
+        assert!(
+            packed_obs.counts.keys.iter().any(|k| k.word.is_none()),
+            "battery never produced a run outside any token"
+        );
+        assert!(
+            packed_obs.counts.keys.iter().any(|k| k.word.is_some()),
+            "battery never named a run's containing word"
+        );
+    }
 
     /// Within-verse doublings, as slices of `text`.
     fn dw(text: &str) -> Vec<&str> {
@@ -2468,7 +2576,8 @@ mod tests {
         cfg: &RepeatedCharacterRunConfig,
     ) -> Vec<Finding> {
         let mut out = Vec::new();
-        drive_repeated_run(true, cache, corpus, cfg, &mut out);
+        let mut shared = crate::prep::SharedTokens::default();
+        drive_repeated_run(true, cache, &mut shared, corpus, cfg, &mut out);
         out.sort_by_key(|f| (f.key_idx, f.range.start, f.range.end));
         out
     }
