@@ -475,33 +475,125 @@ fn logistic(z: f64) -> f64 {
 
 // ── W2 word-reshuffle machinery (case-free; ADR 0052). ──────────────────────
 
+/// The juror panel both W2 witnesses are summed over: the corpus's frequent word
+/// starts in **canonical (sorted word) order** — ADR 0066 — each juror's
+/// word-start total, and each boundary class's per-juror aftermath as a dense
+/// row.
+///
+/// Dense rows indexed by juror position rather than a `FxHashMap<&str, u64>` per
+/// class. Both accumulations below visit every (class, juror) pair, so a map
+/// costs two string hashes per pair; a position costs none, and the position *is*
+/// the canonical order, so the order-sensitive `f64` sums are unchanged by the
+/// representation.
+struct Panel {
+    /// Words whose word-start total is ≥ [`JUROR_MIN`], in sorted order.
+    jurors: Vec<Arc<str>>,
+    /// Parallel to `jurors`: the juror's word-start total — the baseline column,
+    /// which **includes** every class's aftermath.
+    base: Vec<u64>,
+    /// Every boundary class some word was seen after, sorted.
+    classes: Vec<ClassKey>,
+    /// `classes.len() × jurors.len()`, row-major: the class's occurrences before
+    /// each juror. One class's row is [`Panel::row`].
+    after: Vec<u64>,
+    /// Parallel to `classes`: the class's occurrences before *every* word, jurors
+    /// and non-jurors alike. This is the class size the [`CLASS_MIN_EVENTS`] floor
+    /// and the reference terminal's volume comparison read, so it is deliberately
+    /// not `row(c).iter().sum()`.
+    events: Vec<u64>,
+}
+
+impl Panel {
+    /// Derive the panel from a merged corpus word table.
+    fn build(words: &FxHashMap<Arc<str>, WordStats>) -> Panel {
+        // Class totals accumulate into a sorted flat list, which is also what
+        // fixes the class order: a handful of classes (the fleet's widest corpus
+        // sees ~26) makes a binary search cheaper than a hash, and sorted means
+        // the row order is a property of corpus content, not of scan order.
+        let mut events: Vec<(ClassKey, u64)> = Vec::new();
+        let mut panel: Vec<(&Arc<str>, u64, &WordStats)> = Vec::new();
+        for (key, w) in words {
+            let total = w.all_total();
+            if total == 0 {
+                continue;
+            }
+            for f in &w.forced {
+                let t = f.tally.total();
+                if t == 0 {
+                    continue;
+                }
+                let ck = ClassKey {
+                    mark: f.mark,
+                    quoted: f.quoted,
+                };
+                match events.binary_search_by_key(&ck, |&(c, _)| c) {
+                    Ok(i) => events[i].1 += t,
+                    Err(i) => events.insert(i, (ck, t)),
+                }
+            }
+            if total >= JUROR_MIN {
+                panel.push((key, total, w));
+            }
+        }
+        panel.sort_unstable_by(|a, b| (**a.0).cmp(&**b.0));
+
+        let n = panel.len();
+        let classes: Vec<ClassKey> = events.iter().map(|&(c, _)| c).collect();
+        let mut after = vec![0u64; classes.len() * n];
+        let mut base = Vec::with_capacity(n);
+        let mut jurors = Vec::with_capacity(n);
+        for (j, &(key, total, w)) in panel.iter().enumerate() {
+            base.push(total);
+            jurors.push(Arc::clone(key));
+            for f in &w.forced {
+                let t = f.tally.total();
+                if t == 0 {
+                    continue;
+                }
+                let ck = ClassKey {
+                    mark: f.mark,
+                    quoted: f.quoted,
+                };
+                let c = classes
+                    .binary_search(&ck)
+                    .expect("every class a word was seen after is in the panel");
+                after[c * n + j] = t;
+            }
+        }
+        Panel {
+            jurors,
+            base,
+            classes,
+            after,
+            events: events.into_iter().map(|(_, e)| e).collect(),
+        }
+    }
+
+    /// One class's per-juror aftermath row, in juror order.
+    fn row(&self, class: usize) -> &[u64] {
+        let n = self.jurors.len();
+        &self.after[class * n..(class + 1) * n]
+    }
+}
+
 /// Aggregate per-juror 2×2 association (Dunning G² / Fisher) of a class's
 /// aftermath vs the corpus baseline, standardized: under the null each juror's
 /// statistic is ~χ²₁ (mean 1), so `(Σ − df)/√(2·df)` is comparable across corpus
 /// sizes. `base` is the word-start distribution and **includes** the after-c
 /// occurrences, so the "elsewhere" column subtracts them out.
-fn reshuffle_deviate(
-    after: &FxHashMap<&str, u64>,
-    base: &FxHashMap<&str, u64>,
-    jurors: &[&str],
-) -> f64 {
-    let n_after: u64 = jurors
-        .iter()
-        .map(|w| after.get(w).copied().unwrap_or(0))
-        .sum();
-    let n_base: u64 = jurors
-        .iter()
-        .map(|w| base.get(w).copied().unwrap_or(0))
-        .sum();
+///
+/// `after` and `base` are one class's row and the baseline column of the same
+/// [`Panel`], so they are aligned and in canonical juror order.
+fn reshuffle_deviate(after: &[u64], base: &[u64]) -> f64 {
+    let n_after: u64 = after.iter().sum();
+    let n_base: u64 = base.iter().sum();
     if n_after == 0 || n_base <= n_after {
         return 0.0;
     }
     let n_else = n_base - n_after;
     let mut sum = 0.0;
     let mut df = 0u64;
-    for w in jurors {
-        let a = after.get(w).copied().unwrap_or(0);
-        let total_w = base.get(w).copied().unwrap_or(0);
+    for (&a, &total_w) in after.iter().zip(base) {
         if total_w == 0 {
             continue;
         }
@@ -517,74 +609,38 @@ fn reshuffle_deviate(
 
 /// Total-variation distance `½·Σ|p_w − q_w|` between two juror distributions —
 /// a size-independent effect size in `[0, 1]`; 0 iff the distributions match.
-fn tv_distance(p: &FxHashMap<&str, u64>, q: &FxHashMap<&str, u64>, jurors: &[&str]) -> f64 {
-    let np: u64 = jurors.iter().map(|w| p.get(w).copied().unwrap_or(0)).sum();
-    let nq: u64 = jurors.iter().map(|w| q.get(w).copied().unwrap_or(0)).sum();
+fn tv_distance(p: &[u64], q: &[u64]) -> f64 {
+    let np: u64 = p.iter().sum();
+    let nq: u64 = q.iter().sum();
     if np == 0 || nq == 0 {
         return 1.0;
     }
-    let sum: f64 = jurors
+    let sum: f64 = p
         .iter()
-        .map(|w| {
-            let pp = p.get(w).copied().unwrap_or(0) as f64 / np as f64;
-            let qq = q.get(w).copied().unwrap_or(0) as f64 / nq as f64;
+        .zip(q)
+        .map(|(&pw, &qw)| {
+            let pp = pw as f64 / np as f64;
+            let qq = qw as f64 / nq as f64;
             (pp - qq).abs()
         })
         .sum();
     (0.5 * sum).clamp(0.0, 1.0)
 }
 
-/// Per-class trust computed from the merged word table (ADR 0052). Returns the
-/// noisy-OR trust for every candidate class (≥ `CLASS_MIN_EVENTS`); a class
-/// absent from the map has trust 0. The W2 aggregates (per-class following-word
-/// counts, baseline word-start distribution) are reindexed here from the
-/// per-word forced tallies — the reshuffle witness is case-free, so a word's
-/// forced upper+lower after a class is its occurrence count there.
-fn build_trust(words: &FxHashMap<Arc<str>, WordStats>, z: f64) -> FxHashMap<ClassKey, f64> {
-    // Baseline word-start distribution + per-class aftermath (reindex).
-    let mut word_start_total: FxHashMap<&str, u64> = FxHashMap::default();
-    let mut after: FxHashMap<ClassKey, FxHashMap<&str, u64>> = FxHashMap::default();
-    for (key, w) in words {
-        let key: &str = key;
-        let total = w.all_total();
-        if total == 0 {
-            continue;
-        }
-        *word_start_total.entry(key).or_default() += total;
-        // Bare classes then quote classes, each in mark order — the flat list's
-        // own order, which is exactly what the two maps produced, so `after`'s
-        // insertion sequence (and every hash iteration derived from it) is
-        // unchanged.
-        for f in &w.forced {
-            if f.tally.total() > 0 {
-                *after
-                    .entry(ClassKey {
-                        mark: f.mark,
-                        quoted: f.quoted,
-                    })
-                    .or_default()
-                    .entry(key)
-                    .or_default() += f.tally.total();
-            }
-        }
-    }
-
-    // Juror order is a property of corpus CONTENT, never of map insertion
-    // history: `reshuffle_deviate` and `tv_distance` accumulate f64 sums over
-    // this slice, and float addition is order-sensitive in the last bits — an
-    // incrementally maintained model can only reproduce a rebuild bit-for-bit
-    // if both walk the jurors in one canonical order.
-    let mut jurors: Vec<&str> = word_start_total
-        .iter()
-        .filter(|&(_, &n)| n >= JUROR_MIN)
-        .map(|(&k, _)| k)
-        .collect();
-    jurors.sort_unstable();
-
-    let kept: Vec<ClassKey> = after
-        .iter()
-        .filter(|(_, c)| c.values().sum::<u64>() >= CLASS_MIN_EVENTS)
-        .map(|(&k, _)| k)
+/// Per-class trust computed from the merged word table and its juror
+/// [`Panel`] (ADR 0052). Returns the noisy-OR trust for every candidate class
+/// (≥ [`CLASS_MIN_EVENTS`] events); a class absent from the map has trust 0.
+///
+/// The W2 aggregates the panel carries are case-free — a word's forced
+/// upper+lower after a class is simply its occurrence count there — so only the
+/// W1 case-follow half reads `words` here.
+fn build_trust(
+    words: &FxHashMap<Arc<str>, WordStats>,
+    panel: &Panel,
+    z: f64,
+) -> FxHashMap<ClassKey, f64> {
+    let kept: Vec<usize> = (0..panel.classes.len())
+        .filter(|&c| panel.events[c] >= CLASS_MIN_EVENTS)
         .collect();
     if kept.is_empty() {
         return FxHashMap::default();
@@ -610,53 +666,67 @@ fn build_trust(words: &FxHashMap<Arc<str>, WordStats>, z: f64) -> FxHashMap<Clas
     }
 
     struct Prelim {
+        /// The panel row this class occupies.
+        class: usize,
+        ck: ClassKey,
         s_case: f64,
         case_seen: bool,
         diff: f64,
         events: u64,
     }
-    let mut prelim: FxHashMap<ClassKey, Prelim> = FxHashMap::default();
-    for &ck in &kept {
-        let a = &after[&ck];
-        let dev = reshuffle_deviate(a, &word_start_total, &jurors);
-        let diff = logistic((dev - W2_SIGMOID_THR) / W2_SIGMOID_SCALE);
-        let (s_case, case_seen) = match w1.get(&ck) {
-            Some(&(up, total)) if total > 0 => (wilson_lower_bound(up, total, z), true),
-            _ => (0.0, false),
-        };
-        prelim.insert(
-            ck,
+    let prelim: Vec<Prelim> = kept
+        .iter()
+        .map(|&c| {
+            let dev = reshuffle_deviate(panel.row(c), &panel.base);
+            let ck = panel.classes[c];
+            let (s_case, case_seen) = match w1.get(&ck) {
+                Some(&(up, total)) if total > 0 => (wilson_lower_bound(up, total, z), true),
+                _ => (0.0, false),
+            };
             Prelim {
+                class: c,
+                ck,
                 s_case,
                 case_seen,
-                diff,
-                events: a.values().sum(),
-            },
-        );
-    }
+                diff: logistic((dev - W2_SIGMOID_THR) / W2_SIGMOID_SCALE),
+                events: panel.events[c],
+            }
+        })
+        .collect();
 
     // Reference terminal for the agreement guard: the highest-VOLUME strongly-
     // case-trusted BARE class (`.` in Latin corpora), so the canonical
     // terminator anchors the comparison and does not erode itself. Ties break by
     // mark for determinism. Caseless fallbacks: highest-differentness bare,
     // then any highest-differentness class.
+    //
+    // Each comparator is a strict total order over the candidates it ranks: the
+    // first two filter to bare classes, where `mark` alone is already unique, and
+    // the last is reached only when no bare class was kept at all. So the winner
+    // does not depend on the order the candidates are visited in.
     let by_diff = |pred: &dyn Fn(&ClassKey) -> bool| {
         prelim
             .iter()
-            .filter(|(ck, _)| pred(ck))
-            .max_by(|(a, pa), (b, pb)| {
+            .enumerate()
+            .filter(|(_, p)| pred(&p.ck))
+            .max_by(|(_, pa), (_, pb)| {
                 pa.diff
                     .partial_cmp(&pb.diff)
                     .unwrap_or(std::cmp::Ordering::Equal)
-                    .then_with(|| a.mark.cmp(&b.mark))
+                    .then_with(|| pa.ck.mark.cmp(&pb.ck.mark))
             })
-            .map(|(&ck, _)| ck)
+            .map(|(i, _)| i)
     };
     let reference = prelim
         .iter()
-        .filter(|(ck, p)| p.case_seen && !ck.quoted && p.s_case >= 0.5)
-        .max_by(|(a, pa), (b, pb)| pa.events.cmp(&pb.events).then_with(|| a.mark.cmp(&b.mark)))
-        .map(|(&ck, _)| ck)
+        .enumerate()
+        .filter(|(_, p)| p.case_seen && !p.ck.quoted && p.s_case >= 0.5)
+        .max_by(|(_, pa), (_, pb)| {
+            pa.events
+                .cmp(&pb.events)
+                .then_with(|| pa.ck.mark.cmp(&pb.ck.mark))
+        })
+        .map(|(i, _)| i)
         .or_else(|| by_diff(&|ck| !ck.quoted))
         .or_else(|| by_diff(&|_| true));
 
@@ -665,20 +735,20 @@ fn build_trust(words: &FxHashMap<Arc<str>, WordStats>, z: f64) -> FxHashMap<Clas
     // A real terminal resets to the sentence-start distribution; a list
     // separator's aftermath is its own, so agreement collapses (the genealogy
     // guard plain differentness cannot supply).
-    let ref_after = reference.map(|r| &after[&r]);
-    let ref_base_tv = ref_after.map(|ra| tv_distance(&word_start_total, ra, &jurors).max(1e-6));
+    let ref_after = reference.map(|i| panel.row(prelim[i].class));
+    let ref_base_tv = ref_after.map(|ra| tv_distance(&panel.base, ra).max(1e-6));
 
     let mut trust = FxHashMap::with_capacity_and_hasher(prelim.len(), Default::default());
-    for (&ck, p) in &prelim {
-        let agree = if Some(ck) == reference {
+    for (i, p) in prelim.iter().enumerate() {
+        let agree = if Some(i) == reference {
             1.0
         } else if let (Some(ra), Some(rbt)) = (ref_after, ref_base_tv) {
-            (1.0 - tv_distance(&after[&ck], ra, &jurors) / rbt).clamp(0.0, 1.0)
+            (1.0 - tv_distance(panel.row(p.class), ra) / rbt).clamp(0.0, 1.0)
         } else {
             0.0
         };
         let s_reshuffle = p.diff * agree;
-        trust.insert(ck, 1.0 - (1.0 - p.s_case) * (1.0 - s_reshuffle));
+        trust.insert(p.ck, 1.0 - (1.0 - p.s_case) * (1.0 - s_reshuffle));
     }
     trust
 }
@@ -691,10 +761,7 @@ fn build_trust(words: &FxHashMap<Arc<str>, WordStats>, z: f64) -> FxHashMap<Clas
 /// [`CasingModel`]).
 pub(crate) struct Model {
     /// Keyed by shared arena words, so this table's keys cost a refcount bump
-    /// each instead of a fresh allocation per corpus word type per build. The
-    /// hash is the word's bytes either way, so the insertion sequence — and with
-    /// it the iteration order the trust math sums over — is exactly what an
-    /// owned-`String` table produced.
+    /// each instead of a fresh allocation per corpus word type per build.
     words: FxHashMap<Arc<str>, WordStats>,
     /// Per class trust; `None`-keyed book-initial is always fully trusted.
     trust: FxHashMap<ClassKey, f64>,
@@ -720,12 +787,11 @@ impl Model {
     fn build(stats: &CasingCorpusStats, cfg: &CasingConfig) -> Model {
         let z = clamp_z(cfg.confidence_z);
         let gate = f64::from(clamp_unit(cfg.trust_gate));
-        // Corpus-wide word table: sum each book's raw tallies, books in slug
-        // order and each book's words in sorted order. That insertion sequence
-        // is load-bearing, not incidental: the reshuffle witness sums a
-        // per-juror statistic over this map's iteration order, and float
-        // addition is not associative — a different insertion sequence would
-        // move trust, and with it every score, in its last bits.
+        // Corpus-wide word table: sum each book's raw tallies. Its iteration
+        // order reaches no order-sensitive accumulation — the reshuffle
+        // witness sums over the [`Panel`]'s canonical juror order (ADR 0066),
+        // and the W1/habit tallies below are integer sums — so this table is a
+        // set, not a sequence.
         let mut words: FxHashMap<Arc<str>, WordStats> = FxHashMap::default();
         for (book_words, _) in stats.per_book.values() {
             // An uncased-only word is the sole per-book-safe prune (ADR 0051):
@@ -736,7 +802,8 @@ impl Model {
             }
         }
 
-        let trust = build_trust(&words, z);
+        let panel = Panel::build(&words);
+        let trust = build_trust(&words, &panel, z);
 
         // Lexicon-restricted per-class habit over the words the (baseline)
         // lexicon calls intrinsically lowercase. Bare glyphs and book-initial
