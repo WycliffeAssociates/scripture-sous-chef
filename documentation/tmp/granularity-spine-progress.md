@@ -5751,3 +5751,75 @@ terms, never subtract-then-add) remains future work, queued behind Phase F.
   ADR 0066 / Entry 36 made canonical rebuild order its prerequisite; future
   work still re-sums retained per-juror terms in that order rather than using
   subtract-then-add float updates.
+
+---
+
+## Entry 38 — Phase F closeout record: non-allocation gates complete; final allocation audit blocked
+
+- **Date:** 2026-07-27. Branch: `granularity-spine`. This entry closes every
+  Phase F item that can be proven on the current local tree. It does **not**
+  claim the allocation audit passed: that one residual gate is recorded below
+  as blocked, so the active plan remains outside `documentation/plans/completed/`.
+
+### Commit ledger
+
+| commit | disposition |
+| --- | --- |
+| `6415109` | Owner-recorded batch-lane decision: no executable latent fallback in v1. |
+| `b2e521d` | Retired the disconnected batch implementation and legacy `Stats`/prior scaffolding; typed direct/substrate execution is the only live path. |
+| `9fc54ee` | Restored the `bench-probes` corpus import, so the retained warm-ladder harness remains buildable. |
+| `c38fd87` | Durable reconciliation: ADR 0067, status/supersession links, current CLAUDE/rule/overview prose, and stale execution comments. |
+| `1332606` | Regenerated both committed wasm packages; bundled and web wasm are byte-identical to each other. |
+
+### Full-fleet behavioral bookend — PASS
+
+The full 1,504-corpus findings fleet and the 188-set resident mutation
+transcript were re-run under both configurations. All four outputs are
+byte-identical to their standing pins; no re-pin or drift adjudication occurred.
+
+| oracle | config | sha256 |
+| --- | --- | --- |
+| findings | default | `a10cf5a4c17492bf9771d77ea4daace337e1042d66b83dcea8042eceb6748e29` |
+| findings | all | `ddedee96571b2e8bff082ec45bdaa7723cd188fc911f21e1d633b19f6e65b986` |
+| resident transcript | default | `ab9b0f966a3b310dc0b37f5832a7f6f1c0dcd2618205f3343519f09b3848090b` |
+| resident transcript | all | `c8a1be69a9b88f13d299d06fd916a370395efe9f9261e1d26c25d645912128c9` |
+
+The eight WA+small findings/transcript dumps also remained byte-identical to
+Entry 34. Workspace tests passed serially and with `--features parallel`;
+`cargo check -p ssc-wasm --target wasm32-unknown-unknown`, clippy (no new
+warnings), and the oracle gate all passed.
+
+### Package/generator closeout — PASS
+
+`cargo xtask wire-js` ran twice; both passes reported zero changed files.
+`cargo xtask wire-vectors` left the committed vectors clean. `npm run
+build:wasm` regenerated the committed package binaries: both `pkg-web` and
+`pkg-bundler` now carry the same 1,713,006-byte wasm file (from 1,539,082 B;
++173,924 B), with matching SHA-256. The increase is the accumulated real core
+implementation since the packages were last regenerated, not a hand-edited
+package surface. Generated JS/schema/types, vectors, package metadata, and the
+wire consumer reference were already current.
+
+Built-package Node suites passed: `findings.test.mjs` 15, `galley.test.mjs` 2,
+and `package.test.mjs` 2 — **19 total**. They cover generated schema/vector
+parity, decoding/reconciliation/persistence acceptance, the pre/post-analyze
+Galley identity seam, and the `./findings` export in both package directories.
+
+### Measurement record consolidated, not re-invented
+
+`documentation/calibration/2026-07-21-warm-path-profile.md` now indexes the
+final map/reduce/judge, delta-consumption, and packed-wire/decode/reconcile
+measurements with their original same-harness records (Entries 30, 32, and 35;
+the wire-live confirmation). This closeout adds no cross-hardware A/B claim.
+The casing `keys` optimization remains separately scheduled after Phase F:
+ADR 0066 made canonical juror order a prerequisite; the future design must
+retain per-juror terms and re-sum canonically, never subtract-then-add floats.
+
+### Allocation audit — BLOCKED (not waived)
+
+The local post-Phase-F dhat process was host-killed before it emitted comparable
+post-seed statistics. The last valid retained-byte baseline therefore remains
+**9,360,970 B default** and **77,808,537 B all**. A remote rerun would require
+syncing this private repository, which requires explicit user approval. Until
+that authority is granted and a comparable post-seed dhat result is recorded,
+the allocation audit and the move of this plan to `completed/` remain open.

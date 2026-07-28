@@ -1,11 +1,10 @@
 # Plan — the granularity spine: typed observation substrates, chapter replay, and incremental judge
 
-Date: 2026-07-22. Status: **owner-adjudicated after second-opinion review;
-implementation-ready once the preconditions in §2 pass.** This is one
-sequential, exhaustive execution program. It is intentionally long: work may
-pause indefinitely at any phase boundary, but an implementer must not invent a
-different cache model, partial-corpus semantic, rule dependency system, or
-wire protocol.
+Date: 2026-07-22. Status: **Phase F is complete except for the final allocation
+audit and the completed-folder move (2026-07-27).** This remains the active
+record until that audit is run. The implemented program must not be re-opened
+to invent a different cache model, partial-corpus semantic, rule dependency
+system, or wire protocol.
 
 Canonical vocabulary: [`../../glossary.md`](../../glossary.md). The terms in
 that glossary are normative for new code, comments, ADRs, and progress notes.
@@ -1074,6 +1073,17 @@ change.
 5. Regenerate wasm packages and declarations; update durable reference docs and
    editor integration notes; move this plan to `completed/` only after all
    ledger rows are resolved.
+
+**Completion note (2026-07-27).** Items 1, 2, 4, and the regeneration/reference
+portion of item 5 are complete; the ledger contains every `RuleId::ALL` member,
+the full-fleet findings/transcript bookend matches its standing pins, ADR 0067
+records the final architecture, and both committed wasm packages passed their
+Node suites. Item 3's final allocation audit is **blocked**, not waived: the
+local dhat process was host-killed before post-seed statistics, and the remote
+runner requires explicit approval to sync this private repository. The plan
+therefore remains here rather than moving to `completed/`. Casing's future
+canonical-order keys optimization is separately scheduled work, not a Phase F
+reopen.
 
 ## 9. Reserved exceptional-rule design
 

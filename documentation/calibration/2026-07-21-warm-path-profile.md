@@ -1,5 +1,26 @@
 # Measurement: warm incremental analyze decomposition (samply, ADR 0062 ladder)
 
+> **Spine closeout index (2026-07-27).** The old `Stats`/`PrepCache` terminology
+> below is historical measurement context. Current map/reduce/judge work uses
+> typed observation substrates and resident `AnalysisCache` (ADR 0067). No new
+> cross-hardware comparison is claimed here; this index points to the final
+> same-harness evidence instead of blending measurements from different machines.
+
+## Granularity-spine closeout measurements
+
+| question | final measured evidence | harness / record |
+| --- | --- | --- |
+| Map/reduce/judge floor and per-substrate attribution | The positional materialization and unchanged-book early-out reduced the 3JN/default warm call 1.404 → 0.819 ms (5/5 paired batches); the row-phase tables identify map, ordered reduce, keys, judge, and materialization separately. | `spike-bench/src/bin/warm_ladder_profile.rs --drive-phases`; progress Entry 30 |
+| Final Phase-E default path | The six remaining substrate migrations closed at 0.538 ms on 3JN/default (≤2 ms gate), with all three edit lanes measured. | `warm_ladder_profile`; progress Entry 32 |
+| Delta consumption | On a stable aggregate, all-rules 3JN was 24.91 → 2.01 ms; forced aggregate movement remains 38.32 → 36.32 ms because casing's complete model/key set genuinely moves. | `warm_ladder_profile --stable-aggregate/--distinct-variants`; progress Entry 35 |
+| Packed wire/decode/reconcile | Live packed wire is ~0.02–0.04 ms end-to-end at tested scales; the 1,000-finding JS reconcile cases are ~191 µs unchanged and ~348 µs with one changed record. | `spike-bench/archive/2026-07-21-wire-live-confirmation/`; progress Entry 10; `2026-07-18-findings-wire-format-survey.md` |
+
+The final retained-allocation rerun is deliberately absent from this table. The
+last valid baseline remains 9,360,970 B (`default`) and 77,808,537 B (`all`);
+the local post-Phase-F dhat process was host-killed before it produced comparable
+post-seed statistics. See progress Entry 38 for the explicit remote-run approval
+blocker.
+
 - **Date:** 2026-07-21. Status: MEASUREMENT only — informs, does not decide.
 - **Question:** what are the warm 5–19 ms actually made of? Decides the
   ceiling of chapter-granularity invalidation and the floor of Galley
