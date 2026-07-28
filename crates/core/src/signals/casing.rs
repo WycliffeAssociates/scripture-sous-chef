@@ -1806,6 +1806,14 @@ struct VerdictDiff {
     flipped: usize,
     /// Whether there was a retained table to diff against at all. A first build —
     /// or the first after the model was dropped — proves nothing.
+    ///
+    /// Belt-and-braces rather than load-bearing today, in the same sense as
+    /// `PendingPartition::promote`'s candidate gate: every path that drops the
+    /// model also leaves the partition either empty or wholly owed (the uncased
+    /// early-out publishes no findings at all; the last-consumer-disabled path
+    /// clears the cache and its judging identity). It stays because "an empty
+    /// table proved every record correct" has no meaning, not because a witness
+    /// fails without it.
     proven: bool,
 }
 
@@ -4850,6 +4858,102 @@ mod tests {
         assert_eq!(
             render(&reverted, &back),
             render(&reverted, &run_both(&reverted, &c))
+        );
+    }
+
+    /// A score that moves while its own counts do not still republishes.
+    ///
+    /// `marah`'s uppercase occurrences are all at a forced `.` position, so its
+    /// intrinsic dominance is the trust-weighted censoring discount — a corpus-
+    /// global `f64`. An edit that moves only the `.` class habit therefore moves
+    /// `marah`'s score while `upper`/`total` stay at 20/21, and the site that emits
+    /// is in GEN 1 while the edit is in GEN 2.
+    ///
+    /// This is the case a diff over the integer args alone would miss: the finding
+    /// row changes in nothing but its score, and the score is exactly what the
+    /// engine publishes.
+    #[test]
+    fn a_score_that_moves_without_its_counts_moving_still_republishes() {
+        // The floor is set so that `marah`'s intrinsic score (0.85 -> 0.91) is the
+        // ONLY outcome that moves: the positional channel over `them` stays below it
+        // in both states, so nothing else can mask the flip.
+        let c = cfg(0.50, 32.0, 0.0);
+        let symbols = WordInterner::default();
+        let mut rows: Vec<(String, String)> = Vec::new();
+        {
+            let mut push = |slug: &str, ch: u16, v: u16, t: &str| {
+                rows.push((format!("{slug} {ch}:{v}"), t.to_string()));
+            };
+            // `Marah` after each preceding verse's terminal, plus the one lowercase
+            // mid-flow site that emits.
+            for v in 1..=20u16 {
+                push("GEN", 1, v, "Marah saw them there.");
+            }
+            push("GEN", 1, 21, "We saw marah there.");
+            // `them` is lexicon-lowercase and sits after a terminal, so its casing
+            // here IS the `.` class habit.
+            for v in 1..=30u16 {
+                push("GEN", 2, v, "Them saw us there.");
+            }
+        }
+        let lower_gen2 = |rows: &mut Vec<(String, String)>, lo: u16, hi: u16| {
+            for v in lo..=hi {
+                rows.iter_mut()
+                    .find(|(k, _)| *k == format!("GEN 2:{v}"))
+                    .expect("GEN 2 verse")
+                    .1 = "them saw us there.".to_string();
+            }
+        };
+
+        let mut r = Resident::new();
+        lower_gen2(&mut rows, 1, 15);
+        let seed = corpus_of(&rows);
+        let before = r.analyze(&symbols, &seed, &c);
+        let row_of = |corpus: &Corpus, f: &[Finding]| -> (f32, u32, u32) {
+            let hit = f
+                .iter()
+                .find(|f| f.code == INCONSISTENT_WORD_CASING)
+                .unwrap_or_else(|| panic!("no intrinsic finding: {:?}", render(corpus, f)));
+            assert_eq!(corpus.key(hit.key_idx), "GEN 1:21");
+            match (hit.score, hit.args.clone()) {
+                (Some(s), Some(FindingArgs::WordCasing { upper, total, .. })) => (s, upper, total),
+                other => panic!("unexpected finding shape: {other:?}"),
+            }
+        };
+        let (score_before, up_before, total_before) = row_of(&seed, &before);
+        assert_eq!(render(&seed, &before), render(&seed, &run_both(&seed, &c)));
+
+        // Ten more after-terminal `them` go lowercase: the `.` habit drops, the
+        // censoring discount rises, and `marah`'s score rises with it.
+        lower_gen2(&mut rows, 16, 25);
+        let edited = corpus_of(&rows);
+        let after = r.analyze(&symbols, &edited, &c);
+        let (score_after, up_after, total_after) = row_of(&edited, &after);
+
+        assert_eq!(
+            r.retained.as_ref().expect("model").flipped,
+            1,
+            "`marah`'s score is the only outcome the habit move may touch"
+        );
+        assert!(
+            !before.iter().any(|f| f.code == SENTENCE_INITIAL_LOWERCASE)
+                && !after.iter().any(|f| f.code == SENTENCE_INITIAL_LOWERCASE),
+            "the positional channel must stay silent in both states"
+        );
+        assert!(r.last.0, "a flip owes the whole partition");
+        assert_eq!(
+            (up_before, total_before),
+            (up_after, total_after),
+            "the finding's own counts must NOT move — only the score may"
+        );
+        assert_ne!(
+            score_before.to_bits(),
+            score_after.to_bits(),
+            "the score must move, or the fixture proves nothing"
+        );
+        assert_eq!(
+            render(&edited, &after),
+            render(&edited, &run_both(&edited, &c))
         );
     }
 
