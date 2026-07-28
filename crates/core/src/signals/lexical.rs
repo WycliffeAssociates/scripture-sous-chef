@@ -15,7 +15,7 @@ use crate::evidence;
 use crate::grapheme::{GSpan, segment, segment_tape};
 use crate::span::Span;
 use crate::tape::TapeEntry;
-use crate::token::{Token, tokenize};
+use crate::token::Token;
 
 // ─────────────────────────────────────────────────────────────────────
 // Duplicate word
@@ -1803,6 +1803,7 @@ pub fn scan_repeated_character_run(text: &str, graphemes: &[GSpan]) -> Vec<Span>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::token::tokenize;
 
     /// One chapter of text shaped to reach every corner the shared token lane
     /// has: multi-byte graphemes, combining marks, an empty verse, repeated-letter

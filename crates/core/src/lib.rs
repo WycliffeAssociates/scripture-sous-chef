@@ -642,6 +642,7 @@ fn transition(
             cache: &mut substrates.mixed_case,
             symbols: &substrates.words,
         },
+        &mut shared_tokens,
         target,
         &config.mixed_case,
         &mut substrate_lane,

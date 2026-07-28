@@ -100,7 +100,6 @@ use crate::evidence::{clamp_count, clamp_unit, clamp_z, wilson_lower_bound};
 use crate::interner::{WordInterner, WordSym};
 use crate::signals::case_shape::{CaseShape, case_shape};
 use crate::span::Span;
-use crate::token::tokenize_into;
 
 pub const MIXED_CASE_WORD: RuleId = RuleId::MixedCaseWord;
 
@@ -400,9 +399,12 @@ impl ChapterAcc {
         }
     }
 
-    fn verse(&mut self, local_idx: LocalKeyIdx, text: &str) {
-        self.tokens_buf.clear();
-        tokenize_into(text, &mut self.tokens_buf);
+    /// One verse, from the chapter's shared token stream: the same
+    /// `tokenize_into` result the private per-verse walk produced, decoded into
+    /// this accumulator's own buffer.
+    fn verse(&mut self, vi: usize, text: &str, shared: &crate::prep::ChapterTokens) {
+        let local_idx = LocalKeyIdx::from_usize(vi);
+        shared.verse(vi, &mut self.tokens_buf);
         for i in 0..self.tokens_buf.len() {
             let span = self.tokens_buf[i].span;
             let word = span.slice(text);
@@ -470,8 +472,10 @@ pub fn chapter_extent_probe(corpus: &Corpus) -> (usize, usize) {
         for c in &book.chapters {
             let mut acc = ChapterAcc::new();
             let mut tokens = 0usize;
-            for (vi, text) in texts[c.range.clone()].iter().enumerate() {
-                acc.verse(LocalKeyIdx::from_usize(vi), text);
+            let verses = &texts[c.range.clone()];
+            let shared = crate::prep::ChapterTokens::build(verses);
+            for (vi, text) in verses.iter().enumerate() {
+                acc.verse(vi, text, &shared);
             }
             for p in &acc.profiles {
                 tokens += p.total() as usize;
@@ -518,8 +522,9 @@ impl crate::substrate::ObservationSubstrate for MixedCaseSubstrate {
         symbols: &WordInterner,
     ) -> MixedCaseChapterObs {
         let mut acc = ChapterAcc::new();
+        let shared = chapter.tokens();
         for (vi, text) in chapter.texts.iter().enumerate() {
-            acc.verse(LocalKeyIdx::from_usize(vi), text);
+            acc.verse(vi, text, shared);
         }
         acc.finish(chapter.chapter, symbols)
     }
@@ -759,10 +764,9 @@ pub(crate) struct MixedCaseState<'a> {
 
 /// One chapter the substrate has to map this analysis, as the ordered map seam
 /// sees it: its caller-order `(book, chapter)` slot plus the view mapping reads.
-struct MixedCaseMapWork<'a> {
+struct MixedCaseMapWork {
     book: usize,
     chapter: usize,
-    view: crate::substrate::ChapterView<'a>,
 }
 
 /// The rules this substrate emits through — its complete consumer set, used to
@@ -792,6 +796,7 @@ fn judging_fp(cfg: &MixedCaseConfig) -> u64 {
 pub(crate) fn drive_mixed_case(
     active: bool,
     state: MixedCaseState<'_>,
+    shared: &mut crate::prep::SharedTokens,
     corpus: &Corpus,
     cfg: &MixedCaseConfig,
     lane: &mut crate::substrate::SubstrateLane,
@@ -824,7 +829,7 @@ pub(crate) fn drive_mixed_case(
     // the planning pass never allocates. `update_book` takes ownership only
     // where it rebuilds a persistent cache entry.
     let mut stamped: Vec<Vec<(&str, ObservationInputStamp)>> = Vec::with_capacity(layout.len());
-    let mut work: Vec<MixedCaseMapWork<'_>> = Vec::new();
+    let mut work: Vec<MixedCaseMapWork> = Vec::new();
     let mut book_runs: Vec<std::ops::Range<usize>> = Vec::new();
     let mut work_bytes = 0usize;
     for (bi, book) in layout.iter().enumerate() {
@@ -833,12 +838,13 @@ pub(crate) fn drive_mixed_case(
         for (ci, c) in book.chapters.iter().enumerate() {
             let stamp = ObservationInputStamp::target_only::<MixedCaseSubstrate>(c.hash, &());
             if !cache.observation_is_current(&book.slug, &c.chapter, &stamp) {
-                let verses = &texts[c.range.clone()];
-                work_bytes += verses.iter().map(String::len).sum::<usize>();
+                work_bytes += texts[c.range.clone()]
+                    .iter()
+                    .map(String::len)
+                    .sum::<usize>();
                 work.push(MixedCaseMapWork {
                     book: bi,
                     chapter: ci,
-                    view: ChapterView::target(&c.chapter, verses),
                 });
             }
             chapters.push((&*c.chapter, stamp));
@@ -849,13 +855,29 @@ pub(crate) fn drive_mixed_case(
         stamped.push(chapters);
     }
     probe.mark(DrivePhase::Plan);
+    // Fill the shared token lane for exactly this drive's work set before the map
+    // seam opens. Separate from the seam, not nested inside it: one Rayon grain is
+    // live at a time, and a chapter already streamed by an earlier drive is not
+    // rebuilt.
+    let wanted: Vec<(usize, usize)> = work.iter().map(|w| (w.book, w.chapter)).collect();
+    shared.ensure(layout, texts, &wanted);
+    let shared: &crate::prep::SharedTokens = shared;
     let route = crate::rule::map_route(&book_runs, work.len(), work_bytes);
     #[cfg(any(test, feature = "test-probes"))]
     {
         cache.map_route = route.label();
     }
     let fresh = crate::rule::map_chapter_work(&work, &book_runs, route, |w| {
-        MixedCaseSubstrate::map_chapter(&w.view, &(), symbols)
+        let c = &layout[w.book].chapters[w.chapter];
+        MixedCaseSubstrate::map_chapter(
+            &ChapterView::tokened(
+                &c.chapter,
+                &texts[c.range.clone()],
+                shared.get(w.book, w.chapter),
+            ),
+            &(),
+            symbols,
+        )
     });
     // Back into caller-order `(book, chapter)` slots, so reduction reads them in
     // corpus order and never in completion order.
@@ -872,9 +894,14 @@ pub(crate) fn drive_mixed_case(
     for (bi, book) in layout.iter().enumerate() {
         let delta = cache.update_book(&book.slug, &stamped[bi], symbols, |i| {
             slots[bi][i].take().unwrap_or_else(|| {
+                // The reduction demanded an observation the planning pass did not
+                // name, so this chapter has no shared stream: build one for it
+                // alone, from the same encoder the lane uses.
                 let c = &book.chapters[i];
+                let verses = &texts[c.range.clone()];
+                let tokens = crate::prep::ChapterTokens::build(verses);
                 MixedCaseSubstrate::map_chapter(
-                    &ChapterView::target(&c.chapter, &texts[c.range.clone()]),
+                    &ChapterView::tokened(&c.chapter, verses, Some(&tokens)),
                     &(),
                     symbols,
                 )
@@ -1017,6 +1044,7 @@ pub(crate) fn shape_totals(corpus: &Corpus) -> [u64; 4] {
             cache: &mut cache,
             symbols: &symbols,
         },
+        &mut crate::prep::SharedTokens::default(),
         corpus,
         &MixedCaseConfig::default(),
         &mut lane,
@@ -1046,6 +1074,7 @@ pub fn mixed_case_findings(corpus: &Corpus, cfg: &MixedCaseConfig) -> Vec<Findin
             cache: &mut cache,
             symbols: &symbols,
         },
+        &mut crate::prep::SharedTokens::default(),
         corpus,
         cfg,
         &mut lane,
@@ -1058,6 +1087,64 @@ pub fn mixed_case_findings(corpus: &Corpus, cfg: &MixedCaseConfig) -> Vec<Findin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// mixed-case's map reads exactly the tokens its private per-verse walk read.
+    ///
+    /// Both sides map the same chapter through the shared lane, but from two
+    /// independent encodings of one `tokenize_into` result: the shipped packed
+    /// form, and a form that stores every span verbatim. A packed-path defect
+    /// therefore shows up as a value-unequal observation rather than being read
+    /// back correctly by the same code that wrote it wrong. The observations are
+    /// compared against one shared interner, so the word symbols they carry mean
+    /// the same thing on both sides.
+    #[test]
+    fn the_shared_stream_maps_what_a_private_mixed_case_token_walk_mapped() {
+        let texts: Vec<String> = [
+            "In the beginning God created the heavens".to_string(),
+            String::new(),
+            "   ".to_string(),
+            // The four case shapes, plus interior capitals.
+            "word Word WORD wOrd McDonald iPhone LORDs".to_string(),
+            // Combining marks inside a title-case and an all-caps word.
+            "Cafe\u{0301} CAFE\u{0301} cafe\u{0301}".to_string(),
+            "परमेश्वर Ne कहा".to_string(),
+            // Han: adjacent tokens with no gap between them.
+            "神說要有光".to_string(),
+            "…—!!! ?? 40 ४५ don't McDonald's".to_string(),
+            // A gap wider, and a token longer, than the packed field can hold.
+            format!("Alpha{}oMega", " ".repeat(40)),
+            format!("{}X tail", "x".repeat(200)),
+        ]
+        .to_vec();
+        let symbols = WordInterner::default();
+        let packed = crate::prep::ChapterTokens::build(&texts);
+        let verbatim = crate::prep::ChapterTokens::escaped_only(&texts);
+        let map = |t: &crate::prep::ChapterTokens| {
+            <MixedCaseSubstrate as crate::substrate::ObservationSubstrate>::map_chapter(
+                &crate::substrate::ChapterView::tokened("1", &texts, Some(t)),
+                &(),
+                &symbols,
+            )
+        };
+        let packed_obs = map(&packed);
+        assert!(
+            packed_obs == map(&verbatim),
+            "the packed shared stream mapped a different observation than the same \
+             tokenizer output stored verbatim"
+        );
+        // Not vacuous: the battery has to produce real shape profiles and at least
+        // one retained interior-capital occurrence, or two empty observations could
+        // compare equal.
+        assert!(
+            packed_obs.words.keys.len() >= 8,
+            "battery produced only {} word profiles",
+            packed_obs.words.keys.len()
+        );
+        assert!(
+            !packed_obs.words.sites.is_empty(),
+            "battery produced no interior-capital occurrence"
+        );
+    }
 
     /// The two representations are the point of WP7b item 4: the scattered
     /// per-chapter element is half the width of the mergeable one. Pinned,
@@ -1425,6 +1512,7 @@ mod tests {
                     cache: &mut self.cache,
                     symbols,
                 },
+                &mut crate::prep::SharedTokens::default(),
                 corpus,
                 cfg,
                 &mut lane,
