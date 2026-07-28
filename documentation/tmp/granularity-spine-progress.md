@@ -6317,3 +6317,188 @@ casing   plan 0.0751  map 0.0479  reduce 0.0414  keys 2.1233  judge 0.0000  mate
                                         all substrates, all phases: 21.8795 ms
 warm total 22.242 ms | 77 findings
 ```
+
+### Execution log — the verdict-level materialize delta
+
+- **Date:** 2026-07-28. Base `9d9aafe` / pin commit `d99e904`. Commits `f793f4a`
+  (the delta), `181955a` (the float-only witness), plus this entry's own commit
+  (the entry-width pin + this log). Branch `granularity-spine`, main tree, no
+  worktree. Every commit gated on all eight WA+small dumps; the packet closes
+  with a four-dump FULL-fleet bookend. **No dump moved a byte at any point.**
+
+#### Design as built
+
+The stats-delta stays exactly as honest as it was. Casing's judge is
+corpus-global, so any word edit moves the trust and habit terms every key is
+judged against and *every* judge key is genuinely dirty — the key SET was never
+the narrowable thing. What is narrowable is the **consequence**: dirty means
+"must be recomputed", not "will come out different".
+
+- **`VerdictTable`** — `FxHashMap<(Arc<str>, PosClass), CasingOutcome>`, retained
+  as a field of `CasingModel` and carried through `CasingModel::build`, which
+  already takes the previous model by value. Keyed by word **content**, never by
+  interner address or table index: between two passes the book tables are
+  re-folded and the merged corpus table is patched in place, so the string is the
+  only identity that survives a pass boundary. The `Arc<str>` keys are clones of
+  the interner's, so the keys cost refcounts, not bytes.
+- **The diff** is `CasingOutcome::same` — field for field, both channels, with
+  the `f32` scores compared by `to_bits()`. Deliberately not `PartialEq` (`==`
+  equates `0.0` with `-0.0` and nothing with `NaN`) and emphatically not a
+  digest: a digest answers "probably equal" and the whole partition's correctness
+  rests on this answer being exact. Entry 42's digest probe was a *measurement*
+  of the same quantity; it is not the thing the engine may decide on.
+- **Consumption.** `CasingModel::build` returns `(model, VerdictDiff)`. When
+  `diff.stands()` the drive no longer calls `pending.owe_all()`, so
+  `PendingPartition::plan` returns the site-delta WP8 already accumulates and
+  `materialize` re-emits only those chapters. When it does not stand, the drive
+  owes the whole partition — today's behaviour, unconditionally sound.
+- **Completeness is the table's contract**, and it is what makes the diff
+  trustworthy: after materialization the table absorbs the pass's memo, replacing
+  itself outright when the pass emitted for every chapter (the memo then
+  enumerates the key universe exactly) and unioning when it did not. Refreshing
+  alone would be a real bug: a key first seen in an edited chapter would never
+  enter the table and the next pass would not check it. The `slot_words` field
+  the Entry 42 probe added under `bench-probes` became production for exactly
+  this — it is how the memo is enumerable as portable `(word, pos)` entries.
+- **The proof the packet asked for, not assumed.** A NEW key can only arrive from
+  a chapter the pass materialized: a chapter absent from the site delta reduced to
+  a *value-equal* `CasingReduced` under the same token, and that value contains
+  the chapter's `ChapterWords` (its word **symbols**, and symbol equality is
+  string equality on an append-only interner) and its sites — including the first
+  word's resolved `pos`. So an unmaterialized chapter's `(word, pos)` multiset is
+  provably unchanged. Vanished keys are the other direction and are **not**
+  identified: doing so needs the very site walk the table exists to avoid. They
+  linger, harmlessly — a lingering key recomputes equal (nothing happens) or
+  recomputes differently, which forces a full rebuild that resyncs the table
+  exactly. The bias is always towards materializing more, never less.
+- **Knob and consumer changes** need nothing new: `PendingPartition::plan`'s
+  judging fingerprint and consumer-set comparison already own both, and both are
+  witnessed here as outcomes (`all_dirty` true) rather than as mechanisms.
+- **Retry safety.** The obligation is recorded in the cache immediately after the
+  build, not derived from `reusable` on a later pass — the model, its verdict
+  table and the drained swap log are all memos in a section a failed attempt does
+  not roll back, and nothing between the build and the `owe_all` can fail, so an
+  attempt has both or neither. `remove_book` needed no change: casing's
+  stats-delta is empty by construction, and the generation bump forces the build
+  whose diff then decides.
+- **The `bench-probes` flip probe now reads the production diff** instead of
+  maintaining its own digest map — the flag reports the decision the engine took
+  rather than a proxy for it.
+
+#### Retained memory: +1,064,960 B on `all`, measured
+
+| quantity | value |
+| --- | ---: |
+| distinct `(word, class)` keys, WA-en-ulb `all` | 12,462 |
+| `(Arc<str>, PosClass)` key | 24 B |
+| `CasingOutcome` value | 36 B |
+| pair, padded | 64 B |
+| hashbrown buckets at len 12,462 | 16,384 |
+| **table total** (`buckets × (64 + 1 control byte)`) | **1,064,960 B = 1.02 MiB** |
+
+That is +1.36% of Entry 41's 78,470,821 B `all` retained baseline, and it is
+`all`-only (both casing consumers are off in `v1_defaults`). It is exactly what
+12,462 entries at a 64-byte pair implies, so it is **not** the packet's
+size stop clause — but it is over the 1 MiB line Entry 40 used, so it is flagged
+rather than absorbed, and `the_verdict_table_entry_stays_sixty_four_bytes` pins
+the width. Two compactions exist if it ever matters, neither taken here: the
+stored `positional` tuple carries `glyph`/`quoted`, which are derivable from the
+key's own `PosClass` (36 → 28 B); and because the overwhelming majority of keys
+are silent in both channels (77 findings corpus-wide), a `u32` index into a small
+side vector of non-default outcomes would take the pair to 32 B, roughly halving
+the table. No string bytes are added in any case — the keys are the interner's
+existing `Arc`s.
+
+#### Witness inventory (all fresh, synthetic corpora only)
+
+| witness | what only the delta path can fail |
+| --- | --- |
+| `a_verdict_flip_republishes_a_chapter_the_edit_never_touched` | `marah`'s intrinsic score crosses the emit floor (24/25 → 39/40 against a 0.97 floor) because occurrences were added in GEN 3, while the site that emits is in GEN 1 — a chapter with an unchanged reduction, so not in the site delta. Asserts the flip count is exactly 1, that the partition was owed in full, that the finding lands at `GEN 1:20`, and cold equality. Then crosses back **downward**, so the same untouched chapter has to STOP publishing. This is the witness a delta wired to "never fire" cannot pass. |
+| `a_key_first_seen_in_an_edited_chapter_is_checked_by_the_next_pass` | `selah` has no site anywhere until GEN 2 is edited (silent, delta route), and its verdict then flips from a later GEN 3 edit. Holds the UNION half of the table's contract: a table that only re-evaluated keys it already knew would see no flip and keep GEN 2 stale. |
+| `a_score_that_moves_without_its_counts_moving_still_republishes` | a verdict that changes in nothing but its `f32`. `marah`'s uppercase occurrences are all at forced `.` positions, so its intrinsic dominance IS the trust-weighted censoring discount; moving only the `.` class habit moves the score 0.8533352 → 0.9065085 while the finding's `upper`/`total` stay at 20/21. The floor is set so this is the ONLY outcome that moves, so no unrelated flip can mask it. |
+| `a_verdict_delta_patch_equals_a_cold_rebuild_across_every_edit_shape` | patch ≡ cold across: cold seed, a no-flip word edit (key appears; asserts flipped 0 AND that chapters were patched rather than the partition), the key vanishing, a judging-knob change (asserts nothing maps or reduces and the partition is owed), the knob returning, one consumer off and on, a book removal, a chapter removal. Asserts BOTH routes ran, so it cannot pass by conservatively rebuilding. |
+| `the_verdict_table_entry_stays_sixty_four_bytes` | the retained-cost pin above. |
+| existing suites | 511 core + 3 spike + 25 galley + 14 wasm + 25 wire + 1 xtask, green serially and with `--features parallel`, and green under `--features bench-probes`; `cargo check -p ssc-wasm --target wasm32-unknown-unknown` clean; clippy lint inventory unchanged from base; `casing.rs` has the same 25 pre-existing rustfmt hunks as at base (no new deviation, no whole-file format). |
+
+#### Mutation verification (7 mutations, each reverted immediately)
+
+| mutation | caught by |
+| --- | --- |
+| `CasingOutcome::same` ignores the intrinsic channel | `…never_touched` and `…checked_by_the_next_pass` |
+| `same` compares only the integer args, never the scores | `a_score_that_moves_without_its_counts_moving…` (and the pre-existing `resident_casing_equals_cold_under_randomized_edits`) |
+| a partial pass does not union its memo's new keys into the table | `…checked_by_the_next_pass` — and *only* that witness, which is why it exists |
+| a whole-corpus pass never absorbs the key universe at all | `…never_touched`, `a_score…`, `resident_casing_equals_cold…` |
+| the drive never owes the whole partition on a flip | all three flip witnesses plus `resident_casing_equals_cold…` |
+| `same` compares scores with a 0.01 tolerance instead of by bits | **not caught** — the score moves by 0.053 in the witness, well outside that tolerance, so the tolerance behaves correctly there. A sub-epsilon tolerance is not distinguishable by any synthetic fixture; the code compares bits, so there is nothing left to catch. Recorded rather than papered over. |
+| a whole-corpus pass unions instead of replacing (lingering keys never dropped) | **not caught, by design** — lingering keys are documented as harmless in both directions, so this mutation is a memory-growth bug, not a correctness one, and no behavioral witness can hold it. |
+
+`VerdictDiff::proven` (a build with no previous table proves nothing) is likewise
+**not** witness-provable, and the code now says so: every path that drops the
+model leaves the partition either empty (the uncased early-out publishes no
+findings) or wholly owed (the last-consumer-disabled path clears the cache and
+its judging identity). It is belt-and-braces in the same sense as
+`PendingPartition::promote`'s candidate gate.
+
+#### Directional reading (one, not a ladder)
+
+`warm_ladder_profile corpora/vref/WA-en-ulb.txt 3JN --config all --drive-phases
+--distinct-variants --batches 1`, the forced-rebuild lane. Load average 46.7 at
+the baseline and 42.4 after, so the absolutes are soft and comparable to each
+other; only the direction is claimed.
+
+| cell | base `9d9aafe` | after | delta |
+| --- | ---: | ---: | ---: |
+| casing `materlz` | 18.1485 ms | **0.0390 ms** | −18.11 ms (465×) |
+| casing `keys` | 2.1233 ms | 2.9206 ms | +0.80 ms (the ~12.5k-key refresh) |
+| casing row total | 20.4361 ms | **3.1210 ms** | −17.32 ms |
+| all substrates, all phases | 21.8795 ms | **4.5825 ms** | −17.30 ms |
+| warm total | 22.242 ms | **4.892 ms** | −17.35 ms (4.5×) |
+
+77 findings before and after. The trade is explicit and is the whole packet:
+**0.8 ms of key recomputation buys back 18.1 ms of site walking.**
+
+`--casing-flips`, now reading the production diff rather than a digest proxy:
+`over 199 passes: keys ~12462 | flipped min 0 med 0 max 0 | churn med 0` —
+Entry 42's zero-flip measurement reproduced by the mechanism that acts on it.
+
+#### Full-fleet behavioral bookend — PASS
+
+The 1,504-corpus findings fleet and the 188-set resident mutation transcript,
+both configurations. The resident transcript is the load-bearing one: it
+exercises exactly the warm rematerialization path this packet changed.
+
+| oracle | config | sha256 |
+| --- | --- | --- |
+| findings | default | `a10cf5a4c17492bf9771d77ea4daace337e1042d66b83dcea8042eceb6748e29` |
+| findings | all | `ddedee96571b2e8bff082ec45bdaa7723cd188fc911f21e1d633b19f6e65b986` |
+| resident transcript | default | `ab9b0f966a3b310dc0b37f5832a7f6f1c0dcd2618205f3343519f09b3848090b` |
+| resident transcript | all | `c8a1be69a9b88f13d299d06fd916a370395efe9f9261e1d26c25d645912128c9` |
+
+All four byte-identical to the standing pins (Entry 38 / Entry 32). No re-pin, no
+drift adjudication: nothing moved. The eight WA+small dumps were byte-identical
+to this entry's base pin at each of the three commits.
+
+#### Deviations and open items
+
+- **Deviation from the packet's commit split.** The packet asked for "retained
+  outcome table + diff" and "delta consumption" as two gated commits. They landed
+  as one (`f793f4a`). A commit holding the table and the diff with the
+  unconditional `owe_all` still in place has no consumer for the diff, so it
+  needs either a dead-code allowance or a scaffolding comment that narrates the
+  change — both against house rules. The gate was not weakened: the isolation the
+  split was meant to buy (bisecting a moved dump between plumbing and decision)
+  was available by locally reverting the six-line consumption hunk, and no dump
+  ever moved.
+- **`materialize` is no longer casing's cost; `keys` is.** At 2.92 ms of a 3.12 ms
+  row, the remaining warm casing cost is the model rebuild plus the verdict
+  refresh. The refresh is ~12.5k `judge.outcome` calls, each a string hash into
+  the merged table plus the factor arithmetic — narrowable in principle (the
+  outcome is a pure function of the word's `WordStats` and the corpus-global
+  trust/habit terms, so a key whose word tallies did not move and whose class
+  terms did not move cannot flip), but that is a new packet, and every term is
+  panel-global today (Entry 40's own closing note).
+- The retained +1.02 MiB above is flagged for whatever re-baselines Entry 41's
+  dhat table next; no dhat was run this packet (deliberately light, per the
+  packet).
+- `spike-bench/src/bin/replay_distance.rs` still does not build (stale spike,
+  Entry 42) — untouched, as instructed. Only `warm_ladder_profile` was built.

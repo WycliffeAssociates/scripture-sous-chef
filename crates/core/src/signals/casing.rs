@@ -4779,6 +4779,22 @@ mod tests {
         .unwrap()
     }
 
+    /// The retained verdict table's per-entry width, pinned. It holds one entry
+    /// per distinct `(word, position class)` the corpus's sites reach — 12,462 on
+    /// WA-en-ulb under `all` — so the entry width IS the packet's retained-memory
+    /// cost: at a 64-byte pair plus hashbrown's control byte over 16,384 buckets it
+    /// is 1,064,960 B. A field widening here is a megabyte-scale regression that no
+    /// behavioral test would notice.
+    #[test]
+    fn the_verdict_table_entry_stays_sixty_four_bytes() {
+        assert_eq!(std::mem::size_of::<(Arc<str>, PosClass)>(), 24);
+        assert_eq!(std::mem::size_of::<CasingOutcome>(), 36);
+        assert_eq!(
+            std::mem::size_of::<((Arc<str>, PosClass), CasingOutcome)>(),
+            64
+        );
+    }
+
     /// A verdict flip re-materializes the WHOLE partition, so a finding whose site
     /// sits in a chapter the edit never touched still moves.
     ///
