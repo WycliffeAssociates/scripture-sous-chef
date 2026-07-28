@@ -87,14 +87,14 @@ case-insensitive (`The the` flags). See ADR 0014 and the
 
 **Open issues / future work** — A corpus-observed reduplication-rate gate
 (auto-enable only where doubling is statistically rare in *this* corpus) is
-the obvious graduation path into the `labs`/stateful tier, but isn't built —
+the obvious graduation path into a corpus-relative substrate, but isn't built —
 today it's a manual per-project toggle.
 
 ---
 
 ## `lex.punct-only-token` — corpus-unusual punctuation-only chunks
 
-> **Severity** Warning · **Default** on · **Scope** stateful corpus · **Knobs** `convention_rate_per_10k`, `confidence_z`, `emit_score_min` · **Source** `lexical.rs`
+> **Severity** Warning · **Default** on · **Scope** substrate-backed corpus · **Knobs** `convention_rate_per_10k`, `confidence_z`, `emit_score_min` · **Source** `lexical.rs`
 
 **Flags** — A whitespace-delimited chunk that is entirely punctuation/symbols
 and whose pattern is unusual for this corpus:
@@ -151,10 +151,10 @@ early-draft NTs), while a single tiny epistle (~500 units) still
 conservatively abstains — with that little text, "this corpus rarely does X"
 is not knowable.
 
-**Nuance & ADR ties** — Stats are aggregate-only and partitioned per book:
-core-pattern counts plus a lexical-unit count, no stored sites; incremental
-analysis supersedes one book and re-scans only the supplied target verses for
-spans. Sparse conventions (pt-br `—,` ×17, stranded `(` house styles ×~20)
+**Nuance & ADR ties** — Evidence is aggregate-only and partitioned per book:
+core-pattern counts plus a lexical-unit count. The substrate derives affected
+chapter products and patches the resident partition from its current sites.
+Sparse conventions (pt-br `—,` ×17, stranded `(` house styles ×~20)
 surface at moderate scores — the systematic-pattern tradeoff ADR 0024
 documents, tunable via the rate and floor. The old judge-side mojibake bypass
 (3+ `?` chunks scored 1.0 regardless of recurrence) is gone: the special case
@@ -172,7 +172,7 @@ dedicated damaged-text hygiene rule — is resolved: it did, as
 
 ## `lex.repeated-character-run` — corpus-unusual repeated letter graphemes
 
-> **Severity** Info · **Default** on · **Scope** stateful corpus · **Knobs** `convention_rate_per_10k`, `word_recurrence_k`, `confidence_z`, `emit_score_min` · **Source** `lexical.rs`
+> **Severity** Info · **Default** on · **Scope** substrate-backed corpus · **Knobs** `convention_rate_per_10k`, `word_recurrence_k`, `confidence_z`, `emit_score_min` · **Source** `lexical.rs`
 
 **Flags** — Three or more identical extended grapheme clusters where both the
 cluster and its containing word are unusual for this corpus:
@@ -227,11 +227,10 @@ by scoring: kashida is a stretching control whose repetition is inherently
 typographic (`الإيمــــــان` is one word, elongated), so runs of it can never
 be the doubled-letter error this rule hunts. That is a one-character
 Unicode-semantics carve-out, not a script allow-list — the no-script-identity
-principle (ADR 0023/0025) stands. Stats are aggregate-only and partitioned per book:
-cluster counts, run-containing word counts, and lexical-unit count, with no
-stored sites. Incremental analysis replaces one book's aggregates, scores
-against the retained corpus, and re-scans only the supplied target verses for
-spans. The cluster key is the full first grapheme lowercased, so case variants
+principle (ADR 0023/0025) stands. Evidence is aggregate-only and partitioned per book:
+cluster counts, run-containing word counts, and lexical-unit count. The
+substrate retains the chapter-local sites needed to patch current findings
+after a relevant evidence change. The cluster key is the full first grapheme lowercased, so case variants
 pool while combining marks remain significant. Run length above three adds no
 weight. See ADR 0028, ADR 0032 (Wilson unification), and the 2026-07-06
 calibration reports.

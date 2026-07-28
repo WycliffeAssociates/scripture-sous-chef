@@ -2145,7 +2145,7 @@ mod tests {
         assert!(po("\"go!\" he said.").is_empty());
     }
 
-    // ── punct-only-token: stateful corpus-relative scoring ───────────────
+    // ── punct-only-token: substrate-backed corpus-relative scoring ───────
 
     /// Build a single-book `Corpus`, one verse per string (chapter 1, verses
     /// numbered from 1).

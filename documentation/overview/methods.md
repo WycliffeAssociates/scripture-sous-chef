@@ -1282,33 +1282,28 @@ into their actual `sous-chef.toml`. We never silently override user config.
 ---
 
 
-### 5.10 The event-stream execution engine (ADR 0057)
+### 5.10 Typed observation substrates and the resident engine (ADR 0067)
 
-Everything in §3–§5 describes *what* each rule computes; since ADR 0057 the
-engine computes it over **one fused walk**. Think of the corpus as a stream
-of books, each book a stream of verses: for every verse the walker decodes
-and classifies the text once into the scalar tape (ADR 0045), segments
-grapheme clusters once, and tokenizes words once, then hands that shared
-view to every enabled rule's *listener* — a small struct owning that rule's
-per-book accumulation. State that legitimately flows across verse seams
-(casing's pending sentence terminal, bracket stacks, duplicate-word's tail,
-spacing's cross-seam neighbour reads) lives inside the listener and resets
-only at book boundaries, because the book — never the verse — is the
-discourse unit (§0.1).
+Everything in §3–§5 describes *what* each rule computes. The current engine
+keeps that work in typed observation substrates: map derives chapter-local
+facts from text, ordered reduce applies only the boundary state a substrate
+owns, and a rule judge applies policy to the substrate's complete corpus
+aggregate. A rule never reads another rule's state.
 
-The observe/judge split (ADR 0017) is unchanged: listeners produce the same
-aggregate-only per-book stats and the same call-ephemeral candidate sites
-(ADR 0044), and judges are corpus-wide math over the merged stats plus those
-sites. The fused walk now collects sites for *every* supplied book —
-including books whose counts carry from the prior in a `changed`-scoped
-call — so the judge phase is site-driven and never re-scans text. The
-census (§ADR 0058) is the same walk's second subscriber: its accumulators
-count what the rules' extractors see, with no thresholds, so report and
-squiggles can never disagree.
+The resident `Galley` owns the complete target/reference corpora,
+configuration, and a disposable `AnalysisCache`. An edit maps only dirty
+chapters, replays ordered reduction only as far as changed boundary state
+requires, and rejudges changed substrate keys before patching resident finding
+partitions. A full current finding snapshot is still the only published
+answer: incremental work changes how it is derived, never its corpus scope.
 
-Each rule's `reduce` survives as a single-listener driver over the same
-walk, which is what keeps every rule independently testable and calibratable
-— the fusion shares traversal, never verdicts.
+Shared preparation (scalar tape, grapheme spans, word tokens) is fused once
+per dirty chapter for the substrates that need it. Native whole-corpus work
+may fan out independent books; a single book with enough dirty chapters may
+fan out caller-order chapter work. Ordered reduction within a book remains
+deterministic and sequential. The census remains a separate, cold pure entry
+point that reuses rule extraction semantics without sharing rule caches or
+judging policy.
 
 ## 6. What "data" we actually need
 

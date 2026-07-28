@@ -48,10 +48,10 @@ pub mod bench {
     use std::cell::Cell;
     use std::time::Duration;
 
-    /// One analyze call's coarse phase split. `map` covers the per-verse lane
-    /// plus the fused walk and slotting; `reduce` covers stats/site assembly,
-    /// the token cache, and project emission; `judge` covers the stateful
-    /// judge loop. Pack/reconcile do not exist until Phase A-W.
+    /// One analyze call's coarse phase split. `map` covers direct findings,
+    /// fused shared preparation, and substrate observations; `reduce` covers
+    /// ordered substrate reduction plus corpus evidence updates; `judge`
+    /// covers outcome evaluation and resident finding-partition patching.
     #[derive(Clone, Copy, Default, Debug)]
     pub struct PhaseTimings {
         pub map: Duration,
@@ -1156,17 +1156,6 @@ mod tests {
         on.rules.insert(RuleId::MixedNormalization, true);
         assert!(on.is_enabled(RuleId::MixedNormalization));
     }
-
-    // ── Per-book `Tally` provenance (hash-derived counting) ──────────────────
-
-
-
-
-
-
-
-
-
 
     // ── Resident finding partitions: the atomic finding boundary (§3.3) ──────
 

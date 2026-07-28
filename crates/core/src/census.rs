@@ -8,15 +8,15 @@
 //! (nothing in it can change a count or a sort), so the census is permanently
 //! knob-free and config-independent.
 //!
-//! **Same walks, second accumulator.** The census subscribes to the same
-//! fused book walk the rules use (`stream::drive_book`: tape once, graphemes
-//! once, tokens once per verse) and reuses the rules' own extractors — the
+//! **Same extraction semantics, separate cold path.** The census uses the
+//! shared preparation/extractors that rules use (`stream::drive_book`: tape,
+//! graphemes, and tokens when needed) and reuses their classification rules — the
 //! adjacency run walk, the spacing opportunity walk, the bracket event
 //! stream, rare-glyph's census pages, mixed-case's letter-token/shape
 //! classification — so the report and the squiggles can never disagree about
 //! tokenization or terminals. Agreement is enforced by equivalence tests,
-//! not by sharing cached `Stats` (which are enabled-set-dependent and
-//! aggregate-only; see the census plan).
+//! not by sharing resident rule evidence or finding partitions (see the census
+//! plan).
 //!
 //! **Examples** are capped per row: the first occurrence per book until the
 //! cap, then stop — deterministic and book-spread by construction.
@@ -160,8 +160,8 @@ pub struct Inventory {
 /// and per-verse-visible adjacency in a coarser map is a documented superset).
 pub fn census(target: &Corpus, opts: &CensusOptions) -> Inventory {
     let books = corpus::by_book(target);
-    // The same fan-out as analyze (ADR 0042): one fused walk per book, the
-    // census accumulator fed per verse; fan-in merges in book order.
+    // The same book-level fan-out as analysis: shared extraction feeds the
+    // census accumulator per verse; fan-in merges in book order.
     let per_book: Vec<BookCensus> = rule::map_books(&books, |group| {
         stream::drive_book(
             group,

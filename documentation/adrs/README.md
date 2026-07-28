@@ -33,7 +33,7 @@ isn't visible from the code alone.
 | 0014 | 2026-06-09 | [The deterministic rule batch — tokenizer, eleven rules, and shipped defaults](0014-deterministic-rule-batch.md) | Accepted (punct.repeated-punct amended by 0024; hyg joiner allow-list removed by 0025) |
 | 0015 | 2026-06-09 | [Script identity is a `Copy` tag enum, not a `&'static str`](0015-script-tag-enum-perf.md) | Accepted |
 | 0016 | 2026-06-09 | [Bracket balance — book-scope, windowed, with a delimiter inventory](0016-bracket-balance-book-scope-windowed.md) | Accepted |
-| 0017 | 2026-06-30 | [Stateful rules — reduce/merge/judge and a stats-returning `analyze`](0017-stateful-rules-stats-returning-analyze.md) | Accepted |
+| 0017 | 2026-06-30 | [Stateful rules — reduce/merge/judge and a stats-returning `analyze`](0017-stateful-rules-stats-returning-analyze.md) | Superseded by 0067 |
 | 0018 | 2026-06-30 | [Parallelism behind a cargo feature, gated on feature not target](0018-parallelism-behind-a-feature.md) | Accepted |
 | 0019 | 2026-06-30 | [Shared tokenization, token-rule traits, and the per-character cost of non-Latin scripts](0019-shared-tokenization-and-per-char-cost.md) | Accepted |
 | 0020 | 2026-06-30 | [Per-character classification via a fused `ClassBits` lookup](0020-char-classification-fused-classbits-table.md) | Accepted (amended by 0021, 0022) |
@@ -58,9 +58,9 @@ isn't visible from the code alone.
 | 0039 | 2026-07-07 | [Quote / discourse-marker balance stays deferred — now with census data](0039-quote-balance-deferred.md) | Deferred |
 | 0040 | 2026-07-07 | [One corpus format — self-describing vref files from external producers](0040-vref-corpus-format-onion-builder.md) | Accepted |
 | 0041 | 2026-07-07 | [Stateful-phase hot-path cleanup — grapheme::count, Po bit, Copy keys, bracket gate, offset chunking](0041-stateful-phase-hot-path-cleanup.md) | Accepted (extends 0017/0021/0022) |
-| 0042 | 2026-07-07 | [The stateful phase fans out per book — books-shaped rules, shared grouping, judge on the token cache](0042-stateful-phase-book-fanout.md) | Accepted (extends 0017/0018) |
-| 0043 | 2026-07-07 | [`changed` narrows counting, never emission — the complete-snapshot call](0043-changed-scope-complete-snapshot.md) | Superseded by [0062](0062-resident-galley-tally-provenance.md) |
-| 0044 | 2026-07-07 | [Reduce forwards its candidate sites to judge — within one call, never on the wire](0044-reduce-judge-site-forwarding.md) | Accepted (extends 0017/0043) |
+| 0042 | 2026-07-07 | [The stateful phase fans out per book — books-shaped rules, shared grouping, judge on the token cache](0042-stateful-phase-book-fanout.md) | Superseded by 0067 (book parallelism remains a scheduling option) |
+| 0043 | 2026-07-07 | [`changed` narrows counting, never emission — the complete-snapshot call](0043-changed-scope-complete-snapshot.md) | Superseded by 0067 (via 0062) |
+| 0044 | 2026-07-07 | [Reduce forwards its candidate sites to judge — within one call, never on the wire](0044-reduce-judge-site-forwarding.md) | Superseded by 0067 |
 | 0045 | 2026-07-07 | [The scalar tape — decode + classify each verse once, then every scan consumes the tape](0045-scalar-tape.md) | Accepted (extends 0021/0022/0041) |
 | 0046 | 2026-07-08 | [Per-verse "dirty bits" prefilter — measured, and deferred](0046-per-verse-dirty-bits-prefilter.md) | Deferred (spike only; extends 0045/0022) |
 | 0047 | 2026-07-08 | [Store the crate's full script set faithfully; push mixing policy into a probabilistic rule](0047-full-script-set-no-collapse-probabilistic-mixing.md) | Accepted (amends 0009/0022) |
@@ -73,15 +73,17 @@ isn't visible from the code alone.
 | 0054 | 2026-07-10 | [Spacing attachment signatures — pooled class-conditioned per-side conventions](0054-spacing-attachment-signatures.md) | Accepted (amends 0050) |
 | 0055 | 2026-07-10 | [`case.mixed-case-word` — the interior-capital anomaly](0055-mixed-case-word.md) | Accepted |
 | 0056 | 2026-07-10 | [Rare-glyph reduce: page-table census, surface-deferred attribution](0056-rare-glyph-reduce-page-table.md) | Accepted |
-| 0057 | 2026-07-11 | [The event-stream engine — one fused book walk, every rule a listener](0057-event-stream-engine.md) | Accepted (supersedes 0044's fusion rejection) |
+| 0057 | 2026-07-11 | [The event-stream engine — one fused book walk, every rule a listener](0057-event-stream-engine.md) | Superseded by 0067 |
 | 0058 | 2026-07-11 | [The census (absolute mode) — `census(map) → Inventory`, the event stream's first subscriber](0058-census-absolute-mode.md) | Accepted (ratifies the 2026-07-10 plan) |
 | 0059 | 2026-07-11 | [Association goes G²-only — retire the Fisher fallback as the default](0059-association-g2-only.md) | Accepted |
-| 0060 | 2026-07-13 | [Cross-call analysis caches — content-keyed per-book products](0060-cross-call-analysis-caches.md) | Draft |
+| 0060 | 2026-07-13 | [Cross-call analysis caches — content-keyed per-book products](0060-cross-call-analysis-caches.md) | Superseded by 0067 |
 | 0061 | 2026-07-14 | [Finding addresses become an ordered `Corpus` + `KeyIdx`/`LocalKeyIdx` (retires `Sid`/`BookId`/`VerseMap`)](0061-finding-address-corpus-keyidx.md) | Accepted (amends 0010/0040) |
-| 0062 | 2026-07-15 | [Resident galley shell + per-book `Tally` provenance](0062-resident-galley-tally-provenance.md) | Accepted (supersedes 0043's `changed` contract) |
+| 0062 | 2026-07-15 | [Resident galley shell + per-book `Tally` provenance](0062-resident-galley-tally-provenance.md) | Accepted in part (resident shell/mutations stand; execution superseded by 0067) |
 | 0063 | 2026-07-16 | [`uni.mixed-normalization` — a deterministic, corpus-scoped NFC-mixing finding](0063-mixed-normalization-deterministic-nfc.md) | Accepted (ships default-off — perf-adjudicated deviation from the plan's default-on ruling) |
 | 0064 | 2026-07-17 | [Word-break fast path over the fused `Class` table, plus a per-book adaptive ASCII gate](0064-word-break-fast-path.md) | Accepted (extends 0021/0022/0045/0057/0018) |
 | 0065 | 2026-07-24 | [Packed findings wire — `analyze` returns a flat binary buffer with a content-derived identity](0065-packed-findings-wire.md) | Accepted (supersedes 0061's output-contract clause) |
+| 0066 | 2026-07-27 | [Casing's juror order is canonical (sorted), not hash-incidental](0066-canonical-juror-order.md) | Accepted |
+| 0067 | 2026-07-27 | [Typed observation substrates and the resident `Galley`](0067-typed-observation-substrates-resident-galley.md) | Accepted (supersedes legacy stateful/cache execution) |
 
 ## Format
 

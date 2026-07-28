@@ -36,10 +36,10 @@
 //! a convention — corpus counts alone cannot tell them apart (the documented
 //! limitation shared with the punctuation anomalies).
 //!
-//! **Aggregate-only state** (ADR 0017): each book caches per-signature counts and
-//! per-script token counts — never sites — so `Stats` stays a few KB. At `judge`
-//! spans come from the forwarded reduce sites where this call scanned the book
-//! (ADR 0044), or by re-scanning any book carried from the prior.
+//! **Aggregate-only evidence:** each book retains per-signature counts and
+//! per-script token counts — never legacy cross-call `Stats`. Resident finding
+//! partitions own sites; when evidence or sites move, the substrate patches the
+//! affected keys against the complete current corpus.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;

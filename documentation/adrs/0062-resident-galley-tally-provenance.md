@@ -1,9 +1,13 @@
 # ADR 0062: Resident galley shell + per-book `Tally` provenance
 
+> **⚠ Partly superseded by [ADR 0067](0067-typed-observation-substrates-resident-galley.md).**
+> The resident `Galley` API and mutation ownership stand. Its `Tally`
+> provenance, echo-era cache model, and execution contract are historical.
+
 - **Date:** 2026-07-15
-- **Status:** Accepted (all four phases implemented on `galley-resident-handle`;
-  full-fleet oracle bookend clean; warm-path perf re-measured 2026-07-16 — the
-  ladder holds with no regression, see Consequences)
+- **Status:** Accepted in part — resident `Galley` ownership/mutations stand;
+  `Tally` provenance and execution are superseded by
+  [ADR 0067](0067-typed-observation-substrates-resident-galley.md)
 - **Builds on:** ADR 0010 (pure analyzer), ADR 0017 (caller-held `Stats`),
   ADR 0060 (cross-call `PrepCache`), ADR 0061 (`Corpus`/`KeyIdx` addresses)
 - **Supersedes:** ADR 0043's caller-declared `changed` contract (the

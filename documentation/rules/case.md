@@ -1,4 +1,4 @@
-# `case.*` — Casing (word lexicon, two-factor, stateful)
+# `case.*` — Casing (word lexicon, two-factor, typed substrate)
 
 Source: `crates/core/src/signals/casing.rs`.
 
@@ -30,7 +30,7 @@ dropped; `case.mixed-case-word` uses the *unmerged* letter-run token instead
 
 ## `case.sentence-initial-lowercase` — lowercase after a casing-convention terminal
 
-> **Severity** Info · **Default** OFF · **Scope** stateful (per-book word table) · **Knobs** `emit_score_min` (0.95), `recurrence_k` (32), `confidence_z` (1.96), `trust_gate` (0.90) · **ADR** 0017, 0035, 0051, 0052
+> **Severity** Info · **Default** OFF · **Scope** substrate-backed (per-book word table) · **Knobs** `emit_score_min` (0.95), `recurrence_k` (32), `confidence_z` (1.96), `trust_gate` (0.90) · **ADR** 0017, 0035, 0051, 0052
 
 **Flags** — A forced-position lowercase word-start, scored by how established
 the corpus's capitalize-after-this-terminal habit is (measured only on words
@@ -92,7 +92,7 @@ the floor or lower `recurrence_k`. **Looser:** the reverse.
 
 ## `case.inconsistent-word-casing` — a usually-capitalized word written lowercase
 
-> **Severity** Info · **Default** OFF · **Scope** stateful (per-book word table) · **Knobs** shared `Config.casing` · **ADR** 0051 (new rule), 0052
+> **Severity** Info · **Default** OFF · **Scope** substrate-backed (per-book word table) · **Knobs** shared `Config.casing` · **ADR** 0051 (new rule), 0052
 
 **Flags** — A lowercase occurrence of a word this translation almost always
 capitalizes, scored by how dominantly it capitalizes that exact word times how
@@ -136,26 +136,26 @@ lower `recurrence_k`. **Looser:** the reverse.
 
 ---
 
-**Stats / ADR ties** — Per book, the word table stores raw case tallies (mid-
+**Evidence / ADR ties** — Per book, the word table stores raw case tallies (mid-
 flow upper/lower and forced upper/lower split by **boundary class** — the mark
 plus its adjacent-close-quote context, ADR 0052 — not the bare glyph); the
 lexicon classification, per-class habit, `terminal_strength` trust, the gate, and
 soft censoring are all judge-time arithmetic over the merged table, so
-book-supersede stays sound and `reduce` stays one walk. The trust's second
+incremental replacement stays sound and reduction reuses cached chapter
+observations. The trust's second
 witness needs a second word-level aggregate — per-class following-word (juror)
 counts and the baseline word-start distribution (ADR 0052). Only uncased-only
 words are pruned (the sole per-book-safe drop — see the module doc for why
-dropping either case mass is unsound across the merge). Findings are recovered
-from the forwarded reduce sites, or by re-walking a book counted from the prior
-(ADR 0044). See ADR 0017 (stateful shape), 0042 (book fan-out), 0044
-(reduce→judge sites), 0050 (two-factor precedent), 0052 (mark-trust gate), and
+dropping either case mass is unsound across the merge). Finding partitions use
+the substrate's chapter-local sites. See ADR 0050 (two-factor precedent), 0052
+(mark-trust gate), and
 the 2026-07-09 casing calibration doc.
 
 ---
 
 ## `case.mixed-case-word` — an interior-capital slip
 
-> **Severity** Info · **Default** OFF · **Scope** stateful (per-book word shape table) · **Knobs** `emit_score_min` (0.95), `recurrence_k` (32), `confidence_z` (1.96) · **ADR** 0017, 0050, 0055
+> **Severity** Info · **Default** OFF · **Scope** substrate-backed (per-book word shape table) · **Knobs** `emit_score_min` (0.95), `recurrence_k` (32), `confidence_z` (1.96) · **ADR** 0017, 0050, 0055
 
 **Flags** — A word written with a capital letter *inside* it (`wOrd`, `DIos`,
 `MUngu`, `FIls`, `asÍ`) — an OtherMixed shape: it has both cases and is neither
@@ -197,12 +197,13 @@ silent on them (they belong to the spacing / attachment lane).
 `confidence_z` 1.96). **Stricter:** raise `emit_score_min` or lower
 `recurrence_k`. **Looser:** the reverse.
 
-**Stats / ADR ties** — Per book, a word→four-shape-count table
+**Evidence / ADR ties** — Per book, a word→four-shape-count table
 (`lower`/`title`/`allcaps`/`other`), raw and mergeable; dominance and the
 recurrence knee are judge-time sums over the merged table. Every **cased** word
 is kept — mixed-only pruning is unsound because a candidate's clean-shape mass
-(which drives dominance) is spread across books (see the module doc). Judge
-forwards no sites and re-scans for spans (ADR 0044), like `uni.rare-glyph`. The
+(which drives dominance) is spread across books (see the module doc). Its
+finding partition is rebuilt from the substrate's current chapter-local sites,
+like `uni.rare-glyph`. The
 shape classifier and the titlecase name-shape helper live in
 `signals::case_shape`, shared with `uni.rare-glyph` (whose `is_titlecase_name`
 is intentionally looser — see ADR 0055). Shipped by the

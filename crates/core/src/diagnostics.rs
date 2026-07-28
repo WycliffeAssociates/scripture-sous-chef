@@ -17,8 +17,9 @@ use crate::span::Span;
 ///
 /// Adding a rule is exactly one line here; the enum, `ALL`, and `code()`
 /// all derive from it (and the `Tsify` string union with them). See
-/// ADR 0012. The compiler still forces every rule's `PerVerseRule` /
-/// `ProjectRule` impl; this macro only owns the identity↔code mapping.
+/// ADR 0012. The compiler still forces every rule to be routed through the
+/// direct lane or a typed observation substrate; this macro only owns the
+/// identity↔code mapping.
 macro_rules! define_rule_ids {
     ($( $(#[$vmeta:meta])* $variant:ident => $code:literal ),+ $(,)?) => {
         /// Stable, machine-readable rule identity — a **closed set**.

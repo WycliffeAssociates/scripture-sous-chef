@@ -48,22 +48,22 @@ file where it isn't obvious.
 | `hyg.replacement-run` | Warning | on | per-verse | ✅ documented (ADR 0034) |
 | `struct.source-marker-leftover` | Warning | on | per-verse | ✅ documented |
 | `struct.merge-conflict-marker` | Warning | on | per-verse | ✅ documented |
-| `lex.duplicate-word` | Warning | **off** | per-verse | ✅ documented |
+| `lex.duplicate-word` | Warning | **off** | substrate-backed, corpus-relative | ✅ documented |
 | `uni.combining-mark-without-base` | Warning | on | per-verse | ✅ documented |
-| `uni.mixed-script-in-token` | Info | on | stateful (corpus-relative) | ✅ documented (ADR 0047) |
+| `uni.mixed-script-in-token` | Info | on | substrate-backed, corpus-relative | ✅ documented (ADR 0047) |
 | `uni.mixed-numeral-systems` | Warning | on | per-verse | ✅ documented |
 | `uni.redundant-zero-width-space` | Info | on | per-verse | ✅ documented (ADR 0027) |
-| `punct.bracket-balance` | Info | on | project (corpus-relative scored) | ✅ documented (ADR 0037) |
-| `uni.mixed-normalization` | Warning | **off** | project (deterministic) | ✅ documented (ADR 0063, perf-gated default-off) |
-| `prop.length-ratio` | Warning | on | project | 🗣 pending discussion |
-| `punct.adjacency-anomaly` | Info | on | stateful | ✅ documented (ADR 0024, 0031) |
-| `lex.punct-only-token` | Warning | on | stateful | ✅ documented (ADR 0030, 0032) |
-| `case.sentence-initial-lowercase` | Info | **off** | stateful (word table) | ✅ documented (ADR 0035, 0051, 0052) |
-| `case.inconsistent-word-casing` | Info | **off** | stateful (word table) | ✅ documented (ADR 0051, 0052) |
-| `case.mixed-case-word` | Info | **off** | stateful (word shape table) | ✅ documented (ADR 0055) |
-| `uni.rare-glyph` | Info | **off** | stateful (corpus-relative) | ✅ documented (ADR 0053) |
-| `lex.repeated-character-run` | Info | on | stateful | ✅ documented (ADR 0028, 0032) |
-| `punct.spacing-anomaly` | Info | **off** | stateful (aggregate) | 💡 suggestion (corpus-relative; ADR 0029) |
+| `punct.bracket-balance` | Info | on | substrate-backed, corpus-relative | ✅ documented (ADR 0037) |
+| `uni.mixed-normalization` | Warning | **off** | substrate-backed, corpus-scoped | ✅ documented (ADR 0063, perf-gated default-off) |
+| `prop.length-ratio` | Warning | on | substrate-backed, target/reference | 🗣 pending discussion |
+| `punct.adjacency-anomaly` | Info | on | substrate-backed, corpus-relative | ✅ documented (ADR 0024, 0031) |
+| `lex.punct-only-token` | Warning | on | substrate-backed, corpus-relative | ✅ documented (ADR 0030, 0032) |
+| `case.sentence-initial-lowercase` | Info | **off** | substrate-backed, word table | ✅ documented (ADR 0035, 0051, 0052) |
+| `case.inconsistent-word-casing` | Info | **off** | substrate-backed, word table | ✅ documented (ADR 0051, 0052) |
+| `case.mixed-case-word` | Info | **off** | substrate-backed, word shape table | ✅ documented (ADR 0055) |
+| `uni.rare-glyph` | Info | **off** | substrate-backed, corpus-relative | ✅ documented (ADR 0053) |
+| `lex.repeated-character-run` | Info | on | substrate-backed, corpus-relative | ✅ documented (ADR 0028, 0032) |
+| `punct.spacing-anomaly` | Info | **off** | substrate-backed, corpus-relative | 💡 suggestion (corpus-relative; ADR 0029) |
 
 ✅ = settled write-up done · 🗣 = needs a conversation before write-up ·
 💡 = floated as observe-and-flag-above-threshold redesigns

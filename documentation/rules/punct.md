@@ -1,7 +1,7 @@
 # `punct.*` — Punctuation integrity
 
 The `punct.` namespace spans two source files: `punctuation.rs`
-(`adjacency-anomaly` and `spacing-anomaly` — both corpus-relative and stateful)
+(`adjacency-anomaly` and `spacing-anomaly` — both corpus-relative substrates)
 and `bracket_balance.rs` (`bracket-balance`, the corpus-relative book-stream
 matcher).
 
@@ -9,7 +9,7 @@ matcher).
 
 ## `punct.bracket-balance` — unbalanced paired brackets
 
-> **Severity** Info · **Default** on · **Scope** project (book stream, corpus-relative verdicts) · **Knobs** `window_verses` (default 16), `confidence_z` (default 1.96), `emit_score_min` (default 0.5) · **Source** `bracket_balance.rs` · **ADR** 0016, 0037
+> **Severity** Info · **Default** on · **Scope** substrate-backed (book stream, corpus-relative verdicts) · **Knobs** `window_verses` (default 16), `confidence_z` (default 1.96), `emit_score_min` (default 0.5) · **Source** `bracket_balance.rs` · **ADR** 0016, 0037
 
 **Flags** — Bracket events that don't fit the corpus's own pairing behaviour,
 matched with a LIFO stack across the **whole book stream** (verses in
@@ -70,8 +70,9 @@ sharply top-heavy score histogram (291 at 1.0, 35 at the floor).
 and their book-scope balance is deferred (ADR 0011) — brackets are the
 unambiguous warm-up for that matcher. Severity is **Info**, now with a score
 (pre-0037 findings carried none). The reference corpus is irrelevant —
-brackets are intrinsic to the target. The rule stays a `ProjectRule`
-(whole-map, non-incremental); family statistics are recomputed per call. The
+brackets are intrinsic to the target. The rule is a typed observation
+substrate with ordered book-local delimiter state; its complete corpus
+aggregate is retained residently and re-derived from dirty chapters. The
 inventory is generated into `charclass_table.rs` (`BRACKET_PAIRS`) from a
 committed trimmed `BidiBrackets.txt` by `cargo xtask gen-charclass-table`.
 
@@ -80,15 +81,15 @@ sibling (ADR 0011). Known accepted residual (ADR 0037): a missing closer
 plus a coincidental stray same-family closer can silently pair across a long
 span; the long-span verdict recovers the short-pair-convention cases, and in
 a corpus with no dominant span convention the cost is at most one missed
-coincidence where the window design gave two uninspectable orphans. If the
-rule ever converts to stateful reduce/merge/judge, the per-family tallies are
-already the right aggregates.
+coincidence where the window design gave two uninspectable orphans. Its
+per-family tallies are the resident substrate's aggregates; any future
+quote-balance rule must declare its own boundary state and substrate contract.
 
 ---
 
 ## `punct.adjacency-anomaly` — corpus-relative repeated / mixed punctuation
 
-> **Severity** Info · **Default** on · **Scope** stateful (aggregate-only) · **Knobs** `convention_rate`, `confidence_z`, `breadth_convention_rate`, `breadth_z`, `breadth_min_books`, `length_gain_slope`, `emit_score_min` · **Source** `punctuation.rs` · **ADR** 0024, 0031
+> **Severity** Info · **Default** on · **Scope** substrate-backed (aggregate evidence) · **Knobs** `convention_rate`, `confidence_z`, `breadth_convention_rate`, `breadth_z`, `breadth_min_books`, `length_gain_slope`, `emit_score_min` · **Source** `punctuation.rs` · **ADR** 0024, 0031
 
 **Flags** — A repeated or mixed punctuation run that is **neither frequent nor
 widespread** in the corpus, amplified by run length, with a continuous `score`:
@@ -162,7 +163,7 @@ scope.
 ---
 ## `punct.spacing-anomaly` — pooled class-conditioned spacing
 
-> **Severity** Info · **Default** off · **Scope** stateful (aggregate-only) · **Knobs** `emit_score_min` (default 0.5), `confidence_z` (default 1.96), `minority_recurrence_k` (default 32), `minority_rate_per_10k` (default 40) · **Source** `punctuation.rs` · **ADR** 0029, 0033, 0050, 0054 (2nd amendment)
+> **Severity** Info · **Default** off · **Scope** substrate-backed (aggregate evidence) · **Knobs** `emit_score_min` (default 0.5), `confidence_z` (default 1.96), `minority_recurrence_k` (default 32), `minority_rate_per_10k` (default 40) · **Source** `punctuation.rs` · **ADR** 0029, 0033, 0050, 0054 (2nd amendment)
 
 **Flags** — A separator mark (GC `Po` minus quotes — `. , ; : ? !` and equally
 danda `।`, Arabic `۔ ، ؟ ؛`, Ethiopic `። ፤ ፥`, Burmese `။ ၊`, Khmer `។`) **or a

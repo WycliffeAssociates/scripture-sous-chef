@@ -1,7 +1,11 @@
 # ADR 0057: The event-stream engine — one fused book walk, every rule a listener
 
+> **⚠ Superseded by [ADR 0067](0067-typed-observation-substrates-resident-galley.md).**
+> Shared preparation remains fused where needed, but rules are no longer
+> fused-book listeners; typed substrates own chapter observations and reduction.
+
 - **Date:** 2026-07-11
-- **Status:** Accepted
+- **Status:** Superseded by [ADR 0067](0067-typed-observation-substrates-resident-galley.md)
 - **Supersedes:** the "Full pass fusion (the automaton)" rejection in
   [ADR 0044](0044-reduce-judge-site-forwarding.md) — that deferral's revisit
   condition ("worth revisiting only if the engine matures into needing a

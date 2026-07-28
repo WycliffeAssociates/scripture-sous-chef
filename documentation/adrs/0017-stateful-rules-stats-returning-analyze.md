@@ -1,7 +1,11 @@
 # ADR 0017: Stateful rules — reduce/merge/judge and a stats-returning `analyze`
 
+> **⚠ Superseded by [ADR 0067](0067-typed-observation-substrates-resident-galley.md).**
+> This record preserves the rationale for separating observation from policy;
+> its `Stats`-returning/caller-threaded execution model is historical.
+
 - **Date:** 2026-06-30
-- **Status:** Accepted
+- **Status:** Superseded by [ADR 0067](0067-typed-observation-substrates-resident-galley.md)
 - **Amends:** [ADR 0011](0011-statefulness-incrementality-strategy.md) (realises
   the deferred Mode B). Builds on [ADR 0010](0010-pure-analyzer-contract-v1-reset.md)
   (pure core), [ADR 0012](0012-ruleid-closed-enum-config-surface.md) (closed

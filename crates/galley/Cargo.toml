@@ -13,7 +13,7 @@ rustc-hash = { workspace = true }
 parallel = ["ssc-core/parallel"]
 
 [dev-dependencies]
-# The shell's tests read PrepCache::probe() to prove cache-reuse and
+# The shell's tests read AnalysisCache::probe() to prove cache-reuse and
 # zero-re-tally invariants directly across the crate boundary, and drive the
 # core fault hook (ssc_core::fault) in the lifecycle retry-safety tests.
 ssc-core = { workspace = true, features = ["test-probes"] }

@@ -1,5 +1,9 @@
 # sous-chef v1 reset — design narrative
 
+> **Historical reset narrative.** This is the 2026-06-02 account behind ADR
+> 0010, not the current engine architecture. The current typed-substrate and
+> resident-`Galley` contract is [ADR 0067](../adrs/0067-typed-observation-substrates-resident-galley.md).
+
 Companion to [ADR 0010](adrs/0010-pure-analyzer-contract-v1-reset.md). The
 ADR records *what* we decided; this doc records *how we got there* — the
 alternatives we rejected and why — so that when we come back to graduate

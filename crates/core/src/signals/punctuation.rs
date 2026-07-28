@@ -1,11 +1,9 @@
 //! Punctuation signals.
 //!
-//! `punct.adjacency-anomaly` and `punct.spacing-anomaly` are both corpus-relative
-//! and stateful with **aggregate-only** state (ADR 0017, ADR 0024, ADR 0029,
-//! ADR 0031): each caches per-book *counts* — never sites — so `Stats` stays
-//! tiny; at `judge` each re-scans the current call's verses to emit spans,
-//! keeping scores corpus-wide and incremental re-analysis correct. Spans always
-//! slice the offending characters out of the verse text.
+//! `punct.adjacency-anomaly` and `punct.spacing-anomaly` are corpus-relative
+//! typed substrates. Each retains per-book counts and chapter-local sites;
+//! ordered reduction maintains corpus evidence and judges patch only affected
+//! resident findings. Spans always slice offending characters from verse text.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -2402,8 +2400,8 @@ mod tests {
         }
         Corpus::try_from_parts(keys, texts).unwrap()
     }
-    /// The knobs, as the substrate's judge config. (`rule`/`default_rule` used
-    /// to build the retired `StatefulRule`; the config *is* the rule now.)
+    /// The knobs, as the substrate's judge config. The configuration is input
+    /// to the judge; the substrate owns extraction and evidence.
     fn rule(cfg: PunctuationAdjacencyConfig) -> PunctuationAdjacencyConfig {
         cfg
     }

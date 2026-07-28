@@ -1,14 +1,18 @@
 # scripture-sous-chef — Vision
 
+> **Historical discovery narrative.** This document preserves pre-build product
+> reasoning. Its concrete execution sketches predate the typed-substrate,
+> resident-`Galley` architecture in [ADR 0067](../adrs/0067-typed-observation-substrates-resident-galley.md);
+> current engine contracts live in the ADRs, glossary, and reference docs.
+
 A configurable Rust engine for statistical and heuristic analysis of USFM
 scripture text, designed to power proofreading and consistency feedback inside
 WYSIWYG editors used by field Bible translators in low-resource majority-world
 languages.
 
-This document captures the product intent, architectural decisions, open
-questions, and research items established during pre-build discovery. It is the
-canonical reference for what we are (and are not) building, and should be kept
-current as decisions evolve.
+This document captures product intent, architectural decisions, open questions,
+and research items established during pre-build discovery. It remains useful
+context, but is not the canonical execution contract.
 
 ---
 

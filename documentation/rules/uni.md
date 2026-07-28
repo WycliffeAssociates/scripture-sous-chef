@@ -59,7 +59,7 @@ mark tables.
 
 ## `uni.mixed-script-in-token` — two scripts inside one word
 
-> **Severity** Info · **Default** on · **Scope** corpus-relative (stateful) ·
+> **Severity** Info · **Default** on · **Scope** substrate-backed, corpus-relative ·
 > **Knobs** `convention_rate`, `breadth_convention_rate`, `confidence_z`,
 > `breadth_z`, `breadth_min_books`, `emit_score_min`
 
@@ -104,8 +104,8 @@ measuring against the dominant script asks the right question — "what share of
 the main script's words does this contaminate?" A **systematic, widespread**
 cross-script contamination is suppressed exactly like a convention — corpus
 counts alone cannot tell them apart (the documented limitation shared with the
-punctuation anomalies). State is aggregate-only (ADR 0017): per-book signature
-and per-script token counts, no sites; spans re-derive at judge. Script identity
+punctuation anomalies). Its substrate retains aggregate per-book signature and
+per-script token counts plus current chapter-local sites. Script identity
 via ADR 0009 / ADR 0015. This replaced the deterministic categorical rule
 (ADR 0047).
 
@@ -166,7 +166,7 @@ positives (ADR 0027).
 
 ## `uni.rare-glyph` — a letter this translation barely ever uses
 
-> **Severity** Info · **Default** off · **Scope** corpus-relative (stateful) ·
+> **Severity** Info · **Default** off · **Scope** substrate-backed, corpus-relative ·
 > **Knobs** `closure_threshold`, `recurrence_k`, `emit_score_min` · **Source**
 > `rare_glyph.rs` · **ADR** 0053
 
@@ -210,8 +210,8 @@ dial — how many times a letter may appear before it stops counting as rare.
 `emit_score_min` (default 0.5) is the emission floor.
 
 **Nuance & ADR ties** — **L (letter) lane only** in v1: digits (`N`) are
-census-only, punctuation/symbols (`P`/`S`) await adjudication (ADR 0053). But the
-stats tally **every** scalar per book — the accumulator is the substrate the
+census-only, punctuation/symbols (`P`/`S`) await adjudication (ADR 0053). The
+glyph substrate tallies **every** scalar per book — the accumulator is the substrate the
 future glyph census reuses (the reason this rule was built first). **Combining
 marks (M)** are excluded from candidacy (`char` keys and NFC are incompatible —
 a normalized-grapheme inventory is a later upgrade); **Z/C and the hygiene
@@ -220,8 +220,9 @@ classes** are excluded so this never becomes a second hygiene rule.
 phenomenon, one finding) — a candidate inside a two-script token is skipped, a
 script-Common glyph in a single-script token stays eligible. The forced-position
 definition and the mixed-script predicate are reused from `signals::casing` and
-`signals::script_mixing`, not re-implemented. State is aggregate-only,
-book-superseding (ADR 0017); spans re-derive at judge (ADR 0044). Ships
+`signals::script_mixing`, not re-implemented. Its whole-book aggregate is
+re-derived from current chapter observations; finding sites are patched
+residently. Ships
 default-off — turn it on when the translation uses a fixed alphabet.
 
 **Open issues / future work** — The `N`/`P`/`S` lanes (census-only or pending
@@ -316,9 +317,9 @@ in the corpus; its `example` is the anchor's NFC key as a `String` (not
 `char` — composition exclusions and multi-mark clusters can be more than
 one scalar). Cardinality is capped at one finding per supplied corpus —
 this is a deterministic fact about the corpus, not a per-occurrence
-annotation. Wired as a fused project listener (parallel to
-`punct.bracket-balance`) with a content-keyed cached per-book product, not
-a `RuleStats`/`Tally` entry (ADR 0063).
+annotation. It is a typed substrate with a content-keyed resident per-book
+product and a whole-book aggregate fold, not a legacy `RuleStats`/`Tally`
+entry (ADR 0063; execution model superseded by ADR 0067).
 
 **Open issues / future work** — The fix (bulk `text.normalize("NFC")` over
 every verse in the project) is a project-wide action, not a per-finding

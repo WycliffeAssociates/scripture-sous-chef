@@ -1,7 +1,11 @@
 # ADR 0060: Cross-call analysis caches — content-keyed per-book products
 
+> **⚠ Superseded by [ADR 0067](0067-typed-observation-substrates-resident-galley.md).**
+> This draft's proposed per-book cache shape was never the final contract;
+> `AnalysisCache` now holds typed chapter products and resident partitions.
+
 - **Date:** 2026-07-13
-- **Status:** Draft
+- **Status:** Superseded by [ADR 0067](0067-typed-observation-substrates-resident-galley.md)
 - **Builds on:** ADR 0042 (book-shaped stateful fan-out), ADR 0043
   (complete-snapshot changed scope), ADR 0057 (fused event-stream engine)
 

@@ -5,7 +5,7 @@ language. No corpus statistics, no config knobs beyond on/off. The bar is
 high by design: if there's any plausible language or style where a pattern is
 fine, it belongs in a statistical signal that *learns* the corpus convention
 (the `case.*` / `prop.*` families), not here. All ship on by default in the
-deterministic batch (ADR 0014).
+direct per-verse lane (ADR 0014).
 
 Source: `crates/core/src/signals/hygiene.rs`. (That file also holds the
 `uni.*` script/numeral rules — see [`uni.md`](uni.md).)

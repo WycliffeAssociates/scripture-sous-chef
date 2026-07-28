@@ -19,7 +19,7 @@
 //! distributions — its own book and the whole project (all books pooled) —
 //! and flags it once if it is an outlier in *either*, tagging the finding's
 //! `scope` (`Book` / `Project` / `Both`) with the z-score(s) that fired. The
-//! book-scope output matches the prior Mode-A `ProjectRule`; project-scope is
+//! book-scope output matches the prior Mode-A implementation; project-scope is
 //! additive (e.g. a verse a short book can't judge alone but the project can).
 
 use std::collections::BTreeMap;

@@ -30,8 +30,10 @@ be the referee):
 
 1. **Before touching anything**, dump deterministic findings over the full
    vref fleet with `calibrate --dump-findings` (both configs: v1 defaults
-   and everything-on) and `--dump-incremental` (echo + snapshot + stats
-   digest over a fixed mutation). These dumps are the behavior contract.
+   and everything-on) and the resident `ssc-galley` transcript oracle over a
+   fixed mutation. These dumps are the behavior contract. The transcript
+   oracle publishes the complete post-mutation snapshot; it has no echo or
+   serialized-stats channel.
 2. **Gate every step**: re-dump and diff; byte-identical or the step does
    not land. Commit per gated step.
    - **Scale the gate to the step.** For a multi-step refactor, intermediate
@@ -56,7 +58,7 @@ rework of comparable reach.
 ## Feature routing: rules first, census adopts later
 
 New check ideas start in **statistics mode** — a scored, convention-learned
-rule (the `StatefulRule` shape, calibrated on the fleet). The census /
+rule backed by a typed observation substrate and calibrated on the fleet. The census /
 inventory report (absolute mode) is never the primary implementation of an
 error-shaped check: rules judge, the census counts. A census lane appears
 either by mirroring a shipped rule's extractor or because triage explicitly

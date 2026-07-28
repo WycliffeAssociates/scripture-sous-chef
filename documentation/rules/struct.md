@@ -7,7 +7,7 @@ issue. Both rules are pure byte scans with no language sensitivity and no
 config beyond on/off.
 
 Source: `crates/core/src/signals/structural.rs`. Both ship in the
-deterministic default batch (ADR 0014).
+direct per-verse lane (ADR 0014).
 
 ---
 
@@ -34,7 +34,7 @@ a deterministic markup scan.
 **Why it matters** — The text that reaches the analyzer is supposed to be
 clean, projected verse content. A surviving `\v` or `<br/>` means the
 USFM/HTML stripping pipeline upstream broke or was skipped. This is the
-highest-value scan in the deterministic batch: it catches whole-pipeline
+highest-value direct scan: it catches whole-pipeline
 failures that would otherwise corrupt every downstream rule's view of the
 text.
 

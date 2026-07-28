@@ -1,7 +1,11 @@
 # ADR 0042: The stateful phase fans out per book — books-shaped rules, one shared grouping, judge on the token cache
 
+> **⚠ Superseded by [ADR 0067](0067-typed-observation-substrates-resident-galley.md).**
+> Independent-book parallelism remains a scheduling option; this record's
+> stateful-phase grouping and token-cache execution are historical.
+
 - **Date:** 2026-07-07
-- **Status:** Accepted
+- **Status:** Superseded by [ADR 0067](0067-typed-observation-substrates-resident-galley.md)
 - **Extends:** [ADR 0018](0018-parallelism-behind-a-feature.md) (the
   `parallel` feature and its serial-identical contract — extended from the
   per-verse phase to the stateful phase) and [ADR 0017](0017-stateful-rules-stats-returning-analyze.md)

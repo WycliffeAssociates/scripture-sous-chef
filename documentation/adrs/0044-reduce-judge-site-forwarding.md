@@ -1,7 +1,11 @@
 # ADR 0044: Reduce forwards its candidate sites to judge — within one call, never on the wire
 
+> **⚠ Superseded by [ADR 0067](0067-typed-observation-substrates-resident-galley.md).**
+> Resident substrate products and finding partitions now own site validity;
+> this record's call-ephemeral forwarding contract is historical.
+
 - **Date:** 2026-07-07
-- **Status:** Accepted
+- **Status:** Superseded by [ADR 0067](0067-typed-observation-substrates-resident-galley.md)
 - **Extends:** [ADR 0017](0017-stateful-rules-stats-returning-analyze.md)
   (whose aggregates-only *wire* contract is deliberately untouched) and
   [ADR 0043](0043-changed-scope-complete-snapshot.md) (whose complete-snapshot

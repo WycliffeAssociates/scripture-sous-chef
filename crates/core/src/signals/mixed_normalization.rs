@@ -838,9 +838,8 @@ mod tests {
     }
 
     /// Exercises Latin, the Bengali composition exclusion, and canonical
-    /// mark-order cases together — proves the direct `ProjectRule::check`
-    /// path and `analyze_with_config`'s fused-walk path share one
-    /// accumulator/emitter and cannot drift (plan §8.2).
+    /// mark-order cases together — proves the direct helper and resident
+    /// substrate path share one accumulator/emitter and cannot drift.
     #[test]
     fn direct_path_and_fused_path_agree() {
         let c = book(

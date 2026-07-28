@@ -1,14 +1,13 @@
 # ADR 0043: `changed` narrows counting, never emission — the complete-snapshot call
 
-> **⚠ Superseded by [ADR 0062](0062-resident-galley-tally-provenance.md).** The
-> `changed` parameter described here is gone; counting scope now derives from
-> per-book `Tally` provenance. Read 0062 for the current contract; this record
-> is kept for the reasoning that led there.
+> **⚠ Supersession chain: [ADR 0062](0062-resident-galley-tally-provenance.md),
+> then [ADR 0067](0067-typed-observation-substrates-resident-galley.md).** The
+> `changed` parameter and its later `Tally` provenance replacement are gone.
+> Read 0067 for the current complete-snapshot contract.
 
 - **Date:** 2026-07-07
-- **Status:** Superseded by [ADR 0062](0062-resident-galley-tally-provenance.md)
-  (the `changed` parameter is deleted; counting scope is now derived from
-  per-book `Tally` provenance, so under-declaring an edit is impossible)
+- **Status:** Superseded by [ADR 0067](0067-typed-observation-substrates-resident-galley.md)
+  (via ADR 0062; current scope derives from resident corpus/cache validity)
 - **Extends:** [ADR 0017](0017-stateful-rules-stats-returning-analyze.md)
   (the observe/judge contract this adds one argument to) and
   [ADR 0042](0042-stateful-phase-book-fanout.md) (book granularity).
