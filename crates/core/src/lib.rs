@@ -632,6 +632,7 @@ fn transition(
     signals::lexical::drive_duplicate_word(
         active.duplicate_word,
         &mut substrates.duplicate_word,
+        &mut shared_tokens,
         target,
         &mut out,
     );

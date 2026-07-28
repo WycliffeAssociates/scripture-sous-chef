@@ -230,8 +230,13 @@ impl crate::substrate::ObservationSubstrate for DuplicateWordSubstrate {
         // The carry starts empty at the chapter's first verse — that IS the
         // shipped chapter reset, not an approximation of it.
         let mut tail: Option<Tail<'_>> = None;
+        // The chapter's tokens come from the shared prep lane rather than a private
+        // per-verse walk: the same `tokenize_into` result, decoded instead of
+        // recomputed, and into one reused buffer instead of a fresh `Vec` a verse.
+        let shared = chapter.tokens();
+        let mut tokens: Vec<crate::token::Token> = Vec::new();
         for (vi, text) in chapter.texts.iter().enumerate() {
-            let tokens = tokenize(text);
+            shared.verse(vi, &mut tokens);
             duplicate_word_verse(
                 LocalKeyIdx::from_usize(vi),
                 text,
@@ -332,10 +337,9 @@ impl DuplicateBookContribution {
 
 /// One chapter the substrate has to map this analysis, as the ordered map seam
 /// sees it: its caller-order `(book, chapter)` slot plus the view mapping reads.
-struct DuplicateMapWork<'a> {
+struct DuplicateMapWork {
     book: usize,
     chapter: usize,
-    view: crate::substrate::ChapterView<'a>,
 }
 
 /// Drive the `struct.duplicate-word` observation substrate for one analysis:
@@ -345,6 +349,7 @@ struct DuplicateMapWork<'a> {
 pub(crate) fn drive_duplicate_word(
     active: bool,
     cache: &mut crate::substrate::SubstrateCache<DuplicateWordSubstrate>,
+    shared: &mut crate::prep::SharedTokens,
     corpus: &Corpus,
     out: &mut Vec<Finding>,
 ) {
@@ -364,7 +369,7 @@ pub(crate) fn drive_duplicate_word(
     // the planning pass never allocates. `update_book` takes ownership only
     // where it rebuilds a persistent cache entry.
     let mut stamped: Vec<Vec<(&str, ObservationInputStamp)>> = Vec::with_capacity(layout.len());
-    let mut work: Vec<DuplicateMapWork<'_>> = Vec::new();
+    let mut work: Vec<DuplicateMapWork> = Vec::new();
     let mut book_runs: Vec<std::ops::Range<usize>> = Vec::new();
     let mut work_bytes = 0usize;
     for (bi, book) in layout.iter().enumerate() {
@@ -373,12 +378,13 @@ pub(crate) fn drive_duplicate_word(
         for (ci, c) in book.chapters.iter().enumerate() {
             let stamp = ObservationInputStamp::target_only::<DuplicateWordSubstrate>(c.hash, &());
             if !cache.observation_is_current(&book.slug, &c.chapter, &stamp) {
-                let verses = &texts[c.range.clone()];
-                work_bytes += verses.iter().map(String::len).sum::<usize>();
+                work_bytes += texts[c.range.clone()]
+                    .iter()
+                    .map(String::len)
+                    .sum::<usize>();
                 work.push(DuplicateMapWork {
                     book: bi,
                     chapter: ci,
-                    view: ChapterView::target(&c.chapter, verses),
                 });
             }
             chapters.push((&*c.chapter, stamp));
@@ -389,13 +395,29 @@ pub(crate) fn drive_duplicate_word(
         stamped.push(chapters);
     }
     probe.mark(DrivePhase::Plan);
+    // Fill the shared token lane for exactly this drive's work set before the map
+    // seam opens. Separate from the seam, not nested inside it: one Rayon grain is
+    // live at a time, and a chapter already streamed by an earlier drive is not
+    // rebuilt.
+    let wanted: Vec<(usize, usize)> = work.iter().map(|w| (w.book, w.chapter)).collect();
+    shared.ensure(layout, texts, &wanted);
+    let shared: &crate::prep::SharedTokens = shared;
     let route = crate::rule::map_route(&book_runs, work.len(), work_bytes);
     #[cfg(any(test, feature = "test-probes"))]
     {
         cache.map_route = route.label();
     }
     let fresh = crate::rule::map_chapter_work(&work, &book_runs, route, |w| {
-        DuplicateWordSubstrate::map_chapter(&w.view, &(), &())
+        let c = &layout[w.book].chapters[w.chapter];
+        DuplicateWordSubstrate::map_chapter(
+            &ChapterView::tokened(
+                &c.chapter,
+                &texts[c.range.clone()],
+                shared.get(w.book, w.chapter),
+            ),
+            &(),
+            &(),
+        )
     });
     let mut slots: Vec<Vec<Option<DuplicateChapterObs>>> = layout
         .iter()
@@ -408,9 +430,14 @@ pub(crate) fn drive_duplicate_word(
     for (bi, book) in layout.iter().enumerate() {
         cache.update_book(&book.slug, &stamped[bi], &(), |i| {
             slots[bi][i].take().unwrap_or_else(|| {
+                // The reduction demanded an observation the planning pass did not
+                // name, so this chapter has no shared stream: build one for it
+                // alone, from the same encoder the lane uses.
                 let c = &book.chapters[i];
+                let verses = &texts[c.range.clone()];
+                let tokens = crate::prep::ChapterTokens::build(verses);
                 DuplicateWordSubstrate::map_chapter(
-                    &ChapterView::target(&c.chapter, &texts[c.range.clone()]),
+                    &ChapterView::tokened(&c.chapter, verses, Some(&tokens)),
                     &(),
                     &(),
                 )
@@ -441,7 +468,8 @@ pub(crate) fn drive_duplicate_word(
 pub(crate) fn duplicate_findings(corpus: &Corpus) -> Vec<Finding> {
     let mut cache = crate::substrate::SubstrateCache::new();
     let mut out = Vec::new();
-    drive_duplicate_word(true, &mut cache, corpus, &mut out);
+    let mut shared = crate::prep::SharedTokens::default();
+    drive_duplicate_word(true, &mut cache, &mut shared, corpus, &mut out);
     out.sort_by_key(|f| (f.key_idx, f.range.start));
     out
 }
@@ -1856,6 +1884,49 @@ mod tests {
         );
     }
 
+    /// duplicate-word's map reads exactly the tokens its private per-verse walk
+    /// read. Same two-encoding comparison as the repeated-run witness above, but
+    /// over a battery whose doublings straddle verse seams — this rule's carry
+    /// keeps a `Tail` borrowed from the previous verse's text, so a token whose
+    /// span decoded wrong would move a hit's range across a seam rather than
+    /// merely lose it.
+    #[test]
+    fn the_shared_stream_maps_what_a_private_duplicate_token_walk_mapped() {
+        let mut texts = tricky_chapter();
+        texts.push("in the the beginning".to_string());
+        texts.push("And And he said, yes yes".to_string());
+        // A doubling split across the verse seam: `said` ends this verse and opens
+        // the next, so the hit is found from the carried tail.
+        texts.push("he said".to_string());
+        texts.push("said unto them".to_string());
+        texts.push("परमेश्वर परमेश्वर ने".to_string());
+        let packed = crate::prep::ChapterTokens::build(&texts);
+        let verbatim = crate::prep::ChapterTokens::escaped_only(&texts);
+        use crate::substrate::ObservationSubstrate;
+        let view = |t: &crate::prep::ChapterTokens| {
+            DuplicateWordSubstrate::map_chapter(
+                &crate::substrate::ChapterView::tokened("1", &texts, Some(t)),
+                &(),
+                &(),
+            )
+        };
+        let packed_obs = view(&packed);
+        assert!(
+            packed_obs == view(&verbatim),
+            "the packed shared stream mapped a different observation than the same \
+             tokenizer output stored verbatim"
+        );
+        assert!(
+            packed_obs.hits.len() >= 4,
+            "battery produced only {} doublings",
+            packed_obs.hits.len()
+        );
+        assert!(
+            packed_obs.hits.iter().any(|h| h.first_local.is_some()),
+            "battery never produced a doubling across a verse seam"
+        );
+    }
+
     /// Within-verse doublings, as slices of `text`.
     fn dw(text: &str) -> Vec<&str> {
         scan_verse(text, &tokenize(text))
@@ -2047,7 +2118,8 @@ mod tests {
         corpus: &Corpus,
     ) -> Vec<Finding> {
         let mut out = Vec::new();
-        drive_duplicate_word(true, cache, corpus, &mut out);
+        let mut shared = crate::prep::SharedTokens::default();
+        drive_duplicate_word(true, cache, &mut shared, corpus, &mut out);
         out.sort_by_key(|f| (f.key_idx, f.range.start));
         out
     }
