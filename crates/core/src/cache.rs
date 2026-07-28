@@ -3,15 +3,9 @@
 //! It is organized into three independently-invalidated sections, each with its
 //! own entry points so a change to one lane never disturbs another:
 //!
-//! - **shared prep** ([`PrepSection`]): mechanical, content-keyed map products —
-//!   the direct (per-verse) rule findings **per chapter** and the fused walk's
-//!   sites per book. Pure functions of that text (+ config fingerprint), so a
-//!   content-hash match is always safe to reuse and the whole section is
-//!   droppable for the price of a re-walk. The two lanes are keyed at different
-//!   granularities on purpose: a per-verse rule reads one verse, so its products
-//!   decompose to the chapter a chapter edit replaces, while the fused walk
-//!   carries discourse state across every verse seam in a book and so remains
-//!   book-keyed until its listeners become observation substrates.
+//! - **shared prep** ([`PrepSection`]): mechanical, content-keyed direct
+//!   per-verse findings per chapter. A direct rule reads one verse, so a chapter
+//!   replacement leaves every other chapter's product reusable.
 //! - **substrate chapter products** ([`SubstrateSection`]): typed per-substrate
 //!   chapter observations and reductions. A Phase C lane; an empty placeholder
 //!   here — no substrate machinery is invented before it lands.
@@ -19,9 +13,7 @@
 //!   chapter-local semantic findings, the resident home findings live in.
 //!   Populated in a later step; introduced here as the third section boundary.
 //!
-//! None of it takes part in the counting decision — proving which books re-tally
-//! is [`Stats::tallied`](crate::stats::Stats)'s job. A miss or a dropped cache
-//! may cost work but can never change output.
+//! A miss or a dropped cache may cost work but can never change output.
 
 use rustc_hash::FxHashMap;
 use xxhash_rust::xxh3::xxh3_64;
@@ -34,9 +26,7 @@ use crate::signals::{
 };
 
 use crate::span::Span;
-use crate::stream::{BookOut, WalkPlan};
 use crate::substrate::SubstrateCache;
-use crate::token::Token;
 
 const CACHE_SCHEMA: u32 = 1;
 
@@ -76,7 +66,7 @@ impl DirectChapter {
 /// owns one on the resident path; the one-shot path builds a transient one, runs
 /// the same transition, and drops it.
 pub struct AnalysisCache {
-    /// Shared-prep section: content-keyed per-book map products.
+    /// Shared-prep section: content-keyed direct per-chapter map products.
     pub(crate) prep: PrepSection,
     /// Substrate-chapter-products section: typed per-substrate observations and
     /// reductions. Driven by the transition (`substrate::drive_*`).
@@ -85,16 +75,10 @@ pub struct AnalysisCache {
     pub(crate) findings: FindingSection,
 }
 
-/// Shared-prep section: per-book map products keyed by a content hash of the
-/// book's text. Everything here is a pure function of that text (+ config), so
-/// a hash match is always safe to reuse.
+/// Shared-prep section: direct per-chapter map products keyed by content hash.
 pub(crate) struct PrepSection {
     fingerprint: Option<u64>,
-    pub(crate) books: FxHashMap<Box<str>, BookEntry>,
-    /// The direct (per-verse) lane, keyed slug → opaque chapter token. Separate
-    /// from `books` because it is chapter-granular: a book-keyed entry is
-    /// replaced wholesale when the book hash moves, which would throw away every
-    /// unedited chapter's records on any edit to the book.
+    /// The direct (per-verse) lane, keyed slug → opaque chapter token.
     direct: FxHashMap<Box<str>, FxHashMap<Box<str>, DirectChapter>>,
     /// Total chapters cached in `direct`, maintained on every write. Compared
     /// against the corpus's chapter count so the planning pass can tell in O(1)
@@ -107,16 +91,6 @@ pub(crate) struct PrepSection {
     direct_hits: usize,
     #[cfg(any(test, feature = "test-probes"))]
     direct_misses: usize,
-    #[cfg(any(test, feature = "test-probes"))]
-    walk_hits: usize,
-    #[cfg(any(test, feature = "test-probes"))]
-    walk_misses: usize,
-    /// Books this call actually re-walked, on the most recent call. Distinct from
-    /// `walk_misses`, which counts only books that were *offered* to the lane
-    /// check and failed it: a book inside the stale scope skips that check
-    /// entirely and is walked outright, so it is a walk without a miss.
-    #[cfg(any(test, feature = "test-probes"))]
-    walked: usize,
     /// The direct lane's map grain on the most recent call.
     #[cfg(any(test, feature = "test-probes"))]
     direct_route: &'static str,
@@ -328,11 +302,10 @@ impl FindingPartition {
 /// resident home findings live in from now on (the "stateful findings never
 /// cached" doctrine). Assembly reads only from here.
 ///
-/// Two maintenance lanes, one partition shape: the direct (per-verse) rules'
-/// partitions are patched per changed chapter
-/// ([`patch_direct`](Self::patch_direct)); every other rule still replaces its
-/// whole partition each analyze ([`rebuild_batch`](Self::rebuild_batch)). The
-/// lanes never overlap — a `RuleId` belongs to exactly one of them.
+/// Two maintenance modes, one partition shape: direct per-verse rules patch
+/// changed chapters ([`patch_direct`](Self::patch_direct)); typed substrates
+/// either patch their own chapters or rebuild their own partition from that
+/// analyze's typed output. The modes never overlap — a `RuleId` has one owner.
 pub(crate) struct FindingSection {
     partitions: std::collections::BTreeMap<RuleId, FindingPartition>,
     /// The chapter content hash each direct-lane chapter's **committed** records
@@ -401,21 +374,18 @@ impl FindingSection {
         self.direct_stamps.values().map(FxHashMap::len).sum()
     }
 
-    /// Fully rebuild the **batch-lane** partitions from the freshly-computed
-    /// global findings. Each finding is decomposed into its rule's partition as a
-    /// chapter-local record, preserving emission order within each
-    /// (rule, chapter) — the stable-sort tie contract.
+    /// Rebuild the typed-substrate partitions whose drivers produced a complete
+    /// output vector this analyze. Each finding is decomposed into its rule's
+    /// chapter-local record, preserving emission order within each `(rule,
+    /// chapter)` — the stable-sort tie contract.
     ///
-    /// `retained_ids` are the rules whose partitions another lane maintains: the
-    /// direct (per-verse) lane's ([`patch_direct`](Self::patch_direct)) and every
-    /// converted substrate's ([`commit_substrates`](Self::commit_substrates)).
-    /// Their partitions are left alone here and `findings` never contains one of
-    /// their records. Every other rule still replaces its whole partition each
-    /// analyze, which is exactly the batch lane.
+    /// `retained_ids` are the rules whose partitions another mode maintains:
+    /// direct per-verse rules and patching substrates. Their partitions are left
+    /// alone here and `findings` contains none of their records.
     ///
     /// Called only after map/reduce/judge succeed, so a failed analyze leaves the
     /// previous partitions intact and current.
-    pub(crate) fn rebuild_batch(
+    pub(crate) fn rebuild_substrate_outputs(
         &mut self,
         findings: &[Finding],
         corpus: &crate::corpus::Corpus,
@@ -642,29 +612,13 @@ impl FindingSection {
     }
 }
 
-/// A snapshot of [`PrepSection`]'s observability counters (the `test-probes`
-/// feature). `walk_*` and `direct_*` accumulate across calls. Lets a downstream
-/// crate (the shell) prove its no-work invariants — cache reuse and per-substrate
-/// zero-work — directly.
-///
-/// There is no counting-scope counter here any more: the fused walk has no
-/// counting listener left (every corpus aggregate is a typed observation
-/// substrate, probed on its own row), so `walked` — books whose fused walk
-/// actually ran — is the whole of the walk's work story.
-///
-/// The two map lanes count different units, because their work units differ:
-/// `direct_*` counts **chapters** (the direct per-verse lane's unit — a
-/// one-chapter edit re-derives exactly one chapter), `walk_*` counts **books**
-/// (the fused walk's unit — its listeners carry discourse state across every
-/// verse seam in the book, so an edit anywhere in a book re-walks that book).
+/// A snapshot of cache observability counters (`test-probes`). Direct values
+/// count chapters; each substrate reports its own mapped/reduced work.
 #[cfg(any(test, feature = "test-probes"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CacheProbe {
     pub direct_hits: usize,
     pub direct_misses: usize,
-    pub walk_hits: usize,
-    pub walk_misses: usize,
-    pub walked: usize,
     /// Chapters whose direct-rule partition records were replaced on the most
     /// recent analyze. A chapter whose cached product was reused keeps its
     /// records untouched, so this equals that call's direct-lane miss count.
@@ -798,22 +752,12 @@ impl AnalysisCache {
         self.prep.note_direct(hits, misses);
     }
 
-    pub(crate) fn walk_lanes_ready(&mut self, slug: &str, hash: u128, plan: &WalkPlan) -> bool {
-        self.prep.walk_lanes_ready(slug, hash, plan)
-    }
-
-    pub(crate) fn store_walk(&mut self, slug: &str, hash: u128, output: &BookOut) {
-        self.prep.store_walk(slug, hash, output);
-    }
-
     /// Record the direct lane's map grain for this call.
     #[cfg(any(test, feature = "test-probes"))]
     pub(crate) fn note_direct_route(&mut self, route: crate::rule::MapRoute) {
         self.prep.direct_route = route.label();
     }
 
-    /// Record how many books were re-tallied (the counting scope) this call.
-    #[cfg(any(test, feature = "test-probes"))]
     /// Assemble the findings the resident partitions currently describe, in the
     /// returned order — a witness for the atomic finding boundary. Assembling
     /// only from the lane (never the working `out`) is exactly what a failed
@@ -826,50 +770,12 @@ impl AnalysisCache {
         out
     }
 
-    // ── Test-only prep accessors ────────────────────────────────────────────
-
-    #[cfg(test)]
-    pub(crate) fn book_count(&self) -> usize {
-        self.prep.books.len()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn entry_hash(&self, slug: &str) -> Option<u128> {
-        self.prep.books.get(slug).map(|entry| entry.hash)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn direct_hit_count(&self) -> usize {
-        self.prep.direct_hits
-    }
-
-    #[cfg(test)]
-    pub(crate) fn direct_miss_count(&self) -> usize {
-        self.prep.direct_misses
-    }
-
-    #[cfg(test)]
-    pub(crate) fn walk_hit_count(&self) -> usize {
-        self.prep.walk_hits
-    }
-
-    #[cfg(test)]
-    pub(crate) fn walk_miss_count(&self) -> usize {
-        self.prep.walk_misses
-    }
-
-    #[cfg(any(test, feature = "test-probes"))]
-    pub(crate) fn note_walked(&mut self, n: usize) {
-        self.prep.walked = n;
-    }
-
 }
 
 impl PrepSection {
     fn new() -> Self {
         Self {
             fingerprint: None,
-            books: FxHashMap::default(),
             direct: FxHashMap::default(),
             direct_chapters: 0,
             #[cfg(any(test, feature = "test-probes"))]
@@ -878,12 +784,6 @@ impl PrepSection {
             direct_misses: 0,
             #[cfg(any(test, feature = "test-probes"))]
             direct_route: "serial",
-            #[cfg(any(test, feature = "test-probes"))]
-            walk_hits: 0,
-            #[cfg(any(test, feature = "test-probes"))]
-            walk_misses: 0,
-            #[cfg(any(test, feature = "test-probes"))]
-            walked: 0,
         }
     }
 
@@ -892,9 +792,6 @@ impl PrepSection {
         CacheProbe {
             direct_hits: self.direct_hits,
             direct_misses: self.direct_misses,
-            walk_hits: self.walk_hits,
-            walk_misses: self.walk_misses,
-            walked: self.walked,
             direct_chapters_patched: 0,
             direct_map_route: "serial",
             spacing_map_route: "serial",
@@ -915,21 +812,18 @@ impl PrepSection {
 
     fn clear(&mut self) {
         self.fingerprint = None;
-        self.books.clear();
         self.direct.clear();
         self.direct_chapters = 0;
     }
 
     fn remove_book(&mut self, slug: &str) -> bool {
-        let walk = self.books.remove(slug).is_some();
-        let direct = match self.direct.remove(slug) {
+        match self.direct.remove(slug) {
             Some(chapters) => {
                 self.direct_chapters -= chapters.len();
                 true
             }
             None => false,
-        };
-        walk || direct
+        }
     }
 
     fn ensure_fingerprint(&mut self, config: &Config) {
@@ -1004,71 +898,6 @@ impl PrepSection {
         self.direct_chapters = kept;
     }
 
-    /// Whether the cached entry for `slug` is a clean, reusable walk under this
-    /// plan: content hash matches and every lane the plan needs is present.
-    /// Records the walk hit/miss probe.
-    ///
-    /// This **clones nothing**. A clean cache-hit book's products stay owned by
-    /// their `BookEntry`; the analyze path borrows read-only views of them for
-    /// reduce/judge. The cache therefore holds the single owned copy of a clean
-    /// book's walk products, and the judge consumes a `&`-view — never a copy.
-    fn walk_lanes_ready(&mut self, slug: &str, hash: u128, plan: &WalkPlan) -> bool {
-        let ready = self
-            .books
-            .get(slug)
-            .filter(|entry| entry.hash == hash)
-            .is_some_and(|entry| entry.has_walk_lanes(plan));
-        #[cfg(any(test, feature = "test-probes"))]
-        if ready {
-            self.walk_hits += 1;
-        } else {
-            self.walk_misses += 1;
-        }
-        ready
-    }
-
-    /// Borrow a clean cache-hit book's walk products for judging. The caller
-    /// must have established the entry is a clean hit
-    /// ([`walk_lanes_ready`](Self::walk_lanes_ready)); an absent entry panics
-    /// rather than silently reusing the wrong book.
-    pub(crate) fn walk_entry(&self, slug: &str) -> &BookEntry {
-        self.books
-            .get(slug)
-            .expect("walk_entry called for a book proven clean by walk_lanes_ready")
-    }
-
-    fn store_walk(&mut self, slug: &str, hash: u128, output: &BookOut) {
-        let entry = self.entry_for_write(slug, hash);
-        entry.tokens = output.tokens.clone();
-    }
-
-    fn entry_for_write(&mut self, slug: &str, hash: u128) -> &mut BookEntry {
-        let replace = self.books.get(slug).is_none_or(|entry| entry.hash != hash);
-        if replace {
-            self.books.insert(Box::from(slug), BookEntry::new(hash));
-        }
-        self.books
-            .get_mut(slug)
-            .expect("cache entry inserted or already present")
-    }
-}
-
-pub(crate) struct BookEntry {
-    pub(crate) hash: u128,
-    pub(crate) tokens: Option<Vec<(LocalKeyIdx, Vec<Token>)>>,
-}
-
-impl BookEntry {
-    fn new(hash: u128) -> Self {
-        Self {
-            hash,
-            tokens: None,
-        }
-    }
-
-    fn has_walk_lanes(&self, plan: &WalkPlan) -> bool {
-!plan.collect_tokens || self.tokens.is_some()
-    }
 }
 
 fn config_fingerprint(config: &Config) -> u64 {
@@ -1099,53 +928,19 @@ mod tests {
         assert_ne!(content_hash(&k1, &same_text), content_hash(&k3, &same_text));
     }
 
-    /// A walk output carrying one identifiable site lane, so a cache test can
-    /// tell a reused entry from a rebuilt one.
-    fn walk_with_lane() -> BookOut {
-        BookOut {
-            tokens: Some(vec![(
-                LocalKeyIdx::from_usize(0),
-                vec![crate::token::Token {
-                    span: Span { start: 0, end: 1 },
-                }],
-            )]),
-        }
-    }
-
     #[test]
     fn fingerprint_change_clears_entries() {
         let mut cache = AnalysisCache::new();
         let cfg = Config::v1_defaults();
         cache.ensure_fingerprint(&cfg);
-        cache.store_walk("GEN", 1, &walk_with_lane());
         cache.store_direct_chapter("GEN", "1", 7, Vec::new());
-        assert_eq!(cache.book_count(), 1);
 
         let mut changed = cfg.clone();
         changed.rules.insert(crate::RuleId::BracketBalance, false);
         cache.ensure_fingerprint(&changed);
-        assert_eq!(cache.book_count(), 0);
         assert!(
             !cache.direct_chapter_valid("GEN", "1", 7),
             "the direct lane clears with the rest of the prep section"
-        );
-    }
-
-    #[test]
-    fn content_replacement_drops_a_stale_walk_lane() {
-        let mut cache = AnalysisCache::new();
-        cache.ensure_fingerprint(&Config::v1_defaults());
-        cache.store_walk("GEN", 1, &walk_with_lane());
-        assert!(cache.prep.books.get("GEN").unwrap().tokens.is_some());
-
-        // A new book hash replaces the entry outright: no lane from the old
-        // content may survive into it.
-        cache.store_walk("GEN", 2, &BookOut::default());
-        let entry = cache.prep.books.get("GEN").unwrap();
-        assert_eq!(entry.hash, 2);
-        assert!(
-            entry.tokens.is_none(),
-            "old walk lane must not survive a hash change"
         );
     }
 
@@ -1181,18 +976,14 @@ mod tests {
         assert!(!cache.direct_chapter_valid("GEN", "2", 22));
     }
 
-    /// `AnalysisCache::remove_book` reports presence and clears the book's
-    /// entry — across both prep lanes.
+    /// `AnalysisCache::remove_book` reports presence and clears direct records.
     #[test]
     fn remove_book_reports_presence_and_clears_entry() {
         let mut cache = AnalysisCache::new();
         cache.ensure_fingerprint(&Config::v1_defaults());
-        cache.store_walk("GEN", 1, &BookOut::default());
         cache.store_direct_chapter("GEN", "1", 11, Vec::new());
-        assert_eq!(cache.book_count(), 1);
         assert!(cache.remove_book("GEN"));
         assert!(!cache.remove_book("GEN"), "a second removal is a no-op");
-        assert_eq!(cache.book_count(), 0);
         assert!(!cache.direct_chapter_valid("GEN", "1", 11));
     }
 }

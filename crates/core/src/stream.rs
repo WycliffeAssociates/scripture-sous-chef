@@ -1,16 +1,8 @@
-//! The fused book walker — one walk per verse per book, every listener fed
-//! in-pass (the event-stream engine; ADR pending, supersedes ADR 0044's
-//! deferral of pass fusion).
+//! Shared sequential book walking for consumers that need a verse stream.
 //!
-//! `analyze_stateful` used to run one full corpus walk per stateful rule
-//! (each `reduce` re-building the scalar tape, re-segmenting graphemes and
-//! re-tokenizing the same verses), plus separate walks for the project rules.
-//! The walker replaces those with **one loop over each book's verses**: per
-//! verse it builds the scalar tape once (ADR 0045), segments graphemes once
-//! (tape-driven, ADR 0021/0045), and tokenizes once (UAX #29), then feeds the
-//! shared [`VerseInputs`] view to every enabled rule's *listener* — the
-//! accumulator struct each signals module now exposes. Products a
-//! configuration doesn't need are never built ([`Needs`]).
+//! It builds only the tape, grapheme, and token products the caller requests,
+//! then supplies one [`VerseInputs`] view per verse. Typed substrates own their
+//! resident incremental caches; this module holds no execution registry.
 //!
 //! **The verse is not a boundary.** Listeners that carry stream-order state
 //! (casing's pending terminal, rare-glyph's forced-position machine,
@@ -19,22 +11,8 @@
 //! reset it only at book boundaries — exactly as their per-rule walks did
 //! (repo CLAUDE.md: verse markers are addressing, not discourse).
 //!
-//! **Fan-out is unchanged.** The book stays the parallel unit: the walker
-//! runs under [`rule::map_books`] (ADR 0042), so the `parallel` feature
-//! applies and serial/parallel outputs stay identical. Listeners' per-book
-//! outputs are merged in book order (the `BTreeMap` fan-in each rule's
-//! reduce already did).
-//!
-//! Byte-identity with the per-rule walks is pinned by the fleet oracle dumps
-//! (see the port ADR) and by each rule's `reduce`, which now drives the same
-//! listener single-rule (`StatefulRule::reduce` is a thin driver, kept for
-//! calibration and tests) — the fused path and the trait path share one
-//! accumulator implementation per rule, so they cannot drift.
-
-
-use crate::corpus::{BookGroup, Books, LocalKeyIdx};
+use crate::corpus::{BookGroup, LocalKeyIdx};
 use crate::grapheme::{self, GSpan};
-use crate::rule::{self};
 use crate::tape::{self, TapeEntry};
 use crate::token::{self, Token};
 
@@ -78,44 +56,6 @@ impl Needs {
     }
 }
 
-
-/// What the fused walk runs, derived from the enabled rule set once per
-/// analyze. `counting_*` listeners observe into stats; `bracket` /
-/// `duplicate` are the project rules' walks; `collect_tokens` retains each
-/// verse's tokens as the shared [`TokenCache`] for the judge phase.
-#[derive(Clone, Copy, Default)]
-pub(crate) struct WalkPlan {
-    pub collect_tokens: bool,
-}
-
-/// One book's fused-walk output. **It is down to the token-cache lane**: no
-/// counting listener and no project listener remains — every one of them is a typed
-/// observation substrate now, mapping its own chapters from its own stamp-derived
-/// cache. The token cache exists for the batch lane's judges, which no rule reaches
-/// (see `rule::stateful_rules`), so in practice this is empty on every call.
-#[derive(Default)]
-pub(crate) struct BookOut {
-    pub tokens: Option<Vec<(LocalKeyIdx, Vec<Token>)>>,
-}
-
-/// The fused walk over every supplied book, fan-out per book (ADR 0042). Output is
-/// index-aligned with `books` (its presented order — see `Corpus`), not keyed by
-/// book identity.
-///
-/// `counted` — the provenance-derived stale set — used to narrow which books the
-/// counting listeners ran for. There are no counting listeners left, so it narrows
-/// nothing today; it is threaded through because the batch lane is permanent (plan
-/// §9) and the first batch rule to land will need it back.
-pub(crate) fn walk_fused(
-    books: &Books<'_>,
-    counted: Option<&[&str]>,
-    plan: &WalkPlan,
-) -> Vec<BookOut> {
-    rule::map_books(books, |group| {
-        let count = counted.is_none_or(|list| list.contains(&group.slug));
-        walk_book(group, count, plan)
-    })
-}
 
 /// Sample size for the per-book adaptive tokenize gate (ADR 0064): the
 /// number of a book's leading verses whose non-ASCII codepoint density
@@ -164,48 +104,8 @@ fn book_prefers_delegation(texts: &[String]) -> bool {
     density < ADAPTIVE_THRESHOLD
 }
 
-/// Walk one book's verses once, feeding every listener the plan enables.
-fn walk_book(group: &BookGroup<'_>, count: bool, plan: &WalkPlan) -> BookOut {
-    // NO COUNTING LISTENER REMAINS in this walk: every corpus-aggregate rule is a
-    // typed observation substrate now, reading its own stamp-derived chapter cache
-    // instead of this per-book pass. So `counting_needs()` is empty and the
-    // `counted` scope changes nothing here — the walk runs the project listeners
-    // and the token cache for every supplied book. The `count` distinction is kept
-    // because the batch lane is permanent (plan §9) and the first batch rule to
-    // land will need it back.
-    let _ = count;
-    // THE FUSED WALK HAS NO LISTENER LEFT. Every rule that ever fed it — the
-    // counting listeners and the project listeners alike — is a typed observation
-    // substrate now, mapping its own chapters from its own stamp-derived cache.
-    // What survives is the token-cache lane, which exists for the batch lane's
-    // judges and is currently off (plan §9 keeps the lane; nothing occupies it).
-    // So the honest body is: build the token cache if asked, otherwise nothing.
-    let Some(mut cache) = plan
-        .collect_tokens
-        .then(|| Vec::with_capacity(group.len()))
-    else {
-        return BookOut::default();
-    };
-    let delegate_tokens = book_prefers_delegation(group.texts);
-    let mut tokens_buf: Vec<Token> = Vec::new();
-    for (vi, text) in group.texts.iter().enumerate() {
-        let local_idx = LocalKeyIdx::from_usize(vi);
-        if delegate_tokens {
-            token::tokenize_oracle_into(text, &mut tokens_buf);
-        } else {
-            token::tokenize_hand_rolled_into(text, &mut tokens_buf);
-        }
-        cache.push((local_idx, std::mem::take(&mut tokens_buf)));
-    }
-    BookOut {
-        tokens: Some(cache),
-    }
-}
-
-/// Drive one listener over one book — the shared body behind each rule's
-/// `StatefulRule::reduce` (kept for calibration/tests; `analyze_stateful`
-/// itself uses [`walk_fused`]). The listener sees exactly the products the
-/// fused walk would hand it, so the two paths cannot diverge.
+/// Drive one consumer over one book. It is shared by census and focused
+/// rule-level tests, not by a hidden analyzer fallback.
 pub(crate) fn drive_book<'g, A, T>(
     group: &BookGroup<'g>,
     needs: Needs,

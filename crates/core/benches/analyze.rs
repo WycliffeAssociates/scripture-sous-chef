@@ -38,7 +38,7 @@ use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use ssc_core::config::ProportionalityConfig;
 use ssc_core::key::parse_key;
 use ssc_core::script::is_nt_book;
-use ssc_core::{Config, Corpus, analyze};
+use ssc_core::{Corpus, analyze};
 
 #[path = "../dev/vref_io.rs"]
 mod vref_io;
@@ -111,50 +111,6 @@ fn bench_analyze(c: &mut Criterion) {
 // come from `cargo bench -p ssc-core --features parallel` with no mirror
 // to drift.
 
-/// The counting-vs-emission split: how much of the stateful phase is `reduce`
-/// (invalidated only by text edits, book-granular) vs `judge` (re-paid by any
-/// complete-emission call). This is the number behind hash-derived counting's
-/// payoff — a whole-corpus call that re-counts only the edited book saves ~the
-/// reduce line and still pays the judge line. Tokens are `None` here (no shared
-/// cache), so repeated-run tokenizes in both phases — a slight overcount of
-/// each, same direction.
-fn bench_phases(c: &mut Criterion) {
-    let Some(bible) = corpus("WA-en-ulb") else {
-        return;
-    };
-    let cfg = Config::v1_defaults();
-    let books = ssc_core::corpus::by_book(&bible);
-    let rules: Vec<_> = ssc_core::rule::stateful_rules(&cfg)
-        .into_iter()
-        .filter(|r| cfg.is_enabled(r.id()))
-        .collect();
-
-    let mut g = c.benchmark_group("phases");
-    g.sample_size(10);
-    g.bench_function("reduce_full", |b| {
-        b.iter(|| {
-            rules
-                .iter()
-                .map(|r| r.reduce(black_box(&books), None, None).0)
-                .collect::<Vec<_>>()
-        })
-    });
-    let merged: Vec<_> = rules
-        .iter()
-        .map(|r| r.reduce(&books, None, None).0)
-        .collect();
-    g.bench_function("judge_full", |b| {
-        b.iter(|| {
-            rules
-                .iter()
-                .zip(&merged)
-                .map(|(r, m)| r.judge(black_box(m), black_box(&books), None, None))
-                .collect::<Vec<_>>()
-        })
-    });
-    g.finish();
-}
-
 fn bench_proportionality(c: &mut Criterion) {
     let (Some(target), Some(source)) = (corpus("WA-bem-reg"), corpus("WA-en-ulb")) else {
         return;
@@ -175,5 +131,5 @@ fn bench_proportionality(c: &mut Criterion) {
     g.finish();
 }
 
-criterion_group!(benches, bench_analyze, bench_phases, bench_proportionality);
+criterion_group!(benches, bench_analyze, bench_proportionality);
 criterion_main!(benches);

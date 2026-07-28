@@ -2,10 +2,10 @@
 //!
 //! A [`Galley`] owns the inputs a repeated re-analyze would otherwise re-ship
 //! every call: the corpus, an optional source corpus, the config, the analysis
-//! cache, and the prior [`Stats`]. Its external contract is deliberately small
+//! cache. Its external contract is deliberately small
 //! — update the corpus/source/config, then ask for findings or an inventory.
-//! The caller never sees or returns a prior, stats, cache, or "changed" set:
-//! all hashing, provenance, and cache invalidation are internal.
+//! The caller never sees or returns a cache or "changed" set: all hashing and
+//! cache invalidation are internal.
 //!
 //! Core stays a pure function (ADR 0010): the `Galley` *owns* inputs and
 //! *delegates*. No resident mutable state lives in `ssc-core`. Every field the
@@ -17,7 +17,7 @@
 use rustc_hash::FxHashSet;
 use ssc_core::{
     AnalysisCache, AnalysisId, AnalyzeError, BookBlock, CensusOptions, ChapterBlock, Config, Corpus,
-    CorpusError, Finding, Inventory, MutationEffect, Stats, TargetContextId, analyze_resident,
+    CorpusError, Finding, Inventory, MutationEffect, TargetContextId, analyze_resident,
     census,
 };
 
@@ -52,20 +52,18 @@ pub struct Galley {
     source: Option<Corpus>,
     config: Config,
     cache: AnalysisCache,
-    prior: Option<Stats>,
     state: Lifecycle,
 }
 
 impl Galley {
     /// Seed a handle. The first [`analyze`](Galley::analyze) is a full cold
-    /// pass; later calls reuse the analysis cache and prior.
+    /// pass; later calls reuse the analysis cache.
     pub fn new(corpus: Corpus, source: Option<Corpus>, config: Config) -> Galley {
         Galley {
             corpus,
             source,
             config,
             cache: AnalysisCache::new(),
-            prior: None,
             // Nothing published yet — a fresh handle is dirty until its first
             // successful analyze.
             state: Lifecycle::Dirty,
@@ -120,17 +118,14 @@ impl Galley {
     }
 
     /// Remove books by slug. Unknown slugs are no-ops, excluded from the count.
-    /// A removed book leaves the prior and the analysis cache immediately, so a
-    /// later analyze cannot resurrect its contribution. Returns the number
+    /// A removed book leaves the analysis cache immediately, so a later analyze
+    /// cannot resurrect its findings. Returns the number
     /// actually removed.
     pub fn remove_books(&mut self, slugs: &[&str]) -> usize {
         let mut removed = 0;
         for &slug in slugs {
             if self.corpus.remove_book(slug) {
                 removed += 1;
-                if let Some(prior) = self.prior.as_mut() {
-                    prior.remove_book(slug);
-                }
                 self.cache.remove_book(slug);
             }
         }
@@ -144,10 +139,8 @@ impl Galley {
     /// **complete** new corpus. A corpus equal to the current resident target
     /// is a proven [`MutationEffect::Unchanged`] no-op that retains everything.
     /// Otherwise, before adopting it, every slug present in the old corpus but
-    /// absent from the new one is dropped from the prior and the analysis cache —
-    /// deletion reconciliation, not changed-book hinting. After it, per-book
-    /// `Tally` comparison on the next analyze re-tallies exactly the books whose
-    /// content differs; unchanged books carry.
+    /// absent from the new one is dropped from the analysis cache — deletion
+    /// reconciliation, not changed-book hinting.
     pub fn replace_corpus(&mut self, corpus: Corpus) -> MutationEffect {
         if corpus == self.corpus {
             return MutationEffect::Unchanged;
@@ -163,9 +156,6 @@ impl Galley {
             .map(Box::from)
             .collect();
         for slug in &dropped {
-            if let Some(prior) = self.prior.as_mut() {
-                prior.remove_book(slug);
-            }
             self.cache.remove_book(slug);
         }
         self.corpus = corpus;
@@ -174,9 +164,8 @@ impl Galley {
 
     /// Replace the optional complete reference (source) corpus. A reference
     /// equal to the current one (including `None -> None`) is a proven
-    /// [`MutationEffect::Unchanged`] no-op. Otherwise the prior is retained: on
-    /// the next analyze, per-book `Tally.source` stales exactly the books whose
-    /// same-slug source book changed.
+    /// [`MutationEffect::Unchanged`] no-op. Otherwise reference-declaring
+    /// substrates invalidate themselves from their paired source stamps.
     pub fn replace_source(&mut self, source: Option<Corpus>) -> MutationEffect {
         if source == self.source {
             return MutationEffect::Unchanged;
@@ -187,11 +176,8 @@ impl Galley {
 
     /// Swap the config. An equal config (plain [`Config`] equality, not the
     /// crate-private cache fingerprint) is a no-op. Otherwise the analysis cache is
-    /// cleared (its fingerprint is whole-`Config`) and the **prior is retained**:
-    /// provenance decides what re-tallies — an enabled-set change mismatches
-    /// every `Tally.rules` and re-tallies naturally, while a knob-only change
-    /// leaves counts valid and re-tallies nothing (knobs judge, they do not
-    /// tally).
+    /// cleared (its fingerprint is whole-`Config`). Typed substrates validate
+    /// their own stamps, so a judging-knob change maps and reduces nothing.
     pub fn update_config(&mut self, config: Config) -> MutationEffect {
         if config == self.config {
             return MutationEffect::Unchanged;
@@ -209,8 +195,7 @@ impl Galley {
 
     /// Analyze the resident corpus and return its findings, global to the
     /// current corpus — exactly what the pure one-shot call would return for the
-    /// same inputs. Everything else (hashing, provenance, cache) is internal; the
-    /// resident prior is retained for the next call and the handle becomes
+    /// same inputs. Everything else (hashing and cache) is internal; the handle becomes
     /// [`CleanPublished`](Lifecycle::CleanPublished).
     ///
     /// Total in every shipped build (the core transition has no failure path off
@@ -224,36 +209,21 @@ impl Galley {
 
     /// The fallible analyze the clean/dirty lifecycle is built on (plan §3.3).
     ///
-    /// On success it publishes the new complete snapshot: the resident prior is
-    /// replaced and the handle becomes
+    /// On success it publishes the new complete snapshot and the handle becomes
     /// [`CleanPublished`](Lifecycle::CleanPublished). On a core map/reduce/judge
     /// error (only reachable via the test-only [`fault`](ssc_core::fault) hook)
-    /// it commits **no** partial semantic state: the untouched prior handed back
-    /// by the core is restored, the self-validating warm cache stays, and the
-    /// handle stays [`Dirty`](Lifecycle::Dirty). Because the dirty work is
+    /// it commits **no** partial semantic state: the self-validating warm cache
+    /// stays, and the handle stays [`Dirty`](Lifecycle::Dirty). Because dirty work is
     /// stamp-derived (never drained), a retry with no further mutation reuses the
     /// valid warmed entries / recomputes the invalid ones and reaches exactly the
     /// cold result — it can never mistake the failed attempt for a publication.
     pub fn try_analyze(&mut self) -> Result<Vec<Finding>, AnalyzeError> {
-        let prior = self.prior.take();
-        match analyze_resident(
-            &self.corpus,
-            self.source.as_ref(),
-            &self.config,
-            prior,
-            &mut self.cache,
-        ) {
-            Ok((findings, stats)) => {
-                self.prior = Some(stats);
+        match analyze_resident(&self.corpus, self.source.as_ref(), &self.config, &mut self.cache) {
+            Ok(findings) => {
                 self.state = Lifecycle::CleanPublished;
                 Ok(findings)
             }
-            Err((err, prior)) => {
-                // Restore the resident prior exactly as it arrived (no partial
-                // merge), leave the warm cache in place, and stay Dirty.
-                self.prior = prior;
-                Err(err)
-            }
+            Err(err) => Err(err),
         }
     }
 
@@ -283,7 +253,7 @@ impl Galley {
     }
 
     /// Pure census (absolute inventory) over the resident corpus. Ignores the
-    /// cache and prior — it is a fresh read of the current corpus.
+    /// cache — it is a fresh read of the current corpus.
     pub fn census(&self, opts: &CensusOptions) -> Inventory {
         census(&self.corpus, opts)
     }
@@ -302,7 +272,7 @@ impl Galley {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ssc_core::{CasingConfig, CensusOptions, RuleId, analyze_stateful};
+    use ssc_core::{CasingConfig, CensusOptions, RuleId, analyze_with_config};
 
     fn keyed(book: &str, verses: &[&str]) -> (Vec<String>, Vec<String>) {
         (
@@ -351,8 +321,8 @@ mod tests {
 
     /// A fresh, from-scratch analyze of `corpus` under `cfg` — the pure
     /// reference every `Galley` step must match.
-    fn cold(corpus: &Corpus, cfg: &Config) -> Vec<Finding> {
-        analyze_stateful(corpus, None, cfg, None, None).0
+    fn cold(corpus: &Corpus, _cfg: &Config) -> Vec<Finding> {
+        analyze_with_config(corpus, None, _cfg)
     }
 
     fn casing_on(emit_score_min: f32, confidence_z: f32) -> Config {
@@ -410,7 +380,7 @@ mod tests {
         assert_eq!(g.analyze(), cold(&c3, &cfg), "after replace_corpus");
     }
 
-    /// A failed update leaves the whole handle (corpus, prior, cache) untouched —
+    /// A failed update leaves the whole handle (corpus, cache, lifecycle) untouched —
     /// a re-analyze after the failed attempt is identical.
     #[test]
     fn failed_update_book_leaves_the_galley_untouched() {
@@ -444,9 +414,7 @@ mod tests {
         let b = g.analyze();
         let after = g.cache.probe();
         assert_eq!(a, b, "identical findings");
-        assert_eq!(after.walked, 0, "the no-edit re-analyze re-walks nothing");
-        assert_eq!(after.walk_hits - before.walk_hits, 2, "both books reuse their walk products");
-        assert_eq!(after.walk_misses, before.walk_misses, "no re-walk");
+        assert_eq!(after.direct_misses, before.direct_misses, "the no-edit re-analyze re-maps nothing");
         assert_eq!(
             after.direct_hits - before.direct_hits,
             2,
@@ -505,11 +473,10 @@ mod tests {
     }
 
     /// After remove → analyze, the removed slug is gone everywhere: no finding
-    /// addresses it, the prior's provenance drops it, the cache entry is gone,
-    /// and the result equals a corpus that never held it. Exhaustive per-rule
-    /// removal is core's `Stats::remove_book` contract (proven in ssc-core);
-    /// `remove_books` composes on it, and this test verifies the shell drives it
-    /// and the observable outcome matches a book-free corpus.
+    /// addresses it, its cached partitions are gone, and the result equals a
+    /// corpus that never held it. `remove_books` composes cache eviction with
+    /// the corpus mutation; this test verifies the observable result matches a
+    /// book-free corpus.
     #[test]
     fn remove_then_analyze_drops_the_book_everywhere() {
         let cfg = Config::all();
@@ -524,10 +491,6 @@ mod tests {
                 .iter()
                 .all(|f| !g.corpus().key(f.key_idx).starts_with("GEN")),
             "no finding addresses the removed book"
-        );
-        assert!(
-            !g.prior.as_ref().unwrap().tallied.contains_key("GEN"),
-            "prior provenance drops the removed book"
         );
         assert!(!g.cache.remove_book("GEN"), "cache entry is already gone");
 
@@ -556,11 +519,11 @@ mod tests {
     }
 
     /// Re-supplying the same config is a true no-op: it clears neither cache nor
-    /// prior. Proven not by identical findings (a clear-then-cold-analyze would
-    /// also produce those) but by the next analyze re-tallying nothing and
-    /// reusing every cache entry.
+    /// published lifecycle state. Proven not by identical findings (a
+    /// clear-then-cold-analyze would also produce those) but by the next analyze
+    /// re-mapping nothing and reusing every cache entry.
     #[test]
-    fn update_config_identical_preserves_prior_and_cache() {
+    fn update_config_identical_preserves_cache_and_publication() {
         let cfg = Config::all();
         let corpus = corpus_of(vec![keyed("GEN", &["a  b", "one"]), keyed("EXO", &["x\ty", "two"])]);
         let mut g = Galley::new(corpus, None, cfg.clone());
@@ -570,9 +533,7 @@ mod tests {
         let b = g.analyze();
         let after = g.cache.probe();
         assert_eq!(a, b, "identical findings");
-        assert_eq!(after.walked, 0, "prior survived: nothing stale");
-        assert_eq!(after.walk_hits - before.walk_hits, 2, "cache survived: both books reused");
-        assert_eq!(after.walk_misses, before.walk_misses, "no re-walk");
+        assert_eq!(after.direct_misses, before.direct_misses, "unchanged config re-maps nothing");
     }
 
     /// `Galley` is `Send` (a Tauri command holds it behind a `Mutex`).
@@ -611,14 +572,13 @@ mod tests {
     }
 
     /// A knob-only config change re-analyzes to the cold result under the new
-    /// knobs and — proven by the counting probe (actual accumulator runs, not
-    /// the decision flag) — the retained prior means zero books re-tally. The
-    /// prep lane still re-walks (its validity is the whole-config fingerprint),
-    /// but the spacing substrate maps/reduces nothing: its stamps carry no
+    /// knobs and — proven by the substrate probes — maps and reduces no chapters.
+    /// The prep lane validates its whole-config fingerprint, but the spacing
+    /// substrate maps/reduces nothing: its stamps carry no
     /// judging knob, so `update_config` (which no longer clears the cache)
     /// leaves it entirely valid. `Config::all` so both lanes are live.
     #[test]
-    fn update_config_knob_only_change_retallies_nothing() {
+    fn update_config_knob_only_change_remaps_nothing() {
         let cfg1 = Config::all();
         let mut cfg2 = Config::all();
         cfg2.casing.emit_score_min = 0.9; // knob-only: same enabled set, stricter knob
@@ -766,8 +726,7 @@ mod tests {
         let warm = g.analyze();
         let after = g.cache.probe();
         assert_eq!(warm, cold_pass, "no-edit rewarm matches the cold pass");
-        assert_eq!(after.walk_hits - before.walk_hits, 2, "both books reuse their walk");
-        assert_eq!(after.walk_misses, before.walk_misses, "no re-walk");
+        assert_eq!(after.direct_misses, before.direct_misses, "unchanged books re-map nothing");
 
         // Introduce a second (decomposed) raw form under é's NFC key.
         let mut expected = c0.clone();
@@ -991,7 +950,7 @@ mod tests {
         assert_ne!(g.expected_target_context_id(), tcid1, "config change moves the target-context id");
     }
 
-    /// `census` is a pure read of the resident corpus, independent of prior.
+    /// `census` is a pure read of the resident corpus, independent of cache state.
     #[test]
     fn census_reads_the_resident_corpus() {
         let cfg = Config::all();
@@ -1005,7 +964,7 @@ mod tests {
 
     // ── One core transition + clean/dirty lifecycle ──────────────────────────
 
-    /// The one-shot core path (`analyze_stateful` with no prior/cache) and the
+    /// The one-shot core path and the
     /// resident path (`Galley::analyze`) run the SAME core transition, so for
     /// identical inputs they return byte-identical findings — the plan §1
     /// decision-16 invariant, pinned directly. Covers both configs and a
@@ -1017,7 +976,7 @@ mod tests {
             let source = source_0();
             // No reference, then with a reference (source-dependent rules).
             for src in [None, Some(&source)] {
-                let one_shot = analyze_stateful(&target, src, &cfg, None, None).0;
+                let one_shot = analyze_with_config(&target, src, &cfg);
                 let resident = Galley::new(target.clone(), src.cloned(), cfg.clone()).analyze();
                 assert_eq!(one_shot, resident, "one-shot == resident for identical inputs");
             }
@@ -1108,7 +1067,7 @@ mod tests {
     /// The retry-safety core of step 6 (plan §3.3, §12.5, §16 "destructively
     /// draining"): inject a core failure at the map, reduce, and judge boundary
     /// in turn. Each attempt fails and commits NO partial semantic state — the
-    /// handle stays Dirty and the untouched prior is restored — so a retry with
+    /// handle stays Dirty and published partitions stay untouched — so a retry with
     /// NO further mutation reuses the valid warmed entries / recomputes the
     /// invalid ones and reaches exactly the cold result, then publishes.
     #[test]
@@ -1119,7 +1078,7 @@ mod tests {
             let c0 = full_target_0();
             let source = source_0();
             let mut g = Galley::new(c0.clone(), Some(source.clone()), cfg.clone());
-            g.analyze(); // a warm resident prior + cache worth protecting
+            g.analyze(); // warm resident partitions + cache worth protecting
             assert_eq!(g.state(), Lifecycle::CleanPublished);
 
             // A real edit dirties GEN (bracket/casing carry across its seams).
@@ -1198,8 +1157,8 @@ mod tests {
     /// The self-validating referee: a from-scratch cold complete analyze of
     /// the given target/source under `cfg`. Every transcript step asserts the
     /// resident `Galley::analyze()` equals this for the same inputs.
-    fn cold_src(target: &Corpus, source: Option<&Corpus>, cfg: &Config) -> Vec<Finding> {
-        analyze_stateful(target, source, cfg, None, None).0
+    fn cold_src(target: &Corpus, source: Option<&Corpus>, _cfg: &Config) -> Vec<Finding> {
+        analyze_with_config(target, source, _cfg)
     }
 
     /// GEN: three chapters. Chapter 1 opens a bracket that only closes in

@@ -1182,7 +1182,7 @@ fn for_each_spacing_opportunity(
     group: &crate::corpus::BookGroup<'_>,
     mut f: impl FnMut(LocalKeyIdx, &SpacingOpportunity),
 ) {
-    let mut per_verse: Vec<Vec<GSpan>> = Vec::with_capacity(group.len());
+    let mut per_verse: Vec<Vec<GSpan>> = Vec::with_capacity(group.texts.len());
     for text in group.texts {
         let mut g = Vec::new();
         grapheme::segment(text, &mut g);
@@ -1198,7 +1198,7 @@ fn for_each_spacing_opportunity(
         // Nearest previous verse's LAST edge (left of a verse-leading mark), and
         // nearest next verse's FIRST edge (right of a verse-trailing mark).
         let left_cross = (0..vi).rev().find_map(|jj| edges[jj].1);
-        let right_cross = (vi + 1..group.len()).find_map(|jj| edges[jj].0);
+        let right_cross = (vi + 1..group.texts.len()).find_map(|jj| edges[jj].0);
         for opp in spacing_opportunities(text, &per_verse[vi], left_cross, right_cross) {
             f(LocalKeyIdx::from_usize(vi), &opp);
         }

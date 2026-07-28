@@ -915,9 +915,6 @@ impl<'a> BookGroup<'a> {
         &self.keys[usize::from(local.0)]
     }
 
-    pub(crate) fn len(&self) -> usize {
-        self.keys.len()
-    }
 }
 
 pub type Books<'a> = Vec<BookGroup<'a>>;

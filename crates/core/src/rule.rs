@@ -1,53 +1,14 @@
-//! Rule traits and the registries `analyze` runs.
+//! Direct per-verse rules and shared chapter-map helpers.
 //!
-//! Three shapes, one merged `Finding` stream (ADR 0010, ADR 0017):
-//!
-//! - [`PerVerseRule`] decides from a single verse's text alone — the hot,
-//!   stateless majority (whitespace, hygiene). It returns bare `Span`s;
-//!   the runner stamps `sid` + `code` + `severity`.
-//! - [`ProjectRule`] needs the whole corpus (and optionally a parallel
-//!   `source` corpus) and emits full `Finding`s itself. Knob-bearing
-//!   project rules are *constructed from* the caller's `Config` in
-//!   [`project_rules`], so `check` stays a pure function of the maps.
-//! - [`StatefulRule`] *observes* the corpus into `RuleStats`, then *judges*
-//!   from that cache — the shape that supports incremental re-analysis
-//!   (ADR 0017). Constructed from `Config` in [`stateful_rules`].
-//!
-//! Whether a rule is per-verse or project is the *rule's* property;
-//! execution cadence (every keystroke vs on save) is the orchestrator's.
-//! There is deliberately no hot/cold tier in the type system.
+//! Corpus-aware rules use the typed observation-substrate registry. A future
+//! rule that cannot fit that model requires its own approved execution design;
+//! this module deliberately keeps no latent fallback registry.
 
-
-use rustc_hash::FxHashMap;
-
-use crate::config::Config;
-use crate::corpus::{BookGroup, Books, Corpus, KeyIdx};
-use crate::diagnostics::{Finding, RuleId, Severity};
+use crate::corpus::{BookGroup, Books};
+use crate::diagnostics::{RuleId, Severity};
 use crate::signals;
 use crate::span::Span;
-use crate::stats::RuleStats;
 use crate::tape::{Mask, TapeEntry};
-use crate::token::Token;
-
-/// Per-verse word tokenizations, keyed by the current call's global
-/// `KeyIdx`, computed once per analyze and shared by every token-consuming
-/// rule so the corpus is tokenized a single time instead of once per rule
-/// (the UAX #29 word scan is a top cost on space-free and non-Latin
-/// scripts). Built only when ≥2 token consumers are enabled — see
-/// `analyze_stateful`. Global, not local: this cache is rebuilt fresh every
-/// call (never serialized, never retained across calls), so there is no
-/// cross-call stability requirement to preserve by staying book-local.
-/// FxHashMap: internal-only (never serialized, never crosses the wasm
-/// boundary), fast non-cryptographic hashing on the hot per-book walk (ADR
-/// 0057 allocation-diet follow-up).
-///
-/// The value is a **borrowed** token slice, not an owned `Vec`: the tokens
-/// live in the fused walk's per-book output (a freshly walked book) or in the
-/// resident `AnalysisCache` entry (a clean cache-hit book), and the cache is a
-/// read-only view over them for this analyze. Nothing here owns or clones the
-/// tokens — assembling the cache is a rebase-and-borrow, so a clean book's
-/// tokens are never copied out of the resident cache.
-pub type TokenCache<'a> = FxHashMap<KeyIdx, &'a [Token]>;
 
 /// The hot, stateless majority. `check` reads the verse's prebuilt scalar tape
 /// (ADR 0045) — one shared decode+classify pass the runner does per verse —
@@ -69,100 +30,6 @@ pub(crate) trait PerVerseRule: Sync {
     }
 }
 
-/// Project-scoped rules receive the corpus as [`Books`] — the same shared
-/// grouping the stateful phase walks (ADR 0042), so book-independent passes
-/// fan out through [`map_books`] and nobody regroups the corpus.
-pub trait ProjectRule: Sync {
-    fn id(&self) -> RuleId;
-    fn check(&self, books: &Books<'_>, source: Option<&Corpus>) -> Vec<Finding>;
-}
-
-/// A project-scoped rule that also consults per-verse tokens (e.g.
-/// cross-verse duplicate-word). Receives the shared [`TokenCache`] when one
-/// was built; when `None` it tokenizes the verses it needs itself.
-pub trait ProjectTokenRule: Sync {
-    fn id(&self) -> RuleId;
-    fn check(
-        &self,
-        books: &Books<'_>,
-        source: Option<&Corpus>,
-        tokens: Option<&TokenCache<'_>>,
-    ) -> Vec<Finding>;
-}
-
-/// Candidate **sites** a stateful rule visited while counting — forwarded
-/// from `reduce` to `judge` *within one analyze call* so a book scanned this
-/// call is never scanned twice (ADR 0044). Strictly ephemeral: sites never
-/// enter [`RuleStats`], never serialize, never outlive the call — the
-/// aggregates-only wire contract (ADR 0017) is untouched.
-///
-/// Per rule, per book, the candidates in scan order. **A book's presence in
-/// the map means "reduce scanned it this call"** — an empty list is a scanned
-/// book with zero candidates (judge emits nothing for it, scan-free), while
-/// an *absent* book was carried from the prior and judge must re-scan it for
-/// spans. Proportionality carries no sites: its judge emits from cached
-/// ratios and never scans.
-///
-/// Each per-book value is a [`Cow`]: **owned** for a freshly walked book (the
-/// fused walk hands its sites straight in, moved not cloned) and **borrowed**
-/// for a clean cache-hit book (a read-only view into the resident `AnalysisCache`
-/// entry). A clean book's sites are therefore never cloned out of the cache to
-/// be judged — the judge consumes the view directly. The
-/// lifetime is that of the resident cache borrow held across the judge phase;
-/// **No rule uses either variant any more**: proportionality and rare-glyph both
-/// migrated to observation substrates in Phase E, and the batch registry that
-/// consumed this type is empty. The two variants remain only as the site-FREE
-/// shape a future batch rule would start from (they carry no sites at all — one
-/// never scanned, the other re-scanned by design, ADR 0044/0053), and the enum
-/// survives so `StatefulRule::judge`'s signature stays uniform. Retiring it is part
-/// of the same Phase F batch-lane decision as `RuleStats`.
-pub enum RuleSites {
-    Proportionality,
-    RareGlyph,
-}
-
-/// A rule that **observes** the corpus into `RuleStats`, then **judges** from
-/// that corpus context (ADR 0017). `reduce` summarises the verses it is given;
-/// the caller `merge`s that into prior stats. Aggregate-only rules may re-scan
-/// the supplied verses to recover spans without storing sites. Core stays pure
-/// — the stats live in the caller, not the rule.
-///
-/// Both phases receive the corpus as [`Books`] — grouped once by
-/// `analyze_stateful` and shared — because the **book is the unit of
-/// everything** here (ADR 0042): stats supersede per book, casing's scan
-/// carries sentence state across verse seams within a book, and the
-/// `parallel` feature fans work out per book via [`map_books`]. `tokens` is
-/// the shared per-analyze [`TokenCache`] when one was built; a rule that
-/// tokenizes (repeated-character-run) reads it instead of re-tokenizing, and
-/// every other rule ignores it.
-pub trait StatefulRule: Sync {
-    fn id(&self) -> RuleId;
-    /// Count the supplied verses into this rule's stats, and hand back the
-    /// candidate [`RuleSites`] visited along the way (ADR 0044) so a
-    /// same-call `judge` can skip re-scanning those books.
-    fn reduce(
-        &self,
-        books: &Books<'_>,
-        source: Option<&Corpus>,
-        tokens: Option<&TokenCache<'_>>,
-    ) -> (RuleStats, RuleSites);
-    /// Emit findings from the merged corpus `stats`. `books` holds the verses
-    /// of the current call — a rule whose observations are *sparse* ignores it
-    /// and emits from cached sites (proportionality); a rule with a *dense*
-    /// candidate class caches only aggregates and recovers spans here: from
-    /// the forwarded `sites` for books reduce scanned this call, by
-    /// **re-scanning** any other supplied book (its counts came from the
-    /// prior, so no sites exist). `sites = None` (or a mismatched variant)
-    /// re-scans everything — always correct, never required in the orchestrated
-    /// path. Emissions are for the supplied verses either way.
-    fn judge(
-        &self,
-        stats: &RuleStats,
-        books: &Books<'_>,
-        tokens: Option<&TokenCache<'_>>,
-        sites: Option<&RuleSites>,
-    ) -> Vec<Finding>;
-}
 
 /// Run `f` over every book and collect the outputs **in `books`' presented
 /// order** (index-aligned with `books`, which is caller order, not canonical
@@ -404,30 +271,6 @@ pub(crate) fn per_verse_rules() -> Vec<Box<dyn PerVerseRule>> {
         Box::new(signals::structural::SourceMarkerLeftover),
         Box::new(signals::structural::MergeConflictMarker),
     ]
-}
-
-/// Every project-scoped rule wired in by default. Knob-bearing rules are
-/// constructed from `config`'s typed sub-configs here, once per analyze
-/// call — `ProjectRule::check` itself never sees the `Config`.
-///
-/// **It is currently empty**, for the same reason `stateful_rules` is: both of its
-/// members — `punct.bracket-balance` and `uni.mixed-normalization` — are typed
-/// observation substrates now. The registry and its trait remain because the batch
-/// lane is permanent (plan §9).
-pub fn project_rules(_config: &Config) -> Vec<Box<dyn ProjectRule>> {
-    Vec::new()
-}
-
-/// Every stateful (observe-then-judge) rule wired in (ADR 0017). Like the project
-/// registry, this is complete — including rules `v1_defaults` disables.
-///
-/// **It is currently empty**: every rule that was ever in it is a typed
-/// observation substrate now, driven from its own stamp-derived cache outside this
-/// registry. The batch lane it feeds is permanent by design (plan §9) — a
-/// labs/experimental rule starts here, and a rule whose verdict cannot be
-/// incrementally maintained stays here — so the registry and its trait remain.
-pub fn stateful_rules(_config: &Config) -> Vec<Box<dyn StatefulRule>> {
-    Vec::new()
 }
 
 #[cfg(test)]
