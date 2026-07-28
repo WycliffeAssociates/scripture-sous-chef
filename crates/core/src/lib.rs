@@ -97,6 +97,10 @@ pub mod bench {
     pub use crate::substrate::{
         DRIVE_PHASE_NAMES, SUBSTRATE_NAMES, drive_phase_table as drive_phases,
     };
+
+    /// Casing verdict-churn between consecutive all-dirty passes — the payoff
+    /// ceiling measurement for a verdict-level materialize delta.
+    pub use crate::signals::casing::flip_probe::{FlipStats, last as casing_flips};
 }
 
 #[cfg(test)]

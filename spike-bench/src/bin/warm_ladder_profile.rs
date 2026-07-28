@@ -182,12 +182,39 @@ fn main() {
         other => panic!("unknown config {other:?} (want default|all|all-pos-only|all-no-casing)"),
     };
     eprintln!("config: {config_name}");
+    let drive_phases = args.iter().any(|a| a == "--drive-phases");
     // Cold seed: the resident Galley's first analyze warms the prior + both
     // cache lanes for every book. Excluded from the profiled/timed loop.
     let mut galley = Galley::new(bible.clone(), None, cfg.clone());
     let seed_start = std::time::Instant::now();
     let _ = galley.analyze();
     eprintln!("cold seed: {:?}", seed_start.elapsed());
+    // The seed is itself one whole-corpus analyze, so the phase probes hold
+    // its split until the next call — print it before the warm loop clobbers
+    // it. One sample, no median: cold runs once, so this is the population.
+    if drive_phases {
+        let ph = ssc_core::bench::last();
+        println!(
+            "cold seed {code} {config_name}: map {:?} reduce {:?} judge {:?}",
+            ph.map, ph.reduce, ph.judge
+        );
+        let cold = ssc_core::bench::drive_phases();
+        println!(
+            "  {:<15} {:>9} {:>9} {:>9} {:>9} {:>9} {:>9} {:>10}",
+            "substrate", "plan", "map", "reduce", "keys", "judge", "materlz", "row total",
+        );
+        let mut grand = 0f64;
+        for (s, name) in ssc_core::bench::SUBSTRATE_NAMES.iter().enumerate() {
+            let cells: Vec<f64> = (0..6).map(|p| cold[s][p].as_secs_f64() * 1e3).collect();
+            let row: f64 = cells.iter().sum();
+            grand += row;
+            println!(
+                "  {name:<15} {:>9.4} {:>9.4} {:>9.4} {:>9.4} {:>9.4} {:>9.4} {:>10.4}",
+                cells[0], cells[1], cells[2], cells[3], cells[4], cells[5], row,
+            );
+        }
+        println!("  {:<15} cold: all substrates, all phases: {grand:.4} ms", "");
+    }
 
     let mut rotation = 0usize;
     let do_work = || {
@@ -235,6 +262,13 @@ fn main() {
     // phase — planning, mapping, ordered reduction, judge-key discovery,
     // judging, materialization — by separating them.
     let drive_phases = args.iter().any(|a| a == "--drive-phases");
+    // `--casing-flips`: per warm iteration, how many (word, pos) casing
+    // verdicts changed vs the previous ALL-DIRTY pass (bench-probes flip
+    // probe). Only advances on all-dirty passes, so a stable-aggregate lane
+    // reports nothing rather than garbage.
+    let flip_probe = args.iter().any(|a| a == "--casing-flips");
+    let mut flip_passes = 0usize;
+    let mut flips: Vec<ssc_core::bench::FlipStats> = Vec::new();
     let mut rot = 0usize;
     let mut batch_totals: Vec<std::time::Duration> = Vec::new();
     for b in 0..batches {
@@ -266,6 +300,13 @@ fn main() {
             jud.push(ph.judge);
             if drive_phases {
                 drives.push(ssc_core::bench::drive_phases());
+            }
+            if flip_probe {
+                let f = ssc_core::bench::casing_flips();
+                if f.passes > flip_passes {
+                    flip_passes = f.passes;
+                    flips.push(f);
+                }
             }
         }
         let med = |v: &mut Vec<std::time::Duration>| spike_bench::median(v);
@@ -306,6 +347,32 @@ fn main() {
                 );
             }
             println!("  {:<15} all substrates, all phases: {grand:.4} ms", "");
+        }
+    }
+    if flip_probe {
+        // Skip the first recorded pass: it diffs against the cold seed's memo,
+        // whose (word, pos) universe differs from the steady-state edit loop's.
+        let steady: Vec<_> = flips.iter().skip(1).collect();
+        if steady.is_empty() {
+            println!("casing-flips: no all-dirty passes recorded (aggregate never moved)");
+        } else {
+            let mut fl: Vec<usize> = steady.iter().map(|f| f.flipped).collect();
+            fl.sort_unstable();
+            let f0 = steady[0];
+            println!(
+                "casing-flips over {} all-dirty passes: keys ~{} | flipped min {} med {} max {} | appeared+vanished (churn) med {}",
+                steady.len(),
+                f0.keys,
+                fl[0],
+                fl[fl.len() / 2],
+                fl[fl.len() - 1],
+                {
+                    let mut ch: Vec<usize> =
+                        steady.iter().map(|f| f.appeared + f.vanished).collect();
+                    ch.sort_unstable();
+                    ch[ch.len() / 2]
+                },
+            );
         }
     }
     if batches > 1 {

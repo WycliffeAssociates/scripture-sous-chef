@@ -2304,6 +2304,10 @@ struct VerdictMemo {
     /// Verdicts actually computed — the drive's `judged` probe. It is the memo's
     /// own miss count, so nothing else has to keep it.
     judged: usize,
+    /// Measurement only: the word each slot resolved for, so a finished pass's
+    /// memo can be enumerated as portable `(word, pos) -> outcome` entries.
+    #[cfg(feature = "bench-probes")]
+    slot_words: Vec<Arc<str>>,
 }
 
 const NIL: u32 = u32::MAX;
@@ -2316,6 +2320,8 @@ impl VerdictMemo {
             head: Vec::new(),
             nodes: Vec::new(),
             judged: 0,
+            #[cfg(feature = "bench-probes")]
+            slot_words: Vec::new(),
         }
     }
 
@@ -2341,6 +2347,8 @@ impl VerdictMemo {
             slot = *self.slot_of.entry(id).or_insert_with(|| {
                 let next = self.head.len() as u32;
                 self.head.push(NIL);
+                #[cfg(feature = "bench-probes")]
+                self.slot_words.push(word.clone());
                 next
             });
             self.slots[bid] = slot;
@@ -2359,6 +2367,103 @@ impl VerdictMemo {
         self.head[slot] = (self.nodes.len() - 1) as u32;
         self.judged += 1;
         outcome
+    }
+}
+
+/// Measurement only (`bench-probes`): how many `(word, pos)` verdicts actually
+/// CHANGE between consecutive all-dirty passes. The stats-delta honestly marks
+/// every key dirty whenever the corpus aggregate moves (the global trust terms
+/// shift bit-wise), so the interesting quantity for a future verdict-level
+/// delta is how many outcomes flip — this counts them, keyed portably by word
+/// content + position class so it survives table rebuilds across passes.
+#[cfg(feature = "bench-probes")]
+pub mod flip_probe {
+    use super::{CasingOutcome, PosClass, VerdictMemo};
+    use rustc_hash::FxHashMap;
+    use std::cell::{Cell, RefCell};
+    use std::sync::Arc;
+
+    /// One all-dirty pass diffed against the previous one.
+    #[derive(Clone, Copy, Default, Debug)]
+    pub struct FlipStats {
+        /// Distinct `(word, pos)` verdicts this pass computed.
+        pub keys: usize,
+        /// Keys present in both passes whose outcome changed.
+        pub flipped: usize,
+        /// Keys this pass has that the previous pass did not.
+        pub appeared: usize,
+        /// Keys the previous pass had that this one does not.
+        pub vanished: usize,
+        /// Passes recorded so far (the first has no baseline to diff).
+        pub passes: usize,
+    }
+
+    thread_local! {
+        static PREV: RefCell<FxHashMap<(Arc<str>, PosClass), u64>> =
+            RefCell::new(FxHashMap::default());
+        static LAST: Cell<FlipStats> = const { Cell::new(FlipStats {
+            keys: 0, flipped: 0, appeared: 0, vanished: 0, passes: 0,
+        }) };
+    }
+
+    fn digest(o: &CasingOutcome) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = rustc_hash::FxHasher::default();
+        match o.positional {
+            Some((s, g, q, u, t)) => {
+                1u8.hash(&mut h);
+                s.to_bits().hash(&mut h);
+                g.map(|c| c as u32).hash(&mut h);
+                q.hash(&mut h);
+                u.hash(&mut h);
+                t.hash(&mut h);
+            }
+            None => 0u8.hash(&mut h),
+        }
+        match o.intrinsic {
+            Some((s, u, t)) => {
+                1u8.hash(&mut h);
+                s.to_bits().hash(&mut h);
+                u.hash(&mut h);
+                t.hash(&mut h);
+            }
+            None => 0u8.hash(&mut h),
+        }
+        h.finish()
+    }
+
+    /// Record a finished ALL-DIRTY pass's memo (a partial pass's memo only
+    /// covers visited chapters and would read as mass churn).
+    pub(super) fn record(memo: &VerdictMemo) {
+        let mut fresh: FxHashMap<(Arc<str>, PosClass), u64> =
+            FxHashMap::with_capacity_and_hasher(memo.nodes.len(), Default::default());
+        for (slot, word) in memo.slot_words.iter().enumerate() {
+            let mut n = memo.head[slot];
+            while n != super::NIL {
+                let node = &memo.nodes[n as usize];
+                fresh.insert((word.clone(), node.0), digest(&node.1));
+                n = node.2;
+            }
+        }
+        PREV.with(|prev| {
+            let mut prev = prev.borrow_mut();
+            let mut stats = LAST.with(Cell::get);
+            stats.keys = fresh.len();
+            stats.flipped = fresh
+                .iter()
+                .filter(|(k, d)| prev.get(*k).is_some_and(|old| old != *d))
+                .count();
+            stats.appeared = fresh.keys().filter(|k| !prev.contains_key(*k)).count();
+            stats.vanished = prev.keys().filter(|k| !fresh.contains_key(*k)).count();
+            stats.passes += 1;
+            LAST.with(|c| c.set(stats));
+            *prev = fresh;
+        });
+    }
+
+    /// The most recent recorded pass's diff on this thread.
+    pub fn last() -> FlipStats {
+        LAST.with(Cell::get)
     }
 }
 
@@ -2684,6 +2789,10 @@ pub(crate) fn drive_casing(
                 &mut memo,
             );
         }
+    }
+    #[cfg(feature = "bench-probes")]
+    if all_dirty {
+        flip_probe::record(&memo);
     }
     lane.patches.push(SubstratePatch {
         substrate: crate::substrate::SubstrateId::Casing,

@@ -6183,3 +6183,81 @@ margin load noise alone would not produce.
 Both documentation files (this entry + the calibration doc's final-state
 section) are committed together as one commit; no code, test, or plan file
 changed.
+
+## Entry 42 — post-plan probes: remote criterion A/B, cold decomposition, walk units, casing verdict-flip counts
+
+Executor: the PO/steward session directly. All perf numbers in this entry are
+from the remote x86 quiet box (load ≤ 1.3 throughout; its own series — ratios
+transfer, milliseconds don't), via `scripts/bench-remote.sh`. Behavior gate for
+the probe commit: all eight WA+small dumps byte-identical to the standing pin
+tables (Entries 34/38); workspace suite green; probes are `bench-probes`-gated
+and add nothing to a release build.
+
+### 1. The cold regression is real (same-box criterion A/B)
+
+Pre-spine base `db5fd7a` benched on the box and saved as `pre-spine-remote`,
+then HEAD `7ae89d9` benched against it: `analyze/full_bible` 397.4→462.4 ms
+(+16.4%), `analyze/nt` 90.1→107.6 (+20.1%), `analyze/full_devanagari`
+584.8→791.0 (+35.3%), `proportionality/nt_vs_bible` 15.19→13.15 (−13.4%).
+Warm (directional, harness moved crates in Phase A): `cached_edit`
+9.84/21.16/31.17 → `galley_warm_edit` 5.16/6.28/6.35 ms (3JN/MAT/PSA). This
+confirms Entry 41's loaded-Mac deltas were not load noise; its
+"load-inflated, judged not real" note for the three cold benches is
+superseded by this measurement.
+
+### 2. Where cold goes: per-substrate whole-corpus maps
+
+Cold-seed drive table (new `--drive-phases` cold print in
+`warm_ladder_profile`), WA-en-ulb, default config: substrate drives total
+414.8 ms of a ~452 ms seed — repeated-run map 203.3, mixed-script 130.2,
+punct-only 36.3, adjacency 26.0, bracket 13.7, shared corpus map 37.5.
+`all` config cold drives: 1,521 ms (glyph 508.6, casing 244.5, mixed-case
+159.0, spacing 89.7). Each substrate maps its chapters independently
+(plan §6.1 by design), so cold re-walks the corpus once per enabled
+substrate; every §13 gate was warm, so nothing ever measured the sum.
+
+### 3. Raw-walk unit costs (`cold_walk_probe`, new spike bin)
+
+One full-corpus pass, WA-en-ulb, median of 5: tokenize 34.4 ms, grapheme
+segmentation 90.6 ms, plain byte scan 2.5 ms. Read against the map columns:
+punct-only's 36.3 ms map is ≈ one token walk (~95% shareable); repeated-run's
+203.3 and mixed-script's 130.2 contain at most one token walk + one
+grapheme-scale pass each — a shared token stream + grapheme-boundary product
+caps the recoverable cold cost at roughly 100–190 ms of the 415 ms default
+drives (probable, not proven per-substrate; the private-compute remainder is
+real work sharing cannot remove). Parallel chapter fan-out remains the larger
+native lever; wasm gets only the sharing.
+
+### 4. Casing verdict flips: ZERO (the verdict-delta ceiling measurement)
+
+New `bench-probes` flip probe (`casing::flip_probe` + `--casing-flips`):
+between consecutive ALL-DIRTY passes it diffs every `(word, pos)` verdict
+digest against the previous pass. Forced-rebuild lane (distinct-word variants,
+59 diffed passes each): 3JN — flipped min/med/max **0/0/0**, churn
+(appeared+vanished) median 2 (the edited word itself); MAT — identical
+**0/0/0**, churn 2; punctuation-shape variants — **0/0/0**, churn 0. ~12,461
+verdict keys per pass. A one-word edit moves the global trust terms bit-wise
+(every key honestly stats-dirty) yet changes **no verdict**, every time, on
+every lane tried. A verdict-level materialize delta (re-materialize only
+flipped keys ∪ site-delta chapters) therefore removes essentially the whole
+668k-site walk on real edits — on the box, casing materialize is ~25 ms of the
+~33–43 ms forced-rebuild judge window. Finding-construction is already known
+negligible (~77 pushes per pass corpus-wide).
+
+### Follow-up shape these numbers justify
+
+1. Verdict-level delta packet (casing first, spacing if it fits): ceiling
+   measured at ~the entire materialize cell; witnesses = flip-forcing edits
+   (a word crossing a casing threshold) so the patch path provably fires.
+2. Shared-prep packet for cold: token stream + grapheme boundaries as shared
+   per-chapter products; measured ceiling ~100–190 ms of 415 (default).
+   Decompose per-substrate before landing; parallel fan-out is native-only
+   gravy on top.
+3. Cold seed is otherwise an accepted trade (once per corpus load).
+
+Probe inventory landed this entry: `casing::flip_probe` (+ `slot_words` memo
+field, both `bench-probes`), the drive's all-dirty record hook,
+`warm_ladder_profile --casing-flips` + cold `--drive-phases` seed table,
+`spike-bench/src/bin/cold_walk_probe.rs`. Also noted: stale
+`spike-bench/src/bin/replay_distance.rs` no longer builds post-Phase-F
+(imports the retired `analyze_stateful`) — cleanup candidate.
