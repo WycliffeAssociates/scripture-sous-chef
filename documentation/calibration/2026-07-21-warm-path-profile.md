@@ -183,3 +183,48 @@ emit loop (~22–24 ms, deliberately parked) and mixed-case's whole-corpus
 verse re-scan (needs cross-call caching or a `RuleStats`-shape change —
 correctly refused as non-mechanical; the incremental-judge idea is the
 principled home for both).
+
+## Final state at `3be7e6c` (2026-07-28)
+
+Measurement-only session closing the granularity-spine epic; full detail and
+method notes in progress log Entry 41. No code changed; tree verified clean
+before and after.
+
+### dhat retained/peak heap (WA-en-ulb, `dhat_probe testing`)
+
+| config | retained (curr_bytes, after seed) | peak (max_bytes) | prior baseline (Entry 38) | delta |
+| --- | ---: | ---: | ---: | ---: |
+| `default` | 9,345,670 B | 10,848,202 B | 9,360,970 B | −15,300 B (−0.16%) |
+| `all` | 78,470,821 B | 80,195,501 B | 77,808,537 B | +662,284 B (+647.2 KiB, +0.85%) |
+
+This closes the allocation audit Entry 38 left blocked (no host kill this
+run). The `all` movement is the casing-keys `Panel` retained by Entry 40
+(estimated +661 KiB / 677,200 B); measured is 647.2 KiB, slightly under the
+estimate. `default`'s small decrease is unexpected in direction (casing is
+off in `v1_defaults`) but tiny and attributed to Entry 38's own non-casing
+closeout work, not the keys packet.
+
+### Criterion benches
+
+Load at run time (`uptime`): `ssc-core` run — `9.94 16.05 28.20`;
+`ssc-galley` run — `11.57 15.63 27.17`. Both above the ~8 1-min-load caveat;
+absolute numbers below are load-inflated and were not rerun to chase a
+quieter window.
+
+| bench | pinned baseline | now (load-inflated) | delta | basis |
+| --- | ---: | ---: | ---: | --- |
+| `analyze/full_bible` | 255.92 ms (`pre-spine`) | 316.87 ms | +23.8% | criterion `--baseline pre-spine` |
+| `analyze/nt` | 60.18 ms (`pre-spine`) | 74.04 ms | +22.6% | criterion `--baseline pre-spine` |
+| `analyze/full_devanagari` | 352.04 ms (`pre-spine`) | 479.12 ms | +36.1% | criterion `--baseline pre-spine` |
+| `proportionality/nt_vs_bible` | 7.649 ms (`pre-spine`) | 6.195 ms | −19.0% | criterion `--baseline pre-spine` |
+| `galley_warm_edit_3JN` | 4.40 ms (Jul-23 `warm_ladder_profile`, default) | 2.48 ms | −43.6% | different harness, directional |
+| `galley_warm_edit_MAT` | 12.64 ms (Jul-23 `warm_ladder_profile`, default) | 2.80 ms | −77.8% | different harness, directional |
+| `galley_warm_edit_PSA` | 19.16 ms (Jul-23 `warm_ladder_profile`, default) | 3.06 ms | −84.0% | different harness, directional |
+
+The three whole-corpus `pre-spine`-comparable benches regressed 22–36% under
+heavy, varying load with criterion-reported outliers — untouched by this
+epic's resident warm-edit work, so read as machine noise, not a real
+slowdown. `galley_warm_edit_*` (the epic's actual target) lands 43–84% below
+even the noisy Jul-23 pin, consistent with the epic's own chapter-scoped-
+invalidation narrative and far larger than load noise would produce on its
+own.

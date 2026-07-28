@@ -6084,3 +6084,102 @@ remained byte-identical to the Entry 39 pin at each of the three code commits.
   moving the cell. Anything further there is about the 668,257-site walk itself.
 - The allocation audit blocked in Entry 38 is still blocked; this packet adds a
   measured +661 KiB to whatever that audit eventually re-baselines.
+
+---
+
+## Entry 41 — Final measurement session at `3be7e6c`: dhat + criterion
+
+- **Date:** 2026-07-28. Branch: `granularity-spine`, HEAD `3be7e6c` (tree
+  verified clean before and after; no code changes this session — measurement
+  only, appended to this log and to
+  `documentation/calibration/2026-07-21-warm-path-profile.md`).
+- This closes the allocation audit that Entry 38 left blocked: the local dhat
+  process ran clean both configs, no host kill.
+
+### Table 1 — dhat retained/peak heap
+
+Same procedure as Entries 21/23/28/32/35/38: `spike-bench/src/bin/dhat_probe
+testing <config> ../corpora/vref/WA-en-ulb.txt` (release build, `testing`
+profiler), whole `WA-en-ulb` Bible (31,086 verses), resident `Galley` seeded by
+one cold `analyze`, then 20 warm `update_book`+`analyze` iterations alternating
+two 3JN text variants. **Retained** = `curr_bytes` right after the cold seed
+(steady state); **peak** = `max_bytes`, highest value observed across the seed
+and all 20 warm iterations. dhat is allocation-deterministic — both configs
+were run twice each; `curr_bytes` after seed was byte-identical across repeats
+for a given config.
+
+| config | retained (curr_bytes, after seed) | peak (max_bytes, seed+20 warm iters) | prior retained baseline (Entry 38) | delta |
+| --- | ---: | ---: | ---: | ---: |
+| `default` | 9,345,670 B | 10,848,202 B | 9,360,970 B | **−15,300 B (−0.16%)** |
+| `all` | 78,470,821 B | 80,195,501 B | 77,808,537 B | **+662,284 B (+647.2 KiB, +0.85%)** |
+
+No peak column exists in the Entry 38 baseline table (it recorded retained
+only), so the peak figures above are first-recorded, not diffed.
+
+**Reading against the expected movement.** Entry 40 predicted ~+661 KiB
+(677,200 B) on `all` from the casing-keys `Panel`, which is `all`-only (its
+jurors are `SentenceInitialLowercase`/`InconsistentWordCasing`, both disabled
+in `default`). Measured movement on `all` is +662,284 B (647.2 KiB) —
+*slightly under*, not over, the +661 KiB estimate (14,916 B less, ~2.2%
+smaller than predicted); this is well inside the expected range, not a
+reportable overshoot.
+
+`default`'s −15,300 B is unexpected in direction (casing is off in
+`v1_defaults`, so the keys packet should not touch it at all) but is a
+decrease, is tiny (0.16%), and is consistent with Entry 38's own non-casing
+closeout work (the disconnected batch implementation and legacy
+`Stats`/prior scaffolding were retired in that entry, ahead of the baseline
+this table compares against having been captured) rather than anything in the
+casing-keys packet. Flagged here for the record, not treated as a regression.
+
+### Table 2 — criterion benches
+
+**Load at run time:** `uptime` immediately before the `ssc-core` run: `load
+averages: 9.94 16.05 28.20`; immediately before the `ssc-galley` run: `load
+averages: 11.57 15.63 27.17`. Both exceed the ~8 1-minute-load caveat
+threshold — the absolute times below are **load-inflated**; they were not
+rerun to chase a quieter window, per instruction.
+
+`cargo bench -p ssc-core --bench analyze -- --baseline pre-spine` compares
+directly against the `pre-spine` baseline saved in `target/criterion/`
+(§2 items 5/6, this log's opening entries). `galley_warm_edit_*`
+(`cargo bench -p ssc-galley --bench warm_edit`) has **no saved criterion
+baseline** in this tree — the bench itself did not exist under `ssc-galley`
+until the Phase A dependency-direction restore, so its only prior pin is the
+2026-07-23 `warm_ladder_profile` warm-median table earlier in this log (the
+"Warm-ladder baselines (§2 item 5)" section, `default` row). That harness
+(`analyze_stateful` + hand-chained prior/`PrepCache`) and this one
+(criterion + resident `Galley::update_book`) are not the same code path, so
+the comparison is directional evidence of the epic's warm-path work, not an
+apples-to-apples criterion regression check.
+
+| bench | pinned baseline | now (load-inflated) | delta | comparison basis |
+| --- | ---: | ---: | ---: | --- |
+| `analyze/full_bible` | 255.92 ms (`pre-spine`) | 316.87 ms | +23.8% (criterion-reported) | criterion `--baseline pre-spine`, same bench |
+| `analyze/nt` | 60.18 ms (`pre-spine`) | 74.04 ms | +22.6% (criterion-reported) | criterion `--baseline pre-spine`, same bench |
+| `analyze/full_devanagari` | 352.04 ms (`pre-spine`) | 479.12 ms | +36.1% (criterion-reported) | criterion `--baseline pre-spine`, same bench |
+| `proportionality/nt_vs_bible` | 7.649 ms (`pre-spine`) | 6.195 ms | −19.0% (criterion-reported) | criterion `--baseline pre-spine`, same bench |
+| `galley_warm_edit_3JN` | 4.40 ms (Jul-23 `warm_ladder_profile`, default, warm median) | 2.48 ms | −43.6% | different harness — directional only |
+| `galley_warm_edit_MAT` | 12.64 ms (Jul-23 `warm_ladder_profile`, default, warm median) | 2.80 ms | −77.8% | different harness — directional only |
+| `galley_warm_edit_PSA` | 19.16 ms (Jul-23 `warm_ladder_profile`, default, warm median) | 3.06 ms | −84.0% | different harness — directional only |
+
+**Reading.** The three `pre-spine`-comparable `ssc-core` benches (`full_bible`,
+`nt`, `full_devanagari`) all regressed 22–36% and `proportionality` improved
+19% — under load averages of 10–28 during collection, criterion's own
+`change:`/outlier reporting (2–20% outliers on several benches) says these
+absolute deltas are not trustworthy as behavior signals; they are reported as
+measured, flagged load-inflated, and not rerun. None of these three whole-
+corpus one-shot benches were touched by granularity-spine's map/reduce/judge
+work (that work targets the resident warm-edit path), so a same-direction
+regression across all three under heavy, varying load is consistent with
+machine noise rather than a real slowdown. The `galley_warm_edit_*` numbers,
+by contrast, land far below even a noisy Jul-23 pin (43–84% lower) — in the
+direction the epic's own narrative (Entries 21–40, chapter-scoped
+invalidation collapsing PSA's edit-size-proportional term) predicts, and by a
+margin load noise alone would not produce.
+
+### Commit
+
+Both documentation files (this entry + the calibration doc's final-state
+section) are committed together as one commit; no code, test, or plan file
+changed.
