@@ -280,6 +280,16 @@ pub(crate) struct ChapterView<'a> {
     /// non-`None` value is [`ChapterView::paired`], which will not compile for a
     /// substrate whose registry entry says `TargetOnly`.
     paired: Option<PairedView<'a>>,
+    /// This chapter's shared token stream (plan §5.1's "borrowed immutable views
+    /// to every active mapper"), present only for a substrate whose drive filled
+    /// the shared lane before the map seam.
+    ///
+    /// It is mechanical prep, not evidence: the encoder calls the same
+    /// `tokenize_into` the consuming maps used to call themselves, so a stream
+    /// carries exactly what a private walk would have produced. Nothing about
+    /// which chapters are dirty, which rules are on, or what any judge decides
+    /// reaches this field.
+    tokens: Option<&'a crate::prep::ChapterTokens>,
 }
 
 /// What a reference-declaring substrate reads beyond the target text: this
@@ -308,7 +318,35 @@ impl<'a> ChapterView<'a> {
             chapter,
             texts,
             paired: None,
+            tokens: None,
         }
+    }
+
+    /// A target-only chapter view carrying the chapter's shared token stream —
+    /// the shape a token-consuming substrate's drive builds, having filled the
+    /// shared lane for its whole dirty work set first.
+    pub(crate) fn tokened(
+        chapter: &'a str,
+        texts: &'a [String],
+        tokens: Option<&'a crate::prep::ChapterTokens>,
+    ) -> Self {
+        ChapterView {
+            chapter,
+            texts,
+            paired: None,
+            tokens,
+        }
+    }
+
+    /// This chapter's shared token stream. A substrate that reads it declares so
+    /// by having its drive fill the lane for every chapter it maps, so the stream
+    /// is always there — the `expect` names a broken drive, not a missing
+    /// feature.
+    pub(crate) fn tokens(&self) -> &'a crate::prep::ChapterTokens {
+        self.tokens.expect(
+            "a token-consuming substrate mapped a chapter whose shared token stream its \
+             drive never built — stop and report: the drive's prep contract broke",
+        )
     }
 
     /// A chapter view carrying its declared paired reference. The
@@ -327,6 +365,7 @@ impl<'a> ChapterView<'a> {
             chapter,
             texts,
             paired,
+            tokens: None,
         }
     }
 

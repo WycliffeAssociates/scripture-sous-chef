@@ -24,6 +24,7 @@ pub mod grapheme;
 pub mod identity;
 mod interner;
 pub mod key;
+mod prep;
 pub mod rule;
 pub mod script;
 pub mod signals;
@@ -101,6 +102,11 @@ pub mod bench {
     /// Casing verdict-churn between consecutive all-dirty passes — the payoff
     /// ceiling measurement for a verdict-level materialize delta.
     pub use crate::signals::casing::flip_probe::{FlipStats, last as casing_flips};
+
+    /// The bytes the shared token lane (plan §5.1) held at the end of the most
+    /// recent analyze — the transient cost the lane adds, measured rather than
+    /// reasoned about, at the moment the lane is largest.
+    pub use crate::prep::shared_prep_bytes;
 }
 
 #[cfg(test)]
@@ -551,6 +557,13 @@ fn transition(
     // boundary — so a failed attempt publishes nothing and leaves the previous
     // partitions intact.
     let mut substrate_lane = substrate::SubstrateLane::default();
+    // The shared token lane (plan §5.1). Several substrates open their map by
+    // tokenizing every verse of every dirty chapter with the same call; this holds
+    // that product once per chapter so the second and later ones decode it instead
+    // of re-deriving it. A local, so it is dropped with this call: it is prep, not
+    // resident state, and a whole corpus of encoded streams is not something to
+    // retain between analyses.
+    let mut shared_tokens = prep::SharedTokens::default();
     signals::punctuation::drive_spacing(
         active.spacing,
         &mut substrates.spacing,
@@ -582,6 +595,7 @@ fn transition(
     signals::script_mixing::drive_mixed_script(
         active.mixed_script,
         &mut substrates.mixed_script,
+        &mut shared_tokens,
         target,
         &config.mixed_script,
         &mut out,
@@ -642,6 +656,11 @@ fn transition(
         &config.casing,
         &mut substrate_lane,
     );
+
+    // Every drive has run, so the shared token lane holds every chapter any of
+    // them mapped: its largest point, and the only honest place to read its size.
+    #[cfg(feature = "bench-probes")]
+    shared_tokens.record_retained();
 
     // JUDGE boundary. The products above may be warm, but findings remain
     // unpublished until the partition commit below.

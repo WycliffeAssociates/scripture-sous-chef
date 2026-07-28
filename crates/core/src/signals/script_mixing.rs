@@ -49,7 +49,6 @@ use crate::corpus::{Corpus, LocalKeyIdx, SiteAddr, rebase};
 use crate::diagnostics::{Finding, FindingArgs, RuleId, Severity};
 use crate::evidence::{clamp_rate, clamp_unit, clamp_z, from_strengths, strength};
 use crate::script::{ScriptTag, script_of};
-use crate::token::tokenize;
 
 pub const MIXED_SCRIPT_IN_TOKEN: RuleId = RuleId::MixedScriptInToken;
 
@@ -202,9 +201,15 @@ fn map_mixed_script_chapter(
     let mut signature_counts: BTreeMap<Box<str>, u64> = BTreeMap::new();
     let mut script_tokens: BTreeMap<Box<str>, u64> = BTreeMap::new();
     let mut sites: Vec<SiteAddr> = Vec::new();
+    // The chapter's tokens come from the shared prep lane rather than a private
+    // per-verse walk: the same `tokenize_into` result, decoded instead of
+    // recomputed, and into one reused buffer instead of a fresh `Vec` a verse.
+    let shared = chapter.tokens();
+    let mut tokens: Vec<crate::token::Token> = Vec::new();
     for (vi, text) in chapter.texts.iter().enumerate() {
         let local_idx = LocalKeyIdx::from_usize(vi);
-        for tok in tokenize(text) {
+        shared.verse(vi, &mut tokens);
+        for tok in &tokens {
             let scripts = token_scripts(tok.span.slice(text));
             for &s in &scripts {
                 *script_tokens
@@ -505,11 +510,12 @@ impl MixedScriptBookContribution {
 }
 
 /// One chapter the substrate has to map this analysis, as the ordered map seam
-/// sees it: its caller-order `(book, chapter)` slot plus the view mapping reads.
-struct MixedScriptMapWork<'a> {
+/// sees it: its caller-order `(book, chapter)` layout slot. The view is built
+/// inside the seam rather than carried here, because it borrows the shared token
+/// lane, which is only filled once the whole work set is known.
+struct MixedScriptMapWork {
     book: usize,
     chapter: usize,
-    view: crate::substrate::ChapterView<'a>,
 }
 
 /// Drive the `uni.mixed-script-in-token` observation substrate for one analysis:
@@ -520,6 +526,7 @@ struct MixedScriptMapWork<'a> {
 pub(crate) fn drive_mixed_script(
     active: bool,
     cache: &mut crate::substrate::SubstrateCache<MixedScriptSubstrate>,
+    shared: &mut crate::prep::SharedTokens,
     corpus: &Corpus,
     cfg: &MixedScriptConfig,
     out: &mut Vec<Finding>,
@@ -540,7 +547,7 @@ pub(crate) fn drive_mixed_script(
     // the planning pass never allocates. `update_book` takes ownership only
     // where it rebuilds a persistent cache entry.
     let mut stamped: Vec<Vec<(&str, ObservationInputStamp)>> = Vec::with_capacity(layout.len());
-    let mut work: Vec<MixedScriptMapWork<'_>> = Vec::new();
+    let mut work: Vec<MixedScriptMapWork> = Vec::new();
     let mut book_runs: Vec<std::ops::Range<usize>> = Vec::new();
     let mut work_bytes = 0usize;
     for (bi, book) in layout.iter().enumerate() {
@@ -549,12 +556,13 @@ pub(crate) fn drive_mixed_script(
         for (ci, c) in book.chapters.iter().enumerate() {
             let stamp = ObservationInputStamp::target_only::<MixedScriptSubstrate>(c.hash, &());
             if !cache.observation_is_current(&book.slug, &c.chapter, &stamp) {
-                let verses = &texts[c.range.clone()];
-                work_bytes += verses.iter().map(String::len).sum::<usize>();
+                work_bytes += texts[c.range.clone()]
+                    .iter()
+                    .map(String::len)
+                    .sum::<usize>();
                 work.push(MixedScriptMapWork {
                     book: bi,
                     chapter: ci,
-                    view: ChapterView::target(&c.chapter, verses),
                 });
             }
             chapters.push((&*c.chapter, stamp));
@@ -565,13 +573,29 @@ pub(crate) fn drive_mixed_script(
         stamped.push(chapters);
     }
     probe.mark(DrivePhase::Plan);
+    // Fill the shared token lane for exactly this drive's work set before the map
+    // seam opens. Separate from the seam, not nested inside it: one Rayon grain is
+    // live at a time, and a chapter already streamed by an earlier drive is not
+    // rebuilt.
+    let wanted: Vec<(usize, usize)> = work.iter().map(|w| (w.book, w.chapter)).collect();
+    shared.ensure(layout, texts, &wanted);
+    let shared: &crate::prep::SharedTokens = shared;
     let route = crate::rule::map_route(&book_runs, work.len(), work_bytes);
     #[cfg(any(test, feature = "test-probes"))]
     {
         cache.map_route = route.label();
     }
     let fresh = crate::rule::map_chapter_work(&work, &book_runs, route, |w| {
-        MixedScriptSubstrate::map_chapter(&w.view, &(), &())
+        let c = &layout[w.book].chapters[w.chapter];
+        MixedScriptSubstrate::map_chapter(
+            &ChapterView::tokened(
+                &c.chapter,
+                &texts[c.range.clone()],
+                shared.get(w.book, w.chapter),
+            ),
+            &(),
+            &(),
+        )
     });
     // Back into caller-order `(book, chapter)` slots, so reduction reads them in
     // corpus order and never in completion order.
@@ -586,9 +610,14 @@ pub(crate) fn drive_mixed_script(
     for (bi, book) in layout.iter().enumerate() {
         cache.update_book(&book.slug, &stamped[bi], &(), |i| {
             slots[bi][i].take().unwrap_or_else(|| {
+                // The reduction demanded an observation the planning pass did not
+                // name, so this chapter has no shared stream: build one for it
+                // alone, from the same encoder the lane uses.
                 let c = &book.chapters[i];
+                let verses = &texts[c.range.clone()];
+                let tokens = crate::prep::ChapterTokens::build(verses);
                 MixedScriptSubstrate::map_chapter(
-                    &ChapterView::target(&c.chapter, &texts[c.range.clone()]),
+                    &ChapterView::tokened(&c.chapter, verses, Some(&tokens)),
                     &(),
                     &(),
                 )
@@ -626,8 +655,9 @@ pub(crate) fn drive_mixed_script(
 /// in the final stable order.
 pub fn mixed_script_findings(corpus: &Corpus, cfg: &MixedScriptConfig) -> Vec<Finding> {
     let mut cache = crate::substrate::SubstrateCache::new();
+    let mut shared = crate::prep::SharedTokens::default();
     let mut out = Vec::new();
-    drive_mixed_script(true, &mut cache, corpus, cfg, &mut out);
+    drive_mixed_script(true, &mut cache, &mut shared, corpus, cfg, &mut out);
     out.sort_by_key(|f| (f.key_idx, f.range.start, f.range.end));
     out
 }
@@ -658,9 +688,80 @@ mod tests {
         cfg: &MixedScriptConfig,
     ) -> Vec<Finding> {
         let mut out = Vec::new();
-        drive_mixed_script(true, cache, c, cfg, &mut out);
+        let mut shared = crate::prep::SharedTokens::default();
+        drive_mixed_script(true, cache, &mut shared, c, cfg, &mut out);
         out.sort_by_key(|f| (f.key_idx, f.range.start, f.range.end));
         out
+    }
+
+    /// One chapter of text shaped to reach every corner the shared token lane
+    /// has: multi-byte graphemes, combining marks, look-alike script mixes, an
+    /// empty verse, punctuation-only and numeric segments, script-continua
+    /// characters that tokenize adjacent with no gap between them, and spans wide
+    /// and long enough to leave the packed encoding for the escape path.
+    fn tricky_chapter() -> Vec<String> {
+        [
+            "In the beginning God created the heavens and the earth.".to_string(),
+            String::new(),
+            "   ".to_string(),
+            // Latin/Cyrillic look-alikes inside single tokens.
+            "he said helло to Ivанov and Ivанov replied".to_string(),
+            // Combining marks, both attached and free-standing.
+            "cafe\u{0301} noir \u{0301}bare mark".to_string(),
+            // Devanagari, and a Latin letter inside a Devanagari word.
+            "परमेश्वर ने कहा उजिyाला".to_string(),
+            // Han: Word_Break=Other, so each character is its own token and
+            // consecutive tokens share a boundary with no gap at all.
+            "神說要有光就有了光".to_string(),
+            "…—!!! ?? 40 ४५ 3.14 don't first-born".to_string(),
+            // A gap wider than the packed field can hold.
+            format!("alpha{}oмega", " ".repeat(40)),
+            // A token longer than the packed field can hold.
+            format!("{}т tail", "x".repeat(200)),
+        ]
+        .to_vec()
+    }
+
+    /// The migrated map reads exactly the tokens its private per-verse walk read.
+    ///
+    /// Both sides map the same chapter through the shared lane, but from two
+    /// independent encodings of one `tokenize_into` result: the shipped packed
+    /// form, and a form that stores every span verbatim. A packed-path defect
+    /// therefore shows up as a value-unequal observation rather than being read
+    /// back correctly by the same code that wrote it wrong.
+    #[test]
+    fn the_shared_stream_maps_what_a_private_token_walk_mapped() {
+        let texts = tricky_chapter();
+        let packed = crate::prep::ChapterTokens::build(&texts);
+        let verbatim = crate::prep::ChapterTokens::escaped_only(&texts);
+        let packed_obs = map_mixed_script_chapter(&crate::substrate::ChapterView::tokened(
+            "1",
+            &texts,
+            Some(&packed),
+        ));
+        let verbatim_obs = map_mixed_script_chapter(&crate::substrate::ChapterView::tokened(
+            "1",
+            &texts,
+            Some(&verbatim),
+        ));
+        assert!(
+            packed_obs == verbatim_obs,
+            "the packed shared stream mapped a different observation than the same \
+             tokenizer output stored verbatim"
+        );
+        // Not vacuous: this chapter really does carry mixed-script candidates and
+        // several distinct signatures, so an observation that lost sites or
+        // miscounted scripts could not compare equal by both being empty.
+        assert!(
+            packed_obs.counts.sites.len() >= 4,
+            "battery produced only {} mixed tokens",
+            packed_obs.counts.sites.len()
+        );
+        assert!(
+            packed_obs.counts.signature_counts.len() >= 2,
+            "battery produced only {} signatures",
+            packed_obs.counts.signature_counts.len()
+        );
     }
 
     /// Comparable rendering — key, span text, score and all four arg values, so

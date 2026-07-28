@@ -214,6 +214,11 @@ fn main() {
             );
         }
         println!("  {:<15} cold: all substrates, all phases: {grand:.4} ms", "");
+        println!(
+            "  {:<15} shared token lane retained: {:.3} MB",
+            "",
+            ssc_core::bench::shared_prep_bytes() as f64 / 1e6
+        );
     }
 
     let mut rotation = 0usize;
