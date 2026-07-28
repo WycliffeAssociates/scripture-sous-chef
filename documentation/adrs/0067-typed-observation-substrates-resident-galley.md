@@ -41,8 +41,8 @@ analysis answers for the complete corpus resident in `Galley`.
    Cache validity is derived from owned corpus/config/reference inputs rather
    than caller-supplied changed sets or provenance tallies.
 
-4. **There is no batch execution lane in v1.** The empty direct/batch
-   affordance is not an extension point a rule may silently join. A future rule
+4. **There is no batch execution lane in v1.** The empty batch affordance is
+   not an extension point a rule may silently join. A future rule
    that cannot fit the typed substrate model requires a dedicated ADR/plan that
    specifies complete-input validity, partition commit/retry behavior,
    closed-registry interaction, and an execution witness before an executable
