@@ -1668,12 +1668,20 @@ pub(crate) struct CasingModel {
     /// The juror panel `model`'s trust was summed over, retained OUTSIDE the
     /// `Arc` so the next build can patch it in place. The judge never reads it.
     panel: Panel,
+    /// Every key outcome the corpus's sites were last materialized under, carried
+    /// across builds so a build can prove what it did and did not change.
+    verdicts: VerdictTable,
     /// Which route this build took, so a witness can prove it exercised the path
     /// it claims to: whether the merged table was patched (rather than merged
     /// from every book) and whether the panel was patched (rather than rebuilt
     /// because membership moved).
     #[cfg(test)]
     route: (bool, bool),
+    /// How many retained verdicts this build changed, so a witness can prove its
+    /// edit genuinely flipped one rather than passing through a delta path that
+    /// never fires.
+    #[cfg(any(test, feature = "bench-probes"))]
+    flipped: usize,
 }
 
 impl CasingModel {
@@ -1690,21 +1698,30 @@ impl CasingModel {
     ///   (ADR 0066) from those counts — never adjusted by a difference of sums;
     /// - a change of panel membership rejects the patch and rebuilds the panel,
     ///   because membership *is* the canonical order.
+    ///
+    /// Returns the model and its [`VerdictDiff`] — what re-evaluating the previous
+    /// pass's [`VerdictTable`] under the new model proved.
     fn build(
         prev: Option<CasingModel>,
         stats: &CasingCorpusStats,
         swaps: Vec<(Option<Arc<BookWords>>, Option<Arc<BookWords>>)>,
         generation: u64,
         cfg: &CasingConfig,
-    ) -> CasingModel {
-        let (mut words, panel) = match prev {
+    ) -> (CasingModel, VerdictDiff) {
+        let had_prev = prev.is_some();
+        let (mut words, panel, mut verdicts) = match prev {
             Some(prev) => {
                 assert_eq!(
                     prev.generation + swaps.len() as u64,
                     generation,
                     "casing swap log does not account for every aggregate generation"
                 );
-                let CasingModel { model, panel, .. } = prev;
+                let CasingModel {
+                    model,
+                    panel,
+                    verdicts,
+                    ..
+                } = prev;
                 // Releasing the judge's view of the model FIRST is what leaves
                 // this handle unique, so the patch below writes the resident
                 // table in place instead of deep-copying the vocabulary.
@@ -1715,9 +1732,13 @@ impl CasingModel {
                     1,
                     "the previous model's word table outlived it"
                 );
-                (words, Some(panel))
+                (words, Some(panel), verdicts)
             }
-            None => (Arc::new(CorpusWords::default()), None),
+            None => (
+                Arc::new(CorpusWords::default()),
+                None,
+                VerdictTable::default(),
+            ),
         };
         #[cfg(test)]
         let mut route = (panel.is_some(), panel.is_some());
@@ -1754,14 +1775,45 @@ impl CasingModel {
             }
         };
         let model = Arc::new(Model::build(Arc::clone(&words), &panel, cfg));
-        CasingModel {
-            generation,
-            cfg: *cfg,
-            model,
-            panel,
-            #[cfg(test)]
-            route,
-        }
+        // The verdict diff, taken here rather than in the drive because it is only
+        // meaningful against the table the PREVIOUS model was materialized under,
+        // and this is the one place that table changes hands.
+        let flipped = verdicts.refresh(&CasingJudge::new(Arc::clone(&model), cfg));
+        (
+            CasingModel {
+                generation,
+                cfg: *cfg,
+                model,
+                panel,
+                verdicts,
+                #[cfg(test)]
+                route,
+                #[cfg(any(test, feature = "bench-probes"))]
+                flipped,
+            },
+            VerdictDiff {
+                flipped,
+                proven: had_prev,
+            },
+        )
+    }
+}
+
+/// What a build's verdict diff proved about the standing finding partition.
+#[derive(Clone, Copy)]
+struct VerdictDiff {
+    /// Retained keys whose outcome changed under the new model.
+    flipped: usize,
+    /// Whether there was a retained table to diff against at all. A first build —
+    /// or the first after the model was dropped — proves nothing.
+    proven: bool,
+}
+
+impl VerdictDiff {
+    /// Whether every standing partition record still says exactly what a full
+    /// re-walk would say — the licence to materialize only the site delta.
+    fn stands(self) -> bool {
+        self.proven && self.flipped == 0
     }
 }
 
@@ -1958,6 +2010,36 @@ pub(crate) struct CasingOutcome {
     /// `case.inconsistent-word-casing`: score, then its count pair. The word
     /// itself comes from the site's own chapter interner at materialization.
     intrinsic: Option<(f32, u32, u32)>,
+}
+
+impl CasingOutcome {
+    /// Exact equality, with the scores compared by **bit pattern**.
+    ///
+    /// This is the predicate a retained verdict stands or falls by, so it is
+    /// deliberately not `PartialEq` on `f32`: `==` equates `0.0` with `-0.0` and
+    /// equates nothing at all with `NaN`, and a score that differs in its last bit
+    /// is a different finding row. Nor is it a hash digest — a digest answers
+    /// "probably equal", and the whole partition's correctness rests on this answer
+    /// being exact.
+    fn same(&self, other: &Self) -> bool {
+        let positional = match (self.positional, other.positional) {
+            (Some(a), Some(b)) => {
+                a.0.to_bits() == b.0.to_bits()
+                    && a.1 == b.1
+                    && a.2 == b.2
+                    && a.3 == b.3
+                    && a.4 == b.4
+            }
+            (None, None) => true,
+            _ => false,
+        };
+        let intrinsic = match (self.intrinsic, other.intrinsic) {
+            (Some(a), Some(b)) => a.0.to_bits() == b.0.to_bits() && a.1 == b.1 && a.2 == b.2,
+            (None, None) => true,
+            _ => false,
+        };
+        positional && intrinsic
+    }
 }
 
 /// The judging half: the corpus model plus the knobs, with the two clamped
@@ -2304,9 +2386,10 @@ struct VerdictMemo {
     /// Verdicts actually computed — the drive's `judged` probe. It is the memo's
     /// own miss count, so nothing else has to keep it.
     judged: usize,
-    /// Measurement only: the word each slot resolved for, so a finished pass's
-    /// memo can be enumerated as portable `(word, pos) -> outcome` entries.
-    #[cfg(feature = "bench-probes")]
+    /// The word each slot resolved for, so a finished pass's memo can be
+    /// enumerated as portable `(word, pos) -> outcome` entries — which is how the
+    /// retained [`VerdictTable`] learns the key universe a pass actually reached.
+    /// One `Arc` clone per corpus word type the pass saw; no bytes are copied.
     slot_words: Vec<Arc<str>>,
 }
 
@@ -2320,9 +2403,29 @@ impl VerdictMemo {
             head: Vec::new(),
             nodes: Vec::new(),
             judged: 0,
-            #[cfg(feature = "bench-probes")]
             slot_words: Vec::new(),
         }
+    }
+
+    /// Every `(word, position class) -> outcome` this pass resolved, in no
+    /// particular order. The keys are the corpus words themselves, so they stay
+    /// meaningful after the book tables are re-folded and the merged table
+    /// patched.
+    fn entries(&self) -> impl Iterator<Item = (&Arc<str>, PosClass, CasingOutcome)> + '_ {
+        self.slot_words
+            .iter()
+            .enumerate()
+            .flat_map(move |(slot, word)| {
+                let mut n = self.head[slot];
+                std::iter::from_fn(move || {
+                    if n == NIL {
+                        return None;
+                    }
+                    let node = &self.nodes[n as usize];
+                    n = node.2;
+                    Some((word, node.0, node.1))
+                })
+            })
     }
 
     /// Start a book: the previous book's word ids mean nothing here, but every
@@ -2347,7 +2450,6 @@ impl VerdictMemo {
             slot = *self.slot_of.entry(id).or_insert_with(|| {
                 let next = self.head.len() as u32;
                 self.head.push(NIL);
-                #[cfg(feature = "bench-probes")]
                 self.slot_words.push(word.clone());
                 next
             });
@@ -2370,95 +2472,126 @@ impl VerdictMemo {
     }
 }
 
-/// Measurement only (`bench-probes`): how many `(word, pos)` verdicts actually
-/// CHANGE between consecutive all-dirty passes. The stats-delta honestly marks
-/// every key dirty whenever the corpus aggregate moves (the global trust terms
-/// shift bit-wise), so the interesting quantity for a future verdict-level
-/// delta is how many outcomes flip — this counts them, keyed portably by word
-/// content + position class so it survives table rebuilds across passes.
+/// The retained verdict table: the outcome the corpus's sites were last
+/// materialized under, for every `(word, position class)` key they reach.
+///
+/// It exists because casing's aggregate is corpus-global. Any word edit moves the
+/// trust and habit terms every key is judged against, so the stats-delta honestly
+/// dirties **every** judge key (see `replace_book_in_corpus_stats`) — but
+/// recomputing the corpus's ~12.5k distinct key outcomes and finding them equal is
+/// orders of magnitude cheaper than re-walking the ~668k retained sites those keys
+/// are read at. Dirty means "must be recomputed", not "will come out different".
+///
+/// Keyed by word **content**, not by interner address or table index: between two
+/// passes the book tables are re-folded and the merged corpus table is patched in
+/// place, so the string is the only identity that survives a pass boundary.
+///
+/// **Completeness is the contract.** A pass may trust the diff only if this table
+/// names every key the standing partition records were emitted under. So it is
+/// rebuilt outright from the memo of any pass that materialized the whole corpus,
+/// and otherwise UNIONED with the memo of the chapters a partial pass did
+/// materialize. Refreshing alone would be wrong: a key first seen in an edited
+/// chapter would never enter the table, and the next pass would not check it.
+///
+/// Keys whose sites have since left the corpus may **linger**: identifying them
+/// needs the very site walk this table exists to avoid. A lingering key is harmless
+/// in both directions — it recomputes equal (nothing happens) or recomputes
+/// differently, which forces a whole-partition rebuild that resyncs the table
+/// exactly. The bias is always towards materializing more, never less.
+#[derive(Default)]
+struct VerdictTable {
+    entries: FxHashMap<(Arc<str>, PosClass), CasingOutcome>,
+}
+
+impl VerdictTable {
+    /// Re-evaluate every retained key under `judge`, store the new outcomes, and
+    /// return how many CHANGED. Zero means every standing finding record this
+    /// table covers is still exactly what a full re-walk would emit.
+    fn refresh(&mut self, judge: &CasingJudge) -> usize {
+        let mut flipped = 0;
+        for ((word, pos), outcome) in &mut self.entries {
+            let fresh = judge.outcome(word, *pos);
+            if !fresh.same(outcome) {
+                flipped += 1;
+                *outcome = fresh;
+            }
+        }
+        flipped
+    }
+
+    /// Absorb a pass's memo, returning `(appeared, vanished)`.
+    ///
+    /// `whole_corpus` says the pass materialized every chapter of every book, so
+    /// its memo enumerates the key universe exactly and the table is replaced by
+    /// it — the only point at which lingering keys are dropped. Otherwise the memo
+    /// covers only the chapters the pass emitted for, and its keys are added.
+    ///
+    /// A new key can only arrive from a chapter the pass materialized. An
+    /// unmaterialized chapter reduced to a value-equal result under the same
+    /// token, and that value pins both its word symbols and its sites' position
+    /// classes, so its key multiset cannot have changed.
+    fn absorb(&mut self, memo: &VerdictMemo, whole_corpus: bool) -> (usize, usize) {
+        let before = self.entries.len();
+        if whole_corpus {
+            let mut fresh: FxHashMap<(Arc<str>, PosClass), CasingOutcome> =
+                FxHashMap::with_capacity_and_hasher(memo.nodes.len(), Default::default());
+            for (word, pos, outcome) in memo.entries() {
+                fresh.insert((Arc::clone(word), pos), outcome);
+            }
+            let appeared = fresh
+                .keys()
+                .filter(|k| !self.entries.contains_key(k))
+                .count();
+            self.entries = fresh;
+            return (appeared, before + appeared - self.entries.len());
+        }
+        for (word, pos, outcome) in memo.entries() {
+            self.entries.insert((Arc::clone(word), pos), outcome);
+        }
+        (self.entries.len() - before, 0)
+    }
+}
+
+/// Measurement only (`bench-probes`): what the production verdict diff decided on
+/// the most recent pass — how many of the ~12.5k `(word, pos)` keys actually
+/// changed outcome, and how the key universe churned. Entry 42 measured this
+/// quantity through a separate digest probe before the delta existed; it is now
+/// read straight off the real diff, so the flag reports the decision the engine
+/// took rather than a proxy for it.
 #[cfg(feature = "bench-probes")]
 pub mod flip_probe {
-    use super::{CasingOutcome, PosClass, VerdictMemo};
-    use rustc_hash::FxHashMap;
-    use std::cell::{Cell, RefCell};
-    use std::sync::Arc;
+    use std::cell::Cell;
 
-    /// One all-dirty pass diffed against the previous one.
+    /// One pass's verdict diff.
     #[derive(Clone, Copy, Default, Debug)]
     pub struct FlipStats {
-        /// Distinct `(word, pos)` verdicts this pass computed.
+        /// Keys the retained table names after the pass.
         pub keys: usize,
-        /// Keys present in both passes whose outcome changed.
+        /// Retained keys whose outcome changed — non-zero forces a whole-partition
+        /// rebuild.
         pub flipped: usize,
-        /// Keys this pass has that the previous pass did not.
+        /// Keys the pass added to the table.
         pub appeared: usize,
-        /// Keys the previous pass had that this one does not.
+        /// Keys a whole-corpus pass dropped from the table.
         pub vanished: usize,
-        /// Passes recorded so far (the first has no baseline to diff).
+        /// Passes recorded so far.
         pub passes: usize,
     }
 
     thread_local! {
-        static PREV: RefCell<FxHashMap<(Arc<str>, PosClass), u64>> =
-            RefCell::new(FxHashMap::default());
         static LAST: Cell<FlipStats> = const { Cell::new(FlipStats {
             keys: 0, flipped: 0, appeared: 0, vanished: 0, passes: 0,
         }) };
     }
 
-    fn digest(o: &CasingOutcome) -> u64 {
-        use std::hash::{Hash, Hasher};
-        let mut h = rustc_hash::FxHasher::default();
-        match o.positional {
-            Some((s, g, q, u, t)) => {
-                1u8.hash(&mut h);
-                s.to_bits().hash(&mut h);
-                g.map(|c| c as u32).hash(&mut h);
-                q.hash(&mut h);
-                u.hash(&mut h);
-                t.hash(&mut h);
-            }
-            None => 0u8.hash(&mut h),
-        }
-        match o.intrinsic {
-            Some((s, u, t)) => {
-                1u8.hash(&mut h);
-                s.to_bits().hash(&mut h);
-                u.hash(&mut h);
-                t.hash(&mut h);
-            }
-            None => 0u8.hash(&mut h),
-        }
-        h.finish()
-    }
-
-    /// Record a finished ALL-DIRTY pass's memo (a partial pass's memo only
-    /// covers visited chapters and would read as mass churn).
-    pub(super) fn record(memo: &VerdictMemo) {
-        let mut fresh: FxHashMap<(Arc<str>, PosClass), u64> =
-            FxHashMap::with_capacity_and_hasher(memo.nodes.len(), Default::default());
-        for (slot, word) in memo.slot_words.iter().enumerate() {
-            let mut n = memo.head[slot];
-            while n != super::NIL {
-                let node = &memo.nodes[n as usize];
-                fresh.insert((word.clone(), node.0), digest(&node.1));
-                n = node.2;
-            }
-        }
-        PREV.with(|prev| {
-            let mut prev = prev.borrow_mut();
-            let mut stats = LAST.with(Cell::get);
-            stats.keys = fresh.len();
-            stats.flipped = fresh
-                .iter()
-                .filter(|(k, d)| prev.get(*k).is_some_and(|old| old != *d))
-                .count();
-            stats.appeared = fresh.keys().filter(|k| !prev.contains_key(*k)).count();
-            stats.vanished = prev.keys().filter(|k| !fresh.contains_key(*k)).count();
-            stats.passes += 1;
-            LAST.with(|c| c.set(stats));
-            *prev = fresh;
-        });
+    pub(super) fn record(keys: usize, flipped: usize, appeared: usize, vanished: usize) {
+        let mut stats = LAST.with(Cell::get);
+        stats.keys = keys;
+        stats.flipped = flipped;
+        stats.appeared = appeared;
+        stats.vanished = vanished;
+        stats.passes += 1;
+        LAST.with(|c| c.set(stats));
     }
 
     /// The most recent recorded pass's diff on this thread.
@@ -2713,44 +2846,46 @@ pub(crate) fn drive_casing(
         probe.mark(DrivePhase::Materialize);
         return;
     }
-    // Judge-dirty keys, per the substrate's own derivation: the model is a pure
+    // Judge-dirty keys, per the substrate's own derivation. The model is a pure
     // function of the corpus aggregate and the judging knobs, and every key's
-    // verdict is a function of the whole model. So either nothing moved and
-    // every retained verdict stands, or the model moved and every key is dirty.
+    // verdict is a function of the WHOLE model: when the aggregate moves,
+    // `Model::build` re-derives the per-class trust map and the lexicon-restricted
+    // habit over EVERY word type, and both move even when a single word's tallies
+    // did (measured: 1 of 13,097 word types moves on a one-chapter edit, and
+    // `trust` and `habit` both move with it). So every key is honestly
+    // stats-dirty, and the key SET cannot be narrowed.
     //
-    // This is the whole of casing's delta consumption, and its limit. When the
-    // aggregate moved, `Model::build` re-derives corpus-global terms — the
-    // per-class trust map and the lexicon-restricted habit — over EVERY word
-    // type, and both move even when a single word's tallies did (measured:
-    // 1 of 13,097 word types moves on a one-chapter edit, and `trust` and
-    // `habit` both move with it). So the model is rebuilt and every key is
-    // genuinely dirty; nothing here is a missed optimisation. When the aggregate
-    // did NOT move, every key's verdict is bit-identical to the committed one,
-    // and only the chapters whose own sites moved owe new records.
+    // What can be narrowed is the consequence. Dirty means "must be recomputed",
+    // not "will come out different" — so the rebuilt model re-evaluates the
+    // retained `VerdictTable` and compares outcomes exactly. When none moved,
+    // every standing record is already what a full re-walk would emit and only
+    // the chapters whose own sites moved owe new records; when one moved, the
+    // whole partition is owed, which is unconditionally sound and is what this
+    // drive always used to do.
     let generation = cache.corpus_stats().generation;
     let reusable = retained
         .as_ref()
         .is_some_and(|m| m.generation == generation && m.cfg == *cfg);
     if !reusable {
-        // Owed in the cache, not decided from `reusable`: the model is a memo in
-        // a section a failed attempt does not roll back, so a retry would find it
-        // current and patch only the site-delta over a partition judged against
-        // the old model. The swap log is drained under the same asymmetry — the
-        // model that consumed it is retained beside it, so a retry finds both
-        // moved together.
-        cache.pending.owe_all();
         let swaps = cache.corpus_stats_mut().take_swaps();
         let prev = retained.take();
-        *retained = Some(CasingModel::build(
-            prev,
-            cache.corpus_stats(),
-            swaps,
-            generation,
-            cfg,
-        ));
+        let (built, diff) = CasingModel::build(prev, cache.corpus_stats(), swaps, generation, cfg);
+        *retained = Some(built);
+        // Owed in the CACHE, not derived from `reusable` on a later pass: the
+        // model, its verdict table and the drained swap log are all memos in a
+        // section a failed attempt does not roll back, so a retry finds the model
+        // current, computes no diff, and would otherwise patch only the site delta
+        // over a partition judged against the old model. Recording the obligation
+        // here keeps the three moving together — and nothing between the build and
+        // this line can fail, so an attempt either has both or neither.
+        if !diff.stands() {
+            cache.pending.owe_all();
+        }
     }
-    let model = retained.as_ref().expect("just built or reused");
-    let judge = CasingJudge::new(Arc::clone(&model.model), cfg);
+    let judge = {
+        let model = retained.as_ref().expect("just built or reused");
+        CasingJudge::new(Arc::clone(&model.model), cfg)
+    };
     // Casing's judge key set is the whole model: building or reusing it above IS
     // the key phase, and the per-site verdicts are drawn inside materialization,
     // so `judge` stays zero here and materialization carries both.
@@ -2790,10 +2925,22 @@ pub(crate) fn drive_casing(
             );
         }
     }
+    // Take the key universe this pass reached into the retained table. A pass that
+    // materialized every chapter enumerates the universe exactly; a partial pass
+    // contributes the keys of the chapters it emitted for, which is where every NEW
+    // key must come from.
+    let churn = retained
+        .as_mut()
+        .expect("just built or reused")
+        .verdicts
+        .absorb(&memo, all_dirty);
     #[cfg(feature = "bench-probes")]
-    if all_dirty {
-        flip_probe::record(&memo);
+    {
+        let m = retained.as_ref().expect("just built or reused");
+        flip_probe::record(m.verdicts.entries.len(), m.flipped, churn.0, churn.1);
     }
+    #[cfg(not(feature = "bench-probes"))]
+    let _ = churn;
     lane.patches.push(SubstratePatch {
         substrate: crate::substrate::SubstrateId::Casing,
         rules: CONSUMERS,
@@ -3131,6 +3278,11 @@ mod tests {
         cache: crate::substrate::SubstrateCache<CasingSubstrate>,
         retained: Option<CasingModel>,
         findings: crate::cache::FindingSection,
+        /// The last drive's patch shape: whether it owed the whole partition, and
+        /// how many chapter groups it replaced. A delta witness has to see the
+        /// DECISION and not only the result — a patch that quietly rebuilt
+        /// everything would produce the right findings for the wrong reason.
+        last: (bool, usize),
     }
 
     impl Resident {
@@ -3139,6 +3291,7 @@ mod tests {
                 cache: crate::substrate::SubstrateCache::new(),
                 retained: None,
                 findings: crate::cache::FindingSection::standalone(),
+                last: (false, 0),
             }
         }
 
@@ -3180,6 +3333,11 @@ mod tests {
                 cfg,
                 &mut lane,
             );
+            self.last = lane
+                .patches
+                .first()
+                .map(|p| (p.all_dirty, p.dirty.len()))
+                .expect("a drive always publishes exactly one patch");
             let present: std::collections::BTreeSet<(&str, &str)> = corpus
                 .book_layout()
                 .iter()
@@ -4573,6 +4731,286 @@ mod tests {
         assert!(
             routes.iter().skip(1).all(|(_, (t, _))| *t),
             "every warm build must have patched the merged table, got {routes:?}"
+        );
+    }
+
+    /// The verdict-delta fixture. `marah` is mid-flow uppercase throughout except
+    /// for one lowercase site in GEN 1, so its intrinsic score is `upper/total`
+    /// (`z = 0` and no forced occurrence, hence no trust-weighted discount) and the
+    /// only lever that moves it is `marah`'s own count. Every other lowercase site
+    /// belongs to a word with no capitalization at all, so its outcome is silent in
+    /// both channels and stays silent under any edit.
+    fn verdict_rows() -> Vec<(String, String)> {
+        let mut rows: Vec<(String, String)> = Vec::new();
+        let mut push = |slug: &str, ch: u16, v: u16, t: &str| {
+            rows.push((format!("{slug} {ch}:{v}"), t.to_string()));
+        };
+        for v in 1..=19u16 {
+            push("GEN", 1, v, "We saw Marah there.");
+        }
+        // The one lowercase `marah` — the site a verdict flip is observed at, in a
+        // chapter no edit below touches.
+        push("GEN", 1, 20, "We saw marah there.");
+        for v in 1..=20u16 {
+            push("GEN", 2, v, "We saw them there.");
+        }
+        for v in 1..=5u16 {
+            push("GEN", 3, v, "We saw Marah there.");
+        }
+        for v in 1..=10u16 {
+            push("EXO", 1, v, "We saw them there.");
+        }
+        rows
+    }
+
+    fn corpus_of(rows: &[(String, String)]) -> Corpus {
+        Corpus::try_from_parts(
+            rows.iter().map(|(k, _)| k.clone()).collect(),
+            rows.iter().map(|(_, t)| t.clone()).collect(),
+        )
+        .unwrap()
+    }
+
+    /// A verdict flip re-materializes the WHOLE partition, so a finding whose site
+    /// sits in a chapter the edit never touched still moves.
+    ///
+    /// This is the witness a delta path cannot pass by never firing. `marah`'s
+    /// intrinsic score crosses the emit floor because occurrences were added in
+    /// GEN 3, while the site that emits is in GEN 1 — a chapter with an unchanged
+    /// reduction, and therefore not in the site delta. A drive that trusted the
+    /// site delta alone would leave GEN 1's records standing and never publish the
+    /// finding.
+    #[test]
+    fn a_verdict_flip_republishes_a_chapter_the_edit_never_touched() {
+        // 24 uppercase `Marah` against 1 lowercase: 24/25 = 0.96, just under the
+        // floor. The flip edit takes it to 39/40 = 0.975, just over.
+        let c = cfg(0.97, 32.0, 0.0);
+        let symbols = WordInterner::default();
+        let mut rows = verdict_rows();
+        let seed = corpus_of(&rows);
+
+        let mut r = Resident::new();
+        let before = r.analyze(&symbols, &seed, &c);
+        assert!(
+            !before.iter().any(|f| f.code == INCONSISTENT_WORD_CASING),
+            "the fixture must start BELOW the emit floor, got {:?}",
+            render(&seed, &before)
+        );
+        assert_eq!(render(&seed, &before), render(&seed, &run_both(&seed, &c)));
+
+        // Three more `Marah` per verse of GEN 3 — the aggregate move that carries
+        // the score over the floor.
+        for row in rows.iter_mut().filter(|(k, _)| k.starts_with("GEN 3:")) {
+            row.1 = "We saw Marah Marah Marah Marah there.".to_string();
+        }
+        let edited = corpus_of(&rows);
+        let after = r.analyze(&symbols, &edited, &c);
+
+        assert_eq!(
+            r.retained
+                .as_ref()
+                .expect("a cased corpus builds a model")
+                .flipped,
+            1,
+            "exactly `marah`'s mid-flow verdict may flip"
+        );
+        assert!(r.last.0, "a flip owes the whole partition");
+
+        // The finding the flip published sits in GEN 1, which the edit did not
+        // touch — the assertion that fails if the delta never fires.
+        let published: Vec<&Finding> = after
+            .iter()
+            .filter(|f| f.code == INCONSISTENT_WORD_CASING)
+            .collect();
+        assert_eq!(published.len(), 1, "{:?}", render(&edited, &after));
+        assert_eq!(edited.key(published[0].key_idx), "GEN 1:20");
+        assert_eq!(
+            render(&edited, &after),
+            render(&edited, &run_both(&edited, &c))
+        );
+
+        // And back down: the score recrosses the floor downward, so the same
+        // untouched chapter has to STOP publishing.
+        for row in rows.iter_mut().filter(|(k, _)| k.starts_with("GEN 3:")) {
+            row.1 = "We saw Marah there.".to_string();
+        }
+        let reverted = corpus_of(&rows);
+        let back = r.analyze(&symbols, &reverted, &c);
+        assert_eq!(
+            r.retained.as_ref().expect("model").flipped,
+            1,
+            "the downward crossing is a flip too"
+        );
+        assert!(r.last.0);
+        assert!(
+            !back.iter().any(|f| f.code == INCONSISTENT_WORD_CASING),
+            "{:?}",
+            render(&reverted, &back)
+        );
+        assert_eq!(
+            render(&reverted, &back),
+            render(&reverted, &run_both(&reverted, &c))
+        );
+    }
+
+    /// A key first seen in an edited chapter enters the retained table, so the NEXT
+    /// pass checks it like any other.
+    ///
+    /// This is the half of the table's contract that refreshing alone cannot hold:
+    /// `selah` has no site anywhere until GEN 2 is edited, and its verdict then
+    /// flips because of a later edit in GEN 3. A table that only re-evaluated the
+    /// keys it already knew would see no flip, keep GEN 2's records standing, and
+    /// never publish the finding.
+    #[test]
+    fn a_key_first_seen_in_an_edited_chapter_is_checked_by_the_next_pass() {
+        let c = cfg(0.97, 32.0, 0.0);
+        let symbols = WordInterner::default();
+        let mut rows = verdict_rows();
+        let mut r = Resident::new();
+        let seed = corpus_of(&rows);
+        let _ = r.analyze(&symbols, &seed, &c);
+
+        // `selah` appears for the first time, lowercase and silent, in GEN 2.
+        rows.iter_mut()
+            .find(|(k, _)| k == "GEN 2:1")
+            .expect("GEN 2:1")
+            .1 = "We saw selah there.".to_string();
+        let appeared = corpus_of(&rows);
+        let mid = r.analyze(&symbols, &appeared, &c);
+        assert!(!r.last.0, "an appearing silent key takes the delta route");
+        assert_eq!(
+            render(&appeared, &mid),
+            render(&appeared, &run_both(&appeared, &c))
+        );
+
+        // Now GEN 3 gives `Selah` 35 uppercase occurrences against that one
+        // lowercase site: 35/36 = 0.972, over the 0.97 floor.
+        for row in rows.iter_mut().filter(|(k, _)| k.starts_with("GEN 3:")) {
+            row.1 = format!("We saw{} there.", " Selah".repeat(7));
+        }
+        let flipped_corpus = corpus_of(&rows);
+        let after = r.analyze(&symbols, &flipped_corpus, &c);
+        assert_eq!(
+            r.retained.as_ref().expect("model").flipped,
+            1,
+            "only `selah`'s mid-flow verdict may flip"
+        );
+        assert!(r.last.0, "the flip owes the whole partition");
+        let published: Vec<&Finding> = after
+            .iter()
+            .filter(|f| f.code == INCONSISTENT_WORD_CASING)
+            .collect();
+        assert_eq!(published.len(), 1, "{:?}", render(&flipped_corpus, &after));
+        assert_eq!(
+            flipped_corpus.key(published[0].key_idx),
+            "GEN 2:1",
+            "the finding lands in the chapter this pass did NOT edit"
+        );
+        assert_eq!(
+            render(&flipped_corpus, &after),
+            render(&flipped_corpus, &run_both(&flipped_corpus, &c))
+        );
+    }
+
+    /// The patched analysis equals a cold rebuild after every edit shape the
+    /// verdict delta has to survive: a word-only edit with no flip (the measured
+    /// common case, where only the site-delta chapters re-emit), a key appearing, a
+    /// key vanishing, a judging-knob change, a consumer toggle, a book removal, and
+    /// a chapter removal.
+    ///
+    /// The script also asserts that BOTH routes ran — at least one pass took the
+    /// verdict-delta route and at least one owed everything — so it cannot pass by
+    /// conservatively rebuilding.
+    #[test]
+    fn a_verdict_delta_patch_equals_a_cold_rebuild_across_every_edit_shape() {
+        let c = cfg(0.97, 32.0, 0.0);
+        let symbols = WordInterner::default();
+        let mut rows = verdict_rows();
+        let mut r = Resident::new();
+        let mut routes: Vec<(&'static str, (bool, usize))> = Vec::new();
+
+        let mut step = |r: &mut Resident,
+                        rows: &[(String, String)],
+                        cfg: &CasingConfig,
+                        consumers: (bool, bool),
+                        what: &'static str| {
+            let (pos, intr) = consumers;
+            let corpus = corpus_of(rows);
+            let got = r.analyze_consumers(pos, intr, &symbols, &corpus, cfg);
+            let mut want = casing_findings(&corpus, cfg, pos, intr);
+            want.sort_by_key(|f| (f.key_idx, f.range.start, f.code));
+            assert_eq!(
+                render(&corpus, &got),
+                render(&corpus, &want),
+                "{what}: the patched analysis must equal a cold rebuild"
+            );
+            routes.push((what, r.last));
+        };
+
+        step(&mut r, &rows, &c, (true, true), "cold seed");
+
+        // A word-only edit with no verdict flip: `there` becomes `here` in one verse
+        // of GEN 2. Both words are lowercase-only, so both channels stay silent for
+        // every key and only GEN 2's records are owed.
+        rows.iter_mut()
+            .find(|(k, _)| k == "GEN 2:1")
+            .expect("GEN 2:1")
+            .1 = "We saw them here.".to_string();
+        step(&mut r, &rows, &c, (true, true), "a key appears");
+        assert_eq!(
+            r.retained.as_ref().expect("model").flipped,
+            0,
+            "a silent word's counts moving flips nothing"
+        );
+        assert!(
+            !r.last.0 && r.last.1 > 0,
+            "the no-flip case must patch chapters, not the partition: {:?}",
+            r.last
+        );
+
+        // ...and the key vanishes again.
+        rows.iter_mut()
+            .find(|(k, _)| k == "GEN 2:1")
+            .expect("GEN 2:1")
+            .1 = "We saw them there.".to_string();
+        step(&mut r, &rows, &c, (true, true), "the key vanishes");
+        assert!(!r.last.0, "{:?}", r.last);
+
+        // A judging knob moves: nothing maps or reduces, but every key is re-judged
+        // and every record republished. `PendingPartition::plan`'s fingerprint is
+        // what holds that, not the verdict table, so the witness pins the outcome
+        // rather than the mechanism.
+        let loose = cfg(0.90, 32.0, 0.0);
+        step(&mut r, &rows, &loose, (true, true), "a knob change");
+        assert_eq!((r.cache.mapped, r.cache.reduced), (0, 0));
+        assert!(r.last.0, "a knob change owes the whole partition");
+        step(&mut r, &rows, &c, (true, true), "the knob returns");
+
+        // One consumer off, then on: which channels emit changes without any outcome
+        // moving, so the partition is owed on the consumer set alone.
+        step(&mut r, &rows, &c, (false, true), "intrinsic only");
+        assert!(r.last.0, "a consumer toggle owes the whole partition");
+        step(&mut r, &rows, &c, (true, true), "both consumers again");
+        assert!(r.last.0);
+
+        // A book leaves: the surviving books are judged against a smaller aggregate,
+        // and the removed book's own records go with it.
+        r.remove_book("EXO");
+        rows.retain(|(k, _)| !k.starts_with("EXO"));
+        step(&mut r, &rows, &c, (true, true), "a book is removed");
+
+        // A chapter leaves the surviving book — the partition-pruning path, with the
+        // aggregate moving underneath it.
+        rows.retain(|(k, _)| !k.starts_with("GEN 3:"));
+        step(&mut r, &rows, &c, (true, true), "a chapter is removed");
+
+        assert!(
+            routes.iter().any(|(_, (all, _))| !*all),
+            "no pass took the verdict-delta route: {routes:?}"
+        );
+        assert!(
+            routes.iter().any(|(_, (all, _))| *all),
+            "no pass owed the whole partition: {routes:?}"
         );
     }
 

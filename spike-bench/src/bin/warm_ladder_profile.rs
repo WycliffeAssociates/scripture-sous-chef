@@ -262,10 +262,10 @@ fn main() {
     // phase — planning, mapping, ordered reduction, judge-key discovery,
     // judging, materialization — by separating them.
     let drive_phases = args.iter().any(|a| a == "--drive-phases");
-    // `--casing-flips`: per warm iteration, how many (word, pos) casing
-    // verdicts changed vs the previous ALL-DIRTY pass (bench-probes flip
-    // probe). Only advances on all-dirty passes, so a stable-aggregate lane
-    // reports nothing rather than garbage.
+    // `--casing-flips`: per warm iteration, what casing's production verdict
+    // diff decided — how many of the retained (word, pos) outcomes changed under
+    // the rebuilt model, and how the key universe churned. A non-zero `flipped`
+    // is what forces a whole-partition rematerialization.
     let flip_probe = args.iter().any(|a| a == "--casing-flips");
     let mut flip_passes = 0usize;
     let mut flips: Vec<ssc_core::bench::FlipStats> = Vec::new();
@@ -354,13 +354,13 @@ fn main() {
         // whose (word, pos) universe differs from the steady-state edit loop's.
         let steady: Vec<_> = flips.iter().skip(1).collect();
         if steady.is_empty() {
-            println!("casing-flips: no all-dirty passes recorded (aggregate never moved)");
+            println!("casing-flips: no verdict diff recorded (no casing pass ran)");
         } else {
             let mut fl: Vec<usize> = steady.iter().map(|f| f.flipped).collect();
             fl.sort_unstable();
             let f0 = steady[0];
             println!(
-                "casing-flips over {} all-dirty passes: keys ~{} | flipped min {} med {} max {} | appeared+vanished (churn) med {}",
+                "casing-flips over {} passes: keys ~{} | flipped min {} med {} max {} | appeared+vanished (churn) med {}",
                 steady.len(),
                 f0.keys,
                 fl[0],
