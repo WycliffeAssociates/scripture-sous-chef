@@ -6502,3 +6502,62 @@ to this entry's base pin at each of the three commits.
   packet).
 - `spike-bench/src/bin/replay_distance.rs` still does not build (stale spike,
   Entry 42) — untouched, as instructed. Only `warm_ladder_profile` was built.
+
+---
+
+## Entry 44 — shared per-chapter prep packet: the eight-dump referee pinned at base `a087705`
+
+- **Date:** 2026-07-28. Packet: a shared per-chapter prep product so a cold
+  analyze stops re-deriving the same raw materials once per enabled substrate
+  (plan §5.1/§6.1; the follow-up Entry 42 §3 measured the ceiling for). Base
+  `a087705`, tree clean, main tree, branch `granularity-spine`. This commit
+  contains **no code change** — it records the per-commit referee before the
+  first edit, per repo `CLAUDE.md` step 1.
+
+### The WA+small eight-dump pin (local, this Mac)
+
+Findings + incremental transcript × {default, all} × {`oracle-blobs/wa.blob`,
+`oracle-blobs/small.blob`}, re-derived at this base. All eight are
+byte-identical to the Entry 34/39/43 pin table; every commit in this packet
+re-dumps all eight and must match.
+
+| dump | sha256 |
+| --- | --- |
+| `findings.default.wa.tsv` | `38a0ceadcc792a6656905c7a0f9e2e4c2720c86f47f41f94c66e7a8ad1a9702c` |
+| `findings.all.wa.tsv` | `128fdd933dc71cda0a4a6d9d9971ceb5648a5703f8b22ee798d30b09d2c15660` |
+| `findings.default.small.tsv` | `8d638a441bb654e00fc7fca6e7b0da10d7449a697d9663fdc5efb430bb50ff00` |
+| `findings.all.small.tsv` | `d657dcff009565e509dcbd891c5f7bf50db5bc9f5c8d19dff316dd4aa6c539e2` |
+| `transcript.default.wa.tsv` | `7b19caa79b284bfa16a56f300f5660591ffc58ffa183888451daf82778676dca` |
+| `transcript.all.wa.tsv` | `c951a758823629c6b6d2e1d558e92c59c1873ed17856b328a60c7ebdc4cee74f` |
+| `transcript.default.small.tsv` | `10da8d93dd5c275f38925d726508fa43ba368d43f3ce4f1674652cc47e13661e` |
+| `transcript.all.small.tsv` | `c3532af9a4efa7ec370ba5531b9332fb2c7a0f54b6a86aa8b79972d659f8855e` |
+
+Build note carried forward from Entry 43: `calibrate` is built with
+`--features "serde parallel"`, `transcript_oracle` **without** `parallel` (its
+outer corpus fan-out nests inside the resident drive's chapter-map fan-out and
+trips `rule.rs`'s nested-fan-out assertion).
+
+Standing FULL-fleet bookend targets (Entry 38/32, unchanged): findings
+`a10cf5a4c17492bf9771d77ea4daace337e1042d66b83dcea8042eceb6748e29` (default) /
+`ddedee96571b2e8bff082ec45bdaa7723cd188fc911f21e1d633b19f6e65b986` (all);
+transcript `ab9b0f966a3b310dc0b37f5832a7f6f1c0dcd2618205f3343519f09b3848090b`
+(default) / `c8a1be69a9b88f13d299d06fd916a370395efe9f9261e1d26c25d645912128c9`
+(all).
+
+### Baseline cold drive table (local, this Mac, load 15.8)
+
+`warm_ladder_profile corpora/vref/WA-en-ulb.txt 3JN --config default
+--drive-phases --batches 1`, cold-seed table. Absolutes are soft at this load;
+the before/after pairs in this packet are taken on the same box and are what is
+claimed.
+
+```
+  substrate            plan       map    reduce      keys     judge   materlz  row total
+  adjacency          0.0466   19.0034    0.4630    0.0000    0.0138    0.0222    19.5490
+  repeated-run       0.0275  133.5180    0.3158    0.0042    0.0003    0.0253   133.8910
+  punct-only         0.0288   26.6130    0.4488    0.0000    0.0175    0.0083    27.1164
+  mixed-script       0.0203  108.9371    0.3746    0.0000    0.0003    0.0072   109.3394
+  proportionality    0.0369    0.0453    0.2277    0.0000    0.0199    0.0099     0.3397
+  bracket            0.0139   12.3219    0.6187    0.0000    0.0149    0.0078    12.9772
+                  cold: all substrates, all phases: 303.2127 ms
+```
