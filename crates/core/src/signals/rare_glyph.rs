@@ -381,12 +381,16 @@ fn map_glyph_chapter(chapter: &crate::substrate::ChapterView<'_>) -> GlyphChapte
     // state does to it is not known at map time.
     let mut pending: Option<casing::Pending> = None;
     let mut tokens_buf: Vec<crate::token::Token> = Vec::new();
+    // The chapter's tokens come from the shared prep lane rather than a private
+    // per-verse walk: the same `tokenize_into` result, decoded instead of
+    // recomputed.
+    let shared = chapter.tokens();
 
-    for text in chapter.texts.iter() {
+    for (vi, text) in chapter.texts.iter().enumerate() {
         for c in text.chars() {
             census.bump(c);
         }
-        crate::token::tokenize_into(text, &mut tokens_buf);
+        shared.verse(vi, &mut tokens_buf);
         // `prev_letter` restarts at every verse seam: a terminal opening verse N
         // is not attached to the last letter of verse N-1.
         let mut prev_letter = false;
@@ -961,10 +965,9 @@ impl GlyphBookContribution {
 
 /// One chapter the substrate has to map this analysis, as the ordered map seam
 /// sees it: its caller-order `(book, chapter)` slot plus the view mapping reads.
-struct GlyphMapWork<'a> {
+struct GlyphMapWork {
     book: usize,
     chapter: usize,
-    view: crate::substrate::ChapterView<'a>,
 }
 
 /// Drive the `uni.rare-glyph` observation substrate for one analysis: map the
@@ -976,6 +979,7 @@ struct GlyphMapWork<'a> {
 pub(crate) fn drive_rare_glyph(
     active: bool,
     cache: &mut crate::substrate::SubstrateCache<GlyphSubstrate>,
+    shared: &mut crate::prep::SharedTokens,
     corpus: &Corpus,
     cfg: &RareGlyphConfig,
     out: &mut Vec<Finding>,
@@ -996,7 +1000,7 @@ pub(crate) fn drive_rare_glyph(
     // the planning pass never allocates. `update_book` takes ownership only
     // where it rebuilds a persistent cache entry.
     let mut stamped: Vec<Vec<(&str, ObservationInputStamp)>> = Vec::with_capacity(layout.len());
-    let mut work: Vec<GlyphMapWork<'_>> = Vec::new();
+    let mut work: Vec<GlyphMapWork> = Vec::new();
     let mut book_runs: Vec<std::ops::Range<usize>> = Vec::new();
     let mut work_bytes = 0usize;
     for (bi, book) in layout.iter().enumerate() {
@@ -1005,12 +1009,13 @@ pub(crate) fn drive_rare_glyph(
         for (ci, c) in book.chapters.iter().enumerate() {
             let stamp = ObservationInputStamp::target_only::<GlyphSubstrate>(c.hash, &());
             if !cache.observation_is_current(&book.slug, &c.chapter, &stamp) {
-                let verses = &texts[c.range.clone()];
-                work_bytes += verses.iter().map(String::len).sum::<usize>();
+                work_bytes += texts[c.range.clone()]
+                    .iter()
+                    .map(String::len)
+                    .sum::<usize>();
                 work.push(GlyphMapWork {
                     book: bi,
                     chapter: ci,
-                    view: ChapterView::target(&c.chapter, verses),
                 });
             }
             chapters.push((&*c.chapter, stamp));
@@ -1021,13 +1026,29 @@ pub(crate) fn drive_rare_glyph(
         stamped.push(chapters);
     }
     probe.mark(DrivePhase::Plan);
+    // Fill the shared token lane for exactly this drive's work set before the map
+    // seam opens. Separate from the seam, not nested inside it: one Rayon grain is
+    // live at a time, and a chapter already streamed by an earlier drive is not
+    // rebuilt.
+    let wanted: Vec<(usize, usize)> = work.iter().map(|w| (w.book, w.chapter)).collect();
+    shared.ensure(layout, texts, &wanted);
+    let shared: &crate::prep::SharedTokens = shared;
     let route = crate::rule::map_route(&book_runs, work.len(), work_bytes);
     #[cfg(any(test, feature = "test-probes"))]
     {
         cache.map_route = route.label();
     }
     let fresh = crate::rule::map_chapter_work(&work, &book_runs, route, |w| {
-        GlyphSubstrate::map_chapter(&w.view, &(), &())
+        let c = &layout[w.book].chapters[w.chapter];
+        GlyphSubstrate::map_chapter(
+            &ChapterView::tokened(
+                &c.chapter,
+                &texts[c.range.clone()],
+                shared.get(w.book, w.chapter),
+            ),
+            &(),
+            &(),
+        )
     });
     // Back into caller-order `(book, chapter)` slots, so reduction reads them in
     // corpus order and never in completion order.
@@ -1042,9 +1063,14 @@ pub(crate) fn drive_rare_glyph(
     for (bi, book) in layout.iter().enumerate() {
         cache.update_book(&book.slug, &stamped[bi], &(), |i| {
             slots[bi][i].take().unwrap_or_else(|| {
+                // The reduction demanded an observation the planning pass did not
+                // name, so this chapter has no shared stream: build one for it
+                // alone, from the same encoder the lane uses.
                 let c = &book.chapters[i];
+                let verses = &texts[c.range.clone()];
+                let tokens = crate::prep::ChapterTokens::build(verses);
                 GlyphSubstrate::map_chapter(
-                    &ChapterView::target(&c.chapter, &texts[c.range.clone()]),
+                    &ChapterView::tokened(&c.chapter, verses, Some(&tokens)),
                     &(),
                     &(),
                 )
@@ -1095,7 +1121,14 @@ pub(crate) fn drive_rare_glyph(
 pub fn rare_glyph_findings(corpus: &Corpus, cfg: &RareGlyphConfig) -> Vec<Finding> {
     let mut cache = crate::substrate::SubstrateCache::new();
     let mut out = Vec::new();
-    drive_rare_glyph(true, &mut cache, corpus, cfg, &mut out);
+    drive_rare_glyph(
+        true,
+        &mut cache,
+        &mut crate::prep::SharedTokens::default(),
+        corpus,
+        cfg,
+        &mut out,
+    );
     out.sort_by_key(|f| (f.key_idx, f.range.start, f.range.end));
     out
 }
@@ -1109,7 +1142,14 @@ pub(crate) fn corpus_letter_inventory(corpus: &Corpus) -> BTreeMap<char, u64> {
     let mut cache: crate::substrate::SubstrateCache<GlyphSubstrate> =
         crate::substrate::SubstrateCache::new();
     let mut out = Vec::new();
-    drive_rare_glyph(true, &mut cache, corpus, &RareGlyphConfig::default(), &mut out);
+    drive_rare_glyph(
+        true,
+        &mut cache,
+        &mut crate::prep::SharedTokens::default(),
+        corpus,
+        &RareGlyphConfig::default(),
+        &mut out,
+    );
     let _ = <GlyphSubstrate as ObservationSubstrate>::ID;
     cache
         .corpus_stats()
@@ -1123,6 +1163,67 @@ pub(crate) fn corpus_letter_inventory(corpus: &Corpus) -> BTreeMap<char, u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// glyph's map reads exactly the tokens its private per-verse walk read.
+    ///
+    /// Both sides map the same chapter through the shared lane, but from two
+    /// independent encodings of one `tokenize_into` result: the shipped packed
+    /// form, and a form that stores every span verbatim. A packed-path defect
+    /// therefore shows up as a value-unequal observation rather than being read
+    /// back correctly by the same code that wrote it wrong.
+    ///
+    /// This row carries the most token-derived state of any migrated one: the
+    /// gap before the chapter's first letter token, the pending-terminal machine
+    /// that gap feeds, and the unresolved-word index, all of which are positioned
+    /// by token spans — so a mis-decoded span moves the observation's boundary
+    /// fields, not only its tables.
+    #[test]
+    fn the_shared_stream_maps_what_a_private_glyph_token_walk_mapped() {
+        let texts: Vec<String> = [
+            // No letter token at all, so the whole verse is the chapter's lead gap
+            // and the first letter token arrives later.
+            "  \u{201c}\u{2014}  ".to_string(),
+            String::new(),
+            "In the beginning God created the heavens.".to_string(),
+            "\u{201c}Let there be light,\u{201d} and there was light.".to_string(),
+            "Cafe\u{0301} \u{03c0}rime \u{0501}yrillic mixed".to_string(),
+            "परमेश्वर ने कहा".to_string(),
+            // Han: adjacent tokens with no gap between them.
+            "神說要有光".to_string(),
+            "…—!!! ?? 40 ४५ don't first-born".to_string(),
+            format!("alpha{}omega.", " ".repeat(40)),
+            format!("{}x tail", "x".repeat(200)),
+        ]
+        .to_vec();
+        let packed = crate::prep::ChapterTokens::build(&texts);
+        let verbatim = crate::prep::ChapterTokens::escaped_only(&texts);
+        let map = |t: &crate::prep::ChapterTokens| {
+            <GlyphSubstrate as crate::substrate::ObservationSubstrate>::map_chapter(
+                &crate::substrate::ChapterView::tokened("1", &texts, Some(t)),
+                &(),
+                &(),
+            )
+        };
+        let packed_obs = map(&packed);
+        assert!(
+            packed_obs == map(&verbatim),
+            "the packed shared stream mapped a different observation than the same \
+             tokenizer output stored verbatim"
+        );
+        // Not vacuous: word and surface tables both populated, a letter token seen,
+        // and the first-letter-token resolution actually reached.
+        assert!(
+            packed_obs.counts.words.len() >= 10,
+            "battery produced only {} word types",
+            packed_obs.counts.words.len()
+        );
+        assert!(!packed_obs.counts.surfaces.is_empty());
+        assert!(packed_obs.has_letter_token);
+        assert!(
+            packed_obs.unresolved.is_some(),
+            "battery never left a first-letter-token resolution for reduction"
+        );
+    }
 
     /// A controlled corpus: two templates establish a settled alphabet in both
     /// cases — lowercase {a,n,m,e,l,k,p,o,u,h,i}, uppercase {A,E,O,U} — each
@@ -1154,7 +1255,14 @@ mod tests {
         cfg: &RareGlyphConfig,
     ) -> Vec<Finding> {
         let mut out = Vec::new();
-        drive_rare_glyph(true, cache, map, cfg, &mut out);
+        drive_rare_glyph(
+            true,
+            cache,
+            &mut crate::prep::SharedTokens::default(),
+            map,
+            cfg,
+            &mut out,
+        );
         out.sort_by_key(|f| (f.key_idx, f.range.start, f.range.end));
         out
     }

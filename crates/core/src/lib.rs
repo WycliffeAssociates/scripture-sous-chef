@@ -604,6 +604,7 @@ fn transition(
     signals::rare_glyph::drive_rare_glyph(
         active.glyph,
         &mut substrates.glyph,
+        &mut shared_tokens,
         target,
         &config.rare_glyph,
         &mut out,
