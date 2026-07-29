@@ -202,3 +202,12 @@ token grouped by shape) or the glyph/punct-sequence tables:
    click-through is wrong. Absolute mode renders in the findings UI
    shell so site navigation and ignore-plumbing come free; PO reports
    are an export view of that page.
+
+---
+
+## Still owed to the PO (carried from the dissolved shortlist, 2026-07-29)
+
+From the triage's **ASK PO** rows: "Extra text / unmarked text" and
+"Optional text or untagged footnote" — meaning unclear; probably
+text-outside-any-marker → onion territory, but confirm with the PO before
+routing anywhere.

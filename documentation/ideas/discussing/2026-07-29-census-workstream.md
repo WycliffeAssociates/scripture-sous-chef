@@ -204,3 +204,12 @@ retention cost on every census call.
 - `committed/2026-07-14-census-both-forms-mark-examples.md` (the cap-bump +
   keep-it-flat adjudication lives there).
 - `2026-07-14-census-vs-rules-overlay.md` (exact overlay is the main customer).
+
+---
+
+## Absorbed 2026-07-29 from the post-port roadmap's risk list
+
+**Census `words.case-variants` lane size** (ADR 0058 open item): p50 287 KB /
+max 2 MB against a ~300 KB estimate; restrict rows or cap examples —
+adjudicate before the wasm census surface ships. (The site-cap-policy section
+above is the same conversation from the other end.)

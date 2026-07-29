@@ -104,3 +104,12 @@ diacritic-heavy and an ASCII corpus.
 - `../plans/2026-07-21-packed-findings-wire-plan.md` (its non-goals point
   here for word-keyed stats packing).
 - ADR 0051 (casing lexicon — the main prospective consumer).
+
+---
+
+**Moved to `doubtful/` 2026-07-29 (owner ruling).** The reason it was
+proposed — an enabler for word-shaped state and wire diets — was overtaken:
+the granularity-spine epic landed *word*-level interning (the `WordInterner`)
+and the packed wire, and a full engine rework came and went without a
+grapheme-id customer materializing. The spike data stays valid; the premise
+"gated on a customer" is now "doubtful any customer exists."

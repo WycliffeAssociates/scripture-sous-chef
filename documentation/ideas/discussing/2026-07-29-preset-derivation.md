@@ -129,3 +129,28 @@ never-silently-override line in `documentation/reference/config.md`).
   entrypoint in core?); whether recommendations re-run and *change* as the
   corpus grows (probably yes, with a "your text now disagrees with your
   config" tier-3 report).
+
+---
+
+## Status 2026-07-29 — demoted plan → discussing; the open conversation
+
+Demoted from `plans/` because the user-facing knob design needs to be talked
+through before this is executable. What to resolve in discussion:
+
+1. **How this relates to the calibration we already do.** Existing
+   calibration (the 2026-07-09 sweeps, the fleet survey harness) pins
+   *internal* thresholds so each rule is bimodal and trustworthy at its
+   default — it answers "what should the engine believe." Preset derivation
+   is a different artifact from the same fleet data: "which *semantic* knob
+   positions correspond to conservative/normal/aggressive for a user" — the
+   per-rule effective-dial table above, measured per preset row. Same
+   instrument, different product surface; the discussion is whether the
+   preset rows are derived once and shipped, or re-derived per corpus.
+2. **What changed under this doc since it was written.** The engine now has
+   the closed substrate registry and knob-isolation (judging knobs never
+   invalidate extraction), so preset switching is cheap at runtime by
+   construction — a preset flip re-judges without re-mapping. The catalog
+   (`rule_cards`, `SENSITIVITY_STOPS`) still exists as the exposure surface.
+3. **The one-knob promise vs. per-rule reality** — the table in this doc
+   predates several rules (casing pair, mixed-case, normalization); their
+   dials need rows before any preset can be measured.

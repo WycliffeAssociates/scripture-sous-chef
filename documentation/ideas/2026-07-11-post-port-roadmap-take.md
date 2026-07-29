@@ -50,25 +50,19 @@ findings wire format was measured (packed buffer 20–160× faster end-to-end �
 5. **Boundary-trust unification** (design pass → ADR):
    `committed/2026-07-11-boundary-trust-substrate.md`.
 
-## A heresy still worth debating (whiteboard, not spike)
+## Extracted 2026-07-29 (backlog reorganization)
 
-Corpus-relative purity has a cold-start cost: a one-chapter corpus knows
-nothing, and `confidence_z` is the only dial. A **reference-fleet-derived
-prior used strictly for presentation ranking** — never gating, never
-findings, never entering scores — could soften cold-start without touching
-the philosophy. The counterargument (any fleet prior smuggles
-majority-language conventions into minority-language UX) is strong and may
-win; the debate deserves to happen on purpose rather than by default.
+- The "heresy worth debating" (fleet-derived presentation prior for
+  statistical cold-start) → `candidates/2026-07-29-cold-start-problem.md`.
+- wasm parallelism → `rejected/2026-07-29-macro-rejections.md`.
+- Census case-variants lane size → `discussing/2026-07-29-census-workstream.md`.
 
 ## Risks / debt worth naming
 
 - **Playground is unversioned** (survey baselines, samply runner,
   extract-profile.mjs live outside git). Cheap to fix; embarrassing to lose.
-- **wasm parallelism**: parallel numbers are native-only; the browser pays
-  serial (a gated threaded-rayon spike was tried and rejected —
-  `galley-resident-handle` branch tip). wasm threads (SharedArrayBuffer +
-  COOP/COEP) remain a known path if first-load ever needs it — measure
-  appetite before paying deployment complexity.
-- **Census `words.case-variants` lane size** (ADR 0058 open item): p50
-  287 KB / max 2 MB against a ~300 KB estimate; restrict rows or cap
-  examples — adjudicate before the wasm census surface ships.
+
+## The point of all of it (owner note, 2026-07-29)
+
+Everything above serves one goal: get this engine into an editor in front of
+a translator. That integration is the roadmap now.
