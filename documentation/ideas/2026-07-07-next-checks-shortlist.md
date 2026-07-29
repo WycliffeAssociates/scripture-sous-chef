@@ -65,13 +65,16 @@ honest learned habit (really paragraph-final punctuation observed at a
 convenient boundary). Wilson dominance self-gates: an 80/20 corpus never
 establishes the habit and the rule stays silent. Cheap on the census walks.
 
-### 6. Boundary-class refinement → see the committed boundary-trust idea
+### 6. Boundary-class refinement — retired 2026-07-29
 
-Learning *which boundary contexts* are trustworthy per corpus (bare terminal
-vs terminal+close-quote…) so positional/spacing/casing rules condition on
-proven boundaries. This grew into its own doc:
-`committed/2026-07-11-boundary-trust-substrate.md` — the single substrate
-unifying ADR 0052's trust classes and ADR 0054's pooled spacing.
+The committed boundary-trust-substrate doc this grew into was deleted in the
+2026-07-29 trim: its design was a fused-walk listener (an architecture the
+granularity-spine epic retired), and its perf motivation (the reshuffle
+witness rebuilding per analyze) was resolved by the incremental casing model.
+What survives is only the observation that casing (ADR 0052) and spacing
+(ADR 0054) learn boundary behavior with separate class vocabularies; if that
+single-source-of-truth itch ever earns work, it starts from a typed-substrate
+design, not from the deleted doc.
 
 ## Still owed to the PO (clarification, not build)
 
