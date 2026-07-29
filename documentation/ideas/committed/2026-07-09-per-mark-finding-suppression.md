@@ -78,3 +78,82 @@ editor adoption of the Galley (roadmap priority 1). Two boundaries to hold:
 
 Persistence (where the suppression set is stored/restored across sessions)
 rides the Galley snapshot story.
+
+## The full taxonomy (owner, 2026-07-29) — three grains × two meanings
+
+This doc originally covered one grain (per-mark-within-a-rule). The complete
+picture is a matrix, and any build here must be explicit about which cell it
+is implementing.
+
+### The three grains
+
+1. **Per rule (bool — the biggest).** "Don't run duplicate-word at all."
+   Already shipped: config rule toggles + the catalog's `enable_question`s.
+   Nothing to build; listed so the taxonomy is complete and so the two lower
+   grains aren't asked to do this job.
+2. **Per class within a rule (mark / word / span-pattern).** "Ignore
+   'that that' for duplicate-word — it's normal English — but keep flagging
+   other duplicates." "Ignore danda spacing." The key vocabulary is
+   rule-specific (a mark for spacing, a word for duplicate-word/casing, a
+   glyph for rare-glyph, a pair for adjacency), so the class key needs a
+   typed per-rule shape — same closed-union style as `FindingArgs`, never a
+   stringly-typed guess.
+3. **Per cell / occurrence.** "THIS double danda is fine; THIS 'noah' is a
+   name I checked." Mechanism (2026-07-29 discussion): persist
+   `(code, checksum over the finding's range content)` — content-addressed,
+   so it is self-healing: unrelated edits and address shifts cannot break
+   it, and editing the suppressed text itself breaks the checksum and
+   legitimately resurfaces the finding.
+
+### The two meanings (unchanged from the top of this doc, restated)
+
+- **Ignore/suppress (attention filter).** Display-only. The numerator and
+  denominator do not move; the measurement stays an honest record. DECIDED:
+  Galley-owned, app-persisted.
+- **Change-my-math (population exemption).** Remove the thing from the
+  denominator entirely — "this corpus should not be judged on this at all."
+  UNDECIDED in shape, deliberately: parked until a real corpus needs the
+  recompute semantics.
+
+### How the grains and meanings cross (the part that must stay clear)
+
+|  | ignore/suppress | change-my-math |
+| --- | --- | --- |
+| per rule | trivially = toggle off | same thing (a disabled rule judges nothing) |
+| per class | the committed build (danda, "that that") | the parked half — coherent but unshaped |
+| per cell | the committed build (checksum) | **incoherent — do not build.** Removing one occurrence from a denominator is statistically meaningless noise; exemption is inherently a *class* claim about the data. If a user asks for it, they want the attention filter. |
+
+### Tradeoffs and open questions (numerator/denominator terms)
+
+- **Suppression must never read as "clean."** Every surface that hides
+  findings must surface the count of what it hid ("312 findings, 87
+  suppressed") — hiding is a choice about attention, not a claim about the
+  text.
+- **Exemption's honest price:** removing danda from the denominator also
+  stops catching a genuinely *broken* danda. Acceptable exactly when the
+  form is truly free-variant; that judgment belongs to the user, which is
+  why it is config, not inference.
+- **Interaction with the evidence-bar slider** (see
+  `../discussing/2026-07-29-preset-derivation.md`): suppression applies at
+  display, after judging; turning the slider up re-judges, and previously
+  suppressed cells STAY suppressed when they reappear at a looser bar —
+  that persistence is what makes progressive canonicalization a loop
+  rather than a treadmill.
+- **Persistence, updated:** the 2026-07-20 ruling said this "rides the
+  Galley snapshot story"; that story has since resolved to
+  persist-packed-findings-not-Galley
+  (`../../handoffs/2026-07-21-persist-packed-findings-recipe.md`).
+  Suppression records are app-persisted alongside the packed buffer and
+  loaded into the resident Galley's suppression layer at open.
+- **Open:** the per-rule class-key type vocabulary (which rules get class
+  suppression in v1, and what their keys are); whether class suppressions
+  are also checksum-independent of the slider tier; whether an export
+  (PO report) shows suppressed items in a separate section or not at all.
+
+### Status (2026-07-29)
+
+Likely the next build on the board (contending with the census batch),
+because the progressive-canonicalization loop (triage → suppress → raise
+the bar) is inert without it. Build order within it: grain 3 (checksum,
+smallest and loop-critical) + grain 2 attention-filter, both Galley-owned;
+grain 2 exemption stays parked.
