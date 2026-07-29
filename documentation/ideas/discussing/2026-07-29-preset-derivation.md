@@ -193,3 +193,27 @@ tables in the catalog (re-pointing `SENSITIVITY_STOPS`) → dial rows for the
 post-table rules (casing pair, mixed-case, normalization) → proportionality
 percent-rendering (`median ± z·MAD/0.6745` → "z 3.5 ≈ ~38% longer/shorter
 than typical in Luke") → live-count UI.
+
+## Discussion 2026-07-29 (cont.) — master fader vs per-rule trims; flips allowed
+
+**Soundness ruling on one-slider-for-all:** sound as a *master fader over
+per-rule trims*, unsound alone. Mechanically safe here because rules are
+uncoupled and knobs are judge-only (config changes are math over retained
+observations — the knob-isolation property, by design). Two places the
+master alone lies: (1) rules hit precision cliffs at different depths, so
+each rule's curve must be individually bounded by its sweep — t=1.0 means
+"everything defensible per rule," never "everything possible"; (2) the
+master cannot express per-rule preference — the level-2 override detaches a
+rule from the master, standard mixer semantics.
+
+**Owner ruling on monotonicity (caveat 2): flips are allowed** so long as
+finding wording is baseline-carrying ("`।` is spaced here, but attached 98%
+of the time in your text") — a convention-belief change is comprehensible
+when the belief is stated. This downgrades the monotonicity audit to a
+survey: locate flips, verify wording there, no clamping — EXCEPT any dial
+with a flip cliff on a tiny slider movement (flicker), which earns a
+per-rule clamp or snap-point, decided from sweep data.
+
+**Watch item:** if one rule dominates volume growth over most of the range,
+the master feels single-purpose; the live count mitigates, the sweep will
+say whether it's real.
