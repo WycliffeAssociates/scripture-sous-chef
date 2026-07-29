@@ -154,3 +154,42 @@ through before this is executable. What to resolve in discussion:
 3. **The one-knob promise vs. per-rule reality** — the table in this doc
    predates several rules (casing pair, mixed-case, normalization); their
    dials need rows before any preset can be measured.
+
+---
+
+## Discussion 2026-07-29 — the continuous slider (owner + steward)
+
+**Why the old global sliders died, dev terms.** Post-calibration, every
+scored rule is decisive: ~97% of candidates score ≈0, survivors score
+0.8–1.0, ~0.4% live near `emit_score_min`. Sliding a threshold through an
+empty region is a no-op — a log-level filter on an app that only logs ERROR
+and TRACE. Sensitivity moved upstream into each rule's *definition of a
+violation* (the semantic-knob table above). Consequence found in code: the
+catalog's `SENSITIVITY_STOPS` is still wired to `emit_score_min`, the dead
+knob — re-pointing it at the semantic knobs is part of this work.
+
+**The continuous 0–1 slider is feasible, and presets collapse into it.**
+Per rule: a small monotone lookup table mapping slider `t` to the semantic
+knob, piecewise-linear through fleet-measured anchor positions; presets
+become named ticks (t≈0.25/0.5/0.75). Perceptual linearization comes from
+the same sweeps: space anchors so equal slider travel gives roughly equal
+proportional change in finding volume (the audio-dB trick) — that is the
+"sigmoid feel."
+
+**Three design caveats (the real decisions):**
+1. Deterministic hygiene rules have no dial and must not ride the slider —
+   on/off at level 2 only. The slider governs the convention-learned rules.
+2. Monotonicity must be VERIFIED per dial: moving a knob can change which
+   convention gets learned (findings swap rather than add). The sweep must
+   find and clamp to each dial's monotone region.
+3. Don't promise smoothness — show the count. Judging knobs re-judge without
+   re-mapping (knob isolation), single-digit ms, so the UI can live-update
+   "~N findings at this setting" while dragging. The mapping curve then only
+   has to be decent, not perfect.
+
+**Build order when promoted:** fleet sweeps per dial (needed for presets
+anyway, more positions) → monotonicity audit + clamping → per-rule anchor
+tables in the catalog (re-pointing `SENSITIVITY_STOPS`) → dial rows for the
+post-table rules (casing pair, mixed-case, normalization) → proportionality
+percent-rendering (`median ± z·MAD/0.6745` → "z 3.5 ≈ ~38% longer/shorter
+than typical in Luke") → live-count UI.
