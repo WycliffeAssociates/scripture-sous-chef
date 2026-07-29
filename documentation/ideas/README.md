@@ -16,3 +16,5 @@ off-ramps for ideas that don't make that trip.
   re-proposed and re-investigated from scratch.
 - `doubtful/` — ideas that aren't rejected but also haven't been spiked or
   scheduled; genuinely open, not buried for sure.
+- `candidates/` — technically plausible follow-ups that have a named trigger
+  and evidence gate but are not yet owner-committed or scheduled.

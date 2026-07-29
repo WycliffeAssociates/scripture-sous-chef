@@ -15,11 +15,12 @@
 | Delta consumption | On a stable aggregate, all-rules 3JN was 24.91 → 2.01 ms; forced aggregate movement remains 38.32 → 36.32 ms because casing's complete model/key set genuinely moves. | `warm_ladder_profile --stable-aggregate/--distinct-variants`; progress Entry 35 |
 | Packed wire/decode/reconcile | Live packed wire is ~0.02–0.04 ms end-to-end at tested scales; the 1,000-finding JS reconcile cases are ~191 µs unchanged and ~348 µs with one changed record. | `spike-bench/archive/2026-07-21-wire-live-confirmation/`; progress Entry 10; `2026-07-18-findings-wire-format-survey.md` |
 
-The final retained-allocation rerun is deliberately absent from this table. The
-last valid baseline remains 9,360,970 B (`default`) and 77,808,537 B (`all`);
-the local post-Phase-F dhat process was host-killed before it produced comparable
-post-seed statistics. See progress Entry 38 for the explicit remote-run approval
-blocker.
+The final post-packet retained-allocation rerun completed at 9,350,519 B
+retained / 11,175,370 B peak (`default`) and 79,545,549 B retained /
+82,585,485 B peak (`all`); progress Entry 45 is the authoritative final table.
+The earlier pre-packet audit remains below as historical same-harness evidence.
+The host-killed attempt and its temporary remote-run approval blocker remain in
+progress Entry 38 as execution history, not current status.
 
 - **Date:** 2026-07-21. Status: MEASUREMENT only — informs, does not decide.
 - **Question:** what are the warm 5–19 ms actually made of? Decides the

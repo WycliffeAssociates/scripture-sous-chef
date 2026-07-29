@@ -79,7 +79,7 @@ Core-defined, disposable cross-call analysis state. `Galley` owns the resident
 instance and passes it through the pure engine transition; one-shot analysis
 uses a temporary instance. Dropping it can only make the next analysis slower.
 
-Its lanes have distinct invalidation regimes:
+Its resident lanes have distinct invalidation regimes:
 
 - shared preparation and per-substrate chapter observations are invalidated by
   relevant input/schema changes; ordered reduced results also depend on their
@@ -89,6 +89,12 @@ Its lanes have distinct invalidation regimes:
 
 `AnalysisCache` supersedes the narrower name `PrepCache` once it also owns
 resident finding partitions.
+
+Not every shared mechanical product is resident. A transition may own a
+content-stamped shared-prep lane when reuse within one `analyze()` is valuable
+but retaining the product across calls is not. The shared per-chapter token
+lane is the current example: independent substrate drives reuse it during one
+transition, then it is dropped.
 
 ### Mutation effect
 

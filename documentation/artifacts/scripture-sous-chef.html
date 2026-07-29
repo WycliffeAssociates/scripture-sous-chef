@@ -1,0 +1,541 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Scripture Sous Chef — resident engine mental model</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Fira+Code:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --font-body: "DM Sans", ui-sans-serif, sans-serif;
+    --font-mono: "Fira Code", ui-monospace, monospace;
+    --bg: #f4f1e8;
+    --surface: #fffdf7;
+    --surface-2: #ebe7dc;
+    --surface-3: #e2ddd0;
+    --ink: #172335;
+    --dim: #667080;
+    --faint: #9aa0a7;
+    --line: rgba(23,35,53,.12);
+    --line-strong: rgba(23,35,53,.25);
+    --blue: #1e4d73;
+    --blue-soft: rgba(30,77,115,.09);
+    --gold: #b07818;
+    --gold-soft: rgba(176,120,24,.10);
+    --sage: #52765a;
+    --sage-soft: rgba(82,118,90,.10);
+    --rust: #a84f2a;
+    --rust-soft: rgba(168,79,42,.10);
+    --red: #a23b45;
+    --red-soft: rgba(162,59,69,.09);
+    --shadow: 0 16px 50px rgba(34,42,52,.08);
+  }
+  [data-theme="dark"] {
+    --bg: #11171d;
+    --surface: #192129;
+    --surface-2: #202a34;
+    --surface-3: #293541;
+    --ink: #e7e3d7;
+    --dim: #a8b0ba;
+    --faint: #707a84;
+    --line: rgba(255,255,255,.08);
+    --line-strong: rgba(255,255,255,.18);
+    --blue: #78add2;
+    --blue-soft: rgba(120,173,210,.12);
+    --gold: #e5b75b;
+    --gold-soft: rgba(229,183,91,.12);
+    --sage: #93bd98;
+    --sage-soft: rgba(147,189,152,.12);
+    --rust: #df8a64;
+    --rust-soft: rgba(223,138,100,.12);
+    --red: #e38b92;
+    --red-soft: rgba(227,139,146,.12);
+    --shadow: 0 18px 60px rgba(0,0,0,.22);
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; background: var(--bg); }
+  body {
+    margin: 0;
+    color: var(--ink);
+    background:
+      linear-gradient(var(--line) 1px, transparent 1px),
+      linear-gradient(90deg, var(--line) 1px, transparent 1px),
+      radial-gradient(circle at 82% 2%, var(--gold-soft), transparent 30%),
+      var(--bg);
+    background-size: 32px 32px, 32px 32px, auto, auto;
+    font-family: var(--font-body);
+    line-height: 1.6;
+    overflow-wrap: break-word;
+  }
+  a { color: var(--blue); text-decoration-thickness: 1px; text-underline-offset: 3px; }
+  code { font-family: var(--font-mono); font-size: .88em; color: var(--blue); }
+  .layout {
+    width: min(1540px, 100%);
+    margin: 0 auto;
+    display: grid;
+    grid-template-columns: 230px minmax(0,1fr);
+    gap: 0 44px;
+    padding: 0 42px 100px;
+  }
+  .toc {
+    position: sticky;
+    top: 20px;
+    align-self: start;
+    max-height: calc(100dvh - 40px);
+    overflow-y: auto;
+    padding: 26px 4px 22px;
+    grid-row: 1 / -1;
+  }
+  .toc__brand { font-family: var(--font-mono); font-weight: 600; font-size: 14px; margin-bottom: 2px; }
+  .toc__meta { color: var(--faint); font-family: var(--font-mono); font-size: 10px; margin-bottom: 22px; }
+  .toc__group { color: var(--faint); font-family: var(--font-mono); font-size: 9px; letter-spacing: .16em; text-transform: uppercase; margin: 18px 8px 7px; }
+  .toc a { display: block; color: var(--dim); text-decoration: none; border-left: 2px solid transparent; padding: 5px 9px; font-size: 12px; line-height: 1.3; border-radius: 0 6px 6px 0; }
+  .toc a:hover { color: var(--ink); background: var(--surface-2); }
+  .toc a.active { color: var(--blue); border-left-color: var(--gold); background: var(--blue-soft); }
+  main { min-width: 0; padding-top: 42px; }
+  section { margin-bottom: 74px; scroll-margin-top: 24px; }
+  .hero {
+    position: relative;
+    min-height: 540px;
+    padding: 64px 68px;
+    display: grid;
+    grid-template-columns: minmax(0,1.25fr) minmax(280px,.75fr);
+    gap: 48px;
+    align-items: center;
+    background: color-mix(in srgb, var(--surface) 94%, var(--blue) 6%);
+    border: 1px solid var(--line-strong);
+    box-shadow: var(--shadow);
+    overflow: hidden;
+  }
+  .hero::before { content:""; position:absolute; width:420px; height:420px; right:-170px; top:-190px; border:1px solid var(--gold); border-radius:50%; opacity:.25; box-shadow:0 0 0 42px var(--gold-soft),0 0 0 92px var(--blue-soft); }
+  .kicker, .section-kicker { font-family: var(--font-mono); color: var(--gold); font-size: 11px; font-weight: 600; letter-spacing: .16em; text-transform: uppercase; }
+  h1 { font-size: clamp(45px,7vw,88px); line-height: .94; letter-spacing: -.055em; margin: 18px 0 24px; max-width: 760px; }
+  .hero__lead { font-size: clamp(18px,2vw,23px); color: var(--dim); max-width: 690px; line-height: 1.5; }
+  .hero__contract { border-left: 3px solid var(--gold); padding: 12px 0 12px 18px; margin-top: 28px; max-width: 650px; }
+  .hero__contract strong { color: var(--blue); }
+  .hero__metrics { position: relative; display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .metric { min-width: 0; background: var(--surface); border: 1px solid var(--line); padding: 20px; }
+  .metric:first-child { grid-column: 1 / -1; background: var(--blue); color: #fff; }
+  [data-theme="dark"] .metric:first-child { color: #101820; }
+  .metric__value { font-family: var(--font-mono); font-size: 30px; line-height: 1; font-weight: 600; }
+  .metric__label { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; margin-top: 9px; opacity: .72; }
+  .theme-toggle { position: fixed; right: 20px; top: 18px; z-index: 300; width: 38px; height: 38px; border: 1px solid var(--line-strong); background: var(--surface); color: var(--ink); border-radius: 50%; cursor: pointer; font-family: var(--font-mono); }
+  h2 { font-size: clamp(30px,4vw,52px); line-height: 1.05; letter-spacing: -.035em; margin: 8px 0 15px; }
+  h3 { margin: 0 0 8px; font-size: 17px; }
+  p { margin: 0 0 13px; }
+  .lede { color: var(--dim); font-size: 18px; max-width: 78ch; margin-bottom: 28px; }
+  .section-head { display: grid; grid-template-columns: 76px minmax(0,1fr); gap: 18px; align-items: start; margin-bottom: 28px; }
+  .section-num { font-family: var(--font-mono); color: var(--gold); font-size: 14px; padding-top: 12px; border-top: 2px solid var(--gold); }
+  .truth-grid, .card-grid, .cache-grid, .gotcha-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 16px; }
+  .truth-grid { grid-template-columns: repeat(5,minmax(180px,1fr)); }
+  .ve-card { min-width:0; background:var(--surface); border:1px solid var(--line); padding:22px; position:relative; }
+  .ve-card--hero { background:color-mix(in srgb,var(--surface) 91%,var(--gold) 9%); border-color:color-mix(in srgb,var(--line) 50%,var(--gold) 50%); box-shadow:var(--shadow); }
+  .ve-card--recessed { background:var(--surface-2); box-shadow:inset 0 1px 3px rgba(0,0,0,.05); }
+  .truth__n { font-family:var(--font-mono); color:var(--gold); font-size:11px; margin-bottom:28px; }
+  .truth h3 { font-size:18px; }
+  .truth p, .ve-card p { color:var(--dim); font-size:13px; }
+  .callout { border-left:3px solid var(--blue); background:var(--blue-soft); padding:18px 22px; margin:20px 0; }
+  .callout--gold { border-left-color:var(--gold); background:var(--gold-soft); }
+  .callout--red { border-left-color:var(--red); background:var(--red-soft); }
+  .callout__label { font-family:var(--font-mono); color:var(--blue); font-size:10px; font-weight:600; letter-spacing:.12em; text-transform:uppercase; margin-bottom:5px; }
+  .callout--gold .callout__label { color:var(--gold); }
+  .topology { display:grid; grid-template-columns:minmax(170px,.65fr) 34px minmax(220px,1fr) 34px minmax(220px,1fr) 34px minmax(170px,.7fr); align-items:stretch; gap:8px; }
+  .topology__node { min-width:0; border:1px solid var(--line-strong); background:var(--surface); padding:20px; display:flex; flex-direction:column; justify-content:center; }
+  .topology__node strong { font-family:var(--font-mono); color:var(--blue); font-size:13px; }
+  .topology__node small { color:var(--dim); margin-top:7px; }
+  .topology__node--core { border-top:4px solid var(--gold); }
+  .topology__node--edge { border-top:4px solid var(--sage); }
+  .topology__arrow { display:flex; align-items:center; justify-content:center; color:var(--gold); font-size:25px; }
+  .crate-row { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:10px; margin-top:14px; }
+  .crate { background:var(--surface-2); border:1px solid var(--line); padding:14px; }
+  .crate code { display:block; font-weight:600; margin-bottom:5px; }
+  .crate span { color:var(--dim); font-size:12px; }
+  .soa { display:grid; grid-template-columns:1fr 1fr; gap:0; border:1px solid var(--line-strong); overflow:hidden; }
+  .soa__col { min-width:0; background:var(--surface); }
+  .soa__col + .soa__col { border-left:1px solid var(--line-strong); }
+  .soa__head { padding:10px 16px; background:var(--surface-2); font-family:var(--font-mono); font-size:11px; color:var(--gold); }
+  .soa__row { display:grid; grid-template-columns:42px 1fr; gap:12px; padding:9px 16px; border-top:1px solid var(--line); font-family:var(--font-mono); font-size:12px; }
+  .soa__row span:first-child { color:var(--faint); }
+  .lifecycle { display:grid; grid-template-columns:1fr 90px 1fr; gap:24px; align-items:center; max-width:900px; margin:24px auto; }
+  .state { background:var(--surface); border:2px solid var(--blue); min-height:160px; padding:28px; display:flex; flex-direction:column; justify-content:center; text-align:center; }
+  .state--dirty { border-color:var(--gold); }
+  .state__name { font-family:var(--font-mono); font-size:20px; font-weight:600; }
+  .state__desc { color:var(--dim); font-size:13px; margin-top:8px; }
+  .state-arrows { font-family:var(--font-mono); font-size:10px; color:var(--dim); text-align:center; }
+  .state-arrows b { color:var(--gold); font-size:28px; display:block; line-height:1.2; }
+  .pipeline { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:12px; counter-reset:pipe; }
+  .pipe { min-width:0; background:var(--surface); border:1px solid var(--line); padding:18px; position:relative; counter-increment:pipe; }
+  .pipe::before { content:counter(pipe,decimal-leading-zero); display:block; color:var(--gold); font-family:var(--font-mono); font-size:10px; margin-bottom:18px; }
+  .pipe::after { content:""; position:absolute; right:-13px; top:50%; width:13px; height:1px; background:var(--gold); }
+  .pipe:nth-child(4)::after,.pipe:nth-child(8)::after { display:none; }
+  .pipe h3 { font-size:15px; }
+  .pipe p { color:var(--dim); font-size:12px; }
+  .lanes { display:grid; grid-template-columns:1fr 1fr; gap:18px; margin-top:20px; }
+  .lane { border:1px solid var(--line-strong); background:var(--surface); padding:24px; }
+  .lane--direct { border-top:4px solid var(--sage); }
+  .lane--substrate { border-top:4px solid var(--gold); }
+  .mini-flow { display:flex; flex-wrap:wrap; align-items:center; gap:7px; margin:15px 0; }
+  .mini-step { background:var(--surface-2); border:1px solid var(--line); padding:6px 9px; font-family:var(--font-mono); font-size:10px; }
+  .mini-arrow { color:var(--faint); }
+  .type-chain { display:grid; grid-template-columns:repeat(6,minmax(120px,1fr)); gap:8px; overflow-x:auto; padding-bottom:7px; }
+  .type-box { background:var(--surface); border:1px solid var(--line); border-top:3px solid var(--blue); padding:14px; min-width:120px; }
+  .type-box code { font-size:11px; }
+  .type-box p { font-size:11px; color:var(--dim); margin-top:7px; }
+  .cache-grid { grid-template-columns:repeat(4,minmax(0,1fr)); }
+  .cache-card { border-top:4px solid var(--blue); }
+  .cache-card:nth-child(2) { border-top-color:var(--gold); }
+  .cache-card:nth-child(3) { border-top-color:var(--sage); }
+  .cache-card:nth-child(4) { border-top-color:var(--rust); background:var(--rust-soft); }
+  .schedule { display:grid; grid-template-columns:1fr 1fr; gap:18px; }
+  .schedule__panel { min-width:0; border:1px solid var(--line-strong); background:var(--surface); padding:24px; }
+  .schedule__visual { margin:18px 0; background:var(--surface-2); padding:15px; font-family:var(--font-mono); font-size:12px; white-space:pre-wrap; color:var(--blue); }
+  .perf-strip { display:grid; grid-template-columns:repeat(4,1fr); gap:1px; background:var(--line-strong); border:1px solid var(--line-strong); margin-top:18px; }
+  .perf { background:var(--surface); padding:18px; }
+  .perf strong { display:block; font-family:var(--font-mono); font-size:19px; }
+  .perf span { color:var(--dim); font-size:11px; }
+  .wire { border:1px solid var(--line-strong); background:var(--surface); padding:24px; }
+  .wire__bar { display:flex; min-width:760px; height:72px; margin:15px 0 8px; }
+  .wire-scroll { overflow-x:auto; }
+  .field { display:flex; align-items:center; justify-content:center; text-align:center; padding:7px; border-right:1px solid var(--surface); background:var(--blue-soft); color:var(--blue); font-family:var(--font-mono); font-size:10px; }
+  .field--gold { background:var(--gold-soft); color:var(--gold); }
+  .field--sage { background:var(--sage-soft); color:var(--sage); }
+  .field--rust { background:var(--rust-soft); color:var(--rust); }
+  .receiver { display:grid; grid-template-columns:repeat(3,1fr); gap:12px; margin-top:18px; }
+  .receiver .ve-card { padding:18px; }
+  .steps { counter-reset:recipe; display:grid; grid-template-columns:repeat(4,1fr); gap:12px; }
+  .recipe { counter-increment:recipe; background:var(--surface); border:1px solid var(--line); padding:18px; }
+  .recipe::before { content:counter(recipe); display:flex; align-items:center; justify-content:center; width:28px; height:28px; border-radius:50%; background:var(--gold); color:#fff; font-family:var(--font-mono); font-size:12px; margin-bottom:13px; }
+  .table-wrap { border:1px solid var(--line-strong); background:var(--surface); overflow:hidden; }
+  .table-scroll { overflow-x:auto; }
+  table { border-collapse:collapse; width:100%; min-width:880px; font-size:13px; }
+  th { position:sticky; top:0; z-index:2; background:var(--surface-2); color:var(--dim); text-transform:uppercase; letter-spacing:.08em; font-family:var(--font-mono); font-size:10px; text-align:left; padding:13px 15px; border-bottom:2px solid var(--line-strong); }
+  td { padding:13px 15px; border-bottom:1px solid var(--line); vertical-align:top; }
+  tr:nth-child(even) td { background:var(--blue-soft); }
+  tr:last-child td { border-bottom:none; }
+  .read-list { display:grid; grid-template-columns:1fr 1fr; gap:10px; counter-reset:read; }
+  .read-item { counter-increment:read; display:grid; grid-template-columns:34px minmax(0,1fr); gap:12px; background:var(--surface); border:1px solid var(--line); padding:15px; }
+  .read-item::before { content:counter(read,decimal-leading-zero); color:var(--gold); font-family:var(--font-mono); font-size:11px; }
+  .read-item p { color:var(--dim); font-size:12px; margin:5px 0 0; }
+  .gotcha-grid { grid-template-columns:repeat(3,minmax(0,1fr)); }
+  .code-block { background:#101720; color:#dce4eb; border:1px solid var(--line-strong); padding:22px; font-family:var(--font-mono); font-size:12px; line-height:1.7; white-space:pre-wrap; overflow-x:auto; }
+  .code-block .c { color:#8493a3; }
+  footer { color:var(--faint); border-top:1px solid var(--line); padding:26px 0; font-family:var(--font-mono); font-size:10px; }
+  @keyframes fadeUp { from { opacity:0; transform:translateY(10px); } to { opacity:1; transform:none; } }
+  section { animation:fadeUp .45s ease-out both; }
+  @media (prefers-reduced-motion:reduce) { *,*::before,*::after { animation-duration:.01ms!important; transition-duration:.01ms!important; scroll-behavior:auto!important; } }
+  @media (max-width:1180px) {
+    .layout { grid-template-columns:190px minmax(0,1fr); gap:0 26px; padding:0 24px 80px; }
+    .truth-grid { grid-template-columns:repeat(3,1fr); }
+    .topology { grid-template-columns:1fr; }
+    .topology__arrow { transform:rotate(90deg); }
+    .crate-row,.cache-grid { grid-template-columns:repeat(2,1fr); }
+    .pipeline { grid-template-columns:repeat(2,1fr); }
+    .pipe:nth-child(2n)::after { display:none; }
+    .perf-strip { grid-template-columns:1fr 1fr; }
+  }
+  @media (max-width:820px) {
+    body { padding-top:0; }
+    .layout { display:block; padding:0 18px 60px; }
+    .toc { position:sticky; top:0; z-index:200; max-height:none; display:flex; gap:4px; align-items:center; overflow-x:auto; background:var(--bg); border-bottom:1px solid var(--line); margin:0 -18px; padding:9px 18px; }
+    .toc__brand,.toc__meta,.toc__group { display:none; }
+    .toc a { flex-shrink:0; white-space:nowrap; border-left:none; border-bottom:2px solid transparent; border-radius:4px 4px 0 0; font-size:10px; }
+    .toc a.active { border-bottom-color:var(--gold); }
+    main { padding-top:18px; }
+    section { scroll-margin-top:54px; margin-bottom:58px; }
+    .hero { min-height:auto; grid-template-columns:1fr; padding:42px 28px; }
+    .hero__metrics { max-width:520px; }
+    .section-head { grid-template-columns:46px 1fr; }
+    .truth-grid,.card-grid,.lanes,.schedule,.soa,.read-list { grid-template-columns:1fr; }
+    .truth-grid { grid-template-columns:1fr 1fr; }
+    .soa__col + .soa__col { border-left:none; border-top:1px solid var(--line-strong); }
+    .lifecycle { grid-template-columns:1fr; }
+    .state-arrows { transform:rotate(90deg); }
+    .steps,.receiver,.gotcha-grid { grid-template-columns:1fr 1fr; }
+  }
+  @media (max-width:520px) {
+    .truth-grid,.crate-row,.cache-grid,.pipeline,.steps,.receiver,.gotcha-grid,.perf-strip { grid-template-columns:1fr; }
+    .pipe::after { display:none; }
+    .hero__metrics { grid-template-columns:1fr; }
+    .metric:first-child { grid-column:auto; }
+    .theme-toggle { right:10px; top:58px; }
+  }
+</style>
+</head>
+<body>
+<button class="theme-toggle" id="theme-toggle" type="button" aria-label="Toggle color theme">◐</button>
+<div class="layout">
+  <nav class="toc" id="toc" aria-label="Page contents">
+    <div class="toc__brand">scripture-sous-chef</div>
+    <div class="toc__meta">resident engine · 2026-07-28</div>
+    <div class="toc__group">Read first</div>
+    <a href="#what">What it is</a><a href="#truths">Mental model</a><a href="#topology">System topology</a>
+    <div class="toc__group">Inside the engine</div>
+    <a href="#inputs">Corpus + identity</a><a href="#lifecycle">Lifecycle</a><a href="#transition">Analyze transition</a><a href="#substrates">Typed substrates</a><a href="#cache">Cache anatomy</a>
+    <div class="toc__group">Edges</div>
+    <a href="#scheduling">Cold vs warm</a><a href="#wire">Packed findings</a><a href="#consumer">Consumer recipe</a><a href="#matrix">Invalidation matrix</a>
+    <div class="toc__group">Work in the repo</div>
+    <a href="#read-order">Read order</a><a href="#gotchas">Gotchas</a><a href="#commands">Commands</a>
+  </nav>
+
+  <main>
+    <section class="hero" id="what">
+      <div>
+        <div class="kicker">Corpus-aware scripture text analysis</div>
+        <h1>Evidence in.<br>Findings out.</h1>
+        <p class="hero__lead">Sous Chef learns the translation’s own written patterns, retains typed evidence by chapter, and points an editor at text worth another look.</p>
+        <div class="hero__contract"><strong>The resident Galley is the main story.</strong> It owns the complete target, optional reference, configuration, caches, and publication lifecycle. Callers mutate inputs; only an explicit <code>analyze()</code> publishes a new complete snapshot.</div>
+      </div>
+      <div class="hero__metrics" aria-label="Architecture at a glance">
+        <div class="metric"><div class="metric__value">complete corpus</div><div class="metric__label">Every successful answer, even after one chapter changes</div></div>
+        <div class="metric"><div class="metric__value">25</div><div class="metric__label">Closed RuleIds</div></div>
+        <div class="metric"><div class="metric__value">12</div><div class="metric__label">Typed substrates</div></div>
+        <div class="metric"><div class="metric__value">16 B</div><div class="metric__label">Per packed finding</div></div>
+        <div class="metric"><div class="metric__value">2</div><div class="metric__label">Analysis lanes</div></div>
+      </div>
+    </section>
+
+    <section id="truths">
+      <div class="section-head"><div class="section-num">01</div><div><div class="section-kicker">Read first</div><h2>Five truths that keep the model straight</h2><p class="lede">Most implementation details are consequences of these contracts.</p></div></div>
+      <div class="truth-grid">
+        <article class="ve-card truth"><div class="truth__n">01 / OWNER</div><h3>Galley owns the world</h3><p>Complete corpora, config, identity, cache and lifecycle stay resident. The caller never ships a prior or a changed set.</p></article>
+        <article class="ve-card truth"><div class="truth__n">02 / MUTATE</div><h3>Updates do not analyze</h3><p>Mutation methods validate, hash, splice and mark dirty. The caller decides when to debounce and recompute.</p></article>
+        <article class="ve-card truth"><div class="truth__n">03 / SNAPSHOT</div><h3>No echo semantics</h3><p>A one-chapter update may narrow work, but the next answer still contains findings for the complete resident corpus.</p></article>
+        <article class="ve-card truth"><div class="truth__n">04 / EVIDENCE</div><h3>Rules never read rules</h3><p>Shared knowledge is a typed observation substrate. Consumers judge that evidence; they do not depend on another rule’s verdict.</p></article>
+        <article class="ve-card truth"><div class="truth__n">05 / RECEIVER</div><h3>The wire is wholesale</h3><p>Wasm sends one packed snapshot. JS reconciles identities and object reuse; there is no engine diff or tombstone stream.</p></article>
+      </div>
+    </section>
+
+    <section id="topology">
+      <div class="section-head"><div class="section-num">02</div><div><div class="section-kicker">Topology</div><h2>One engine, four durable boundaries</h2><p class="lede">Rust owns analysis and identity. The JS package owns decoding and UI object reuse.</p></div></div>
+      <div class="topology" role="img" aria-label="Editor through wasm, Galley, core and packed findings">
+        <div class="topology__node topology__node--edge"><strong>editor / worker</strong><small>ordered keys + texts, optional reference, config, persisted bytes</small></div><div class="topology__arrow">→</div>
+        <div class="topology__node"><strong>ssc-galley</strong><small>resident inputs, mutation verbs, lifecycle, explicit analyze</small></div><div class="topology__arrow">→</div>
+        <div class="topology__node topology__node--core"><strong>ssc-core</strong><small>Corpus, AnalysisCache, direct rules, typed substrates, complete findings</small></div><div class="topology__arrow">→</div>
+        <div class="topology__node topology__node--edge"><strong>ssc-wire + JS</strong><small>packed Uint8Array → validated snapshot → reconciled UI objects</small></div>
+      </div>
+      <div class="crate-row">
+        <div class="crate"><code>ssc-core</code><span>Pure transition, domain types, cache, evidence and judging.</span></div>
+        <div class="crate"><code>ssc-galley</code><span>Stateful owner around the pure transition.</span></div>
+        <div class="crate"><code>ssc-wire</code><span>Single source of truth for schema and encoding.</span></div>
+        <div class="crate"><code>crates/wasm</code><span>Camel-case browser surface and packed publication.</span></div>
+        <div class="crate"><code>xtask</code><span>Generates JS tables, declarations and conformance vectors.</span></div>
+      </div>
+      <div class="callout callout--gold"><div class="callout__label">Purity boundary</div><code>ssc-core</code> does not own a singleton or a hidden resident engine. One-shot analysis creates a temporary <code>AnalysisCache</code>; Galley hands the same transition a retained one.</div>
+    </section>
+
+    <section id="inputs">
+      <div class="section-head"><div class="section-num">03</div><div><div class="section-kicker">Inputs + identity</div><h2>The caller’s order is the address space</h2><p class="lede"><code>Corpus</code> validates ordered parallel arrays, derives contiguous book/chapter layout, and owns the hashes that prove cache validity.</p></div></div>
+      <div class="soa" aria-label="Structure of arrays corpus example">
+        <div class="soa__col"><div class="soa__head">keys[] · opaque caller addresses</div><div class="soa__row"><span>0</span><b>GEN 1:1</b></div><div class="soa__row"><span>1</span><b>GEN 1:2</b></div><div class="soa__row"><span>2</span><b>GEN 2:1</b></div><div class="soa__row"><span>3</span><b>MAT 1:1</b></div></div>
+        <div class="soa__col"><div class="soa__head">texts[] · analyzed verse text</div><div class="soa__row"><span>0</span><b>In the beginning…</b></div><div class="soa__row"><span>1</span><b>Now the earth…</b></div><div class="soa__row"><span>2</span><b>Thus the heavens…</b></div><div class="soa__row"><span>3</span><b>The book of…</b></div></div>
+      </div>
+      <div class="card-grid" style="margin-top:16px">
+        <article class="ve-card"><h3>Layout is owned proof</h3><p>Book and chapter ranges are derived once, kept in caller order, and updated atomically by every mutation path. Chapter and folded book hashes make unchanged content reusable.</p></article>
+        <article class="ve-card"><h3>Identity is available early</h3><p><code>expectedAnalysisId()</code>, <code>expectedTargetContextId()</code> and <code>hasReference()</code> need no analysis. They fold owned hashes, config and an engine stamp.</p></article>
+      </div>
+      <div class="callout"><div class="callout__label">Address versus display</div>Rust findings carry a global <code>KeyIdx</code> into this exact ordered corpus. The JS decoder resolves it through the retained <code>keys[]</code> snapshot and exposes <code>sid</code>; rebasing the internal index does not churn public identity.</div>
+    </section>
+
+    <section id="lifecycle">
+      <div class="section-head"><div class="section-num">04</div><div><div class="section-kicker">Resident lifecycle</div><h2>Mutation and publication are separate clocks</h2></div></div>
+      <div class="lifecycle" role="img" aria-label="Galley Dirty and CleanPublished state transitions">
+        <div class="state state--dirty"><div class="state__name">Dirty</div><div class="state__desc">Never analyzed, or resident inputs are ahead of the last successful publication.</div></div>
+        <div class="state-arrows"><span>analyze succeeds</span><b>⇄</b><span>changed mutation</span></div>
+        <div class="state"><div class="state__name">CleanPublished</div><div class="state__desc">The latest successful findings describe exactly the current resident inputs.</div></div>
+      </div>
+      <div class="card-grid">
+        <article class="ve-card"><h3>Mutations coalesce</h3><p>Several <code>updateChapter</code>/<code>updateBook</code>/<code>updateConfig</code> calls can remain Dirty until one analyze. A proven no-op preserves the current state exactly.</p></article>
+        <article class="ve-card"><h3>Failures commit nothing semantic</h3><p>An injected map/reduce/judge/pack fault leaves Dirty, retains valid warmed work, and preserves prior partitions/publication. Retry without mutation reaches the cold result.</p></article>
+      </div>
+      <div class="callout callout--gold"><div class="callout__label">Persisted-first UI</div>A validated packed snapshot may render immediately while the resident engine cold-warms. Detailed lazy args remain unavailable until this Galley successfully publishes the matching <code>analysisId</code>.</div>
+    </section>
+
+    <section id="transition">
+      <div class="section-head"><div class="section-num">05</div><div><div class="section-kicker">The analyze call</div><h2>One transition, two analysis lanes</h2><p class="lede">The same transition serves cold one-shot and resident calls. Cache state narrows work; it never changes the answer.</p></div></div>
+      <div class="pipeline" role="img" aria-label="Analyze transition pipeline">
+        <article class="pipe"><h3>Route</h3><p>Close the enabled direct-rule set and <code>ActiveSubstrates</code> from final config.</p></article>
+        <article class="pipe"><h3>Validate</h3><p>Compare chapter content, schema, extraction config and reference stamps.</p></article>
+        <article class="pipe"><h3>Map</h3><p>Build dirty direct chapter records and dirty typed observations.</p></article>
+        <article class="pipe"><h3>Reduce</h3><p>Replay each affected book in order until boundary state converges.</p></article>
+        <article class="pipe"><h3>Judge</h3><p>Read complete corpus aggregates and judging knobs; compute outcomes.</p></article>
+        <article class="pipe"><h3>Partition</h3><p>Patch chapter-local records; retain untouched published partitions.</p></article>
+        <article class="pipe"><h3>Assemble</h3><p>Rebase to global KeyIdx and stable-sort by address, span and code.</p></article>
+        <article class="pipe"><h3>Publish</h3><p>Pack one complete buffer, then let JS decode and reconcile it.</p></article>
+      </div>
+      <div class="lanes">
+        <article class="lane lane--direct"><div class="section-kicker" style="color:var(--sage)">Lane A</div><h3>Direct per-verse rules</h3><div class="mini-flow"><span class="mini-step">chapter stamp</span><span class="mini-arrow">→</span><span class="mini-step">scalar tape once / verse</span><span class="mini-arrow">→</span><span class="mini-step">u32 bit gates</span><span class="mini-arrow">→</span><span class="mini-step">chapter records</span></div><p>Rules that need only one verse share a classified scalar tape. Their cached product is chapter-local, so replacing one chapter leaves other addresses valid.</p></article>
+        <article class="lane lane--substrate"><div class="section-kicker">Lane B</div><h3>Typed observation substrates</h3><div class="mini-flow"><span class="mini-step">map chapter</span><span class="mini-arrow">→</span><span class="mini-step">reduce book</span><span class="mini-arrow">→</span><span class="mini-step">corpus aggregate</span><span class="mini-arrow">→</span><span class="mini-step">judge</span></div><p>Corpus-relative rules retain typed evidence and boundary carry. Twelve substrates serve the corpus-aware rules; casing has two consumer rules.</p></article>
+      </div>
+    </section>
+
+    <section id="substrates">
+      <div class="section-head"><div class="section-num">06</div><div><div class="section-kicker">Map / reduce / judge</div><h2>A substrate is evidence, not a rule</h2><p class="lede">Its types make the incremental contract explicit and prevent one rule from covertly depending on another.</p></div></div>
+      <div class="type-chain">
+        <div class="type-box"><code>Observation</code><p>Chapter-local, predecessor-free extracted facts.</p></div>
+        <div class="type-box"><code>Boundary</code><p>All discourse carry entering/leaving a chapter.</p></div>
+        <div class="type-box"><code>ChapterReduced</code><p>Observation interpreted under entering state.</p></div>
+        <div class="type-box"><code>BookContribution</code><p>Canonical fold of ordered reduced chapters.</p></div>
+        <div class="type-box"><code>CorpusStats</code><p>Complete evidence across resident books.</p></div>
+        <div class="type-box"><code>Outcome</code><p>Judge-time decision for a typed evidence key.</p></div>
+      </div>
+      <div class="card-grid" style="margin-top:18px">
+        <article class="ve-card ve-card--hero"><h3>Map is chapter-local</h3><p><code>map_chapter</code> sees one chapter and extraction-only config. It never sees a predecessor boundary or a judging knob, so moving an unchanged chapter preserves its observation.</p></article>
+        <article class="ve-card ve-card--hero"><h3>Reduce owns seams</h3><p><code>reduce_chapter</code> walks left-to-right inside a book. If carry changes, cached observations replay until leaving state converges—unchanged text need not be rescanned.</p></article>
+        <article class="ve-card ve-card--hero"><h3>Judge is read-only</h3><p>Judging reads the complete aggregate and current knobs. It cannot mutate counting, which is why a sensitivity change can reuse mapped evidence.</p></article>
+        <article class="ve-card ve-card--hero"><h3>Delta is explicit</h3><p>Counts do not prove site equality. Substrates report the changed evidence/site channel needed to patch resident finding partitions safely.</p></article>
+      </div>
+      <div class="callout callout--red"><div class="callout__label">Chapter boundary doctrine</div>A chapter boundary is not a discourse reset. Bracket stacks, casing position and punctuation seams travel in typed <code>Boundary</code> state; replay is sequential and deterministic inside a book.</div>
+    </section>
+
+    <section id="cache">
+      <div class="section-head"><div class="section-num">07</div><div><div class="section-kicker">Resident state</div><h2>AnalysisCache has three homes</h2><p class="lede">Each section invalidates for different reasons. The fourth card is intentionally outside the cache.</p></div></div>
+      <div class="cache-grid">
+        <article class="ve-card cache-card"><h3>PrepSection</h3><p>Content-keyed direct per-chapter findings, plus its configuration fingerprint and observability counters.</p></article>
+        <article class="ve-card cache-card"><h3>SubstrateSection</h3><p>One compile-time typed slot per substrate: chapter observations, reductions, book contributions, corpus aggregates and measured memos.</p></article>
+        <article class="ve-card cache-card"><h3>FindingSection</h3><p>Per-rule, chapter-local resident finding partitions. Assembly rebases them once to the current global corpus.</p></article>
+        <article class="ve-card cache-card"><h3>SharedTokens</h3><p>Transition-local, layout-shaped and content-stamped. Built once per requested chapter, read sequentially by six drives, then dropped.</p></article>
+      </div>
+      <div class="callout"><div class="callout__label">Disposable by contract</div>Dropping a cache or missing a stamp may cost a cold rebuild. It cannot change output. No caller-owned provenance or “changed” hint participates in correctness.</div>
+    </section>
+
+    <section id="scheduling">
+      <div class="section-head"><div class="section-num">08</div><div><div class="section-kicker">Execution order</div><h2>Why cold walks more than warm</h2><p class="lede">Substrate independence describes ownership and validity. Today’s scheduler also drives them independently, one substrate at a time.</p></div></div>
+      <div class="schedule">
+        <article class="schedule__panel"><div class="section-kicker">Current · substrate outer</div><h3>Each active substrate plans its dirty chapters</h3><div class="schedule__visual">for substrate in active:
+  dirty = plan(substrate)
+  map(dirty chapters)
+  reduce → judge → materialize</div><p>Cold cache: most chapters are dirty for every active substrate, so the corpus is rescanned several times. Warm edit: each drive usually maps only the changed chapter and reuses the rest.</p></article>
+        <article class="schedule__panel"><div class="section-kicker" style="color:var(--sage)">Shared mechanical work</div><h3>Tokens are already hoisted within one analyze</h3><div class="schedule__visual">first token consumer:
+  build ChapterTokens slot
+later five consumers:
+  decode same slot
+after transition: drop slots</div><p>This removes duplicate tokenization without coupling substrate stamps, reduction or judging. Tape/grapheme sharing needs a different execution order or a compact codec.</p></article>
+      </div>
+      <div class="perf-strip">
+        <div class="perf"><strong>462.4 ms</strong><span>latest comparable pre-mitigation full-Bible end-to-end criterion result</span></div>
+        <div class="perf"><strong>264.5 ms</strong><span>post-packet default cold-drive subtotal—not the same end-to-end series</span></div>
+        <div class="perf"><strong>−9.4%</strong><span>all-rules cold drives from SharedTokens; warm flat</span></div>
+        <div class="perf"><strong>82.6 MB</strong><span>final all-rules native Dhat peak; 79.5 MB retained</span></div>
+      </div>
+      <div class="callout callout--gold"><div class="callout__label">Parallel shape</div>Native mapping may fan out independent books or sufficiently large chapter work under Rayon. Reduction within a book stays ordered. The shipped wasm build is serial.</div>
+      <div class="callout"><div class="callout__label">Candidate, not scheduled</div><a href="ideas/candidates/2026-07-28-chapter-outer-selective-map-hoisting.md">Chapter-outer selective map hoisting</a> could build token/tape/grapheme views for a chapter and dispatch only the substrates dirty there. It preserves substrate ownership, but changes the central scheduler and has no demonstrated editor UX need yet.</div>
+    </section>
+
+    <section id="wire">
+      <div class="section-head"><div class="section-num">09</div><div><div class="section-kicker">Publication</div><h2>Complete findings cross as one flat buffer</h2><p class="lede">Core spans stay UTF-8. Packing projects them once to UTF-16, then wasm transfers an exact-size <code>ArrayBuffer</code>.</p></div></div>
+      <div class="wire">
+        <h3>32-byte header</h3>
+        <div class="wire-scroll"><div class="wire__bar"><div class="field" style="flex:4">magic<br>4</div><div class="field field--gold" style="flex:1">ver<br>1</div><div class="field field--gold" style="flex:1">rec<br>1</div><div class="field field--gold" style="flex:1">hdr<br>1</div><div class="field field--gold" style="flex:1">flags<br>1</div><div class="field field--sage" style="flex:4">count<br>4</div><div class="field" style="flex:4">reserved<br>4</div><div class="field field--rust" style="flex:8">targetContextId<br>8</div><div class="field field--rust" style="flex:8">analysisId<br>8</div></div></div>
+        <h3 style="margin-top:24px">16-byte record × finding count</h3>
+        <div class="wire-scroll"><div class="wire__bar"><div class="field" style="flex:1">code<br>1</div><div class="field field--gold" style="flex:1">sev + flags<br>1</div><div class="field field--sage" style="flex:4">key_idx<br>4</div><div class="field" style="flex:2">start UTF-16<br>2</div><div class="field" style="flex:2">end UTF-16<br>2</div><div class="field field--gold" style="flex:2">score u16<br>2</div><div class="field field--rust" style="flex:4">digest<br>4</div></div></div>
+      </div>
+      <div class="receiver">
+        <article class="ve-card"><h3><code>decodeFindings</code></h3><p>Strictly validate one current buffer and resolve internal indices through the exact keys snapshot.</p></article>
+        <article class="ve-card"><h3><code>reconcileFindings</code></h3><p>Return the exact prior array if nothing visible changed; otherwise reuse unchanged objects deterministically.</p></article>
+        <article class="ve-card"><h3><code>decodePersistedFindings</code></h3><p>Fail closed against expected identities, with the single typed reference-removal salvage.</p></article>
+      </div>
+      <div class="callout callout--gold"><div class="callout__label">Wholesale replace</div>There is no wire diff and no tombstone. Removal means “present in the previous complete snapshot, absent from the new one.” Detailed <code>findingArgs</code>/<code>findingsArgs</code> are lazy and generation-checked by <code>analysisId</code>.</div>
+    </section>
+
+    <section id="consumer">
+      <div class="section-head"><div class="section-num">10</div><div><div class="section-kicker">Editor recipe</div><h2>Persisted first, resident thereafter</h2></div></div>
+      <div class="steps">
+        <article class="recipe"><h3>Construct</h3><p>Build <code>Galley({ target, source, config })</code>. Retain the exact immutable ordered <code>keys[]</code> snapshot.</p></article>
+        <article class="recipe"><h3>Validate cache</h3><p>Compare stored bytes with expected IDs; render accepted compact findings while analysis warms.</p></article>
+        <article class="recipe"><h3>Mutate + debounce</h3><p>Call chapter/book/config verbs as editor state changes. They update hashes and Dirty state, not findings.</p></article>
+        <article class="recipe"><h3>Analyze + reconcile</h3><p>Transfer the returned buffer worker→main and reconcile against the previous JS snapshot.</p></article>
+      </div>
+      <div class="callout"><div class="callout__label">Two surfaces</div>Resident <code>Galley</code> supports lazy detailed args and incremental work. Stateless <code>analyze_vref</code> is a compact one-shot packed surface; consumers needing detailed messages use Galley.</div>
+    </section>
+
+    <section id="matrix">
+      <div class="section-head"><div class="section-num">11</div><div><div class="section-kicker">Invalidation</div><h2>What moves when an input moves</h2></div></div>
+      <div class="table-wrap"><div class="table-scroll"><table>
+        <thead><tr><th>Change</th><th>Map</th><th>Reduce</th><th>Judge / findings</th></tr></thead>
+        <tbody>
+          <tr><td><strong>Target chapter text</strong></td><td>Relevant active substrate observations and direct chapter product for that chapter.</td><td>Affected book; replay cached observations to convergence where boundary state carries.</td><td>Patch actual changed keys/sites; publish complete snapshot.</td></tr>
+          <tr><td><strong>Judging knob</strong></td><td>Typed substrate map is zero. The direct lane’s whole-config fingerprint may invalidate direct chapter products.</td><td>Typed substrate reduce is zero.</td><td>Rejudge the affected consumer from cached aggregate.</td></tr>
+          <tr><td><strong>Rule toggled on</strong></td><td>Build its missing substrate observations; unrelated typed substrates retain their products.</td><td>Build/replay its own books.</td><td>Create its partitions; other rules remain independent.</td></tr>
+          <tr><td><strong>Reference changed</strong></td><td>Only the reference-declaring proportionality substrate’s paired observations invalidate.</td><td>Its affected books.</td><td>Its findings; target-only partitions remain valid.</td></tr>
+          <tr><td><strong>Book removed</strong></td><td>Drop its chapter products immediately.</td><td>Remove its contribution from each active aggregate.</td><td>Drop its resident partitions; no resurrection.</td></tr>
+          <tr><td><strong>Byte-identical no-op</strong></td><td>Nothing.</td><td>Nothing.</td><td>Lifecycle and publication remain exactly as they were.</td></tr>
+        </tbody>
+      </table></div></div>
+    </section>
+
+    <section id="read-order">
+      <div class="section-head"><div class="section-num">12</div><div><div class="section-kicker">Code orientation</div><h2>Read the ownership story before the rule zoo</h2></div></div>
+      <div class="read-list">
+        <a class="read-item" href="../crates/galley/src/lib.rs"><div><code>crates/galley/src/lib.rs</code><p>Start here: resident fields, lifecycle, mutations, identity accessors and explicit analyze.</p></div></a>
+        <a class="read-item" href="../crates/core/src/corpus.rs"><div><code>crates/core/src/corpus.rs</code><p>SoA inputs, validation, owned layout, hashes and atomic mutation primitives.</p></div></a>
+        <a class="read-item" href="../crates/core/src/lib.rs"><div><code>crates/core/src/lib.rs</code><p>The <code>transition</code>: both lanes, phase boundaries, assembly and failure seams.</p></div></a>
+        <a class="read-item" href="../crates/core/src/cache.rs"><div><code>crates/core/src/cache.rs</code><p>The three resident cache sections and chapter-local finding addresses.</p></div></a>
+        <a class="read-item" href="../crates/core/src/substrate.rs"><div><code>crates/core/src/substrate.rs</code><p>Typed trait contract, stamps, replay-to-convergence driver and phase vocabulary.</p></div></a>
+        <a class="read-item" href="../crates/core/src/signals/punctuation.rs"><div><code>signals/punctuation.rs</code><p>Representative seam-heavy substrates: spacing and adjacency.</p></div></a>
+        <a class="read-item" href="../crates/core/src/signals/casing.rs"><div><code>signals/casing.rs</code><p>The richest shared model, canonical float order and verdict-level delta.</p></div></a>
+        <a class="read-item" href="../crates/wire/src/packed.rs"><div><code>crates/wire/src/packed.rs</code><p>Header/record validation, UTF-16 projection, quantization and packing.</p></div></a>
+        <a class="read-item" href="../crates/wasm/src/lib.rs"><div><code>crates/wasm/src/lib.rs</code><p>Browser Galley wrapper, publication identity and lazy args accessors.</p></div></a>
+        <a class="read-item" href="../crates/wasm/js/findings.js"><div><code>crates/wasm/js/findings.js</code><p>Strict decode, persisted validation and receiver-owned reconciliation.</p></div></a>
+      </div>
+      <div class="callout callout--gold"><div class="callout__label">Durable architectural record</div>Then read <a href="adrs/0067-typed-observation-substrates-resident-galley.md">ADR 0067</a>, <a href="adrs/0068-cold-analyze-trade.md">ADR 0068</a>, the <a href="reference/findings-wire.md">findings-wire reference</a>, and the <a href="plans/completed/2026-07-22-granularity-spine-plan.md">completed spine plan</a>.</div>
+    </section>
+
+    <section id="gotchas">
+      <div class="section-head"><div class="section-num">13</div><div><div class="section-kicker">Sharp edges</div><h2>Small facts with large consequences</h2></div></div>
+      <div class="gotcha-grid">
+        <article class="ve-card"><h3>Keys must match bytes</h3><p>Decode against the exact immutable ordered duplicate-preserving keys array used to mint the buffer.</p></article>
+        <article class="ve-card"><h3>Two offset units</h3><p>Core <code>Span</code> is UTF-8 byte offsets. The packed wire is UTF-16 code units for direct JS/editor use.</p></article>
+        <article class="ve-card"><h3>Index is not identity</h3><p><code>key_idx</code> may rebase after insertion. Public JS identity uses resolved sid, duplicate ordinal, code and span.</p></article>
+        <article class="ve-card"><h3>Wasm memory is high-water</h3><p>Linear memory does not shrink, though the allocator reuses freed regions. Avoid multiplying resident Galleys blindly.</p></article>
+        <article class="ve-card"><h3>Reference is narrow</h3><p>Only <code>prop.length-ratio</code> declares target+reference input; it emits nothing when reference is absent.</p></article>
+        <article class="ve-card"><h3>One semantic engine</h3><p>One-shot and resident calls use the same core transition. The cache changes cost, not behavior.</p></article>
+      </div>
+    </section>
+
+    <section id="commands">
+      <div class="section-head"><div class="section-num">14</div><div><div class="section-kicker">Working locally</div><h2>Build, verify, regenerate</h2></div></div>
+      <pre class="code-block"><span class="c"># Rust workspace and native parallel lane</span>
+cargo test --workspace
+cargo test --workspace --features parallel
+cargo check --workspace
+
+<span class="c"># Browser packages</span>
+npm run build:wasm
+npm run check:wasm
+node --test crates/wasm/js/*.test.mjs
+
+<span class="c"># Wire source-of-truth regeneration</span>
+cargo xtask wire-js
+cargo xtask wire-vectors</pre>
+    </section>
+
+    <footer>Generated 2026-07-28 from the landed granularity-spine architecture. Maintain this page against current code, ADR 0067, ADR 0068 and the findings-wire reference—not historical superseded execution ADRs.</footer>
+  </main>
+</div>
+<script>
+  (() => {
+    const root = document.documentElement;
+    const toggle = document.getElementById('theme-toggle');
+    const saved = localStorage.getItem('ssc-explainer-theme');
+    if (saved === 'dark' || saved === 'light') root.dataset.theme = saved;
+    else root.dataset.theme = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+    toggle.addEventListener('click', () => {
+      root.dataset.theme = root.dataset.theme === 'dark' ? 'light' : 'dark';
+      localStorage.setItem('ssc-explainer-theme', root.dataset.theme);
+    });
+    const links = [...document.querySelectorAll('#toc a')];
+    const sections = links.map(link => ({ link, el: document.querySelector(link.getAttribute('href')) })).filter(x => x.el);
+    const observer = new IntersectionObserver(entries => {
+      for (const entry of entries) if (entry.isIntersecting) {
+        links.forEach(link => link.classList.remove('active'));
+        const hit = sections.find(x => x.el === entry.target);
+        if (hit) hit.link.classList.add('active');
+      }
+    }, { rootMargin: '-10% 0px -78% 0px' });
+    sections.forEach(x => observer.observe(x.el));
+  })();
+</script>
+</body>
+</html>

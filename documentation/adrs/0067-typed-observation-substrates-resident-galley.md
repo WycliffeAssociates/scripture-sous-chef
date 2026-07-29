@@ -35,11 +35,16 @@ analysis answers for the complete corpus resident in `Galley`.
    changed-key calculation. Judges consume only their substrate plus judging
    configuration; rules never read other rules' state.
 
-3. **`AnalysisCache` is disposable derived state.** It holds shared
-   preparation, typed substrate products, and resident finding partitions.
-   Dropping it can make the next analysis slower but cannot change its result.
-   Cache validity is derived from owned corpus/config/reference inputs rather
-   than caller-supplied changed sets or provenance tallies.
+3. **Derived preparation has an explicit lifetime.** `AnalysisCache` holds
+   resident preparation only where measured cross-call reuse justifies its
+   retained-memory cost, alongside typed substrate products and resident
+   finding partitions. A bounded product may instead be transition-local: the
+   shared token lane is built once per requested chapter, reused sequentially
+   across independent substrate drives in that analyze, and then dropped. This
+   is sharing, not a revival of fused listener execution. Dropping either form
+   can make the next analysis slower but cannot change its result. Validity is
+   derived from owned corpus/config/reference inputs rather than caller-supplied
+   changed sets or provenance tallies.
 
 4. **There is no batch execution lane in v1.** The empty batch affordance is
    not an extension point a rule may silently join. A future rule

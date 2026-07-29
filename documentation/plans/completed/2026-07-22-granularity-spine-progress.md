@@ -1,7 +1,7 @@
 # granularity-spine — execution progress log
 
 Append-only execution log for the granularity-spine epic
-(`documentation/plans/2026-07-22-granularity-spine-plan.md`, §15). This file is
+(`documentation/plans/completed/2026-07-22-granularity-spine-plan.md`, §15). This file is
 **evidence, not a second specification**: it records what was run, measured, and
 observed, plus stop-safe next steps. It never redefines the plan. Where
 implementation reality contradicts a plan statement, it is flagged here and in
@@ -6846,8 +6846,9 @@ comparable pair). Parallel cold seed (24 cores): 83 ms default / 764 ms all.
 (`Permission denied (publickey)`) and remains unreachable — the final
 pre-spine-vs-HEAD criterion A/B re-run (now including the two packets) is
 PENDING an instrument: either the box returning or a quiet Mac. The Entry 42
-A/B stands as the adjudicated cold measurement; the pending re-run can only
-improve it (both packets shrink cold). Recorded, not blocking.
+A/B stands as the adjudicated cold measurement; the pending re-run is expected
+to improve it because both packets shrink the cold-drive subtotal, but the
+end-to-end result remains unmeasured. Recorded, not blocking.
 
 **Closeout.** ADR 0068 records the cold trade and its mitigations; the plan's
 completion note is updated and the plan moves to

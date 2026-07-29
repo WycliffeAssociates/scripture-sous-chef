@@ -8,7 +8,7 @@
   (the resident `Galley` whose lifecycle this extends with the wire
   publication), [ADR 0060](0060-cross-call-analysis-caches.md) (the cache whose
   warm reuse backs the pack-failure retry).
-- **Plan:** `documentation/plans/2026-07-22-granularity-spine-plan.md`,
+- **Plan:** `documentation/plans/completed/2026-07-22-granularity-spine-plan.md`,
   Appendix A (the normative wire specification; this ADR records the decision,
   the reference doc `documentation/reference/findings-wire.md` documents the
   shipped surface).

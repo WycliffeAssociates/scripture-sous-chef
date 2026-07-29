@@ -84,6 +84,7 @@ isn't visible from the code alone.
 | 0065 | 2026-07-24 | [Packed findings wire — `analyze` returns a flat binary buffer with a content-derived identity](0065-packed-findings-wire.md) | Accepted (supersedes 0061's output-contract clause) |
 | 0066 | 2026-07-27 | [Casing's juror order is canonical (sorted), not hash-incidental](0066-canonical-juror-order.md) | Accepted |
 | 0067 | 2026-07-27 | [Typed observation substrates and the resident `Galley`](0067-typed-observation-substrates-resident-galley.md) | Accepted (supersedes legacy stateful/cache execution) |
+| 0068 | 2026-07-28 | [Cold whole-corpus analyze trades 16–35% for the resident warm model](0068-cold-analyze-trade.md) | Accepted |
 
 ## Format
 

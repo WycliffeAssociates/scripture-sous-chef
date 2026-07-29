@@ -4,7 +4,7 @@ This is the durable consumer reference for the packed-findings buffer that
 `Galley.analyze()` and stateless `analyze_vref` return, and for the official
 JS decoder/reconciler that reads it. The **normative** specification is
 Appendix A of the granularity-spine plan
-(`documentation/plans/2026-07-22-granularity-spine-plan.md`); the binding
+(`documentation/plans/completed/2026-07-22-granularity-spine-plan.md`); the binding
 decision is [ADR 0065](../adrs/0065-packed-findings-wire.md). This file
 documents the shipped surface — it is not a second plan or a normative handoff.
 

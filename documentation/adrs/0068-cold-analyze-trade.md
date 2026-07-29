@@ -24,10 +24,12 @@ scenario; the once-per-corpus-load cold path was never gated, and it moved:
   near-zero; the cost is repeated tokenization/segmentation/scan compute,
   which is why grapheme-heavy scripts regressed most.
 
-Against it, the epic's wins on the paths users actually sit on: warm
-one-chapter edit 9.8/21.2/31.2 → 5.2/6.3/6.4 ms same-box serial
-(3JN/MAT/PSA; the Mac §13 floor is 0.54 ms default), casing's warm
-materialize 18.1 → 0.04 ms after the verdict-level delta, and peak heap
+Against it, the epic's wins on the paths users actually sit on: directional
+warm one-chapter readings moved 9.8/21.2/31.2 → 5.2/6.3/6.4 ms serial
+(3JN/MAT/PSA). Those endpoints used evolved harnesses and are not presented as
+one strict same-harness A/B; the plan's paired per-packet gates are the exact
+warm evidence. The Mac §13 floor is 0.54 ms default, casing's warm materialize
+moved 18.1 → 0.04 ms after the verdict-level delta, and peak heap moved
 111 → 82.6 MB (`all`).
 
 ## Decision
@@ -55,10 +57,13 @@ warm model's foundation.
 
 ## Consequences
 
-- Cold whole-Bible analyze on the product-target series is roughly 300 ms
-  serial (x86 idle-box figures above are its own series; ratios transfer).
-  It happens once per corpus load; every subsequent keystroke rides the
-  warm path the epic built.
+- The packet-local default cold-drive subtotal measured 289.6 → 264.5 ms
+  serial after the two mitigations. The latest comparable end-to-end
+  whole-Bible criterion result remains 462.4 ms at the pre-mitigation spine
+  HEAD; the final post-packet end-to-end rerun is pending and must not be
+  inferred from the phase subtotal or transferred across hardware. In the
+  intended resident `Galley` lifecycle, cold seed happens once per corpus load;
+  subsequent edits ride the warm path the epic built.
 - Any future cold-path work gates on the criterion `analyze` benches
   same-box A/B — the instrument that caught this — not on §13 warm lanes.
 - The §13 gate table gains no cold row retroactively; instead this ADR is

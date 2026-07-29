@@ -25,3 +25,9 @@ gates' attribution.
 
 Relates to: `../calibration/2026-07-21-warm-path-profile.md` (fixed-floor
 decomposition), ADR 0022 (fused static classification table).
+
+**Moved to `doubtful/` 2026-07-29.** Revive condition sharpened: the spike's
+SWAR/SIMD win was ~3.2× on Latin but a net loss on Devanagari/Han — a revived
+attempt must first show a SIMD classification shape that holds on largely
+non-ASCII text, or a cheap script-dispatch that falls back without paying for
+the check. Start from the spike tables.

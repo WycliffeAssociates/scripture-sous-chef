@@ -2,7 +2,7 @@
 
 Date: 2026-07-21. Reclassified: 2026-07-23. Status: **application integration
 recipe; not an engine plan or independent work queue.** The engine boundary is
-owned by `../plans/2026-07-22-granularity-spine-plan.md` §3 and §10.1.
+owned by `../plans/completed/2026-07-22-granularity-spine-plan.md` §3 and §10.1.
 
 ## Decision
 
@@ -156,7 +156,7 @@ correctness plan.
 
 ## Relates to
 
-- `../plans/2026-07-22-granularity-spine-plan.md` §3 and §10.1 (normative
+- `../plans/completed/2026-07-22-granularity-spine-plan.md` §3 and §10.1 (normative
   identity/lifecycle boundary).
 - `../plans/2026-07-21-packed-findings-wire-plan.md` (wire header, validation,
   compact-vs-detailed contract).

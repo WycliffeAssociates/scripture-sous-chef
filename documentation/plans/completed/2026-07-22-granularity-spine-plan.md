@@ -1,10 +1,9 @@
 # Plan — the granularity spine: typed observation substrates, chapter replay, and incremental judge
 
-Date: 2026-07-22. Status: **Phase F is complete except for the final allocation
-audit and the completed-folder move (2026-07-27).** This remains the active
-record until that audit is run. The implemented program must not be re-opened
-to invent a different cache model, partial-corpus semantic, rule dependency
-system, or wire protocol.
+Date: 2026-07-22. Status: **completed 2026-07-28.** This is the archived
+normative record of the implemented epic. The implemented program must not be
+re-opened to invent a different cache model, partial-corpus semantic, rule
+dependency system, or wire protocol without a new plan or ADR.
 
 Canonical vocabulary: [`../../glossary.md`](../../glossary.md). The terms in
 that glossary are normative for new code, comments, ADRs, and progress notes.
@@ -478,11 +477,15 @@ Corpus
     authoritative keys/texts + derived layout/hashes
 
 AnalysisCache
-    shared prep
+    resident shared prep whose cross-call reuse is measured and bounded
     per-substrate input-independent chapter observations
     per-substrate ordered-reduction boundary states/results
     typed per-substrate book contributions + corpus aggregates
     per-rule resident finding partitions
+
+Transition-local shared prep
+    content-stamped products reused by multiple substrate drives in one analyze
+    (currently the shared per-chapter token lane)
 ```
 
 Rename `PrepCache` to `AnalysisCache` atomically in Phase B. It is
@@ -499,23 +502,22 @@ Shared prep is chapter-keyed, target/reference-role-specific mechanical data.
 Each entry carries the relevant chapter content hash plus a prep schema stamp.
 It contains no enabled-rule bit, judging knob, corpus statistic, or finding.
 
-Before mapping, the closed active-substrate registry computes a typed
-`SharedPrepNeeds` bitset. For each chapter whose observation input stamp is
-dirty:
+Ownership is lane-specific and measurement-led. A bounded product may live in
+`AnalysisCache` when cross-call reuse pays its retained-memory rent. A product
+may instead be transition-local when sharing within one analyze removes
+duplicate work but retaining a whole-corpus copy would exceed the memory
+budget. The shipped `SharedTokens` lane is the latter: it is layout-shaped,
+built once per requested chapter, reused sequentially by six independent
+substrate drives, and dropped when the transition returns.
 
-1. reuse every requested prep lane whose role/content/schema stamp matches;
-2. build each missing requested lane once;
-3. expose borrowed immutable views to every active mapper in the one fused
-   chapter walk; and
-4. retain only lanes that have a named active consumer or a separately measured
-   always-on benefit.
-
-No mapper independently re-tokenizes/re-segments the same chapter during one
-analysis. Conversely, do not eagerly build an expensive prep lane merely
-because some disabled or hypothetical future rule could use it. Mechanical preparation that
-needs cross-chapter semantic carry is misclassified: map the chapter's raw
-typed events independently, then carry state in ordered substrate reduction
-rather than hiding it in shared prep.
+This sharing does **not** recreate the retired fused-listener engine. Each
+active substrate still plans and maps only its own dirty chapters, preserving
+rule-toggle, schema-stamp, and replay isolation. The first consumer of a
+content-stamped shared-prep slot builds it; later consumers borrow it. Disabled
+or hypothetical consumers do not cause eager construction. Mechanical
+preparation that needs cross-chapter semantic carry is misclassified: map the
+chapter's raw typed events independently, then carry state in ordered substrate
+reduction rather than hiding it in shared prep.
 
 ### 5.2 Strongly typed substrate contract
 
@@ -1074,19 +1076,20 @@ change.
    editor integration notes; move this plan to `completed/` only after all
    ledger rows are resolved.
 
-**Completion note (2026-07-27).** Items 1, 2, 4, and the regeneration/reference
+**Completion note (2026-07-27).** Items 1–4 and the regeneration/reference
 portion of item 5 are complete; the ledger contains every `RuleId::ALL` member,
-the full-fleet findings/transcript bookend matches its standing pins, ADR 0067
-records the final architecture, and both committed wasm packages passed their
-Node suites. Item 3's final allocation audit is **blocked**, not waived: the
-local dhat process was host-killed before post-seed statistics, and the remote
-runner requires explicit approval to sync this private repository. The plan
-therefore remains here rather than moving to `completed/`. Casing's future
-canonical-order keys optimization is separately scheduled work, not a Phase F
+the full-fleet findings/transcript bookend matches its standing pins, the
+warm-path calibration records the required phase tables, ADR 0067 records the
+final architecture, and both committed wasm packages passed their Node suites.
+A separate final retained-allocation audit remained **blocked**, not waived:
+the local dhat process was host-killed before post-seed statistics, and the
+remote runner required explicit approval to sync this private repository. The
+plan therefore remained active until that audit completed. Casing's future
+canonical-order keys optimization was separately scheduled work, not a Phase F
 reopen.
 
-**Completion note (2026-07-28) — plan closed.** Item 3's allocation audit
-completed: dhat tables recorded in progress Entries 41 and 45 (final:
+**Completion note (2026-07-28) — plan closed.** The separate retained-allocation
+audit completed: dhat tables recorded in progress Entries 41 and 45 (final:
 9,350,519 B retained / 11,175,370 B peak default; 79,545,549 B retained /
 82,585,485 B peak `all`, vs the 111 MB pre-spine peak). The one behavioral
 number the plan never gated — cold whole-corpus analyze — regressed 16–35%
