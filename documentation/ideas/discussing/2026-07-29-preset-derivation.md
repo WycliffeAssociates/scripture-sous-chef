@@ -244,3 +244,31 @@ are judge-time, knob isolation makes the whole range real-time.
 3. Rate-shaped rules get the trivial fallback (fraction < cutoff); the
    model-shaped rules (casing trust, mixed-script association) need per-rule
    fallback definitions — a sweep-packet deliverable.
+
+## Discussion 2026-07-29 (cont.) — the operational loop this all serves
+
+Owner framing: the product's workflow is **progressive canonicalization** —
+triage the most-anomalous slice (say, the top 100), suppress what you accept
+(suppression only; denominators never change — the attention-filter ruling),
+then raise the evidence-bar slider and repeat. Prior suppressions persist.
+"Done" = the marginal anomaly stopped being worth reading — the tool is not
+designed to reach zero; it exposes anomaly as a property of the project and
+converges to *boring*, not to *empty*. (Motivating examples: Oven/oven at
+1-vs-1 — only visible at the census-ish end; noah 1/12 in a cased language —
+thin-evidence tier, near-certain typo.)
+
+**Suppression mechanism (site grain):** persist `(code, checksum over the
+finding's range content)` — content-addressed suppression. Self-healing by
+construction: unrelated edits and address rebases cannot break it; editing
+the suppressed text itself breaks the checksum and legitimately resurfaces
+the finding. Composes with the persisted packed buffer (handoffs recipe);
+app-side record, reconciled alongside findings. This is the SITE grain; the
+committed per-mark doc is the CLASS grain ("stop showing danda spacing at
+all") — the triage loop needs both verbs.
+
+**New requirement surfaced: a cross-rule anomalousness ranking** for the
+top-N triage slice. Sort by evidence tier, then score, then raw rarity;
+scores are not perfectly comparable across rules but the loop is
+batch-shaped so the slice, not the total order, is what must feel right —
+add "does the top-100 slice look sane on real corpora" to the sweep packet's
+deliverables.
