@@ -217,3 +217,30 @@ per-rule clamp or snap-point, decided from sweep data.
 **Watch item:** if one rule dominates volume growth over most of the range,
 the master feels single-purpose; the live count mitigates, the sweep will
 say whether it's real.
+
+## Discussion 2026-07-29 (cont.) — the slider's semantic axis is the EVIDENCE BAR
+
+Owner insight: Wilson rewards big denominators by design (it is a pessimist
+about small samples — 2/10 could be a 20% rate; 3/10000 is provably rare).
+At small corpus sizes the interesting minorities never clear the proof bar,
+and loosening z cannot fix it because the strict end's QUESTION ("provably
+anomalous?") is the wrong question for the noisy end. The noisy end's
+question is the census's ("minority at all? here are the counts") — asked in
+real time.
+
+**Unified slider semantics: `t` = how much proof is required before showing.**
+Strict → statistically proven anomaly (Wilson/G² gated). Loose → raw
+minority fraction with counts attached and no proof claimed. This axis is
+comparable across rules (finding-volume never was) and is cheap by
+construction: convention cells' num/denom are retained observations, gates
+are judge-time, knob isolation makes the whole range real-time.
+
+**Pinned consequences:**
+1. Findings wear their evidence tier (wording + severity/styling): "2 of 10
+   — too few to judge, shown because you asked" vs "3 of 10,000 — anomalous."
+   One enum; num/denom already in args.
+2. Census routing untouched: rules degrade gracefully toward census-like
+   reporting at high t; the census itself stays knob- and verdict-free.
+3. Rate-shaped rules get the trivial fallback (fraction < cutoff); the
+   model-shaped rules (casing trust, mixed-script association) need per-rule
+   fallback definitions — a sweep-packet deliverable.
