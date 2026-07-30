@@ -63,6 +63,29 @@ pub struct ProportionalityOverrides {
     pub min_verses: Option<usize>,
 }
 
+/// Partial overrides for `lex.untranslated-word`'s knobs (Phase C/D, source-
+/// paired tier plan). Omitted fields keep core's provisional defaults —
+/// **not yet calibrated** (Phase D's job; see
+/// `documentation/calibration/` for the running calibration doc). The rule
+/// ships default-OFF (`Config::v1_defaults()` disables it) until Phase D
+/// adjudicates default-on/off.
+#[derive(Deserialize, Tsify, Default)]
+#[tsify(from_wasm_abi)]
+pub struct UntranslatedWordsOverrides {
+    #[serde(default)]
+    #[tsify(optional)]
+    pub corpus_gate_share: Option<f32>,
+    #[serde(default)]
+    #[tsify(optional)]
+    pub word_recurrence_k: Option<f32>,
+    #[serde(default)]
+    #[tsify(optional)]
+    pub run_bonus: Option<f32>,
+    #[serde(default)]
+    #[tsify(optional)]
+    pub emit_score_min: Option<f32>,
+}
+
 /// Partial overrides for the casing pair (`case.sentence-initial-lowercase`
 /// and `case.inconsistent-word-casing`, which share one config). Omitted
 /// fields keep core's calibrated defaults (ADR 0051/0052): `emit_score_min`
@@ -257,6 +280,9 @@ pub struct SousConfig {
     #[serde(default)]
     #[tsify(optional)]
     pub mixed_case: Option<MixedCaseOverrides>,
+    #[serde(default)]
+    #[tsify(optional)]
+    pub untranslated_words: Option<UntranslatedWordsOverrides>,
 }
 
 /// The analysis-input set every entry point takes as one typed object:
@@ -416,6 +442,20 @@ fn build_config(config: Option<SousConfig>) -> Config {
             }
             if let Some(v) = m.confidence_z {
                 cfg.mixed_case.confidence_z = v;
+            }
+        }
+        if let Some(u) = c.untranslated_words {
+            if let Some(v) = u.corpus_gate_share {
+                cfg.untranslated_words.corpus_gate_share = v;
+            }
+            if let Some(v) = u.word_recurrence_k {
+                cfg.untranslated_words.word_recurrence_k = v;
+            }
+            if let Some(v) = u.run_bonus {
+                cfg.untranslated_words.run_bonus = v;
+            }
+            if let Some(v) = u.emit_score_min {
+                cfg.untranslated_words.emit_score_min = v;
             }
         }
     }
@@ -1006,6 +1046,12 @@ mod tests {
                 recurrence_k: Some(20.0),
                 confidence_z: Some(1.5),
             }),
+            untranslated_words: Some(UntranslatedWordsOverrides {
+                corpus_gate_share: Some(0.4),
+                word_recurrence_k: Some(30.0),
+                run_bonus: Some(0.3),
+                emit_score_min: Some(0.6),
+            }),
         }));
 
         assert!(cfg.is_enabled(RuleId::DuplicateWord));
@@ -1042,6 +1088,10 @@ mod tests {
         assert_eq!(cfg.mixed_case.emit_score_min, 0.85);
         assert_eq!(cfg.mixed_case.recurrence_k, 20.0);
         assert_eq!(cfg.mixed_case.confidence_z, 1.5);
+        assert_eq!(cfg.untranslated_words.corpus_gate_share, 0.4);
+        assert_eq!(cfg.untranslated_words.word_recurrence_k, 30.0);
+        assert_eq!(cfg.untranslated_words.run_bonus, 0.3);
+        assert_eq!(cfg.untranslated_words.emit_score_min, 0.6);
     }
 
     /// A duplicate key entry is preserved (not collapsed into one row the
