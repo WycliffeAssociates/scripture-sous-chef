@@ -25,6 +25,7 @@ pub mod identity;
 mod interner;
 pub mod key;
 mod prep;
+pub mod review_depth;
 pub mod rule;
 pub mod script;
 pub mod signals;
@@ -185,7 +186,9 @@ mod phase_f_tests {
 }
 #[cfg(feature = "bench-probes")]
 pub use stream::{FloorNeeds, walk_floor};
-pub use catalog::{RuleCard, SENSITIVITY_STOPS, Verdict, rule_cards};
+pub use catalog::{
+    REVIEW_DEPTH_CATALOG, ReviewControl, ReviewDepthCatalog, RuleCard, Verdict, rule_cards,
+};
 pub use census::{CensusOptions, Inventory, census};
 pub use config::{
     BracketBalanceConfig, CasingConfig, CasingRuleConfig, Config, InconsistentWordCasingConfig,
@@ -198,6 +201,9 @@ pub use diagnostics::{
     LengthRatioScope, RuleId, Severity,
 };
 pub use identity::{ANALYSIS_ENGINE_STAMP, AnalysisId, TargetContextId};
+pub use review_depth::{
+    ReviewAdjustment, ReviewDepth, ReviewPolicy, ReviewPolicyError, apply_review_policy,
+};
 pub use span::{GraphemeSpan, Span, Utf16Span};
 
 use corpus::LocalKeyIdx;

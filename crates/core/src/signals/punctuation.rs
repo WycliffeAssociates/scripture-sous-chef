@@ -1909,6 +1909,32 @@ pub(crate) fn spacing_floor(cfg: &PunctuationSpacingConfig) -> f64 {
     f64::from(clamp_unit(cfg.emit_score_min))
 }
 
+/// Fleet-calibrated Review Depth profile for spacing convention review. The
+/// strict end requires stronger confidence and tolerates fewer repeated
+/// minority forms; the exploratory end relaxes both support and recurrence.
+pub fn config_at_review_depth(
+    depth: crate::review_depth::ReviewDepth,
+) -> PunctuationSpacingConfig {
+    PunctuationSpacingConfig {
+        emit_score_min: crate::review_depth::interpolate_f32(
+            depth,
+            &[(0, 0.80), (25, 0.65), (50, 0.50), (75, 0.40), (100, 0.30)],
+        ),
+        confidence_z: crate::review_depth::interpolate_f32(
+            depth,
+            &[(0, 2.58), (25, 2.20), (50, 1.96), (75, 1.64), (100, 1.28)],
+        ),
+        minority_recurrence_k: crate::review_depth::interpolate_u32(
+            depth,
+            &[(0, 20), (25, 26), (50, 32), (75, 42), (100, 56)],
+        ) as f32,
+        minority_rate_per_10k: crate::review_depth::interpolate_u32(
+            depth,
+            &[(0, 20), (25, 30), (50, 40), (75, 50), (100, 65)],
+        ) as f32,
+    }
+}
+
 /// One chapter the substrate has to map this analysis, as the ordered map seam
 /// sees it: its caller-order `(book, chapter)` slot plus the view mapping reads.
 struct SpacingMapWork<'a> {
@@ -2120,6 +2146,7 @@ fn spacing_judging_fp(cfg: &PunctuationSpacingConfig) -> u64 {
         cfg.emit_score_min,
         cfg.confidence_z,
         cfg.minority_recurrence_k,
+        cfg.minority_rate_per_10k,
     ])
 }
 
@@ -3870,7 +3897,7 @@ mod tests {
     #[test]
     fn spacing_judging_fp_moves_with_every_knob() {
         let base = PunctuationSpacingConfig::default();
-        let mutants: [(&str, PunctuationSpacingConfig); 3] = [
+        let mutants: [(&str, PunctuationSpacingConfig); 4] = [
             (
                 "emit_score_min",
                 PunctuationSpacingConfig {
@@ -3889,6 +3916,13 @@ mod tests {
                 "minority_recurrence_k",
                 PunctuationSpacingConfig {
                     minority_recurrence_k: base.minority_recurrence_k + 1.0,
+                    ..base
+                },
+            ),
+            (
+                "minority_rate_per_10k",
+                PunctuationSpacingConfig {
+                    minority_rate_per_10k: base.minority_rate_per_10k + 1.0,
                     ..base
                 },
             ),

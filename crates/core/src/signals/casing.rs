@@ -80,7 +80,9 @@ use rustc_hash::FxHashMap;
 
 use crate::analysis::association::Table2;
 use crate::charclass::class_of;
-use crate::config::CasingConfig;
+use crate::config::{
+    CasingConfig, CasingRuleConfig, InconsistentWordCasingConfig, SentenceInitialCasingConfig,
+};
 use crate::corpus::{Corpus, LocalKeyIdx, SiteAddr, rebase};
 use crate::diagnostics::{Finding, FindingArgs, RuleId, Severity};
 use crate::evidence::{clamp_count, clamp_unit, clamp_z, wilson_lower_bound};
@@ -3166,6 +3168,58 @@ pub fn evaluate(corpus: &Corpus, cfg: &CasingConfig) -> Vec<SiteEval> {
     }
     let _ = <CasingSubstrate as ObservationSubstrate>::ID;
     out
+}
+
+/// Fleet-calibrated positional Review Depth profile. The anchor values are
+/// kept in the rule module because they describe this judge's unusualness and
+/// support path; `review_depth.rs` owns only the shared interpolation math.
+pub fn sentence_initial_config_at_review_depth(
+    depth: crate::review_depth::ReviewDepth,
+) -> SentenceInitialCasingConfig {
+    SentenceInitialCasingConfig {
+        evidence: CasingRuleConfig {
+            emit_score_min: crate::review_depth::interpolate_f32(
+                depth,
+                &[(0, 0.99), (25, 0.97), (50, 0.95), (75, 0.90), (100, 0.80)],
+            ),
+            recurrence_k: crate::review_depth::interpolate_u32(
+                depth,
+                &[(0, 16), (25, 24), (50, 32), (75, 44), (100, 64)],
+            ) as f32,
+            confidence_z: crate::review_depth::interpolate_f32(
+                depth,
+                &[(0, 2.58), (25, 2.20), (50, 1.96), (75, 1.64), (100, 1.28)],
+            ),
+        },
+        trust_gate: crate::review_depth::interpolate_f32(
+            depth,
+            &[(0, 0.95), (25, 0.92), (50, 0.90), (75, 0.85), (100, 0.75)],
+        ),
+    }
+}
+
+/// Fleet-calibrated intrinsic Review Depth profile for the model-shaped casing
+/// consumer. It intentionally owns a separate table from the positional rule,
+/// even while the pilot currently shares the same evidence anchors.
+pub fn inconsistent_word_config_at_review_depth(
+    depth: crate::review_depth::ReviewDepth,
+) -> InconsistentWordCasingConfig {
+    InconsistentWordCasingConfig {
+        evidence: CasingRuleConfig {
+            emit_score_min: crate::review_depth::interpolate_f32(
+                depth,
+                &[(0, 0.99), (25, 0.97), (50, 0.95), (75, 0.90), (100, 0.80)],
+            ),
+            recurrence_k: crate::review_depth::interpolate_u32(
+                depth,
+                &[(0, 16), (25, 24), (50, 32), (75, 44), (100, 64)],
+            ) as f32,
+            confidence_z: crate::review_depth::interpolate_f32(
+                depth,
+                &[(0, 2.58), (25, 2.20), (50, 1.96), (75, 1.64), (100, 1.28)],
+            ),
+        },
+    }
 }
 
 #[cfg(test)]

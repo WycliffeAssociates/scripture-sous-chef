@@ -11,6 +11,7 @@ pub(crate) mod misc;
 pub(crate) mod mixedcase;
 pub(crate) mod paired;
 pub(crate) mod pooled;
+pub(crate) mod review_depth;
 pub(crate) mod shared;
 pub(crate) mod signatures;
 pub(crate) mod terminal;

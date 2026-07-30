@@ -74,6 +74,7 @@ use survey::misc::{
 use survey::mixedcase::{analyze_mixedcase, mixedcase_fleet, mixedcase_single_report};
 use survey::paired::{paired_survey, seed_faults, uw_calibrate, uw_case_shape_simulate};
 use survey::pooled::{analyze_pooled, pooled_fleet, pooled_single_report};
+use survey::review_depth::review_depth_survey;
 use survey::signatures::{analyze_signatures, signature_fleet, signature_single_report};
 use survey::terminal::{terminal_fleet, terminal_single};
 
@@ -141,6 +142,12 @@ fn main() {
                 let id = p.file_stem().unwrap().to_string_lossy().to_string();
                 pooled_single_report(&analyze_pooled(id, &load_corpus(p)));
             }
+            return;
+        }
+        // Review Depth pilot survey: compact per-corpus TSV rows over the
+        // committed five-anchor grids. Use a small/WA pass before full fleet.
+        [flag, path, out, tier] if flag == "--review-depth-survey" => {
+            review_depth_survey(Path::new(path), Path::new(out), tier);
             return;
         }
         // Casing two-factor calibration (ADR 0051). `<path>` is a single vref

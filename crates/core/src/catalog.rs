@@ -1,10 +1,10 @@
-//! The rule catalog — the human-facing card for every rule (ADR 0038).
+//! The rule catalog — the human-facing card for every rule (ADR 0038, amended by ADR 0070).
 //!
 //! `RuleId` is the typed config and localization surface (ADR 0012); this
 //! module is the shipped **English reference text** for that surface: what a
 //! finding is, why it might deserve an eyeball, the plain-language question
-//! behind every language-dependent on/off toggle, and the one sensitivity
-//! dial. Consumers render these directly or key translations off `code`.
+//! behind every language-dependent on/off toggle, and Review Depth eligibility.
+//! Consumers render these directly or key translations off `code`.
 //!
 //! Wording principles (the product voice — hold the line in edits):
 //!
@@ -36,6 +36,38 @@ pub enum Verdict {
     SourceRelative,
 }
 
+/// Whether a rule participates in the continuous Review Depth control.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "kebab-case"))]
+pub enum ReviewControl {
+    /// The rule remains an explicit on/off decision.
+    Fixed,
+    /// The rule has a calibrated depth-to-native-config mapping.
+    Mapped,
+}
+
+/// The shared public metadata for the one Review Depth control.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+pub struct ReviewDepthCatalog {
+    pub minimum: u8,
+    pub maximum: u8,
+    pub default: u8,
+    pub label: &'static str,
+    pub strict_label: &'static str,
+    pub exploratory_label: &'static str,
+}
+
+pub const REVIEW_DEPTH_CATALOG: ReviewDepthCatalog = ReviewDepthCatalog {
+    minimum: 0,
+    maximum: 100,
+    default: 50,
+    label: "Review depth",
+    strict_label: "Strongest patterns first",
+    exploratory_label: "Explore more patterns",
+};
+
 /// One rule's human-facing card.
 #[derive(Debug, Clone, Copy)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
@@ -52,17 +84,15 @@ pub struct RuleCard {
     /// language question and the default is right for everyone.
     pub enable_question: Option<&'static str>,
     pub verdict: Verdict,
+    pub review_control: ReviewControl,
 }
 
-/// The sensitivity dial's labelled stops, shared by every corpus-relative
-/// rule (they all emit the same score unit — anomaly evidence — so one set
-/// of words serves all of them). Values are `emit_score_min` settings;
-/// higher = fewer, surer findings.
-pub const SENSITIVITY_STOPS: &[(f32, &str)] = &[
-    (0.9, "Only what this translation almost never does"),
-    (0.7, "Unusual for this translation"),
-    (0.5, "Anything even moderately unusual"),
-];
+/// The closed catalog's independent Review Depth eligibility. The resolver in
+/// `review_depth.rs` is the authority; this wrapper keeps the catalog API
+/// discoverable without duplicating the mapping list.
+pub const fn review_control(id: RuleId) -> ReviewControl {
+    crate::review_depth::review_control(id)
+}
 
 /// The full catalog, one card per rule, in `RuleId::ALL` order. Complete by
 /// construction — the exhaustive match fails to compile when a rule is added
@@ -279,6 +309,7 @@ pub fn card(id: RuleId) -> RuleCard {
         why,
         enable_question,
         verdict,
+        review_control: review_control(id),
     }
 }
 
@@ -562,11 +593,14 @@ mod tests {
     }
 
     #[test]
-    fn sensitivity_stops_are_descending_and_in_range() {
-        let mut prev = 1.0f32;
-        for &(v, label) in SENSITIVITY_STOPS {
-            assert!(v < prev && v > 0.0 && !label.is_empty());
-            prev = v;
-        }
+    fn review_control_is_explicit_and_catalog_metadata_is_stable() {
+        assert_eq!(
+            card(RuleId::PunctuationSpacingAnomaly).review_control,
+            ReviewControl::Mapped
+        );
+        assert_eq!(card(RuleId::DuplicateWord).review_control, ReviewControl::Fixed);
+        assert_eq!(REVIEW_DEPTH_CATALOG.default, 50);
+        assert_eq!(REVIEW_DEPTH_CATALOG.minimum, 0);
+        assert_eq!(REVIEW_DEPTH_CATALOG.maximum, 100);
     }
 }
