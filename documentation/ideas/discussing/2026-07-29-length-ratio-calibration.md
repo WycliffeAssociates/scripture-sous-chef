@@ -51,9 +51,44 @@ What has never happened: a paired survey — every sweep to date ran
    top-scored sample, drawn preferentially from books/languages high in
    the reviewing model's parametric knowledge (owner ruling) so
    pre-screening is useful before owner adjudication.
-3. **Visualization — agreed**: d3 over a TSV dump — per-book fraction
-   scatter with median±z·MAD/0.6745 boundaries drawn and findings marked;
-   fleet-survey HTML is prior art.
+3. **Visualization — agreed, no new deps** (owner ruling 2026-07-30): the
+   fleet-survey report already does this pattern — a self-contained HTML
+   template (`crates/core/examples/fleet_report_template.html`) with an
+   inline script and a JSON payload injected at generation (`</`-escaping
+   handled). The calibration report is a second template on the same
+   pattern: per-book fraction scatter with median±z·MAD/0.6745 boundaries
+   drawn and findings marked. No d3, no external anything.
 4. **UI framing — agreed, and produced by instrument (a)**: keep the
    MAD-z gate internal; the per-book floors from the seeded sweep *are*
    the percent labels ("3.5 ≈ ~38% off-typical in Luke, ~55% in Psalms").
+
+## Harness sketch (2026-07-30) — shared with untranslated-words
+
+Home: a new survey cluster in the `calibrate` example (gate-neutral —
+`oracle.rs` untouched).
+
+1. **Pairs manifest** — a checked-in TSV: `target-path, source-path, tier`
+   (tier1 = the 15 Tech_Advance true pairs; tier2 = well-known complete
+   Bibles). Both sides are ordinary vref/repo corpora already on disk.
+2. **`--paired-survey <pairs.tsv> <out-dir>`** — per pair, per book: dump
+   verse fractions, median, MAD, flag boundaries, and findings at the
+   default z. Emits the versification guard: any book whose *median
+   fraction* is an outlier against the corpus's other books is quarantined
+   as a pairing artifact (rmn-class), never counted as findings.
+3. **`--seed-faults`** — deterministic (fixed-seed) mutation of a pair's
+   target before analysis: tail-chop at 10/20/30/50%, whole-verse
+   deletion, source-verse paste (the paste fault doubles as
+   untranslated-words ground truth). Ground-truth manifest written next to
+   the dump; rerun and join → catch-rate and clean-verse flag-rate tables.
+4. **The z-sweep is judge-only.** Knob isolation means the sweep maps each
+   corpus once and re-judges per z — the spine's slider machinery paying
+   off inside the harness itself. Sweep z ∈ [2.0 … 6.0]; read the curve
+   knee and the per-book detection floors.
+5. **Report** — second self-contained HTML template (fleet-report
+   pattern): scatter + boundaries per book, seeded-fault catch table,
+   fleet finding-rate histogram (bimodality health check).
+6. **Deliverables** — a `documentation/calibration/` write-up; z=3.5
+   confirmed or re-pinned (with drift recorded, ADR if behavior moves);
+   per-book percent labels for the UI slider; triage sample drawn from
+   tier-2 high-parametric-knowledge books, model-prescreened, owner-
+   adjudicated.
