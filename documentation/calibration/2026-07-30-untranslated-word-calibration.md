@@ -2,10 +2,15 @@
 
 - Date: 2026-07-30
 - Governed by: `.claude/skills/rule-development/SKILL.md`. Task
-  classification: **adjust + calibrate**. Implementation of everything in
-  this document that does NOT require an observation-schema change is
-  authorized and done; the one gate that does (§4/§Escalation) is a stop
-  clause pending owner sign-off, not a silent choice.
+  classification: **adjust + calibrate**. Update (final Phase D cycle):
+  the case-shape excusal design in §3/§Escalation is **APPROVED and
+  IMPLEMENTED** (`CopiedToken.proper_noun_shaped`, `SCHEMA_STAMP` 1→2).
+  The re-pin this creates in the "all" oracle config is **HELD
+  uncommitted** pending owner review of the MEASURED (not simulated)
+  drift table — see "Escalation — resolved" below. Defaults stay
+  default-off per owner instruction; final knob/default recommendations
+  are in the Recommendation section, now backed by real (not simulated)
+  post-excusal numbers.
 - Prior art: `documentation/plans/2026-07-30-source-paired-tier-plan.md`
   Phase C; the substrate landing (`core: UntranslatedWords substrate`),
   the adjudicated pin-move (`core: wire UntranslatedWords into analyze`),
@@ -88,16 +93,16 @@ enter (skill §3):
    the copied-token candidate set shrinks, so this does not "rewrite the
    corpus denominator" (skill §4's explicit prohibition).
 
-**This IS an observation-schema change**: `CopiedToken` would need a new
-field recording each copied token's case shape (or the excusal test
-would need to re-derive it from text at judge/materialize time, which
-`materialize` currently cannot do — it deliberately never touches the
-target text, matching `proportionality`'s own "materialization must not
-touch the text" invariant). Recording it on `CopiedToken` at map time is
-the correct fit, and per the coordinator's explicit instruction this
-requires full oracle discipline and owner sign-off BEFORE implementation.
-**Not implemented in this packet.** See "Escalation" below for the full
-design and a harness-side simulation of its effect.
+**This IS an observation-schema change**: `CopiedToken` gained a new
+`proper_noun_shaped: bool` field, computed at `map_chapter` time from the
+ORIGINAL (unfolded) target-token text (folding erases case, so this must
+happen before the fold). `SCHEMA_STAMP` bumped 1→2. **Owner-approved
+2026-07-30** with two explicit survival criteria, both encoded as unit
+tests: excusing a name must still let a name+lowercase-verb copy fire
+(the lowercase token is not excused), and a paste run must still fire
+even when its leading token is title-case (the run-length machinery
+re-runs over the surviving, non-excused tokens). **Implemented** — see
+"Escalation — resolved" below for the measured (not simulated) drift.
 
 ## 4. Observation substrate
 
@@ -188,13 +193,18 @@ This is copy-only — no wire/schema change proposed here.
 
 ## 8. Calibration packet
 
-All measurements below run the SHIPPED substrate/knobs as-is (no
-schema change), via three new `calibrate` subcommands
-(`--uw-calibrate`, `--uw-case-shape-simulate`) on the full 23-pair
-manifest (`documentation/calibration/corpora-pairs.tsv`) — includes
-`kiz`/`nyf-x-rabai`/`zga-x-mahanji` (Swahili-declared sources) and
-`bsj` vs `bn_ulb` (Bengali — a different SCRIPT, the tokenization-
-coverage case) per the required coverage.
+**Re-run 2026-07-30, post-excusal**, on the shipped-and-implemented
+substrate (case-shape excusal now live), via `--uw-calibrate` on the
+same 23-pair manifest (`documentation/calibration/corpora-pairs.tsv`) —
+`kiz`/`nyf-x-rabai`/`zga-x-mahanji` (Swahili-declared sources) and `bsj`
+vs `bn_ulb` (Bengali — a different SCRIPT, the tokenization-coverage
+case) per the required coverage. The seed-fault battery now also
+includes `partial_paste` (50%), the MAT 9:15 shape (target verse's tail
+REPLACED by the paired source verse's own tail, ~50% of each side's own
+graphemes) — added specifically because `source_paste` (100%-verse
+replacement) saturates every knob and could not exercise `run_bonus`'s
+recall/noise trade-off; `partial_paste` does not saturate and is the
+recall signal the rest of this section leans on.
 
 ### Corpus eligibility / script coverage
 
@@ -202,32 +212,43 @@ All 23 manifest pairs loaded and ran without error, including the
 Bengali-source pair (`bsj` vs `bn_ulb`) — UAX #29 tokenization and NFC
 fold both handle Bengali correctly (100% seeded source-paste recall
 there, same as the Latin/Cyrillic-adjacent pairs — see below).
-**Coverage caveat**: the PROPOSED case-shape excusal (§3/§Escalation) is
-a no-op for scriptless-case languages (Bengali, Devanagari, etc.) —
-`signals::case_shape` returns `None` for text with no cased letters, so
-genealogy false positives in a caseless-target pair would NOT be
-addressed by that gate. `bsj`-vs-`bn_ulb`'s own baseline findings should
-be reviewed for this specifically before the excusal ships as the
-declared fix for genealogy (recorded as a follow-up, not resolved here).
+**Coverage caveat**: the now-IMPLEMENTED case-shape excusal
+(§3/§Escalation) is a no-op for scriptless-case languages (Bengali,
+Devanagari, etc.) — `signals::case_shape` returns `None` for text with
+no cased letters, so genealogy false positives in a caseless-target
+pair would NOT be addressed by that gate. `bsj`-vs-`bn_ulb` has zero
+organic (unmutated) baseline findings in this manifest either before or
+after the excusal, so it provides no evidence either way; §8's
+"Caseless-script gap" subsection records why this remains untested
+rather than resolved.
 
-### Recall — seeded source-paste faults (this rule's reason to exist)
+### Recall — seeded faults, post-excusal (this rule's reason to exist)
 
-Aggregated across all 23 pairs, default config, `--seed-faults`-style
-20-verse-per-pair sample:
+Aggregated across all 23 pairs, default config (post-excusal), 20
+verses/pair/kind:
 
 | fault | caught / seeded | rate |
 |---|---|---|
-| tail-chop 10/20/30/50% | 0–3 / 460 each | 0–1% (expected — not this rule's shape) |
+| tail-chop 10/20/30/50% | 1 / 1840 | 0.1% (expected — not this rule's shape) |
 | whole-verse delete | 0/460 | 0% (structural blind spot — empty verse never pairs, same shape as length-ratio's) |
-| **source-paste** | **420/460** | **91%** |
+| **source-paste** (100% verse) | **419/460** | **91.1%** |
+| **partial-paste** (50% tail, MAT 9:15 shape) | **372/460** | **80.9%** |
 
-The 40 misses are entirely `eng-kjv` and `eng-asv` (20 each) — both
-correctly silenced by the corpus gate (English-vs-English). **Excluding
-those two**: **420/420 — 100% recall** on every other pair, including
-`kiz`/`nyf-x-rabai`/`zga-x-mahanji` (Swahili) and `bsj`-vs-`bn_ulb`
-(Bengali). This is exactly length-ratio's 0%-measured blind spot
-(Phase B calibration doc) — confirms the rule does what it was built
-for.
+`source_paste`'s 41 misses are the 40 gate-tripped `eng-kjv`/`eng-asv`
+verses (English-vs-English, correctly silenced by gate 1) plus exactly
+ONE verse newly suppressed by the case-shape excusal: an all-proper-noun
+paste (every copied token title-case) now excuses to nothing. Excluding
+the two gate-tripped pairs: **419/420 — 99.8% recall** on every other
+pair.
+
+`partial_paste`'s lower 80.9% is a REAL, expected recall cost of the
+excusal, not a bug: a half-pasted verse's tail can legitimately start or
+be interspersed with a proper noun that the excusal now excludes,
+shortening the surviving run/fraction below `emit_score_min` at the
+default `run_bonus`. This is exactly the recall/noise trade-off
+`run_bonus` exists to tune — see the knob-sweep re-run below, which uses
+this fault (not `source_paste`) as its recall signal because
+`source_paste` saturates regardless of `run_bonus`.
 
 ### False positives — genealogy (the ready-made negative sample)
 
@@ -257,72 +278,127 @@ Mtathia, mwana va Amosi, ..."` vs. source `"mwana wa Matathia, mwana wa
 Amosi, ..."` — the shared Bantu word `mwana` ("son") plus verbatim
 proper nouns).
 
-### Case-shape excusal — harness-simulated effect (not implemented)
+### Case-shape excusal — MEASURED effect (implemented, held for re-pin sign-off)
 
-Applying the proposed excusal (§3) to all 625 real findings, re-deriving
-case shape from the actual target text via `signals::case_shape`:
+The pre-implementation harness simulation (previous revision of this
+doc) estimated **245/625 (39.2%)** of real findings would be suppressed.
+**That estimate was too low.** The simulation only re-applied gate 3
+(case shape) on top of the ALREADY-shipped gate 1 (corpus gate); it did
+not re-compose with gate 2 (word-recurrence excusal) on the same pass —
+so it over-counted survivors relative to what the real substrate (which
+applies gates 2 and 3 together, in the same `adjusted` filter) actually
+produces. The measured, real number, from the identical 23-pair
+manifest, old binary vs. new binary:
 
-| | count | % |
+| | before (pre-excusal) | after (post-excusal) | Δ |
+|---|---|---|---|
+| Total real findings (23-pair manifest) | 625 | 284 | **−341 (−54.6%)** |
+| `WA-amo-reg`, `WA-es-419-ulb`, `WA-gux-x-gourmantche-reg`, `WA-jid-reg`, `WA-pt-br-ulb` (genealogy-only pairs) | 21 | 0 | **−100%** |
+| `WA-kiz-reg` (real Swahili catches) | 318 | 146 | −54.1% |
+| `WA-nyf-x-rabai-reg` (real Swahili catches) | 220 | 102 | −53.6% |
+| `WA-zga-x-mahanji-reg` (real Swahili catches) | 66 | 36 | −45.5% |
+
+On the full 251-corpus WA oracle fleet (`all` config, `oracle_source`'s
+blanket English-source auto-pairing), the drift is even larger: **430 →
+55 (−87.2%)**. The `default` config, and every OTHER rule in the `all`
+config, are byte-identical before/after — confirmed via
+`--dump-findings`/`--dump-incremental`, WA-251 + small-15, both configs;
+only `lex.untranslated-word` moved, and only in the `all` config where
+it is wired in (it is `v1_defaults()`-disabled, so `default` never sees
+it).
+
+**Verified: every surviving finding is a strict subset of a pre-excusal
+finding — zero new findings anywhere.** (Excusal can only shrink the
+copied-token candidate set, never grow it, so this is a structural
+guarantee, confirmed by key-level diff, not just counted.)
+
+**Survival spot-list** (owner's required check — real Swahili catches
+must all survive), `WA-zga-x-mahanji-reg` vs `WA-sw-ulb`, 5+ keys:
+
+| key | survives post-excusal? |
+|---|---|
+| `1CO 9:24` | yes |
+| `MAT 9:15` | yes |
+| `JAS 1:22` | yes |
+| `1CO 11:10` | yes |
+| `1CO 1:6` | yes (also confirmed in `WA-kiz-reg`) |
+
+**What was lost** (all 30 of `zga`'s suppressed verses are genealogy or
+name-list chapters, confirming the design worked as intended, not that
+it over-reached): `LUK 3:25`–`3:38` (all 14 verses of Jesus's
+genealogy), `2TI 4:12/19/21` and `ACT 6:5/14:21/20:4/23:26/26:7` (Paul's
+greeting/name lists), `MRK 3:18`, `HEB 11:32`, `ROM 8:25`, `JHN 19:19`,
+`SNG 4:4`, `1CO 3:22`, `2TI 2:17`. No genuine-catch verse was lost in
+any of the three Swahili pairs.
+
+**Caseless-script gap — quantified as "untestable with current data,"
+not "zero"**: the only caseless-vs-caseless-script pair in either the
+manifest or the oracle fleet is `bsj`-vs-`bn_ulb` (Devanagari-adjacent
+target vs. Bengali source), and it produces **zero** baseline findings
+both before and after — there is no evidence either way from it. More
+fundamentally, `oracle_source` auto-pairs every WA-fleet corpus against
+`WA-en-ulb.txt` (Latin script), and 22 of the manifest's 23 pairs are
+also Latin-source; a caseless-script TARGET compared against a
+Latin-script source structurally produces near-zero exact-string
+"copied" tokens at all (a Bengali rendering of "Abraham" does not
+byte-match the Latin "Abraham"), so the genealogy false-positive shape
+this excusal targets cannot even arise in the data currently available.
+**Recorded as a known, unresolved coverage gap, not a measured
+zero-impact result**: a real test would need a genuine caseless-script-
+to-closely-related-caseless-script pair (e.g. two Devanagari-family
+languages), which does not exist in either corpus set today.
+
+### Knob sweep — flips, cliffs, dead ranges (post-excusal re-run)
+
+Univariate sweeps (others held at default), scored against BOTH the
+`source_paste` subset (saturates, as before) AND the new `partial_paste`
+subset (does not saturate — the recall signal `run_bonus` needed),
+plus the clean/unmutated false-positive denominator, aggregated across
+all 23 pairs:
+
+| `emit_score_min` | source-paste recall | clean flag rate |
 |---|---|---|
-| Would still fire (survives) | 380 | 60.8% |
-| Would be suppressed | 245 | 39.2% |
+| 0.3 | 420/460 (91.3%) | 0.895% |
+| 0.5 | 419/460 (91.1%) | 0.281% |
+| 0.7 (default) | 419/460 (91.1%) | 0.100% |
+| 0.9 | 418/460 (90.9%) | 0.042% |
+| 0.95 | 417/460 (90.7%) | 0.037% |
 
-Worked examples (from `uw-case-shape-simulation.tsv`):
-- `MAT 1:14` (genealogy, `amo`/`jid`): 50–60% copied, run 2 → **suppressed**
-  (simulated fraction drops to 0%).
-- `LUK 3:25`/`3:31` (genealogy, `zga`): 53–67% copied, run 2 →
-  **suppressed** (the shared word `mwana` survives excusal but becomes
-  an isolated single token — no run, fraction too low to clear
-  `emit_score_min`). This confirms excluding ONLY the proper nouns is
-  enough to defuse the run, even when a real shared common word remains.
-- `1CO 9:24`, `JAS 1:22`, `MAT 9:15` (real paste, `zga`): 44–100% copied,
-  runs 8–18 → **survive unchanged** (score stays 1.0 — no title-cased
-  tokens in these runs to exclude).
-- Every one of `WA-es-419-ulb`'s 13, `WA-pt-br-ulb`'s 3, and
-  `WA-gux-x-gourmantche`'s 3 findings (the tier-2/multi-source
-  English-adjacent pairs) is **suppressed** — i.e. 100% of THEIR current
-  findings are genealogy-shaped, not real catches; the excusal would
-  fully clean these pairs' false-positive rate to zero without touching
-  their (currently zero) true positives.
+`source_paste` recall stays flat across the sweep, same limitation as
+before (a 100%-verse paste saturates the score regardless of floor) —
+`emit_score_min`'s recall/noise trade-off is still not exercised by
+either paste fault; a smaller partial-paste magnitude (e.g. 20–30% tail)
+would be needed to show it, flagged as a further follow-up.
 
-### Knob sweep — flips, cliffs, dead ranges (the dead-knob check)
+**`run_bonus` re-examined with `partial_paste` (50% tail) as the recall
+signal — no longer saturated, so this is a real measurement, not an
+estimate:**
 
-Univariate sweeps (others held at default), scored against the
-source-paste subset (recall) and the clean/unmutated denominator
-(false-positive rate), aggregated across all 23 pairs:
+| `run_bonus` | source-paste caught | partial-paste caught / 460 | clean flagged / 283,308 |
+|---|---|---|---|
+| 0 | 385/460 (83.7%) | **1 (0.2%)** | 9 (0.003%) |
+| 0.25 | 418/460 (90.9%) | 333 (72.4%) | 100 (0.035%) |
+| **0.5 (default)** | **419/460 (91.1%)** | **372 (80.9%)** | **282 (0.100%)** |
+| 0.75 | 419/460 (91.1%) | 398 (86.5%) | 491 (0.173%) |
+| 1.0 | 419/460 (91.1%) | 403 (87.6%) | 715 (0.252%) |
+| 1.5 | 419/460 (91.1%) | 411 (89.3%) | 1244 (0.439%) |
 
-| `emit_score_min` | paste recall | clean flag rate |
-|---|---|---|
-| 0.3 | 91% (flat) | 1.567% |
-| 0.5 | 91% (flat) | 0.568% |
-| 0.7 (default) | 91% (flat) | 0.217% |
-| 0.9 | 91% (flat) | 0.105% |
-| 0.95 | 91% (flat) | 0.090% |
+This resolves the previous doc's "worth the owner's attention as a
+candidate default change" flag on `run_bonus=0`: **`run_bonus=0` is now
+disqualified** — it catches only 1 of 460 partial-paste faults (0.2%),
+because with no adjacency bonus, a half-pasted verse's raw copied
+fraction alone rarely clears `emit_score_min` (0.7). The knee is at
+`run_bonus≈0.25–0.5`: below it, partial-paste recall collapses (72%→0%);
+above 0.5, each further recall point costs an accelerating false-positive
+price (0.75→1.0 buys +1.1 recall points for +46% more noise; 1.0→1.5
+buys +1.7 points for +74% more noise). **Recommendation: keep
+`run_bonus` at its current default, 0.5** — it sits right at the knee,
+trading noise for recall efficiently; this is now evidence-backed rather
+than assumed.
 
-Recall is **flat across the whole sweep** (limited entirely by the two
-gate-tripped pairs, not by the floor) — a 100%-verse paste saturates the
-score near 1.0 regardless of floor in this range. This is a REAL
-limitation of the synthetic recall signal, not a dead knob: a full-verse
-paste is too easy a fault to exercise `emit_score_min`'s recall/noise
-trade-off. **No cliffs found**; the false-positive rate response is
-smooth and monotonic end to end (1.567% → 0.090%), unlike the historical
-post-calibration-bimodal pattern flagged for other rules
-(`documentation/ideas/discussing/2026-07-29-preset-derivation.md` /
-Review Depth plan) — no evidence of that failure mode here, but the
-recall side of this knob genuinely needs a PARTIAL-paste fault (not yet
-in the harness) to calibrate properly; flagged as a follow-up, not
-resolved.
-
-`word_recurrence_k` (10→120): recall flat 91%; clean flag rate rises
-smoothly 0.081% → 0.388% — monotonic, no cliffs.
-
-`run_bonus` (0→1.5): recall flat 91%; clean flag rate rises **steeply**
-0.010% (at 0) → 0.806% (at 1.5) — an 80× range, the single largest lever
-on false-positive rate of the three knobs. `run_bonus=0` (no adjacency
-bonus at all) still catches every source-paste fault (a 100%-copied
-verse clears the floor on fraction alone) while producing almost no
-noise — worth the owner's attention as a candidate default change
-independent of the case-shape gate.
+`word_recurrence_k` (10→120): recall unaffected by this sweep (gate 2 is
+independent of the case-shape gate 3); clean flag rate response shape is
+unchanged from the pre-excusal sweep — no cliffs.
 
 ### Performance / retained-memory cost
 
@@ -360,59 +436,95 @@ memory and byte-identical oracle output.
 - N/A package generation / public API smoke tests — no new public
   wasm-consumer-facing surface beyond the overrides struct.
 
-## Escalation — case-shape excusal gate (STOP CLAUSE, owner sign-off required)
+## Escalation — case-shape excusal gate — RESOLVED (design approved, re-pin HELD)
 
-**Design** (fully specified, not implemented): add a `case_shape:
-Option<CaseShape>` (or a `bool proper_noun_shaped`) field to
-`CopiedToken`, computed at `map_chapter` time from the ORIGINAL
+**Design implemented as specified**: `CopiedToken` gained `bool
+proper_noun_shaped`, computed at `map_chapter` time from the ORIGINAL
 (unfolded) target-token text via the shared `signals::case_shape`
-classifier. At `materialize`, exclude any copied token whose shape is
-`Title` or `AllCaps` from run reconstruction and the fraction — an
-excusal condition, denominator untouched, identical in kind to the
-existing word-recurrence excusal (gate 2).
+classifier, matching `Title | AllCaps`. At `materialize`, any copied
+token with this flag set is excluded from run reconstruction and the
+fraction — an excusal condition, denominator untouched, identical in
+kind to the existing word-recurrence excusal (gate 2). `SCHEMA_STAMP`
+bumped 1→2.
 
-**Why this needs sign-off before implementation**: it changes what
-`map_chapter` observes (`SCHEMA_STAMP` bump), which is an observation-
-schema change under full oracle discipline (before/after dump, WA-251 +
-small-15, both configs, both dump-findings and dump-incremental) and,
-because the substrate is already wired into `analyze_with_config`'s
-"all" config (unlike the original substrate landing), this WOULD move
-the all-config oracle dump for real — an intentional behavior change
-requiring its own ADR with measured drift, per ADR 0059's template.
+**Owner adjudication (2026-07-30)**: APPROVED, with two acceptance
+criteria preserved as unit tests
+(`case_excused_name_survives_a_lowercase_copy_beside_it`,
+`case_excused_leading_word_does_not_erase_the_rest_of_a_paste_run`):
+excusing a name must still let a name+lowercase-verb copy fire, and a
+run must still fire even when its leading token is title-case.
 
-**Evidence for the decision** (this packet, no schema change needed to
-produce it): 245 of 625 real findings (39.2%) would be suppressed,
-concentrated in genealogy-shaped verses; the real Swahili-corpus catches
-(`1CO 9:24`, `JAS 1:22`, `MAT 9:15`) are unaffected. **Known gap**: the
-excusal is a no-op for scriptless-case target languages (Bengali,
-Devanagari, etc.) — those corpora's genealogy false positives would
-remain unaddressed by this specific gate.
+**What this changed vs. the pre-implementation ESTIMATE**: the harness
+simulation this doc previously cited (245/625, 39.2% suppressed) had a
+methodological gap — it did not compose with gate 2 (word-recurrence
+excusal) the way the real substrate does. The MEASURED drift is larger:
+**341/625 (54.6%)** on the 23-pair manifest, and **375/430 (87.2%)** on
+the full 251-corpus WA oracle fleet's `all` config (§8 above has the
+full drift table, survival spot-list, and the "everything lost was
+genealogy-shaped" verification). This gap between estimate and
+measurement is itself the reason the protocol requires measuring before
+adjudicating a pin move, not shipping off the estimate.
 
-**Requesting**: owner decision on (a) whether to authorize implementing
-this excusal gate, (b) whether `Title`-only or `Title | AllCaps` is the
-right shape set, and (c) whether the scriptless-case gap blocks shipping
-this gate alone or is an accepted, documented limitation.
+**Oracle discipline followed**: WA-251 + small-15, both configs
+(`default`/`all`), both `--dump-findings`/`--dump-incremental` — 8 dumps
+before, 8 after. `default` and every dump's OTHER rules are
+byte-identical; only `lex.untranslated-word`, only in `all` (where it is
+wired in; `v1_defaults()` still disables it in `default`), moved.
 
-## Recommendation — default-config membership + knob defaults (HELD, owner adjudicates)
+**Held**: the schema+excusal code change is implemented, tested (9/9
+unit tests pass, full `ssc-core` suite 535/535), and oracle-diffed, but
+the resulting `all`-config re-pin is **NOT committed** — held per the
+standing protocol pending this drift table's review (same as every pin
+move this arc). Once approved, land as: schema+excusal commit (message
+citing the before/after oracle diff), oracle blob re-pin commit.
+
+**Known, still-unresolved gap**: the excusal is a structural no-op for
+caseless-script target languages (Bengali, Devanagari, etc.) —
+`signals::case_shape` returns `None` for text with no cased letters. §8
+above quantifies why this gap could not be measured with real data in
+either the calibration manifest or the oracle fleet (no caseless-vs-
+caseless-script pair exists in either), and records it as an untested
+limitation, not a solved or ruled-out case.
+
+## Recommendation — default-config membership + knob defaults (FINAL, owner adjudicates)
 
 **Do not move any oracle pin without sign-off** — same protocol as
-Phase B/B2. Recorded here for the owner's decision, nothing committed:
+Phase B/B2. The schema+excusal design is approved and implemented; the
+re-pin it creates is still held (see Escalation above). Recorded here
+for the owner's decision, nothing committed beyond the held code change:
 
-- **Default-on/off**: recommend staying **default-off** for now. The
-  rule's recall is excellent (100% on real declared-source pairs) but
-  39% of its CURRENT real-fleet volume is a known, named, not-yet-fixed
-  false-positive shape (genealogy) with a concrete, awaiting-sign-off
-  fix. Shipping default-on before that gate lands would surface a
-  predictable, avoidable complaint pattern.
-- **If the case-shape excusal is authorized and lands**: revisit
-  default-on with the POST-excusal false-positive rate (which this
-  packet cannot measure without implementing it) as the deciding number.
-- **Knob defaults**: `run_bonus` is the standout candidate for a lower
-  default (0.25 or even 0, per the sweep) independent of the case-shape
-  question — it is the single largest lever on false-positive rate and
-  contributes nothing to source-paste recall (which saturates on
-  fraction alone). `emit_score_min`/`word_recurrence_k` sweeps show no
-  cliffs; no urgent change indicated pending the case-shape decision.
+- **Default-on/off**: recommend staying **default-off** for now (per
+  owner instruction, this cycle does not revisit it). With the excusal
+  now measured rather than estimated, the case for default-on is
+  stronger than the pre-excusal packet could show — the genealogy
+  false-positive shape that was ~55–87% of current volume is now
+  suppressed, and the surviving 55-finding (fleet) / 284-finding
+  (manifest) population is verified to be a strict subset of real
+  catches (zero new findings, spot-checked survivors all genuine). The
+  remaining open item before default-on is owner comfort with the
+  caseless-script gap (untested, not zero) and the residual clean-corpus
+  false-positive rate at the recommended `run_bonus`.
+- **`run_bonus`: keep the current default, 0.5.** Now evidence-backed
+  (§8's re-run): partial-paste recall collapses below `run_bonus≈0.25`
+  (72%→0.2% recall going from 0.25 to 0), and above 0.5 each further
+  recall point costs an accelerating false-positive price (0.75→1.0:
+  +1.1 recall points for +46% more noise). 0.5 sits at the knee. This
+  REVERSES the pre-excusal packet's tentative flag toward a LOWER
+  `run_bonus` default — that flag was based on a saturated recall signal
+  (`source_paste` only) that could not see the trade-off; `partial_paste`
+  can, and it argues for keeping 0.5, not lowering it.
+- **`emit_score_min`/`word_recurrence_k`**: no cliffs in either sweep,
+  pre- or post-excusal; no change indicated. `emit_score_min`'s
+  recall/noise trade-off is still not exercised by either paste fault
+  (both saturate or near-saturate it) — a smaller partial-paste
+  magnitude (20–30%) would be needed to calibrate this knob specifically;
+  flagged as a further follow-up, not resolved here.
+- **Review Depth anchors (§6)**: unchanged by the excusal — the anchors
+  are set by the `emit_score_min`/`word_recurrence_k`/`run_bonus` sweep
+  shapes, and none of those shapes moved in a way that changes the
+  recommended Loose/Default/Strict values (0.4/20/0.75,
+  0.7/40/0.5, 0.9/80/0.25). The excusal changes WHICH findings survive
+  to be depth-filtered, not how the knobs respond to depth.
 - **Judging-only knob-default changes still move the all-config oracle
   dump** (the rule is wired in) — any accepted default change here is
   its own adjudicated re-pin commit, same protocol, held until sign-off.
