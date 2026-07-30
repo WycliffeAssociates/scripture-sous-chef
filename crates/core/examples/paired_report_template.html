@@ -223,7 +223,14 @@ function scatterChart(points, median, lower, upper, opts) {
       x: marginL, y: y(upper), width: plotW, height: Math.max(0, y(lower) - y(upper)),
       fill: css("--band"),
     }));
+  }
+  // Each edge is drawn independently — an asymmetric spread (ADR 0069) can
+  // have only one side's MAD present (the other side abstained: a tie
+  // pileup, see `Spread::gated`), and that edge is simply omitted.
+  if (lower != null) {
     svg.append(svgEl("line", { x1: marginL, x2: marginL + plotW, y1: y(lower), y2: y(lower), stroke: css("--deemph"), "stroke-dasharray": "3,3" }));
+  }
+  if (upper != null) {
     svg.append(svgEl("line", { x1: marginL, x2: marginL + plotW, y1: y(upper), y2: y(upper), stroke: css("--deemph"), "stroke-dasharray": "3,3" }));
   }
   svg.append(svgEl("line", { x1: marginL, x2: marginL + plotW, y1: y(median), y2: y(median), stroke: css("--text-secondary") }));
@@ -340,8 +347,10 @@ function pairCard(p) {
     tile("Verses paired", fmtInt(p.verses_paired)),
     tile("Books", p.books.length),
     tile(`Findings @ z=${DATA.default_z}`, fmtInt(p.findings_default_z)),
-    tile("Project floor @ z=3.5", p.project.floor_pct_z3_5 != null ? `${p.project.floor_pct_z3_5.toFixed(0)}%` : "—",
-      "small books ride this channel"),
+    tile("Project floor @ z=3.5 (long/short)",
+      `${p.project.floor_pct_long_z3_5 != null ? p.project.floor_pct_long_z3_5.toFixed(0) + "%" : "—"} / ` +
+      `${p.project.floor_pct_short_z3_5 != null ? p.project.floor_pct_short_z3_5.toFixed(0) + "%" : "—"}`,
+      "small books ride this channel (ADR 0069: two one-sided MADs)"),
   );
   card.append(tiles);
 
@@ -356,14 +365,15 @@ function pairCard(p) {
   det.setAttribute("open", "");
   det.append(el("summary", null, `Per-book median/MAD (${p.books.length} books)`));
   const tbl = el("table");
-  tbl.innerHTML = '<thead><tr><th>book</th><th class="num">n</th><th class="num">median</th><th class="num">MAD</th><th class="num">floor % @ z=3.5</th><th>quarantined</th></tr></thead>';
+  tbl.innerHTML = '<thead><tr><th>book</th><th class="num">n</th><th class="num">median</th><th class="num">MAD above</th><th class="num">MAD below</th><th class="num">floor % long/short @ z=3.5</th><th>quarantined</th></tr></thead>';
   const tb = el("tbody");
   const sortedBooks = [...p.books].sort((a, b) => b.n - a.n);
+  const pct = (v) => v != null ? v.toFixed(0) + "%" : "—";
   for (const b of sortedBooks) {
     tb.append(el("tr", null,
       `<td>${esc(b.book)}</td><td class="num">${fmtInt(b.n)}</td><td class="num">${fmt3(b.median)}</td>` +
-      `<td class="num">${fmt3(b.mad)}</td>` +
-      `<td class="num">${b.floor_pct_z3_5 != null ? b.floor_pct_z3_5.toFixed(0) + "%" : "—"}</td>` +
+      `<td class="num">${fmt3(b.mad_above)}</td><td class="num">${fmt3(b.mad_below)}</td>` +
+      `<td class="num">${pct(b.floor_pct_long_z3_5)} / ${pct(b.floor_pct_short_z3_5)}</td>` +
       `<td>${b.quarantined ? "yes — pairing artifact" : ""}</td>`));
   }
   tbl.append(tb);
@@ -386,18 +396,21 @@ function pairCard(p) {
     card.append(sdet);
   }
 
-  // Scatter for the largest judgeable (non-quarantined, n >= min_verses) book.
-  const judgeable = sortedBooks.filter((b) => !b.quarantined && b.n >= DATA.min_verses && b.mad > 0);
+  // Scatter for the largest judgeable (non-quarantined, n >= min_verses,
+  // at least one side with signal) book. The band is asymmetric (ADR
+  // 0069): the upper edge uses the long-side MAD, the lower edge the
+  // short-side MAD — a missing side (no signal) leaves that edge off.
+  const judgeable = sortedBooks.filter((b) => !b.quarantined && b.n >= DATA.min_verses && (b.mad_above > 0 || b.mad_below > 0));
   if (judgeable.length) {
     const top = judgeable[0];
     const pts = p.scatter
       .filter((s) => s.book === top.book)
       .map((s) => ({ x: s.order, y: s.fraction, flagged: s.flagged, scope: s.scope }));
-    const lower = top.median - DATA.default_z * top.mad / 0.6745;
-    const upper = top.median + DATA.default_z * top.mad / 0.6745;
-    card.append(el("div", "chart-title", `Fraction scatter — ${esc(top.book)} (largest judgeable book), median line, ±z=${DATA.default_z} band`));
+    const upper = top.mad_above > 0 ? top.median + DATA.default_z * top.mad_above / 0.6745 : null;
+    const lower = top.mad_below > 0 ? top.median - DATA.default_z * top.mad_below / 0.6745 : null;
+    card.append(el("div", "chart-title", `Fraction scatter — ${esc(top.book)} (largest judgeable book), median line, asymmetric ±z=${DATA.default_z} band (ADR 0069)`));
     card.append(scatterChart(pts, top.median, lower, upper, {}));
-    card.append(el("div", "caption", "Red = flagged at the shipped z. Grey band = the flag boundary; points outside it are outliers."));
+    card.append(el("div", "caption", "Red = flagged at the shipped z. Grey band = the flag boundary (upper = long-side MAD, lower = short-side MAD); points outside it are outliers."));
   } else {
     card.append(el("div", "caption", "No book in this pair clears the quarantine + min_verses + nonzero-MAD gate for a scatter."));
   }

@@ -21,12 +21,21 @@ use crate::diagnostics::RuleId;
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default))]
 pub struct ProportionalityConfig {
-    /// Robust z-score (median/MAD) magnitude above which a verse's
-    /// target/reference length ratio is flagged. Vision §9 guessed 2.5;
-    /// calibration showed verse-length ratios are much fatter-tailed
-    /// than normal and settled on 3.5 — see
-    /// `documentation/calibration/2026-06-09-proportionality.md`.
-    pub z_threshold: f32,
+    /// Robust z-score magnitude, against the LONG-side MAD (deviations of
+    /// ratios above the median), past which a verse longer than typical is
+    /// flagged. Vision §9 guessed 2.5; calibration showed verse-length
+    /// ratios are much fatter-tailed than normal and settled on 3.5 — see
+    /// `documentation/calibration/2026-06-09-proportionality.md`. Split
+    /// from the short-side knob by ADR 0069 (the ratio distribution is
+    /// squeezed against zero on the short side and open-ended on the long
+    /// side, so one symmetric threshold mis-sizes one tail); Phase B's
+    /// paired-fleet survey confirmed the shared 3.5 value for both sides —
+    /// see `documentation/calibration/2026-07-30-length-ratio-paired-survey.md`.
+    pub z_long: f32,
+    /// Robust z-score magnitude, against the SHORT-side MAD (deviations of
+    /// ratios below the median), past which a verse shorter than typical is
+    /// flagged. See `z_long` for the asymmetric-spread rationale (ADR 0069).
+    pub z_short: f32,
     /// Minimum target∩reference verse count in a book before its
     /// distribution is judged at all; smaller books are skipped.
     pub min_verses: usize,
@@ -35,7 +44,8 @@ pub struct ProportionalityConfig {
 impl Default for ProportionalityConfig {
     fn default() -> Self {
         Self {
-            z_threshold: 3.5,
+            z_long: 3.5,
+            z_short: 3.5,
             min_verses: 50,
         }
     }

@@ -125,6 +125,35 @@ per-book percent terms.
 3. Per-book percent labels for the UI slider ("3.5 ≈ ~38% off-typical in
    Luke") fall out of the floors — recorded for preset-derivation.
 
+## Phase B2 — asymmetric spread (owner-adjudicated 2026-07-30)
+
+Phase B outcome: **z=3.5 confirmed** (no-op, evidence recorded in the
+calibration doc). Additionally adjudicated: split the spread measurement
+by direction — the ratio distribution is squeezed against zero on the
+short side and open-ended on the long side, so one symmetric "usual
+difference" mis-sizes one tail. Change `prop.length-ratio`'s judge to
+two one-sided MADs (deviations above the median measured separately from
+deviations below — "double MAD") and two thresholds (`z_long`,
+`z_short`), both defaulting 3.5 so behavior is initially unchanged in
+spirit (values shift where the tails are actually asymmetric). No compat
+shim (pre-alpha). UI language: "flags at N× the usual
+longer/shorter-than-typical difference" — two trims on the fine-tune
+panel. Engine change → full oracle discipline + ADR recording the
+measured drift + Phase B key tables re-run.
+
+**Premise correction (2026-07-30, found by the B2 gate itself):** the
+oracle dumps are NOT sourceless — `oracle_source` (oracle.rs) pairs
+every dump corpus against `WA-en-ulb.txt` when present (pre-existing,
+documented). `prop.length-ratio` contributes ~47.6k findings to today's
+WA default dump; "zero findings ever" was true only of the `--fleet`
+survey path. B2 is therefore a real adjudicated behavior change (ADR
+0059 pattern), and Phase C's pin-move will likewise show real findings,
+not zero drift. Additionally adjudicated into B2: naive double-MAD has a
+single-deviation-side collapse (a side with one strict deviation pins
+its z at 0.6745 and can never fire) — the design gains a per-side data
+floor with pooled-symmetric fallback before drift is measured for
+adjudication.
+
 ## Phase C — untranslated-words substrate
 
 One new substrate (`UntranslatedWords`), zero new machinery — the

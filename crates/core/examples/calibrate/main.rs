@@ -86,7 +86,7 @@ mod terminal;
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let (target_dir, source_dir, z_threshold) = match args.as_slice() {
+    let (target_dir, source_dir, z) = match args.as_slice() {
         // Dump a corpus as `{ "GEN 1:1": text, … }` JSON on stdout (ad-hoc).
         [flag, t] if flag == "--json" => {
             let corpus = load_corpus(Path::new(t));
@@ -353,7 +353,7 @@ fn main() {
             batch(Path::new(t));
             return;
         }
-        [t, s] => (t, s, ProportionalityConfig::default().z_threshold),
+        [t, s] => (t, s, ProportionalityConfig::default().z_long),
         [t, s, z] => (t, s, z.parse().expect("z threshold")),
         _ => {
             eprintln!("usage: calibrate <target-vref-file> [<source-vref-file> [z]]");
@@ -373,8 +373,13 @@ fn main() {
     let findings = ssc_core::signals::proportionality::length_ratio_findings(
         &target,
         Some(&source),
+        // Ad-hoc single-pair path: one CLI knob drives both sides —
+        // documented, not a design claim (the paired harness's
+        // `--paired-survey`/`--seed-faults` is where z_long/z_short are
+        // actually swept independently).
         &ProportionalityConfig {
-            z_threshold,
+            z_long: z,
+            z_short: z,
             ..Default::default()
         },
     );

@@ -6,9 +6,22 @@
 //! a verse 3× or ⅓ the reference length is often a misplaced verse
 //! number, an omission, or gross over/under-translation. We flag verses
 //! whose ratio is a robust outlier **within its book**: per book, take
-//! the median and MAD of the ratios and flag `|z| > z_threshold` where
-//! `z = 0.6745 · (ratio − median) / MAD` (median+MAD, not mean+stddev, so
-//! one bad verse can't poison the threshold — methods §3.4).
+//! the median of the ratios and flag `|z| > z_long` (above the median) or
+//! `|z| > z_short` (below it), where `z = 0.6745 · (ratio − median) / MAD`
+//! (median+MAD, not mean+stddev, so one bad verse can't poison the
+//! threshold — methods §3.4).
+//!
+//! **Asymmetric spread (ADR 0069).** The ratio distribution is squeezed
+//! against zero on the short side (a verse can be at most 100% shorter —
+//! empty) and open-ended on the long side (a verse can be arbitrarily
+//! longer), so one symmetric MAD mis-sizes one tail. `judge` therefore
+//! measures two ONE-SIDED MADs per unit — `MAD_above` from deviations of
+//! ratios greater than the median, `MAD_below` from deviations of ratios
+//! less than the median — and scores a verse's signed deviation against
+//! whichever side it fell on, with its own threshold (`z_long`/`z_short`,
+//! both default 3.5 — Phase B confirmed the symmetric value; see
+//! `documentation/calibration/2026-07-30-length-ratio-paired-survey.md`
+//! and `documentation/adrs/0069-length-ratio-asymmetric-spread.md`).
 //!
 //! `reduce` records the raw per-book ratios (the sufficient statistic for an
 //! order rule — Phase 1 §7); `judge` derives the median/MAD late and flags
@@ -35,7 +48,7 @@ use crate::span::Span;
 pub const PROJECT_LENGTH_RATIO: RuleId = RuleId::ProjectLengthRatio;
 
 /// Scale factor making MAD a stddev-equivalent under normality, so
-/// `z_threshold` reads in familiar z-score units.
+/// `z_long`/`z_short` read in familiar z-score units.
 const MAD_TO_SIGMA: f64 = 0.6745;
 
 /// One verse's target/reference ratio, retained so materialization can emit
@@ -132,15 +145,28 @@ impl PartialEq for RatioBits {
 
 impl Eq for RatioBits {}
 
-/// A median/MAD pair with the sample size it came from. Knob-FREE: `min_verses`
-/// and the zero-spread rule are judging gates, applied in
-/// [`judge`](ProportionalitySubstrate::judge), never here — which is what lets the
-/// aggregate be maintained without knowing any config.
+/// A median with its two one-sided MADs, their sample sizes, and the
+/// pooled symmetric MAD (ADR 0069) fallback — the sample size the whole
+/// unit came from is `count`. Knob-FREE: `min_verses` and the per-side
+/// data-floor/zero-MAD rules are judging gates, applied in
+/// [`judge`](ProportionalitySubstrate::judge), never here — which is what
+/// lets the aggregate be maintained without knowing any config.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub(crate) struct Spread {
     count: usize,
     med: f64,
-    mad: f64,
+    /// Median of `(x - med)` over `x > med` — the long-side MAD.
+    mad_above: f64,
+    /// Median of `(med - x)` over `x < med` — the short-side MAD.
+    mad_below: f64,
+    /// How many points landed strictly above/below the median — the
+    /// per-side data-floor gate reads these, not just the MAD values.
+    n_above: usize,
+    n_below: usize,
+    /// Median of `|x - med|` over ALL points (both sides pooled) — the
+    /// pre-ADR-0069 symmetric MAD, retained as the fallback for whichever
+    /// side doesn't clear the data floor (`Spread::gated`).
+    mad_symmetric: f64,
 }
 
 /// The proportionality corpus aggregate: every book's ratios, that book's spread,
@@ -157,12 +183,23 @@ pub(crate) struct RatioCorpusStats {
 /// verse of that book — and materialization turns it into each verse's own z.
 pub(crate) type RatioKey = Box<str>;
 
-/// One book's verdict: the two spreads its verses are measured against, already
-/// gated by `min_verses` and the zero-spread rule.
+/// One judgeable unit's gated spread: the median, plus each side's MAD when
+/// that side has signal. `Spread::gated` is the sole constructor — reached
+/// only once the whole unit clears `min_verses`.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct SideSpreads {
+    med: f64,
+    mad_above: Option<f64>,
+    mad_below: Option<f64>,
+}
+
+/// One book's verdict: the two units (book, project) a verse is measured
+/// against, each already gated by `min_verses` and, per side, the
+/// zero-MAD rule (ADR 0069).
 #[derive(Clone, Copy, Default)]
 pub(crate) struct RatioOutcome {
-    book: Option<(f64, f64)>,
-    project: Option<(f64, f64)>,
+    book: Option<SideSpreads>,
+    project: Option<SideSpreads>,
 }
 
 /// The `proj.length-ratio` observation substrate. Sole consumer: the rule of the
@@ -245,7 +282,11 @@ fn median_in_place(v: &mut [f64]) -> f64 {
     }
 }
 
-/// The knob-free median + MAD of a ratio sample.
+/// The knob-free median plus the two one-sided MADs, their sample counts,
+/// and the pooled symmetric MAD (ADR 0069) of a ratio sample. The median
+/// itself is computed from the WHOLE sample (unchanged from the symmetric
+/// design) — only the spread around it splits by side, and the symmetric
+/// MAD is retained alongside as the per-side fallback's data source.
 fn spread_of<'a>(ratios: impl Iterator<Item = &'a RatioBits>) -> Spread {
     let mut v: Vec<f64> = ratios.map(|r| f64::from(r.0)).collect();
     let count = v.len();
@@ -253,24 +294,121 @@ fn spread_of<'a>(ratios: impl Iterator<Item = &'a RatioBits>) -> Spread {
         return Spread::default();
     }
     let med = median_in_place(&mut v);
-    for x in v.iter_mut() {
-        *x = (*x - med).abs();
+    // The median splits `count` close to 50/50 by construction (ties at
+    // `med` land on neither side), so each side's sample is normally
+    // large whenever the whole unit clears `min_verses` — a side collapsing
+    // to a handful of deviations signals a genuine tie pileup or a skewed
+    // distribution, not starvation.
+    let mut above: Vec<f64> = v.iter().copied().filter(|&x| x > med).map(|x| x - med).collect();
+    let mut below: Vec<f64> = v.iter().copied().filter(|&x| x < med).map(|x| med - x).collect();
+    let mut symmetric: Vec<f64> = v.iter().map(|&x| (x - med).abs()).collect();
+    let n_above = above.len();
+    let n_below = below.len();
+    let mad_above = if above.is_empty() {
+        0.0
+    } else {
+        median_in_place(&mut above)
+    };
+    let mad_below = if below.is_empty() {
+        0.0
+    } else {
+        median_in_place(&mut below)
+    };
+    // `symmetric` always has `count` (> 0, checked above) entries, so this
+    // never hits the empty-median trap `median_in_place` doesn't guard.
+    let mad_symmetric = median_in_place(&mut symmetric);
+    Spread {
+        count,
+        med,
+        mad_above,
+        mad_below,
+        n_above,
+        n_below,
+        mad_symmetric,
     }
-    let mad = median_in_place(&mut v);
-    Spread { count, med, mad }
 }
 
+/// Minimum strict deviations a side needs before its OWN one-sided MAD is
+/// trusted (ADR 0069's per-side data floor). Below this, a side falls back
+/// to the pooled symmetric MAD instead. 3 is the smallest sample where a
+/// one-sided median-of-deviations is not trivially pinned to a single
+/// member's own value: at 1 point the "median" IS that point's deviation
+/// (self-referential — see the collapse property documented on
+/// `Spread::gated`); at 2 points the median is their average, still
+/// dominated by whichever of the two is the actual candidate under test;
+/// at 3, the median deviation is a real THIRD point's value, independent of
+/// whichever single point is being scored against it.
+const SIDE_DATA_FLOOR: usize = 3;
+
 impl Spread {
-    /// Apply the judging gates: too small a sample cannot judge, and a zero MAD
-    /// would make every deviation infinite (a book of identical ratios has no
-    /// outliers). `min_verses` is caller-supplied, so the empty guard is
-    /// independent of it — `min_verses = 0` must not let an empty sample through.
-    fn gated(self, min_verses: usize) -> Option<(f64, f64)> {
-        if self.count == 0 || self.count < min_verses || self.mad == 0.0 {
+    /// Apply the judging gates. Two layers:
+    ///
+    /// 1. **Whole-unit gate** (unchanged from the symmetric design): too few
+    ///    paired verses and the unit cannot judge at all — `min_verses = 0`
+    ///    must still not let an empty sample through, so the count==0 check
+    ///    is independent of the caller-supplied floor.
+    /// 2. **Per-side gate with pooled fallback** (ADR 0069): each side is
+    ///    judged independently once the whole unit clears (1). A side uses
+    ///    its OWN one-sided MAD only when it has `>= SIDE_DATA_FLOOR` strict
+    ///    deviations AND that MAD is nonzero; otherwise it falls back to the
+    ///    pooled symmetric MAD (today's — pre-ADR-0069 — single-MAD design).
+    ///    **Collapse property, and why the floor exists**: with too few
+    ///    points on a side, that side's own MAD is measured FROM the very
+    ///    points it would judge — at n=1 a lone deviation's "median" is
+    ///    itself, pinning its z at exactly `MAD_TO_SIGMA` (0.6745) no matter
+    ///    how extreme the underlying ratio is (proven in
+    ///    `a_side_with_a_single_deviation_can_never_fire_on_that_side`).
+    ///    The pooled fallback is never `None` unless the WHOLE unit is
+    ///    degenerate (every ratio identical), in which case neither side
+    ///    should fire anyway. Net effect: the finer per-side instrument is
+    ///    used only where the data can support it; below the floor the rule
+    ///    behaves exactly as the symmetric model did — the same
+    ///    self-gating shape as every other corpus-relative rule in this
+    ///    engine (a convention needs enough recurrence before it is trusted
+    ///    to judge at all).
+    fn gated(self, min_verses: usize) -> Option<SideSpreads> {
+        if self.count == 0 || self.count < min_verses {
             return None;
         }
-        Some((self.med, self.mad))
+        let side_or_fallback = |n: usize, mad_side: f64| -> Option<f64> {
+            if n >= SIDE_DATA_FLOOR && mad_side > 0.0 {
+                Some(mad_side)
+            } else {
+                (self.mad_symmetric > 0.0).then_some(self.mad_symmetric)
+            }
+        };
+        Some(SideSpreads {
+            med: self.med,
+            mad_above: side_or_fallback(self.n_above, self.mad_above),
+            mad_below: side_or_fallback(self.n_below, self.mad_below),
+        })
     }
+}
+
+/// The signed z of ratio `r` against one gated unit's spreads: `MAD_above`
+/// when `r` is longer than the median, `MAD_below` when shorter, `None`
+/// when the unit didn't judge, `r` sits exactly at the median (no
+/// deviation), or the relevant side abstained. The sign is `(r - med)`'s,
+/// preserved through whichever side's MAD divides it — negative means
+/// shorter than typical, matching `LengthRatioScope`'s documented
+/// convention.
+fn side_z(r: f64, outcome: Option<SideSpreads>) -> Option<f64> {
+    let s = outcome?;
+    if r > s.med {
+        Some(MAD_TO_SIGMA * (r - s.med) / s.mad_above?)
+    } else if r < s.med {
+        Some(MAD_TO_SIGMA * (r - s.med) / s.mad_below?)
+    } else {
+        None
+    }
+}
+
+/// Which threshold governs a signed z: `z_long` above the median (`z >=
+/// 0`), `z_short` below it. Mirrors `side_z`'s sign convention exactly, so
+/// a long-side z is never compared against the short-side knob or vice
+/// versa.
+fn threshold_for(z: f64, cfg: &ProportionalityConfig) -> f32 {
+    if z >= 0.0 { cfg.z_long } else { cfg.z_short }
 }
 
 impl crate::substrate::ObservationSubstrate for ProportionalitySubstrate {
@@ -289,10 +427,10 @@ impl crate::substrate::ObservationSubstrate for ProportionalitySubstrate {
     type ReducedChapter = RatioReduced;
     type BookContribution = RatioBookContribution;
     type CorpusStats = RatioCorpusStats;
-    // Both `ProportionalityConfig` fields (`z_threshold`, `min_verses`) are read
-    // at judge, so a knob change maps and reduces nothing. The REFERENCE is not
-    // config and does not appear here: it enters `ObservationInputStamp::reference`
-    // as declared evidence.
+    // All three `ProportionalityConfig` fields (`z_long`, `z_short`,
+    // `min_verses`) are read at judge/materialize, so a knob change maps and
+    // reduces nothing. The REFERENCE is not config and does not appear here:
+    // it enters `ObservationInputStamp::reference` as declared evidence.
     type ExtractorConfig = ();
     type Symbols = ();
     type JudgeConfig = ProportionalityConfig;
@@ -421,17 +559,15 @@ impl RatioBookContribution {
             layout.len(),
             "materialize: contribution/layout chapter count mismatch"
         );
-        let t = f64::from(cfg.z_threshold);
         for (chapter, block) in self.chapters.iter().zip(layout) {
             let base = crate::substrate::chapter_base(block, &chapter.token);
             for o in chapter.obs.iter() {
                 let r = f64::from(o.ratio);
-                let book_z = outcome.book.map(|(med, mad)| MAD_TO_SIGMA * (r - med) / mad);
-                let project_z = outcome
-                    .project
-                    .map(|(med, mad)| MAD_TO_SIGMA * (r - med) / mad);
-                let book_fires = book_z.is_some_and(|z| z.abs() > t);
-                let project_fires = project_z.is_some_and(|z| z.abs() > t);
+                let book_z = side_z(r, outcome.book);
+                let project_z = side_z(r, outcome.project);
+                let book_fires = book_z.is_some_and(|z| z.abs() > f64::from(threshold_for(z, cfg)));
+                let project_fires =
+                    project_z.is_some_and(|z| z.abs() > f64::from(threshold_for(z, cfg)));
                 let scope = match (book_fires, project_fires) {
                     (true, true) => LengthRatioScope::Both {
                         book_z: book_z.unwrap() as f32,
@@ -445,12 +581,15 @@ impl RatioBookContribution {
                     },
                     (false, false) => continue, // outlier in neither scope
                 };
-                // Confidence: the strongest firing z.
+                // Confidence: the strongest firing z, scored against ITS OWN
+                // side's threshold — a long-side z never borrows z_short's
+                // scale or vice versa.
                 let mag = book_fires
-                    .then(|| book_z.unwrap().abs())
+                    .then(|| book_z.unwrap())
                     .into_iter()
-                    .chain(project_fires.then(|| project_z.unwrap().abs()))
-                    .fold(0.0_f64, f64::max);
+                    .chain(project_fires.then(|| project_z.unwrap()))
+                    .max_by(|a, b| a.abs().partial_cmp(&b.abs()).unwrap())
+                    .expect("scope match above already proved at least one side fires");
                 out.push(Finding {
                     key_idx: rebase(base, o.local_idx),
                     code: PROJECT_LENGTH_RATIO,
@@ -460,7 +599,7 @@ impl RatioBookContribution {
                         start: 0,
                         end: o.len,
                     },
-                    score: Some(score_from_z(mag, cfg.z_threshold)),
+                    score: Some(score_from_z(mag.abs(), threshold_for(mag, cfg))),
                     args: Some(FindingArgs::LengthRatio {
                         ratio_pct: r as f32 * 100.0,
                         scope,
@@ -680,6 +819,25 @@ mod tests {
         format!("{book} 1:{verse}")
     }
 
+    /// Four-bucket background jitter around `base` (ADR 0069 test fixture):
+    /// two buckets below the eventual median, two above. A single
+    /// two-value alternation (as the old symmetric-MAD tests used) puts a
+    /// planted outlier ALONE on its side of the median — under double-MAD
+    /// that makes the outlier's own deviation equal its side's MAD exactly
+    /// (z pins at `MAD_TO_SIGMA` regardless of magnitude, since nothing
+    /// else on that side gives the outlier something to be extreme
+    /// RELATIVE TO). Real fleet ratios are continuous and don't collapse
+    /// this way; this helper gives synthetic corpora the same genuine
+    /// same-side company a real distribution has, on both sides.
+    fn spread_jitter(base: &str, v: u16) -> String {
+        match v % 4 {
+            0 => base[..base.len() - 2].to_string(), // shorter: below median
+            1 => base.to_string(),
+            2 => format!("{base}x"),  // longer: above median
+            _ => format!("{base}xx"), // longer still: above median
+        }
+    }
+
     /// `n` parallel verses of equal length, with target verse `outlier_at`
     /// (if any) inflated by `factor`. Target and source share key strings
     /// 1:1 (the common, non-duplicate-key pairing case).
@@ -828,11 +986,7 @@ mod tests {
             source_keys.push(k.clone());
             source_texts.push(base.clone());
             target_keys.push(k);
-            target_texts.push(if v % 2 == 0 {
-                format!("{base}x")
-            } else {
-                base.clone()
-            });
+            target_texts.push(spread_jitter(&base, v));
         }
         // Source has one "GEN 1:59" (5x, a genuine outlier length); target
         // has three. Only the first target occurrence has a source
@@ -875,11 +1029,7 @@ mod tests {
             source_keys.push(k.clone());
             source_texts.push(base.clone());
             target_keys.push(k);
-            target_texts.push(if v % 2 == 0 {
-                format!("{base}x")
-            } else {
-                base.clone()
-            });
+            target_texts.push(spread_jitter(&base, v));
         }
         // Target has one "GEN 1:59" (baseline length); source has three —
         // the first is 5x (a genuine outlier pairing for ordinal 0), the
@@ -925,22 +1075,14 @@ mod tests {
             let mut texts = Vec::new();
             for v in 1..=gen_len {
                 keys.push(key("GEN", v));
-                texts.push(if v % 2 == 0 {
-                    format!("{base}x")
-                } else {
-                    base.clone()
-                });
+                texts.push(spread_jitter(&base, v));
             }
             for v in 1..=5u16 {
                 keys.push(key("EXO", v));
-                // Same jitter parity as GEN (keeps the tie/MAD structure
+                // Same jitter shape as GEN (keeps the tie/MAD structure
                 // stable across the grown/shrunk variants below), except
                 // verse 3, unconditionally overridden to the 5x outlier.
-                let t = if v % 2 == 0 {
-                    format!("{base}x")
-                } else {
-                    base.clone()
-                };
+                let t = spread_jitter(&base, v);
                 texts.push(if v == 3 { base.repeat(5) } else { t });
             }
             Corpus::try_from_parts(keys, texts).unwrap()
@@ -1075,12 +1217,8 @@ mod tests {
             let k = key("GEN", v);
             source_keys.push(k.clone());
             source_texts.push(base.clone());
-            let mut t = base.clone();
-            if v % 2 == 0 {
-                t.push('x'); // jitter so GEN's MAD > 0
-            }
             target_keys.push(k);
-            target_texts.push(t);
+            target_texts.push(spread_jitter(&base, v));
         }
         for v in 1..=3 {
             let k = key("EXO", v);
@@ -1340,11 +1478,7 @@ mod tests {
             for v in 2..=30u16 {
                 let k = format!("GEN {ch}:{v}");
                 keys.push(k.clone());
-                texts.push(if v % 2 == 0 {
-                    format!("{base}x")
-                } else {
-                    base.clone()
-                });
+                texts.push(spread_jitter(&base, v));
                 src_keys.push(k);
                 src_texts.push(base.clone());
             }
@@ -1430,6 +1564,201 @@ mod tests {
         assert_eq!(score_from_z(2.5, 2.5), 0.5);
         assert_eq!(score_from_z(5.0, 2.5), 1.0);
         assert_eq!(score_from_z(50.0, 2.5), 1.0);
+    }
+
+    /// ADR 0069: `z_long` and `z_short` are independent knobs. A long-side
+    /// outlier fires under a permissive `z_long` even when `z_short` is set
+    /// strict enough that no short-side deviation could ever clear it, and
+    /// vice versa — each side's threshold is scored against ONLY its own
+    /// side's z, never the other side's.
+    #[test]
+    fn long_and_short_thresholds_apply_independently() {
+        let base = "abcdefghij ".repeat(4);
+        let mut target_keys = Vec::new();
+        let mut target_texts = Vec::new();
+        let mut source_keys = Vec::new();
+        let mut source_texts = Vec::new();
+        for v in 1..=58u16 {
+            let k = key("GEN", v);
+            source_keys.push(k.clone());
+            source_texts.push(base.clone());
+            target_keys.push(k);
+            target_texts.push(spread_jitter(&base, v));
+        }
+        // One long-side outlier (5x) and one short-side outlier (tiny).
+        target_keys.push(key("GEN", 59));
+        target_texts.push(base.repeat(5));
+        source_keys.push(key("GEN", 59));
+        source_texts.push(base.clone());
+        target_keys.push(key("GEN", 60));
+        target_texts.push("a".to_string());
+        source_keys.push(key("GEN", 60));
+        source_texts.push(base.clone());
+
+        let target = Corpus::try_from_parts(target_keys, target_texts).unwrap();
+        let source = Corpus::try_from_parts(source_keys, source_texts).unwrap();
+
+        // Permissive long side, impossibly strict short side: only the
+        // long-side (5x) outlier can fire.
+        let long_only = ProportionalityConfig {
+            z_long: 2.0,
+            z_short: 1000.0,
+            ..Default::default()
+        };
+        let findings = run(&long_only, &target, Some(&source));
+        assert!(
+            findings.iter().any(|f| target.key(f.key_idx) == key("GEN", 59)),
+            "the long-side outlier must fire under a permissive z_long: {findings:?}"
+        );
+        assert!(
+            findings.iter().all(|f| target.key(f.key_idx) != key("GEN", 60)),
+            "the short-side outlier must NOT fire under an impossibly strict z_short: {findings:?}"
+        );
+
+        // The mirror image: permissive short side, impossibly strict long side.
+        let short_only = ProportionalityConfig {
+            z_long: 1000.0,
+            z_short: 2.0,
+            ..Default::default()
+        };
+        let findings = run(&short_only, &target, Some(&source));
+        assert!(
+            findings.iter().any(|f| target.key(f.key_idx) == key("GEN", 60)),
+            "the short-side outlier must fire under a permissive z_short: {findings:?}"
+        );
+        assert!(
+            findings.iter().all(|f| target.key(f.key_idx) != key("GEN", 59)),
+            "the long-side outlier must NOT fire under an impossibly strict z_long: {findings:?}"
+        );
+    }
+
+    /// The documented per-side abstain invariant, proven directly: when a
+    /// side has exactly one strict deviation, that point's own deviation
+    /// defines its side's MAD, so its z is pinned at exactly
+    /// `MAD_TO_SIGMA` (0.6745) if it had to use its OWN one-sided MAD —
+    /// exactly the collapse the per-side data floor (`SIDE_DATA_FLOOR`)
+    /// exists to route around. Below the floor, `Spread::gated` falls back
+    /// to the pooled symmetric MAD (the pre-ADR-0069 design) instead, so
+    /// this outlier fires exactly where the OLD symmetric-MAD rule would
+    /// have fired.
+    #[test]
+    fn a_lone_deviation_fires_via_the_pooled_fallback() {
+        let (target, source) = corpus(60, Some(3), 50); // 1 gross outlier, else identical
+        // Mild below-typical jitter on the background (skipping the
+        // outlier verse itself) gives the pooled symmetric MAD genuine,
+        // nonzero signal — while the outlier remains the ONLY point above
+        // the median, i.e. below `SIDE_DATA_FLOOR` on its own side.
+        let target = jitter(&target, |i, t| {
+            if i != 2 && i % 2 == 0 {
+                t.truncate(t.len() - 2);
+            }
+        });
+        let findings = run(&rule(), &target, Some(&source));
+        assert_eq!(
+            findings.len(),
+            1,
+            "the pooled fallback must catch what the (undertrusted) lone-point \
+             one-sided MAD alone could not: {findings:?}"
+        );
+        assert_eq!(target.key(findings[0].key_idx), key("GEN", 3));
+    }
+
+    /// A side with `>= SIDE_DATA_FLOOR` strict deviations is trusted with
+    /// its OWN one-sided MAD, never silently substituted with the pooled
+    /// symmetric one — proven directly at the `Spread` level, where the
+    /// two candidate MADs can be told apart even where the whole-rule
+    /// output alone might not distinguish them.
+    #[test]
+    fn a_well_populated_side_uses_its_own_mad_not_the_pooled_fallback() {
+        // A below-median cluster of 10 (tight: deviation 1 each), a big
+        // tie block anchoring the true median at 10.0 regardless of how
+        // the flanking clusters' sizes interact with `median_in_place`'s
+        // even/odd averaging, and an above-median cluster of 10 (loose:
+        // deviation 5 each) — comfortably past the floor on both sides,
+        // with deliberately different spreads so "own" and "pooled" are
+        // numerically distinguishable.
+        let mut ratios = Vec::new();
+        for _ in 0..10 {
+            ratios.push(RatioBits(9.0));
+        }
+        for _ in 0..15 {
+            ratios.push(RatioBits(10.0));
+        }
+        for _ in 0..10 {
+            ratios.push(RatioBits(15.0));
+        }
+        let spread = spread_of(ratios.iter());
+        assert_eq!(spread.med, 10.0, "the tie block must anchor the median exactly");
+        assert!(spread.n_above >= SIDE_DATA_FLOOR && spread.n_below >= SIDE_DATA_FLOOR);
+        assert_ne!(
+            spread.mad_above, spread.mad_symmetric,
+            "sanity: the own-side and pooled MADs must actually differ here, \
+             or this test would pass vacuously"
+        );
+        let gated = spread.gated(0).expect("count > 0 and min_verses=0 always judges");
+        assert_eq!(
+            gated.mad_above,
+            Some(spread.mad_above),
+            "a well-populated side must use its OWN MAD, not the pooled fallback"
+        );
+        assert_eq!(gated.mad_below, Some(spread.mad_below));
+    }
+
+    /// The exact boundary the floor draws: one deviation short of
+    /// `SIDE_DATA_FLOOR` falls back to the pooled MAD; right AT the floor,
+    /// the side's own MAD is trusted. Both builds keep the below side
+    /// (`n_above + 1` points) comfortably clear of the floor throughout, so
+    /// only the above side's count crosses it.
+    #[test]
+    fn per_side_data_floor_boundary() {
+        // A small tie block anchors the median at exactly 10.0 regardless
+        // of the flanking clusters' varying sizes (the thing under test) —
+        // `assert_eq!(med, 10.0)` below is the proof this construction
+        // does what it claims, not an assumption. Deliberately small (3,
+        // not e.g. 9): an oversized tie block would itself dominate more
+        // than half the sample with zero-deviations, collapsing the
+        // POOLED symmetric MAD to 0 too and making the fallback
+        // assertions vacuous — the same shape of pitfall this whole test
+        // exists to keep out of the judge.
+        let build = |n_above: usize| {
+            let n_below = n_above + 1;
+            let mut ratios = Vec::new();
+            for _ in 0..n_below {
+                ratios.push(RatioBits(9.0));
+            }
+            for _ in 0..3 {
+                ratios.push(RatioBits(10.0));
+            }
+            for _ in 0..n_above {
+                ratios.push(RatioBits(15.0));
+            }
+            spread_of(ratios.iter())
+        };
+
+        let below_floor = build(SIDE_DATA_FLOOR - 1);
+        assert_eq!(below_floor.med, 10.0);
+        assert_eq!(below_floor.n_above, SIDE_DATA_FLOOR - 1);
+        let gated = below_floor.gated(0).unwrap();
+        assert_eq!(
+            gated.mad_above,
+            Some(below_floor.mad_symmetric),
+            "one short of the floor: the above side must fall back to the pooled MAD"
+        );
+        assert_ne!(
+            below_floor.mad_symmetric, below_floor.mad_above,
+            "sanity: fallback and own-side MAD must differ here, or the assertion above \
+             would pass whichever branch `gated` took"
+        );
+
+        let at_floor = build(SIDE_DATA_FLOOR);
+        assert_eq!(at_floor.med, 10.0);
+        assert_eq!(at_floor.n_above, SIDE_DATA_FLOOR);
+        let gated = at_floor.gated(0).unwrap();
+        assert_eq!(
+            gated.mad_above,
+            Some(at_floor.mad_above),
+            "right at the floor: the above side must use its OWN MAD"
+        );
     }
 
     /// The selection median must agree with the sorting one it replaced, on both

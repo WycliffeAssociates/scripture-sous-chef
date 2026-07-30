@@ -280,3 +280,81 @@ owner confirms 3.5, that is a no-op (the shipped default is already
 3.5). If the owner wants to re-pin, that is an intentional behavior
 change requiring its own ADR with the measured drift, per ADR 0059 — the
 numbers in §1 and §2 are exactly the drift figures that ADR would need.
+
+## 9. Phase B2 — asymmetric double-MAD spread (2026-07-30, owner-adjudicated, accepted)
+
+Owner adjudication after §8 (above): z=3.5 confirmed, AND split the
+spread measurement by direction — a symmetric MAD mis-sizes the squeezed
+(bounded-at-zero) short tail against the open-ended long tail. Full
+design, the collapse property this uncovered, the per-side data floor
+that fixes it, and the oracle-pairing correction (§1 above's "zero
+findings ever" framing was true only for `--fleet`, not the oracle
+dump — `prop.length-ratio` has been firing in the oracle gate all along)
+are in `documentation/adrs/0069-length-ratio-asymmetric-spread.md`. This
+section is the paired-harness half of that ADR's evidence; **the owner
+reviewed the full package (drift table, floor design, catch-rate deltas)
+and accepted it as-is on 2026-07-30 — ADR 0069 is Accepted and this
+change is landed.**
+
+### Per-side floors (both vocabularies)
+
+Median non-quarantined book floor at z=3.5, long side vs. short side,
+full 23-pair fleet:
+
+| | long-side floor (median %) | short-side floor (median %) |
+|---|---|---|
+| tier-1 (18 pairs, 496 books) | 68.3% | 61.8% |
+| tier-2 (5 pairs, 288 books) | 40.6% | 39.1% |
+
+The two sides are close at the median (this fleet's books are not
+wildly skewed) but not identical, and individual books vary more — see
+each pair's `<id>.floors.tsv` for the full per-book, per-z, per-side
+breakdown that feeds this median.
+
+### Finding-count deltas at 3.5/3.5 (real rule, 4 tier-1 pairs)
+
+Same pairs as §2 (`amo`, `bbm`, `bsj` vs. `en_ulb`; `kiz` vs. `sw_ulb`,
+the Swahili-source pair):
+
+| pair | Phase B (symmetric MAD) | B2 (asymmetric + floor) | Δ |
+|---|---|---|---|
+| amo vs en_ulb | 217 | 184 | −15.2% |
+| bbm vs en_ulb | 108 | 83 | −23.1% |
+| bsj vs en_ulb | 127 | 128 | +0.8% |
+| kiz vs sw_ulb | 209 | 196 | −6.2% |
+
+Fleet-wide (all 23 pairs, oracle gate): total findings 92,731 → 86,131
+(WA-subset, default config), `prop.length-ratio` 47,598 → 40,998
+(−13.9%). Full table, per-rule confirmation (only `prop.length-ratio`
+moved), and the no-floor-vs-floor+fallback byte-identical result are in
+ADR 0069.
+
+### Seeded-chop catch-rate change
+
+Combined (real OR-gate) catch rate, aggregated across the same 4 pairs,
+at z=3.5 — chops are short-side faults, so this is the direct read on
+"did the short side get more or less sensitive":
+
+| | Phase B | B2 | read |
+|---|---|---|---|
+| tail-chop 10% | 0% | 0% | unchanged (still undetectable, as expected) |
+| tail-chop 20% | 1% | 1% | unchanged |
+| tail-chop 30% | 12% | **16%** | improved |
+| tail-chop 50% | 30% | **34%** | improved |
+| source-paste | 0% | 0% | unchanged (still length-ratio's structural blind spot) |
+| clean (false-positive) rate @3.5 | 2.03% | **1.83%** | improved (noise went DOWN, not up) |
+
+**Read**: the short side got more sensitive (higher catch rate on real
+chop faults) while overall noise decreased — the opposite of a
+recall/precision trade-off, which is the signature of the OLD symmetric
+MAD having been miscalibrated in a way asymmetric measurement corrects,
+not of a knob simply being loosened. Long-side noise specifically was
+not isolated as its own number in this pass (the clean-rate table
+doesn't split by sign), but the aggregate noise decrease is inconsistent
+with a long-side noise increase large enough to matter.
+
+### Status
+
+Owner-adjudicated and accepted 2026-07-30. ADR 0069 is Accepted; this
+change is committed (`core(prop): asymmetric double-MAD spread +
+per-side thresholds (ADR 0069)`).

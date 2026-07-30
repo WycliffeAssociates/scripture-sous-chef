@@ -45,13 +45,19 @@ fn to_corpus_or_reject(v: VrefCorpus) -> Result<Corpus, JsError> {
 }
 
 /// Partial overrides for `prop.length-ratio`'s knobs. Omitted fields keep
-/// core's calibrated defaults (`z_threshold` 3.5, `min_verses` 50).
+/// core's calibrated defaults (`z_long`/`z_short` 3.5, `min_verses` 50).
+/// The two thresholds are separate knobs (ADR 0069, asymmetric spread): the
+/// UI's fine-tune panel exposes them as two trims, "longer than typical" /
+/// "shorter than typical".
 #[derive(Deserialize, Tsify, Default)]
 #[tsify(from_wasm_abi)]
 pub struct ProportionalityOverrides {
     #[serde(default)]
     #[tsify(optional)]
-    pub z_threshold: Option<f32>,
+    pub z_long: Option<f32>,
+    #[serde(default)]
+    #[tsify(optional)]
+    pub z_short: Option<f32>,
     #[serde(default)]
     #[tsify(optional)]
     pub min_verses: Option<usize>,
@@ -296,8 +302,11 @@ fn build_config(config: Option<SousConfig>) -> Config {
             cfg.rules.extend(rules);
         }
         if let Some(p) = c.proportionality {
-            if let Some(z) = p.z_threshold {
-                cfg.proportionality.z_threshold = z;
+            if let Some(z) = p.z_long {
+                cfg.proportionality.z_long = z;
+            }
+            if let Some(z) = p.z_short {
+                cfg.proportionality.z_short = z;
             }
             if let Some(m) = p.min_verses {
                 cfg.proportionality.min_verses = m;
@@ -947,7 +956,8 @@ mod tests {
             // DuplicateWord ships default-off; enabling it exercises the rules map.
             rules: Some([(RuleId::DuplicateWord, true)].into_iter().collect()),
             proportionality: Some(ProportionalityOverrides {
-                z_threshold: Some(2.5),
+                z_long: Some(2.5),
+                z_short: Some(3.0),
                 min_verses: Some(10),
             }),
             casing: Some(CasingOverrides {
@@ -999,7 +1009,8 @@ mod tests {
         }));
 
         assert!(cfg.is_enabled(RuleId::DuplicateWord));
-        assert_eq!(cfg.proportionality.z_threshold, 2.5);
+        assert_eq!(cfg.proportionality.z_long, 2.5);
+        assert_eq!(cfg.proportionality.z_short, 3.0);
         assert_eq!(cfg.proportionality.min_verses, 10);
         assert_eq!(cfg.casing.emit_score_min, 0.8);
         assert_eq!(cfg.casing.recurrence_k, 24.0);

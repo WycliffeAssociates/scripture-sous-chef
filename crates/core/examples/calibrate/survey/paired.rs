@@ -193,6 +193,10 @@ fn median(v: &mut [f64]) -> f64 {
     }
 }
 
+/// Single symmetric median+MAD — used ONLY for the versification guard's
+/// own meta-statistic (the spread of book MEDIANS, an unrelated quantity to
+/// the judge's per-verse ratio spread). The judge itself, and this file's
+/// own floor math below, use the double-MAD design (ADR 0069) instead.
 fn median_mad(mut v: Vec<f64>) -> (f64, f64) {
     if v.is_empty() {
         return (0.0, 0.0);
@@ -203,15 +207,68 @@ fn median_mad(mut v: Vec<f64>) -> (f64, f64) {
     (med, mad)
 }
 
-/// A verse's z-threshold-independent detection floor, in percent-of-typical
-/// terms: the smallest departure from the median a verse needs to reach
-/// `z` at this median/MAD. `None` when the channel can't judge (MAD or
-/// median is zero — a degenerate/uniform sample).
-fn percent_floor(z: f64, median: f64, mad: f64) -> Option<f64> {
-    if median == 0.0 || mad == 0.0 {
+/// The median plus its two one-sided MADs (ADR 0069's asymmetric-spread
+/// design, mirrored here for descriptive purposes only — see the module
+/// doc: this file never uses its own stats to decide whether a verse
+/// fires, only the real rule's harvested verdicts do).
+/// Mirrors `signals::proportionality::SIDE_DATA_FLOOR` exactly (see that
+/// constant's doc for the justification) — the harness's own descriptive
+/// floors must use the same per-side data floor the real judge does, or
+/// this file would report a "detection floor" the engine doesn't actually
+/// use.
+const SIDE_DATA_FLOOR: usize = 3;
+
+fn median_double_mad(mut v: Vec<f64>) -> (f64, f64, f64) {
+    if v.is_empty() {
+        return (0.0, 0.0, 0.0);
+    }
+    let med = median(&mut v);
+    let mut above: Vec<f64> = v.iter().copied().filter(|&x| x > med).map(|x| x - med).collect();
+    let mut below: Vec<f64> = v.iter().copied().filter(|&x| x < med).map(|x| med - x).collect();
+    let mut symmetric: Vec<f64> = v.iter().map(|&x| (x - med).abs()).collect();
+    let n_above = above.len();
+    let n_below = below.len();
+    let mad_above_raw = if above.is_empty() { 0.0 } else { median(&mut above) };
+    let mad_below_raw = if below.is_empty() { 0.0 } else { median(&mut below) };
+    let mad_symmetric = median(&mut symmetric);
+    // Per-side data floor with pooled fallback (ADR 0069): a side under
+    // `SIDE_DATA_FLOOR` strict deviations (or with a zero own-side MAD)
+    // reports the pooled symmetric MAD instead — the EFFECTIVE spread the
+    // real judge would use, not the untrusted raw one-sided value. This
+    // file returns only the effective values; nothing downstream (floors,
+    // scatter bands, book tables) ever sees the untrusted raw MAD.
+    let effective = |n: usize, raw: f64| {
+        if n >= SIDE_DATA_FLOOR && raw > 0.0 {
+            raw
+        } else {
+            mad_symmetric
+        }
+    };
+    (med, effective(n_above, mad_above_raw), effective(n_below, mad_below_raw))
+}
+
+/// A verse's z-threshold-independent detection floor on ONE side, in
+/// percent-of-typical terms: the smallest departure from the median a verse
+/// needs to reach `z` against that side's MAD. `None` when the side can't
+/// judge (MAD or median is zero — a degenerate/uniform sample, or a tie
+/// pileup on that side — see `Spread::gated` in `signals::proportionality`).
+fn percent_floor(z: f64, median: f64, mad_side: f64) -> Option<f64> {
+    if median == 0.0 || mad_side == 0.0 {
         return None;
     }
-    Some(z * mad / MAD_TO_SIGMA / median * 100.0)
+    Some(z * mad_side / MAD_TO_SIGMA / median * 100.0)
+}
+
+/// Collapse a `(long, short)` floor pair into one number for callers that
+/// predate the asymmetric split (multi-source sensitivity's book-floor
+/// delta) — the mean of whichever side(s) are present, `None` if neither is.
+fn floor_pct_combined(sides: (Option<f64>, Option<f64>)) -> Option<f64> {
+    match sides {
+        (Some(l), Some(s)) => Some((l + s) / 2.0),
+        (Some(l), None) => Some(l),
+        (None, Some(s)) => Some(s),
+        (None, None) => None,
+    }
 }
 
 /// One book's descriptive spread plus the versification-guard verdict. This
@@ -221,7 +278,10 @@ struct BookStat {
     book: String,
     n: usize,
     median: f64,
-    mad: f64,
+    /// Long-side MAD (deviations of fractions above the median).
+    mad_above: f64,
+    /// Short-side MAD (deviations of fractions below the median).
+    mad_below: f64,
     /// True when this book's *median fraction* is itself a robust outlier
     /// against the corpus's other book medians (plan step 2's versification
     /// guard) — a pairing artifact, never counted as a finding.
@@ -235,13 +295,15 @@ struct BookStat {
 struct ProjectStat {
     n: usize,
     median: f64,
-    mad: f64,
+    mad_above: f64,
+    mad_below: f64,
 }
 
-/// Per-book median/MAD, then the versification guard over the book medians
-/// themselves (needs ≥2 books and a nonzero spread of medians to judge at
-/// all — a single-book pair, or one where every book agrees, quarantines
-/// nothing).
+/// Per-book median + double-MAD, then the versification guard over the
+/// book MEDIANS themselves (needs ≥2 books and a nonzero spread of medians
+/// to judge at all — a single-book pair, or one where every book agrees,
+/// quarantines nothing). The guard's own meta-statistic stays a single
+/// symmetric MAD (`median_mad`) — it is not the judge's per-verse spread.
 fn book_stats(rows: &[VerseRow]) -> Vec<BookStat> {
     let mut by_book: BTreeMap<&str, Vec<f64>> = BTreeMap::new();
     for r in rows {
@@ -251,12 +313,13 @@ fn book_stats(rows: &[VerseRow]) -> Vec<BookStat> {
         .into_iter()
         .map(|(book, fractions)| {
             let n = fractions.len();
-            let (med, mad) = median_mad(fractions);
+            let (med, mad_above, mad_below) = median_double_mad(fractions);
             BookStat {
                 book: book.to_string(),
                 n,
                 median: med,
-                mad,
+                mad_above,
+                mad_below,
                 quarantined: false,
             }
         })
@@ -277,8 +340,13 @@ fn book_stats(rows: &[VerseRow]) -> Vec<BookStat> {
 fn project_stat(rows: &[VerseRow]) -> ProjectStat {
     let fractions: Vec<f64> = rows.iter().map(|r| r.fraction).collect();
     let n = fractions.len();
-    let (median, mad) = median_mad(fractions);
-    ProjectStat { n, median, mad }
+    let (median, mad_above, mad_below) = median_double_mad(fractions);
+    ProjectStat {
+        n,
+        median,
+        mad_above,
+        mad_below,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -333,9 +401,10 @@ impl RealVerdict {
 
 /// Harvest the REAL rule's per-verse verdicts — both channels, signed z — by
 /// calling the shipped `length_ratio_findings` (the actual `judge`, via its
-/// one public entrypoint) at a threshold near zero. `materialize` only
-/// emits a `Finding` for a channel that *fires* (`|z| > z_threshold`), so a
-/// near-zero threshold makes virtually every gated verse fire on whichever
+/// one public entrypoint) at both `z_long`/`z_short` near zero. `materialize`
+/// only emits a `Finding` for a channel that *fires* (`|z| > z_long` above
+/// the median, `|z| > z_short` below it — ADR 0069), so a
+/// near-zero threshold on both sides makes virtually every gated verse fire on whichever
 /// channel(s) reach it, carrying the real computed z. Whatever a channel
 /// does NOT capture this way has `|z| < 1e-6` by construction — negligible
 /// for every z this harness ever sweeps (`>= 2.0`) — so treating an
@@ -347,7 +416,8 @@ impl RealVerdict {
 /// decision anywhere in this file.
 fn harvest_real_verdicts(target: &Corpus, source: &Corpus) -> HashMap<u32, RealVerdict> {
     let cfg = ProportionalityConfig {
-        z_threshold: HARVEST_Z,
+        z_long: HARVEST_Z,
+        z_short: HARVEST_Z,
         min_verses: MIN_VERSES,
     };
     let findings = length_ratio_findings(target, Some(source), &cfg);
@@ -503,16 +573,19 @@ struct BookStatOut {
     book: String,
     n: usize,
     median: f64,
-    mad: f64,
+    mad_above: f64,
+    mad_below: f64,
     quarantined: bool,
-    floor_pct_default: Option<f64>,
+    /// Percent-of-typical floor at `DEFAULT_Z` — `(long, short)`.
+    floor_pct_default: (Option<f64>, Option<f64>),
 }
 
 struct ProjectStatOut {
     n: usize,
     median: f64,
-    mad: f64,
-    floor_pct_default: Option<f64>,
+    mad_above: f64,
+    mad_below: f64,
+    floor_pct_default: (Option<f64>, Option<f64>),
 }
 
 struct ScatterPoint {
@@ -628,16 +701,18 @@ fn survey_one_pair(
     let zsweep: Vec<(f64, usize)> = Z_SWEEP.iter().map(|&z| (z, counts_at(z))).collect();
 
     // The report renders a scatter for only the largest judgeable book(s),
-    // so the JSON payload need not carry every book's verses.
+    // so the JSON payload need not carry every book's verses. "Judgeable"
+    // now means at least one side has signal (ADR 0069) — a book can still
+    // be worth showing with only a long-side or only a short-side band.
     let mut judgeable: Vec<&BookStat> = books
         .iter()
-        .filter(|b| !b.quarantined && b.n >= MIN_VERSES && b.mad > 0.0)
+        .filter(|b| !b.quarantined && b.n >= MIN_VERSES && (b.mad_above > 0.0 || b.mad_below > 0.0))
         .collect();
     judgeable.sort_by_key(|b| std::cmp::Reverse(b.n));
     let scatter_books: HashSet<&str> = judgeable.iter().take(3).map(|b| b.book.as_str()).collect();
 
     let mut verses_out = String::from(
-        "book\tkey\tt_len\ts_len\tfraction\tbook_median\tbook_mad\tbook_n\tquarantined\tbook_z\tproject_z\tscope\tshear\tflagged_z3.5\n",
+        "book\tkey\tt_len\ts_len\tfraction\tbook_median\tbook_mad_above\tbook_mad_below\tbook_n\tquarantined\tbook_z\tproject_z\tscope\tshear\tflagged_z3.5\n",
     );
     let mut order_in_book: HashMap<&str, u32> = HashMap::new();
     let mut scatter = Vec::new();
@@ -650,14 +725,15 @@ fn survey_one_pair(
         let scope = v.scope(DEFAULT_Z);
         let fires = !is_excluded && v.fires_at(DEFAULT_Z);
         verses_out += &format!(
-            "{}\t{}\t{}\t{}\t{:.6}\t{:.6}\t{:.6}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+            "{}\t{}\t{}\t{}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
             r.book,
             r.key,
             r.t_len,
             r.s_len,
             r.fraction,
             book.median,
-            book.mad,
+            book.mad_above,
+            book.mad_below,
             book.n,
             book.quarantined,
             v.book_z.map(|z| format!("{z:.3}")).unwrap_or_else(|| "NA".to_string()),
@@ -697,46 +773,54 @@ fn survey_one_pair(
     fs::write(out_dir.join(format!("{id}.verses.tsv")), verses_out)
         .unwrap_or_else(|e| panic!("write {id}.verses.tsv: {e}"));
 
-    let mut books_out = String::from("book\tn\tmedian\tmad\tquarantined\tfloor_pct_z3.5\n");
+    let mut books_out =
+        String::from("book\tn\tmedian\tmad_above\tmad_below\tquarantined\tfloor_pct_long_z3.5\tfloor_pct_short_z3.5\n");
     let mut books_report = Vec::with_capacity(books.len());
     for b in &books {
-        let floor_pct = percent_floor(DEFAULT_Z, b.median, b.mad);
+        let floor_long = percent_floor(DEFAULT_Z, b.median, b.mad_above);
+        let floor_short = percent_floor(DEFAULT_Z, b.median, b.mad_below);
         books_out += &format!(
-            "{}\t{}\t{:.6}\t{:.6}\t{}\t{}\n",
+            "{}\t{}\t{:.6}\t{:.6}\t{:.6}\t{}\t{}\t{}\n",
             b.book,
             b.n,
             b.median,
-            b.mad,
+            b.mad_above,
+            b.mad_below,
             b.quarantined,
-            floor_pct.map(|p| format!("{p:.2}")).unwrap_or_else(|| "NA".to_string()),
+            floor_long.map(|p| format!("{p:.2}")).unwrap_or_else(|| "NA".to_string()),
+            floor_short.map(|p| format!("{p:.2}")).unwrap_or_else(|| "NA".to_string()),
         );
         books_report.push(BookStatOut {
             book: b.book.clone(),
             n: b.n,
             median: b.median,
-            mad: b.mad,
+            mad_above: b.mad_above,
+            mad_below: b.mad_below,
             quarantined: b.quarantined,
-            floor_pct_default: floor_pct,
+            floor_pct_default: (floor_long, floor_short),
         });
     }
     fs::write(out_dir.join(format!("{id}.books.tsv")), books_out)
         .unwrap_or_else(|e| panic!("write {id}.books.tsv: {e}"));
 
     // Floors table (task 3): every non-quarantined judgeable book, plus the
-    // project channel, at every swept z, in BOTH vocabularies — the TSV
-    // carries the full sweep; the JSON/report keep only the z=3.5 column.
-    let mut floors_out = String::from("channel\tn\tmedian\tmad");
+    // project channel, at every swept z, in BOTH vocabularies AND both
+    // sides (long/short, ADR 0069) — the TSV carries the full sweep; the
+    // JSON/report keep only the z=3.5 columns.
+    let mut floors_out = String::from("channel\tn\tmedian\tmad_above\tmad_below");
     for z in Z_SWEEP {
-        floors_out += &format!("\tfloor_pct_z{z}");
+        floors_out += &format!("\tfloor_pct_long_z{z}\tfloor_pct_short_z{z}");
     }
     floors_out.push('\n');
-    let floor_row = |label: &str, n: usize, med: f64, mad: f64, out: &mut String| {
-        *out += &format!("{label}\t{n}\t{med:.6}\t{mad:.6}");
+    let floor_row = |label: &str, n: usize, med: f64, mad_above: f64, mad_below: f64, out: &mut String| {
+        *out += &format!("{label}\t{n}\t{med:.6}\t{mad_above:.6}\t{mad_below:.6}");
         for &z in Z_SWEEP {
-            let p = percent_floor(z, med, mad);
+            let long = percent_floor(z, med, mad_above);
+            let short = percent_floor(z, med, mad_below);
             *out += &format!(
-                "\t{}",
-                p.map(|v| format!("{v:.2}")).unwrap_or_else(|| "NA".to_string())
+                "\t{}\t{}",
+                long.map(|v| format!("{v:.2}")).unwrap_or_else(|| "NA".to_string()),
+                short.map(|v| format!("{v:.2}")).unwrap_or_else(|| "NA".to_string()),
             );
         }
         out.push('\n');
@@ -745,9 +829,16 @@ fn survey_one_pair(
         if b.quarantined {
             continue; // a pairing artifact's floor is meaningless
         }
-        floor_row(&format!("book:{}", b.book), b.n, b.median, b.mad, &mut floors_out);
+        floor_row(&format!("book:{}", b.book), b.n, b.median, b.mad_above, b.mad_below, &mut floors_out);
     }
-    floor_row("project", project.n, project.median, project.mad, &mut floors_out);
+    floor_row(
+        "project",
+        project.n,
+        project.median,
+        project.mad_above,
+        project.mad_below,
+        &mut floors_out,
+    );
     fs::write(out_dir.join(format!("{id}.floors.tsv")), floors_out)
         .unwrap_or_else(|e| panic!("write {id}.floors.tsv: {e}"));
 
@@ -769,7 +860,8 @@ fn survey_one_pair(
         .iter()
         .filter(|r| book_by_name[r.book.as_str()].quarantined)
         .count();
-    let project_floor = percent_floor(DEFAULT_Z, project.median, project.mad);
+    let project_floor_long = percent_floor(DEFAULT_Z, project.median, project.mad_above);
+    let project_floor_short = percent_floor(DEFAULT_Z, project.median, project.mad_below);
 
     PairReport {
         id: id.to_string(),
@@ -782,8 +874,9 @@ fn survey_one_pair(
         project: ProjectStatOut {
             n: project.n,
             median: project.median,
-            mad: project.mad,
-            floor_pct_default: project_floor,
+            mad_above: project.mad_above,
+            mad_below: project.mad_below,
+            floor_pct_default: (project_floor_long, project_floor_short),
         },
         findings_default_z,
         zsweep,
@@ -858,13 +951,13 @@ fn multi_source_sensitivity(reports: &[PairReport]) -> Vec<MultiSourceRow> {
                 let floors_a: HashMap<&str, f64> = a
                     .books
                     .iter()
-                    .filter_map(|bk| bk.floor_pct_default.map(|p| (bk.book.as_str(), p)))
+                    .filter_map(|bk| floor_pct_combined(bk.floor_pct_default).map(|p| (bk.book.as_str(), p)))
                     .collect();
                 let deltas: Vec<f64> = b
                     .books
                     .iter()
                     .filter_map(|bk| {
-                        let pb = bk.floor_pct_default?;
+                        let pb = floor_pct_combined(bk.floor_pct_default)?;
                         let pa = *floors_a.get(bk.book.as_str())?;
                         Some((pa - pb).abs())
                     })
@@ -1289,12 +1382,17 @@ fn write_report_html(
                 "quarantined_verses": r.quarantined_verse_count,
                 "shear_verses": r.excluded_shear_verse_count,
                 "books": r.books.iter().map(|b| serde_json::json!({
-                    "book": b.book, "n": b.n, "median": b.median, "mad": b.mad,
-                    "quarantined": b.quarantined, "floor_pct_z3_5": b.floor_pct_default,
+                    "book": b.book, "n": b.n, "median": b.median,
+                    "mad_above": b.mad_above, "mad_below": b.mad_below,
+                    "quarantined": b.quarantined,
+                    "floor_pct_long_z3_5": b.floor_pct_default.0,
+                    "floor_pct_short_z3_5": b.floor_pct_default.1,
                 })).collect::<Vec<_>>(),
                 "project": serde_json::json!({
-                    "n": r.project.n, "median": r.project.median, "mad": r.project.mad,
-                    "floor_pct_z3_5": r.project.floor_pct_default,
+                    "n": r.project.n, "median": r.project.median,
+                    "mad_above": r.project.mad_above, "mad_below": r.project.mad_below,
+                    "floor_pct_long_z3_5": r.project.floor_pct_default.0,
+                    "floor_pct_short_z3_5": r.project.floor_pct_default.1,
                 }),
                 "zsweep": r.zsweep,
                 "scatter": r.scatter.iter().map(|p| serde_json::json!({
