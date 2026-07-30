@@ -188,8 +188,9 @@ pub use stream::{FloorNeeds, walk_floor};
 pub use catalog::{RuleCard, SENSITIVITY_STOPS, Verdict, rule_cards};
 pub use census::{CensusOptions, Inventory, census};
 pub use config::{
-    BracketBalanceConfig, CasingConfig, Config, ProportionalityConfig, PunctOnlyTokenConfig,
-    PunctuationAdjacencyConfig, PunctuationSpacingConfig, RepeatedCharacterRunConfig,
+    BracketBalanceConfig, CasingConfig, CasingRuleConfig, Config, InconsistentWordCasingConfig,
+    ProportionalityConfig, PunctOnlyTokenConfig, PunctuationAdjacencyConfig,
+    PunctuationSpacingConfig, RepeatedCharacterRunConfig, SentenceInitialCasingConfig,
 };
 pub use corpus::{BookBlock, ChapterBlock, Corpus, CorpusError, KeyIdx, MutationEffect};
 pub use diagnostics::{
@@ -793,12 +794,8 @@ mod tests {
     fn casing_on(emit_score_min: f32, confidence_z: f32) -> Config {
         let mut cfg = Config::v1_defaults();
         cfg.rules.insert(RuleId::SentenceInitialLowercase, true);
-        cfg.casing = CasingConfig {
-            emit_score_min,
-            recurrence_k: 32.0,
-            confidence_z,
-            ..CasingConfig::default()
-        };
+        cfg.casing.sentence_initial.evidence.emit_score_min = emit_score_min;
+        cfg.casing.sentence_initial.evidence.confidence_z = confidence_z;
         cfg
     }
 

@@ -126,19 +126,15 @@ impl Default for BracketBalanceConfig {
     }
 }
 
-/// Knobs for the casing pair `case.sentence-initial-lowercase` (positional)
-/// and `case.inconsistent-word-casing` (intrinsic), which share one word
-/// lexicon and one two-factor score (ADR 0051, superseding ADR 0035). Both
-/// score a lowercase site as `dominance × rarity`: the positional rule with
-/// the lexicon-restricted per-glyph capitalize-after-terminal habit and the
-/// word's forced-lowercase recurrence; the intrinsic rule with the word's own
-/// (soft-censored) capitalized share and its lowercase recurrence. These three
-/// values are the whole judgment surface; both rules ship **default-off**.
+/// Shared score knobs for one casing consumer. The positional and intrinsic
+/// casing rules use the same retained observations, but their judging
+/// policies are independent so a per-rule Review Depth adjustment cannot move
+/// the sibling rule.
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default))]
-pub struct CasingConfig {
-    /// **The user-facing decision threshold** for both rules: emit a lowercase
+pub struct CasingRuleConfig {
+    /// **The user-facing decision threshold** for this rule: emit a lowercase
     /// site only when its two-factor evidence (convention dominance × the
     /// site's rarity) is at least this value. Not a share and not a
     /// sensitivity dial in the intuitive direction — higher ⇒ fewer, surer
@@ -157,12 +153,31 @@ pub struct CasingConfig {
     /// *deal*) over the floor while leaving the k-flat single-occurrence
     /// false positives below it. Sanitised through `clamp_count`.
     pub recurrence_k: f32,
-    /// Wilson confidence for every dominance estimate here (the per-glyph
-    /// habit, and each word's capitalized share). Shrinks small-sample
-    /// majorities toward 0.5, so a barely-observed glyph or word can't assert
-    /// a convention — the smooth replacement for a hard `min_samples` gate.
-    /// `1.96` ≈ 95%.
+    /// Wilson confidence for this rule's dominance estimates. Shrinks
+    /// small-sample majorities toward 0.5, so a barely-observed glyph or word
+    /// cannot assert a convention — the smooth replacement for a hard
+    /// `min_samples` gate. `1.96` ≈ 95%.
     pub confidence_z: f32,
+}
+
+impl Default for CasingRuleConfig {
+    fn default() -> Self {
+        Self {
+            emit_score_min: 0.95,
+            recurrence_k: 32.0,
+            confidence_z: 1.96,
+        }
+    }
+}
+
+/// Judging settings for the positional casing rule. The trust gate controls
+/// only whether a terminal class is trusted enough to score a sentence-start
+/// site; it is not part of the intrinsic rule's policy.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
+pub struct SentenceInitialCasingConfig {
+    pub evidence: CasingRuleConfig,
     /// The learned-`terminal_strength` **gate** for the positional rule (ADR
     /// 0052): a forced site is scored (with the *unchanged* `habit × rarity`)
     /// only when its boundary class earns `trust ≥ trust_gate`; below it the
@@ -178,15 +193,35 @@ pub struct CasingConfig {
     pub trust_gate: f32,
 }
 
-impl Default for CasingConfig {
+impl Default for SentenceInitialCasingConfig {
     fn default() -> Self {
         Self {
-            emit_score_min: 0.95,
-            recurrence_k: 32.0,
-            confidence_z: 1.96,
+            evidence: CasingRuleConfig::default(),
             trust_gate: 0.90,
         }
     }
+}
+
+/// Judging settings for the intrinsic word-casing rule.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
+pub struct InconsistentWordCasingConfig {
+    pub evidence: CasingRuleConfig,
+}
+
+/// Knobs for the casing pair `case.sentence-initial-lowercase` (positional)
+/// and `case.inconsistent-word-casing` (intrinsic), which share one word
+/// lexicon and one two-factor observation substrate (ADR 0051, superseding ADR
+/// 0035). Both score a lowercase site as `dominance × rarity`, but the
+/// resolved judging settings remain per-consumer so Review Depth adjustments
+/// are independent. Both rules ship **default-off**.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
+pub struct CasingConfig {
+    pub sentence_initial: SentenceInitialCasingConfig,
+    pub inconsistent_word: InconsistentWordCasingConfig,
 }
 
 /// Knobs for `punct.adjacency-anomaly`. The rule keeps the prior conservative

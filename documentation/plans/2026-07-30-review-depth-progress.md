@@ -140,3 +140,37 @@ the work-packet-5 replacement target, not a compatibility surface to preserve.
 Gate 0 passes. The first code change is restricted to independent casing
 judging configuration and its tests. The full default/all/transcript pins above
 must remain byte-identical after that split; any drift is a stop condition.
+
+## Entry 2 — Work packet 1: independent casing judges
+
+- **Date:** 2026-07-30
+- **Status:** complete; default/all/transcript gate passed.
+- **Changed surfaces:** `Config` now contains nested positional and intrinsic
+  casing judging configs; the casing substrate retains one observation product
+  but carries separate confidence, recurrence, floor, and positional trust
+  semantics; native/wasm tests and calibration helpers use the new shape.
+- **Compatibility decision:** the existing advanced `CasingOverrides` remains
+  a shared public override for this cut. Its evidence fields assign both
+  nested consumers, while `trust_gate` assigns only the positional consumer.
+  This avoids inventing a second raw advanced API; per-rule Review Depth is the
+  independent user surface.
+- **Verification:** focused casing tests (44 including the new isolation test),
+  Galley config tests, and wasm config tests passed. Release oracle outputs were
+  regenerated over all 1,504 corpora and compared with `cmp`:
+
+```text
+default:     1791fcb07deabdeb3e9be208ab7cd02d6348cb15edd15b6ecffc62eae50d749b
+all:         14be8b4fbb225e83c48705cd91ff58440dbc5c3c3ec5ba43296de63383c292ea
+incremental: 2dd7a19055e558ce7a96525208ec89d5b474c62131d928210b8d70595dab8721
+```
+
+All three are byte-identical to Entry 1. The casing isolation test also proves
+that changing one nested consumer's floor leaves the other consumer's complete
+finding content unchanged.
+
+### Next step
+
+Add the dev-only Review Depth survey cluster and use compact TSV summaries to
+measure the two pilot paths. Production profile constants remain unchosen until
+the TSV output identifies useful anchors; no guessed numbers are to enter the
+Rust profiles.

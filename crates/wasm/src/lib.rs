@@ -340,16 +340,19 @@ fn build_config(config: Option<SousConfig>) -> Config {
         }
         if let Some(cas) = c.casing {
             if let Some(v) = cas.emit_score_min {
-                cfg.casing.emit_score_min = v;
+                cfg.casing.sentence_initial.evidence.emit_score_min = v;
+                cfg.casing.inconsistent_word.evidence.emit_score_min = v;
             }
             if let Some(v) = cas.recurrence_k {
-                cfg.casing.recurrence_k = v;
+                cfg.casing.sentence_initial.evidence.recurrence_k = v;
+                cfg.casing.inconsistent_word.evidence.recurrence_k = v;
             }
             if let Some(v) = cas.confidence_z {
-                cfg.casing.confidence_z = v;
+                cfg.casing.sentence_initial.evidence.confidence_z = v;
+                cfg.casing.inconsistent_word.evidence.confidence_z = v;
             }
             if let Some(v) = cas.trust_gate {
-                cfg.casing.trust_gate = v;
+                cfg.casing.sentence_initial.trust_gate = v;
             }
         }
         if let Some(p) = c.punctuation_adjacency {
@@ -1058,10 +1061,13 @@ mod tests {
         assert_eq!(cfg.proportionality.z_long, 2.5);
         assert_eq!(cfg.proportionality.z_short, 3.0);
         assert_eq!(cfg.proportionality.min_verses, 10);
-        assert_eq!(cfg.casing.emit_score_min, 0.8);
-        assert_eq!(cfg.casing.recurrence_k, 24.0);
-        assert_eq!(cfg.casing.confidence_z, 1.5);
-        assert_eq!(cfg.casing.trust_gate, 0.75);
+        assert_eq!(cfg.casing.sentence_initial.evidence.emit_score_min, 0.8);
+        assert_eq!(cfg.casing.inconsistent_word.evidence.emit_score_min, 0.8);
+        assert_eq!(cfg.casing.sentence_initial.evidence.recurrence_k, 24.0);
+        assert_eq!(cfg.casing.inconsistent_word.evidence.recurrence_k, 24.0);
+        assert_eq!(cfg.casing.sentence_initial.evidence.confidence_z, 1.5);
+        assert_eq!(cfg.casing.inconsistent_word.evidence.confidence_z, 1.5);
+        assert_eq!(cfg.casing.sentence_initial.trust_gate, 0.75);
         assert_eq!(cfg.punctuation_adjacency.convention_rate, 0.4);
         assert_eq!(cfg.punctuation_adjacency.confidence_z, 2.1);
         assert_eq!(cfg.punctuation_adjacency.emit_score_min, 0.7);

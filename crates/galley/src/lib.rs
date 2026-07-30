@@ -272,7 +272,7 @@ impl Galley {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ssc_core::{CasingConfig, CensusOptions, RuleId, analyze_with_config};
+    use ssc_core::{CensusOptions, RuleId, analyze_with_config};
 
     fn keyed(book: &str, verses: &[&str]) -> (Vec<String>, Vec<String>) {
         (
@@ -328,12 +328,8 @@ mod tests {
     fn casing_on(emit_score_min: f32, confidence_z: f32) -> Config {
         let mut cfg = Config::v1_defaults();
         cfg.rules.insert(RuleId::SentenceInitialLowercase, true);
-        cfg.casing = CasingConfig {
-            emit_score_min,
-            recurrence_k: 32.0,
-            confidence_z,
-            ..CasingConfig::default()
-        };
+        cfg.casing.sentence_initial.evidence.emit_score_min = emit_score_min;
+        cfg.casing.sentence_initial.evidence.confidence_z = confidence_z;
         cfg
     }
 
@@ -581,7 +577,8 @@ mod tests {
     fn update_config_knob_only_change_remaps_nothing() {
         let cfg1 = Config::all();
         let mut cfg2 = Config::all();
-        cfg2.casing.emit_score_min = 0.9; // knob-only: same enabled set, stricter knob
+        cfg2.casing.sentence_initial.evidence.emit_score_min = 0.9;
+        // knob-only: same enabled set, stricter positional casing knob
         let corpus = corpus_of(vec![
             keyed("GEN", &["a  b", "A1 α qQx joyfullly"]),
             keyed("EXO", &["x\ty", "one) word word"]),
@@ -1342,7 +1339,8 @@ mod tests {
             "step 8a: disable one shared casing consumer"
         );
         let mut cfg_knob = cfg_toggle.clone();
-        cfg_knob.casing.emit_score_min = 0.9; // knob-only tightening
+        cfg_knob.casing.sentence_initial.evidence.emit_score_min = 0.9;
+        // knob-only tightening
         g.update_config(cfg_knob.clone());
         assert_eq!(
             g.analyze(),

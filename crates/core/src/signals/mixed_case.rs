@@ -1395,12 +1395,9 @@ mod tests {
     fn casing_skips_othermixed_while_mixed_case_flags_it() {
         use crate::config::CasingConfig;
 
-        let casing_cfg = CasingConfig {
-            emit_score_min: 0.5,
-            recurrence_k: 32.0,
-            confidence_z: 0.0,
-            trust_gate: 0.90,
-        };
+        let mut casing_cfg = CasingConfig::default();
+        casing_cfg.inconsistent_word.evidence.emit_score_min = 0.5;
+        casing_cfg.inconsistent_word.evidence.confidence_z = 0.0;
         // `case.inconsistent-word-casing` alone — the intrinsic consumer of the
         // shared casing substrate.
         let run_casing = |corpus: &Corpus| {

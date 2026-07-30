@@ -109,7 +109,8 @@ pub(crate) fn fleet(dir: &Path, out: &Path) {
     // both the full distribution and the user-facing volume.
     let mut cfg = Config::all();
     cfg.bracket_balance.emit_score_min = 0.0;
-    cfg.casing.emit_score_min = 0.0;
+    cfg.casing.sentence_initial.evidence.emit_score_min = 0.0;
+    cfg.casing.inconsistent_word.evidence.emit_score_min = 0.0;
     cfg.punctuation_adjacency.emit_score_min = 0.0;
     cfg.punctuation_spacing.emit_score_min = 0.0;
     cfg.repeated_character_run.emit_score_min = 0.0;
@@ -120,7 +121,9 @@ pub(crate) fn fleet(dir: &Path, out: &Path) {
         .iter()
         .map(|id| match id {
             RuleId::BracketBalance => Some(BracketBalanceConfig::default().emit_score_min),
-            RuleId::SentenceInitialLowercase => Some(CasingConfig::default().emit_score_min),
+            RuleId::SentenceInitialLowercase => {
+                Some(CasingConfig::default().sentence_initial.evidence.emit_score_min)
+            }
             RuleId::PunctuationAdjacencyAnomaly => {
                 Some(PunctuationAdjacencyConfig::default().emit_score_min)
             }
@@ -968,4 +971,3 @@ fn print_scored<'a>(target: &Corpus, findings: impl Iterator<Item = &'a Finding>
         );
     }
 }
-

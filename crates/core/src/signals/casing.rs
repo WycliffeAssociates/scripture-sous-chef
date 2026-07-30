@@ -36,7 +36,7 @@
 //! Consumption, per ADR 0052's "verdicts gate, evidence weighs":
 //!
 //! - **Flagging is gated, never scaled.** A forced site is scored with the
-//!   *unchanged* `habit × rarity` iff `trust(class) ≥ cfg.trust_gate`; below the
+//!   *unchanged* `habit × rarity` iff `trust(class) ≥ cfg.sentence_initial.trust_gate`; below the
 //!   gate its positional channel is not scored. Multiplying trust into the score
 //!   would compound honest ~0.97 factors below the floor (the measured erosion
 //!   of 373 genuine findings); since `habit ≤ trust` (the case witness is a term
@@ -885,7 +885,7 @@ fn tv_distance(p: &[u64], q: &[u64]) -> f64 {
 fn build_trust(
     words: &FxHashMap<Arc<str>, WordStats>,
     panel: &Panel,
-    z: f64,
+    positional_z: f64,
 ) -> FxHashMap<ClassKey, f64> {
     let kept: Vec<usize> = (0..panel.classes.len())
         .filter(|&c| panel.events[c] >= CLASS_MIN_EVENTS)
@@ -898,7 +898,7 @@ fn build_trust(
     // followers — exactly ADR 0051's per-glyph habit, re-derived per class.
     let mut w1: FxHashMap<ClassKey, (u64, u64)> = FxHashMap::default();
     for w in words.values() {
-        if !w.is_lexicon_lower(z) {
+        if !w.is_lexicon_lower(positional_z) {
             continue;
         }
         for f in &w.forced {
@@ -928,7 +928,9 @@ fn build_trust(
             let dev = reshuffle_deviate(panel.row(c), &panel.base);
             let ck = panel.classes[c];
             let (s_case, case_seen) = match w1.get(&ck) {
-                Some(&(up, total)) if total > 0 => (wilson_lower_bound(up, total, z), true),
+                Some(&(up, total)) if total > 0 => {
+                    (wilson_lower_bound(up, total, positional_z), true)
+                }
                 _ => (0.0, false),
             };
             Prelim {
@@ -1020,7 +1022,8 @@ pub(crate) struct Model {
     /// Lexicon-restricted capitalize-after-class counts (up, total). `None` =
     /// book-initial. A quote class is present only when promoted.
     habit: FxHashMap<Option<ClassKey>, (u64, u64)>,
-    z: f64,
+    positional_z: f64,
+    intrinsic_z: f64,
     gate: f64,
 }
 
@@ -1043,9 +1046,10 @@ impl Model {
     /// sequence, and an incrementally patched table judges identically to a
     /// freshly merged one.
     fn build(words: Arc<CorpusWords>, panel: &Panel, cfg: &CasingConfig) -> Model {
-        let z = clamp_z(cfg.confidence_z);
-        let gate = f64::from(clamp_unit(cfg.trust_gate));
-        let trust = build_trust(&words, panel, z);
+        let positional_z = clamp_z(cfg.sentence_initial.evidence.confidence_z);
+        let intrinsic_z = clamp_z(cfg.inconsistent_word.evidence.confidence_z);
+        let gate = f64::from(clamp_unit(cfg.sentence_initial.trust_gate));
+        let trust = build_trust(&words, panel, positional_z);
 
         // Lexicon-restricted per-class habit over the words the (baseline)
         // lexicon calls intrinsically lowercase. Bare glyphs and book-initial
@@ -1054,7 +1058,7 @@ impl Model {
         // bare-terminal convention.
         let mut habit: FxHashMap<Option<ClassKey>, (u64, u64)> = FxHashMap::default();
         for w in words.values() {
-            if !w.is_lexicon_lower(z) {
+            if !w.is_lexicon_lower(positional_z) {
                 continue;
             }
             if w.book_initial.total() > 0 {
@@ -1086,7 +1090,8 @@ impl Model {
             words,
             trust,
             habit,
-            z,
+            positional_z,
+            intrinsic_z,
             gate,
         }
     }
@@ -1103,7 +1108,7 @@ impl Model {
 
     fn habit_dominance(&self, key: Option<ClassKey>) -> f64 {
         match self.habit.get(&key) {
-            Some(&(up, total)) => wilson_lower_bound(up, total, self.z),
+            Some(&(up, total)) => wilson_lower_bound(up, total, self.positional_z),
             None => 0.0,
         }
     }
@@ -1190,14 +1195,14 @@ impl Model {
         let up = self.effective_upper(w);
         let (_, lo) = self.eff_mid(w);
         let n = up + lo as f64;
-        n > 0.0 && wilson_lower_bound_f(up, n, self.z) > 0.5
+        n > 0.0 && wilson_lower_bound_f(up, n, self.intrinsic_z) > 0.5
     }
 
     fn is_lower_soft(&self, w: &WordStats) -> bool {
         let up = self.effective_upper(w);
         let (_, lo) = self.eff_mid(w);
         let n = up + lo as f64;
-        n > 0.0 && wilson_lower_bound_f(lo as f64, n, self.z) > 0.5
+        n > 0.0 && wilson_lower_bound_f(lo as f64, n, self.intrinsic_z) > 0.5
     }
 
     /// The intrinsic-channel factors for a lowercase site of word `key`, if the
@@ -1210,7 +1215,7 @@ impl Model {
         let up = self.effective_upper(w);
         let (_, lo) = self.eff_mid(w);
         Some(Factors {
-            dominance: wilson_lower_bound_f(up, up + lo as f64, self.z),
+            dominance: wilson_lower_bound_f(up, up + lo as f64, self.intrinsic_z),
             minority: w.all_lower(),
             opportunities: w.all_total(),
             raw_major: w.all_upper(),
@@ -2057,16 +2062,20 @@ impl CasingOutcome {
 /// scalars hoisted out of the per-key path.
 pub(crate) struct CasingJudge {
     model: Arc<Model>,
-    k: f64,
-    floor: f64,
+    positional_k: f64,
+    positional_floor: f64,
+    intrinsic_k: f64,
+    intrinsic_floor: f64,
 }
 
 impl Clone for CasingJudge {
     fn clone(&self) -> Self {
         CasingJudge {
             model: Arc::clone(&self.model),
-            k: self.k,
-            floor: self.floor,
+            positional_k: self.positional_k,
+            positional_floor: self.positional_floor,
+            intrinsic_k: self.intrinsic_k,
+            intrinsic_floor: self.intrinsic_floor,
         }
     }
 }
@@ -2075,8 +2084,14 @@ impl CasingJudge {
     fn new(model: Arc<Model>, cfg: &CasingConfig) -> Self {
         CasingJudge {
             model,
-            k: clamp_count(cfg.recurrence_k),
-            floor: f64::from(clamp_unit(cfg.emit_score_min)),
+            positional_k: clamp_count(cfg.sentence_initial.evidence.recurrence_k),
+            positional_floor: f64::from(clamp_unit(
+                cfg.sentence_initial.evidence.emit_score_min,
+            )),
+            intrinsic_k: clamp_count(cfg.inconsistent_word.evidence.recurrence_k),
+            intrinsic_floor: f64::from(clamp_unit(
+                cfg.inconsistent_word.evidence.emit_score_min,
+            )),
         }
     }
 
@@ -2087,18 +2102,17 @@ impl CasingJudge {
         let Some(w) = self.model.words.get(word) else {
             return CasingOutcome::default();
         };
-        let score_of = |f: &Factors| f.dominance * rarity(f.minority, self.k);
         let positional = self.model.positional(w, pos).and_then(|f| {
-            let score = score_of(&f);
-            if score < self.floor {
+            let score = f.dominance * rarity(f.minority, self.positional_k);
+            if score < self.positional_floor {
                 return None;
             }
             let (glyph, quoted) = pos.habit_glyph();
             Some((score as f32, glyph, quoted, clamp_u32(f.raw_major), clamp_u32(f.raw_total)))
         });
         let intrinsic = self.model.intrinsic(w).and_then(|f| {
-            let score = score_of(&f);
-            if score < self.floor {
+            let score = f.dominance * rarity(f.minority, self.intrinsic_k);
+            if score < self.intrinsic_floor {
                 return None;
             }
             Some((score as f32, clamp_u32(f.raw_major), clamp_u32(f.raw_total)))
@@ -2341,7 +2355,7 @@ impl crate::substrate::ObservationSubstrate for CasingSubstrate {
 const CONSUMERS: &[RuleId] = &[SENTENCE_INITIAL_LOWERCASE, INCONSISTENT_WORD_CASING];
 
 /// This substrate's judging fingerprint — the committed partition's judging
-/// identity. Every field of [`CasingConfig`] must appear, and
+/// identity. Every nested consumer field must appear, and
 /// `casing_judging_fp_moves_with_every_knob` pins that field-by-field.
 ///
 /// For casing specifically this is a SECOND guard, not the only one: any knob
@@ -2350,10 +2364,13 @@ const CONSUMERS: &[RuleId] = &[SENTENCE_INITIAL_LOWERCASE, INCONSISTENT_WORD_CAS
 /// partition's identity should not depend on a memo that is free to be dropped.
 fn judging_fp(cfg: &CasingConfig) -> u64 {
     crate::substrate::judging_fp(&[
-        cfg.emit_score_min,
-        cfg.recurrence_k,
-        cfg.confidence_z,
-        cfg.trust_gate,
+        cfg.sentence_initial.evidence.emit_score_min,
+        cfg.sentence_initial.evidence.recurrence_k,
+        cfg.sentence_initial.evidence.confidence_z,
+        cfg.sentence_initial.trust_gate,
+        cfg.inconsistent_word.evidence.emit_score_min,
+        cfg.inconsistent_word.evidence.recurrence_k,
+        cfg.inconsistent_word.evidence.confidence_z,
     ])
 }
 
@@ -3249,10 +3266,21 @@ mod tests {
         trust_gate: f32,
     ) -> CasingConfig {
         CasingConfig {
-            emit_score_min,
-            recurrence_k,
-            confidence_z,
-            trust_gate,
+            sentence_initial: crate::config::SentenceInitialCasingConfig {
+                evidence: crate::config::CasingRuleConfig {
+                    emit_score_min,
+                    recurrence_k,
+                    confidence_z,
+                },
+                trust_gate,
+            },
+            inconsistent_word: crate::config::InconsistentWordCasingConfig {
+                evidence: crate::config::CasingRuleConfig {
+                    emit_score_min,
+                    recurrence_k,
+                    confidence_z,
+                },
+            },
         }
     }
 
@@ -4285,6 +4313,42 @@ mod tests {
         assert_eq!(render(&vm, &after), render(&vm, &run_both(&vm, &loose)));
     }
 
+    /// The two casing consumers share observations but not judging policy: a
+    /// positional threshold change cannot alter an intrinsic finding, and the
+    /// reverse is equally true.
+    #[test]
+    fn split_consumer_judging_is_isolated() {
+        let vm = cycle("GEN", &["The men praise God near the gate."], 40);
+        let vm = push_verse(vm, "GEN", 100, "He wept. god is near.");
+        let base = cfg(0.5, 32.0, 0.0);
+        let mut positional = base;
+        positional.sentence_initial.evidence.emit_score_min = 0.0;
+        let mut intrinsic = base;
+        intrinsic.inconsistent_word.evidence.emit_score_min = 0.0;
+
+        let base_findings = run_both(&vm, &base);
+        let positional_findings = run_both(&vm, &positional);
+        let intrinsic_findings = run_both(&vm, &intrinsic);
+        let for_rule = |findings: &[Finding], rule: RuleId| {
+            findings
+                .iter()
+                .filter(|f| f.code == rule)
+                .map(|f| render(&vm, std::slice::from_ref(f)))
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(
+            for_rule(&base_findings, INCONSISTENT_WORD_CASING),
+            for_rule(&positional_findings, INCONSISTENT_WORD_CASING),
+            "positional policy must not move intrinsic findings"
+        );
+        assert_eq!(
+            for_rule(&base_findings, SENTENCE_INITIAL_LOWERCASE),
+            for_rule(&intrinsic_findings, SENTENCE_INITIAL_LOWERCASE),
+            "intrinsic policy must not move positional findings"
+        );
+    }
+
     /// Disabling one consumer leaves the shared substrate — and the other
     /// consumer — untouched (plan §12.4).
     #[test]
@@ -4323,39 +4387,104 @@ mod tests {
         assert_eq!(render(&vm, &back), render(&vm, &both));
     }
 
-    /// Every knob of [`CasingConfig`] must move the judging fingerprint. A knob
+    /// Every nested knob of [`CasingConfig`] must move the judging fingerprint. A knob
     /// missing from `judging_fp` would let a retained partition survive a change
     /// to it; casing's model memo happens to catch that too, so only a direct
     /// field-by-field witness can hold the fingerprint itself honest.
     #[test]
     fn casing_judging_fp_moves_with_every_knob() {
         let base = CasingConfig::default();
-        let mutants: [(&str, CasingConfig); 4] = [
+        let mutants: [(&str, CasingConfig); 7] = [
             (
-                "emit_score_min",
+                "sentence_initial.emit_score_min",
                 CasingConfig {
-                    emit_score_min: base.emit_score_min + 0.125,
+                    sentence_initial: crate::config::SentenceInitialCasingConfig {
+                        evidence: crate::config::CasingRuleConfig {
+                            emit_score_min: base
+                                .sentence_initial
+                                .evidence
+                                .emit_score_min
+                                + 0.125,
+                            ..base.sentence_initial.evidence
+                        },
+                        ..base.sentence_initial
+                    },
                     ..base
                 },
             ),
             (
-                "recurrence_k",
+                "sentence_initial.recurrence_k",
                 CasingConfig {
-                    recurrence_k: base.recurrence_k + 1.0,
+                    sentence_initial: crate::config::SentenceInitialCasingConfig {
+                        evidence: crate::config::CasingRuleConfig {
+                            recurrence_k: base.sentence_initial.evidence.recurrence_k + 1.0,
+                            ..base.sentence_initial.evidence
+                        },
+                        ..base.sentence_initial
+                    },
                     ..base
                 },
             ),
             (
-                "confidence_z",
+                "sentence_initial.confidence_z",
                 CasingConfig {
-                    confidence_z: base.confidence_z + 0.5,
+                    sentence_initial: crate::config::SentenceInitialCasingConfig {
+                        evidence: crate::config::CasingRuleConfig {
+                            confidence_z: base.sentence_initial.evidence.confidence_z + 0.5,
+                            ..base.sentence_initial.evidence
+                        },
+                        ..base.sentence_initial
+                    },
                     ..base
                 },
             ),
             (
-                "trust_gate",
+                "sentence_initial.trust_gate",
                 CasingConfig {
-                    trust_gate: base.trust_gate * 0.5,
+                    sentence_initial: crate::config::SentenceInitialCasingConfig {
+                        trust_gate: base.sentence_initial.trust_gate * 0.5,
+                        ..base.sentence_initial
+                    },
+                    ..base
+                },
+            ),
+            (
+                "inconsistent_word.emit_score_min",
+                CasingConfig {
+                    inconsistent_word: crate::config::InconsistentWordCasingConfig {
+                        evidence: crate::config::CasingRuleConfig {
+                            emit_score_min: base
+                                .inconsistent_word
+                                .evidence
+                                .emit_score_min
+                                + 0.125,
+                            ..base.inconsistent_word.evidence
+                        },
+                    },
+                    ..base
+                },
+            ),
+            (
+                "inconsistent_word.recurrence_k",
+                CasingConfig {
+                    inconsistent_word: crate::config::InconsistentWordCasingConfig {
+                        evidence: crate::config::CasingRuleConfig {
+                            recurrence_k: base.inconsistent_word.evidence.recurrence_k + 1.0,
+                            ..base.inconsistent_word.evidence
+                        },
+                    },
+                    ..base
+                },
+            ),
+            (
+                "inconsistent_word.confidence_z",
+                CasingConfig {
+                    inconsistent_word: crate::config::InconsistentWordCasingConfig {
+                        evidence: crate::config::CasingRuleConfig {
+                            confidence_z: base.inconsistent_word.evidence.confidence_z + 0.5,
+                            ..base.inconsistent_word.evidence
+                        },
+                    },
                     ..base
                 },
             ),
@@ -4690,8 +4819,16 @@ mod tests {
             "{what}: lexicon habit"
         );
         assert_eq!(
-            (patched.model.z.to_bits(), patched.model.gate.to_bits()),
-            (rebuilt.model.z.to_bits(), rebuilt.model.gate.to_bits()),
+            (
+                patched.model.positional_z.to_bits(),
+                patched.model.intrinsic_z.to_bits(),
+                patched.model.gate.to_bits(),
+            ),
+            (
+                rebuilt.model.positional_z.to_bits(),
+                rebuilt.model.intrinsic_z.to_bits(),
+                rebuilt.model.gate.to_bits(),
+            ),
             "{what}: judging scalars"
         );
     }
