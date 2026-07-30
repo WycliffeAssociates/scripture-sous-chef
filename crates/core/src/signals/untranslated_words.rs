@@ -5,8 +5,9 @@
 //! `ChapterView::paired`, `ObservationInputStamp::with_reference`,
 //! `index_reference_chapters` (pairing by verse key, never position).
 //!
-//! For each target verse, a target token is "copied" when its NFC + case-
-//! folded form appears anywhere in the paired reference verse's folded token
+//! For each target verse, a target token is "copied" when its NFC +
+//! Unicode-lowercased form (see `fold_via` — deliberately not full case
+//! folding) appears anywhere in the paired reference verse's folded token
 //! set — membership is order-free by design (word order does not transfer
 //! across languages); only the TARGET-side position of a copied token is
 //! kept, since that is where a finding's span lives. A verse whose target

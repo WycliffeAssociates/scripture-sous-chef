@@ -439,7 +439,7 @@ pub enum FindingArgs {
     #[cfg_attr(feature = "serde", serde(rename = "normalization"))]
     Normalization { affected: u32, example: String },
     /// `lex.untranslated-word`: how much of the flagged verse's target text
-    /// matches the paired source verse's wording exactly (NFC + case fold,
+    /// matches the paired source verse's wording exactly (NFC + Unicode lowercase,
     /// after excusal — Phase C) — `copied_pct` is the excusal-adjusted
     /// fraction of target tokens copied, `run_len` the longest ADJACENT run
     /// of copied tokens the finding's `range` anchors (>= 2 when the finding
