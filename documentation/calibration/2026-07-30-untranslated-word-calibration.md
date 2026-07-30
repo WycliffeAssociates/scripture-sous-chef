@@ -21,8 +21,11 @@
 ## 1. Claim and counterclaim
 
 - **Observes**: for each target verse paired to a reference (source)
-  verse, whether the target's own tokens are, exactly (NFC + Unicode case
-  fold, nothing fuzzier), present in the source verse's token set — and
+  verse, whether the target's own tokens are, exactly (NFC + Unicode
+  **lowercase** — `str::to_lowercase`, deliberately *not* full Unicode
+  case folding: both sides fold through the same function so within-form
+  matching is exact; cross-form corners like `ß`↔`SS` are out of
+  contract; nothing fuzzier), present in the source verse's token set — and
   if so, whether they form a contiguous run or are scattered.
 - **User-facing inference**: "this verse — or this run of words — looks
   like it was left in the source language rather than translated."
@@ -57,16 +60,25 @@ construction, since token indices restart at 0 per chapter).
 
 - **Conditioning variable**: which corpus this is (its declared source) —
   defines the fair comparison population the corpus-wide gate reads.
-- **Primary signal**: the fraction of a verse's target tokens that are
-  exact-copied from the paired source verse, after word excusal.
+- **Primary signal**: a single **paste-shape statistic** — copied
+  coverage × contiguity — over the verse's post-excusal copied tokens:
+  `score = (fraction × (1 + run_bonus×(max_run−1))).min(1.0)`. Adjacency
+  is NOT a separate corroborating signal informally multiplied in
+  (reclassified 2026-07-30, owner-adjudicated): a paste is
+  characteristically contiguous, so coverage and contiguity are two
+  facets of the one claim ("this looks pasted"), combined as a **genuine
+  calibrated joint model** per the rule-development discipline's third
+  option — the calibration evidence is §5's `run_bonus` sweep (smooth,
+  no cliffs; recall collapse below ≈0.25; accelerating noise above 0.5)
+  and the partial-paste recall curve.
 - **Support/opportunity**: the verse's total token count (the
   denominator) and, for word excusal, the word's corpus-wide occurrence
   count (how much evidence backs "this is a convention, not a gap").
-- **Corroborating signal**: run adjacency (`run_bonus`) — a SEPARATE
-  reason for suspicion (a paste is characteristically contiguous, a
-  coincidental proper-noun match is not), currently combined with the
-  primary fraction via a bounded multiplicative bonus
-  (`score = (fraction × (1 + run_bonus×(max_run−1))).min(1.0)`).
+  **Known open question (2026-07-30, queued follow-up)**: verse-level
+  support is not yet gated — a 1-of-1 copied hapax can score 1.0.
+  Because `(copied, total)` is retained per verse, a minimum-support
+  gate (or small-sample discount on the fraction) is judging-only
+  arithmetic — no remap, a small adjudicated re-pin when taken up.
 
 **Case-shape gate — the classification this document resolves explicitly
 (coordinator's requirement, not left informal):**

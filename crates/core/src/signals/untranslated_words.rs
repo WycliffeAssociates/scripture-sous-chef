@@ -72,6 +72,10 @@ pub const UNTRANSLATED_WORD: RuleId = RuleId::UntranslatedWord;
 /// Fold one token's text for exact-membership comparison: NFC, then Unicode
 /// (not ASCII-only) lowercase. "Nothing fuzzier" (plan) — no romanization, no
 /// edit distance. `scratch` is a caller-owned, reused NFC-intermediate buffer
+/// The matching contract is NFC + Unicode **lowercase**, deliberately not
+/// full Unicode case folding: both sides of the membership test fold
+/// through this same function, so within-form matching is exact; cross-form
+/// corners (`ß` vs `SS`, final sigma variants) are out of contract.
 /// (cleared here, not by the caller) — `str::to_lowercase` has no in-place
 /// form, so the returned `String` is a real allocation, but the NFC step that
 /// used to be a second one is now amortized across every fold call in the

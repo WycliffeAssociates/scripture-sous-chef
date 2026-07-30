@@ -2,7 +2,8 @@
 
 - Date: 2026-07-30
 - Status: committed (owner decision 2026-07-30 — "this is next"; the
-  sensitivity/preset-derivation discussion depends on it)
+  [Review Depth plan](2026-07-30-review-depth-plan.md) consumes its calibrated
+  source-relative rows)
 - Subsumes (deleted 2026-07-30, in git history):
   `ideas/discussing/2026-07-29-length-ratio-calibration.md`,
   `ideas/candidates/2026-07-29-untranslated-words-rule.md`. Also relates:
@@ -26,7 +27,7 @@ per-book percent terms.
 1. `prop.length-ratio` shipped long ago, does the right statistics, and
    has produced **zero findings ever** — every fleet sweep ran
    `source = None`. It is the only shipped rule with no calibration story.
-2. The preset-derivation work (evidence-bar slider) needs per-rule
+2. The Review Depth work needs per-rule
    fleet-measured anchors; length-ratio can't contribute anchors until a
    paired survey exists. This plan feeds that one.
 3. Untranslated-words is the last engine-shaped gap on the PO checklist
@@ -122,8 +123,9 @@ per-book percent terms.
    measured drift per the ADR 0059 template (in principle it drifts
    nothing today, since no fleet corpus loads a source — the ADR would
    record the forward-looking default change).
-3. Per-book percent labels for the UI slider ("3.5 ≈ ~38% off-typical in
-   Luke") fall out of the floors — recorded for preset-derivation.
+3. Per-book percent labels for Review Depth ("3.5 ≈ ~38% off-typical in
+   Luke") fall out of the floors — recorded for the
+   [Review Depth plan](2026-07-30-review-depth-plan.md).
 
 ## Phase B2 — asymmetric spread (owner-adjudicated 2026-07-30)
 
@@ -165,7 +167,8 @@ shared token lane; the source chapter is tokenized inside `map_chapter`,
 chapter-local and transient.
 
 - **map_chapter**: per verse, folded source token set; membership-test
-  target tokens (exact match after NFC + case fold — nothing fuzzier).
+  target tokens (exact match after NFC + Unicode lowercase — deliberately
+  not full case folding; nothing fuzzier).
   Observation: per-verse `(copied, total, longest_run)`, per-word copied
   tallies, capped target-side example spans for maximal copied runs.
   Membership is order-free by design — word order does not transfer
@@ -212,7 +215,7 @@ everything," that's a design failure, not a tuning problem.
 1. Same harness, paste faults as ground truth; sweep the judge knobs
    (ceiling, knee, run bonus) judge-only; triage sample as in Phase B.
 2. Adjudicate: default-on or default-off, knob defaults, and the anchor
-   table rows this rule contributes to preset-derivation.
+   table rows this rule contributes to Review Depth.
 3. Deliverable: calibration doc + (if default-on) the adjudicated oracle
    re-pin for the default config; catalog card, localization key, docs.
 
@@ -236,7 +239,7 @@ decision). Full packet: `documentation/calibration/
 - Tier-1 target hygiene: the Tech_Advance repos are real field data —
   findings there may be *true positives*; triage will tell us whether to
   quarantine any pair from the clean-negative denominator.
-- Whether Phase B's re-pin (if any) waits for the preset-derivation
-  anchor-table work or lands independently.
+- Whether Phase B's re-pin (if any) waits for the Review Depth anchor-table
+  work or lands independently.
 - rmn: drop from tier 1 vs run against en_ulb behind the versification
   guard.

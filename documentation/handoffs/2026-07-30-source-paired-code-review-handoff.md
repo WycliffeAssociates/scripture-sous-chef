@@ -14,10 +14,16 @@ facts.
 
 ## Commit range
 
-`c1797cd..<branch tip>` — the arc is contiguous from `c1797cd`
-("calibrate(paired): Phase A harness") through the Phase D closing commits
-(case-shape excusal + oracle re-pin) at the tip. Enumerate with
-`git log --oneline c1797cd^..HEAD`.
+**`c1797cd^..33fd0df`** — from `c1797cd` ("calibrate(paired): Phase A
+harness", inclusive) through `33fd0df` ("core: case-shape excusal …
+pin-move", the arc's last implementation commit). Later docs commits
+(this handoff itself) are not in scope. Enumerate with
+`git log --oneline c1797cd^..33fd0df`; derive the authoritative file
+inventory with `git diff --name-only c1797cd^..33fd0df` (~27 files) —
+the lists below are priority labels, not the inventory. Beyond the named
+engine files, that inventory includes cache registration (`cache.rs`),
+the wire discriminant/schema (`crates/wire/`), generated wasm schema
+artifacts, and the dhat probe (`spike-bench/`) — all in scope.
 
 Review weight — the ENGINE commits get the deep pass:
 
@@ -73,9 +79,13 @@ behavior movement was owner-adjudicated with measured drift.
      source.
    - *Why*: measured — length-ratio catches 0% of source-paste faults
      ("right length, wrong language"). First dumps found real production
-     errors: whole English verses in the Oromo gaz-ulb, ~600 genuine
-     untranslated/half-pasted verses in the Swahili-sourced pairs, and
-     half-translated drafts with embedded English scaffolding (omt-reg).
+     errors: whole English verses in the Oromo gaz-ulb, ~604 raw findings
+     in the Swahili-sourced pairs (a mix of genuine pastes — several
+     hand-verified — and genealogy false positives later removed by the
+     excusal), and half-translated drafts with embedded English
+     scaffolding (omt-reg). Post-excusal survivors were structurally
+     proven a strict subset and spot-checked genuine, not exhaustively
+     verified.
    - *Alternatives rejected*: fuzzy matching (separate parked
      edit-distance candidate); alignment-based (out of scope);
      census-only (error-shaped claims belong in rules).
@@ -121,23 +131,73 @@ behavior movement was owner-adjudicated with measured drift.
 ## Constraints & non-goals for the reviewer
 
 - Read-only. No fixes, refactors, or reformatting — findings only.
-- `crates/core/examples/calibrate/oracle.rs` is the gate contract: flag
-  anything in the range that would change its output; do not propose
-  edits to it.
+- `crates/core/examples/calibrate/oracle.rs` is the gate contract: do
+  not propose edits to it. Intentional, owner-adjudicated re-pins ARE
+  policy (repo `CLAUDE.md`) — B2 and both untranslated-word pin-moves
+  changed oracle output on purpose. Findings are warranted for: changed
+  oracle *mechanics*, unadjudicated drift, drift in a rule other than
+  the adjudicated one, or drift inconsistent with the recorded tables.
 - Statistical *designs* are owner-adjudicated (ADR 0069, the calibration
-  docs) — review the implementations against the documented designs;
-  challenge a design only where the implementation contradicts it.
+  docs) — review the implementations against the documented designs.
+  Exception, explicitly opened for challenge: the single paste-shape
+  statistic (coverage × contiguity via `run_bonus`) — the contract
+  classifies it as a calibrated joint model; if you judge that
+  classification unsound, say so with reasoning (P2).
 - Style nits in example code are P3 at most.
 
 ## Targeted verification call-outs (explicit verdicts required)
 
-(a) B2 drift genuinely confined to `prop.length-ratio` (per-rule diff of
-    oracle dumps before `c2d9955`^ and after).
-(b) Unicode fold correctness after the scratch rework (`fold_via` path,
-    final-sigma-class hazards, NFC scratch reuse across verses).
+Reproduce before/after states by building at pinned commits — for each
+boundary commit X: `git checkout X^`, `cargo build --release -p ssc-core
+--example calibrate`, run the dump matrix below into `/tmp/review/before/`,
+then the same at `X` into `/tmp/review/after/`, and diff per rule. Dump
+matrix (WA + small, both configs, findings + incremental):
+
+```
+./target/release/examples/calibrate --dump-findings oracle-blobs/wa.blob    <out> default full
+./target/release/examples/calibrate --dump-findings oracle-blobs/wa.blob    <out> all     full
+./target/release/examples/calibrate --dump-findings oracle-blobs/small.blob <out> default full
+./target/release/examples/calibrate --dump-findings oracle-blobs/small.blob <out> all     full
+   (+ the same four with --dump-incremental)
+```
+
+(a) B2 drift confined to `prop.length-ratio`: boundary `c2d9955`.
+(b) Fold-path semantic contract: the documented contract is NFC +
+    Unicode **lowercase** (deliberately not full case folding — see the
+    `fold_via` doc comment). Verify the implementation matches THAT
+    contract (NFC scratch reuse across verses, lowercase applied after
+    NFC, both sides folding identically) — not byte-equivalence with the
+    pre-diet implementation.
 (c) Harvest-once/re-threshold equivalence in `paired.rs` vs per-z judging.
-(d) Excusal drift confined to `lex.untranslated-word`, and the
-    survivors-are-a-strict-subset property (no new findings post-excusal).
+(d) Excusal drift confined to `lex.untranslated-word` with survivors a
+    strict subset (no new findings): boundary `33fd0df`.
+(e) Reference-change invalidation: a source-corpus swap/edit re-stamps
+    and remaps exactly the affected chapters (`with_reference` path).
+(f) Gate ordering and independence: corpus gate → word excusal →
+    case-shape excusal → site scoring; the two excusals compose as
+    independent conditions, and no gate rewrites the denominator.
+(g) Finding-span addressing: run spans are target-side byte ranges of
+    the actual run (never the source, never the whole verse when a run
+    ≥ 2 exists).
+(h) Judging-knob isolation: all four `UntranslatedWordsConfig` knobs
+    re-judge without remapping any chapter.
+(i) Resident/stateless equivalence for the new substrate (the
+    edit-locality tests, and whether they cover enough).
+(j) Paired retained-memory bounds: observations are O(verses)-small; the
+    folded source token pools are map-transient (the module's "no second
+    copy of the source text lives on" invariant holds in code, not just
+    in the comment).
+
+## Known open questions (flag, don't fix)
+
+- **Verse-level support gate**: a 1-of-1 copied lowercase hapax can
+  score 1.0 today. `(copied, total)` is retained per verse, so a
+  minimum-support gate is judging-only — a queued follow-up packet. Give
+  a verdict on whether this is P1-shaped (must land before the rule is
+  user-facing) or acceptable-until-Review-Depth.
+- **Caseless-script gap**: the case-shape excusal is a no-op for
+  caseless scripts; untestable with the current fleet (no
+  caseless-vs-caseless pair). Recorded limitation.
 
 ## Verification steps available
 

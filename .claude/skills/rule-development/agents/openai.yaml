@@ -1,0 +1,4 @@
+interface:
+  display_name: "Rule Development"
+  short_description: "Design, calibrate, add, and audit engine rules"
+  default_prompt: "Use $rule-development to audit or develop a Scripture Sous Chef rule."
