@@ -12,7 +12,13 @@
 //! hang, or misbehave on some configurations).
 //!
 //! Usage:
-//!   dhat_probe <testing|profile|warm-profile> <default|all|all-no-*> [corpus]
+//!   dhat_probe <testing|profile|warm-profile> <default|all|all-no-*> [corpus] [source]
+//!
+//! `[source]` (Phase C's paired-residency memory gate): an optional second
+//! vref file loaded and passed to `Galley::new` as the reference corpus —
+//! every dhat number before this flag was sourceless (`None`), so this is
+//! the harness's first paired-residency measurement. Omit it to reproduce
+//! every prior sourceless number unchanged.
 //!
 //! `testing` mode: `dhat::Profiler::builder().testing().build()`, seed once,
 //! then run N=20 warm iterations, printing per-iteration `HeapStats` deltas
@@ -144,6 +150,17 @@ fn main() {
     let bible = spike_bench::vref_io::load_corpus(&path);
     eprintln!("loaded {} verses from {}", bible.len(), path.display());
 
+    let source = args.get(3).map(|s| {
+        let source_path = PathBuf::from(s);
+        let source = spike_bench::vref_io::load_corpus(&source_path);
+        eprintln!(
+            "loaded {} verses from {} (paired-residency source)",
+            source.len(),
+            source_path.display()
+        );
+        source
+    });
+
     let books = ssc_core::corpus::by_book(&bible);
     let bg = books
         .iter()
@@ -169,9 +186,9 @@ fn main() {
     eprintln!("config: {config_name}, mode: {mode}");
 
     match mode {
-        "testing" => run_testing(&bible, &cfg, block_a, block_b),
-        "profile" => run_profile(&bible, &cfg, block_a, block_b),
-        "warm-profile" => run_warm_profile(&bible, &cfg, block_a, block_b),
+        "testing" => run_testing(&bible, source.clone(), &cfg, block_a, block_b),
+        "profile" => run_profile(&bible, source.clone(), &cfg, block_a, block_b),
+        "warm-profile" => run_warm_profile(&bible, source, &cfg, block_a, block_b),
         other => {
             eprintln!("unknown mode {other:?} (want testing|profile)");
             std::process::exit(2);
@@ -179,10 +196,10 @@ fn main() {
     }
 }
 
-fn run_testing(bible: &Corpus, cfg: &Config, block_a: BookBlock, block_b: BookBlock) {
+fn run_testing(bible: &Corpus, source: Option<Corpus>, cfg: &Config, block_a: BookBlock, block_b: BookBlock) {
     let _profiler = dhat::Profiler::builder().testing().build();
 
-    let mut galley = Galley::new(bible.clone(), None, cfg.clone());
+    let mut galley = Galley::new(bible.clone(), source, cfg.clone());
     let seed_start = std::time::Instant::now();
     let _ = galley.analyze();
     eprintln!("cold seed: {:?}", seed_start.elapsed());
@@ -231,8 +248,8 @@ fn run_testing(bible: &Corpus, cfg: &Config, block_a: BookBlock, block_b: BookBl
 /// OFF, start it, then run a few warm iterations — so `dhat-heap.json`'s
 /// backtraces are the warm analyze's own allocations, not the cold seed's
 /// (which outnumber them by orders of magnitude and would bury them).
-fn run_warm_profile(bible: &Corpus, cfg: &Config, block_a: BookBlock, block_b: BookBlock) {
-    let mut galley = Galley::new(bible.clone(), None, cfg.clone());
+fn run_warm_profile(bible: &Corpus, source: Option<Corpus>, cfg: &Config, block_a: BookBlock, block_b: BookBlock) {
+    let mut galley = Galley::new(bible.clone(), source, cfg.clone());
     let seed_start = std::time::Instant::now();
     let _ = galley.analyze();
     eprintln!("cold seed (profiler off): {:?}", seed_start.elapsed());
@@ -251,10 +268,10 @@ fn run_warm_profile(bible: &Corpus, cfg: &Config, block_a: BookBlock, block_b: B
     eprintln!("warm profile: {PROFILE_ITERS} iterations recorded");
 }
 
-fn run_profile(bible: &Corpus, cfg: &Config, block_a: BookBlock, block_b: BookBlock) {
+fn run_profile(bible: &Corpus, source: Option<Corpus>, cfg: &Config, block_a: BookBlock, block_b: BookBlock) {
     let _profiler = dhat::Profiler::new_heap();
 
-    let mut galley = Galley::new(bible.clone(), None, cfg.clone());
+    let mut galley = Galley::new(bible.clone(), source, cfg.clone());
     let seed_start = std::time::Instant::now();
     let _ = galley.analyze();
     eprintln!("cold seed: {:?}", seed_start.elapsed());

@@ -15,5 +15,6 @@ pub mod punctuation;
 pub mod rare_glyph;
 pub mod script_mixing;
 pub mod structural;
+pub mod untranslated_words;
 pub mod whitespace;
 pub mod zero_width_space;

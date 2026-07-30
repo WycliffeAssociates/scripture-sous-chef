@@ -78,6 +78,11 @@ pub(crate) enum SubstrateId {
     /// `case.mixed-case-word`'s per-word case-shape profiles + its retained
     /// interior-capital occurrences.
     MixedCase,
+    /// `lex.untranslated-word`'s per-verse copied-token records (Phase C) —
+    /// the second reference-declaring substrate, after `Proportionality`.
+    /// Landed with its consumer excluded from both oracle configs; the
+    /// oracle pin-move that enables it is a separate, adjudicated commit.
+    UntranslatedWords,
 }
 
 impl SubstrateId {
@@ -98,6 +103,7 @@ impl SubstrateId {
         SubstrateId::DuplicateWord,
         SubstrateId::Casing,
         SubstrateId::MixedCase,
+        SubstrateId::UntranslatedWords,
     ];
 
     /// This id's row in the drive-phase probe table — its position in
@@ -1406,6 +1412,7 @@ pub(crate) struct ActiveSubstrates {
     pub(crate) duplicate_word: bool,
     pub(crate) casing: bool,
     pub(crate) mixed_case: bool,
+    pub(crate) untranslated_words: bool,
 }
 
 impl ActiveSubstrates {
@@ -1426,6 +1433,7 @@ impl ActiveSubstrates {
             duplicate_word: any(duplicate_word_consumers()),
             casing: any(casing_consumers()),
             mixed_case: any(mixed_case_consumers()),
+            untranslated_words: any(untranslated_words_consumers()),
         }
     }
 
@@ -1444,6 +1452,7 @@ impl ActiveSubstrates {
             SubstrateId::DuplicateWord => self.duplicate_word,
             SubstrateId::Casing => self.casing,
             SubstrateId::MixedCase => self.mixed_case,
+            SubstrateId::UntranslatedWords => self.untranslated_words,
         }
     }
 }
@@ -1514,6 +1523,15 @@ pub(crate) fn casing_consumers() -> &'static [RuleId] {
 /// The closed registry: the mixed-case substrate's sole consumer.
 pub(crate) fn mixed_case_consumers() -> &'static [RuleId] {
     &[RuleId::MixedCaseWord]
+}
+
+/// The closed registry: the untranslated-words substrate's sole consumer
+/// (Phase C). Not wired into `analyze_with_config` yet — see the substrate
+/// module doc; this registry entry is complete ahead of that pin-move so
+/// the completeness tests (`registry_covers_every_substrate`,
+/// `every_rule_has_one_executable_owner`) are honest about the closed set.
+pub(crate) fn untranslated_words_consumers() -> &'static [RuleId] {
+    &[RuleId::UntranslatedWord]
 }
 
 /// What semantic inputs a substrate's MAP consumes, and — when it consumes a
@@ -1588,9 +1606,12 @@ impl DeclaresReference for SameSlugSameChapter {}
 #[allow(dead_code)] // read by the registry-alignment tests and by future orchestration
 pub(crate) fn input_of(id: SubstrateId) -> SubstrateInput {
     match id {
-        // `proj.length-ratio` is the only reference-consuming rule in the engine,
-        // and therefore this the only reference-declaring substrate.
-        SubstrateId::Proportionality => SubstrateInput::SameSlugSameChapterReference,
+        // `proj.length-ratio` and `lex.untranslated-word` are the only
+        // reference-consuming rules in the engine, and therefore the only
+        // reference-declaring substrates.
+        SubstrateId::Proportionality | SubstrateId::UntranslatedWords => {
+            SubstrateInput::SameSlugSameChapterReference
+        }
         SubstrateId::Spacing
         | SubstrateId::Adjacency
         | SubstrateId::RepeatedRun
@@ -1622,6 +1643,7 @@ pub(crate) fn consumers_of(id: SubstrateId) -> &'static [RuleId] {
         SubstrateId::DuplicateWord => duplicate_word_consumers(),
         SubstrateId::Casing => casing_consumers(),
         SubstrateId::MixedCase => mixed_case_consumers(),
+        SubstrateId::UntranslatedWords => untranslated_words_consumers(),
     }
 }
 
@@ -1681,6 +1703,10 @@ mod tests {
             <crate::signals::mixed_case::MixedCaseSubstrate as ObservationSubstrate>::ID,
             SubstrateId::MixedCase
         );
+        assert_eq!(
+            <crate::signals::untranslated_words::UntranslatedWordsSubstrate as ObservationSubstrate>::ID,
+            SubstrateId::UntranslatedWords
+        );
     }
 
     /// Every substrate id has at least one consumer, and the active-set fields
@@ -1707,6 +1733,7 @@ mod tests {
                 duplicate_word: true,
                 casing: true,
                 mixed_case: true,
+                untranslated_words: true,
             };
             assert!(all_on.is_active(id), "{id:?} has no active-set field");
             assert!(!ActiveSubstrates::default().is_active(id));
@@ -1738,6 +1765,7 @@ mod tests {
         check::<crate::signals::lexical::DuplicateWordSubstrate>();
         check::<crate::signals::casing::CasingSubstrate>();
         check::<crate::signals::mixed_case::MixedCaseSubstrate>();
+        check::<crate::signals::untranslated_words::UntranslatedWordsSubstrate>();
     }
 
     /// THE SEAM PLAN §5.2 ASKS FOR, both directions. A substrate's declared input

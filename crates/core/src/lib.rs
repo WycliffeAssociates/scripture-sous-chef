@@ -812,8 +812,9 @@ mod tests {
     /// asserted in CI by running the suite under both feature sets.
     /// The closed `InputDependency` registry classifies every `RuleId` exactly
     /// once (the exhaustive match is compiler-enforced; this proves the total
-    /// call is panic-free over `RuleId::ALL`), and exactly one rule —
-    /// `prop.length-ratio` — reads the reference.
+    /// call is panic-free over `RuleId::ALL`), and exactly two rules —
+    /// `prop.length-ratio` and `lex.untranslated-word` (Phase C) — read the
+    /// reference.
     #[test]
     fn input_dependency_covers_every_rule() {
         let ref_dependent: Vec<RuleId> = RuleId::ALL
@@ -823,11 +824,14 @@ mod tests {
                 r.input_dependency() == InputDependency::TargetAndReferenceSilentWhenAbsent
             })
             .collect();
-        assert_eq!(ref_dependent, vec![RuleId::ProjectLengthRatio]);
+        assert_eq!(
+            ref_dependent,
+            vec![RuleId::ProjectLengthRatio, RuleId::UntranslatedWord]
+        );
         // Every other rule is TargetOnly (total coverage, no panic).
         for &r in RuleId::ALL {
             let dep = r.input_dependency();
-            if r != RuleId::ProjectLengthRatio {
+            if !ref_dependent.contains(&r) {
                 assert_eq!(dep, InputDependency::TargetOnly, "{r:?}");
             }
         }

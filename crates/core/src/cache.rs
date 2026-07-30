@@ -136,6 +136,13 @@ pub(crate) struct SubstrateSection {
     pub(crate) bracket: SubstrateCache<bracket_balance::BracketSubstrate>,
     /// `case.mixed-case-word`'s substrate (Phase E).
     pub(crate) mixed_case: SubstrateCache<crate::signals::mixed_case::MixedCaseSubstrate>,
+    /// `lex.untranslated-word`'s substrate (Phase C, source-paired tier
+    /// plan) — the second reference-declaring substrate, after
+    /// `proportionality`. Not wired into `analyze_with_config`'s drive
+    /// sequence yet (see the substrate module doc) — landed byte-identical,
+    /// the oracle pin-move that activates it is a separate commit.
+    pub(crate) untranslated_words:
+        SubstrateCache<crate::signals::untranslated_words::UntranslatedWordsSubstrate>,
     /// The shared folded-word table every word-keyed substrate names its word
     /// types through (casing and `case.mixed-case-word`). It lives here,
     /// beside the substrate slots rather than inside one, for two reasons: a
@@ -166,6 +173,7 @@ impl SubstrateSection {
             casing: SubstrateCache::new(),
             casing_model: None,
             mixed_case: SubstrateCache::new(),
+            untranslated_words: SubstrateCache::new(),
             words: crate::interner::WordInterner::default(),
         }
     }
@@ -186,6 +194,7 @@ impl SubstrateSection {
         self.casing.clear();
         self.casing_model = None;
         self.mixed_case.clear();
+        self.untranslated_words.clear();
         // Every observation that could hold a symbol is gone, so the table's
         // symbols have no readers left — the one point it is safe to drop.
         self.words = crate::interner::WordInterner::default();
@@ -206,6 +215,7 @@ impl SubstrateSection {
         self.duplicate_word.remove_book(slug);
         self.casing.remove_book(slug);
         self.mixed_case.remove_book(slug);
+        self.untranslated_words.remove_book(slug);
     }
 
     /// The finding lane committed `id`'s patch: its partition owes nothing and now
@@ -231,6 +241,7 @@ impl SubstrateSection {
             S::DuplicateWord => &mut self.duplicate_word.pending,
             S::Casing => &mut self.casing.pending,
             S::MixedCase => &mut self.mixed_case.pending,
+            S::UntranslatedWords => &mut self.untranslated_words.pending,
         };
         pending.promote();
     }

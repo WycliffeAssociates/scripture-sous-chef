@@ -51,6 +51,45 @@ impl Default for ProportionalityConfig {
     }
 }
 
+/// Knobs for `lex.untranslated-word` (Phase C of the source-paired tier
+/// plan). **Provisional defaults** — this rule is not yet calibrated
+/// (Phase D's job); it ships excluded from both the default and `all`
+/// oracle configs until then (see `crates/core/examples/calibrate/oracle.rs`
+/// and the ADR the Phase D pin-move will carry).
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
+pub struct UntranslatedWordsConfig {
+    /// Corpus-wide copied-token-share ceiling: at or above this, the whole
+    /// corpus silences the rule (gate 1 — the creole / closely-related-
+    /// language case, where a high baseline copy rate is expected and not
+    /// evidence of anything).
+    pub corpus_gate_share: f32,
+    /// A word recurring at or above this rate per 10,000 target tokens,
+    /// corpus-wide, is excused from every verse's copied-count numerator
+    /// (gate 2 — proper nouns, loanwords, "Amen" are conventions, not
+    /// translation gaps).
+    pub word_recurrence_k: f32,
+    /// Per-extra-token multiplier on the excusal-adjusted verse fraction for
+    /// the longest ADJACENT run of copied tokens (gate 3 — an adjacent run,
+    /// the paste shape, dominates the same count of scattered singles).
+    pub run_bonus: f32,
+    /// The sensitivity floor: a site's score must reach this before it
+    /// materializes as a finding.
+    pub emit_score_min: f32,
+}
+
+impl Default for UntranslatedWordsConfig {
+    fn default() -> Self {
+        Self {
+            corpus_gate_share: 0.5,
+            word_recurrence_k: 40.0,
+            run_bonus: 0.5,
+            emit_score_min: 0.7,
+        }
+    }
+}
+
 /// Knobs for `punct.bracket-balance`. The rule matches brackets at **book**
 /// scope (a parenthetical aside legitimately spans verses); the window is a
 /// circuit-breaker, not an aside detector.
@@ -568,6 +607,8 @@ pub struct Config {
     pub rare_glyph: RareGlyphConfig,
     #[cfg_attr(feature = "serde", serde(default))]
     pub mixed_case: MixedCaseConfig,
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub untranslated_words: UntranslatedWordsConfig,
 }
 
 impl Config {
@@ -600,6 +641,11 @@ impl Config {
             // until a demonstrably cheaper design exists, not a further
             // hot-path redesign. See ADR 0063 Consequences.
             RuleId::MixedNormalization,
+            // Phase C lands the substrate uncalibrated; Phase D adjudicates
+            // default-on/off (source-paired tier plan). Not wired into
+            // `analyze_with_config` at all yet — this entry is belt-and-
+            // suspenders for the day it is.
+            RuleId::UntranslatedWord,
         ])
     }
 

@@ -80,6 +80,10 @@ pub const fn wire_def(rule: RuleId) -> WireDef {
         RuleId::RareGlyph => (22, U32),
         RuleId::MixedCaseWord => (23, CountPair),
         RuleId::MixedNormalization => (24, U32),
+        // Phase C (source-paired tier plan): not yet wired into
+        // `analyze_with_config`, so no consumer packs its args today — `None`
+        // until Phase D decides whether/how a digest is worth assigning.
+        RuleId::UntranslatedWord => (25, None),
     };
     WireDef { code, digest }
 }
@@ -329,6 +333,12 @@ mod tests {
             (22, "uni.rare-glyph", "u32", "target-only"),
             (23, "case.mixed-case-word", "count-pair", "target-only"),
             (24, "uni.mixed-normalization", "u32", "target-only"),
+            (
+                25,
+                "lex.untranslated-word",
+                "none",
+                "target-and-reference-silent-when-absent",
+            ),
         ];
 
         // The pin covers RuleId::ALL exactly once, no more, no fewer.

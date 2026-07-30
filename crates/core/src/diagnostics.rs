@@ -84,6 +84,7 @@ define_rule_ids! {
     RareGlyph                => "uni.rare-glyph",
     MixedCaseWord            => "case.mixed-case-word",
     MixedNormalization       => "uni.mixed-normalization",
+    UntranslatedWord         => "lex.untranslated-word",
 }
 
 impl std::fmt::Display for RuleId {
@@ -115,11 +116,14 @@ pub enum InputDependency {
 impl RuleId {
     /// This rule's output-level [`InputDependency`]. An exhaustive match (no
     /// `_` arm), so a new rule cannot land without an explicit classification.
-    /// Only `prop.length-ratio` reads the reference (source) corpus, and it
-    /// emits nothing at all when no reference is present.
+    /// `prop.length-ratio` and `lex.untranslated-word` are the two rules that
+    /// read the reference (source) corpus, and both emit nothing at all when
+    /// no reference is present.
     pub fn input_dependency(self) -> InputDependency {
         match self {
-            RuleId::ProjectLengthRatio => InputDependency::TargetAndReferenceSilentWhenAbsent,
+            RuleId::ProjectLengthRatio | RuleId::UntranslatedWord => {
+                InputDependency::TargetAndReferenceSilentWhenAbsent
+            }
             RuleId::ExcessHWhitespace
             | RuleId::TabInBody
             | RuleId::ControlChars
@@ -434,6 +438,15 @@ pub enum FindingArgs {
     /// count across every mixed key in the corpus, not just the anchor's.
     #[cfg_attr(feature = "serde", serde(rename = "normalization"))]
     Normalization { affected: u32, example: String },
+    /// `lex.untranslated-word`: how much of the flagged verse's target text
+    /// matches the paired source verse's wording exactly (NFC + case fold,
+    /// after excusal — Phase C) — `copied_pct` is the excusal-adjusted
+    /// fraction of target tokens copied, `run_len` the longest ADJACENT run
+    /// of copied tokens the finding's `range` anchors (>= 2 when the finding
+    /// is a run span; 0 or 1 for the scattered-verse case, whose `range`
+    /// spans the whole verse instead).
+    #[cfg_attr(feature = "serde", serde(rename = "untranslated-word"))]
+    UntranslatedWord { copied_pct: f32, run_len: u16 },
 }
 
 /// One addressable content finding in one verse.

@@ -264,6 +264,13 @@ pub fn card(id: RuleId) -> RuleCard {
             None,
             Deterministic,
         ),
+        RuleId::UntranslatedWord => (
+            "Words copied from the source",
+            "A run of words in this verse matches the source text's exact wording — not just a shared name, but a stretch that looks untranslated.",
+            "Can mean a verse was left in the source language, pasted in as a placeholder, or genuinely borrowed (a name, a loanword) — worth a look either way.",
+            None,
+            SourceRelative,
+        ),
     };
     RuleCard {
         code: id,
@@ -485,6 +492,15 @@ pub fn message(id: RuleId, args: Option<&FindingArgs>) -> String {
                 "This text writes ‘{example}’ in two different encodings in {affected} places."
             ),
             _ => "This text writes the same character in two different encodings.".into(),
+        },
+
+        // ── Source-relative. ──
+        RuleId::UntranslatedWord => match args {
+            Some(FindingArgs::UntranslatedWord { copied_pct, .. }) => format!(
+                "{}% of this verse's words match the source text's wording exactly.",
+                copied_pct.round() as i32
+            ),
+            _ => "This verse closely matches the source text's wording.".into(),
         },
     }
 }
