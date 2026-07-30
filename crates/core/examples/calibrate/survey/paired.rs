@@ -1068,6 +1068,14 @@ enum FaultKind {
     TailChop(u32),
     Delete,
     SourcePaste,
+    /// The MAT 9:15 shape: the target verse's tail is REPLACED (not just
+    /// dropped) by the paired source verse's own tail, at `pct` percent of
+    /// each side's own grapheme length — a half-pasted verse, distinct from
+    /// `SourcePaste`'s whole-verse replacement (which every knob saturates
+    /// on) and from `TailChop`'s pure drop (which plants no source text at
+    /// all). This is the recall case `run_bonus` exists for: a real but
+    /// PARTIAL run, long enough to matter but never the entire verse.
+    PartialPaste(u32),
 }
 
 impl FaultKind {
@@ -1076,23 +1084,25 @@ impl FaultKind {
             FaultKind::TailChop(_) => "tail_chop",
             FaultKind::Delete => "delete",
             FaultKind::SourcePaste => "source_paste",
+            FaultKind::PartialPaste(_) => "partial_paste",
         }
     }
     fn magnitude(&self) -> u32 {
         match self {
-            FaultKind::TailChop(p) => *p,
+            FaultKind::TailChop(p) | FaultKind::PartialPaste(p) => *p,
             FaultKind::Delete | FaultKind::SourcePaste => 0,
         }
     }
 }
 
-const FAULT_KINDS: [FaultKind; 6] = [
+const FAULT_KINDS: [FaultKind; 7] = [
     FaultKind::TailChop(10),
     FaultKind::TailChop(20),
     FaultKind::TailChop(30),
     FaultKind::TailChop(50),
     FaultKind::Delete,
     FaultKind::SourcePaste,
+    FaultKind::PartialPaste(50),
 ];
 
 /// A deterministic (Fisher–Yates, `FAULT_SEED`) permutation of `0..n`.
@@ -1160,6 +1170,51 @@ fn apply_fault(text: &str, source_text: &str, kind: FaultKind) -> String {
         }
         FaultKind::Delete => String::new(),
         FaultKind::SourcePaste => source_text.to_string(),
+        FaultKind::PartialPaste(pct) => {
+            // Keep the target's own HEAD (100 - pct% of its graphemes) and
+            // append the source's own TAIL (pct% of the source's own
+            // graphemes) — both sides measured against their own length, so
+            // a much-longer or much-shorter source verse still yields a
+            // grapheme-proportionate, deterministic tail graft.
+            let mut t_spans = Vec::new();
+            segment(text, &mut t_spans);
+            let t_total = t_spans.len();
+            let head = if t_total == 0 {
+                text
+            } else {
+                let drop = (t_total * pct as usize) / 100;
+                let keep = t_total.saturating_sub(drop);
+                if keep == 0 {
+                    ""
+                } else {
+                    &text[..t_spans[keep - 1].range().end as usize]
+                }
+            };
+
+            let mut s_spans = Vec::new();
+            segment(source_text, &mut s_spans);
+            let s_total = s_spans.len();
+            let tail = if s_total == 0 {
+                ""
+            } else {
+                let take = (s_total * pct as usize) / 100;
+                if take == 0 {
+                    ""
+                } else {
+                    let start_idx = s_total - take;
+                    &source_text[s_spans[start_idx].range().start as usize..]
+                }
+            };
+
+            let head = head.trim_end();
+            let tail = tail.trim_start();
+            match (head.is_empty(), tail.is_empty()) {
+                (true, true) => String::new(),
+                (true, false) => tail.to_string(),
+                (false, true) => head.to_string(),
+                (false, false) => format!("{head} {tail}"),
+            }
+        }
     }
 }
 
@@ -1399,8 +1454,9 @@ pub(crate) fn uw_calibrate(pairs_path: &Path, out_dir: &Path) {
     let mut baseline_out = String::from("pair\tkey\tcopied_pct\trun_len\tall_titlecase_run\n");
     let mut recall_out =
         String::from("pair\tfault_type\tmagnitude\tn_seeded\tn_caught_default\n");
-    let mut sweep_out =
-        String::from("pair\tknob\tvalue\tsource_paste_caught\tsource_paste_n\tclean_flagged\tclean_n\n");
+    let mut sweep_out = String::from(
+        "pair\tknob\tvalue\tsource_paste_caught\tsource_paste_n\tpartial_paste_caught\tpartial_paste_n\tclean_flagged\tclean_n\n",
+    );
 
     for row in &manifest {
         let id = pair_id(row);
@@ -1468,11 +1524,19 @@ pub(crate) fn uw_calibrate(pairs_path: &Path, out_dir: &Path) {
         }
 
         // Knob sweep, univariate around the default, scored against the
-        // source-paste subset (this rule's reason to exist) plus the clean
+        // source-paste subset (this rule's reason to exist), the
+        // partial-paste subset (the MAT 9:15 shape — a real but PARTIAL run,
+        // the recall case `run_bonus` exists for and the only one of the two
+        // that does NOT saturate every knob value), plus the clean
         // (unmutated) false-positive denominator.
         let paste_idx: Vec<usize> = selected
             .iter()
             .filter(|f| f.kind == FaultKind::SourcePaste)
+            .map(|f| f.global_idx)
+            .collect();
+        let partial_idx: Vec<usize> = selected
+            .iter()
+            .filter(|f| matches!(f.kind, FaultKind::PartialPaste(_)))
             .map(|f| f.global_idx)
             .collect();
         let clean_denom = rows.len() - seeded_idx.len();
@@ -1482,10 +1546,12 @@ pub(crate) fn uw_calibrate(pairs_path: &Path, out_dir: &Path) {
             let fired: HashSet<usize> =
                 findings.iter().map(|f| f.key_idx.get() as usize).collect();
             let caught = paste_idx.iter().filter(|gi| fired.contains(gi)).count();
+            let partial_caught = partial_idx.iter().filter(|gi| fired.contains(gi)).count();
             let clean_flagged = fired.iter().filter(|gi| !seeded_idx.contains_key(gi)).count();
             sweep_out += &format!(
-                "{id}\t{label}\t{value}\t{caught}\t{}\t{clean_flagged}\t{clean_denom}\n",
-                paste_idx.len()
+                "{id}\t{label}\t{value}\t{caught}\t{}\t{partial_caught}\t{}\t{clean_flagged}\t{clean_denom}\n",
+                paste_idx.len(),
+                partial_idx.len()
             );
         };
         for &v in UW_EMIT_SWEEP {
@@ -1844,6 +1910,47 @@ mod tests {
     #[test]
     fn delete_empties_the_verse() {
         assert_eq!(apply_fault("original", "source", FaultKind::Delete), "");
+    }
+
+    /// `PartialPaste` (the MAT 9:15 shape): the target's own HEAD survives
+    /// and the source's own TAIL is grafted on — never the whole source
+    /// verse (that is `SourcePaste`'s job) and never a bare drop with
+    /// nothing planted (that is `TailChop`'s job).
+    #[test]
+    fn partial_paste_grafts_the_source_tail_onto_the_target_head() {
+        let target = "one two three four five six";
+        let source = "uno dos tres cuatro cinco seis";
+        let grafted = apply_fault(target, source, FaultKind::PartialPaste(50));
+        // The target's own head (its first ~50% of graphemes) survives —
+        // this is NOT a whole-verse `SourcePaste`.
+        assert!(grafted.starts_with("one two thr"), "{grafted:?}");
+        // The source's own tail (its last ~50% of graphemes) is grafted on
+        // — this is NOT a bare `TailChop` (nothing planted).
+        assert!(grafted.ends_with("seis"), "{grafted:?}");
+        assert_ne!(grafted, target, "must actually mutate the text");
+        assert_ne!(grafted, source, "must not become a whole-verse paste");
+    }
+
+    /// Determinism: the same inputs always graft the same result — no
+    /// hidden randomness, matching every other `FaultKind`'s contract.
+    #[test]
+    fn partial_paste_is_deterministic() {
+        let a = apply_fault("alpha beta gamma delta", "uno dos tres cuatro", FaultKind::PartialPaste(50));
+        let b = apply_fault("alpha beta gamma delta", "uno dos tres cuatro", FaultKind::PartialPaste(50));
+        assert_eq!(a, b);
+    }
+
+    /// Degenerate sides (empty target or empty source) never panic. An
+    /// empty target head yields just the source's own tail portion (not
+    /// the whole source verse); an empty source tail yields just the
+    /// target's own head portion (not the whole target verse) — each side
+    /// is measured against its OWN grapheme length, per the fault's
+    /// definition, not against the other side's.
+    #[test]
+    fn partial_paste_handles_empty_sides() {
+        assert_eq!(apply_fault("", "uno dos tres", FaultKind::PartialPaste(50)), "s tres");
+        assert_eq!(apply_fault("alpha beta gamma", "", FaultKind::PartialPaste(50)), "alpha be");
+        assert_eq!(apply_fault("", "", FaultKind::PartialPaste(50)), "");
     }
 
     #[test]
