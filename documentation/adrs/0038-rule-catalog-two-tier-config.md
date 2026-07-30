@@ -1,5 +1,9 @@
 # ADR 0038: The rule catalog — shipped plain-language cards and a two-tier config
 
+> **Status update:** Superseded by [ADR 0070](0070-review-depth-policy.md) for
+> the sensitivity-stop / shared-score-floor decision. The card-copy and
+> catalog-history portions remain useful context.
+
 - **Date:** 2026-07-06
 - **Status:** Accepted
 - **Builds on:** [ADR 0012](0012-ruleid-closed-enum-config-surface.md)

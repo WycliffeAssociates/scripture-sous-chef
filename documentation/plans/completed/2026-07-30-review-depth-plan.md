@@ -1,7 +1,7 @@
 # Plan — Review Depth: one master control with fleet-calibrated per-rule adjustments
 
 - **Date:** 2026-07-30
-- **Status:** committed (owner design discussion 2026-07-29/30)
+- **Status:** completed (implemented and verified 2026-07-30)
 - **Plan depth:** exhaustive
 - **Interview:** complete through owner/steward discussion; no unresolved product
   branch remains before Gate 0
@@ -14,10 +14,10 @@
   [`2026-07-30-source-paired-tier-plan.md`](2026-07-30-source-paired-tier-plan.md)
   before `prop.length-ratio` or `lex.untranslated-word` can join the mapping
 - **Companion process contract:**
-  [`.claude/skills/rule-development/SKILL.md`](../../.claude/skills/rule-development/SKILL.md)
+  [`.claude/skills/rule-development/SKILL.md`](../../../.claude/skills/rule-development/SKILL.md)
 - **Binding architecture:** ADR 0067 (typed observation substrates and resident
-  Galley), ADR 0065 (packed findings wire), ADR 0038 (current catalog; this plan
-  will supersede its single-`emit_score_min` dial decision)
+  Galley), ADR 0065 (packed findings wire), and ADR 0070 (Review Depth policy;
+  superseding ADR 0038's single-`emit_score_min` dial decision)
 
 ## 0. Settled owner decisions
 

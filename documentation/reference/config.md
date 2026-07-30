@@ -68,7 +68,7 @@ The engine is designed to be cautious. We would rather miss a minor typo than ov
 * **Conservative thresholds:** We require overwhelming proof to learn a rule. For example, we only assume a character is a "sentence terminator" if it predicts a capital letter at least 85% of the time, and only if the math guarantees a less than 0.1% chance it's a coincidence.
 * **Hygiene vs. statistics:** Hygiene rules (like using invisible formatting characters by mistake) have maximum weight because they are *always* wrong. Statistical rules have lower weights because they are educated guesses.
 
-### The user-facing surface: cards and one dial (ADR 0038)
+### The user-facing surface: Review Depth
 
 The shipped rule catalog (`core::catalog`, wasm `rule_catalog()`) carries the
 plain-language text a consumer renders: per rule a **title**, one sentence on
@@ -78,20 +78,29 @@ language-dependent toggles — the **enable question** a translator answers
 wording holds two lines: the *translation* is the authority, never "the
 language"; and findings are invitations to look, not verdicts.
 
-For every corpus-relative rule the single user dial is `emit_score_min`,
-because ADR 0032 unified the score unit — one set of labelled stops serves
-all of them (`catalog::SENSITIVITY_STOPS`):
+Review Depth is one continuous project-wide control from `0` through `100`,
+labelled **Strongest patterns first** → **Explore more patterns**. The shared
+sentence is: “Review Depth controls how unusual a pattern must appear—and how
+much corpus evidence must support that judgment—before it is shown.”
 
-| `emit_score_min` | label |
-| --- | --- |
-| 0.9 | Only what this translation almost never does |
-| 0.7 | Unusual for this translation |
-| 0.5 | Anything even moderately unusual (shipped default) |
+Mapped rules resolve their own native judging parameters from the effective
+depth. A per-rule adjustment is relative, not an override:
 
-Everything else — `convention_rate`, `confidence_z`, structure knobs like
-`word_recurrence_k` and `window_verses` — is the calibration tier: fully
-exposed in `Config` and the wasm overrides, documented in §6b, deliberately
-absent from the cards.
+```text
+effective_depth(rule) = clamp(master_depth + adjustment(rule), 0, 100)
+```
+
+The default anchor is `50`, with no adjustments. It resolves to the existing
+calibrated native defaults, so omitted review configuration is byte-identical
+to current behavior. Explicit advanced native overrides apply afterward and
+win field-by-field. Rules without an honest calibrated path remain fixed
+on/off controls; the catalog's `review_control` field is the source of truth.
+
+The five production anchors are `0 / 25 / 50 / 75 / 100`. Their native values
+are rule-local and are derived from the compact calibration TSVs, not fitted to
+the current project at runtime. `convention_rate`, `confidence_z`, and native
+structure knobs remain advanced calibration fields and are deliberately absent
+from the normal cards.
 
 ### Three Tiers of Configuration
 
@@ -469,17 +478,21 @@ finding — ADR 0034; the old judge-side score-1.0 bypass is gone).
 **Stricter (fewer findings):** lower `convention_rate_per_10k` or raise
 `emit_score_min`. **Looser:** reverse those.
 
-### `case.sentence-initial-lowercase` + `case.inconsistent-word-casing` (`Config.casing`) — **both default OFF**
+### `case.sentence-initial-lowercase` + `case.inconsistent-word-casing` (`Config.casing` consumers) — **both default OFF**
 
-One config drives both casing rules (ADR 0051/0052, superseding ADR 0035): they
-share a per-word case lexicon and one two-factor score `dominance × rarity`.
+The two rules share one per-word case lexicon and two-factor score
+`dominance × rarity`, but their judging configs are independent (ADR 0051/0052,
+amended by ADR 0070). `Config.casing.sentence_initial` owns the positional
+consumer and `Config.casing.inconsistent_word` owns the intrinsic consumer.
+Review Depth maps both consumers separately; these native fields remain
+advanced overrides.
 
 | knob | meaning |
 | --- | --- |
-| `emit_score_min` | the two-factor emission floor for **both** rules; default **0.95**, the frozen knee that clears the homograph/adjective/plural false-positive band (~0.87–0.95) while keeping genuine proper-noun and forced-position slips (≥ 0.956) |
-| `recurrence_k` | the absolute recurrence knee `k`: `rarity = 1 − min(minority − 1, k)/k` over the minority-form count (the ADR 0050 absolute knee; the opportunity-proportional term is omitted — word opportunities are tens-to-hundreds, where a rate term vanishes). A form written the minority way once is a rare slip (`rarity 1`); one recurring past `k` is the corpus's own second convention (`rarity → 0`, silent). Default **32** — what lifts the genuine two-occurrence slips (*christ*, *deal*) over the floor while leaving the k-flat single-occurrence false positives below it. Sanitised through `clamp_count` |
-| `confidence_z` | Wilson confidence for every dominance here (the per-glyph habit and each word's capitalized share); shrinks small samples so a barely-observed glyph or word can't assert a convention; default 1.96 |
-| `trust_gate` | the learned-`terminal_strength` **gate** for the positional rule (ADR 0052): a forced site is scored only when its boundary class — the terminal mark, plus whether a close-quote follows (`.` and `."` are distinct classes) — earns `trust ≥ trust_gate`; below it the positional channel is not scored. Trust is *never* multiplied into the score (three honest ~0.97 factors would sink a confident finding under the floor); it also weights the intrinsic censoring discount (`1 − trust × habit`) regardless of the gate. Default **0.90** — deliberately below the 0.95 emit floor (so the two constants aren't conflated) and inside a measured plateau where the surfaced total is identical for every `trust_gate ∈ [0.50, 0.95]`. Sanitised through `clamp_unit` |
+| `*.evidence.emit_score_min` | the two-factor emission floor for that consumer; default **0.95**, the frozen midpoint that clears the homograph/adjective/plural false-positive band while keeping genuine proper-noun and forced-position slips |
+| `*.evidence.recurrence_k` | the absolute recurrence knee `k`: `rarity = 1 − min(minority − 1, k)/k` over the minority-form count. Default **32** at Review Depth 50; each consumer may resolve its own value. Sanitised through `clamp_count` |
+| `*.evidence.confidence_z` | Wilson confidence for that consumer's dominance; default **1.96** at Review Depth 50 |
+| `sentence_initial.trust_gate` | the learned-`terminal_strength` gate for the positional rule (ADR 0052). Default **0.90** at Review Depth 50; intrinsic casing has no trust gate. Sanitised through `clamp_unit` |
 
 - **`case.sentence-initial-lowercase`** (positional): a forced-position
   lowercase site (after an attached terminal — bare or quote-context — or

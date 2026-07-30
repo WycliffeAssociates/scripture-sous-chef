@@ -54,7 +54,7 @@ isn't visible from the code alone.
 | 0035 | 2026-07-06 | [Casing joins the evidence library — dominance verdict, aggregate stats](0035-casing-recast-on-dominance.md) | Accepted (amends 0017 casing shape) |
 | 0036 | 2026-07-06 | [Excess-whitespace reads Unicode classes — `Zs`+tab runs, STerm protection](0036-excess-whitespace-unicode-classes.md) | Accepted (amends 0014) |
 | 0037 | 2026-07-06 | [Bracket balance — UCD inventory, book-stream pairing, corpus-relative verdicts](0037-bracket-balance-corpus-relative.md) | Accepted (amends 0016) |
-| 0038 | 2026-07-06 | [The rule catalog — shipped plain-language cards and a two-tier config](0038-rule-catalog-two-tier-config.md) | Accepted |
+| 0038 | 2026-07-06 | [The rule catalog — shipped plain-language cards and a two-tier config](0038-rule-catalog-two-tier-config.md) | Superseded in part by 0070 |
 | 0039 | 2026-07-07 | [Quote / discourse-marker balance stays deferred — now with census data](0039-quote-balance-deferred.md) | Deferred |
 | 0040 | 2026-07-07 | [One corpus format — self-describing vref files from external producers](0040-vref-corpus-format-onion-builder.md) | Accepted |
 | 0041 | 2026-07-07 | [Stateful-phase hot-path cleanup — grapheme::count, Po bit, Copy keys, bracket gate, offset chunking](0041-stateful-phase-hot-path-cleanup.md) | Accepted (extends 0017/0021/0022) |
@@ -85,6 +85,7 @@ isn't visible from the code alone.
 | 0066 | 2026-07-27 | [Casing's juror order is canonical (sorted), not hash-incidental](0066-canonical-juror-order.md) | Accepted |
 | 0067 | 2026-07-27 | [Typed observation substrates and the resident `Galley`](0067-typed-observation-substrates-resident-galley.md) | Accepted (supersedes legacy stateful/cache execution) |
 | 0068 | 2026-07-28 | [Cold whole-corpus analyze trades 16–35% for the resident warm model](0068-cold-analyze-trade.md) | Accepted |
+| 0070 | 2026-07-30 | [Review Depth resolves calibrated judging policy, not one shared score floor](0070-review-depth-policy.md) | Accepted (supersedes 0038's sensitivity decision) |
 
 ## Format
 

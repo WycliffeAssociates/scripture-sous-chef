@@ -5,7 +5,7 @@
   user-facing text, the structured message args it carries (or should), and
   whether a front end can synthesize a `replace(haystack, needle)` from those
   args alone.
-- **Related:** [ADR 0038](../adrs/0038-rule-catalog-two-tier-config.md) (the
+- **Related:** [ADR 0070](../adrs/0070-review-depth-policy.md) (the
   `RuleCard` catalog), [ADR 0048](../adrs/0048-descriptive-share-args-for-dominance-rules.md)
   (raw convention share alongside the Wilson score), [ADR 0010](../adrs/0010-pure-analyzer-contract-v1-reset.md)
   §6 (`FindingArgs`).
@@ -51,11 +51,11 @@ accounted for:
 
 ## Verdict kinds
 
-| Kind | Meaning | Score? | Sensitivity dial? |
+| Kind | Meaning | Score? | Review Control |
 |---|---|---|---|
-| Deterministic | fixed mechanical condition | no | no |
-| CorpusRelative | judged against this translation's own patterns | yes `[0,1]` | yes (`emit_score_min`) |
-| SourceRelative | judged against the paired source text | yes | yes |
+| Deterministic | fixed mechanical condition | no | fixed |
+| CorpusRelative | judged against this translation's own patterns | yes `[0,1]` | mapped only when a calibrated path exists |
+| SourceRelative | judged against the paired source text | yes | fixed until its own calibration path lands |
 
 ## Messaging — default English + structured args
 

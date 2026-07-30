@@ -174,3 +174,118 @@ Add the dev-only Review Depth survey cluster and use compact TSV summaries to
 measure the two pilot paths. Production profile constants remain unchosen until
 the TSV output identifies useful anchors; no guessed numbers are to enter the
 Rust profiles.
+
+## Entry 3 — pilot survey and profile adjudication
+
+- **Date:** 2026-07-30
+- **Status:** complete for the three target-only pilots; source-relative and
+  remaining target-only rules remain fixed as planned.
+- **Harness correction:** the first WA attempt was sequential and was stopped
+  after it proved impractical. The survey was then changed to run one pilot at
+  a time, in parallel per corpus, and to retain only compact ordered strings;
+  this reduced unrelated rule work without changing the measured judge. The
+  output order remains deterministic because Rayon results are written in input
+  order.
+- **Small command and pin:**
+
+  ```text
+  cargo run --release -p ssc-core --example calibrate -- --build-blob corpora/vref small /tmp/review-depth.small.blob
+  ./target/release/examples/calibrate --review-depth-survey /tmp/review-depth.small.blob /tmp/review-depth.small.tsv small
+  ```
+
+  The small run covers 15 corpora, 225 data rows. Its SHA-256 is
+  `35578bec0508a7649dfc1d2fea960ca4a90083b7b6e921390da67eb9eba25d24`.
+- **WA command and pin:**
+
+  ```text
+  ./target/release/examples/calibrate --review-depth-survey oracle-blobs/wa.blob /tmp/review-depth.wa.optimized.tsv wa
+  ```
+
+  The completed run covers 251 corpora and 3,765 data rows. Its pre-profile-
+  column SHA-256 was
+  `19e97e19d3cc6d0ab73d842cfd8f1c8c181cc078deb17cf9c35947bab1325051`; the
+  expanded-schema rerun covers the same 251 corpora and 3,765 rows and is
+  pinned at `fd31554cd8ccff04efc1c281c10efd9ddad117fc7083d565f319f25f7cdcd0dd`.
+- **Full command and pin:**
+
+  ```text
+  ./target/release/examples/calibrate --review-depth-survey corpora/vref /tmp/review-depth.full.tsv full
+  ```
+
+  The full run covers 1,504 corpora and 22,560 data rows with SHA-256
+  `ba96fde95d913b53aa741d6c53219cf6a9aba08a4bd5b1156645cd9df3132c86`.
+- **Full-fleet anchor check:** spacing at depth 50 emits 27,024 findings from
+  69,529,074 opportunities, matching the existing shipped calibration count;
+  casing remains monotone from strict through exploratory endpoints.
+- **Reproducible aggregation:** for either TSV, after the two comment/header
+  lines, this command sums opportunities and findings by rule/depth:
+
+  ```text
+  awk -F '\t' 'NR>2 {o[$1 FS $2]+=$4; f[$1 FS $2]+=$5; n[$1 FS $2]++} END {for (k in n) print k FS n[k] FS o[k] FS f[k]}' /tmp/review-depth.wa.optimized.tsv | sort
+  ```
+
+  The score columns use nearest-rank quantiles: sort finite scores with
+  `f32::total_cmp`, then choose index `ceil(p*n)-1` (clamped). The opportunity
+  column is the zero-floor judge population: spacing cells with
+  `emit_score_min=0`, or casing sites with the relevant channel present.
+- **Observed WA response before the profile columns were added:**
+
+  ```text
+  rule                              depth  opportunities  findings
+  case.inconsistent-word-casing       0       155140          17
+  case.inconsistent-word-casing      25       164013          62
+  case.inconsistent-word-casing      50       172552         238
+  case.inconsistent-word-casing      75       186077        1267
+  case.inconsistent-word-casing     100       199758        6530
+  case.sentence-initial-lowercase     0        57491          71
+  case.sentence-initial-lowercase    25        61663         300
+  case.sentence-initial-lowercase    50        64319         901
+  case.sentence-initial-lowercase    75        70328        3794
+  case.sentence-initial-lowercase   100        83513       12846
+  punct.spacing-anomaly                0      8443970        1117
+  punct.spacing-anomaly               25      8443970        3284
+  punct.spacing-anomaly               50      8443970        7124
+  punct.spacing-anomaly               75      8443970       12228
+  punct.spacing-anomaly              100      8443970       19609
+  ```
+
+- **Adjudication assumption:** implementation is treating the settled owner
+  decision in the plan as approval of these first production anchors. The
+  curves are monotone, the midpoint rows reproduce the native defaults, and
+  the strict/endpoints materially narrow or widen the surfaced set. The
+  constants are rule-local rather than a shared score-floor fit; each emitted
+  TSV row now includes the native profile fields so a reviewer can reproduce
+  the exact interpolation and compare it with the response curve. A later
+  owner review can change only the profile tables without changing the policy
+  contract.
+
+## Entry 4 — public artifacts and final gates
+
+- **Date:** 2026-07-30
+- **Status:** complete; plan moved to `documentation/plans/completed/`.
+- **Full survey:** 1,504 corpora, 22,560 data rows, SHA-256
+  `ba96fde95d913b53aa741d6c53219cf6a9aba08a4bd5b1156645cd9df3132c86`.
+  At depth 50, spacing emits 27,024 findings from 69,529,074 opportunities;
+  all three pilot curves are monotone across the five anchors.
+- **Final oracle bookends:** each `cmp` passed against Entry 1:
+
+  ```text
+  default:     427,881 rows, 1791fcb07deabdeb3e9be208ab7cd02d6348cb15edd15b6ecffc62eae50d749b
+  all:         962,372 rows, 14be8b4fbb225e83c48705cd91ff58440dbc5c3c3ec5ba43296de63383c292ea
+  incremental:  56,958 rows, 2dd7a19055e558ce7a96525208ec89d5b474c62131d928210b8d70595dab8721
+  ```
+
+- **Rust/wasm verification:** core Review Depth, catalog, full wasm unit suite
+  (16 tests), and wire suite (25 tests plus doc tests) pass. `git diff --check`
+  passes. Both generated packages were refreshed with wasm-bindgen 0.2.120;
+  the shared public declarations match through the catalog/config surface and
+  both expose `review_depth`, `review_control`, and `review`.
+- **Known repository-wide gate note:** `cargo fmt --all -- --check` reports
+  pre-existing formatting drift in unrelated examples/tools, and clippy with
+  `-D warnings` reports pre-existing lints in casing/token/untranslated-word
+  code. The new Review Depth module's clippy issue was fixed; no new warning is
+  being waived. These unrelated baseline failures were not reformatted or
+  changed.
+- **Ownership:** the pre-existing roadmap, per-mark suppression, deleted
+  preset-derivation, and absolute-mode census edits remain outside the scoped
+  commits.

@@ -14,8 +14,12 @@ causes: the position forces uppercase, or the word is intrinsically
 capitalized. Censoring is one-directional — uppercase at a forced position is
 uninformative about the word (weighted by the terminal class's learned trust —
 ADR 0052); lowercase is informative everywhere. Both score a
-lowercase site as `dominance × rarity` and share one config (`Config.casing`:
-`emit_score_min` 0.95, `recurrence_k` 32, `confidence_z` 1.96, `trust_gate` 0.90).
+lowercase site as `dominance × rarity`. Their evidence defaults remain
+`emit_score_min` 0.95, `recurrence_k` 32, and `confidence_z` 1.96, while the
+positional consumer additionally owns `trust_gate` 0.90. The typed config is
+split into `Config.casing.sentence_initial` and
+`Config.casing.inconsistent_word` so Review Depth can adjust the consumers
+independently without duplicating the observation substrate.
 All three rules ship **default OFF**.
 
 Forced positions are structural: a word right after a *bare* attached terminal
@@ -84,15 +88,17 @@ conflated. Caseless scripts and thin/rare classes contribute 0 trust and
 self-silence. This wiring took the fleet from 3,547 to 4,005 findings (+519
 newly-policeable quote-context sites, +373 readmitted erosion victims).
 
-**Config** — `emit_score_min` (0.95), `recurrence_k` (32), `confidence_z`
-(1.96), `trust_gate` (0.90); see `documentation/reference/config.md`. **Stricter:** raise
-the floor or lower `recurrence_k`. **Looser:** the reverse.
+**Config** — native judging fields are the positional half of
+`Config.casing`; the rule is **Review Control: mapped**. Review Depth resolves
+its floor, recurrence knee, confidence, and trust gate from the offline pilot
+profile, then explicit advanced fields win. **Stricter:** raise the floor or
+lower `recurrence_k`. **Looser:** the reverse.
 
 ---
 
 ## `case.inconsistent-word-casing` — a usually-capitalized word written lowercase
 
-> **Severity** Info · **Default** OFF · **Scope** substrate-backed (per-book word table) · **Knobs** shared `Config.casing` · **ADR** 0051 (new rule), 0052
+> **Severity** Info · **Default** OFF · **Scope** substrate-backed (per-book word table) · **Knobs** `Config.casing.inconsistent_word` · **Review Control** mapped · **ADR** 0051 (new rule), 0052
 
 **Flags** — A lowercase occurrence of a word this translation almost always
 capitalizes, scored by how dominantly it capitalizes that exact word times how

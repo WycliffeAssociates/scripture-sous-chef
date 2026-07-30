@@ -163,7 +163,7 @@ scope.
 ---
 ## `punct.spacing-anomaly` — pooled class-conditioned spacing
 
-> **Severity** Info · **Default** off · **Scope** substrate-backed (aggregate evidence) · **Knobs** `emit_score_min` (default 0.5), `confidence_z` (default 1.96), `minority_recurrence_k` (default 32), `minority_rate_per_10k` (default 40) · **Source** `punctuation.rs` · **ADR** 0029, 0033, 0050, 0054 (2nd amendment)
+> **Severity** Info · **Default** off · **Scope** substrate-backed (aggregate evidence) · **Knobs** `emit_score_min` (default 0.5), `confidence_z` (default 1.96), `minority_recurrence_k` (default 32), `minority_rate_per_10k` (default 40) · **Review Control** mapped · **Source** `punctuation.rs` · **ADR** 0029, 0033, 0050, 0054 (2nd amendment)
 
 **Flags** — A separator mark (GC `Po` minus quotes — `. , ; : ? !` and equally
 danda `।`, Arabic `۔ ، ؟ ؛`, Ethiopic `። ፤ ፥`, Burmese `။ ၊`, Khmer `។`) **or a
@@ -259,7 +259,9 @@ unioned across both sides when both fire.
 per-pool Wilson-dominance gate; `minority_recurrence_k` (default **32**) and
 `minority_rate_per_10k` (default **40**) are the volume-scaled recurrence knee
 (the rate term keeps ne_udb's verse-final dandas near the floor — ADR 0050);
-`confidence_z` (default 1.96) is an advanced Wilson-confidence knob. No
+`confidence_z` (default 1.96) is an advanced Wilson-confidence knob. Review
+Depth maps the four judging fields through the offline profile; explicit
+advanced overrides win afterward. No
 `convention_rate`, no `min_samples`. Constants carried from ADR 0050 and
 re-verified under the per-pool denominators (ADR 0054 2nd amendment). At the
 shipped cell the fleet lands at **27,024 findings across 1,360 corpora**; the
