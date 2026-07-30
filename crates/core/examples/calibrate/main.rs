@@ -72,7 +72,7 @@ use survey::misc::{
     spacing_fleet_sweep, zwsp_calib,
 };
 use survey::mixedcase::{analyze_mixedcase, mixedcase_fleet, mixedcase_single_report};
-use survey::paired::{paired_survey, seed_faults};
+use survey::paired::{paired_survey, seed_faults, uw_calibrate, uw_case_shape_simulate};
 use survey::pooled::{analyze_pooled, pooled_fleet, pooled_single_report};
 use survey::signatures::{analyze_signatures, signature_fleet, signature_single_report};
 use survey::terminal::{terminal_fleet, terminal_single};
@@ -347,6 +347,23 @@ fn main() {
         // every swept z.
         [flag, pairs, out] if flag == "--seed-faults" => {
             seed_faults(Path::new(pairs), Path::new(out));
+            return;
+        }
+        // Phase D calibration packet for lex.untranslated-word: baseline
+        // findings (genealogy/false-positive read), seeded source-paste
+        // recall, and a judging-only knob sweep (emit_score_min,
+        // word_recurrence_k, run_bonus) — the shipped substrate/knobs as-is,
+        // no observation-schema change.
+        [flag, pairs, out] if flag == "--uw-calibrate" => {
+            uw_calibrate(Path::new(pairs), Path::new(out));
+            return;
+        }
+        // Harness-side simulation of the proposed case-shape (proper-noun)
+        // excusal gate, against every real finding the shipped rule
+        // currently produces — does NOT change the substrate. Estimates the
+        // observation-schema-change proposal's effect before it is made.
+        [flag, pairs, out] if flag == "--uw-case-shape-simulate" => {
+            uw_case_shape_simulate(Path::new(pairs), Path::new(out));
             return;
         }
         [t] => {

@@ -31,10 +31,11 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use ssc_core::config::ProportionalityConfig;
+use ssc_core::config::{ProportionalityConfig, UntranslatedWordsConfig};
 use ssc_core::grapheme::{count as grapheme_count, segment};
 use ssc_core::key::parse_key;
 use ssc_core::signals::proportionality::length_ratio_findings;
+use ssc_core::signals::untranslated_words::untranslated_word_findings;
 use ssc_core::{Corpus, FindingArgs, LengthRatioScope};
 
 use super::misc::display_slice;
@@ -1062,7 +1063,7 @@ impl SplitMix64 {
 /// re-rolled.
 const FAULT_SEED: u64 = 0x5EED_FA17_C0FF_EE;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 enum FaultKind {
     TailChop(u32),
     Delete,
@@ -1357,6 +1358,290 @@ pub(crate) fn seed_faults(pairs_path: &Path, out_dir: &Path) {
     }
     let sensitivity = multi_source_sensitivity(&surveys);
     write_report_html(out_dir, &surveys, &faults, &skipped, &sensitivity);
+}
+
+// ---------------------------------------------------------------------------
+// --uw-calibrate: lex.untranslated-word Phase D calibration packet
+// ---------------------------------------------------------------------------
+
+/// `emit_score_min` univariate sweep — the knob with the dead-knob history
+/// this packet exists partly to check (other rules' post-calibration score
+/// distributions have gone bimodal and stopped responding to this knob; see
+/// `documentation/ideas/discussing/2026-07-29-preset-derivation.md`).
+const UW_EMIT_SWEEP: &[f32] = &[0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95];
+/// `word_recurrence_k` univariate sweep (per 10k target tokens).
+const UW_RECUR_SWEEP: &[f32] = &[10.0, 20.0, 30.0, 40.0, 60.0, 80.0, 120.0];
+/// `run_bonus` univariate sweep.
+const UW_RUN_BONUS_SWEEP: &[f32] = &[0.0, 0.25, 0.5, 0.75, 1.0, 1.5];
+
+/// Phase D calibration packet for `lex.untranslated-word`, entirely on the
+/// SHIPPED substrate/knobs as-is (no observation-schema change — the
+/// case-shape-aware excusal design is a separate, escalated gate). Three
+/// outputs:
+///
+/// 1. `uw-baseline-findings.tsv` — every real (unmutated) finding at the
+///    default config, with a naive title-case-run heuristic so the
+///    genealogy/name-list false positives (the ready-made negative sample
+///    the pin-move's adjudication eyeball already found) are inspectable
+///    without re-deriving them from the oracle dump.
+/// 2. `uw-seed-recall.tsv` — per fault kind/magnitude, how many seeded
+///    faults the rule catches at the default config. `source_paste` is the
+///    fault this rule exists for (length-ratio measured 0% on it).
+/// 3. `uw-knob-sweep.tsv` — univariate sweeps of all three judging-only
+///    knobs (`emit_score_min`, `word_recurrence_k`, `run_bonus`), each
+///    scored against the `source_paste` subset (recall) and the clean
+///    denominator (false-positive rate) — the flips/cliffs/dead-range read.
+pub(crate) fn uw_calibrate(pairs_path: &Path, out_dir: &Path) {
+    let manifest = read_manifest(pairs_path);
+    fs::create_dir_all(out_dir).unwrap_or_else(|e| panic!("mkdir {}: {e}", out_dir.display()));
+
+    let default_cfg = UntranslatedWordsConfig::default();
+    let mut baseline_out = String::from("pair\tkey\tcopied_pct\trun_len\tall_titlecase_run\n");
+    let mut recall_out =
+        String::from("pair\tfault_type\tmagnitude\tn_seeded\tn_caught_default\n");
+    let mut sweep_out =
+        String::from("pair\tknob\tvalue\tsource_paste_caught\tsource_paste_n\tclean_flagged\tclean_n\n");
+
+    for row in &manifest {
+        let id = pair_id(row);
+        let Some((target, source)) = load_row(row) else {
+            eprintln!("uw-calibrate: {id} not loadable, skipped");
+            continue;
+        };
+        eprintln!("uw-calibrate: {id}");
+
+        // --- 1. Baseline: real (unmutated) findings at the default config —
+        // the genealogy/false-positive read. `all_titlecase_run` is a cheap
+        // proxy for "every copied word in this run looks like a proper
+        // noun" (first letter uppercase) — not the real case-shape
+        // classifier (`signals::case_shape`), which needs an observation-
+        // schema change this packet does not make; a proxy is enough to
+        // confirm the shape of the false-positive population.
+        let baseline = untranslated_word_findings(&target, Some(&source), &default_cfg);
+        for f in &baseline {
+            let Some(FindingArgs::UntranslatedWord { copied_pct, run_len }) = f.args else {
+                continue;
+            };
+            let key = target.key(f.key_idx);
+            let text = target.text(f.key_idx);
+            let slice = f.range.slice(text);
+            let all_titlecase_run = slice
+                .split_whitespace()
+                .all(|w| w.chars().next().is_some_and(char::is_uppercase));
+            baseline_out += &format!("{id}\t{key}\t{copied_pct:.1}\t{run_len}\t{all_titlecase_run}\n");
+        }
+
+        // --- 2/3. Seeded source-paste recall + knob sweep.
+        let rows = pair_verses(&target, &source);
+        let selected = select_faults(&rows);
+        if selected.is_empty() {
+            eprintln!("uw-calibrate: {id} too few paired verses to seed — skipped recall/sweep");
+            continue;
+        }
+        let seeded_idx: HashMap<usize, FaultKind> =
+            selected.iter().map(|f| (f.global_idx, f.kind)).collect();
+        let mut texts = target.texts().to_vec();
+        let source_text_of: HashMap<usize, &str> =
+            rows.iter().map(|r| (r.global_idx, r.source_text.as_str())).collect();
+        for (&gi, &kind) in &seeded_idx {
+            let src = source_text_of.get(&gi).copied().unwrap_or("");
+            texts[gi] = apply_fault(&texts[gi], src, kind);
+        }
+        let mutated = Corpus::try_from_parts(target.keys().to_vec(), texts)
+            .unwrap_or_else(|e| panic!("{id}: mutated corpus invalid: {e}"));
+
+        let default_findings = untranslated_word_findings(&mutated, Some(&source), &default_cfg);
+        let fired_default: HashSet<usize> =
+            default_findings.iter().map(|f| f.key_idx.get() as usize).collect();
+        let mut per_kind_n: HashMap<FaultKind, usize> = HashMap::new();
+        let mut per_kind_caught: HashMap<FaultKind, usize> = HashMap::new();
+        for f in &selected {
+            *per_kind_n.entry(f.kind).or_default() += 1;
+            if fired_default.contains(&f.global_idx) {
+                *per_kind_caught.entry(f.kind).or_default() += 1;
+            }
+        }
+        for k in FAULT_KINDS {
+            let n = per_kind_n.get(&k).copied().unwrap_or(0);
+            let c = per_kind_caught.get(&k).copied().unwrap_or(0);
+            recall_out += &format!("{id}\t{}\t{}\t{n}\t{c}\n", k.label(), k.magnitude());
+        }
+
+        // Knob sweep, univariate around the default, scored against the
+        // source-paste subset (this rule's reason to exist) plus the clean
+        // (unmutated) false-positive denominator.
+        let paste_idx: Vec<usize> = selected
+            .iter()
+            .filter(|f| f.kind == FaultKind::SourcePaste)
+            .map(|f| f.global_idx)
+            .collect();
+        let clean_denom = rows.len() - seeded_idx.len();
+
+        let mut sweep_one = |cfg: &UntranslatedWordsConfig, label: &str, value: f32| {
+            let findings = untranslated_word_findings(&mutated, Some(&source), cfg);
+            let fired: HashSet<usize> =
+                findings.iter().map(|f| f.key_idx.get() as usize).collect();
+            let caught = paste_idx.iter().filter(|gi| fired.contains(gi)).count();
+            let clean_flagged = fired.iter().filter(|gi| !seeded_idx.contains_key(gi)).count();
+            sweep_out += &format!(
+                "{id}\t{label}\t{value}\t{caught}\t{}\t{clean_flagged}\t{clean_denom}\n",
+                paste_idx.len()
+            );
+        };
+        for &v in UW_EMIT_SWEEP {
+            sweep_one(
+                &UntranslatedWordsConfig { emit_score_min: v, ..default_cfg },
+                "emit_score_min",
+                v,
+            );
+        }
+        for &v in UW_RECUR_SWEEP {
+            sweep_one(
+                &UntranslatedWordsConfig { word_recurrence_k: v, ..default_cfg },
+                "word_recurrence_k",
+                v,
+            );
+        }
+        for &v in UW_RUN_BONUS_SWEEP {
+            sweep_one(
+                &UntranslatedWordsConfig { run_bonus: v, ..default_cfg },
+                "run_bonus",
+                v,
+            );
+        }
+    }
+
+    fs::write(out_dir.join("uw-baseline-findings.tsv"), baseline_out)
+        .unwrap_or_else(|e| panic!("write uw-baseline-findings.tsv: {e}"));
+    fs::write(out_dir.join("uw-seed-recall.tsv"), recall_out)
+        .unwrap_or_else(|e| panic!("write uw-seed-recall.tsv: {e}"));
+    fs::write(out_dir.join("uw-knob-sweep.tsv"), sweep_out)
+        .unwrap_or_else(|e| panic!("write uw-knob-sweep.tsv: {e}"));
+    eprintln!(
+        "uw-calibrate: wrote uw-baseline-findings.tsv, uw-seed-recall.tsv, uw-knob-sweep.tsv to {}",
+        out_dir.display()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// --uw-case-shape-simulate: the proposed proper-noun excusal, simulated
+// harness-side (NOT implemented in the substrate — no observation-schema
+// change has been made; this only estimates one before it is requested)
+// ---------------------------------------------------------------------------
+
+/// Simulate the proposed case-shape excusal gate for `lex.untranslated-word`
+/// against every REAL (unmutated) finding the shipped rule currently
+/// produces: re-derive each finding's copied tokens, mark any whose
+/// ORIGINAL (unfolded) target-text form is `Title`- or `AllCaps`-shaped
+/// (`signals::case_shape`, the shared ADR 0051/0055 classifier — reused, not
+/// reinvented) as "proper-noun-shaped," exclude those from run
+/// reconstruction and the fraction, and recompute the SAME score formula
+/// `judge`/`materialize` use. This never touches the substrate — it is a
+/// harness-side estimate of "what would change" so the owner can adjudicate
+/// the design BEFORE the observation-schema change (recording case-shape on
+/// `CopiedToken`) is made.
+pub(crate) fn uw_case_shape_simulate(pairs_path: &Path, out_dir: &Path) {
+    use ssc_core::signals::case_shape::{CaseShape, case_shape};
+    use unicode_normalization::UnicodeNormalization;
+
+    fn fold(raw: &str) -> String {
+        raw.nfc().collect::<String>().to_lowercase()
+    }
+
+    let manifest = read_manifest(pairs_path);
+    fs::create_dir_all(out_dir).unwrap_or_else(|e| panic!("mkdir {}: {e}", out_dir.display()));
+    let cfg = UntranslatedWordsConfig::default();
+    let mut out = String::from(
+        "pair\tkey\treal_copied_pct\treal_run_len\treal_score\tsim_copied_pct\tsim_run_len\tsim_score\tsurvives\n",
+    );
+    let mut survive = 0usize;
+    let mut suppressed = 0usize;
+
+    for row in &manifest {
+        let id = pair_id(row);
+        let Some((target, source)) = load_row(row) else {
+            continue;
+        };
+        let findings = untranslated_word_findings(&target, Some(&source), &cfg);
+        if findings.is_empty() {
+            continue;
+        }
+        let rows = pair_verses(&target, &source);
+        let source_text_of: HashMap<usize, &str> =
+            rows.iter().map(|r| (r.global_idx, r.source_text.as_str())).collect();
+
+        for f in &findings {
+            let Some(FindingArgs::UntranslatedWord { copied_pct, run_len }) = f.args else {
+                continue;
+            };
+            let gi = f.key_idx.get() as usize;
+            let Some(&src_text) = source_text_of.get(&gi) else {
+                continue;
+            };
+            let text = target.text(f.key_idx);
+            let target_tokens = ssc_core::token::tokenize(text);
+            let source_folded: HashSet<String> = ssc_core::token::tokenize(src_text)
+                .iter()
+                .map(|t| fold(t.span.slice(src_text)))
+                .collect();
+
+            // Re-derive the copied set, each with its proper-noun-shaped
+            // flag from the ORIGINAL (unfolded) target text — folding
+            // erases the case information the proposed gate reads.
+            struct Cp {
+                idx: usize,
+                proper: bool,
+            }
+            let mut copied = Vec::new();
+            for (ti, tok) in target_tokens.iter().enumerate() {
+                let raw = tok.span.slice(text);
+                if source_folded.contains(&fold(raw)) {
+                    let proper = matches!(
+                        case_shape(raw),
+                        Some(CaseShape::Title) | Some(CaseShape::AllCaps)
+                    );
+                    copied.push(Cp { idx: ti, proper });
+                }
+            }
+            let total = target_tokens.len().max(1);
+
+            let sim: Vec<&Cp> = copied.iter().filter(|c| !c.proper).collect();
+            let mut sim_runs: Vec<usize> = Vec::new();
+            let mut i = 0;
+            while i < sim.len() {
+                let mut j = i + 1;
+                while j < sim.len() && sim[j].idx == sim[j - 1].idx + 1 {
+                    j += 1;
+                }
+                sim_runs.push(j - i);
+                i = j;
+            }
+            let sim_max_run = sim_runs.iter().copied().max().unwrap_or(0);
+            let sim_fraction = sim.len() as f64 / total as f64;
+            let sim_bonus =
+                1.0 + f64::from(cfg.run_bonus) * (sim_max_run.saturating_sub(1) as f64);
+            let sim_score = (sim_fraction * sim_bonus).min(1.0) as f32;
+            let survives = sim_score >= cfg.emit_score_min;
+            if survives {
+                survive += 1;
+            } else {
+                suppressed += 1;
+            }
+
+            out += &format!(
+                "{id}\t{}\t{copied_pct:.1}\t{run_len}\t{:.3}\t{:.1}\t{sim_max_run}\t{sim_score:.3}\t{survives}\n",
+                target.key(f.key_idx),
+                f.score.unwrap_or(0.0),
+                sim_fraction * 100.0,
+            );
+        }
+    }
+    fs::write(out_dir.join("uw-case-shape-simulation.tsv"), out)
+        .unwrap_or_else(|e| panic!("write uw-case-shape-simulation.tsv: {e}"));
+    eprintln!(
+        "uw-case-shape-simulate: {survive} findings would still fire, {suppressed} would be \
+         suppressed by the proposed proper-noun excusal (simulation only — substrate unchanged)"
+    );
 }
 
 // ---------------------------------------------------------------------------
