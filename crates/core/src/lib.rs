@@ -617,6 +617,22 @@ fn transition(
         &config.proportionality,
         &mut out,
     );
+    // Oracle pin-move (source-paired tier plan, Phase C): the substrate
+    // landed excluded from both oracle configs (this call did not exist
+    // yet); this is the one line that activates it. `v1_defaults()` still
+    // disables the rule (Phase D decides default-on/off), so it stays
+    // silent under the default oracle config — but oracle.rs's "all" dump
+    // forces every RuleId::ALL member enabled, so this is the change that
+    // makes it produce real findings there (see the pin-move's own commit
+    // for the measured drift).
+    signals::untranslated_words::drive_untranslated_words(
+        active.untranslated_words,
+        &mut substrates.untranslated_words,
+        target,
+        source,
+        &config.untranslated_words,
+        &mut out,
+    );
     signals::mixed_normalization::drive_normalization(
         active.normalization,
         &mut substrates.normalization,
