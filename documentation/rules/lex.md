@@ -244,51 +244,132 @@ conflation if it happens to contain a single-cluster triple.
 
 ## `lex.untranslated-word` — words copied verbatim from the source (cross-map)
 
-> **Severity** Warning · **Default OFF** (uncalibrated — Phase D of the
-> source-paired tier plan adjudicates default-on/off) · **Scope** project
-> (cross-map, needs `source`, silent when absent) · **Knobs**
-> `corpus_gate_share` (0.5), `word_recurrence_k` (40/10k), `run_bonus` (0.5),
-> `emit_score_min` (0.7) — all provisional, see the calibration doc below.
+> **Severity** Warning · **Default OFF** (standing stop clause — see below) ·
+> **Scope** project (cross-map, needs `source`, silent when absent) ·
+> **Knobs** `corpus_gate_share` (0.5), `word_recurrence_k` (40/10k),
+> `run_bonus` (0.5), `emit_score_min` (0.7) · **Source**
+> `crates/core/src/signals/untranslated_words.rs`
 
-Source: `crates/core/src/signals/untranslated_words.rs`. The second
-reference-declaring substrate (after `prop.length-ratio`), same paired-drive
-shape end to end (`ChapterView::paired`, `ObservationInputStamp::with_reference`,
-pairing by exact key string + occurrence ordinal, never position).
+The second reference-declaring substrate (after `prop.length-ratio`), same
+paired-drive shape end to end (`ChapterView::paired`,
+`ObservationInputStamp::with_reference`, pairing by exact key string +
+occurrence ordinal, never position).
 
 **Flags** — A target verse whose text substantially reproduces the paired
-source verse's exact wording (NFC + Unicode case fold, no romanization, no
-edit distance): either a contiguous run of ≥2 adjacent copied target tokens
-(anchored on the run's own span), or — with no such run — a verse whose
-overall copied fraction still clears the floor (anchored on the whole verse).
+source verse's exact wording: either a contiguous run of ≥2 adjacent copied
+target tokens (anchored on the run's own span), or — with no such run — a
+verse whose overall copied fraction still clears the floor (anchored on the
+whole verse). One finding per verse, never more.
+
+**Matching contract** — NFC, then Unicode **lowercase** (`str::to_lowercase`)
+on both sides through the same function, no romanization, no edit distance.
+Deliberately **not** full Unicode case folding: within-form matching is exact
+by construction, but cross-form corners like German `ß` ↔ `SS` are out of
+contract — a documented, accepted gap, not an oversight.
 
 **Clean** — A verse sharing a handful of transliterated proper nouns or
 loanwords with its source (learned as conventions once corpus-wide
-recurrence clears `word_recurrence_k`); a corpus whose declared source is a
-closely related language with a naturally high baseline copied-token share
+recurrence clears `word_recurrence_k`, or excused unconditionally by case
+shape — see gate 3 below); a corpus whose declared source is a closely
+related language with a naturally high baseline copied-token share
 (`corpus_gate_share` silences the whole corpus in that case — the "creole"
 case, not evidence of anything).
 
 **Why it matters** — Catches the untranslated-verse/paste case
 `prop.length-ratio` structurally cannot: a pasted source verse is usually
 close to the target's typical length, so it clears length-ratio's gate at
-0% recall (measured, Phase B). A run of copied function words at high
-`copied_pct` is the strongest signal a translator left source-language text
-in place rather than translating it.
+0% recall (measured, Phase B). A verse-level paste-shape statistic — copied
+**coverage × contiguity** (see Scoring) — is the strongest signal a
+translator left source-language text in place rather than translating it.
 
-**Known false-positive shape (adjudicated 2026-07-30, real fleet data)** —
-Genealogies/name lists (`GEN 46:16`-class): adjacent transliterated proper
-nouns that are correctly-translated conventions, not gaps, and that the
-recurrence knee alone cannot reach (hapax names never recur enough to clear
-any `word_recurrence_k`). A case-shape-aware excusal gate (proper-noun-shaped
-copied tokens excluded from run/fraction accounting) is proposed and
-harness-simulated but **not yet implemented** — it is an observation-schema
-change requiring its own oracle-gated commit; see the calibration doc.
+**Four gates, in order** (knob-isolated — map/reduce never read config, so a
+knob-only change maps and reduces nothing):
+
+1. **Corpus gate** (`corpus_gate_share`, default 0.5) — a corpus-wide
+   copied-token-share ceiling silences the rule for the WHOLE corpus (the
+   creole / closely-related-language case, where a high baseline copy rate
+   is expected and not evidence of anything). Confirmed empirically:
+   `eng-kjv`/`eng-asv` vs. `en_ulb` — English-vs-English, the most extreme
+   related-language case in the fleet — trip this gate and stay silent
+   everywhere, including on seeded paste faults.
+2. **Word-recurrence excusal** (`word_recurrence_k`, default 40 per 10,000
+   target tokens) — a word recurring at or above this rate, corpus-wide, is
+   excused from every verse's copied-count numerator (proper nouns,
+   loanwords, "Amen" — conventions, not translation gaps).
+3. **Case-shape excusal** (unconditional, no knob) — a copied target token
+   whose ORIGINAL (unfolded) form is `Title`- or `AllCaps`-shaped
+   (`signals::case_shape`, the same classifier `case.mixed-case-word`/ADR
+   0051/0055 use — not reinvented) is excused from run reconstruction and
+   the fraction, unconditionally, at materialize time; the denominator
+   (`total` target tokens) is never touched. This is deliberately narrower
+   than gate 2: it fires per-token with no rate threshold, and is not a
+   substitute for it (a shared lowercase word still needs gate 2 to be
+   excused). Two survivals are load-bearing owner acceptance criteria,
+   encoded as unit tests: excusing a name must still let a
+   name+lowercase-verb copy fire (the lowercase token is not excused), and a
+   paste run must still fire even when its leading token is title-case (the
+   run-length machinery re-runs over the surviving, non-excused tokens).
+4. **Site scoring** — the doubly-excusal-adjusted fraction and run length
+   feed the one calibrated statistic below; a site is emitted only once its
+   score clears `emit_score_min` (default 0.7).
+
+**Scoring** — ONE calibrated paste-shape statistic, copied coverage ×
+contiguity, over the verse's post-excusal copied tokens — not a primary
+fraction with a separately-added corroborating run bonus. Adjacency is a
+second facet of the same claim ("this looks pasted"), calibrated jointly:
+
+```text
+score = (fraction × (1 + run_bonus × (max_run − 1))).min(1.0)
+```
+
+`fraction` is the excusal-adjusted copied-token count over the verse's total
+token count; `max_run` is the longest run of ADJACENT surviving copied
+tokens. `run_bonus`'s default (0.5) is evidence-backed by a partial-paste
+seed-fault sweep (the MAT 9:15 half-pasted-verse shape): below `run_bonus ≈
+0.25` partial-paste recall collapses toward zero; above 0.5 each further
+recall point costs an accelerating false-positive price. 0.5 sits at the
+knee.
+
+**Known false-positive shape, adjudicated and resolved (2026-07-30, real
+fleet data)** — Genealogies/name lists (`GEN 46:16`-class): adjacent
+transliterated proper nouns that are correctly-translated conventions, not
+gaps, and that the recurrence knee alone could not reach (hapax names never
+recur enough to clear any `word_recurrence_k`). Gate 3 (case-shape excusal)
+was implemented and landed to close this: measured, adjudicated drift is
+−87.2% (430 → 55) on the full WA oracle fleet's all-config dump and −54.6%
+(625 → 284) on the 23-pair calibration manifest, with zero new findings
+anywhere and every genuine catch spot-checked as still live (English-source
+pastes, Swahili tier-1 catches, and a distinct half-translated-draft class
+all confirmed to survive). See the calibration doc for the full drift table
+and survival spot-list.
+
+**Known, still-unresolved limitation — caseless-script targets**: gate 3 is
+a structural no-op for caseless-script languages (Bengali, Devanagari,
+etc.) — `signals::case_shape` returns `None` for text with no cased
+letters, so a genealogy-shaped false positive in a caseless-target corpus
+would not be excused by this gate. This is recorded as **untested with
+current data**, not measured-and-zero: no caseless-vs-closely-related-
+caseless-script pair exists in either the calibration manifest or the
+oracle fleet to exercise it (every fleet corpus auto-pairs against
+English/Latin-script `WA-en-ulb.txt`, under which a caseless-script target's
+transliterated names don't exact-string-match the Latin source at all, so
+the false-positive shape can't even arise in the data available today).
+
+**STANDING STOP CLAUSE**: no default-on, and no Review Depth integration,
+until the verse-level support policy is adjudicated. Today a verse's
+`(copied, total)` pair carries no minimum-support gate — a 1-of-1 copied
+hapax token can score 1.0 exactly like a well-supported multi-token run.
+Because both counts are already retained per verse, closing this is
+judging-only arithmetic (a small-sample discount or a minimum-`total` floor)
+with its own small adjudicated re-pin when taken up — but it has not been
+taken up, and default-on/Review Depth wiring do not proceed ahead of it.
 
 **Config** — All four knobs are judging-only (map/reduce never read them; a
-knob-only config change maps and reduces nothing). See
+knob-only config change maps and reduces nothing — proven by
+`knob_change_maps_and_reduces_nothing`). See
 `documentation/calibration/2026-07-30-untranslated-word-calibration.md` for
-the full rule contract, the seeded-fault recall sweep (100% source-paste
-recall on every fleet pair whose declared source isn't itself English —
-length-ratio's blind spot), the knob sweep (no cliffs/dead ranges found;
-`run_bonus` is the largest lever on false-positive rate), and the
-default-membership recommendation (held for owner adjudication).
+the full rule contract, the seeded-fault recall sweep (91% source-paste /
+81% partial-paste recall at default config, on every fleet pair whose
+declared source isn't itself English — `prop.length-ratio`'s structural
+blind spot), the full knob sweep, and the case-shape excusal's measured
+drift and adjudication.

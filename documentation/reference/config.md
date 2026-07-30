@@ -217,11 +217,15 @@ Every available configuration option, set to its built-in default. Copy this and
       "params": {
         // MAD-based robust z-score thresholds. A target verse whose
         // length-ratio (target / source) deviates from the per-book
-        // OR per-corpus median by more than these many MAD-units is
+        // OR per-project median by more than these many MAD-units is
         // flagged. Higher = stricter (fewer findings).
         //
-        // Use `z_threshold` to set both at once, or split them when
-        // you want different sensitivity for "too long" vs "too short."
+        // Split by ADR 0069 into independent long-side/short-side
+        // knobs (each measured against its own one-sided MAD — a
+        // length ratio's short tail is bounded at zero, its long tail
+        // is not, so one shared threshold mis-sizes one side). See
+        // §6c below for the real, current field names
+        // (`z_long`/`z_short`) and defaults.
         "z_upper": 3.0,
         "z_lower": 3.0
       }
@@ -527,6 +531,61 @@ excluded. A never-paired glyph (gux's letter-`]`) self-suppresses at ~0.
 
 **Stricter (fewer findings):** raise `emit_score_min`. **Looser:** lower it
 (weak-convention families' orphans surface near the floor).
+
+## 6c. Cross-map (source-paired) rules
+
+These two rules need a **declared source/reference corpus** (`--source
+<dir>` on the CLI) and emit nothing when it's absent — unlike §6b's
+rules, which are corpus-relative against the target alone.
+
+### `prop.length-ratio` (`Config.proportionality`) — **default ON**
+
+| knob | meaning |
+| --- | --- |
+| `z_long` | robust z-score magnitude, against the LONG-side one-sided MAD, past which a verse longer than typical for its book (or project) fires; default **3.5** |
+| `z_short` | robust z-score magnitude, against the SHORT-side one-sided MAD, past which a verse shorter than typical fires; default **3.5** |
+| `min_verses` | minimum target∩reference verse count a book needs before its OWN distribution is judged; smaller books are still covered via the whole-project channel. Default **50** |
+
+Replaces the earlier single `z_threshold` (ADR 0069, 2026-07-30): a length
+ratio's short tail is bounded at zero but its long tail is open-ended, so
+one shared threshold mis-measures whichever side is actually wider —
+`z_long`/`z_short` are independent knobs, each scored against its own
+one-sided MAD (with a pooled-MAD fallback when a side has fewer than 3
+strict deviations — a thin-sample self-gate, the same shape as every other
+corpus-relative rule's recurrence knee). Judged twice per verse — its own
+book, and the whole project — and flagged if either channel fires; a book
+under `min_verses` is still covered through the project channel.
+
+**Stricter (fewer findings):** raise `z_long`/`z_short` independently, or
+raise `min_verses` (fewer small books get their own book-channel judgment —
+they're still covered via the project channel). **Looser:** lower either z.
+See `documentation/rules/prop.md` for the percent-terms reading of the
+shipped default (≈65% deviation from a book's own typical ratio, tier-1
+median) and what this rule deliberately cannot see (whole-verse deletion,
+source-language paste) by design.
+
+### `lex.untranslated-word` (`Config.untranslated_words`) — **default OFF**
+
+| knob | meaning |
+| --- | --- |
+| `corpus_gate_share` | corpus-wide copied-token-share ceiling; at or above this the WHOLE corpus is silenced (the creole/closely-related-language case — a high baseline copy rate is expected, not evidence). Default **0.5** |
+| `word_recurrence_k` | a word recurring at or above this rate per 10,000 target tokens, corpus-wide, is excused from every verse's copied-count numerator (proper nouns, loanwords, conventions). Default **40.0** |
+| `run_bonus` | per-extra-token multiplier on the excusal-adjusted verse fraction for the longest ADJACENT run of copied tokens — a paste is characteristically contiguous, so an adjacent run counts for more than the same number of scattered singles. Default **0.5**, evidence-backed by a partial-paste seed-fault sweep: recall collapses below ≈0.25, and false-positive rate accelerates above 0.5 — 0.5 sits at the knee |
+| `emit_score_min` | the sensitivity floor: a verse's `(fraction × (1 + run_bonus×(max_run−1))).min(1.0)` score must clear this before it materializes as a finding. Default **0.7** |
+
+All four knobs are judging-only — map/reduce never read them, so a
+knob-only config change re-judges without re-mapping or re-reducing
+anything. A copied token whose ORIGINAL (pre-fold) case shape is `Title`-
+or `AllCaps`-shaped is excused from scoring unconditionally (no knob — a
+structural gate, not a tunable one; see `documentation/rules/lex.md`).
+
+**Stricter (fewer findings):** raise `emit_score_min`, lower `run_bonus`
+(less credit for contiguity), or lower `word_recurrence_k` (more words
+excused as conventions). **Looser:** reverse those. Raising
+`corpus_gate_share` risks letting a genuinely-related-language pair's
+baseline copy rate through as false positives — see
+`documentation/rules/lex.md`'s standing stop clause before enabling this
+rule at all.
 
 ## 7. Common Tuning Recipes
 

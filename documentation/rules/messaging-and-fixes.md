@@ -79,6 +79,7 @@ is larger); the engine ships the counts, not the derived value.
 | `lex.duplicate-word` | Det | Doubled word | "The same word appears twice in a row." (cross-verse variant, when `DuplicateWord` args are present: "This repeats the last word of the previous verse.") | `DuplicateWord { first_sid }` (cross-verse only; within-verse carries no args) |
 | `uni.mixed-numeral-systems` | Det | Mixed number systems | "A digit from a different number system than the rest of the verse." | *(proposed)* `target: char` |
 | `prop.length-ratio` | Source | Verse length far from its source | "This verse is {ratio_pct}% the length of the same verse in the source." (default, no args: "This verse is a very different length from its source.") | `LengthRatio { ratio_pct, scope }` |
+| `lex.untranslated-word` | Source | Words copied from the source | "{copied_pct}% of this verse's words match the source text's wording exactly." (default, no args: "This verse closely matches the source text's wording.") | `UntranslatedWord { copied_pct, run_len }` |
 | `case.sentence-initial-lowercase` | Corpus | Lowercase sentence start | "This translation capitalizes after ‘{glyph}’ in {upper} of {total} places; this word starts lowercase." (variants: "…after ‘{glyph}’ closing a quote…" when `quoted`; "…the first word after a sentence break…" when `glyph` is `None`, the book-initial word) | `CasingConvention { glyph: Option<char>, quoted, upper, total }` (`quoted` = the close-quote boundary class, ADR 0052) |
 | `case.inconsistent-word-casing` | Corpus | Inconsistent word capitalization | "This translation writes ‘{word}’ capitalized in {upper} of {total} places; here it is lowercase." | `WordCasing { word, upper, total }` |
 | `case.mixed-case-word` | Corpus | Odd capital inside a word | "‘{word}’ has a capital in the middle here — this translation writes it that way {other} of {total} times." | `MixedCaseWord { word, other, total }` |
@@ -124,6 +125,7 @@ from the op + the finding's `range` + verse text; only `ToDominantForm` /
 | `struct.merge-conflict-marker` | None | can't auto-pick a side | ❌ |
 | `hyg.empty-verse` | None | nothing to fix *to* | ❌ |
 | `prop.length-ratio` | None | semantic, not mechanical | ❌ |
+| `lex.untranslated-word` | None | the fix is a real translation, not a mechanical edit — the flagged span needs a human to render it, not replace it | ❌ |
 | `uni.mixed-normalization` | None *(project-wide action, not per-finding)* | bulk `text.normalize("NFC")` over every verse in the project — no dominant form, example, or count needed; gated on the editor adopting a whole-project resident `Galley` (ADR 0062/0063 §11) | ❌ |
 
 ### `updateSafe()` — bulk apply
