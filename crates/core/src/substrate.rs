@@ -192,6 +192,7 @@ pub const SUBSTRATE_NAMES: [&str; SubstrateId::ALL.len()] = [
     "duplicate-word",
     "casing",
     "mixed-case",
+    "untranslated-words",
 ];
 
 /// Column labels for [`drive_phase_table`] — [`DrivePhase`] declaration order.
