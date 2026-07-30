@@ -71,7 +71,8 @@ behavior movement was owner-adjudicated with measured drift.
      its z at 0.6745 and can never fire — unit-tested).
    - *Adjudicated drift*: −13.9% prop findings in the WA oracle dump.
 2. **New rule `lex.untranslated-word`** (`5302901`, `309e5ba`)
-   - *What*: per verse, NFC+casefold exact membership of target tokens in
+   - *What*: per verse, exact membership (NFC + Unicode lowercase —
+     deliberately not full case folding) of target tokens in
      the paired source verse's tokens; score = copied_fraction ×
      (1 + run_bonus×(run−1)) capped at 1; three-gate judge (corpus-share
      ceiling → per-word recurrence excusal → site scoring with run
@@ -108,7 +109,8 @@ behavior movement was owner-adjudicated with measured drift.
      opportunity sets — no genuine need shown); corroborating-signal
      score fudge (informal products forbidden).
    - *Adjudicated drift*: 430→55 WA all-config (−87.2%), 625→284 paired
-     manifest (−54.6%); zero new findings; survivors verified real
+     manifest (−54.6%); zero new findings — survivors are a strict
+     subset, with the named survivor classes spot-checked genuine
      (English pastes, Swahili pastes, half-translated drafts); genealogy
      wholesale removed. Known recorded gap: no-op for caseless scripts
      (untestable with current fleet — no caseless-vs-caseless pair).
@@ -147,19 +149,48 @@ behavior movement was owner-adjudicated with measured drift.
 
 ## Targeted verification call-outs (explicit verdicts required)
 
-Reproduce before/after states by building at pinned commits — for each
-boundary commit X: `git checkout X^`, `cargo build --release -p ssc-core
---example calibrate`, run the dump matrix below into `/tmp/review/before/`,
-then the same at `X` into `/tmp/review/after/`, and diff per rule. Dump
-matrix (WA + small, both configs, findings + incremental):
+Reproduce before/after states in **isolated worktrees** — the main
+worktree may hold unrelated uncommitted work; never `git checkout` a
+boundary revision in it. For each boundary commit X:
 
 ```
+git worktree add /tmp/review/wt-before X^
+git worktree add /tmp/review/wt-after  X
+# in each worktree: symlink the corpus assets, then build + dump
+ln -s /Users/willkelly/Documents/Work/Code/scripture-sous-chef/corpora      corpora
+ln -s /Users/willkelly/Documents/Work/Code/scripture-sous-chef/oracle-blobs oracle-blobs
+```
+
+Findings dumps (the `calibrate` example):
+
+```
+cargo build --release -p ssc-core --example calibrate
 ./target/release/examples/calibrate --dump-findings oracle-blobs/wa.blob    <out> default full
 ./target/release/examples/calibrate --dump-findings oracle-blobs/wa.blob    <out> all     full
 ./target/release/examples/calibrate --dump-findings oracle-blobs/small.blob <out> default full
 ./target/release/examples/calibrate --dump-findings oracle-blobs/small.blob <out> all     full
-   (+ the same four with --dump-incremental)
 ```
+
+Incremental dumps live in a DIFFERENT binary — `calibrate
+--dump-incremental` deliberately moved to ssc-galley's transcript oracle
+(calibrate exits with an explanatory error). Build it WITHOUT the
+`parallel` feature (it asserts against nested fan-out):
+
+```
+cargo build --release -p ssc-galley --example transcript_oracle
+./target/release/examples/transcript_oracle --dump-incremental oracle-blobs/wa.blob    <out> default wa
+./target/release/examples/transcript_oracle --dump-incremental oracle-blobs/small.blob <out> default full
+   (+ the same two with `all`)
+```
+
+Diff per rule between before/after. **Oracle scope note**: this matrix is
+the WA+small *reproducibility* check — repo policy's full-fleet
+(`corpora/vref`, 1,504 corpora) bookends are the recorded,
+owner-adjudicated evidence in ADR 0069, the calibration docs, and the
+pin-move commit bodies; post-arc full-fleet pin hashes are recorded in
+the plan's completion note. You verify the recorded evidence's internal
+consistency and reproduce at WA+small scale; you are not required to
+re-run the full fleet (but may).
 
 (a) B2 drift confined to `prop.length-ratio`: boundary `c2d9955`.
 (b) Fold-path semantic contract: the documented contract is NFC +
@@ -183,18 +214,26 @@ matrix (WA + small, both configs, findings + incremental):
     re-judge without remapping any chapter.
 (i) Resident/stateless equivalence for the new substrate (the
     edit-locality tests, and whether they cover enough).
-(j) Paired retained-memory bounds: observations are O(verses)-small; the
+(j) Paired retained-memory bounds: retained observations grow with
+    verses + copied tokens + copied-word bytes (each verse retains one
+    boxed folded word per surviving copied token) — the empirical bound
+    is the adjudicated measurement: **+642 KB retained** all-config for
+    an NT target vs a full-Bible source, default-config +0. Verify the
     folded source token pools are map-transient (the module's "no second
     copy of the source text lives on" invariant holds in code, not just
-    in the comment).
+    in the comment), and that nothing retained scales with the SOURCE
+    corpus beyond the paired chapters' stamps.
 
 ## Known open questions (flag, don't fix)
 
-- **Verse-level support gate**: a 1-of-1 copied lowercase hapax can
-  score 1.0 today. `(copied, total)` is retained per verse, so a
-  minimum-support gate is judging-only — a queued follow-up packet. Give
-  a verdict on whether this is P1-shaped (must land before the rule is
-  user-facing) or acceptable-until-Review-Depth.
+- **Verse-level support gate — a STOP CLAUSE, not a soft follow-up**: a
+  1-of-1 copied lowercase hapax can score 1.0 today, which violates the
+  rule discipline's sparse-evidence requirement. Standing boundary
+  (owner-ratified): the rule does NOT go default-on and does NOT
+  integrate into Review Depth until the support policy is adjudicated.
+  `(copied, total)` is retained per verse, so the fix is judging-only.
+  Give a verdict on the policy shape (minimum opportunity floor vs
+  small-sample discount on the fraction).
 - **Caseless-script gap**: the case-shape excusal is a no-op for
   caseless scripts; untestable with the current fleet (no
   caseless-vs-caseless pair). Recorded limitation.
@@ -219,6 +258,7 @@ matrix (WA + small, both configs, findings + incremental):
 ## Expected return
 
 Ranked findings (P1/P2/P3, `file:line`, failure scenario, suggested
-direction — not patches), plus explicit verdicts on call-outs (a)–(d).
-State what you checked and how, so silence on a file means "reviewed
-clean," not "didn't look."
+direction — not patches), plus explicit verdicts on ALL call-outs
+(a)–(j) and on both open questions (support-gate policy shape; run_bonus
+joint-model classification). State what you checked and how, so silence
+on a file means "reviewed clean," not "didn't look."
