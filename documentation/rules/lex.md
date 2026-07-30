@@ -239,3 +239,56 @@ calibration reports.
 corpus counts cannot infer intent. Multi-grapheme morphological reduplication
 such as Gujarati `દાદાદાદી` is outside this detector and remains a known
 conflation if it happens to contain a single-cluster triple.
+
+---
+
+## `lex.untranslated-word` — words copied verbatim from the source (cross-map)
+
+> **Severity** Warning · **Default OFF** (uncalibrated — Phase D of the
+> source-paired tier plan adjudicates default-on/off) · **Scope** project
+> (cross-map, needs `source`, silent when absent) · **Knobs**
+> `corpus_gate_share` (0.5), `word_recurrence_k` (40/10k), `run_bonus` (0.5),
+> `emit_score_min` (0.7) — all provisional, see the calibration doc below.
+
+Source: `crates/core/src/signals/untranslated_words.rs`. The second
+reference-declaring substrate (after `prop.length-ratio`), same paired-drive
+shape end to end (`ChapterView::paired`, `ObservationInputStamp::with_reference`,
+pairing by exact key string + occurrence ordinal, never position).
+
+**Flags** — A target verse whose text substantially reproduces the paired
+source verse's exact wording (NFC + Unicode case fold, no romanization, no
+edit distance): either a contiguous run of ≥2 adjacent copied target tokens
+(anchored on the run's own span), or — with no such run — a verse whose
+overall copied fraction still clears the floor (anchored on the whole verse).
+
+**Clean** — A verse sharing a handful of transliterated proper nouns or
+loanwords with its source (learned as conventions once corpus-wide
+recurrence clears `word_recurrence_k`); a corpus whose declared source is a
+closely related language with a naturally high baseline copied-token share
+(`corpus_gate_share` silences the whole corpus in that case — the "creole"
+case, not evidence of anything).
+
+**Why it matters** — Catches the untranslated-verse/paste case
+`prop.length-ratio` structurally cannot: a pasted source verse is usually
+close to the target's typical length, so it clears length-ratio's gate at
+0% recall (measured, Phase B). A run of copied function words at high
+`copied_pct` is the strongest signal a translator left source-language text
+in place rather than translating it.
+
+**Known false-positive shape (adjudicated 2026-07-30, real fleet data)** —
+Genealogies/name lists (`GEN 46:16`-class): adjacent transliterated proper
+nouns that are correctly-translated conventions, not gaps, and that the
+recurrence knee alone cannot reach (hapax names never recur enough to clear
+any `word_recurrence_k`). A case-shape-aware excusal gate (proper-noun-shaped
+copied tokens excluded from run/fraction accounting) is proposed and
+harness-simulated but **not yet implemented** — it is an observation-schema
+change requiring its own oracle-gated commit; see the calibration doc.
+
+**Config** — All four knobs are judging-only (map/reduce never read them; a
+knob-only config change maps and reduces nothing). See
+`documentation/calibration/2026-07-30-untranslated-word-calibration.md` for
+the full rule contract, the seeded-fault recall sweep (100% source-paste
+recall on every fleet pair whose declared source isn't itself English —
+length-ratio's blind spot), the knob sweep (no cliffs/dead ranges found;
+`run_bonus` is the largest lever on false-positive rate), and the
+default-membership recommendation (held for owner adjudication).
