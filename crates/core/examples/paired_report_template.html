@@ -228,11 +228,17 @@ function scatterChart(points, median, lower, upper, opts) {
   }
   svg.append(svgEl("line", { x1: marginL, x2: marginL + plotW, y1: y(median), y2: y(median), stroke: css("--text-secondary") }));
   for (const p of points) {
-    svg.append(svgEl("circle", {
+    const circle = svgEl("circle", {
       cx: x(p.x), cy: y(p.y), r: p.flagged ? 2.6 : 1.6,
       fill: p.flagged ? css("--series-2") : css("--deemph"),
       opacity: p.flagged ? 0.9 : 0.55,
-    }));
+    });
+    if (p.scope) {
+      const title = svgEl("title", {});
+      title.textContent = `order ${p.x}, fraction ${p.y.toFixed(3)}, scope: ${p.scope}`;
+      circle.append(title);
+    }
+    svg.append(circle);
   }
   svg.append(svgEl("text", { x: marginL, y: h - 4, class: "axis-label" }));
   svg.lastChild.textContent = "verse order within book →";
@@ -325,6 +331,7 @@ function pairCard(p) {
   head.append(el("span", "badge", "tier " + esc(p.tier)));
   const nq = p.books.filter((b) => b.quarantined).length;
   if (nq) head.append(el("span", "badge warn", `${nq} quarantined book(s)`));
+  if (p.shear?.length) head.append(el("span", "badge warn", `${p.shear.length} versification shear pair(s)`));
   card.append(head);
   if (p.note) card.append(el("div", "note", esc(p.note)));
 
@@ -333,6 +340,8 @@ function pairCard(p) {
     tile("Verses paired", fmtInt(p.verses_paired)),
     tile("Books", p.books.length),
     tile(`Findings @ z=${DATA.default_z}`, fmtInt(p.findings_default_z)),
+    tile("Project floor @ z=3.5", p.project.floor_pct_z3_5 != null ? `${p.project.floor_pct_z3_5.toFixed(0)}%` : "—",
+      "small books ride this channel"),
   );
   card.append(tiles);
 
@@ -347,17 +356,35 @@ function pairCard(p) {
   det.setAttribute("open", "");
   det.append(el("summary", null, `Per-book median/MAD (${p.books.length} books)`));
   const tbl = el("table");
-  tbl.innerHTML = '<thead><tr><th>book</th><th class="num">n</th><th class="num">median</th><th class="num">MAD</th><th>quarantined</th></tr></thead>';
+  tbl.innerHTML = '<thead><tr><th>book</th><th class="num">n</th><th class="num">median</th><th class="num">MAD</th><th class="num">floor % @ z=3.5</th><th>quarantined</th></tr></thead>';
   const tb = el("tbody");
   const sortedBooks = [...p.books].sort((a, b) => b.n - a.n);
   for (const b of sortedBooks) {
     tb.append(el("tr", null,
       `<td>${esc(b.book)}</td><td class="num">${fmtInt(b.n)}</td><td class="num">${fmt3(b.median)}</td>` +
-      `<td class="num">${fmt3(b.mad)}</td><td>${b.quarantined ? "yes — pairing artifact" : ""}</td>`));
+      `<td class="num">${fmt3(b.mad)}</td>` +
+      `<td class="num">${b.floor_pct_z3_5 != null ? b.floor_pct_z3_5.toFixed(0) + "%" : "—"}</td>` +
+      `<td>${b.quarantined ? "yes — pairing artifact" : ""}</td>`));
   }
   tbl.append(tb);
   det.append(tbl);
   card.append(det);
+
+  if (p.shear?.length) {
+    const sdet = el("details");
+    sdet.append(el("summary", null, `Versification shear (${p.shear.length}) — excluded from findings, reported separately`));
+    const stbl = el("table");
+    stbl.innerHTML = '<thead><tr><th>book</th><th>chapter</th><th>verse A</th><th class="num">z A</th><th>verse B</th><th class="num">z B</th></tr></thead>';
+    const stb = el("tbody");
+    for (const s of p.shear) {
+      stb.append(el("tr", null,
+        `<td>${esc(s.book)}</td><td>${esc(s.chapter)}</td><td>${esc(s.key_a)}</td><td class="num">${s.z_a.toFixed(2)}</td>` +
+        `<td>${esc(s.key_b)}</td><td class="num">${s.z_b.toFixed(2)}</td>`));
+    }
+    stbl.append(stb);
+    sdet.append(stbl);
+    card.append(sdet);
+  }
 
   // Scatter for the largest judgeable (non-quarantined, n >= min_verses) book.
   const judgeable = sortedBooks.filter((b) => !b.quarantined && b.n >= DATA.min_verses && b.mad > 0);
@@ -365,7 +392,7 @@ function pairCard(p) {
     const top = judgeable[0];
     const pts = p.scatter
       .filter((s) => s.book === top.book)
-      .map((s) => ({ x: s.order, y: s.fraction, flagged: s.flagged }));
+      .map((s) => ({ x: s.order, y: s.fraction, flagged: s.flagged, scope: s.scope }));
     const lower = top.median - DATA.default_z * top.mad / 0.6745;
     const upper = top.median + DATA.default_z * top.mad / 0.6745;
     card.append(el("div", "chart-title", `Fraction scatter — ${esc(top.book)} (largest judgeable book), median line, ±z=${DATA.default_z} band`));
@@ -388,8 +415,9 @@ if (DATA.faults?.length) {
   section.append(el("h2", null, "Seeded-fault catch rate"));
   section.append(el("p", "tierdesc",
     "Deterministic fixed-seed fault injection (tail-chop 10/20/30/50%, whole-verse " +
-    "delete, source-verse paste). Each row is one fault kind/magnitude; each column is " +
-    "one swept z. “clean” is the unmutated-verse false-positive rate at the same z."));
+    "delete, source-verse paste), joined against the REAL rule's verdict (both channels — " +
+    "book z and project z — reported per-channel and combined, the real OR gate). Each cell " +
+    "reads combined (book/project). “clean” is the unmutated-verse false-positive rate."));
   for (const f of DATA.faults) {
     const card = el("div", "card");
     card.append(el("h3", null, esc(f.id)));
@@ -404,21 +432,48 @@ if (DATA.faults?.length) {
       const label = c.kind === "tail_chop" ? `tail_chop ${c.magnitude}%` : c.kind;
       let row = `<td>${esc(label)}</td><td class="num">${fmtInt(c.n_seeded)}</td>`;
       for (let i = 0; i < DATA.z_sweep.length; i++) {
-        const rate = c.n_seeded ? (100 * c.caught[i] / c.n_seeded).toFixed(0) + "%" : "—";
-        row += `<td class="num">${c.caught[i]}/${c.n_seeded} (${rate})</td>`;
+        const rate = c.n_seeded ? (100 * c.caught_combined[i] / c.n_seeded).toFixed(0) + "%" : "—";
+        row += `<td class="num">${c.caught_combined[i]}/${c.n_seeded} (${rate}) <span class="caption">(${c.caught_book[i]}/${c.caught_project[i]})</span></td>`;
       }
       tb.append(el("tr", null, row));
     }
     let cleanRow = `<td>clean (false positives)</td><td class="num">${fmtInt(f.clean_total)}</td>`;
     for (let i = 0; i < DATA.z_sweep.length; i++) {
-      const rate = f.clean_total ? (100 * f.clean_flagged[i] / f.clean_total).toFixed(2) + "%" : "—";
-      cleanRow += `<td class="num">${f.clean_flagged[i]}/${f.clean_total} (${rate})</td>`;
+      const rate = f.clean_total ? (100 * f.clean_combined[i] / f.clean_total).toFixed(2) + "%" : "—";
+      cleanRow += `<td class="num">${f.clean_combined[i]}/${f.clean_total} (${rate}) <span class="caption">(${f.clean_book[i]}/${f.clean_project[i]})</span></td>`;
     }
     tb.append(el("tr", null, cleanRow));
     tbl.append(tb);
     card.append(tbl);
     section.append(card);
   }
+}
+
+/* ---------- multi-source sensitivity ---------- */
+
+if (DATA.sensitivity?.length) {
+  const section = el("div");
+  section.append(el("h2", null, "Multi-source sensitivity"));
+  section.append(el("p", "tierdesc",
+    "The same target under two different declared sources — a free source-sensitivity " +
+    "experiment. Overlap/Jaccard is agreement between the two runs' flagged-verse sets " +
+    "at z=3.5; the floor delta is the mean absolute change (percentage points) in the " +
+    "per-book detection floor across books judgeable under both sources."));
+  const tbl = el("table");
+  tbl.innerHTML = '<thead><tr><th>target</th><th>source A</th><th>source B</th>' +
+    '<th class="num">flagged A</th><th class="num">flagged B</th><th class="num">overlap</th>' +
+    '<th class="num">jaccard</th><th class="num">shared books</th><th class="num">mean |Δfloor%|</th></tr></thead>';
+  const tb = el("tbody");
+  for (const s of DATA.sensitivity) {
+    tb.append(el("tr", null,
+      `<td>${esc(s.target)}</td><td>${esc(s.source_a)}</td><td>${esc(s.source_b)}</td>` +
+      `<td class="num">${fmtInt(s.flagged_a)}</td><td class="num">${fmtInt(s.flagged_b)}</td>` +
+      `<td class="num">${fmtInt(s.overlap)}</td><td class="num">${s.jaccard.toFixed(3)}</td>` +
+      `<td class="num">${fmtInt(s.shared_books)}</td><td class="num">${s.mean_abs_floor_pct_delta.toFixed(1)}</td>`));
+  }
+  tbl.append(tb);
+  section.append(tbl);
+  $("#faults-section").before(section);
 }
 </script>
 </body>

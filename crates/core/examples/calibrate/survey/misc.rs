@@ -325,7 +325,7 @@ pub(crate) fn fleet(dir: &Path, out: &Path) {
 
 /// Printable preview of a finding slice: invisibles made visible, whitespace
 /// flattened, capped at `max` chars.
-fn display_slice(s: &str, max: usize) -> String {
+pub(crate) fn display_slice(s: &str, max: usize) -> String {
     s.chars()
         .take(max)
         .map(|c| match c {

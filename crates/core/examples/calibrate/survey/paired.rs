@@ -1,50 +1,68 @@
-//! Phase A of the source-paired tier plan
+//! Phase A + B of the source-paired tier plan
 //! (`documentation/plans/2026-07-30-source-paired-tier-plan.md`): the paired
-//! harness `prop.length-ratio` has never had. Independent from `oracle.rs`'s
-//! byte-identical gate contract by construction — a survey cluster, not the
-//! engine, and it touches no `core` code.
+//! harness `prop.length-ratio` has never had, and its calibration. Independent
+//! from `oracle.rs`'s byte-identical gate contract by construction — a
+//! survey cluster, not the engine, and it touches no `core` code.
 //!
 //! Loading precedent: `main.rs`'s single-pair path
 //! (`<target-vref-file> [<source-vref-file> [z]]`). Pairing precedent:
 //! `signals::proportionality::map_ratio_chapter`'s exact-key-string +
 //! occurrence-ordinal pairing (verse markers are addressing, never
 //! discourse — pairing is never positional), reproduced here at
-//! whole-corpus grain over the public `Corpus` API. This is calibration
-//! code, not the engine, so re-deriving the pairing rather than reaching
-//! into `pub(crate)` substrate internals is the right shape — and it means
-//! this file can dump the intermediate per-verse fractions `judge` never
-//! retains, which is the whole point of a survey.
+//! whole-corpus grain over the public `Corpus` API.
 //!
 //! Tier-1 loading: every manifest row (both tiers) resolves to a plain
 //! `corpora/vref/<id>.txt` file — the 15 `Tech_Advance__*` targets and their
 //! WA-Catalog sources are already onion-built vref files, same format and
 //! same `vref_io::load_corpus` ingest path as the rest of the fleet. No new
 //! loader was needed for Phase A.
+//!
+//! **Phase B fidelity correction (adjudicated 2026-07-30, from Phase A's
+//! smoke run):** every per-verse firing decision below comes from the
+//! shipped rule itself (`signals::proportionality::length_ratio_findings`,
+//! the actual `judge`), never from statistics this file re-derives. Only
+//! `BookStat`/`ProjectStat`'s median and MAD are still computed here — kept
+//! as descriptive stats for the floors table, never used to decide whether a
+//! verse fires. See [`harvest_real_verdicts`] for how a single real
+//! map+reduce+judge pass yields every verse's real, signed, per-channel z
+//! without a re-map per swept z.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use ssc_core::Corpus;
+use ssc_core::config::ProportionalityConfig;
 use ssc_core::grapheme::{count as grapheme_count, segment};
 use ssc_core::key::parse_key;
+use ssc_core::signals::proportionality::length_ratio_findings;
+use ssc_core::{Corpus, FindingArgs, LengthRatioScope};
 
+use super::misc::display_slice;
 use crate::vref_io::load_corpus;
 
 /// Robust z-score MAD scale (mirrored from `signals::proportionality`'s
 /// `MAD_TO_SIGMA`) — makes MAD read in z-score units.
 const MAD_TO_SIGMA: f64 = 0.6745;
 
-/// Plan step 4's judge-only sweep. Each verse's `(fraction, book median,
-/// book MAD)` is computed exactly once (`analyze` below); crossing a `z`
+/// Plan step 4's judge-only sweep. Each verse's real per-channel z is
+/// harvested exactly once ([`harvest_real_verdicts`]); crossing a `z`
 /// boundary for every value in this list is then pure arithmetic on that one
-/// pass — never a re-map, per the plan's efficiency note.
+/// harvest — never a re-map, and never a second call into the rule.
 const Z_SWEEP: &[f64] = &[2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0, 5.5, 6.0];
 
 /// Mirrors `ProportionalityConfig::default()` so "findings at default z"
 /// matches the shipped rule exactly.
 const DEFAULT_Z: f64 = 3.5;
 const MIN_VERSES: usize = 50;
+
+/// Threshold used to harvest the real rule's per-verse channel z-values (see
+/// [`harvest_real_verdicts`]) — not a calibration knob, an implementation
+/// detail of "ask the real judge for numbers, not just booleans".
+const HARVEST_Z: f32 = 1e-6;
+
+/// Owner ruling (Phase B): adjacent verses with `|z| > 5` on OPPOSITE signs
+/// are versification shear, not translation defects — see [`detect_shear`].
+const SHEAR_Z: f64 = 5.0;
 
 // ---------------------------------------------------------------------------
 // Manifest
@@ -111,12 +129,14 @@ fn load_row(row: &PairRow) -> Option<(Corpus, Corpus)> {
 }
 
 // ---------------------------------------------------------------------------
-// Pairing + robust statistics
+// Pairing + descriptive statistics (median/MAD — never a firing decision)
 // ---------------------------------------------------------------------------
 
 /// One target verse paired to its source counterpart. `global_idx` is the
-/// verse's position in `target.texts()`, kept so fault injection (below)
-/// mutates exactly this verse without rebuilding the pairing.
+/// verse's position in `target.texts()`, which is exactly what a
+/// `Finding::key_idx` from the real rule resolves to (`KeyIdx` is "position
+/// in the complete `Corpus` supplied for one call") — the join key that lets
+/// [`harvest_real_verdicts`]' output be matched back onto this file's rows.
 #[derive(Clone)]
 struct VerseRow {
     global_idx: usize,
@@ -183,7 +203,20 @@ fn median_mad(mut v: Vec<f64>) -> (f64, f64) {
     (med, mad)
 }
 
-/// One book's spread plus the versification-guard verdict.
+/// A verse's z-threshold-independent detection floor, in percent-of-typical
+/// terms: the smallest departure from the median a verse needs to reach
+/// `z` at this median/MAD. `None` when the channel can't judge (MAD or
+/// median is zero — a degenerate/uniform sample).
+fn percent_floor(z: f64, median: f64, mad: f64) -> Option<f64> {
+    if median == 0.0 || mad == 0.0 {
+        return None;
+    }
+    Some(z * mad / MAD_TO_SIGMA / median * 100.0)
+}
+
+/// One book's descriptive spread plus the versification-guard verdict. This
+/// is NEVER what decides whether a verse fires (Phase B correction) — it
+/// feeds the floors table and the book-grain quarantine only.
 struct BookStat {
     book: String,
     n: usize,
@@ -193,6 +226,16 @@ struct BookStat {
     /// against the corpus's other book medians (plan step 2's versification
     /// guard) — a pairing artifact, never counted as a finding.
     quarantined: bool,
+}
+
+/// The whole-corpus pooled spread — the same population the real rule's
+/// PROJECT channel judges against (every book's ratios pooled, no
+/// `min_verses` filter at the pooling stage; `min_verses` gates only
+/// whether the channel is trusted to judge, at harvest/judge time).
+struct ProjectStat {
+    n: usize,
+    median: f64,
+    mad: f64,
 }
 
 /// Per-book median/MAD, then the versification guard over the book medians
@@ -231,57 +274,245 @@ fn book_stats(rows: &[VerseRow]) -> Vec<BookStat> {
     stats
 }
 
-/// A verse's robust z, or `None` when its book can't judge at all — a
-/// quarantined book, a book under `min_verses`, or a zero-MAD (uniform) book.
-/// Mirrors `Spread::gated` in `signals::proportionality`.
-fn verse_z(fraction: f64, book: &BookStat) -> Option<f64> {
-    if book.quarantined || book.n < MIN_VERSES || book.mad == 0.0 {
-        return None;
-    }
-    Some(MAD_TO_SIGMA * (fraction - book.median) / book.mad)
+fn project_stat(rows: &[VerseRow]) -> ProjectStat {
+    let fractions: Vec<f64> = rows.iter().map(|r| r.fraction).collect();
+    let n = fractions.len();
+    let (median, mad) = median_mad(fractions);
+    ProjectStat { n, median, mad }
 }
 
-/// One pass over paired verses: every book's stats, and every verse's z
-/// (computed once — the z-sweep below only ever re-thresholds this).
+// ---------------------------------------------------------------------------
+// The REAL rule's per-verse verdicts (Phase B's fidelity correction)
+// ---------------------------------------------------------------------------
+
+/// One verse's real, signed, per-channel z, as the shipped `judge` computed
+/// it — harvested via [`harvest_real_verdicts`], never re-derived.
+#[derive(Clone, Copy, Debug, Default)]
+struct RealVerdict {
+    book_z: Option<f64>,
+    project_z: Option<f64>,
+}
+
+impl RealVerdict {
+    /// Whether either channel exceeds `zt` — the real rule's own OR gate
+    /// (`materialize`'s `book_fires || project_fires`, reproduced exactly:
+    /// a verse a small book can't judge alone still fires on the project
+    /// channel, which is exactly the MAL/OBA-class correction Phase A's
+    /// book-only harness missed).
+    fn fires_at(&self, zt: f64) -> bool {
+        self.book_z.is_some_and(|z| z.abs() > zt) || self.project_z.is_some_and(|z| z.abs() > zt)
+    }
+
+    /// The stronger-magnitude signed z across whichever channel(s) are
+    /// gated — one number for shear detection and the triage dump. Sign is
+    /// informative (negative = shorter than typical), per
+    /// `LengthRatioScope`'s own doc comment.
+    fn primary(&self) -> Option<f64> {
+        match (self.book_z, self.project_z) {
+            (Some(b), Some(p)) => Some(if b.abs() >= p.abs() { b } else { p }),
+            (Some(b), None) => Some(b),
+            (None, Some(p)) => Some(p),
+            (None, None) => None,
+        }
+    }
+
+    /// Which channel(s) fire at `zt` — the TSV/report `scope` column,
+    /// naming the same three shapes `LengthRatioScope` does plus "none".
+    fn scope(&self, zt: f64) -> &'static str {
+        match (
+            self.book_z.is_some_and(|z| z.abs() > zt),
+            self.project_z.is_some_and(|z| z.abs() > zt),
+        ) {
+            (true, true) => "both",
+            (true, false) => "book",
+            (false, true) => "project",
+            (false, false) => "none",
+        }
+    }
+}
+
+/// Harvest the REAL rule's per-verse verdicts — both channels, signed z — by
+/// calling the shipped `length_ratio_findings` (the actual `judge`, via its
+/// one public entrypoint) at a threshold near zero. `materialize` only
+/// emits a `Finding` for a channel that *fires* (`|z| > z_threshold`), so a
+/// near-zero threshold makes virtually every gated verse fire on whichever
+/// channel(s) reach it, carrying the real computed z. Whatever a channel
+/// does NOT capture this way has `|z| < 1e-6` by construction — negligible
+/// for every z this harness ever sweeps (`>= 2.0`) — so treating an
+/// uncaptured channel as "never fires" is exact, not an approximation.
+///
+/// This is a single real map+reduce+judge pass per corpus. Every swept z
+/// below re-thresholds this ONE harvest arithmetically; there is no second
+/// call into the rule and no re-derived median/MAD feeding a firing
+/// decision anywhere in this file.
+fn harvest_real_verdicts(target: &Corpus, source: &Corpus) -> HashMap<u32, RealVerdict> {
+    let cfg = ProportionalityConfig {
+        z_threshold: HARVEST_Z,
+        min_verses: MIN_VERSES,
+    };
+    let findings = length_ratio_findings(target, Some(source), &cfg);
+    let mut map = HashMap::new();
+    for f in &findings {
+        let Some(FindingArgs::LengthRatio { scope, .. }) = f.args else {
+            continue;
+        };
+        let v = match scope {
+            LengthRatioScope::Book { z } => RealVerdict {
+                book_z: Some(f64::from(z)),
+                project_z: None,
+            },
+            LengthRatioScope::Project { z } => RealVerdict {
+                book_z: None,
+                project_z: Some(f64::from(z)),
+            },
+            LengthRatioScope::Both { book_z, project_z } => RealVerdict {
+                book_z: Some(f64::from(book_z)),
+                project_z: Some(f64::from(project_z)),
+            },
+        };
+        map.insert(f.key_idx.get(), v);
+    }
+    map
+}
+
+// ---------------------------------------------------------------------------
+// Chapter-grain versification shear (Phase B, new — owner ruling)
+// ---------------------------------------------------------------------------
+
+/// One detected shear pair: two textually adjacent verses (consecutive
+/// integer verse tokens, same book+chapter) whose real z's are both extreme
+/// and opposite in sign — the fingerprint of a verse-numbering offset
+/// between target and source, not a translation defect.
+struct ShearPair {
+    book: String,
+    chapter: String,
+    key_a: String,
+    key_b: String,
+    global_a: usize,
+    global_b: usize,
+    z_a: f64,
+    z_b: f64,
+}
+
+/// Chapter-grain versification shear (owner ruling, Phase B): adjacent
+/// verses (consecutive integer verse tokens, same book+chapter) where BOTH
+/// sides are extreme (`|z| > 5`) with OPPOSITE signs. This is a first-class
+/// signal, not noise suppression: reported in its own section, EXCLUDED
+/// from finding counts (see `Analysis::excluded`) — never silently dropped.
+/// The book-grain quarantine (`BookStat::quarantined`) is unrelated and
+/// stays exactly as Phase A left it.
+fn detect_shear(rows: &[VerseRow], verdicts: &[RealVerdict]) -> Vec<ShearPair> {
+    let mut out = Vec::new();
+    for i in 0..rows.len().saturating_sub(1) {
+        let (a, b) = (&rows[i], &rows[i + 1]);
+        let (Ok(pa), Ok(pb)) = (parse_key(&a.key), parse_key(&b.key)) else {
+            continue;
+        };
+        if pa.book != pb.book || pa.chapter != pb.chapter {
+            continue;
+        }
+        // Adjacency is verified by consecutive integer verse tokens, not by
+        // array position — `pair_verses` can skip an unpaired verse in
+        // between, and a non-numeric verse token (bridged/sub-verse) never
+        // qualifies.
+        let (Ok(va), Ok(vb)) = (pa.verse.parse::<u32>(), pb.verse.parse::<u32>()) else {
+            continue;
+        };
+        if vb != va + 1 {
+            continue;
+        }
+        let (Some(za), Some(zb)) = (verdicts[i].primary(), verdicts[i + 1].primary()) else {
+            continue;
+        };
+        if za.abs() > SHEAR_Z && zb.abs() > SHEAR_Z && za.signum() != zb.signum() {
+            out.push(ShearPair {
+                book: pa.book.to_string(),
+                chapter: pa.chapter.to_string(),
+                key_a: a.key.clone(),
+                key_b: b.key.clone(),
+                global_a: a.global_idx,
+                global_b: b.global_idx,
+                z_a: za,
+                z_b: zb,
+            });
+        }
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------
+// One pair's full analysis: real verdicts + descriptive stats + exclusions
+// ---------------------------------------------------------------------------
+
 struct Analysis {
     books: Vec<BookStat>,
-    zs: Vec<Option<f64>>,
+    project: ProjectStat,
+    /// Aligned index-for-index with the `rows` passed in.
+    verdicts: Vec<RealVerdict>,
+    shear: Vec<ShearPair>,
+    /// Global verse indices excluded from finding counts: quarantined-book
+    /// verses ∪ shear-pair verses. Never affects the harvested verdicts
+    /// themselves — only how this file counts/reports them.
+    excluded: HashSet<usize>,
 }
 
-fn analyze(rows: &[VerseRow]) -> Analysis {
+fn analyze(rows: &[VerseRow], target: &Corpus, source: &Corpus) -> Analysis {
     let books = book_stats(rows);
-    let by_name: HashMap<&str, &BookStat> = books.iter().map(|b| (b.book.as_str(), b)).collect();
-    let zs = rows
+    let project = project_stat(rows);
+    let verdict_map = harvest_real_verdicts(target, source);
+    let verdicts: Vec<RealVerdict> = rows
         .iter()
-        .map(|r| verse_z(r.fraction, by_name[r.book.as_str()]))
+        .map(|r| {
+            verdict_map
+                .get(&(r.global_idx as u32))
+                .copied()
+                .unwrap_or_default()
+        })
         .collect();
-    Analysis { books, zs }
+    let shear = detect_shear(rows, &verdicts);
+
+    let quarantined_books: HashSet<&str> = books
+        .iter()
+        .filter(|b| b.quarantined)
+        .map(|b| b.book.as_str())
+        .collect();
+    let mut excluded: HashSet<usize> = rows
+        .iter()
+        .filter(|r| quarantined_books.contains(r.book.as_str()))
+        .map(|r| r.global_idx)
+        .collect();
+    for s in &shear {
+        excluded.insert(s.global_a);
+        excluded.insert(s.global_b);
+    }
+
+    Analysis {
+        books,
+        project,
+        verdicts,
+        shear,
+        excluded,
+    }
 }
 
 // ---------------------------------------------------------------------------
 // --paired-survey
 // ---------------------------------------------------------------------------
 
-/// One pair's survey outcome, retained for the HTML report.
-struct PairReport {
-    id: String,
-    tier: String,
-    note: String,
-    verses_paired: usize,
-    books: Vec<BookStatOut>,
-    findings_default_z: usize,
-    zsweep: Vec<(f64, usize)>,
-    scatter: Vec<ScatterPoint>,
-}
-
-/// Report-facing book row (owns its data — `BookStat` is dropped once its
-/// TSV/JSON row is built).
 struct BookStatOut {
     book: String,
     n: usize,
     median: f64,
     mad: f64,
     quarantined: bool,
+    floor_pct_default: Option<f64>,
+}
+
+struct ProjectStatOut {
+    n: usize,
+    median: f64,
+    mad: f64,
+    floor_pct_default: Option<f64>,
 }
 
 struct ScatterPoint {
@@ -289,6 +520,44 @@ struct ScatterPoint {
     order: u32,
     fraction: f64,
     flagged: bool,
+    scope: &'static str,
+}
+
+/// One pair's survey outcome, retained for the HTML report and for
+/// cross-pair reductions (multi-source sensitivity, the tier-2 triage pool).
+struct PairReport {
+    id: String,
+    /// Manifest paths — `target_path` is the multi-source-sensitivity
+    /// grouping key (same target, different `source_path`).
+    target_path: String,
+    source_path: String,
+    tier: String,
+    note: String,
+    verses_paired: usize,
+    books: Vec<BookStatOut>,
+    project: ProjectStatOut,
+    /// Real-rule firings at `DEFAULT_Z`, excluding quarantined/shear verses.
+    findings_default_z: usize,
+    zsweep: Vec<(f64, usize)>,
+    scatter: Vec<ScatterPoint>,
+    shear: Vec<ShearPair>,
+    /// Flagged verse keys at `DEFAULT_Z` (excluding quarantine/shear) — the
+    /// multi-source overlap join key.
+    flagged_keys: HashSet<String>,
+    quarantined_verse_count: usize,
+    excluded_shear_verse_count: usize,
+}
+
+/// One verse a tier-2 pair's real rule flagged strongly — carried out of
+/// `survey_one_pair` for the cross-pair top-40 triage dump.
+struct TriageCandidate {
+    pair: String,
+    key: String,
+    z: f64,
+    scope: &'static str,
+    fraction: f64,
+    target_slice: String,
+    source_slice: String,
 }
 
 pub(crate) fn paired_survey(pairs_path: &Path, out_dir: &Path) {
@@ -296,6 +565,7 @@ pub(crate) fn paired_survey(pairs_path: &Path, out_dir: &Path) {
     fs::create_dir_all(out_dir).unwrap_or_else(|e| panic!("mkdir {}: {e}", out_dir.display()));
     let mut reports = Vec::new();
     let mut skipped = Vec::new();
+    let mut triage: Vec<TriageCandidate> = Vec::new();
     for row in &manifest {
         let id = pair_id(row);
         let Some((target, source)) = load_row(row) else {
@@ -307,10 +577,15 @@ pub(crate) fn paired_survey(pairs_path: &Path, out_dir: &Path) {
             target.len(),
             source.len()
         );
-        reports.push(survey_one_pair(&id, row, &target, &source, out_dir));
+        reports.push(survey_one_pair(
+            &id, row, &target, &source, out_dir, &mut triage,
+        ));
     }
     write_summary(out_dir, &reports, &skipped);
-    write_report_html(out_dir, &reports, &[], &skipped);
+    let sensitivity = multi_source_sensitivity(&reports);
+    write_multi_source(out_dir, &sensitivity);
+    write_triage(out_dir, triage);
+    write_report_html(out_dir, &reports, &[], &skipped, &sensitivity);
     eprintln!(
         "paired-survey: {} pairs run, {} skipped (not vref-loadable) — see {}",
         reports.len(),
@@ -319,52 +594,63 @@ pub(crate) fn paired_survey(pairs_path: &Path, out_dir: &Path) {
     );
 }
 
-/// Run the harness over one already-loaded pair, writing its per-verse,
-/// per-book, and z-sweep TSVs, and returning the report-facing summary.
+/// Run the harness over one already-loaded pair: real-rule verdicts, the
+/// versification/shear exclusions, the descriptive floors table, and every
+/// per-pair TSV. When `row.tier == "2"` (high parametric-knowledge, clean
+/// negative expected), every non-excluded verse's real z is also offered to
+/// `triage` for the cross-pair top-40 dump.
 fn survey_one_pair(
     id: &str,
     row: &PairRow,
     target: &Corpus,
     source: &Corpus,
     out_dir: &Path,
+    triage: &mut Vec<TriageCandidate>,
 ) -> PairReport {
     let rows = pair_verses(target, source);
-    let Analysis { books, zs } = analyze(&rows);
+    let Analysis {
+        books,
+        project,
+        verdicts,
+        shear,
+        excluded,
+    } = analyze(&rows, target, source);
     let book_by_name: HashMap<&str, &BookStat> = books.iter().map(|b| (b.book.as_str(), b)).collect();
+    let shear_idx: HashSet<usize> = shear.iter().flat_map(|s| [s.global_a, s.global_b]).collect();
 
-    let findings_default_z = zs.iter().filter(|z| z.is_some_and(|v| v.abs() > DEFAULT_Z)).count();
-    let zsweep: Vec<(f64, usize)> = Z_SWEEP
-        .iter()
-        .map(|&z| {
-            (
-                z,
-                zs.iter().filter(|zz| zz.is_some_and(|v| v.abs() > z)).count(),
-            )
-        })
-        .collect();
+    let counts_at = |zt: f64| {
+        rows.iter()
+            .zip(&verdicts)
+            .filter(|(r, v)| !excluded.contains(&r.global_idx) && v.fires_at(zt))
+            .count()
+    };
+    let findings_default_z = counts_at(DEFAULT_Z);
+    let zsweep: Vec<(f64, usize)> = Z_SWEEP.iter().map(|&z| (z, counts_at(z))).collect();
 
     // The report renders a scatter for only the largest judgeable book(s),
-    // so the JSON payload need not carry every book's verses — cap it to the
-    // top 3 judgeable (non-quarantined, n >= min_verses, MAD > 0) books by
-    // size. The TSV below is unaffected: it keeps every paired verse.
+    // so the JSON payload need not carry every book's verses.
     let mut judgeable: Vec<&BookStat> = books
         .iter()
         .filter(|b| !b.quarantined && b.n >= MIN_VERSES && b.mad > 0.0)
         .collect();
     judgeable.sort_by_key(|b| std::cmp::Reverse(b.n));
-    let scatter_books: std::collections::HashSet<&str> =
-        judgeable.iter().take(3).map(|b| b.book.as_str()).collect();
+    let scatter_books: HashSet<&str> = judgeable.iter().take(3).map(|b| b.book.as_str()).collect();
 
-    let mut verses_out =
-        String::from("book\tkey\tt_len\ts_len\tfraction\tbook_median\tbook_mad\tbook_n\tquarantined\tz\tflagged_z3.5\n");
+    let mut verses_out = String::from(
+        "book\tkey\tt_len\ts_len\tfraction\tbook_median\tbook_mad\tbook_n\tquarantined\tbook_z\tproject_z\tscope\tshear\tflagged_z3.5\n",
+    );
     let mut order_in_book: HashMap<&str, u32> = HashMap::new();
     let mut scatter = Vec::new();
-    for (r, z) in rows.iter().zip(&zs) {
+    let mut flagged_keys = HashSet::new();
+    for (r, v) in rows.iter().zip(&verdicts) {
         let book = book_by_name[r.book.as_str()];
         let ord = order_in_book.entry(r.book.as_str()).or_insert(0);
-        let flagged = z.is_some_and(|v| v.abs() > DEFAULT_Z);
+        let is_excluded = excluded.contains(&r.global_idx);
+        let is_shear = shear_idx.contains(&r.global_idx);
+        let scope = v.scope(DEFAULT_Z);
+        let fires = !is_excluded && v.fires_at(DEFAULT_Z);
         verses_out += &format!(
-            "{}\t{}\t{}\t{}\t{:.6}\t{:.6}\t{:.6}\t{}\t{}\t{}\t{}\n",
+            "{}\t{}\t{}\t{}\t{:.6}\t{:.6}\t{:.6}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
             r.book,
             r.key,
             r.t_len,
@@ -374,15 +660,36 @@ fn survey_one_pair(
             book.mad,
             book.n,
             book.quarantined,
-            z.map(|v| format!("{v:.3}")).unwrap_or_else(|| "NA".to_string()),
-            flagged,
+            v.book_z.map(|z| format!("{z:.3}")).unwrap_or_else(|| "NA".to_string()),
+            v.project_z.map(|z| format!("{z:.3}")).unwrap_or_else(|| "NA".to_string()),
+            scope,
+            is_shear,
+            fires,
         );
+        if fires {
+            flagged_keys.insert(r.key.clone());
+        }
         if scatter_books.contains(r.book.as_str()) {
             scatter.push(ScatterPoint {
                 book: r.book.clone(),
                 order: *ord,
                 fraction: r.fraction,
-                flagged,
+                flagged: fires,
+                scope,
+            });
+        }
+        if row.tier == "2"
+            && !is_excluded
+            && let Some(z) = v.primary()
+        {
+            triage.push(TriageCandidate {
+                pair: id.to_string(),
+                key: r.key.clone(),
+                z,
+                scope,
+                fraction: r.fraction,
+                target_slice: display_slice(&target.texts()[r.global_idx], 200),
+                source_slice: display_slice(&r.source_text, 200),
             });
         }
         *ord += 1;
@@ -390,21 +697,18 @@ fn survey_one_pair(
     fs::write(out_dir.join(format!("{id}.verses.tsv")), verses_out)
         .unwrap_or_else(|e| panic!("write {id}.verses.tsv: {e}"));
 
-    let mut books_out =
-        String::from("book\tn\tmedian\tmad\tlower_z3.5\tupper_z3.5\tquarantined\n");
+    let mut books_out = String::from("book\tn\tmedian\tmad\tquarantined\tfloor_pct_z3.5\n");
     let mut books_report = Vec::with_capacity(books.len());
     for b in &books {
-        let (lo, hi) = if b.mad > 0.0 {
-            (
-                b.median - DEFAULT_Z * b.mad / MAD_TO_SIGMA,
-                b.median + DEFAULT_Z * b.mad / MAD_TO_SIGMA,
-            )
-        } else {
-            (f64::NAN, f64::NAN)
-        };
+        let floor_pct = percent_floor(DEFAULT_Z, b.median, b.mad);
         books_out += &format!(
-            "{}\t{}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{}\n",
-            b.book, b.n, b.median, b.mad, lo, hi, b.quarantined
+            "{}\t{}\t{:.6}\t{:.6}\t{}\t{}\n",
+            b.book,
+            b.n,
+            b.median,
+            b.mad,
+            b.quarantined,
+            floor_pct.map(|p| format!("{p:.2}")).unwrap_or_else(|| "NA".to_string()),
         );
         books_report.push(BookStatOut {
             book: b.book.clone(),
@@ -412,10 +716,40 @@ fn survey_one_pair(
             median: b.median,
             mad: b.mad,
             quarantined: b.quarantined,
+            floor_pct_default: floor_pct,
         });
     }
     fs::write(out_dir.join(format!("{id}.books.tsv")), books_out)
         .unwrap_or_else(|e| panic!("write {id}.books.tsv: {e}"));
+
+    // Floors table (task 3): every non-quarantined judgeable book, plus the
+    // project channel, at every swept z, in BOTH vocabularies — the TSV
+    // carries the full sweep; the JSON/report keep only the z=3.5 column.
+    let mut floors_out = String::from("channel\tn\tmedian\tmad");
+    for z in Z_SWEEP {
+        floors_out += &format!("\tfloor_pct_z{z}");
+    }
+    floors_out.push('\n');
+    let floor_row = |label: &str, n: usize, med: f64, mad: f64, out: &mut String| {
+        *out += &format!("{label}\t{n}\t{med:.6}\t{mad:.6}");
+        for &z in Z_SWEEP {
+            let p = percent_floor(z, med, mad);
+            *out += &format!(
+                "\t{}",
+                p.map(|v| format!("{v:.2}")).unwrap_or_else(|| "NA".to_string())
+            );
+        }
+        out.push('\n');
+    };
+    for b in &books {
+        if b.quarantined {
+            continue; // a pairing artifact's floor is meaningless
+        }
+        floor_row(&format!("book:{}", b.book), b.n, b.median, b.mad, &mut floors_out);
+    }
+    floor_row("project", project.n, project.median, project.mad, &mut floors_out);
+    fs::write(out_dir.join(format!("{id}.floors.tsv")), floors_out)
+        .unwrap_or_else(|e| panic!("write {id}.floors.tsv: {e}"));
 
     let mut zsweep_out = String::from("z\tfindings\n");
     for (z, n) in &zsweep {
@@ -424,36 +758,190 @@ fn survey_one_pair(
     fs::write(out_dir.join(format!("{id}.zsweep.tsv")), zsweep_out)
         .unwrap_or_else(|e| panic!("write {id}.zsweep.tsv: {e}"));
 
+    let mut shear_out = String::from("book\tchapter\tkey_a\tkey_b\tz_a\tz_b\n");
+    for s in &shear {
+        shear_out += &format!("{}\t{}\t{}\t{}\t{:.3}\t{:.3}\n", s.book, s.chapter, s.key_a, s.key_b, s.z_a, s.z_b);
+    }
+    fs::write(out_dir.join(format!("{id}.shear.tsv")), shear_out)
+        .unwrap_or_else(|e| panic!("write {id}.shear.tsv: {e}"));
+
+    let quarantined_verse_count = rows
+        .iter()
+        .filter(|r| book_by_name[r.book.as_str()].quarantined)
+        .count();
+    let project_floor = percent_floor(DEFAULT_Z, project.median, project.mad);
+
     PairReport {
         id: id.to_string(),
+        target_path: row.target.clone(),
+        source_path: row.source.clone(),
         tier: row.tier.clone(),
         note: row.note.clone(),
         verses_paired: rows.len(),
         books: books_report,
+        project: ProjectStatOut {
+            n: project.n,
+            median: project.median,
+            mad: project.mad,
+            floor_pct_default: project_floor,
+        },
         findings_default_z,
         zsweep,
         scatter,
+        shear,
+        flagged_keys,
+        quarantined_verse_count,
+        excluded_shear_verse_count: shear_idx.len(),
     }
 }
 
 fn write_summary(out_dir: &Path, reports: &[PairReport], skipped: &[(String, String, String)]) {
-    let mut s = String::from("pair\ttier\tverses_paired\tbooks\tquarantined_books\tfindings_at_z3.5\n");
+    let mut s = String::from(
+        "pair\ttier\tverses_paired\tbooks\tquarantined_books\tshear_pairs\tfindings_at_z3.5\n",
+    );
     for r in reports {
         let q = r.books.iter().filter(|b| b.quarantined).count();
         s += &format!(
-            "{}\t{}\t{}\t{}\t{}\t{}\n",
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
             r.id,
             r.tier,
             r.verses_paired,
             r.books.len(),
             q,
+            r.shear.len(),
             r.findings_default_z
         );
     }
     for (id, tier, note) in skipped {
-        s += &format!("{id}\t{tier}\t-\t-\t-\tskipped: {note}\n");
+        s += &format!("{id}\t{tier}\t-\t-\t-\t-\tskipped: {note}\n");
     }
     fs::write(out_dir.join("summary.tsv"), s).unwrap_or_else(|e| panic!("write summary.tsv: {e}"));
+}
+
+// ---------------------------------------------------------------------------
+// Multi-source sensitivity (task 4)
+// ---------------------------------------------------------------------------
+
+/// Two source-sensitivity signals for the same target under two different
+/// declared sources: how much the flagged-verse SET agrees (overlap/Jaccard)
+/// and how much the per-book detection FLOOR moves (mean absolute delta, in
+/// percent-of-typical, over books judgeable under both sources).
+struct MultiSourceRow {
+    target: String,
+    source_a: String,
+    source_b: String,
+    flagged_a: usize,
+    flagged_b: usize,
+    overlap: usize,
+    jaccard: f64,
+    shared_books: usize,
+    mean_abs_floor_pct_delta: f64,
+}
+
+fn multi_source_sensitivity(reports: &[PairReport]) -> Vec<MultiSourceRow> {
+    let mut by_target: BTreeMap<&str, Vec<&PairReport>> = BTreeMap::new();
+    for r in reports {
+        by_target.entry(r.target_path.as_str()).or_default().push(r);
+    }
+    let mut out = Vec::new();
+    for group in by_target.values() {
+        if group.len() < 2 {
+            continue;
+        }
+        for i in 0..group.len() {
+            for j in (i + 1)..group.len() {
+                let (a, b) = (group[i], group[j]);
+                let overlap = a.flagged_keys.intersection(&b.flagged_keys).count();
+                let union = a.flagged_keys.union(&b.flagged_keys).count();
+                let jaccard = if union == 0 { 1.0 } else { overlap as f64 / union as f64 };
+
+                let floors_a: HashMap<&str, f64> = a
+                    .books
+                    .iter()
+                    .filter_map(|bk| bk.floor_pct_default.map(|p| (bk.book.as_str(), p)))
+                    .collect();
+                let deltas: Vec<f64> = b
+                    .books
+                    .iter()
+                    .filter_map(|bk| {
+                        let pb = bk.floor_pct_default?;
+                        let pa = *floors_a.get(bk.book.as_str())?;
+                        Some((pa - pb).abs())
+                    })
+                    .collect();
+                let shared_books = deltas.len();
+                let mean_abs = if shared_books == 0 {
+                    0.0
+                } else {
+                    deltas.iter().sum::<f64>() / shared_books as f64
+                };
+
+                out.push(MultiSourceRow {
+                    target: a.target_path.clone(),
+                    source_a: a.source_path.clone(),
+                    source_b: b.source_path.clone(),
+                    flagged_a: a.flagged_keys.len(),
+                    flagged_b: b.flagged_keys.len(),
+                    overlap,
+                    jaccard,
+                    shared_books,
+                    mean_abs_floor_pct_delta: mean_abs,
+                });
+            }
+        }
+    }
+    out
+}
+
+fn write_multi_source(out_dir: &Path, rows: &[MultiSourceRow]) {
+    let mut out = String::from(
+        "target\tsource_a\tsource_b\tflagged_a\tflagged_b\toverlap\tjaccard\tshared_books\tmean_abs_floor_pct_delta\n",
+    );
+    for r in rows {
+        out += &format!(
+            "{}\t{}\t{}\t{}\t{}\t{}\t{:.3}\t{}\t{:.2}\n",
+            r.target,
+            r.source_a,
+            r.source_b,
+            r.flagged_a,
+            r.flagged_b,
+            r.overlap,
+            r.jaccard,
+            r.shared_books,
+            r.mean_abs_floor_pct_delta,
+        );
+    }
+    fs::write(out_dir.join("multi-source-sensitivity.tsv"), out)
+        .unwrap_or_else(|e| panic!("write multi-source-sensitivity.tsv: {e}"));
+}
+
+// ---------------------------------------------------------------------------
+// Tier-2 triage dump (task 6)
+// ---------------------------------------------------------------------------
+
+fn write_triage(out_dir: &Path, mut triage: Vec<TriageCandidate>) {
+    triage.sort_by(|a, b| b.z.abs().partial_cmp(&a.z.abs()).expect("z is finite"));
+    triage.truncate(40);
+    let mut out = String::from("pair\tkey\tz\tscope\tfraction\ttarget_slice\tsource_slice\n");
+    for t in &triage {
+        out += &format!(
+            "{}\t{}\t{:.3}\t{}\t{:.4}\t{}\t{}\n",
+            t.pair,
+            t.key,
+            t.z,
+            t.scope,
+            t.fraction,
+            t.target_slice.replace('\t', " "),
+            t.source_slice.replace('\t', " "),
+        );
+    }
+    let out_path = out_dir.join("triage-top40.tsv");
+    fs::write(&out_path, out).unwrap_or_else(|e| panic!("write {}: {e}", out_path.display()));
+    eprintln!(
+        "paired-survey: wrote {} tier-2 triage candidates to {}",
+        triage.len(),
+        out_path.display()
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -581,14 +1069,50 @@ fn apply_fault(text: &str, source_text: &str, kind: FaultKind) -> String {
     }
 }
 
-/// Per-fault-kind catch counts at every swept z, plus the clean-verse
-/// flag-rate at every swept z — the plan step 3 join.
+/// Per-fault-kind real-rule catch counts at every swept z, per channel and
+/// combined (task 2's "reported per channel and combined").
+struct CatchCounts {
+    n: usize,
+    book: Vec<usize>,
+    project: Vec<usize>,
+    combined: Vec<usize>,
+}
+
+impl CatchCounts {
+    fn new() -> Self {
+        Self {
+            n: 0,
+            book: vec![0; Z_SWEEP.len()],
+            project: vec![0; Z_SWEEP.len()],
+            combined: vec![0; Z_SWEEP.len()],
+        }
+    }
+    fn record(&mut self, v: &RealVerdict) {
+        self.n += 1;
+        for (zi, &zt) in Z_SWEEP.iter().enumerate() {
+            if v.book_z.is_some_and(|z| z.abs() > zt) {
+                self.book[zi] += 1;
+            }
+            if v.project_z.is_some_and(|z| z.abs() > zt) {
+                self.project[zi] += 1;
+            }
+            if v.fires_at(zt) {
+                self.combined[zi] += 1;
+            }
+        }
+    }
+}
+
 struct FaultReport {
     id: String,
-    catch: Vec<(FaultKind, usize, Vec<usize>)>, // (kind, n_seeded, caught per Z_SWEEP)
+    catch: Vec<(FaultKind, CatchCounts)>,
     clean_total: usize,
-    clean_flagged: Vec<usize>, // per Z_SWEEP
-    findings_default_z: usize, // on the MUTATED corpus, for the report histogram
+    clean_book: Vec<usize>,
+    clean_project: Vec<usize>,
+    clean_combined: Vec<usize>,
+    /// On the MUTATED corpus, real-rule firings at `DEFAULT_Z` (excluding
+    /// quarantine/shear) — feeds the report histogram.
+    findings_default_z: usize,
 }
 
 pub(crate) fn seed_faults(pairs_path: &Path, out_dir: &Path) {
@@ -597,6 +1121,7 @@ pub(crate) fn seed_faults(pairs_path: &Path, out_dir: &Path) {
     let mut surveys = Vec::new();
     let mut faults = Vec::new();
     let mut skipped = Vec::new();
+    let mut unused_triage: Vec<TriageCandidate> = Vec::new();
     for row in &manifest {
         let id = pair_id(row);
         let Some((target, source)) = load_row(row) else {
@@ -605,7 +1130,9 @@ pub(crate) fn seed_faults(pairs_path: &Path, out_dir: &Path) {
         };
         // A baseline survey of the UNMUTATED pair — gives the report its
         // scatter/boundary context alongside the fault tables below.
-        surveys.push(survey_one_pair(&id, row, &target, &source, out_dir));
+        surveys.push(survey_one_pair(
+            &id, row, &target, &source, out_dir, &mut unused_triage,
+        ));
 
         let rows = pair_verses(&target, &source);
         let selected = select_faults(&rows);
@@ -637,31 +1164,45 @@ pub(crate) fn seed_faults(pairs_path: &Path, out_dir: &Path) {
             .unwrap_or_else(|e| panic!("{id}: mutated corpus invalid: {e}"));
 
         let mrows = pair_verses(&mutated, &source);
-        let Analysis { zs: mzs, .. } = analyze(&mrows); // only the per-verse z feeds the join below
-        let findings_default_z = mzs.iter().filter(|z| z.is_some_and(|v| v.abs() > DEFAULT_Z)).count();
+        let Analysis {
+            verdicts: mverdicts,
+            excluded: mexcluded,
+            ..
+        } = analyze(&mrows, &mutated, &source);
+        let findings_default_z = mrows
+            .iter()
+            .zip(&mverdicts)
+            .filter(|(r, v)| !mexcluded.contains(&r.global_idx) && v.fires_at(DEFAULT_Z))
+            .count();
 
-        let mut catch: BTreeMap<FaultKind, (usize, Vec<usize>)> = BTreeMap::new();
+        let mut catch: BTreeMap<FaultKind, CatchCounts> = BTreeMap::new();
         for k in FAULT_KINDS {
-            catch.insert(k, (0, vec![0; Z_SWEEP.len()]));
+            catch.insert(k, CatchCounts::new());
         }
         let mut clean_total = 0usize;
-        let mut clean_flagged = vec![0usize; Z_SWEEP.len()];
-        for (r, z) in mrows.iter().zip(&mzs) {
+        let mut clean_book = vec![0usize; Z_SWEEP.len()];
+        let mut clean_project = vec![0usize; Z_SWEEP.len()];
+        let mut clean_combined = vec![0usize; Z_SWEEP.len()];
+        for (r, v) in mrows.iter().zip(&mverdicts) {
+            // Versification-shear/quarantine verses count toward neither the
+            // catch nor the clean denominator — they are excluded from
+            // finding counts everywhere in this file, seeded faults included.
+            if mexcluded.contains(&r.global_idx) {
+                continue;
+            }
             match seeded_idx.get(&r.global_idx) {
-                Some(&kind) => {
-                    let e = catch.get_mut(&kind).expect("every FAULT_KINDS entry seeded above");
-                    e.0 += 1;
-                    for (zi, &zt) in Z_SWEEP.iter().enumerate() {
-                        if z.is_some_and(|v| v.abs() > zt) {
-                            e.1[zi] += 1;
-                        }
-                    }
-                }
+                Some(&kind) => catch.get_mut(&kind).expect("every kind pre-inserted").record(v),
                 None => {
                     clean_total += 1;
                     for (zi, &zt) in Z_SWEEP.iter().enumerate() {
-                        if z.is_some_and(|v| v.abs() > zt) {
-                            clean_flagged[zi] += 1;
+                        if v.book_z.is_some_and(|z| z.abs() > zt) {
+                            clean_book[zi] += 1;
+                        }
+                        if v.project_z.is_some_and(|z| z.abs() > zt) {
+                            clean_project[zi] += 1;
+                        }
+                        if v.fires_at(zt) {
+                            clean_combined[zi] += 1;
                         }
                     }
                 }
@@ -677,30 +1218,33 @@ pub(crate) fn seed_faults(pairs_path: &Path, out_dir: &Path) {
 
         let mut catch_out = String::from("fault_type\tmagnitude\tn_seeded");
         for z in Z_SWEEP {
-            catch_out += &format!("\tcaught_z{z}");
+            catch_out += &format!("\tcaught_book_z{z}\tcaught_project_z{z}\tcaught_combined_z{z}");
         }
         catch_out.push('\n');
         for k in FAULT_KINDS {
-            let (n, caught) = &catch[&k];
-            catch_out += &format!("{}\t{}\t{}", k.label(), k.magnitude(), n);
-            for c in caught {
-                catch_out += &format!("\t{c}");
+            let c = &catch[&k];
+            catch_out += &format!("{}\t{}\t{}", k.label(), k.magnitude(), c.n);
+            for zi in 0..Z_SWEEP.len() {
+                catch_out += &format!("\t{}\t{}\t{}", c.book[zi], c.project[zi], c.combined[zi]);
             }
             catch_out.push('\n');
         }
         fs::write(out_dir.join(format!("{id}.seed-faults.catch.tsv")), catch_out)
             .unwrap_or_else(|e| panic!("write catch.tsv: {e}"));
 
-        let mut clean_out = String::from("z\tclean_n\tflagged\trate\n");
+        let mut clean_out = String::from("z\tclean_n\tflagged_book\tflagged_project\tflagged_combined\trate_combined\n");
         for (zi, &zt) in Z_SWEEP.iter().enumerate() {
-            let rate = clean_flagged[zi] as f64 / clean_total.max(1) as f64;
-            clean_out += &format!("{zt}\t{clean_total}\t{}\t{rate:.4}\n", clean_flagged[zi]);
+            let rate = clean_combined[zi] as f64 / clean_total.max(1) as f64;
+            clean_out += &format!(
+                "{zt}\t{clean_total}\t{}\t{}\t{}\t{rate:.4}\n",
+                clean_book[zi], clean_project[zi], clean_combined[zi]
+            );
         }
         fs::write(out_dir.join(format!("{id}.seed-faults.clean.tsv")), clean_out)
             .unwrap_or_else(|e| panic!("write clean.tsv: {e}"));
 
         eprintln!(
-            "seed-faults: {id} seeded {} verses ({} clean); catch/clean tables written",
+            "seed-faults: {id} seeded {} verses ({} clean); real-rule catch/clean tables written",
             selected.len(),
             clean_total
         );
@@ -709,17 +1253,17 @@ pub(crate) fn seed_faults(pairs_path: &Path, out_dir: &Path) {
             id: id.clone(),
             catch: FAULT_KINDS
                 .into_iter()
-                .map(|k| {
-                    let (n, c) = catch.remove(&k).unwrap();
-                    (k, n, c)
-                })
+                .map(|k| (k, catch.remove(&k).unwrap()))
                 .collect(),
             clean_total,
-            clean_flagged,
+            clean_book,
+            clean_project,
+            clean_combined,
             findings_default_z,
         });
     }
-    write_report_html(out_dir, &surveys, &faults, &skipped);
+    let sensitivity = multi_source_sensitivity(&surveys);
+    write_report_html(out_dir, &surveys, &faults, &skipped, &sensitivity);
 }
 
 // ---------------------------------------------------------------------------
@@ -731,6 +1275,7 @@ fn write_report_html(
     surveys: &[PairReport],
     faults: &[FaultReport],
     skipped: &[(String, String, String)],
+    sensitivity: &[MultiSourceRow],
 ) {
     let pairs_json: Vec<serde_json::Value> = surveys
         .iter()
@@ -741,13 +1286,24 @@ fn write_report_html(
                 "note": r.note,
                 "verses_paired": r.verses_paired,
                 "findings_default_z": r.findings_default_z,
+                "quarantined_verses": r.quarantined_verse_count,
+                "shear_verses": r.excluded_shear_verse_count,
                 "books": r.books.iter().map(|b| serde_json::json!({
                     "book": b.book, "n": b.n, "median": b.median, "mad": b.mad,
-                    "quarantined": b.quarantined,
+                    "quarantined": b.quarantined, "floor_pct_z3_5": b.floor_pct_default,
                 })).collect::<Vec<_>>(),
+                "project": serde_json::json!({
+                    "n": r.project.n, "median": r.project.median, "mad": r.project.mad,
+                    "floor_pct_z3_5": r.project.floor_pct_default,
+                }),
                 "zsweep": r.zsweep,
                 "scatter": r.scatter.iter().map(|p| serde_json::json!({
-                    "book": p.book, "order": p.order, "fraction": p.fraction, "flagged": p.flagged,
+                    "book": p.book, "order": p.order, "fraction": p.fraction,
+                    "flagged": p.flagged, "scope": p.scope,
+                })).collect::<Vec<_>>(),
+                "shear": r.shear.iter().map(|s| serde_json::json!({
+                    "book": s.book, "chapter": s.chapter, "key_a": s.key_a, "key_b": s.key_b,
+                    "z_a": s.z_a, "z_b": s.z_b,
                 })).collect::<Vec<_>>(),
             })
         })
@@ -758,11 +1314,14 @@ fn write_report_html(
             serde_json::json!({
                 "id": f.id,
                 "findings_default_z": f.findings_default_z,
-                "catch": f.catch.iter().map(|(k, n, caught)| serde_json::json!({
-                    "kind": k.label(), "magnitude": k.magnitude(), "n_seeded": n, "caught": caught,
+                "catch": f.catch.iter().map(|(k, c)| serde_json::json!({
+                    "kind": k.label(), "magnitude": k.magnitude(), "n_seeded": c.n,
+                    "caught_book": c.book, "caught_project": c.project, "caught_combined": c.combined,
                 })).collect::<Vec<_>>(),
                 "clean_total": f.clean_total,
-                "clean_flagged": f.clean_flagged,
+                "clean_book": f.clean_book,
+                "clean_project": f.clean_project,
+                "clean_combined": f.clean_combined,
             })
         })
         .collect();
@@ -770,14 +1329,27 @@ fn write_report_html(
         .iter()
         .map(|(id, tier, note)| serde_json::json!({"id": id, "tier": tier, "note": note}))
         .collect();
+    let sensitivity_json: Vec<serde_json::Value> = sensitivity
+        .iter()
+        .map(|s| {
+            serde_json::json!({
+                "target": s.target, "source_a": s.source_a, "source_b": s.source_b,
+                "flagged_a": s.flagged_a, "flagged_b": s.flagged_b, "overlap": s.overlap,
+                "jaccard": s.jaccard, "shared_books": s.shared_books,
+                "mean_abs_floor_pct_delta": s.mean_abs_floor_pct_delta,
+            })
+        })
+        .collect();
 
     let data = serde_json::json!({
         "z_sweep": Z_SWEEP,
         "default_z": DEFAULT_Z,
         "min_verses": MIN_VERSES,
+        "shear_z": SHEAR_Z,
         "pairs": pairs_json,
         "faults": faults_json,
         "skipped": skipped_json,
+        "sensitivity": sensitivity_json,
     });
     // `</` must not appear inside the inline <script> payload; `<\/` is the
     // same string after JSON unescaping (fleet report's convention).
@@ -905,11 +1477,116 @@ mod tests {
         let b = select_faults(&rows);
         assert_eq!(a.len(), b.len());
         assert!(!a.is_empty());
-        let idxs: std::collections::HashSet<usize> = a.iter().map(|f| f.global_idx).collect();
+        let idxs: HashSet<usize> = a.iter().map(|f| f.global_idx).collect();
         assert_eq!(idxs.len(), a.len(), "no verse is selected for two faults");
         for (x, y) in a.iter().zip(b.iter()) {
             assert_eq!(x.global_idx, y.global_idx);
             assert_eq!(x.kind, y.kind);
+        }
+    }
+
+    /// THE Phase B fidelity correction, proven directly: a book far too
+    /// small to judge alone (`min_verses` gate) still gets a real verdict
+    /// via the PROJECT channel when the corpus overall is large enough — the
+    /// MAL/OBA-class case Phase A's book-only harness missed.
+    #[test]
+    fn project_channel_covers_a_book_too_small_to_judge_alone() {
+        let base = "abcdefghij ".repeat(4); // 44 graphemes
+        let mut pairs = Vec::new();
+        // A big, well-behaved book — establishes the project distribution.
+        // Four roughly-equal-sized jitter buckets (never a >50% majority
+        // value) so the pooled MAD is genuinely nonzero — an all-or-nothing
+        // two-value split would give >50% of the corpus one exact ratio,
+        // making MAD collapse to 0 and gate the project channel off
+        // entirely, which would test nothing.
+        for v in 1..=200u32 {
+            let t = format!("{base}{}", "x".repeat((v % 4) as usize));
+            pairs.push((format!("GEN 1:{v}"), t));
+        }
+        // A tiny book (well under `MIN_VERSES`) with one gross outlier —
+        // too few verses for its OWN book channel to ever judge.
+        for v in 1..=5u32 {
+            let t = if v == 3 {
+                base.repeat(6)
+            } else {
+                format!("{base}{}", "x".repeat((v % 4) as usize))
+            };
+            pairs.push((format!("OBA 1:{v}"), t));
+        }
+        let target_refs: Vec<(&str, &str)> = pairs.iter().map(|(k, t)| (k.as_str(), t.as_str())).collect();
+        let target = corpus(&target_refs);
+        let source_owned: Vec<(String, String)> =
+            pairs.iter().map(|(k, _)| (k.clone(), base.clone())).collect();
+        let source_refs: Vec<(&str, &str)> = source_owned.iter().map(|(k, t)| (k.as_str(), t.as_str())).collect();
+        let source = corpus(&source_refs);
+
+        let verdicts = harvest_real_verdicts(&target, &source);
+        let rows = pair_verses(&target, &source);
+        let oba3 = rows.iter().find(|r| r.key == "OBA 1:3").unwrap();
+        let v = verdicts.get(&(oba3.global_idx as u32)).copied().unwrap_or_default();
+        assert!(v.book_z.is_none(), "OBA (5 verses) must not judge on its own book channel");
+        assert!(
+            v.project_z.is_some_and(|z| z.abs() > DEFAULT_Z),
+            "OBA 1:3's gross outlier must still fire via the pooled project channel: {v:?}"
+        );
+        assert!(v.fires_at(DEFAULT_Z), "the OR gate must fire for OBA 1:3");
+    }
+
+    /// Chapter-grain shear: two adjacent verses, opposite-sign extreme z,
+    /// must be detected and their global indices carried for exclusion —
+    /// built directly against `detect_shear`'s inputs (no corpus needed),
+    /// since the shear fingerprint is defined purely on rows + verdicts.
+    #[test]
+    fn shear_detects_adjacent_opposite_sign_extremes() {
+        let rows = vec![
+            row_stub(0, "GEN", "GEN 1:1"),
+            row_stub(1, "GEN", "GEN 1:2"),
+            row_stub(2, "GEN", "GEN 1:3"),
+            row_stub(3, "GEN", "GEN 1:4"),
+        ];
+        let verdicts = vec![
+            RealVerdict { book_z: Some(0.2), project_z: None },   // typical
+            RealVerdict { book_z: Some(7.0), project_z: None },   // shear half A
+            RealVerdict { book_z: Some(-7.5), project_z: None },  // shear half B
+            RealVerdict { book_z: Some(0.1), project_z: None },   // typical
+        ];
+        let shear = detect_shear(&rows, &verdicts);
+        assert_eq!(shear.len(), 1);
+        assert_eq!(shear[0].key_a, "GEN 1:2");
+        assert_eq!(shear[0].key_b, "GEN 1:3");
+        assert_eq!(shear[0].global_a, 1);
+        assert_eq!(shear[0].global_b, 2);
+    }
+
+    #[test]
+    fn shear_requires_opposite_signs_not_just_both_extreme() {
+        let rows = vec![row_stub(0, "GEN", "GEN 1:1"), row_stub(1, "GEN", "GEN 1:2")];
+        let verdicts = vec![
+            RealVerdict { book_z: Some(7.0), project_z: None },
+            RealVerdict { book_z: Some(7.2), project_z: None }, // same sign: real, not shear
+        ];
+        assert!(detect_shear(&rows, &verdicts).is_empty());
+    }
+
+    #[test]
+    fn shear_requires_consecutive_verse_numbers() {
+        let rows = vec![row_stub(0, "GEN", "GEN 1:1"), row_stub(1, "GEN", "GEN 1:3")]; // gap
+        let verdicts = vec![
+            RealVerdict { book_z: Some(7.0), project_z: None },
+            RealVerdict { book_z: Some(-7.0), project_z: None },
+        ];
+        assert!(detect_shear(&rows, &verdicts).is_empty());
+    }
+
+    fn row_stub(global_idx: usize, book: &str, key: &str) -> VerseRow {
+        VerseRow {
+            global_idx,
+            book: book.to_string(),
+            key: key.to_string(),
+            t_len: 10,
+            s_len: 10,
+            fraction: 1.0,
+            source_text: String::new(),
         }
     }
 }

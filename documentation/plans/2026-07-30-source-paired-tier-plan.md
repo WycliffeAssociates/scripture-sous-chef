@@ -86,6 +86,31 @@ per-book percent terms.
 
 ## Phase B — length-ratio calibration
 
+**Adjudications carried in from Phase A's smoke run (2026-07-30):**
+
+- **Fidelity requirement:** Phase A's harness re-derived *book-only*
+  statistics; the shipped judge fires on either of two channels (book z
+  and project z, scope recorded) — so the smoke catch rates are
+  pessimistic and small books (MAL/OBA-class, under min_verses) are in
+  fact covered by the project channel. Phase B measures the **real
+  rule's** verdicts, both channels, scope reported.
+- **Small-book fallback held in reserve:** if calibration shows the
+  dual-channel design misbehaving, the fallback is an n-weighted blend
+  (book yardstick weighted by the book's verse count, corpus yardstick
+  otherwise) — an engine change, oracle-gated + ADR, only if the data
+  demands it.
+- **Owner prior on the operating band:** ~2.5–4 deviations; in percent
+  terms roughly 2–3× longer/shorter for cross-language pairs. 10–20%
+  chops are not expected to be detectable (measured: they aren't).
+  Floors are reported in BOTH vocabularies (z and percent-of-typical).
+- **Versification shear is a first-class signal, not noise** (owner
+  ruling): the kjv smoke run surfaced Hebrew-vs-English numbering shear
+  (reciprocal long/short adjacent verses within known chapters) and the
+  Comma Johanneum. The book-grain quarantine stays; Phase B adds a
+  chapter-grain shear detector (adjacent verses with opposite-sign
+  extreme z) reported in its own section — actionable for a PO in its
+  own right.
+
 1. Run both tiers through the harness; read the three instruments:
    seeded-fault curves (primary), fleet finding-rate shape, manual triage
    (top-scored sample from tier-2 high-parametric-knowledge books,
