@@ -41,22 +41,31 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::FxHashMap;
 use unicode_normalization::UnicodeNormalization;
 
 use crate::config::UntranslatedWordsConfig;
 use crate::corpus::{Corpus, LocalKeyIdx, rebase};
 use crate::diagnostics::{Finding, FindingArgs, RuleId, Severity};
 use crate::span::Span;
-use crate::token::tokenize;
 
 pub const UNTRANSLATED_WORD: RuleId = RuleId::UntranslatedWord;
 
 /// Fold one token's text for exact-membership comparison: NFC, then Unicode
-/// (not ASCII-only) lowercase. "Nothing fuzzier" (plan) — no romanization,
-/// no edit distance.
-fn fold(raw: &str) -> Box<str> {
-    raw.nfc().collect::<String>().to_lowercase().into_boxed_str()
+/// (not ASCII-only) lowercase. "Nothing fuzzier" (plan) — no romanization, no
+/// edit distance. `scratch` is a caller-owned, reused NFC-intermediate buffer
+/// (cleared here, not by the caller) — `str::to_lowercase` has no in-place
+/// form, so the returned `String` is a real allocation, but the NFC step that
+/// used to be a second one is now amortized across every fold call in the
+/// chapter (allocation-diet lever 2, `documentation/ideas/candidates/
+/// 2026-07-30-untranslated-words-alloc-diet.md`). Byte-identical output to
+/// the original `raw.nfc().collect::<String>().to_lowercase()` — same
+/// characters appended in the same order, then the same `to_lowercase` call
+/// on them.
+fn fold_via(raw: &str, scratch: &mut String) -> String {
+    scratch.clear();
+    scratch.extend(raw.nfc());
+    scratch.to_lowercase()
 }
 
 /// One target token whose folded form appears in the paired source verse's
@@ -178,6 +187,27 @@ fn map_word_chapter(chapter: &crate::substrate::ChapterView<'_>) -> WordChapterO
             index.entry(key.as_str()).or_default().push(text.as_str());
         }
         let mut seen: FxHashMap<&str, usize> = FxHashMap::default();
+
+        // Per-chapter scratch, reused across every verse in this chapter —
+        // still map-transient (dropped with this whole function call, never
+        // retained past it: the memory-gate invariant, "no second copy of
+        // the source text lives on," stays true). This just amortizes the
+        // allocator churn a fresh `Vec`/`String`/hash-set per verse used to
+        // pay (allocation-diet lever 2 — see the module doc's dhat numbers).
+        let mut target_tok_buf: Vec<crate::token::Token> = Vec::new();
+        let mut source_tok_buf: Vec<crate::token::Token> = Vec::new();
+        let mut nfc_scratch = String::new();
+        // The source verse's folded tokens, pooled into one growable buffer
+        // (`source_pool`) with their byte ranges (`source_spans`) rather than
+        // one `Box<str>` heap allocation retained per source token in a hash
+        // set. `source_order` indexes `source_spans` sorted by folded text,
+        // so membership is a binary search — identical exact-match semantics
+        // to the old `FxHashSet::contains`, since both only ever test
+        // presence, never care about duplicates or order.
+        let mut source_pool = String::new();
+        let mut source_spans: Vec<Span> = Vec::new();
+        let mut source_order: Vec<usize> = Vec::new();
+
         for (vi, (key, text)) in paired.keys.iter().zip(chapter.texts.iter()).enumerate() {
             let ordinal = seen.entry(key.as_str()).or_insert(0);
             let src_text = index
@@ -189,35 +219,48 @@ fn map_word_chapter(chapter: &crate::substrate::ChapterView<'_>) -> WordChapterO
                 continue;
             };
 
-            let target_tokens = tokenize(text);
-            if target_tokens.is_empty() {
+            crate::token::tokenize_into(text, &mut target_tok_buf);
+            if target_tok_buf.is_empty() {
                 continue;
             }
-            // The source verse's folded token set — transient, dropped at
-            // the end of this iteration; never retained past `map_chapter`
-            // (the memory gate: no second copy of the source text lives on).
-            let source_set: FxHashSet<Box<str>> = tokenize(src_text)
-                .iter()
-                .map(|t| fold(t.span.slice(src_text)))
-                .collect();
-            if source_set.is_empty() {
+            crate::token::tokenize_into(src_text, &mut source_tok_buf);
+            if source_tok_buf.is_empty() {
                 continue;
             }
 
+            source_pool.clear();
+            source_spans.clear();
+            source_order.clear();
+            for tok in &source_tok_buf {
+                let folded = fold_via(tok.span.slice(src_text), &mut nfc_scratch);
+                let start = source_pool.len() as u32;
+                source_pool.push_str(&folded);
+                source_spans.push(Span {
+                    start,
+                    end: source_pool.len() as u32,
+                });
+            }
+            source_order.extend(0..source_spans.len());
+            source_order
+                .sort_unstable_by(|&a, &b| source_spans[a].slice(&source_pool).cmp(source_spans[b].slice(&source_pool)));
+
             let mut copied = Vec::new();
-            for (ti, tok) in target_tokens.iter().enumerate() {
-                let word = fold(tok.span.slice(text));
-                if source_set.contains(&word) {
+            for (ti, tok) in target_tok_buf.iter().enumerate() {
+                let word = fold_via(tok.span.slice(text), &mut nfc_scratch);
+                let is_copied = source_order
+                    .binary_search_by(|&i| source_spans[i].slice(&source_pool).cmp(word.as_str()))
+                    .is_ok();
+                if is_copied {
                     copied.push(CopiedToken {
                         token_idx: ti as u16,
                         span: tok.span,
-                        word,
+                        word: word.into_boxed_str(),
                     });
                 }
             }
             obs.push(VerseObs {
                 local_idx: LocalKeyIdx::from_usize(vi),
-                total: target_tokens.len() as u16,
+                total: target_tok_buf.len() as u16,
                 len: text.len() as u32,
                 copied,
             });
