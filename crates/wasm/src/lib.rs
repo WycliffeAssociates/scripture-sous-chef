@@ -11,7 +11,8 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use ssc_core::{
-    analyze_with_config, AnalysisId, Config, Corpus, FindingArgs, RuleId, TargetContextId,
+    analyze_with_config, apply_review_policy, AnalysisId, Config, Corpus, FindingArgs,
+    ReviewAdjustment, ReviewDepth, ReviewPolicy, RuleId, TargetContextId,
 };
 use tsify::Tsify;
 use wasm_bindgen::prelude::*;
@@ -105,6 +106,22 @@ pub struct CasingOverrides {
     #[serde(default)]
     #[tsify(optional)]
     pub trust_gate: Option<f32>,
+}
+
+/// The unresolved Review Depth policy. Values are validated at the wasm
+/// boundary and never clamped silently: `depth` is an integer in `0..=100`,
+/// and each relative adjustment is an integer in `-100..=100`.
+#[derive(Deserialize, Tsify, Default)]
+#[tsify(from_wasm_abi)]
+pub struct ReviewPolicyInput {
+    /// `0..=100`; omitted means the current-behavior anchor `50`.
+    #[serde(default)]
+    #[tsify(optional)]
+    pub depth: Option<i16>,
+    /// Relative per-rule adjustments in `-100..=100`.
+    #[serde(default)]
+    #[tsify(optional, type = "Partial<Record<RuleId, number>>")]
+    pub adjustments: Option<BTreeMap<RuleId, i16>>,
 }
 
 /// Partial overrides for `punct.adjacency-anomaly`'s knobs. Omitted fields
@@ -255,6 +272,9 @@ pub struct SousConfig {
     pub rules: Option<BTreeMap<RuleId, bool>>,
     #[serde(default)]
     #[tsify(optional)]
+    pub review: Option<ReviewPolicyInput>,
+    #[serde(default)]
+    #[tsify(optional)]
     pub proportionality: Option<ProportionalityOverrides>,
     #[serde(default)]
     #[tsify(optional)]
@@ -319,14 +339,38 @@ pub struct FindingArgsOut(pub Option<FindingArgs>);
 #[tsify(into_wasm_abi)]
 pub struct FindingsArgsOut(pub Vec<Option<FindingArgs>>);
 
-/// Build core's `Config` from the shipped defaults (P2 rules off) plus the
-/// caller's explicit per-rule entries and knob overrides.
-fn build_config(config: Option<SousConfig>) -> Config {
+/// Build core's effective `Config`: calibrated defaults, Review Depth mapping,
+/// explicit advanced native overrides, then rule enablement. Validation errors
+/// are returned so malformed public input cannot be silently clamped.
+fn build_config(
+    config: Option<SousConfig>,
+) -> Result<Config, ssc_core::ReviewPolicyError> {
     let mut cfg = Config::v1_defaults();
-    if let Some(c) = config {
-        if let Some(rules) = c.rules {
-            cfg.rules.extend(rules);
-        }
+    let Some(c) = config else {
+        return Ok(cfg);
+    };
+
+    if let Some(review) = c.review {
+        let depth = match review.depth {
+            Some(value) => ReviewDepth::from_i16(value)?,
+            None => ReviewDepth::DEFAULT,
+        };
+        let adjustments = review
+            .adjustments
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(rule, value)| Ok((rule, ReviewAdjustment::from_i16(value)?)))
+            .collect::<Result<BTreeMap<_, _>, ssc_core::ReviewPolicyError>>()?;
+        apply_review_policy(
+            &mut cfg,
+            &ReviewPolicy {
+                depth,
+                adjustments,
+            },
+        )?;
+    }
+
+    {
         if let Some(p) = c.proportionality {
             if let Some(z) = p.z_long {
                 cfg.proportionality.z_long = z;
@@ -462,7 +506,10 @@ fn build_config(config: Option<SousConfig>) -> Config {
             }
         }
     }
-    cfg
+    if let Some(rules) = c.rules {
+        cfg.rules.extend(rules);
+    }
+    Ok(cfg)
 }
 
 /// Analyze a vref corpus and return the packed findings buffer (§A.1): a
@@ -481,7 +528,7 @@ fn build_config(config: Option<SousConfig>) -> Config {
 pub fn analyze_vref(args: GalleyArgs) -> Result<Vec<u8>, JsError> {
     let target = to_corpus_or_reject(args.target)?;
     let source = args.source.map(to_corpus_or_reject).transpose()?;
-    let cfg = build_config(args.config);
+    let cfg = build_config(args.config).map_err(|e| JsError::new(&e.to_string()))?;
     let findings = analyze_with_config(&target, source.as_ref(), &cfg);
     // Same content-derived identity as the resident path; the stateless path
     // hashes the freshly built corpora (negligible on this one-shot call).
@@ -491,7 +538,7 @@ pub fn analyze_vref(args: GalleyArgs) -> Result<Vec<u8>, JsError> {
         .map_err(|e| JsError::new(&e.to_string()))
 }
 
-/// One rule's human-facing card (ADR 0038): plain-language title, what a
+/// One rule's human-facing card (ADR 0038, amended by ADR 0070): plain-language title, what a
 /// finding is, why it might deserve an eyeball, the enable question behind a
 /// language-dependent toggle, and how its verdict works. `code` is the same
 /// closed `RuleId` union carried on findings, so a UI can join cards to
@@ -505,25 +552,28 @@ pub struct RuleCard {
     pub why: String,
     pub enable_question: Option<String>,
     /// `"deterministic"` | `"corpus-relative"` | `"source-relative"`.
-    /// Corpus-relative rules carry scores and honour the sensitivity dial.
     pub verdict: String,
+    /// `"fixed"` or `"mapped"`; independent of the rule's verdict class.
+    pub review_control: String,
 }
 
-/// The catalog plus the shared sensitivity dial: labelled `emit_score_min`
-/// stops, identical for every corpus-relative rule (they all emit the same
-/// score unit). Higher value = fewer, surer findings.
+/// The catalog plus the one continuous Review Depth control description.
 #[derive(Serialize, Tsify)]
 #[tsify(into_wasm_abi)]
 pub struct RuleCatalog {
     pub cards: Vec<RuleCard>,
-    pub sensitivity_stops: Vec<SensitivityStop>,
+    pub review_depth: ReviewDepthCatalog,
 }
 
 #[derive(Serialize, Tsify)]
 #[tsify(into_wasm_abi)]
-pub struct SensitivityStop {
-    pub emit_score_min: f32,
+pub struct ReviewDepthCatalog {
+    pub minimum: u8,
+    pub maximum: u8,
+    pub default: u8,
     pub label: String,
+    pub strict_label: String,
+    pub exploratory_label: String,
 }
 
 /// The shipped English rule catalog — the reference text a consumer renders
@@ -546,15 +596,21 @@ pub fn rule_catalog() -> RuleCatalog {
                     ssc_core::Verdict::SourceRelative => "source-relative",
                 }
                 .to_string(),
+                review_control: match c.review_control {
+                    ssc_core::ReviewControl::Fixed => "fixed",
+                    ssc_core::ReviewControl::Mapped => "mapped",
+                }
+                .to_string(),
             })
             .collect(),
-        sensitivity_stops: ssc_core::SENSITIVITY_STOPS
-            .iter()
-            .map(|&(v, label)| SensitivityStop {
-                emit_score_min: v,
-                label: label.to_string(),
-            })
-            .collect(),
+        review_depth: ReviewDepthCatalog {
+            minimum: ssc_core::REVIEW_DEPTH_CATALOG.minimum,
+            maximum: ssc_core::REVIEW_DEPTH_CATALOG.maximum,
+            default: ssc_core::REVIEW_DEPTH_CATALOG.default,
+            label: ssc_core::REVIEW_DEPTH_CATALOG.label.to_string(),
+            strict_label: ssc_core::REVIEW_DEPTH_CATALOG.strict_label.to_string(),
+            exploratory_label: ssc_core::REVIEW_DEPTH_CATALOG.exploratory_label.to_string(),
+        },
     }
 }
 
@@ -819,7 +875,7 @@ impl Galley {
     pub fn new(args: GalleyArgs) -> Result<Galley, JsError> {
         let target = to_corpus_or_reject(args.target)?;
         let source = args.source.map(to_corpus_or_reject).transpose()?;
-        let cfg = build_config(args.config);
+        let cfg = build_config(args.config).map_err(|e| JsError::new(&e.to_string()))?;
         Ok(Galley {
             inner: ssc_galley::Galley::new(target, source, cfg),
             last_analysis_id: None,
@@ -895,10 +951,11 @@ impl Galley {
     /// otherwise the prep cache clears and the prior is retained (provenance
     /// decides what re-tallies).
     #[wasm_bindgen(js_name = updateConfig)]
-    pub fn update_config(&mut self, config: SousConfig) -> MutationEffect {
-        let effect = self.inner.update_config(build_config(Some(config)));
+    pub fn update_config(&mut self, config: SousConfig) -> Result<MutationEffect, JsError> {
+        let cfg = build_config(Some(config)).map_err(|e| JsError::new(&e.to_string()))?;
+        let effect = self.inner.update_config(cfg);
         self.invalidate_publication_on(effect);
-        effect.into()
+        Ok(effect.into())
     }
 
     /// Analyze the resident corpus and return the packed findings buffer
@@ -998,6 +1055,7 @@ mod tests {
         let cfg = build_config(Some(SousConfig {
             // DuplicateWord ships default-off; enabling it exercises the rules map.
             rules: Some([(RuleId::DuplicateWord, true)].into_iter().collect()),
+            review: None,
             proportionality: Some(ProportionalityOverrides {
                 z_long: Some(2.5),
                 z_short: Some(3.0),
@@ -1055,7 +1113,8 @@ mod tests {
                 run_bonus: Some(0.3),
                 emit_score_min: Some(0.6),
             }),
-        }));
+        }))
+        .unwrap();
 
         assert!(cfg.is_enabled(RuleId::DuplicateWord));
         assert_eq!(cfg.proportionality.z_long, 2.5);
@@ -1154,7 +1213,7 @@ mod tests {
     /// stays enabled, and DuplicateWord stays default-off.
     #[test]
     fn build_config_omitted_keeps_defaults() {
-        let cfg = build_config(None);
+        let cfg = build_config(None).unwrap();
         let d = Config::v1_defaults();
         assert_eq!(
             cfg.punctuation_adjacency.emit_score_min,
@@ -1169,6 +1228,61 @@ mod tests {
         );
     }
 
+    #[test]
+    fn build_config_review_is_additive_and_advanced_overrides_win() {
+        let mut adjustments = BTreeMap::new();
+        adjustments.insert(RuleId::PunctuationSpacingAnomaly, 20);
+        let cfg = build_config(Some(SousConfig {
+            review: Some(ReviewPolicyInput {
+                depth: Some(50),
+                adjustments: Some(adjustments),
+            }),
+            punctuation_spacing: Some(PunctuationSpacingOverrides {
+                emit_score_min: Some(0.77),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }))
+        .unwrap();
+
+        // 50 + 20 resolves to the depth-70 profile before the explicit native
+        // floor wins field-by-field.
+        assert_eq!(cfg.punctuation_spacing.emit_score_min, 0.77);
+        assert!((cfg.punctuation_spacing.confidence_z - 1.704).abs() < 0.00001);
+        assert_eq!(cfg.casing, Config::v1_defaults().casing);
+    }
+
+    #[test]
+    fn build_config_rejects_invalid_review_values() {
+        let invalid_depth = build_config(Some(SousConfig {
+            review: Some(ReviewPolicyInput {
+                depth: Some(101),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }));
+        assert!(matches!(
+            invalid_depth,
+            Err(ssc_core::ReviewPolicyError::InvalidDepth(101))
+        ));
+
+        let mut adjustments = BTreeMap::new();
+        adjustments.insert(RuleId::DuplicateWord, 10);
+        let invalid_rule = build_config(Some(SousConfig {
+            review: Some(ReviewPolicyInput {
+                adjustments: Some(adjustments),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }));
+        assert!(matches!(
+            invalid_rule,
+            Err(ssc_core::ReviewPolicyError::FixedRuleAdjustment(
+                RuleId::DuplicateWord
+            ))
+        ));
+    }
+
     /// An explicit `rules["uni.mixed-normalization"] = true` enables it
     /// through the same wasm-boundary `SousConfig.rules` map every other
     /// rule uses — no typed sub-config exists for this knob-free rule.
@@ -1178,7 +1292,8 @@ mod tests {
         let cfg = build_config(Some(SousConfig {
             rules: Some([(RuleId::MixedNormalization, true)].into_iter().collect()),
             ..Default::default()
-        }));
+        }))
+        .unwrap();
         assert!(cfg.is_enabled(RuleId::MixedNormalization));
     }
 
@@ -1504,7 +1619,7 @@ mod tests {
             ("GEN 1:1", "the the word here"),
             ("GEN 1:2", "a  b, joyfullly"),
         ]);
-        let cfg = build_config(Some(all_rules()));
+        let cfg = build_config(Some(all_rules())).unwrap();
         let corpus = to_corpus(vref(&[
             ("GEN 1:1", "the the word here"),
             ("GEN 1:2", "a  b, joyfullly"),

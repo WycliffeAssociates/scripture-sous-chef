@@ -26,7 +26,8 @@ export type WireRuleId =
   | "case.inconsistent-word-casing"
   | "uni.rare-glyph"
   | "case.mixed-case-word"
-  | "uni.mixed-normalization";
+  | "uni.mixed-normalization"
+  | "lex.untranslated-word";
 
 export type Severity = "error" | "warning" | "info";
 

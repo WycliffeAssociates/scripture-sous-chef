@@ -75,7 +75,7 @@ export interface ChapterUpdateIn {
 }
 
 /**
- * One rule\'s human-facing card (ADR 0038): plain-language title, what a
+ * One rule\'s human-facing card (ADR 0038, amended by ADR 0070): plain-language title, what a
  * finding is, why it might deserve an eyeball, the enable question behind a
  * language-dependent toggle, and how its verdict works. `code` is the same
  * closed `RuleId` union carried on findings, so a UI can join cards to
@@ -89,9 +89,12 @@ export interface RuleCard {
     enable_question: string | null;
     /**
      * `\"deterministic\"` | `\"corpus-relative\"` | `\"source-relative\"`.
-     * Corpus-relative rules carry scores and honour the sensitivity dial.
      */
     verdict: string;
+    /**
+     * `\"fixed\"` or `\"mapped\"`; independent of the rule\'s verdict class.
+     */
+    review_control: string;
 }
 
 /**
@@ -158,11 +161,30 @@ export interface RepeatedCharacterRunOverrides {
 }
 
 /**
+ * Partial overrides for `lex.untranslated-word`\'s knobs (Phase C/D, source-
+ * paired tier plan). Omitted fields keep core\'s provisional defaults —
+ * **not yet calibrated** (Phase D\'s job; see
+ * `documentation/calibration/` for the running calibration doc). The rule
+ * ships default-OFF (`Config::v1_defaults()` disables it) until Phase D
+ * adjudicates default-on/off.
+ */
+export interface UntranslatedWordsOverrides {
+    corpus_gate_share?: number;
+    word_recurrence_k?: number;
+    run_bonus?: number;
+    emit_score_min?: number;
+}
+
+/**
  * Partial overrides for `prop.length-ratio`\'s knobs. Omitted fields keep
- * core\'s calibrated defaults (`z_threshold` 3.5, `min_verses` 50).
+ * core\'s calibrated defaults (`z_long`/`z_short` 3.5, `min_verses` 50).
+ * The two thresholds are separate knobs (ADR 0069, asymmetric spread): the
+ * UI\'s fine-tune panel exposes them as two trims, \"longer than typical\" /
+ * \"shorter than typical\".
  */
 export interface ProportionalityOverrides {
-    z_threshold?: number;
+    z_long?: number;
+    z_short?: number;
     min_verses?: number;
 }
 
@@ -239,7 +261,7 @@ export interface CasingOverrides {
  * config and localisation off: Rust via [`RuleId::ALL`] +
  * exhaustive `match`; TS via the `Tsify` string union.
  */
-export type RuleId = "lex.excess-h-whitespace" | "hyg.tab-in-body" | "hyg.control-chars" | "hyg.zero-width-misuse" | "hyg.empty-verse" | "hyg.invalid-codepoint" | "hyg.replacement-run" | "prop.length-ratio" | "struct.source-marker-leftover" | "struct.merge-conflict-marker" | "punct.adjacency-anomaly" | "lex.duplicate-word" | "lex.punct-only-token" | "uni.combining-mark-without-base" | "uni.redundant-zero-width-space" | "uni.mixed-script-in-token" | "lex.repeated-character-run" | "uni.mixed-numeral-systems" | "punct.bracket-balance" | "punct.spacing-anomaly" | "case.sentence-initial-lowercase" | "case.inconsistent-word-casing" | "uni.rare-glyph" | "case.mixed-case-word" | "uni.mixed-normalization";
+export type RuleId = "lex.excess-h-whitespace" | "hyg.tab-in-body" | "hyg.control-chars" | "hyg.zero-width-misuse" | "hyg.empty-verse" | "hyg.invalid-codepoint" | "hyg.replacement-run" | "prop.length-ratio" | "struct.source-marker-leftover" | "struct.merge-conflict-marker" | "punct.adjacency-anomaly" | "lex.duplicate-word" | "lex.punct-only-token" | "uni.combining-mark-without-base" | "uni.redundant-zero-width-space" | "uni.mixed-script-in-token" | "lex.repeated-character-run" | "uni.mixed-numeral-systems" | "punct.bracket-balance" | "punct.spacing-anomaly" | "case.sentence-initial-lowercase" | "case.inconsistent-word-casing" | "uni.rare-glyph" | "case.mixed-case-word" | "uni.mixed-normalization" | "lex.untranslated-word";
 
 /**
  * Structured message arguments — the additive payload ADR 0010 §6
@@ -252,7 +274,7 @@ export type RuleId = "lex.excess-h-whitespace" | "hyg.tab-in-body" | "hyg.contro
  * collected into `Vec`s and never copied on a hot path, so this costs
  * nothing real (ADR 0016).
  */
-export type FindingArgs = { kind: "length-ratio"; ratio_pct: number; scope: LengthRatioScope } | { kind: "bracket-window"; window: DelimObservation[]; measure: BracketMeasure; majority: number; total: number } | { kind: "spacing-convention"; mark: string; left: SpacingSide | null; right: SpacingSide | null } | { kind: "casing-convention"; glyph: string | null; quoted: boolean; upper: number; total: number } | { kind: "word-casing"; word: string; upper: number; total: number } | { kind: "punct-only-rate"; count: number; units: number } | { kind: "adjacency-evidence"; pattern: string; k: number; lead_n: number; books: number; corpus: number } | { kind: "script-mix-evidence"; k: number; n: number; books: number; corpus: number } | { kind: "repeat-evidence"; ch: string; run: number } | { kind: "duplicate-word"; first_sid: string } | { kind: "rare-glyph"; glyph: string; count: number } | { kind: "mixed-case-word"; word: string; other: number; total: number } | { kind: "normalization"; affected: number; example: string };
+export type FindingArgs = { kind: "length-ratio"; ratio_pct: number; scope: LengthRatioScope } | { kind: "bracket-window"; window: DelimObservation[]; measure: BracketMeasure; majority: number; total: number } | { kind: "spacing-convention"; mark: string; left: SpacingSide | null; right: SpacingSide | null } | { kind: "casing-convention"; glyph: string | null; quoted: boolean; upper: number; total: number } | { kind: "word-casing"; word: string; upper: number; total: number } | { kind: "punct-only-rate"; count: number; units: number } | { kind: "adjacency-evidence"; pattern: string; k: number; lead_n: number; books: number; corpus: number } | { kind: "script-mix-evidence"; k: number; n: number; books: number; corpus: number } | { kind: "repeat-evidence"; ch: string; run: number } | { kind: "duplicate-word"; first_sid: string } | { kind: "rare-glyph"; glyph: string; count: number } | { kind: "mixed-case-word"; word: string; other: number; total: number } | { kind: "normalization"; affected: number; example: string } | { kind: "untranslated-word"; copied_pct: number; run_len: number };
 
 /**
  * The analysis-input set every entry point takes as one typed object:
@@ -271,13 +293,11 @@ export interface GalleyArgs {
 }
 
 /**
- * The catalog plus the shared sensitivity dial: labelled `emit_score_min`
- * stops, identical for every corpus-relative rule (they all emit the same
- * score unit). Higher value = fewer, surer findings.
+ * The catalog plus the one continuous Review Depth control description.
  */
 export interface RuleCatalog {
     cards: RuleCard[];
-    sensitivity_stops: SensitivityStop[];
+    review_depth: ReviewDepthCatalog;
 }
 
 /**
@@ -324,6 +344,22 @@ export type FindingArgsOut = FindingArgs | null;
 export type MutationEffect = "unchanged" | "changed";
 
 /**
+ * The unresolved Review Depth policy. Values are validated at the wasm
+ * boundary and never clamped silently: `depth` is an integer in `0..=100`,
+ * and each relative adjustment is an integer in `-100..=100`.
+ */
+export interface ReviewPolicyInput {
+    /**
+     * `0..=100`; omitted means the current-behavior anchor `50`.
+     */
+    depth?: number;
+    /**
+     * Relative per-rule adjustments in `-100..=100`.
+     */
+    adjustments?: Partial<Record<RuleId, number>>;
+}
+
+/**
  * Whether an observed delimiter opens or closes.
  */
 export type DelimRole = "open" | "close";
@@ -354,6 +390,7 @@ export type BracketMeasure = "pairing" | "short-span";
  */
 export interface SousConfig {
     rules?: Partial<Record<RuleId, boolean>>;
+    review?: ReviewPolicyInput;
     proportionality?: ProportionalityOverrides;
     casing?: CasingOverrides;
     punctuation_adjacency?: PunctuationAdjacencyOverrides;
@@ -363,11 +400,16 @@ export interface SousConfig {
     mixed_script?: MixedScriptOverrides;
     rare_glyph?: RareGlyphOverrides;
     mixed_case?: MixedCaseOverrides;
+    untranslated_words?: UntranslatedWordsOverrides;
 }
 
-export interface SensitivityStop {
-    emit_score_min: number;
+export interface ReviewDepthCatalog {
+    minimum: number;
+    maximum: number;
+    default: number;
     label: string;
+    strict_label: string;
+    exploratory_label: string;
 }
 
 

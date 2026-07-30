@@ -230,7 +230,10 @@ export class Galley {
      */
     updateConfig(config) {
         const ret = wasm.galley_updateConfig(this.__wbg_ptr, config);
-        return ret;
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
     }
 }
 if (Symbol.dispose) Galley.prototype[Symbol.dispose] = Galley.prototype.free;
