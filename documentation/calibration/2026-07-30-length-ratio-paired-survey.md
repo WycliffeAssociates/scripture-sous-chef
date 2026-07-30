@@ -213,19 +213,39 @@ length problem — mixing the two into one finding count would blur both.
 `triage-top40.tsv`, excluding shear/quarantine. Top of the list (for the
 owner's spot-adjudication):
 
-1. `eng-asv`/`eng-kjv` **LEV 6:8** (z=55.2/47.9, `both`) — "meal offering"
-   (ASV/modern) vs. `en_ulb`'s much shorter paraphrase; likely a real
-   register/verbosity difference, not damage.
-2. `eng-asv`/`eng-kjv` **NUM 17:11** (z=41.0/36.0, `both`) — same pattern.
+1. `eng-asv`/`eng-kjv` **LEV 6:8** (z=55.2/47.9, `both`) —
+   **CORRECTED on steward prescreen (2026-07-30): versification offset,
+   not register.** The kjv/asv slice at "LEV 6:8" carries the content of
+   *English* Lev 6:15 ("he shall take of it his handful…") — those vref
+   files follow Hebrew numbering in this chapter (Hebrew 6:8 = English
+   6:15) while `en_ulb` follows English ("Then Yahweh spoke to Moses,
+   saying"). A *sustained* offset run has no adjacent opposite-sign pair,
+   so the adjacent-shear detector sees only shear *boundaries*, not
+   offset *segments* — a known limitation, noted for Phase D.
+2. `eng-asv`/`eng-kjv` **NUM 17:11** (z=41.0/36.0, `both`) — same
+   diagnosis: the slice is English Num 16:46's content ("Take a
+   censer…"; Hebrew Num 17 = English 16:36ff).
 3. `WA-es-419-ulb` **LEV 18:2** (z=29.6) — Spanish verbosity vs. `en_ulb`.
-4. `eng-kjv` **1CH 6:17** (z=28.4).
-5. `eng-asv` **PSA 44:4**, **NEH 7:69**, **NUM 1:46** (z=27–28) — NUM
-   1:46 is a striking case: KJV/ASV spell out the total in words
-   ("six hundred thousand and three thousand...") where `en_ulb` writes
-   digits ("603,550") — a *formatting* difference the rule correctly
-   reads as a length outlier, worth flagging to the owner as a distinct
-   pattern from genuine over/under-translation.
+4. `eng-kjv` **1CH 6:17** (z=28.4) — 1CH 6 is a known Hebrew/English
+   offset site (also in the §6 shear list); offset suspected.
+5. `eng-asv` **PSA 44:4**, **NEH 7:69**, **NUM 1:46** (z=27–28) —
+   PSA 44:4 is suspect for the Hebrew Psalm-title offset
+   (superscription counted as v1) and NEH 7:69 is a known
+   versification variant; NUM 1:46 is verified genuine and striking:
+   KJV/ASV spell out the total in words ("six hundred thousand and
+   three thousand...") where `en_ulb` writes digits ("603,550") — a
+   *formatting* difference the rule correctly reads as a length
+   outlier, a distinct pattern from genuine over/under-translation.
 6. `eng-kjv` **1JN 5:7** (z=26.3) — the Comma Johanneum, see §6.
+   Verified genuine (textual tradition).
+
+**Prescreen conclusion:** after book-grain quarantine and adjacent-shear
+exclusion, the top of the outlier list is *still* dominated by
+versification artifacts (sustained offset segments) in the
+archaic-English tier-2 pairs. This does not indict the rule — tier-1
+same-ecosystem pairs share versification by construction — but any
+future segment-grain shear detector should subsume these, and tier-2
+clean-negative rates should be read with this contamination in mind.
 
 The full 40 rows (verse key, both text slices, fraction, z, scope) are
 in the TSV for the owner's pass; the model-prescreen above is a reading
