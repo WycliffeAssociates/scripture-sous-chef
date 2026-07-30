@@ -27,3 +27,9 @@ uncovered; that gap is this candidate's entire value proposition.
 Gate for promotion: a throwaway feasibility probe showing the post-gate
 survivor set on real corpora is worth a rule (the standing revisit condition
 from the original demotion).
+
+**Owner note (2026-07-30):** worth thinking about leveraging Zipf for the
+candidate set — the frequency asymmetry itself is the filter (a hapax one
+edit away from a very frequent word is the interesting shape; two mid-band
+words near each other are the/then/thin noise). Still parked behind the
+feasibility-probe gate above.
