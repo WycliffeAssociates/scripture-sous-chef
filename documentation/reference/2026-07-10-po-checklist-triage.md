@@ -1,12 +1,17 @@
 # Idea — PO proofreading checklist triage (Larry's scripts + Greek Room)
 
-Date: 2026-07-10. Input: the product owner's proofreading list (Larry's
+Date: 2026-07-10. **Refreshed 2026-07-30** against the current engine
+(26 live rule IDs): the triage's build candidates #1/#2/#4 shipped as
+ADRs 0053/0054/0055, #5/#7 dissolved into #1 as predicted, #6 moved to
+doubtful, and the census shipped (ADR 0058) — statuses below updated in
+place. Input: the product owner's proofreading list (Larry's
 scripts per everyone, Greek Room per Aaron B), triaged item-by-item into
-owning subsystem, with status against the engine as it exists today
-(21 live rule IDs) and remarks on how sous-chef implements the idea
+owning subsystem, with status against the engine, and remarks on how
+sous-chef implements the idea
 differently — convention-learned and score-surfaced in the hot loop,
 and/or exhaustively counted in **absolute mode** (the census report,
-ADR 0052 candidate). Report sections, in user-facing terms: **Letters**
+`census(map) → Inventory`, ADR 0058). Report sections, in user-facing
+terms: **Letters**
 (the glyph census — "glyphs" internally), **Punctuation** (sequences,
 spacing profiles, brackets, invisible/format characters), **Numbers**
 (digit-bearing tokens grouped by shape), **Words** (case shapes,
@@ -52,7 +57,7 @@ not error — the census shows it, a human judges). **POSTPONED** /
 | Item | Status | Rule / remarks |
 | --- | --- | --- |
 | Verse lengths vs source | **DONE** (uncalibrated) | `prop.length-ratio` — median+MAD robust-z per book and project. Never calibrated (shortlist item 1: source-paired survey). |
-| Space around punctuation | **DONE** | `punct.spacing-anomaly`, ADR 0050. Convention-learned: French `« … »` spacing is the corpus's own majority, never flagged. Also a census table. |
+| Space around punctuation | **DONE** | `punct.spacing-anomaly`, rewritten as joint attachment signatures (ADR 0054, superseding the before-only ADR 0050 model) — both sides of every mark observed. Convention-learned: French `« … »` spacing is the corpus's own majority, never flagged. Census lane: `punct.mark-spacing`. |
 | Space before phrase-ending mark | **DONE** | Same rule — it's one spacing context. |
 | Repeated words | **DONE** | `lex.duplicate-word` (toggle; auto-recommendation folded into config-recommender idea). |
 | Unpaired delimiters (paren-like) | **DONE** | `punct.bracket-balance` + ADR 0049 inventory (corpus-learned pair set; CJK corner brackets excluded). Quotes deliberately out — parked with census data, ADR 0039. |
@@ -63,89 +68,74 @@ not error — the census shows it, a human judges). **POSTPONED** /
 | Unresolved translation conflict | **DONE** | `struct.merge-conflict-marker`. |
 | Unexpected characters (universally-wrong subset) | **DONE** | `hyg.invalid-codepoint`, `hyg.control-chars`, `hyg.replacement-run`, `hyg.tab-in-body`. The *corpus-relative* subset (legit-somewhere glyphs, rare here) is the rare-glyph candidate below. |
 | Repeated / doubled punctuation (Amharic `፡፡`-class) | **DONE** (separators) / **PARTIAL** (quotes) | `punct.adjacency-anomaly` already *is* "repeated-character-run for punct": it catches `wait,, what` and `what?!?` by counting how often this corpus writes that exact run — a run that's frequent (Amharic `፡፡`) or spread across many books is learned as a convention and goes silent; a run the corpus almost never writes surfaces, scored higher the longer it is. The gap: **quote marks are excluded from its candidate set** (`""`, `''` never enter stats), so literal doubled quotes are unjudged — that stays parked with the quote-balance work (ADR 0039). Rare-but-valid *cross*-mark pairings in quote-heavy corpora (`"!`) are a non-issue for the same reason: quotes never enter, so they can't be flagged. |
-| Punctuation after quote mark | **PARTIAL** (mostly unjudged, by design) | Both punct rules deliberately skip quote-adjacent sites: `spacing-anomaly` drops a mark whose left neighbour is a quote (`word" ,` is not an opportunity), and `adjacency-anomaly` keeps quotes out of its run class. So today nothing judges `."` vs `".` ordering. The planned fix is boundary-class refinement (shortlist item 7: learn which boundary contexts the corpus itself is consistent about). Until then the census punct-sequence table shows every quote-adjacent combo with counts. |
-| Text begins with phrase-ending punctuation | **PARTIAL** | `lex.punct-only-token` would catch it only when the mark stands alone as its own token (`. And` — a dot surrounded by spaces). A verse-initial mark glued to a word (`?And`) is not caught: verse-leading marks are excluded from spacing opportunities, and the casing walk treats a verse-initial terminal as belonging to the *previous* verse's flow (verses are addressing, not discourse). Census punct-sequence table shows verse-initial-mark contexts with counts. |
-| Word-medial punctuation | **NOT COVERED — see candidate #2** | Previously misstated as covered. `spacing-anomaly` only observes the space *before* a mark; in `word,word` the comma is attached-on-the-left, which is the majority form (silent), and the missing space *after* is never looked at. Genuinely medial `-`/`'` conventions stay census either way. |
+| Punctuation after quote mark | **PARTIAL** (by design, updated 2026-07-30) | The signature rewrite (ADR 0054) now observes both sides of every mark, but a quote as *context* reads generic `punct` and quote-adjacent sites abstain on the quote side — so `."` vs `".` ordering is still unjudged as a specific quote question. Quote-specific attachment stays parked with the quote work (ADR 0039). The census `punct.mark-spacing` lane shows quote-adjacent combos with counts. |
+| Text begins with phrase-ending punctuation | **DONE** (via ADR 0054) | A verse-leading `?And` is now an ordinary spacing opportunity: the seam reads as whitespace (no `edge` class — verses are addressing), so the mark signs `space\|letter`, and if that signature is rare for `?` in this corpus it surfaces. `lex.punct-only-token` still catches the free-standing form (`. And`). |
+| Word-medial punctuation | **DONE** (via ADR 0054 — was the gap this triage found) | `word,word` signs `letter\|letter`, judged like any other signature against the mark's own corpus conventions. Genuinely medial `-`/`'` conventions are learned as majority signatures and stay silent, as intended. |
 | Divergent verse lengths (Owl) | **DONE** | = `prop.length-ratio`. |
 | Verse fragment / verse may be untranslated (length reading) | **DONE**-ish | Short-vs-source is `prop.length-ratio`. The copy-from-source reading is the untranslated-words candidate below. |
 
-## SOUS — candidates (build or expand)
+## SOUS — candidates (status refreshed 2026-07-30: 3 shipped, 2 dissolved into #1, 1 doubtful, 1 open)
 
-Ordered by conviction:
+All seven were built or dispositioned via the
+[rare-glyph/signatures/mixed-case plan](../plans/completed/2026-07-10-rare-glyph-signatures-mixedcase-plan.md)
+and the backlog reorganization:
 
-1. **Rare-glyph / rare-letter rule** (Greek Room wildebeest's real value;
-   the Hawaiian case: Latn keyboard, 13-letter alphabet, a stray `q`).
-   **CANDIDATE — top of list.** `uni.mixed-script-in-token` only catches
-   *cross-script* intruders; a same-script letter the corpus never uses is
-   invisible today. Corpus-learned letter/glyph frequency, two-factor shape
-   (established inventory × minority recurrence — a glyph seen 1–2× in 300k
-   is the hapax knee again). No hardcoded "bad character" list ever — the
-   corpus votes. Absolute-mode glyph census is the same tally unfiltered,
-   so the census accumulator and this rule share a walk.
-2. **Mark attachment signatures** (generalizes the after-side gap).
-   **CANDIDATE — found by this triage.** `punct.spacing-anomaly` observes
-   only the mark's *left* side, so `word,word` (comma attached-left =
-   majority, missing space *after* never looked at) is invisible today.
-   Rather than bolt on one mirror channel, learn each mark's **joint
-   left/right context signature**: (before, after) ∈ {letter, space,
-   punct, edge}. `?` in English signs letter|space; Spanish `¿` signs
-   space|letter — so a swapped `¿`/`?`, a `word,word`, an `away!Why?`,
-   and a wrong-order quote+mark all surface as the same thing: a mark
-   occurring in a signature that is rare *for that mark in this corpus*.
-   Scoring is categorical, not binary majority/minority — a `.`
-   legitimately holds several frequent signatures (letter|space,
-   letter|verse-edge), so this is descriptive-share territory (ADR 0048):
-   rare-signature share × minority recurrence. Supersedes the current
-   before-only stats (pre-alpha, redesign cleanly, no compat shim).
-3. **Untranslated words / source-copy** (Owl). **CANDIDATE.** The tier
-   above proportionality: anything with a reference text. Walk target
-   tokens, membership test against the source verse's tokens, run-length
-   bonus (consecutive shared words look like paste). Recurrence knee
-   handles loan words: a source-identical word recurring corpus-wide is a
-   convention, not a miss. Needs source loading — joins the source-paired
-   work (shortlist item 1), not absolute-mode v1. (Greek Room's spelling
-   report is different machinery: uroman romanization + weighted edit
-   distance, gated on shared *alignment* to a reference translation —
-   alignment is declared out of scope; revisit spelling only if/when
-   alignment research happens.)
-4. **Mixed-case word** (`wOrd`). **CANDIDATE — rides ADR 0051.** Not
-   checked today. Tokenization already helps: the letter-run token unit
-   splits at hyphens, so `Hyphenated-Name` is two ordinarily-cased tokens,
-   not a mixed-case one. Recurring legitimate shapes — `LORD` (the
-   all-caps YHWH convention, hundreds of times per corpus), `McX`-style
-   names — are exactly what the recurrence knee excuses: a case shape
-   that recurs is a convention, a hapax `wOrd` is a slip. Hot loop flags
-   the anomaly; census word-shape table shows all counts.
-5. **Quotation-mark anomalies / straight-vs-curly.** **CANDIDATE (parked
-   with data).** Quote *balance* is parked (ADR 0039). Quote-type mixing
-   (straight `"` 2× in a corpus of 4,500 curly) is really the rare-glyph
-   rule (#1) doing its job — no separate rule needed. Census glyph table
-   makes the mix visible unconditionally.
-6. **Punctuation missing at end of chapter.** **CANDIDATE — low.**
-   Chapter is addressing, like verses — but "what fraction of this
-   corpus's chapters end with a terminal mark" is an honest learned habit
-   (really "paragraph-final punctuation" observed at a convenient
-   boundary). The it's-not-always-true worry is handled by the machinery
-   itself: Wilson dominance means the rule only speaks when the corpus is
-   near-categorical about it — a corpus that's 80/20 never establishes
-   the habit and the rule stays silent everywhere. Cheap once census
-   walks exist.
-7. **Superscript digits / odd numerals.** **CANDIDATE — small.**
-   Superscript digits ARE codepoints (U+00B9, U+2070–2079, category No) —
-   not *invalid*, so not `hyg.invalid-codepoint`. Tempting to call them
-   always-wrong in scripture bodies, but the hygiene bar is "universally
-   illegal," and No-class glyphs are occasionally legitimate (a
-   modern-language translation writing measures with `½`). The rare-glyph
-   rule (#1) delivers the always-wrong behaviour in practice — a corpus
-   that never uses them flags the first one at full score — without a
-   universal assertion that's false for the corpus that does. Prefer #1;
-   don't build separately.
+1. **Rare-glyph / rare-letter rule** — **SHIPPED** as `uni.rare-glyph`
+   (ADR 0053; reduce page table ADR 0056). The Hawaiian case (Latn
+   keyboard, 13-letter alphabet, a stray `q`): corpus-learned letter
+   frequency, established-inventory × minority-recurrence two-factor
+   shape, no hardcoded bad-character list. Shares its walk with the
+   census `letters.glyphs` lane as planned.
+2. **Mark attachment signatures** — **SHIPPED** as the rewrite of
+   `punct.spacing-anomaly` (ADR 0054), superseding the before-only ADR
+   0050 model with no compat shim. Joint (before, after) signatures over
+   {letter, digit, space, punct}; **no `edge` class** — the verse/book
+   seam reads as whitespace (verses are addressing, per CLAUDE.md), so a
+   verse-leading `.word` is ordinary `space|letter` coverage. Quotes stay
+   out of the candidate mark set and read generic `punct` as context;
+   quote-specific attachment remains parked (ADR 0039). This closed the
+   `word,word` and `?And` gaps this triage found.
+3. **Untranslated words / source-copy** (Owl) — **STILL OPEN**, the one
+   surviving build candidate:
+   [`ideas/candidates/2026-07-29-untranslated-words-rule.md`](../ideas/candidates/2026-07-29-untranslated-words-rule.md).
+   Membership test against the source verse's tokens, run-length bonus,
+   recurrence knee for loan words. Blocked on source loading — the
+   source-paired tier, alongside `prop.length-ratio` calibration
+   ([`ideas/discussing/2026-07-29-length-ratio-calibration.md`](../ideas/discussing/2026-07-29-length-ratio-calibration.md)).
+   (Greek Room's spelling report stays out of scope: it's alignment-gated
+   machinery.)
+4. **Mixed-case word** (`wOrd`) — **SHIPPED** as `case.mixed-case-word`
+   (ADR 0055). Letter-run token unit (so `Hyphenated-Name` is two
+   ordinary tokens); recurrence knee excuses `LORD` / `McX`-class
+   conventions; census `words.case-shapes` lane shows all counts.
+5. **Quotation-mark anomalies / straight-vs-curly** — **RESOLVED by #1
+   shipping**, as predicted: quote-type mixing (straight `"` 2× in a
+   corpus of 4,500 curly) is the rare-glyph rule doing its job; no
+   separate rule. Quote *balance* still parked (ADR 0039); the census
+   glyph lane shows the mix unconditionally.
+6. **Punctuation missing at end of chapter** — **DOUBTFUL** (moved
+   2026-07-29 to
+   [`ideas/doubtful/2026-07-29-doubtful-rules.md`](../ideas/doubtful/2026-07-29-doubtful-rules.md)):
+   doubtful for need, not cost — no user or corpus has asked for it; a
+   rule in search of a need. The Wilson self-gating story remains sound
+   if a need ever appears.
+7. **Superscript digits / odd numerals** — **RESOLVED by #1 shipping**,
+   as written here: the rare-glyph rule flags the first `¹` in a corpus
+   that never uses them at full score, with no false universal assertion
+   against the corpus that legitimately writes `½`. Never built
+   separately; the census `numbers.token-shapes` lane shows them.
 
 ## SOUS — census-only (absolute mode dissolves the house-style fight)
 
-> **Promoted 2026-07-10** to a committed plan:
-> [absolute-mode census plan](../plans/2026-07-10-absolute-mode-census-plan.md)
-> (queued after the rare-glyph plan, before the preset-table freeze).
+> **SHIPPED** (ADR 0058, plan completed:
+> [absolute-mode census plan](../plans/completed/2026-07-10-absolute-mode-census-plan.md)):
+> `census(map) → Inventory`, knob-free, eight lanes over the rules' own
+> walks/extractors. Everything in the table below landed in the
+> `numbers.token-shapes` lane (number shapes), `letters.glyphs`
+> (wildebeest letter counts, quote counts), and `punct.*` lanes.
+> Open census follow-ons live in
+> [`ideas/discussing/2026-07-29-census-workstream.md`](../ideas/discussing/2026-07-29-census-workstream.md)
+> and [`ideas/committed/2026-07-14-census-both-forms-mark-examples.md`](../ideas/committed/2026-07-14-census-both-forms-mark-examples.md).
 
 These are the naive-Latin-convention items. A hot-loop rule would need a
 house-style config war; a census row just shows what's there, ranked by
@@ -165,13 +155,16 @@ token grouped by shape) or the glyph/punct-sequence tables:
 | Wildebeest punctuation-combination counts | punct-sequence census |
 | Left/right quotation mark counts (Owl) | glyph census + ADR 0039 census data |
 
-## Adjudicated elsewhere (unchanged by this list)
+## Adjudicated elsewhere (pointers refreshed 2026-07-30 — the shortlist these referenced was dissolved into the ideas lifecycle)
 
-- **Spelling variants as site findings** — REJECTED/POSTPONED (shortlist
-  demotion: edit-distance typo pairs; the/then/thin problem). Greek Room
-  escapes it only via alignment, which is out of scope.
+- **Spelling variants as site findings** — dead as a blanket rule;
+  strictly scoped variants are a candidate:
+  [`ideas/candidates/2026-07-29-edit-distance-typo-scoped.md`](../ideas/candidates/2026-07-29-edit-distance-typo-scoped.md).
+  Greek Room escapes it only via alignment, which is out of scope.
 - **Sentence-end/-start positional site rules** — end-side dead as site
-  rule (2026-07-09 ruling); start-side pending base-rate scrutiny.
+  rule (2026-07-09 ruling); start-side doubtful pending base-rate
+  scrutiny. Both recorded in
+  [`ideas/doubtful/2026-07-29-doubtful-rules.md`](../ideas/doubtful/2026-07-29-doubtful-rules.md).
 - **Verse-boundary anything** — verses are reference plumbing; no rule
   may treat verse-initial as sentence-initial (CLAUDE.md, methods §0.1).
 
@@ -183,12 +176,13 @@ token grouped by shape) or the glyph/punct-sequence tables:
    never disagree about tokenization/terminals. Rows: category, type key,
    exact count, learned-rarity sort key, capped example sites as packed
    `(u8,u8,u8)` SIDs. Rows are never filtered; only example lists cap.
-2. **Two genuinely new hot-loop items fall out of the whole PO list**:
-   the rare-glyph rule (#1, which doubles as the glyph-census
-   accumulator) and the after-side spacing channel (#2, a second tally
-   on the existing spacing walk). Everything else is either shipped,
-   census-only, editor, onion, or already queued (source-paired tier,
-   ADR 0051 word table).
+2. **Two genuinely new hot-loop items fell out of the whole PO list**,
+   and both shipped: the rare-glyph rule (#1 → ADR 0053, doubling as the
+   glyph-census accumulator) and the attachment-signature rewrite (#2 →
+   ADR 0054). With the census (ADR 0058) also landed, the PO list's only
+   remaining engine work is the source-paired tier (#3, untranslated
+   words + length-ratio calibration) — everything else is editor, onion,
+   census follow-ons, or adjudicated dead/doubtful.
 3. **The census is not regex-matching.** The "number shapes" and glyph
    tallies are charclass lanes emitted during the same grapheme walk the
    rules use — classification during the walk, never pattern-matching
