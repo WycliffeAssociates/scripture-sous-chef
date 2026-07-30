@@ -234,6 +234,23 @@ sits at the recall/noise knee. Rule stays **default-off** for now (owner
 decision). Full packet: `documentation/calibration/
 2026-07-30-untranslated-word-calibration.md`.
 
+**Standing stop clause (owner-ratified 2026-07-30)**: no default-on and
+no Review Depth integration for `lex.untranslated-word` until the
+verse-level support policy is adjudicated (a 1-of-1 copied hapax can
+score 1.0 today; `(copied, total)` is retained per verse, so the fix is
+judging-only).
+
+**Post-arc full-fleet oracle pins** (arc end `33fd0df`; `corpora/vref`,
+1,504 corpora, `--dump-findings`, sha256 — supersede the 2026-07-23
+epic-era pins for the findings dumps):
+
+- default: `1791fcb07deabdeb3e9be208ab7cd02d6348cb15edd15b6ecffc62eae50d749b` (427,881 lines)
+- all: `14be8b4fbb225e83c48705cd91ff58440dbc5c3c3ec5ba43296de63383c292ea` (962,372 lines)
+
+The arc's per-step gates ran WA-251 + small-15 with owner-adjudicated
+drift at each pin move (commit bodies + ADR 0069 + calibration docs);
+these full-fleet hashes are the re-pinned bookend for future work.
+
 ## Open questions (owner)
 
 - Tier-1 target hygiene: the Tech_Advance repos are real field data —
