@@ -59,6 +59,11 @@ per-book percent terms.
      es-419_ulb against en_ulb.
    - Multi-source targets (bbm+fr, bsj+bn, gux+ar avd where held) run
      under both sources — a free source-sensitivity experiment.
+   - **Loading resolved (2026-07-30):** every pair member exists as a
+     plain vref file in `corpora/vref/` (`WA-<target>-reg.txt`,
+     `WA-en-ulb.txt`, `WA-sw-ulb.txt`, `WA-fr-ulb.txt`, `WA-bn-ulb.txt`,
+     `WA-pt-br-ulb.txt`, `WA-es-419-ulb.txt`) — no repo-format loading
+     needed anywhere in this plan.
 2. **`--paired-survey <pairs.tsv> <out-dir>`**: per pair, per book — verse
    fractions, median, MAD, flag boundaries, findings at default z.
    **Versification guard**: a book whose *median fraction* is an outlier

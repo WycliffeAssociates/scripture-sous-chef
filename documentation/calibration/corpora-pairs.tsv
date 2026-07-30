@@ -1,0 +1,24 @@
+target	source	tier	note
+corpora/vref/WA-amo-reg.txt	corpora/vref/WA-en-ulb.txt	1	tier-1 true pair, owner-declared source
+corpora/vref/WA-bbm-reg.txt	corpora/vref/WA-en-ulb.txt	1	tier-1 true pair, owner-declared source
+corpora/vref/WA-bbm-reg.txt	corpora/vref/WA-fr-ulb.txt	1	multi-source sensitivity experiment (bbm vs fr_ulb)
+corpora/vref/WA-bsj-reg.txt	corpora/vref/WA-en-ulb.txt	1	tier-1 true pair, owner-declared source
+corpora/vref/WA-bsj-reg.txt	corpora/vref/WA-bn-ulb.txt	1	multi-source sensitivity experiment (bsj vs bn_ulb)
+corpora/vref/WA-ema-x-emai-reg.txt	corpora/vref/WA-en-ulb.txt	1	tier-1 true pair, owner-declared source
+corpora/vref/WA-gux-reg.txt	corpora/vref/WA-en-ulb.txt	1	tier-1 true pair, owner-declared source
+corpora/vref/WA-gux-x-gourmantche-reg.txt	corpora/vref/WA-en-ulb.txt	1	tier-1 true pair, owner-declared source
+corpora/vref/WA-gux-x-gourmantche-reg.txt	corpora/vref/WA-fr-ulb.txt	1	multi-source sensitivity experiment (gux-x-gourmantche vs fr_ulb)
+corpora/vref/WA-jid-reg.txt	corpora/vref/WA-en-ulb.txt	1	tier-1 true pair, owner-declared source
+corpora/vref/WA-jni-reg.txt	corpora/vref/WA-en-ulb.txt	1	tier-1 true pair, owner-declared source
+corpora/vref/WA-lko-reg.txt	corpora/vref/WA-en-ulb.txt	1	tier-1 true pair, owner-declared source
+corpora/vref/WA-nyn-x-runyaruguru-reg.txt	corpora/vref/WA-en-ulb.txt	1	tier-1 true pair, owner-declared source
+corpora/vref/WA-sbk-reg.txt	corpora/vref/WA-en-ulb.txt	1	tier-1 true pair, owner-declared source
+corpora/vref/WA-kiz-reg.txt	corpora/vref/WA-sw-ulb.txt	1	tier-1 true pair, Swahili-declared source (not English)
+corpora/vref/WA-nyf-x-rabai-reg.txt	corpora/vref/WA-sw-ulb.txt	1	tier-1 true pair, Swahili-declared source (not English)
+corpora/vref/WA-zga-x-mahanji-reg.txt	corpora/vref/WA-sw-ulb.txt	1	tier-1 true pair, Swahili-declared source (not English)
+corpora/vref/WA-rmn-x-yerliroman-reg.txt	corpora/vref/WA-en-ulb.txt	1	true source is Russian ULB (not held); versification-guard candidate
+corpora/vref/eng-kjv.txt	corpora/vref/WA-en-ulb.txt	2	tier-2 pseudo-pair: clean negative, high parametric knowledge
+corpora/vref/eng-asv.txt	corpora/vref/WA-en-ulb.txt	2	tier-2 pseudo-pair: clean negative, high parametric knowledge
+corpora/vref/WA-pt-br-ulb.txt	corpora/vref/WA-en-ulb.txt	2	tier-2 pseudo-pair: clean negative, OT coverage
+corpora/vref/WA-fr-ulb.txt	corpora/vref/WA-en-ulb.txt	2	tier-2 pseudo-pair: clean negative, OT coverage
+corpora/vref/WA-es-419-ulb.txt	corpora/vref/WA-en-ulb.txt	2	tier-2 pseudo-pair: clean negative, OT coverage

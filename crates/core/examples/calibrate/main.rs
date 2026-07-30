@@ -36,6 +36,14 @@
 //!   # fleet. A `wa` dump only ever diffs against another `wa` dump.
 //!   cargo run --release -p ssc-core --example calibrate -- \
 //!       --dump-findings corpora/vref /tmp/findings.wa.tsv default wa
+//!   # source-paired tier plan Phase A: paired survey (per-book fraction/
+//!   # median/MAD/z=3.5 boundaries + versification quarantine) over a pairs
+//!   # manifest, writing per-pair TSVs and a self-contained HTML report:
+//!   cargo run --release -p ssc-core --example calibrate -- \
+//!       --paired-survey documentation/calibration/corpora-pairs.tsv /tmp/paired
+//!   # same plan, deterministic fixed-seed fault injection + catch-rate join:
+//!   cargo run --release -p ssc-core --example calibrate -- \
+//!       --seed-faults documentation/calibration/corpora-pairs.tsv /tmp/paired
 
 // Spike/survey/dev code — std collections are fine here; the workspace
 // disallowed-types ban targets shipped engine code.
@@ -64,6 +72,7 @@ use survey::misc::{
     spacing_fleet_sweep, zwsp_calib,
 };
 use survey::mixedcase::{analyze_mixedcase, mixedcase_fleet, mixedcase_single_report};
+use survey::paired::{paired_survey, seed_faults};
 use survey::pooled::{analyze_pooled, pooled_fleet, pooled_single_report};
 use survey::signatures::{analyze_signatures, signature_fleet, signature_single_report};
 use survey::terminal::{terminal_fleet, terminal_single};
@@ -321,6 +330,23 @@ fn main() {
                 .map(|s| Path::new(s).to_path_buf())
                 .unwrap_or_else(|| Path::new("target/fleet-report.html").to_path_buf());
             fleet(Path::new(dir), &out);
+            return;
+        }
+        // Source-paired tier plan, Phase A (2026-07-30): per-book paired
+        // survey (fraction, median, MAD, z=3.5 flag boundaries, the
+        // versification quarantine guard) over every loadable row of a
+        // pairs manifest, plus a self-contained HTML report.
+        [flag, pairs, out] if flag == "--paired-survey" => {
+            paired_survey(Path::new(pairs), Path::new(out));
+            return;
+        }
+        // Same plan, Phase A step 3: deterministic fixed-seed fault
+        // injection (tail-chop 10/20/30/50%, whole-verse delete,
+        // source-verse paste) over every loadable pairs-manifest row, with a
+        // ground-truth manifest and a catch-rate/clean-flag-rate join at
+        // every swept z.
+        [flag, pairs, out] if flag == "--seed-faults" => {
+            seed_faults(Path::new(pairs), Path::new(out));
             return;
         }
         [t] => {
