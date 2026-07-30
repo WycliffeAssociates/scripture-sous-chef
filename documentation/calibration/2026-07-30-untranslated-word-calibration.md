@@ -2,15 +2,16 @@
 
 - Date: 2026-07-30
 - Governed by: `.claude/skills/rule-development/SKILL.md`. Task
-  classification: **adjust + calibrate**. Update (final Phase D cycle):
-  the case-shape excusal design in §3/§Escalation is **APPROVED and
-  IMPLEMENTED** (`CopiedToken.proper_noun_shaped`, `SCHEMA_STAMP` 1→2).
-  The re-pin this creates in the "all" oracle config is **HELD
-  uncommitted** pending owner review of the MEASURED (not simulated)
-  drift table — see "Escalation — resolved" below. Defaults stay
-  default-off per owner instruction; final knob/default recommendations
-  are in the Recommendation section, now backed by real (not simulated)
-  post-excusal numbers.
+  classification: **adjust + calibrate**. **CLOSED 2026-07-30**: the
+  case-shape excusal design in §3/§Escalation is **APPROVED, IMPLEMENTED,
+  AND COMMITTED** (`CopiedToken.proper_noun_shaped`, `SCHEMA_STAMP` 1→2).
+  Owner sign-off received on the measured (not simulated) drift table —
+  WA-251 all-config −87.2% (430→55), 23-pair manifest −54.6% (625→284),
+  zero new findings, all named survival checks (gaz-ulb, zga, omt-reg)
+  confirmed live — see "Escalation — resolved and landed" below. Rule
+  stays **default-off** (owner decision); `run_bonus` stays at its
+  current default, 0.5, now evidence-backed by the partial-paste sweep.
+  See the Recommendation section for the full final-state summary.
 - Prior art: `documentation/plans/2026-07-30-source-paired-tier-plan.md`
   Phase C; the substrate landing (`core: UntranslatedWords substrate`),
   the adjudicated pin-move (`core: wire UntranslatedWords into analyze`),
@@ -436,7 +437,7 @@ memory and byte-identical oracle output.
 - N/A package generation / public API smoke tests — no new public
   wasm-consumer-facing surface beyond the overrides struct.
 
-## Escalation — case-shape excusal gate — RESOLVED (design approved, re-pin HELD)
+## Escalation — case-shape excusal gate — RESOLVED AND LANDED (2026-07-30)
 
 **Design implemented as specified**: `CopiedToken` gained `bool
 proper_noun_shaped`, computed at `map_chapter` time from the ORIGINAL
@@ -453,6 +454,20 @@ criteria preserved as unit tests
 `case_excused_leading_word_does_not_erase_the_rest_of_a_paste_run`):
 excusing a name must still let a name+lowercase-verb copy fire, and a
 run must still fire even when its leading token is title-case.
+
+**Owner sign-off on the measured drift (2026-07-30)**: ACCEPTED. Sign-off
+covered the full drift table below plus a named survival check across
+three distinct real-catch classes, all confirmed still live post-
+excusal: `WA-gaz-ulb`'s whole-English-verse pastes (`1CO 9:6`, `JAS 5:6`,
+`LUK 1:5` — the evidence from the original pin-move commit), the three
+Swahili-declared-source pairs' real catches (`zga-x-mahanji`'s
+`1CO 9:24`/`MAT 9:15`/`JAS 1:22` among them), and `WA-omt-reg`'s
+half-translated-draft class (dozens of `MAT`-book verses each ~30–50%
+copied, run lengths 3-5 — a distinct real-catch SHAPE from either of the
+other two, also confirmed to survive). Genealogy/name-list false
+positives were removed wholesale (all 30 of `zga`'s suppressed verses,
+100% of `amo`/`es-419-ulb`/`gux-x-gourmantche`/`jid`/`pt-br-ulb`'s
+findings). **This is now the landed, committed state** — not a proposal.
 
 **What this changed vs. the pre-implementation ESTIMATE**: the harness
 simulation this doc previously cited (245/625, 39.2% suppressed) had a
@@ -471,12 +486,13 @@ before, 8 after. `default` and every dump's OTHER rules are
 byte-identical; only `lex.untranslated-word`, only in `all` (where it is
 wired in; `v1_defaults()` still disables it in `default`), moved.
 
-**Held**: the schema+excusal code change is implemented, tested (9/9
-unit tests pass, full `ssc-core` suite 535/535), and oracle-diffed, but
-the resulting `all`-config re-pin is **NOT committed** — held per the
-standing protocol pending this drift table's review (same as every pin
-move this arc). Once approved, land as: schema+excusal commit (message
-citing the before/after oracle diff), oracle blob re-pin commit.
+**Landed**: the schema+excusal code change is implemented, tested (9/9
+unit tests pass, full `ssc-core` suite 535/535), oracle-diffed, and
+**committed** — the commit message carries the adjudicated drift table,
+the zero-new-findings verification, and the survival confirmations
+above, per the standing pin-move protocol (same shape as every other pin
+move this arc, e.g. the original `core: wire UntranslatedWords into
+analyze` pin-move commit).
 
 **Known, still-unresolved gap**: the excusal is a structural no-op for
 caseless-script target languages (Bengali, Devanagari, etc.) —
@@ -486,25 +502,24 @@ either the calibration manifest or the oracle fleet (no caseless-vs-
 caseless-script pair exists in either), and records it as an untested
 limitation, not a solved or ruled-out case.
 
-## Recommendation — default-config membership + knob defaults (FINAL, owner adjudicates)
+## Recommendation — default-config membership + knob defaults — ADOPTED (2026-07-30)
 
-**Do not move any oracle pin without sign-off** — same protocol as
-Phase B/B2. The schema+excusal design is approved and implemented; the
-re-pin it creates is still held (see Escalation above). Recorded here
-for the owner's decision, nothing committed beyond the held code change:
+The schema+excusal design and its measured drift are both approved and
+**landed** (see Escalation above) — this section now records the
+adopted final state, not an open recommendation:
 
-- **Default-on/off**: recommend staying **default-off** for now (per
-  owner instruction, this cycle does not revisit it). With the excusal
-  now measured rather than estimated, the case for default-on is
-  stronger than the pre-excusal packet could show — the genealogy
-  false-positive shape that was ~55–87% of current volume is now
-  suppressed, and the surviving 55-finding (fleet) / 284-finding
-  (manifest) population is verified to be a strict subset of real
-  catches (zero new findings, spot-checked survivors all genuine). The
-  remaining open item before default-on is owner comfort with the
-  caseless-script gap (untested, not zero) and the residual clean-corpus
-  false-positive rate at the recommended `run_bonus`.
-- **`run_bonus`: keep the current default, 0.5.** Now evidence-backed
+- **Default-on/off**: **stays default-off** (owner decision, this cycle
+  does not revisit it). With the excusal now measured rather than
+  estimated, the case for default-on is stronger than the pre-excusal
+  packet could show — the genealogy false-positive shape that was
+  ~55–87% of current volume is now suppressed, and the surviving
+  55-finding (fleet) / 284-finding (manifest) population is verified to
+  be a strict subset of real catches (zero new findings, spot-checked
+  survivors all genuine). The remaining open item before default-on is
+  owner comfort with the caseless-script gap (untested, not zero) and
+  the residual clean-corpus false-positive rate at the adopted
+  `run_bonus`.
+- **`run_bonus`: kept at the current default, 0.5.** Now evidence-backed
   (§8's re-run): partial-paste recall collapses below `run_bonus≈0.25`
   (72%→0.2% recall going from 0.25 to 0), and above 0.5 each further
   recall point costs an accelerating false-positive price (0.75→1.0:

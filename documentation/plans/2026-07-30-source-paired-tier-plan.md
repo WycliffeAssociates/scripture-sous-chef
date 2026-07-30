@@ -207,7 +207,7 @@ the folded per-verse token sets must *not* be retained — they are
 map-transient. If retained state creeps toward "second copy of
 everything," that's a design failure, not a tuning problem.
 
-## Phase D — untranslated-words calibration + defaults
+## Phase D — untranslated-words calibration + defaults — COMPLETE (2026-07-30)
 
 1. Same harness, paste faults as ground truth; sweep the judge knobs
    (ceiling, knee, run bonus) judge-only; triage sample as in Phase B.
@@ -215,6 +215,21 @@ everything," that's a design failure, not a tuning problem.
    table rows this rule contributes to preset-derivation.
 3. Deliverable: calibration doc + (if default-on) the adjudicated oracle
    re-pin for the default config; catalog card, localization key, docs.
+
+**Closed out**: added a case-shape excusal (`CopiedToken.
+proper_noun_shaped`, via `signals::case_shape`) on top of the shipped
+gates — owner-approved 2026-07-30 with two survival criteria encoded as
+unit tests. Measured, adjudicated drift: WA-251 all-config dump
+430 → 55 findings (−87.2%); 23-pair manifest 625 → 284 (−54.6%); zero new
+findings anywhere (excusal only shrinks the candidate set); real catches
+(gaz-ulb English pastes, zga-x-mahanji Swahili catches, omt-reg's
+half-translated-draft class) all confirmed still live; genealogy/name-
+list false positives removed wholesale. `run_bonus` re-examined against
+a new partial-paste seed fault (the MAT 9:15 shape, non-saturating
+unlike the whole-verse paste fault) and kept at its 0.5 default — it
+sits at the recall/noise knee. Rule stays **default-off** for now (owner
+decision). Full packet: `documentation/calibration/
+2026-07-30-untranslated-word-calibration.md`.
 
 ## Open questions (owner)
 

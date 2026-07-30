@@ -15,17 +15,35 @@
 //! papered over by leaving the source verse in place) rather than genuinely
 //! rendered.
 //!
-//! `judge` has three gates, in order (knob-isolated — map/reduce never read
-//! them, so a knob change maps and reduces nothing):
+//! `judge`/materialize apply four gates, in order (knob-isolated — map/reduce
+//! never read config, so a knob change maps and reduces nothing):
 //! 1. **Corpus gate** — a corpus-wide copied-token-share ceiling silences the
 //!    rule everywhere (a creole / closely-related-language pair's baseline
 //!    copy rate is expected, not evidence).
 //! 2. **Word excusal** — a per-word recurrence knee excuses words recurring
 //!    at or above a rate across the corpus (proper nouns, loanwords, "Amen")
 //!    from every verse's copied-count numerator.
-//! 3. **Site scoring** — the excusal-adjusted verse fraction, boosted for the
-//!    longest ADJACENT run of copied tokens (the paste shape) over scattered
-//!    singles.
+//! 3. **Case-shape excusal** — a copied TARGET token whose ORIGINAL (unfolded)
+//!    case shape is `Title` or `AllCaps` is excused unconditionally, at
+//!    materialize time, from that verse's numerator and from run
+//!    reconstruction (never from the denominator: `v.total` is untouched).
+//!    Names naturally copy across closely-related-language pairs (shared
+//!    proper nouns), so a capitalized copy alone is not evidence. This is
+//!    deliberately narrower than gate 2's corpus-wide recurrence knee: it
+//!    fires per-token, unconditionally, with no rate threshold, and it is
+//!    NOT a substitute for gate 2 (a lowercase recurring common word, e.g. a
+//!    shared "and", still needs gate 2 to be excused). Two survivals are
+//!    load-bearing (owner acceptance criteria, encoded in
+//!    `case_excused_name_survives_a_lowercase_copy_beside_it` and
+//!    `case_excused_leading_word_does_not_erase_the_rest_of_a_paste_run`):
+//!    excusing a name must still let a name+lowercase-verb copy fire (the
+//!    lowercase token is not excused), and must still let a paste run fire
+//!    even when the run's first token is title-case (the run-length
+//!    machinery re-runs over the surviving, non-excused tokens only — a
+//!    title-case word at the head of a run does not erase the rest of it).
+//! 4. **Site scoring** — the doubly-excusal-adjusted verse fraction, boosted
+//!    for the longest ADJACENT run of surviving copied tokens (the paste
+//!    shape) over scattered singles.
 //!
 //! **Deviation from the plan's "target tokens off the shared token lane":**
 //! this landing tokenizes target text directly inside `map_chapter` rather
@@ -74,12 +92,19 @@ fn fold_via(raw: &str, scratch: &mut String) -> String {
 /// copied tokens are ADJACENT (a run) from two that merely both happen to be
 /// copied. `word` is the folded key, retained so judge-time word excusal (a
 /// corpus-wide, config-driven decision) can re-test membership without
-/// re-tokenizing or re-folding the text.
+/// re-tokenizing or re-folding the text. `proper_noun_shaped` is the ORIGINAL
+/// (unfolded) target token's case shape, `Title` or `AllCaps` per
+/// `signals::case_shape` — computed once here at map time (map never reads
+/// config, so this is a pure structural fact about the token, not a judge
+/// decision) and consulted unconditionally at materialize time (gate 3).
+/// Folding erases case, so this must be read off `tok.span.slice(text)`
+/// BEFORE folding, never off `word`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CopiedToken {
     token_idx: u16,
     span: Span,
     word: Box<str>,
+    proper_noun_shaped: bool,
 }
 
 /// One verse's observation. `len` is the verse's byte length — materialize's
@@ -251,10 +276,19 @@ fn map_word_chapter(chapter: &crate::substrate::ChapterView<'_>) -> WordChapterO
                     .binary_search_by(|&i| source_spans[i].slice(&source_pool).cmp(word.as_str()))
                     .is_ok();
                 if is_copied {
+                    // Case shape off the ORIGINAL (unfolded) target text —
+                    // `word` is already lowercase-folded and would read as
+                    // `Lower` for every token, erasing the distinction.
+                    let proper_noun_shaped = matches!(
+                        crate::signals::case_shape::case_shape(tok.span.slice(text)),
+                        Some(crate::signals::case_shape::CaseShape::Title)
+                            | Some(crate::signals::case_shape::CaseShape::AllCaps)
+                    );
                     copied.push(CopiedToken {
                         token_idx: ti as u16,
                         span: tok.span,
                         word: word.into_boxed_str(),
+                        proper_noun_shaped,
                     });
                 }
             }
@@ -274,7 +308,9 @@ fn map_word_chapter(chapter: &crate::substrate::ChapterView<'_>) -> WordChapterO
 
 impl crate::substrate::ObservationSubstrate for UntranslatedWordsSubstrate {
     const ID: crate::substrate::SubstrateId = crate::substrate::SubstrateId::UntranslatedWords;
-    const SCHEMA_STAMP: u64 = 1;
+    // Bumped 1 -> 2: `CopiedToken` gained `proper_noun_shaped` (the case-
+    // shape excusal, gate 3) — an observation-schema change.
+    const SCHEMA_STAMP: u64 = 2;
     // The second reference-declaring substrate in the engine (after
     // proportionality) — `SameSlugSameChapter` is a generic pairing type,
     // not proportionality-specific, so it is reused directly here.
@@ -429,7 +465,8 @@ impl crate::substrate::ObservationSubstrate for UntranslatedWordsSubstrate {
 
 impl WordBookContribution {
     /// Emit this book's untranslated-word findings from the retained
-    /// observations — gate 3 (site scoring), applied per verse.
+    /// observations — gates 3 (case-shape excusal) and 4 (site scoring),
+    /// applied per verse.
     fn materialize(
         &self,
         layout: &[crate::corpus::ChapterLayout],
@@ -452,11 +489,15 @@ impl WordBookContribution {
                     continue;
                 }
                 // Excusal-adjusted copied tokens, still in target-token
-                // order — gate 2 applied.
+                // order — gates 2 (corpus-wide word recurrence) AND 3
+                // (per-token case shape) applied. The two are independent
+                // conditions, not one merged predicate: a lowercase word can
+                // only be excused by gate 2, a capitalized one can be
+                // excused by either.
                 let adjusted: Vec<&CopiedToken> = v
                     .copied
                     .iter()
-                    .filter(|c| !outcome.excused.contains(&c.word))
+                    .filter(|c| !outcome.excused.contains(&c.word) && !c.proper_noun_shaped)
                     .collect();
                 if adjusted.is_empty() {
                     continue;
@@ -717,6 +758,19 @@ mod tests {
         assert!(run(&target, None, &cfg()).is_empty());
     }
 
+    /// Interior-alternating-case a word (`uno` -> `uNo`) — case-VARIES the
+    /// text (to prove the fold does real work, not a byte match) while
+    /// staying `CaseShape::OtherMixed`, never `Title`/`AllCaps`, so gate 3's
+    /// case-shape excusal does not swallow it. (`to_uppercase`/lowercase
+    /// whole-word variants would land on `AllCaps`/`Lower` and, post-
+    /// excusal, prove nothing about the fold for an `AllCaps` case.)
+    fn interior_mixed_case(s: &str) -> String {
+        s.chars()
+            .enumerate()
+            .map(|(i, c)| if i % 2 == 0 { c.to_ascii_lowercase() } else { c.to_ascii_uppercase() })
+            .collect()
+    }
+
     /// The plan's central paste case: a whole verse pasted verbatim from the
     /// source stands out as a maximal run and materializes on that run's
     /// own span, not the whole verse.
@@ -724,8 +778,10 @@ mod tests {
     fn paste_run_is_detected_with_span_addresses() {
         let (mut target, source) = clean_background(60);
         // Verse 3's target text becomes the source text verbatim (case-
-        // varied, to prove the fold is doing real work, not a byte match).
-        let pasted = source[2].1.to_uppercase();
+        // varied, to prove the fold is doing real work, not a byte match —
+        // interior-mixed rather than whole-word-uppercased so gate 3's
+        // case-shape excusal does not exempt every token here).
+        let pasted = interior_mixed_case(&source[2].1);
         target[2].1 = pasted.clone();
 
         let target_c = mk(&target.iter().map(|(k, t)| (k.as_str(), t.as_str())).collect::<Vec<_>>());
@@ -847,6 +903,86 @@ mod tests {
             "resident result must equal cold analysis"
         );
         assert_eq!(edited.key(inc[0].key_idx), "GEN 2:5");
+    }
+
+    /// Owner acceptance criterion 1: excusing a name must NOT excuse a
+    /// lowercase word copied right beside it — a name+verb copy (e.g. a
+    /// proper noun followed by a shared, non-recurring lowercase verb) still
+    /// fires, on the surviving lowercase token(s).
+    #[test]
+    fn case_excused_name_survives_a_lowercase_copy_beside_it() {
+        let (mut target, mut source) = clean_background(200);
+        // Verse 3 is REPLACED (not appended) with a short shared phrase: a
+        // capitalized name ("Yohana", excused by case shape) followed by
+        // lowercase words that are otherwise rare across the corpus (each
+        // appears exactly once, well under the recurrence knee) — so only
+        // gate 3 (case shape), never gate 2 (recurrence), can be excusing
+        // "Yohana" here. If gate 3 over-excused the whole copied token set,
+        // this verse would produce nothing; the owner's criterion is that it
+        // must not.
+        target[2].1 = "Yohana alikimbia haraka sana".to_string();
+        source[2].1 = "Yohana alikimbia haraka sana".to_string();
+        let target_c = mk(&target.iter().map(|(k, t)| (k.as_str(), t.as_str())).collect::<Vec<_>>());
+        let source_c = mk(&source.iter().map(|(k, t)| (k.as_str(), t.as_str())).collect::<Vec<_>>());
+        let findings = run(&target_c, Some(&source_c), &cfg());
+        assert_eq!(
+            findings.len(),
+            1,
+            "the lowercase word copies must still fire even though the leading name is excused: {findings:?}"
+        );
+        let f = &findings[0];
+        assert_eq!(target_c.key(f.key_idx), key("GEN", 3));
+        // The excused capitalized name ("Yohana") must not be part of the
+        // materialized span/run — only the surviving lowercase tokens are.
+        let slice = f.range.slice(&target[2].1);
+        assert!(
+            !slice.contains("Yohana"),
+            "the excused name must not appear in the finding's own span: {slice:?}"
+        );
+        assert!(
+            slice.contains("alikimbia"),
+            "the non-excused lowercase copies must anchor the finding: {slice:?}"
+        );
+    }
+
+    /// Owner acceptance criterion 2: a real paste run that happens to START
+    /// with a title-case word (e.g. sentence-initial capitalization) still
+    /// fires on the surviving run — excluding the one excused leading token
+    /// does not erase the rest of the run.
+    #[test]
+    fn case_excused_leading_word_does_not_erase_the_rest_of_a_paste_run() {
+        let (mut target, mut source) = clean_background(60);
+        // Verse 3's target and source are REPLACED (not appended) with a
+        // short phrase starting with a capitalized name — a whole-verse
+        // paste whose leading token is title-case, but whose remaining
+        // tokens are lowercase and non-recurring elsewhere in the corpus.
+        let phrase = "Yerusalemu ni mji mkuu sana kabisa".to_string();
+        target[2].1 = phrase.clone();
+        source[2].1 = phrase.clone();
+
+        let target_c = mk(&target.iter().map(|(k, t)| (k.as_str(), t.as_str())).collect::<Vec<_>>());
+        let source_c = mk(&source.iter().map(|(k, t)| (k.as_str(), t.as_str())).collect::<Vec<_>>());
+        let findings = run(&target_c, Some(&source_c), &cfg());
+        assert_eq!(
+            findings.len(),
+            1,
+            "the run's non-excused tail must still fire even though its leading token is title-case: {findings:?}"
+        );
+        let f = &findings[0];
+        assert_eq!(target_c.key(f.key_idx), key("GEN", 3));
+        let Some(FindingArgs::UntranslatedWord { run_len, .. }) = f.args else {
+            panic!("expected UntranslatedWord args");
+        };
+        // The phrase has 6 tokens; the first ("Yerusalemu") is excused
+        // (title-case), so the surviving run is the remaining 5 lowercase
+        // tokens.
+        assert_eq!(run_len, 5, "run_len = {run_len}, expected the tail of the run to survive intact");
+        let slice = f.range.slice(&phrase);
+        assert!(
+            !slice.contains("Yerusalemu"),
+            "the excused leading (title-case) token must not anchor the surviving run: {slice:?}"
+        );
+        assert!(slice.contains("kabisa"), "the run's tail must survive: {slice:?}");
     }
 
     /// A judging-knob-only change (e.g. a stricter `emit_score_min`) maps
