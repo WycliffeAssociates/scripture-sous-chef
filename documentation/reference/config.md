@@ -96,11 +96,12 @@ to current behavior. Explicit advanced native overrides apply afterward and
 win field-by-field. Rules without an honest calibrated path remain fixed
 on/off controls; the catalog's `review_control` field is the source of truth.
 
-The five production anchors are `0 / 25 / 50 / 75 / 100`. Their native values
-are rule-local and are derived from the compact calibration TSVs, not fitted to
-the current project at runtime. `convention_rate`, `confidence_z`, and native
-structure knobs remain advanced calibration fields and are deliberately absent
-from the normal cards.
+The three owner-adjudicated production anchors are `0 / 50 / 100`; deterministic
+piecewise-linear interpolation derives interior depths, with half-up rounding
+for integer fields. Their native values are rule-local and are derived from the
+compact calibration TSVs, not fitted to the current project at runtime.
+`convention_rate`, `confidence_z`, and native structure knobs remain advanced
+calibration fields and are deliberately absent from the normal cards.
 
 ### Three Tiers of Configuration
 

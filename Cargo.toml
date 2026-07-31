@@ -4,7 +4,7 @@ members = ["crates/core", "crates/galley", "crates/wire", "crates/wasm", "xtask"
 
 
 [workspace.package]
-version = "0.1.0"
+version = "0.0.5"
 edition = "2024"
 
 # `std::collections::{HashMap, HashSet}` (SipHash) are banned in favor of

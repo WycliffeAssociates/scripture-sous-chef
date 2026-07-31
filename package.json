@@ -1,6 +1,6 @@
 {
   "name": "scripture-sous-chef-web",
-  "version": "0.0.1",
+  "version": "0.0.5",
   "description": "WebAssembly bindings for scripture-sous-chef — a pure, addressable content analyzer for scripture text",
   "license": "MIT",
   "type": "module",

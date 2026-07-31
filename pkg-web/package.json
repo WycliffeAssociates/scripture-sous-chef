@@ -1,7 +1,7 @@
 {
   "name": "ssc-wasm",
   "type": "module",
-  "version": "0.1.0",
+  "version": "0.0.5",
   "files": [
     "sous_chef_web_bg.wasm",
     "sous_chef_web.js",
