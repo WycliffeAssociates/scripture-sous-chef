@@ -91,6 +91,35 @@ preserving book order. The full-fleet run applies the ladder to the first 28
 deterministically ordered corpora and full maturity to the remainder. This is a
 stability study, not ground truth or precision.
 
+## Owner adjudication worksheet
+
+The following is a compact decision view of the full-fleet, full-maturity,
+canonical-order audit rows. It does not approve any row. Strict is the grid
+maximum unusualness plus strict support; midpoint is the current-default cell;
+broad is the grid minimum unusualness plus broad support. Counts are
+corpus-level p50/p90/p99 findings, followed by opportunity p50/p90.
+
+| Rule | Candidate | Parameters | Findings p50/p90/p99 | Opportunities p50/p90 | Correlation |
+| --- | --- | --- | ---: | ---: | ---: |
+| spacing anomaly | strict | floor .80; strict support | 2 / 7 / 26 | 31,560 / 106,484 | .640420 |
+| spacing anomaly | midpoint | floor .50; middle support | 12 / 37 / 132 | 31,560 / 106,484 | .387248 |
+| spacing anomaly | broad | floor .30; broad support | 37 / 95 / 280 | 31,560 / 106,484 | .287250 |
+| sentence-initial lowercase | strict | floor .99; strict support | 0 / 1 / 5 | 5 / 174 | -.013087 |
+| sentence-initial lowercase | midpoint | floor .95; middle support | 0 / 5 / 18 | 15 / 244 | .041026 |
+| sentence-initial lowercase | broad | floor .80; broad support | 4 / 65 / 188 | 37 / 546 | .127705 |
+| inconsistent word casing | strict | floor .99; strict support | 0 / 0 / 1 | 386 / 1,876 | .035602 |
+| inconsistent word casing | midpoint | floor .95; middle support | 0 / 3 / 6 | 447 / 2,098 | .203092 |
+| inconsistent word casing | broad | floor .80; broad support | 13 / 35 / 75 | 535 / 2,341 | .247515 |
+
+Owner decision required:
+
+1. Approve or revise the strict, midpoint, and broad cells for each mapped rule.
+2. Confirm whether the strict/midpoint/broad cells define depths `0/50/100`.
+3. Approve the `25/75` interior path (interpolation between those selections,
+   or a denser candidate sweep before selection).
+4. Record owner, date, and rationale in this packet before moving the plan to
+   `documentation/plans/completed/`.
+
 Production profiles remain provisional until the owner selects endpoints from
 this evidence. Once selected, continuous fields use piecewise-linear
 interpolation between five rows and integer fields use half-up rounding:
