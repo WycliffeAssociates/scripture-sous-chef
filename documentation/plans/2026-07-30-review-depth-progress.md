@@ -346,6 +346,23 @@ Rust profiles.
   representative findings, and correlation audit. They do not select or
   approve production anchors; that explicit owner gate is still blocking.
 
+## Entry 8 — candidate packet v3: endpoint and marginal evidence
+
+- **Date:** 2026-07-30
+- **Status:** stronger candidate measurement complete; owner adjudication still
+  remains the only unresolved plan gate.
+- **Small:** 15 corpora, 4,050 data rows, SHA-256
+  `d2d058ec0d1c2d1b487b15ff867beb452a7e1e4899318f5a855ae86e20e44256`.
+- **WA:** 251 corpora, 19,602 data rows, runtime 230,998 ms, SHA-256
+  `e4ee0a794385925a6ac245d443c540af31e46bb01845fa15f02c38e2d78f96f5`.
+- **Full:** 1,504 corpora, 87,264 data rows, runtime 1,585,499 ms, SHA-256
+  `8d68f8b8cbdf84fd4a98497c0eab200655c308c1cb154811dd1270f0d7c37213`.
+- **Added evidence:** each data row now carries score-nearest marginal
+  finding representatives, and each packet begins with deterministic strict,
+  current-default midpoint, and broad endpoint candidates. The packet labels
+  those cells as owner-selection recommendations; it does not convert them
+  into production anchors.
+
 ## Entry 7 — remediation verification and remaining gate
 
 - **Date:** 2026-07-30

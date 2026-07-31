@@ -18,7 +18,7 @@ call the committed production profile functions. The output columns are:
 ```text
 rule corpus maturity order unusualness support opportunities findings
 median_score p75_score p90_score p99_score adj_additions adj_removals
-adj_flips examples
+adj_flips examples marginal_examples
 ```
 
 The compact small and WA runs were:
@@ -31,8 +31,8 @@ cargo run --release -p ssc-core --example calibrate -- --build-blob corpora/vref
 
 | TSV | Corpora | Data rows | SHA-256 |
 | --- | ---: | ---: | --- |
-| small candidate sweep | 15 | 4,050 data rows plus audit/runtime rows | `e5922efeeebc71b56427f83e9daec2c2b00516d250fdc76649409acea876db15` |
-| WA candidate sweep | 251 | 19,602 data rows plus audit/runtime rows | `d2bfcd0cd53c4c3307102619a04e762f6d2673b42f72bb0be37ecaad064eb3c1` |
+| small candidate sweep | 15 | 4,050 data rows plus audit/runtime rows | `d2d058ec0d1c2d1b487b15ff867beb452a7e1e4899318f5a855ae86e20e44256` |
+| WA candidate sweep | 251 | 19,602 data rows plus audit/runtime rows | `e4ee0a794385925a6ac245d443c540af31e46bb01845fa15f02c38e2d78f96f5` |
 
 The full-fleet command is the same candidate survey command with `corpora/vref`
 and the `full` tier:
@@ -42,11 +42,11 @@ and the `full` tier:
 ```
 
 It covers 1,504 corpora and 87,264 data rows plus audit/runtime rows; its
-SHA-256 is `8907f5d605660042dfbf0ad1bd6a487fe1d790a98a0c46a75c6cc3f6b0ecde20`.
+SHA-256 is `8d68f8b8cbdf84fd4a98497c0eab200655c308c1cb154811dd1270f0d7c37213`.
 The WA packet remains useful as the faster review fixture; both packets are
 evidence for owner endpoint selection, not approval of the current tables.
 
-The survey runtimes were 228,578 ms for WA and 1,597,815 ms for the full
+The v3 survey runtimes were 230,998 ms for WA and 1,585,499 ms for the full
 fleet. The full output contains 270 corpus-audit rows and one runtime row; the
 data-row count is `1504 × 2 × 3 × 3 × 3 + 28 × 8 × 3 × 3 = 87,264` because the
 first 28 corpora receive eight ladder/order views and the remaining corpora
@@ -63,7 +63,8 @@ awk -F '\t' '$1 !~ /^#/ && NR>2 {k=$1 FS $3 FS $4 FS $5 FS $6; o[k]+=$7; f[k]+=$
 
 The data columns are 1-based: `rule`, `corpus`, `maturity`, `order`,
 `unusualness`, `support`, `opportunities`, `findings`, four score quantiles,
-three adjacent-cell deltas, and three representative examples. `opportunities`
+three adjacent-cell deltas, three stable examples, and three score-nearest
+marginal examples. `opportunities`
 is the candidate population before the emission floor: spacing uses the same
 candidate config with `emit_score_min=0`, while casing counts sites where the
 relevant positional or intrinsic channel exists. `findings` is the emitted
@@ -77,8 +78,12 @@ strict support `(z=2.58, k=16, rate=20, trust=0.95)`, middle support
 `(1.96, 32, 40, 0.90)`, and broad support `(1.28, 64, 65, 0.75)`. The rate
 and trust values are not applicable to the rule that does not own them.
 Adjacent additions/removals/flips compare each cell with its right and lower
-neighbor in that 3×3 grid. Examples are the first three finding records in
-stable key order, so any selected endpoint can be reconstructed from the TSV.
+neighbor in that 3×3 grid. Stable examples are the first three finding records
+in key order; marginal examples minimize `abs(score - candidate_floor)` with
+finding-id tie-breaking. Each packet also emits deterministic strict, midpoint,
+and broad endpoint candidates; midpoint is the current-default cell, while
+strict/broad are grid extremes. These are owner-selection recommendations, not
+approval.
 
 Maturity `1/5/28/120/full` takes the first N chapter blocks in canonical order
 and, for the alternate order, reverses chapter order within each book while
