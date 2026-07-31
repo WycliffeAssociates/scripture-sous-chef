@@ -87,6 +87,7 @@ struct Snapshot {
     ids: BTreeSet<String>,
     values: BTreeMap<String, String>,
     examples: Vec<String>,
+    marginal_examples: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -121,6 +122,24 @@ fn candidates(rule: RuleId) -> Vec<Candidate> {
             })
         })
         .collect()
+}
+
+fn candidate_label(candidate: Candidate) -> String {
+    format!(
+        "unusualness={:.2},support={},z={:.2},k={:.0},rate={},trust={}",
+        candidate.unusualness,
+        candidate.support.label,
+        candidate.support.confidence_z,
+        candidate.support.recurrence_k,
+        candidate
+            .support
+            .rate_per_10k
+            .map_or_else(|| "-".into(), |value| format!("{value:.0}")),
+        candidate
+            .support
+            .trust_gate
+            .map_or_else(|| "-".into(), |value| format!("{value:.2}")),
+    )
 }
 
 fn config_for(rule: RuleId, candidate: Candidate) -> Config {
@@ -164,6 +183,15 @@ fn finding_value(f: &Finding) -> String {
     format!("{}|{:?}|{:?}", finding_id(f), f.score, f.args)
 }
 
+fn candidate_floor(rule: RuleId, config: &Config) -> f32 {
+    match rule {
+        RuleId::PunctuationSpacingAnomaly => config.punctuation_spacing.emit_score_min,
+        RuleId::SentenceInitialLowercase => config.casing.sentence_initial.evidence.emit_score_min,
+        RuleId::InconsistentWordCasing => config.casing.inconsistent_word.evidence.emit_score_min,
+        _ => unreachable!(),
+    }
+}
+
 fn quantile(scores: &mut [f32], p: f32) -> Option<f32> {
     if scores.is_empty() {
         return None;
@@ -174,6 +202,7 @@ fn quantile(scores: &mut [f32], p: f32) -> Option<f32> {
 }
 
 fn snapshot(corpus: &Corpus, rule: RuleId, config: Config) -> Snapshot {
+    let floor = candidate_floor(rule, &config);
     let mut opportunity_config = config.clone();
     match rule {
         RuleId::PunctuationSpacingAnomaly => {
@@ -226,6 +255,25 @@ fn snapshot(corpus: &Corpus, rule: RuleId, config: Config) -> Snapshot {
         values.insert(id, finding_value(finding));
     }
     let examples = values.values().take(3).cloned().collect();
+    let mut marginal: Vec<(&Finding, f32)> = findings
+        .iter()
+        .filter_map(|finding| {
+            finding
+                .score
+                .filter(|score| score.is_finite())
+                .map(|score| (finding, (score - floor).abs()))
+        })
+        .collect();
+    marginal.sort_by(|(left, left_distance), (right, right_distance)| {
+        left_distance
+            .total_cmp(right_distance)
+            .then_with(|| finding_id(left).cmp(&finding_id(right)))
+    });
+    let marginal_examples = marginal
+        .into_iter()
+        .take(3)
+        .map(|(finding, _)| finding_value(finding))
+        .collect();
     let mut median_scores = scores.clone();
     let mut p75_scores = scores.clone();
     let mut p90_scores = scores.clone();
@@ -240,6 +288,7 @@ fn snapshot(corpus: &Corpus, rule: RuleId, config: Config) -> Snapshot {
         ids,
         values,
         examples,
+        marginal_examples,
     }
 }
 
@@ -367,9 +416,10 @@ fn corpus_report(corpus_id: &str, corpus: &Corpus, include_maturity: bool) -> Co
                 let down = (index / 3 != 2).then(|| &snapshots[index + 3]);
                 let (additions, removals, flips) = adjacent_counts(&snapshots[index], right, down);
                 let example = snapshots[index].examples.join(" || ");
+                let marginal_example = snapshots[index].marginal_examples.join(" || ");
                 writeln!(
                     rows,
-                    "{}\t{corpus_id}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                    "{}\t{corpus_id}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
                     rule.code(),
                     view.maturity,
                     view.order,
@@ -393,6 +443,7 @@ fn corpus_report(corpus_id: &str, corpus: &Corpus, include_maturity: bool) -> Co
                     removals,
                     flips,
                     example,
+                    marginal_example,
                 )
                 .unwrap();
                 cells.push(CellSummary {
@@ -481,9 +532,25 @@ pub(crate) fn review_depth_survey(path: &Path, out_path: &Path, tier: &str) {
     .unwrap();
     writeln!(
         out,
-        "rule\tcorpus\tmaturity\torder\tunusualness\tsupport\topportunities\tfindings\tmedian_score\tp75_score\tp90_score\tp99_score\tadj_additions\tadj_removals\tadj_flips\texamples"
+        "rule\tcorpus\tmaturity\torder\tunusualness\tsupport\topportunities\tfindings\tmedian_score\tp75_score\tp90_score\tp99_score\tadj_additions\tadj_removals\tadj_flips\texamples\tmarginal_examples"
     )
     .unwrap();
+    for rule in [
+        RuleId::PunctuationSpacingAnomaly,
+        RuleId::SentenceInitialLowercase,
+        RuleId::InconsistentWordCasing,
+    ] {
+        let grid = candidates(rule);
+        writeln!(
+            out,
+            "# endpoint-candidate\t{}\tstrict={}\tmidpoint={}\tbroad={}\tbasis=grid-extremes-and-default-midpoint-owner-selection-required",
+            rule.code(),
+            candidate_label(grid[6]),
+            candidate_label(grid[4]),
+            candidate_label(grid[2]),
+        )
+        .unwrap();
+    }
     for report in &reports {
         out.write_all(report.text.as_bytes()).unwrap();
     }
