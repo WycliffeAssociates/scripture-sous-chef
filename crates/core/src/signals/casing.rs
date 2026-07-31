@@ -1019,14 +1019,75 @@ pub(crate) struct Model {
     /// table to the next model after patching it in place: the judge's view is
     /// released first, which is what makes the handle unique.
     words: Arc<CorpusWords>,
+    /// Positional trust/habit evidence. This is the only state that responds to
+    /// the positional consumer's confidence profile.
+    positional: EvidenceModel,
+    /// Intrinsic soft-censoring evidence. It is deliberately built at the
+    /// shipped model-confidence anchor, not from the positional consumer's
+    /// config: the two consumers share observations, never judging policy.
+    intrinsic: EvidenceModel,
+    intrinsic_z: f64,
+    gate: f64,
+}
+
+struct EvidenceModel {
     /// Per class trust; `None`-keyed book-initial is always fully trusted.
     trust: FxHashMap<ClassKey, f64>,
     /// Lexicon-restricted capitalize-after-class counts (up, total). `None` =
     /// book-initial. A quote class is present only when promoted.
     habit: FxHashMap<Option<ClassKey>, (u64, u64)>,
-    positional_z: f64,
-    intrinsic_z: f64,
-    gate: f64,
+    confidence_z: f64,
+}
+
+/// This is the stable evidence-classification anchor used by intrinsic
+/// soft-censoring. The intrinsic consumer's own `confidence_z` still controls
+/// its final Wilson judgments; this anchor prevents either consumer's profile
+/// from changing the sibling's model state.
+const MODEL_CONFIDENCE_Z: f64 = 1.96;
+
+fn build_evidence(
+    words: &FxHashMap<Arc<str>, WordStats>,
+    panel: &Panel,
+    confidence_z: f64,
+) -> EvidenceModel {
+    let trust = build_trust(words, panel, confidence_z);
+    // Lexicon-restricted per-class habit over the words the baseline lexicon
+    // calls intrinsically lowercase. Bare glyphs and book-initial always
+    // contribute; a quote class contributes only when promoted.
+    let mut habit: FxHashMap<Option<ClassKey>, (u64, u64)> = FxHashMap::default();
+    for w in words.values() {
+        if !w.is_lexicon_lower(confidence_z) {
+            continue;
+        }
+        if w.book_initial.total() > 0 {
+            let e = habit.entry(None).or_default();
+            e.0 += w.book_initial.upper();
+            e.1 += w.book_initial.total();
+        }
+        for (m, t) in w.bare() {
+            let e = habit
+                .entry(Some(ClassKey {
+                    mark: m,
+                    quoted: false,
+                }))
+                .or_default();
+            e.0 += t.upper();
+            e.1 += t.total();
+        }
+        for (m, t) in w.quoted() {
+            let ck = ClassKey { mark: m, quoted: true };
+            if trust.get(&ck).copied().unwrap_or(0.0) > PROMOTE_BAR {
+                let e = habit.entry(Some(ck)).or_default();
+                e.0 += t.upper();
+                e.1 += t.total();
+            }
+        }
+    }
+    EvidenceModel {
+        trust,
+        habit,
+        confidence_z,
+    }
 }
 
 /// A convention factor pair: the dominance the site breaks and its rarity
@@ -1051,78 +1112,61 @@ impl Model {
         let positional_z = clamp_z(cfg.sentence_initial.evidence.confidence_z);
         let intrinsic_z = clamp_z(cfg.inconsistent_word.evidence.confidence_z);
         let gate = f64::from(clamp_unit(cfg.sentence_initial.trust_gate));
-        let trust = build_trust(&words, panel, positional_z);
-
-        // Lexicon-restricted per-class habit over the words the (baseline)
-        // lexicon calls intrinsically lowercase. Bare glyphs and book-initial
-        // always contribute (structurally forced); a quote class contributes
-        // only when promoted, so trust adds the quote channel without moving the
-        // bare-terminal convention.
-        let mut habit: FxHashMap<Option<ClassKey>, (u64, u64)> = FxHashMap::default();
-        for w in words.values() {
-            if !w.is_lexicon_lower(positional_z) {
-                continue;
-            }
-            if w.book_initial.total() > 0 {
-                let e = habit.entry(None).or_default();
-                e.0 += w.book_initial.upper();
-                e.1 += w.book_initial.total();
-            }
-            for (m, t) in w.bare() {
-                let e = habit
-                    .entry(Some(ClassKey {
-                        mark: m,
-                        quoted: false,
-                    }))
-                    .or_default();
-                e.0 += t.upper();
-                e.1 += t.total();
-            }
-            for (m, t) in w.quoted() {
-                let ck = ClassKey { mark: m, quoted: true };
-                if trust.get(&ck).copied().unwrap_or(0.0) > PROMOTE_BAR {
-                    let e = habit.entry(Some(ck)).or_default();
-                    e.0 += t.upper();
-                    e.1 += t.total();
-                }
-            }
-        }
+        let positional = build_evidence(&words, panel, positional_z);
+        let intrinsic = build_evidence(&words, panel, MODEL_CONFIDENCE_Z);
 
         Model {
             words,
-            trust,
-            habit,
-            positional_z,
+            positional,
+            intrinsic,
             intrinsic_z,
             gate,
         }
     }
 
+    fn positional_trust(&self, ck: ClassKey) -> f64 {
+        self.positional.trust.get(&ck).copied().unwrap_or(0.0)
+    }
+
+    fn intrinsic_trust(&self, ck: ClassKey) -> f64 {
+        self.intrinsic.trust.get(&ck).copied().unwrap_or(0.0)
+    }
+
+    #[cfg(test)]
     fn trust_class(&self, ck: ClassKey) -> f64 {
-        self.trust.get(&ck).copied().unwrap_or(0.0)
+        self.positional_trust(ck)
     }
 
-    /// Is a quote-context class promoted to a forced class? (Bare classes are
-    /// always forced; this only decides the quote fold.)
-    fn quote_promoted(&self, mark: char) -> bool {
-        self.trust_class(ClassKey { mark, quoted: true }) > PROMOTE_BAR
+    /// Is a quote-context class promoted for the positional consumer? (Bare
+    /// classes are always forced; this only decides the quote fold.)
+    fn positional_quote_promoted(&self, mark: char) -> bool {
+        self.positional_trust(ClassKey { mark, quoted: true }) > PROMOTE_BAR
     }
 
-    fn habit_dominance(&self, key: Option<ClassKey>) -> f64 {
-        match self.habit.get(&key) {
-            Some(&(up, total)) => wilson_lower_bound(up, total, self.positional_z),
+    /// Is a quote-context class promoted for intrinsic soft-censoring?
+    fn intrinsic_quote_promoted(&self, mark: char) -> bool {
+        self.intrinsic_trust(ClassKey { mark, quoted: true }) > PROMOTE_BAR
+    }
+
+    fn positional_habit_dominance(&self, key: Option<ClassKey>) -> f64 {
+        match self.positional.habit.get(&key) {
+            Some(&(up, total)) => wilson_lower_bound(up, total, self.positional.confidence_z),
             None => 0.0,
         }
     }
 
-    /// Effective mid-flow pool (upper, lower): mid-flow plus quote-context
-    /// classes that did **not** clear the promotion bar (they fall back to
-    /// mid-flow, exactly ADR 0051 — no loss).
-    fn eff_mid(&self, w: &WordStats) -> (u64, u64) {
+    /// Effective mid-flow pool for one consumer (upper, lower): mid-flow plus
+    /// quote-context classes that did not clear that consumer's promotion bar.
+    fn eff_mid(&self, w: &WordStats, intrinsic: bool) -> (u64, u64) {
         let mut up = u64::from(w.mid_upper);
         let mut lo = u64::from(w.mid_lower);
         for (m, t) in w.quoted() {
-            if !self.quote_promoted(m) {
+            let promoted = if intrinsic {
+                self.intrinsic_quote_promoted(m)
+            } else {
+                self.positional_quote_promoted(m)
+            };
+            if !promoted {
                 up += t.upper();
                 lo += t.lower();
             }
@@ -1134,11 +1178,23 @@ impl Model {
     /// plus each *forced* uppercase re-entering at `1 − trust(class)·habit(class)`
     /// (ADR 0052 — the discount is weighted by trust). Book-initial is fully
     /// trusted.
-    fn effective_upper(&self, w: &WordStats) -> f64 {
-        let (mid_up, _) = self.eff_mid(w);
+    fn effective_upper(&self, w: &WordStats, intrinsic: bool) -> f64 {
+        let (mid_up, _) = self.eff_mid(w, intrinsic);
+        let (trust, habit, z) = if intrinsic {
+            (&self.intrinsic.trust, &self.intrinsic.habit, self.intrinsic.confidence_z)
+        } else {
+            (&self.positional.trust, &self.positional.habit, self.positional.confidence_z)
+        };
+        let habit_dominance = |key: Option<ClassKey>| {
+            habit
+                .get(&key)
+                .map(|&(up, total)| wilson_lower_bound(up, total, z))
+                .unwrap_or(0.0)
+        };
+        let trust_class = |ck: ClassKey| trust.get(&ck).copied().unwrap_or(0.0);
         let mut up = mid_up as f64;
         if w.book_initial.upper > 0 {
-            up += (1.0 - self.habit_dominance(None)) * f64::from(w.book_initial.upper);
+            up += (1.0 - habit_dominance(None)) * f64::from(w.book_initial.upper);
         }
         // Bare classes in mark order, then promoted quote classes in mark order.
         // This `f64` accumulation order is the load-bearing one (see
@@ -1150,14 +1206,19 @@ impl Model {
                     mark: m,
                     quoted: false,
                 };
-                let discount = 1.0 - self.trust_class(ck) * self.habit_dominance(Some(ck));
+                let discount = 1.0 - trust_class(ck) * habit_dominance(Some(ck));
                 up += discount * f64::from(t.upper);
             }
         }
         for (m, t) in w.quoted() {
-            if t.upper > 0 && self.quote_promoted(m) {
+            let promoted = if intrinsic {
+                self.intrinsic_quote_promoted(m)
+            } else {
+                self.positional_quote_promoted(m)
+            };
+            if t.upper > 0 && promoted {
                 let ck = ClassKey { mark: m, quoted: true };
-                let discount = 1.0 - self.trust_class(ck) * self.habit_dominance(Some(ck));
+                let discount = 1.0 - trust_class(ck) * habit_dominance(Some(ck));
                 up += discount * f64::from(t.upper);
             }
         }
@@ -1171,7 +1232,7 @@ impl Model {
         let mut lo = w.book_initial.lower();
         lo += self.bare_sum(w, ForcedTally::lower);
         for (m, t) in w.quoted() {
-            if self.quote_promoted(m) {
+            if self.positional_quote_promoted(m) {
                 lo += t.lower();
             }
         }
@@ -1182,7 +1243,7 @@ impl Model {
         let mut n = w.book_initial.total();
         n += self.bare_sum(w, ForcedTally::total);
         for (m, t) in w.quoted() {
-            if self.quote_promoted(m) {
+            if self.positional_quote_promoted(m) {
                 n += t.total();
             }
         }
@@ -1193,29 +1254,39 @@ impl Model {
         w.bare().map(|(_, t)| f(t)).sum()
     }
 
-    fn is_cap_soft(&self, w: &WordStats) -> bool {
-        let up = self.effective_upper(w);
-        let (_, lo) = self.eff_mid(w);
+    fn is_cap_soft(&self, w: &WordStats, intrinsic: bool) -> bool {
+        let z = if intrinsic {
+            self.intrinsic_z
+        } else {
+            self.positional.confidence_z
+        };
+        let up = self.effective_upper(w, intrinsic);
+        let (_, lo) = self.eff_mid(w, intrinsic);
         let n = up + lo as f64;
-        n > 0.0 && wilson_lower_bound_f(up, n, self.intrinsic_z) > 0.5
+        n > 0.0 && wilson_lower_bound_f(up, n, z) > 0.5
     }
 
-    fn is_lower_soft(&self, w: &WordStats) -> bool {
-        let up = self.effective_upper(w);
-        let (_, lo) = self.eff_mid(w);
+    fn is_lower_soft(&self, w: &WordStats, intrinsic: bool) -> bool {
+        let z = if intrinsic {
+            self.intrinsic_z
+        } else {
+            self.positional.confidence_z
+        };
+        let up = self.effective_upper(w, intrinsic);
+        let (_, lo) = self.eff_mid(w, intrinsic);
         let n = up + lo as f64;
-        n > 0.0 && wilson_lower_bound_f(lo as f64, n, self.intrinsic_z) > 0.5
+        n > 0.0 && wilson_lower_bound_f(lo as f64, n, z) > 0.5
     }
 
     /// The intrinsic-channel factors for a lowercase site of word `key`, if the
     /// word is intrinsically capitalized (soft-censored). The censoring discount
     /// is trust-weighted; the channel is never gated.
     fn intrinsic(&self, w: &WordStats) -> Option<Factors> {
-        if !self.is_cap_soft(w) {
+        if !self.is_cap_soft(w, true) {
             return None;
         }
-        let up = self.effective_upper(w);
-        let (_, lo) = self.eff_mid(w);
+        let up = self.effective_upper(w, true);
+        let (_, lo) = self.eff_mid(w, true);
         Some(Factors {
             dominance: wilson_lower_bound_f(up, up + lo as f64, self.intrinsic_z),
             minority: w.all_lower(),
@@ -1236,10 +1307,10 @@ impl Model {
         let (habit_key, trust) = match pos.kind() {
             PosKind::BookInitial => (None, 1.0),
             PosKind::ForcedAfterTerminal(ck) => {
-                if ck.quoted && !self.quote_promoted(ck.mark) {
+                if ck.quoted && !self.positional_quote_promoted(ck.mark) {
                     return None; // folded back to mid-flow — not a forced site
                 }
-                (Some(ck), self.trust_class(ck))
+                (Some(ck), self.positional_trust(ck))
             }
             PosKind::Midflow => return None,
         };
@@ -1250,12 +1321,17 @@ impl Model {
         }
         // A forced-lowercase site of a word the lexicon cannot classify is
         // genuine ambiguity, not an anomaly.
-        if !self.is_cap_soft(w) && !self.is_lower_soft(w) {
+        if !self.is_cap_soft(w, false) && !self.is_lower_soft(w, false) {
             return None;
         }
-        let (raw_major, raw_total) = self.habit.get(&habit_key).copied().unwrap_or((0, 0));
+        let (raw_major, raw_total) = self
+            .positional
+            .habit
+            .get(&habit_key)
+            .copied()
+            .unwrap_or((0, 0));
         Some(Factors {
-            dominance: self.habit_dominance(habit_key),
+            dominance: self.positional_habit_dominance(habit_key),
             minority: self.forced_lower(w),
             opportunities: self.forced_total(w),
             raw_major,
@@ -4403,6 +4479,76 @@ mod tests {
         );
     }
 
+    /// Every mapped casing field belongs to one consumer. In particular,
+    /// confidence and trust are model-building inputs, not merely emission
+    /// knobs, so this exercises the coupling that a floor-only test misses.
+    #[test]
+    fn every_casing_profile_field_is_sibling_isolated() {
+        let vm = cycle("GEN", &["The men praise God near the gate."], 80);
+        let vm = push_verse(vm, "GEN", 100, "He wept. god is near.");
+        let base = cfg(0.5, 32.0, 1.96);
+        let base_findings = run_both(&vm, &base);
+        let for_rule = |findings: &[Finding], rule: RuleId| {
+            findings
+                .iter()
+                .filter(|f| f.code == rule)
+                .map(|f| render(&vm, std::slice::from_ref(f)))
+                .collect::<Vec<_>>()
+        };
+
+        let mut positional_variants = Vec::new();
+        for mut variant in [base; 4] {
+            positional_variants.push({
+                variant.sentence_initial.evidence.emit_score_min = 0.0;
+                variant
+            });
+            positional_variants.push({
+                variant.sentence_initial.evidence.recurrence_k = 4.0;
+                variant
+            });
+            positional_variants.push({
+                variant.sentence_initial.evidence.confidence_z = 2.58;
+                variant
+            });
+            positional_variants.push({
+                variant.sentence_initial.trust_gate = 0.99;
+                variant
+            });
+        }
+        for variant in positional_variants {
+            let findings = run_both(&vm, &variant);
+            assert_eq!(
+                for_rule(&base_findings, INCONSISTENT_WORD_CASING),
+                for_rule(&findings, INCONSISTENT_WORD_CASING),
+                "positional field leaked into intrinsic judging"
+            );
+        }
+
+        let mut intrinsic_variants = Vec::new();
+        for mut variant in [base; 3] {
+            intrinsic_variants.push({
+                variant.inconsistent_word.evidence.emit_score_min = 0.0;
+                variant
+            });
+            intrinsic_variants.push({
+                variant.inconsistent_word.evidence.recurrence_k = 4.0;
+                variant
+            });
+            intrinsic_variants.push({
+                variant.inconsistent_word.evidence.confidence_z = 2.58;
+                variant
+            });
+        }
+        for variant in intrinsic_variants {
+            let findings = run_both(&vm, &variant);
+            assert_eq!(
+                for_rule(&base_findings, SENTENCE_INITIAL_LOWERCASE),
+                for_rule(&findings, SENTENCE_INITIAL_LOWERCASE),
+                "intrinsic field leaked into positional judging"
+            );
+        }
+    }
+
     /// Disabling one consumer leaves the shared substrate — and the other
     /// consumer — untouched (plan §12.4).
     #[test]
@@ -4857,9 +5003,14 @@ mod tests {
             v
         };
         assert_eq!(
-            trust(&patched.model.trust),
-            trust(&rebuilt.model.trust),
-            "{what}: per-class trust, bit for bit"
+            trust(&patched.model.positional.trust),
+            trust(&rebuilt.model.positional.trust),
+            "{what}: positional per-class trust, bit for bit"
+        );
+        assert_eq!(
+            trust(&patched.model.intrinsic.trust),
+            trust(&rebuilt.model.intrinsic.trust),
+            "{what}: intrinsic per-class trust, bit for bit"
         );
         let habit = |m: &FxHashMap<Option<ClassKey>, (u64, u64)>| {
             let mut v: Vec<(Option<ClassKey>, (u64, u64))> =
@@ -4868,18 +5019,23 @@ mod tests {
             v
         };
         assert_eq!(
-            habit(&patched.model.habit),
-            habit(&rebuilt.model.habit),
-            "{what}: lexicon habit"
+            habit(&patched.model.positional.habit),
+            habit(&rebuilt.model.positional.habit),
+            "{what}: positional lexicon habit"
+        );
+        assert_eq!(
+            habit(&patched.model.intrinsic.habit),
+            habit(&rebuilt.model.intrinsic.habit),
+            "{what}: intrinsic lexicon habit"
         );
         assert_eq!(
             (
-                patched.model.positional_z.to_bits(),
+                patched.model.positional.confidence_z.to_bits(),
                 patched.model.intrinsic_z.to_bits(),
                 patched.model.gate.to_bits(),
             ),
             (
-                rebuilt.model.positional_z.to_bits(),
+                rebuilt.model.positional.confidence_z.to_bits(),
                 rebuilt.model.intrinsic_z.to_bits(),
                 rebuilt.model.gate.to_bits(),
             ),

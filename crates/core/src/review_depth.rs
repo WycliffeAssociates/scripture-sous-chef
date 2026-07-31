@@ -134,7 +134,29 @@ pub const fn review_control(rule: RuleId) -> ReviewControl {
         RuleId::PunctuationSpacingAnomaly
         | RuleId::SentenceInitialLowercase
         | RuleId::InconsistentWordCasing => ReviewControl::Mapped,
-        _ => ReviewControl::Fixed,
+        RuleId::ExcessHWhitespace
+        | RuleId::TabInBody
+        | RuleId::ControlChars
+        | RuleId::ZeroWidthMisuse
+        | RuleId::EmptyVerse
+        | RuleId::InvalidCodepoint
+        | RuleId::ReplacementRun
+        | RuleId::ProjectLengthRatio
+        | RuleId::SourceMarkerLeftover
+        | RuleId::MergeConflictMarker
+        | RuleId::PunctuationAdjacencyAnomaly
+        | RuleId::DuplicateWord
+        | RuleId::PunctOnlyToken
+        | RuleId::CombiningMarkWithoutBase
+        | RuleId::RedundantZeroWidthSpace
+        | RuleId::MixedScriptInToken
+        | RuleId::RepeatedCharacterRun
+        | RuleId::MixedNumeralSystems
+        | RuleId::BracketBalance
+        | RuleId::RareGlyph
+        | RuleId::MixedCaseWord
+        | RuleId::MixedNormalization
+        | RuleId::UntranslatedWord => ReviewControl::Fixed,
     }
 }
 
@@ -143,22 +165,46 @@ pub fn apply_review_policy(
     config: &mut Config,
     policy: &ReviewPolicy,
 ) -> Result<(), ReviewPolicyError> {
-    for &rule in policy.adjustments.keys() {
-        if review_control(rule) == ReviewControl::Fixed {
-            return Err(ReviewPolicyError::FixedRuleAdjustment(rule));
+    for &rule in RuleId::ALL {
+        let depth = policy.effective_depth(rule)?;
+        match rule {
+            RuleId::PunctuationSpacingAnomaly => {
+                config.punctuation_spacing =
+                    crate::signals::punctuation::config_at_review_depth(depth);
+            }
+            RuleId::SentenceInitialLowercase => {
+                config.casing.sentence_initial =
+                    crate::signals::casing::sentence_initial_config_at_review_depth(depth);
+            }
+            RuleId::InconsistentWordCasing => {
+                config.casing.inconsistent_word =
+                    crate::signals::casing::inconsistent_word_config_at_review_depth(depth);
+            }
+            RuleId::ExcessHWhitespace
+            | RuleId::TabInBody
+            | RuleId::ControlChars
+            | RuleId::ZeroWidthMisuse
+            | RuleId::EmptyVerse
+            | RuleId::InvalidCodepoint
+            | RuleId::ReplacementRun
+            | RuleId::ProjectLengthRatio
+            | RuleId::SourceMarkerLeftover
+            | RuleId::MergeConflictMarker
+            | RuleId::PunctuationAdjacencyAnomaly
+            | RuleId::DuplicateWord
+            | RuleId::PunctOnlyToken
+            | RuleId::CombiningMarkWithoutBase
+            | RuleId::RedundantZeroWidthSpace
+            | RuleId::MixedScriptInToken
+            | RuleId::RepeatedCharacterRun
+            | RuleId::MixedNumeralSystems
+            | RuleId::BracketBalance
+            | RuleId::RareGlyph
+            | RuleId::MixedCaseWord
+            | RuleId::MixedNormalization
+            | RuleId::UntranslatedWord => {}
         }
     }
-
-    let spacing_depth = policy.effective_depth(RuleId::PunctuationSpacingAnomaly)?;
-    config.punctuation_spacing = crate::signals::punctuation::config_at_review_depth(spacing_depth);
-
-    let positional_depth = policy.effective_depth(RuleId::SentenceInitialLowercase)?;
-    config.casing.sentence_initial =
-        crate::signals::casing::sentence_initial_config_at_review_depth(positional_depth);
-
-    let intrinsic_depth = policy.effective_depth(RuleId::InconsistentWordCasing)?;
-    config.casing.inconsistent_word =
-        crate::signals::casing::inconsistent_word_config_at_review_depth(intrinsic_depth);
 
     Ok(())
 }
@@ -292,6 +338,54 @@ mod tests {
     fn mapped_registry_matches_catalog_control() {
         for &rule in RuleId::ALL {
             assert_eq!(review_control(rule), crate::catalog::review_control(rule));
+        }
+    }
+
+    #[test]
+    fn production_profiles_have_ordered_safe_endpoints_and_default_midpoints() {
+        let depths = [0, 25, 50, 75, 100].map(|value| ReviewDepth::new(value).unwrap());
+        let spacing: Vec<_> = depths
+            .iter()
+            .map(|&depth| crate::signals::punctuation::config_at_review_depth(depth))
+            .collect();
+        let positional: Vec<_> = depths
+            .iter()
+            .map(|&depth| crate::signals::casing::sentence_initial_config_at_review_depth(depth))
+            .collect();
+        let intrinsic: Vec<_> = depths
+            .iter()
+            .map(|&depth| crate::signals::casing::inconsistent_word_config_at_review_depth(depth))
+            .collect();
+
+        assert_eq!(spacing[2], Config::v1_defaults().punctuation_spacing);
+        assert_eq!(positional[2], Config::v1_defaults().casing.sentence_initial);
+        assert_eq!(intrinsic[2], Config::v1_defaults().casing.inconsistent_word);
+
+        for pair in spacing.windows(2) {
+            assert!(pair[0].emit_score_min >= pair[1].emit_score_min);
+            assert!(pair[0].confidence_z >= pair[1].confidence_z);
+            assert!(pair[0].minority_recurrence_k <= pair[1].minority_recurrence_k);
+            assert!(pair[0].minority_rate_per_10k <= pair[1].minority_rate_per_10k);
+            for value in [
+                pair[0].emit_score_min,
+                pair[0].confidence_z,
+                pair[0].minority_recurrence_k,
+                pair[0].minority_rate_per_10k,
+            ] {
+                assert!(value.is_finite() && value >= 0.0);
+            }
+        }
+        for pair in positional.windows(2) {
+            assert!(pair[0].evidence.emit_score_min >= pair[1].evidence.emit_score_min);
+            assert!(pair[0].evidence.confidence_z >= pair[1].evidence.confidence_z);
+            assert!(pair[0].evidence.recurrence_k <= pair[1].evidence.recurrence_k);
+            assert!(pair[0].trust_gate >= pair[1].trust_gate);
+            assert!((0.0..=1.0).contains(&pair[0].trust_gate));
+        }
+        for pair in intrinsic.windows(2) {
+            assert!(pair[0].evidence.emit_score_min >= pair[1].evidence.emit_score_min);
+            assert!(pair[0].evidence.confidence_z >= pair[1].evidence.confidence_z);
+            assert!(pair[0].evidence.recurrence_k <= pair[1].evidence.recurrence_k);
         }
     }
 }
