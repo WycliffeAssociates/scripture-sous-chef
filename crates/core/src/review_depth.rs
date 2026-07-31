@@ -361,6 +361,31 @@ mod tests {
         assert_eq!(positional[2], Config::v1_defaults().casing.sentence_initial);
         assert_eq!(intrinsic[2], Config::v1_defaults().casing.inconsistent_word);
 
+        let close = |actual: f32, expected: f32| {
+            assert!((actual - expected).abs() < 1e-6, "{actual} != {expected}");
+        };
+        close(spacing[1].emit_score_min, 0.65);
+        close(spacing[1].confidence_z, 2.27);
+        assert_eq!(spacing[1].minority_recurrence_k, 24.0);
+        assert_eq!(spacing[1].minority_rate_per_10k, 30.0);
+        close(spacing[3].emit_score_min, 0.40);
+        close(spacing[3].confidence_z, 1.62);
+        assert_eq!(spacing[3].minority_recurrence_k, 48.0);
+        assert_eq!(spacing[3].minority_rate_per_10k, 53.0);
+
+        for profile in [&positional[1].evidence, &intrinsic[1].evidence] {
+            close(profile.emit_score_min, 0.97);
+            close(profile.confidence_z, 2.27);
+            assert_eq!(profile.recurrence_k, 24.0);
+        }
+        close(positional[1].trust_gate, 0.925);
+        for profile in [&positional[3].evidence, &intrinsic[3].evidence] {
+            close(profile.emit_score_min, 0.875);
+            close(profile.confidence_z, 1.62);
+            assert_eq!(profile.recurrence_k, 48.0);
+        }
+        close(positional[3].trust_gate, 0.825);
+
         for pair in spacing.windows(2) {
             assert!(pair[0].emit_score_min >= pair[1].emit_score_min);
             assert!(pair[0].confidence_z >= pair[1].confidence_z);

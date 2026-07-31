@@ -1918,19 +1918,19 @@ pub fn config_at_review_depth(
     PunctuationSpacingConfig {
         emit_score_min: crate::review_depth::interpolate_f32(
             depth,
-            &[(0, 0.80), (25, 0.65), (50, 0.50), (75, 0.40), (100, 0.30)],
+            &[(0, 0.80), (50, 0.50), (100, 0.30)],
         ),
         confidence_z: crate::review_depth::interpolate_f32(
             depth,
-            &[(0, 2.58), (25, 2.20), (50, 1.96), (75, 1.64), (100, 1.28)],
+            &[(0, 2.58), (50, 1.96), (100, 1.28)],
         ),
         minority_recurrence_k: crate::review_depth::interpolate_u32(
             depth,
-            &[(0, 20), (25, 26), (50, 32), (75, 42), (100, 56)],
+            &[(0, 16), (50, 32), (100, 64)],
         ) as f32,
         minority_rate_per_10k: crate::review_depth::interpolate_u32(
             depth,
-            &[(0, 20), (25, 30), (50, 40), (75, 50), (100, 65)],
+            &[(0, 20), (50, 40), (100, 65)],
         ) as f32,
     }
 }

@@ -3256,20 +3256,20 @@ pub fn sentence_initial_config_at_review_depth(
         evidence: CasingRuleConfig {
             emit_score_min: crate::review_depth::interpolate_f32(
                 depth,
-                &[(0, 0.99), (25, 0.97), (50, 0.95), (75, 0.90), (100, 0.80)],
+                &[(0, 0.99), (50, 0.95), (100, 0.80)],
             ),
             recurrence_k: crate::review_depth::interpolate_u32(
                 depth,
-                &[(0, 16), (25, 24), (50, 32), (75, 44), (100, 64)],
+                &[(0, 16), (50, 32), (100, 64)],
             ) as f32,
             confidence_z: crate::review_depth::interpolate_f32(
                 depth,
-                &[(0, 2.58), (25, 2.20), (50, 1.96), (75, 1.64), (100, 1.28)],
+                &[(0, 2.58), (50, 1.96), (100, 1.28)],
             ),
         },
         trust_gate: crate::review_depth::interpolate_f32(
             depth,
-            &[(0, 0.95), (25, 0.92), (50, 0.90), (75, 0.85), (100, 0.75)],
+            &[(0, 0.95), (50, 0.90), (100, 0.75)],
         ),
     }
 }
@@ -3284,15 +3284,15 @@ pub fn inconsistent_word_config_at_review_depth(
         evidence: CasingRuleConfig {
             emit_score_min: crate::review_depth::interpolate_f32(
                 depth,
-                &[(0, 0.99), (25, 0.97), (50, 0.95), (75, 0.90), (100, 0.80)],
+                &[(0, 0.99), (50, 0.95), (100, 0.80)],
             ),
             recurrence_k: crate::review_depth::interpolate_u32(
                 depth,
-                &[(0, 16), (25, 24), (50, 32), (75, 44), (100, 64)],
+                &[(0, 16), (50, 32), (100, 64)],
             ) as f32,
             confidence_z: crate::review_depth::interpolate_f32(
                 depth,
-                &[(0, 2.58), (25, 2.20), (50, 1.96), (75, 1.64), (100, 1.28)],
+                &[(0, 2.58), (50, 1.96), (100, 1.28)],
             ),
         },
     }

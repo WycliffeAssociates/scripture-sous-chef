@@ -1248,7 +1248,7 @@ mod tests {
         // 50 + 20 resolves to the depth-70 profile before the explicit native
         // floor wins field-by-field.
         assert_eq!(cfg.punctuation_spacing.emit_score_min, 0.77);
-        assert!((cfg.punctuation_spacing.confidence_z - 1.704).abs() < 0.00001);
+        assert!((cfg.punctuation_spacing.confidence_z - 1.688).abs() < 0.00001);
         assert_eq!(cfg.casing, Config::v1_defaults().casing);
     }
 

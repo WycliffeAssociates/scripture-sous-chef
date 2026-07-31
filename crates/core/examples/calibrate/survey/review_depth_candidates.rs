@@ -107,6 +107,15 @@ struct CorpusReport {
     max_row_bytes: usize,
 }
 
+#[derive(Clone)]
+struct PathCell {
+    corpus: String,
+    rule: RuleId,
+    depth: u8,
+    opportunities: usize,
+    findings: usize,
+}
+
 fn candidates(rule: RuleId) -> Vec<Candidate> {
     let unusualness = match rule {
         RuleId::PunctuationSpacingAnomaly => [0.30, 0.50, 0.80],
@@ -495,6 +504,122 @@ fn correlation(rows: &[CellSummary]) -> f32 {
     } else {
         xy / (xx * yy).sqrt()
     }
+}
+
+fn path_config(rule: RuleId, depth: u8) -> Config {
+    let depth = ssc_core::ReviewDepth::new(depth).unwrap();
+    let mut config = Config::v1_defaults();
+    match rule {
+        RuleId::PunctuationSpacingAnomaly => {
+            config.punctuation_spacing =
+                ssc_core::signals::punctuation::config_at_review_depth(depth);
+        }
+        RuleId::SentenceInitialLowercase => {
+            config.casing.sentence_initial =
+                ssc_core::signals::casing::sentence_initial_config_at_review_depth(depth);
+        }
+        RuleId::InconsistentWordCasing => {
+            config.casing.inconsistent_word =
+                ssc_core::signals::casing::inconsistent_word_config_at_review_depth(depth);
+        }
+        _ => unreachable!("path survey only covers mapped pilots"),
+    }
+    config
+}
+
+/// Measure the selected production path at the two derived interior checkpoints.
+/// Candidate selection remains non-circular in `review_depth_survey`; this audit
+/// deliberately tests the actual profile that consumers will receive.
+pub(crate) fn review_depth_path_survey(path: &Path, out_path: &Path, tier: &str) {
+    let scope = match tier {
+        "wa" => OracleScope::Wa,
+        "full" | "small" => OracleScope::Full,
+        other => panic!("unknown Review Depth path tier {other:?} (want small|wa|full)"),
+    };
+    let corpora = load_corpora(path, scope);
+    if tier == "small" && corpora.len() > 20 {
+        panic!(
+            "small Review Depth path input must be a small blob, got {} corpora",
+            corpora.len()
+        );
+    }
+    let started = Instant::now();
+    let cells: Vec<PathCell> = corpora
+        .par_iter()
+        .flat_map_iter(|(corpus_id, corpus)| {
+            [
+                RuleId::PunctuationSpacingAnomaly,
+                RuleId::SentenceInitialLowercase,
+                RuleId::InconsistentWordCasing,
+            ]
+            .into_iter()
+            .flat_map(move |rule| {
+                [25, 75].into_iter().map(move |depth| {
+                    let result = snapshot(corpus, rule, path_config(rule, depth));
+                    PathCell {
+                        corpus: corpus_id.clone(),
+                        rule,
+                        depth,
+                        opportunities: result.opportunities,
+                        findings: result.findings,
+                    }
+                })
+            })
+        })
+        .collect();
+
+    let mut out = std::io::BufWriter::new(
+        std::fs::File::create(out_path)
+            .unwrap_or_else(|e| panic!("create {}: {e}", out_path.display())),
+    );
+    writeln!(
+        out,
+        "# review-depth-selected-path-v1\ttier={tier}\tcorpora={}\tdepths=25,75",
+        corpora.len()
+    )
+    .unwrap();
+    writeln!(out, "rule\tcorpus\tdepth\topportunities\tfindings").unwrap();
+    for cell in &cells {
+        writeln!(
+            out,
+            "{}\t{}\t{}\t{}\t{}",
+            cell.rule.code(),
+            cell.corpus,
+            cell.depth,
+            cell.opportunities,
+            cell.findings
+        )
+        .unwrap();
+    }
+    for rule in [
+        RuleId::PunctuationSpacingAnomaly,
+        RuleId::SentenceInitialLowercase,
+        RuleId::InconsistentWordCasing,
+    ] {
+        for depth in [25, 75] {
+            let rows: Vec<&PathCell> = cells
+                .iter()
+                .filter(|cell| cell.rule == rule && cell.depth == depth)
+                .collect();
+            let mut findings: Vec<usize> = rows.iter().map(|row| row.findings).collect();
+            writeln!(
+                out,
+                "# audit\t{}\tdepth={depth}\tcorpus_n={}\tfindings_p50={}\tfindings_p90={}\tfindings_p99={}",
+                rule.code(),
+                rows.len(),
+                percentile(&mut findings.clone(), 0.50),
+                percentile(&mut findings.clone(), 0.90),
+                percentile(&mut findings, 0.99),
+            )
+            .unwrap();
+        }
+    }
+    writeln!(out, "# runtime\twall_ms={}", started.elapsed().as_millis()).unwrap();
+    eprintln!(
+        "review-depth selected path: wrote {} corpora × 3 rules × 2 depths to {}",
+        corpora.len(),
+        out_path.display()
+    );
 }
 
 /// Run the non-circular candidate sweep. Full-fleet rows use the full corpus
