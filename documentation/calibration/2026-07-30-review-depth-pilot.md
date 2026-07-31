@@ -2,12 +2,13 @@
 
 This packet records the independent candidate calibration for Review Depth. It is paired
 with [ADR 0070](../adrs/0070-review-depth-policy.md) and the execution log
-[`2026-07-30-review-depth-progress.md`](../plans/2026-07-30-review-depth-progress.md).
+[`2026-07-30-review-depth-progress.md`](../plans/completed/2026-07-30-review-depth-progress.md).
 
-**Status: provisional; not owner-adjudicated and not a production-anchor
-approval.** The earlier profile-response rows are retained below as historical
-evidence only. The active selection gate is the two-dimensional candidate TSV;
-conceptual approval of Review Depth does not approve numeric rows.
+**Status: owner-adjudicated and approved for production on 2026-07-31.** Will
+Kelly approved the proposed strict, midpoint, and broad cells as depths
+`0/50/100`, with deterministic interpolation for the interior path after the
+full-fleet `25/75` audit below showed no material response cliff. The earlier
+profile-response rows remain historical evidence only.
 
 ## Measurement commands and pins
 
@@ -43,8 +44,8 @@ and the `full` tier:
 
 It covers 1,504 corpora and 87,264 data rows plus audit/runtime rows; its
 SHA-256 is `8d68f8b8cbdf84fd4a98497c0eab200655c308c1cb154811dd1270f0d7c37213`.
-The WA packet remains useful as the faster review fixture; both packets are
-evidence for owner endpoint selection, not approval of the current tables.
+The WA packet remains useful as the faster review fixture; both packets are the
+selection evidence underlying the owner approval recorded below.
 
 The v3 survey runtimes were 230,998 ms for WA and 1,585,499 ms for the full
 fleet. The full output contains 270 corpus-audit rows and one runtime row; the
@@ -93,8 +94,8 @@ stability study, not ground truth or precision.
 
 ## Owner adjudication worksheet
 
-The following is a compact decision view of the full-fleet, full-maturity,
-canonical-order audit rows. It does not approve any row. Strict is the grid
+The following is the compact decision view of the full-fleet, full-maturity,
+canonical-order audit rows used for the approval below. Strict is the grid
 maximum unusualness plus strict support; midpoint is the current-default cell;
 broad is the grid minimum unusualness plus broad support. Counts are
 corpus-level p50/p90/p99 findings, followed by opportunity p50/p90.
@@ -111,22 +112,46 @@ corpus-level p50/p90/p99 findings, followed by opportunity p50/p90.
 | inconsistent word casing | midpoint | floor .95; middle support | 0 / 3 / 6 | 447 / 2,098 | .203092 |
 | inconsistent word casing | broad | floor .80; broad support | 13 / 35 / 75 | 535 / 2,341 | .247515 |
 
-Owner decision required:
+### Owner decision — 2026-07-31
 
-1. Approve or revise the strict, midpoint, and broad cells for each mapped rule.
-2. Confirm whether the strict/midpoint/broad cells define depths `0/50/100`.
-3. Approve the `25/75` interior path (interpolation between those selections,
-   or a denser candidate sweep before selection).
-4. Record owner, date, and rationale in this packet before moving the plan to
-   `documentation/plans/completed/`.
+- **Owner:** Will Kelly
+- **Selected cells:** all proposed strict, midpoint, and broad rows in the
+  table above.
+- **Depth mapping:** strict = `0`, midpoint = `50`, broad = `100`.
+- **Interior path:** interpolate directly between the three selected anchors;
+  do not add separate `25/75` anchors unless later evidence exposes a cliff.
+- **Rationale:** preserve the exact current defaults at 50, expose the full
+  defensible range, and keep each rule easy to calibrate through three explicit
+  native-parameter rows rather than project-specific runtime fitting.
 
-Production profiles remain provisional until the owner selects endpoints from
-this evidence. Once selected, continuous fields use piecewise-linear
-interpolation between five rows and integer fields use half-up rounding:
+Continuous fields use piecewise-linear interpolation between the three owner
+anchors and integer fields use half-up rounding:
 
 ```text
 value(d) = round_half_up(value_left + (value_right - value_left) × (d - left) / (right - left))
 ```
+
+The selected-path audit measures the actual production profiles at depths 25
+and 75 over all 1,504 corpora:
+
+```text
+./target/release/examples/calibrate --review-depth-path-survey corpora/vref /tmp/review-depth.path.full.tsv full
+```
+
+The output has 9,024 data rows plus six audit rows and one runtime row; SHA-256
+is `66ad53391097750c3f2a3be74a1ccac681a9efb55ba781945428028a894dc82b`
+and runtime was 182,148 ms.
+
+| Rule | Depth 25 p50/p90/p99 | Depth 75 p50/p90/p99 |
+| --- | ---: | ---: |
+| spacing anomaly | 5 / 20 / 63 | 22 / 61 / 202 |
+| sentence-initial lowercase | 0 / 2 / 9 | 2 / 26 / 81 |
+| inconsistent word casing | 0 / 1 / 3 | 3 / 13 / 31 |
+
+Together with the endpoint table, every corpus-level percentile increases in
+the intended order. The larger broad-half casing increments are progressive,
+not a single interior discontinuity, and remain below their approved depth-100
+tails. The interpolated path is therefore approved.
 
 The following is the historical profile-response snapshot from the superseded
 circular survey. It is retained for comparison only and is not an anchor
@@ -180,6 +205,6 @@ spacing's candidate population is stable while the native judge changes.
 - No runtime fit, histogram response, result cap, evidence-tier label, or wire
   change is part of this packet.
 
-Numeric owner adjudication is still required. Conceptual approval of the Review
-Depth policy does not approve these rows; the plan remains active until an
-owner signs off on the candidate-derived anchors and the final gates pass.
+Numeric owner adjudication is complete. The remaining release work is limited
+to final verification, generated-package regeneration, documentation link
+repair, and plan closeout.

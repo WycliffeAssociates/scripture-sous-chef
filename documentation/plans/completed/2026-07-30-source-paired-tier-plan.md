@@ -2,7 +2,7 @@
 
 - Date: 2026-07-30
 - Status: committed (owner decision 2026-07-30 — "this is next"; the
-  [Review Depth plan](../2026-07-30-review-depth-plan.md) consumes its calibrated
+  [Review Depth plan](2026-07-30-review-depth-plan.md) consumes its calibrated
   source-relative rows)
 - Subsumes (deleted 2026-07-30, in git history):
   `ideas/discussing/2026-07-29-length-ratio-calibration.md`,
@@ -125,7 +125,7 @@ per-book percent terms.
    record the forward-looking default change).
 3. Per-book percent labels for Review Depth ("3.5 ≈ ~38% off-typical in
    Luke") fall out of the floors — recorded for the
-   [Review Depth plan](../2026-07-30-review-depth-plan.md).
+   [Review Depth plan](2026-07-30-review-depth-plan.md).
 
 ## Phase B2 — asymmetric spread (owner-adjudicated 2026-07-30)
 

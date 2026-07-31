@@ -9,7 +9,7 @@
   [ADR 0052](0052-terminal-strength-mark-trust.md),
   [ADR 0054](0054-spacing-attachment-signatures.md), and
   [ADR 0067](0067-typed-observation-substrates-resident-galley.md)
-- **Plan:** [Review Depth implementation plan](../plans/2026-07-30-review-depth-plan.md)
+- **Plan:** [Review Depth implementation plan](../plans/completed/2026-07-30-review-depth-plan.md)
 
 ## Context
 
@@ -39,13 +39,14 @@ and resolves only an exhaustive mapped set. V1 maps
 calibration and evidence gates pass. The catalog and resolver share one
 eligibility function so the UI cannot drift from engine behavior.
 
-Each mapped rule owns a five-row offline profile at depths `0 / 25 / 50 / 75 /
-100`. The profile changes judging-only fields such as emission floor,
-confidence, recurrence knee, and positional trust. The calibration survey
-emits a compact TSV containing the profile fields, opportunity population,
-finding count, median score, and p90 score; the dated calibration note records
-the aggregation commands and SHA-256 pins. No runtime fitting or per-project
-histogram is introduced.
+Each mapped rule owns three owner-adjudicated offline anchors at depths `0 / 50
+/ 100`; deterministic piecewise-linear interpolation derives interior depths,
+with half-up rounding for integer fields. The profile changes judging-only
+fields such as emission floor, confidence, recurrence knee, and positional
+trust. The calibration surveys emit compact TSVs for candidate selection and
+the selected interior path; the dated calibration note records aggregation
+results and SHA-256 pins. No runtime fitting or per-project histogram is
+introduced.
 
 Depth `50` with no adjustments resolves to the existing native defaults. A
 caller-provided advanced native override is applied after Review Depth and wins

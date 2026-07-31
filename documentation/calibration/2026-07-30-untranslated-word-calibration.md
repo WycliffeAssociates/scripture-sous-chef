@@ -166,7 +166,7 @@ Already landed; restated for completeness per skill §4:
 ## 6. Review Depth mapping — RECOMMENDATION ONLY
 
 Global mapping proposed (no implementation — feeds the [Review Depth
-plan](../plans/2026-07-30-review-depth-plan.md)). `corpus_gate_share`
+plan](../plans/completed/2026-07-30-review-depth-plan.md)). `corpus_gate_share`
 is deliberately EXCLUDED from the depth-interpolated set: it is a
 circuit breaker for corpus eligibility, not a sensitivity dial, and the
 skill's "broadest defensible behavior, not a volume limit" framing

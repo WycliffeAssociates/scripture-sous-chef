@@ -133,12 +133,12 @@ is implementing.
   stops catching a genuinely *broken* danda. Acceptable exactly when the
   form is truly free-variant; that judgment belongs to the user, which is
   why it is config, not inference.
-- **Interaction with the evidence-bar slider** (see
-  `../discussing/2026-07-29-preset-derivation.md`): suppression applies at
-  display, after judging; turning the slider up re-judges, and previously
-  suppressed cells STAY suppressed when they reappear at a looser bar —
-  that persistence is what makes progressive canonicalization a loop
-  rather than a treadmill.
+- **Interaction with Review Depth** (see the
+  [Review Depth plan](../../plans/completed/2026-07-30-review-depth-plan.md)):
+  suppression applies at display, after judging; moving toward “Explore more
+  patterns” re-judges, and previously suppressed cells STAY suppressed when
+  they reappear at a broader depth — that persistence is what makes
+  progressive canonicalization a loop rather than a treadmill.
 - **Persistence, updated:** the 2026-07-20 ruling said this "rides the
   Galley snapshot story"; that story has since resolved to
   persist-packed-findings-not-Galley

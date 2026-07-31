@@ -32,11 +32,11 @@ findings wire format was measured (packed buffer 20–160× faster end-to-end �
    don't each build their own hide-this store. (Bayesian adjudication
    *labels* are a separate, far-future TBD — suppression is not labels, and
    no label-collection machinery is planned now.)
-2. **Run the preset-derivation truncation experiment**
-   ([plan](../plans/2026-07-09-preset-derivation-plan.md) — the one open
-   plan; the config recommender is folded into it). The calibrated rules
-   wait on it for their conservative/normal/aggressive rows; it's what makes
-   the one-knob product story real.
+2. **Derive the fleet-calibrated Review Depth mappings**
+   ([plan](../plans/completed/2026-07-30-review-depth-plan.md)). The calibrated rules
+   contribute global anchor tables for one project-wide control plus relative
+   per-rule adjustments; runtime applies those shipped mappings rather than
+   fitting a curve to the current corpus.
 3. **Packed binary findings wire format** — triage complete 2026-07-21:
    committed plan at `../plans/2026-07-21-packed-findings-wire-plan.md`
    (wire-level diff/tombstones rejected there; interning spun off as

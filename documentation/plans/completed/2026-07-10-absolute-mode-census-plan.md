@@ -9,7 +9,8 @@ handed to an implementing agent as-is.
 **Sequencing (owner decision, 2026-07-10): queued after the
 [rare-glyph / signatures / mixed-casing plan](2026-07-10-rare-glyph-signatures-mixedcase-plan.md)
 completes (all three rules + the owed perf campaign), and before the
-[preset-table freeze](../2026-07-09-preset-derivation-plan.md).** The ADR can be
+then-proposed preset-table freeze (now superseded by the
+[Review Depth plan](2026-07-30-review-depth-plan.md)).** The ADR can be
 written earlier, during the rare-glyph tail — most of its questions are
 answered below; what remains is review, not research.
 

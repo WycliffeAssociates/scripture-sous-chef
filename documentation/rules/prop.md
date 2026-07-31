@@ -135,5 +135,5 @@ sources for the same target) — findings should be read as "outlier
 relative to THIS declared source," never as an absolute translation-quality
 signal. Per-book percent labels for the Review Depth UI fall out of the
 measured floors directly; wiring them in is tracked by the [Review Depth
-plan](../plans/2026-07-30-review-depth-plan.md), not this rule's own
+plan](../plans/completed/2026-07-30-review-depth-plan.md), not this rule's own
 calibration.

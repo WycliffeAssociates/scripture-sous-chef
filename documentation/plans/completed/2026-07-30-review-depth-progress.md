@@ -388,3 +388,47 @@ Rust profiles.
 - **Remaining blocker:** an owner must select/adjudicate production anchors
   from the independent candidate packets. No curve, midpoint, or prior
   conceptual approval is being treated as that numeric sign-off.
+
+## Entry 9 — owner anchor adjudication and selected interior path
+
+- **Date:** 2026-07-31
+- **Status:** owner gate complete; final release and documentation gates are in
+  progress.
+- **Owner decision:** Will Kelly approved the proposed strict/current-default
+  midpoint/broad cells for all three mapped rules as depths `0/50/100` and
+  approved deterministic interpolation after reviewing the full-fleet
+  `25/75` response.
+- **Production representation:** rule-local profiles now contain only the three
+  selected owner anchors. The shared interpolator derives every interior depth;
+  integer parameters retain the existing half-up rounding contract.
+- **Selected-path audit:** 1,504 corpora × 3 rules × 2 depths = 9,024 data rows,
+  six audit rows, and one runtime row. Runtime was 182,148 ms and SHA-256 was
+  `66ad53391097750c3f2a3be74a1ccac681a9efb55ba781945428028a894dc82b`.
+- **Interior findings p50/p90/p99:** spacing was `5/20/63` at depth 25 and
+  `22/61/202` at 75; sentence-initial casing was `0/2/9` and `2/26/81`;
+  inconsistent word casing was `0/1/3` and `3/13/31`. Each lies monotonically
+  between its approved endpoint/midpoint neighbors; no extra interior anchor
+  is justified.
+
+## Entry 10 — final release gates and closeout
+
+- **Date:** 2026-07-31
+- **Status:** complete; plan and progress log are ready for `completed/`.
+- **Oracle bookends:** regenerated default (`427,881` rows,
+  `1791fcb07deabdeb3e9be208ab7cd02d6348cb15edd15b6ecffc62eae50d749b`),
+  all-rules (`962,372` rows,
+  `14be8b4fbb225e83c48705cd91ff58440dbc5c3c3ec5ba43296de63383c292ea`),
+  and resident (`56,958` rows,
+  `2dd7a19055e558ce7a96525208ec89d5b474c62131d928210b8d70595dab8721`)
+  full-fleet outputs. All three are byte-identical to Gate 0.
+- **Rust verification:** 544 core tests plus three integration tests, 25 Galley
+  tests, 16 wasm tests, and 25 wire tests pass. Wasm-target checking passes.
+- **Generated packages:** the optimized web and bundler builds both measure
+  1,836,983 bytes and the generated-package Review Depth smoke passes.
+- **Repository gates:** `git diff --check` passes. Repository-wide formatter
+  and clippy drift remain the previously recorded unrelated baseline; no
+  unrelated files were reformatted.
+- **Documentation closeout:** the superseded preset-derivation discussion is
+  removed, its surviving roadmap/suppression/census references point to this
+  completed plan, and the ADR/calibration packet record the approved
+  three-anchor interpolation contract.

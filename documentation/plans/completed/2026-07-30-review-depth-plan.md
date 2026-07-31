@@ -1,28 +1,26 @@
 # Plan — Review Depth: one master control with fleet-calibrated per-rule adjustments
 
 - **Date:** 2026-07-30
-- **Status:** in progress (remediation after adversarial review 2026-07-30)
+- **Status:** completed 2026-07-31
 - **Plan depth:** exhaustive
-- **Interview:** policy shape is settled; numeric anchor adjudication and final
-  release gates remain unresolved
+- **Interview:** complete; policy shape and numeric anchors are settled
 - **Testing tolerance:** hardened for default-behavior identity, config resolution,
   resident-Galley isolation, and public API contracts; calibration code remains
   measurement infrastructure rather than production behavior
 - **Subsumes (deleted on promotion; retained in git history):**
   `documentation/ideas/discussing/2026-07-29-preset-derivation.md`
 - **Depends on:** the per-rule outputs of
-  [`2026-07-30-source-paired-tier-plan.md`](completed/2026-07-30-source-paired-tier-plan.md)
+  [`2026-07-30-source-paired-tier-plan.md`](2026-07-30-source-paired-tier-plan.md)
   before `prop.length-ratio` or `lex.untranslated-word` can join the mapping
 - **Companion process contract:**
-  [`.claude/skills/rule-development/SKILL.md`](../../.claude/skills/rule-development/SKILL.md)
+  [`.claude/skills/rule-development/SKILL.md`](../../../.claude/skills/rule-development/SKILL.md)
 - **Binding architecture:** ADR 0067 (typed observation substrates and resident
   Galley), ADR 0065 (packed findings wire), and ADR 0070 (Review Depth policy;
   superseding ADR 0038's single-`emit_score_min` dial decision)
 
-The first production-looking tables are provisional. They are not owner-approved
-anchors, and this plan must remain active until the independent candidate sweep,
-owner adjudication, optimized package regeneration, and documentation/link gates
-all pass.
+The production anchors were owner-approved on 2026-07-31 after the independent
+candidate sweep and selected-path audit. Optimized package regeneration and all
+final verification/documentation gates passed the same day.
 
 ## 0. Settled owner decisions
 
@@ -585,13 +583,15 @@ the global tail; it is not silently added to runtime.
 
 ### 9.5 Anchor selection
 
-Choose values for depth `0/25/50/75/100` from the two-dimensional grid:
+Choose owner anchors for depths `0/50/100` from the two-dimensional grid, then
+measure the derived `25/75` path before approval:
 
 - depth 50 is pinned to today's default before examining alternatives;
 - depth 0 is the strictest useful, strongly supported operating point;
 - depth 100 is the broadest point whose claim and evidence wording remain
   honest—not the point immediately before volume becomes inconvenient;
-- interior anchors allocate travel across useful changes and measured cliffs;
+- deterministic interpolation allocates interior travel; add an interior
+  anchor only if measurement exposes a material cliff;
 - support generally relaxes faster than unusualness;
 - a finding-count curve may space anchors but may not define the axis.
 
