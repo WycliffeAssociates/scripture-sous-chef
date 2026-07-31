@@ -74,7 +74,7 @@ use survey::misc::{
 use survey::mixedcase::{analyze_mixedcase, mixedcase_fleet, mixedcase_single_report};
 use survey::paired::{paired_survey, seed_faults, uw_calibrate, uw_case_shape_simulate};
 use survey::pooled::{analyze_pooled, pooled_fleet, pooled_single_report};
-use survey::review_depth::review_depth_survey;
+use survey::review_depth_candidates::review_depth_survey;
 use survey::signatures::{analyze_signatures, signature_fleet, signature_single_report};
 use survey::terminal::{terminal_fleet, terminal_single};
 

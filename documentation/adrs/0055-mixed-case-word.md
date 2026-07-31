@@ -2,8 +2,8 @@
 
 - **Date:** 2026-07-10
 - **Status:** Accepted
-- **Builds on:** [ADR 0017](0017-stateful-observe-judge.md) (observe/judge,
-  aggregate-only book-supersede state), [ADR 0034](0034-one-phenomenon-one-finding.md)
+- **Builds on:** [ADR 0017](0017-stateful-rules-stats-returning-analyze.md) (observe/judge,
+  aggregate-only book-supersede state), [ADR 0034](0034-replacement-run-owns-mojibake.md)
   (one phenomenon, one finding — the casing boundary predicate),
   [ADR 0050](0050-spacing-minority-recurrence-factor.md) (the absolute linear
   recurrence knee), [ADR 0051](0051-casing-two-factor-word-lexicon.md) /

@@ -97,11 +97,11 @@ and the backlog reorganization:
    `word,word` and `?And` gaps this triage found.
 3. **Untranslated words / source-copy** (Owl) — **STILL OPEN**, the one
    surviving build candidate:
-   [`ideas/candidates/2026-07-29-untranslated-words-rule.md`](../ideas/candidates/2026-07-29-untranslated-words-rule.md).
+   [`2026-07-30-untranslated-word-calibration.md`](../calibration/2026-07-30-untranslated-word-calibration.md).
    Membership test against the source verse's tokens, run-length bonus,
    recurrence knee for loan words. Blocked on source loading — the
    source-paired tier, alongside `prop.length-ratio` calibration
-   ([`ideas/discussing/2026-07-29-length-ratio-calibration.md`](../ideas/discussing/2026-07-29-length-ratio-calibration.md)).
+   ([`2026-07-30-length-ratio-paired-survey.md`](../calibration/2026-07-30-length-ratio-paired-survey.md)).
    (Greek Room's spelling report stays out of scope: it's alignment-gated
    machinery.)
 4. **Mixed-case word** (`wOrd`) — **SHIPPED** as `case.mixed-case-word`

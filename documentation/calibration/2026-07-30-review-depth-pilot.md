@@ -1,72 +1,94 @@
-# Review Depth pilot calibration — 2026-07-30
+# Review Depth candidate calibration — 2026-07-30
 
-This packet records the first production Review Depth profiles. It is paired
+This packet records the independent candidate calibration for Review Depth. It is paired
 with [ADR 0070](../adrs/0070-review-depth-policy.md) and the execution log
 [`2026-07-30-review-depth-progress.md`](../plans/2026-07-30-review-depth-progress.md).
 
+**Status: provisional; not owner-adjudicated and not a production-anchor
+approval.** The earlier profile-response rows are retained below as historical
+evidence only. The active selection gate is the two-dimensional candidate TSV;
+conceptual approval of Review Depth does not approve numeric rows.
+
 ## Measurement commands and pins
 
-The survey is dev-only and writes one deterministic TSV row per
-`rule × depth × corpus`. It measures one rule at a time, disables unrelated
-rules, runs corpora in parallel, and writes the ordered results after the
-parallel batch. The output columns are:
+The survey is dev-only and writes deterministic TSV rows for each
+`rule × corpus × maturity × order × unusualness × support` cell. It does not
+call the committed production profile functions. The output columns are:
 
 ```text
-rule depth corpus opportunities findings median_score p90_score
-emit_score_min confidence_z recurrence_k trust_gate minority_rate_per_10k
+rule corpus maturity order unusualness support opportunities findings
+median_score p75_score p90_score p99_score adj_additions adj_removals
+adj_flips examples
 ```
 
 The compact small and WA runs were:
 
 ```text
 cargo run --release -p ssc-core --example calibrate -- --build-blob corpora/vref small /tmp/review-depth.small.blob
-./target/release/examples/calibrate --review-depth-survey /tmp/review-depth.small.blob /tmp/review-depth.small.tsv small
-./target/release/examples/calibrate --review-depth-survey oracle-blobs/wa.blob /tmp/review-depth.wa.tsv wa
+./target/release/examples/calibrate --review-depth-survey /tmp/review-depth.small.blob /tmp/review-depth.small.candidates.tsv small
+./target/release/examples/calibrate --review-depth-survey oracle-blobs/wa.blob /tmp/review-depth.wa.candidates.tsv wa
 ```
 
 | TSV | Corpora | Data rows | SHA-256 |
 | --- | ---: | ---: | --- |
-| small | 15 | 225 | `35578bec0508a7649dfc1d2fea960ca4a90083b7b6e921390da67eb9eba25d24` |
-| WA | 251 | 3,765 | `fd31554cd8ccff04efc1c281c10efd9ddad117fc7083d565f319f25f7cdcd0dd` |
+| small candidate sweep | 15 | 4,320 data rows plus audit/runtime rows | `e5922efeeebc71b56427f83e9daec2c2b00516d250fdc76649409acea876db15` |
+| WA candidate sweep | pending owner-review packet | pending | pending |
 
-The full-fleet command is the same survey command with `corpora/vref` and the
-`full` tier:
+The full-fleet command is the same candidate survey command with `corpora/vref`
+and the `full` tier:
 
 ```text
-./target/release/examples/calibrate --review-depth-survey corpora/vref /tmp/review-depth.full.tsv full
+./target/release/examples/calibrate --review-depth-survey corpora/vref /tmp/review-depth.full.candidates.tsv full
 ```
 
-It covers 1,504 corpora and 22,560 data rows with SHA-256
-`ba96fde95d913b53aa741d6c53219cf6a9aba08a4bd5b1156645cd9df3132c86`. The WA
-packet remains useful as the faster review fixture; the full fleet confirms the
-same monotone shape and the shipped midpoint count for spacing.
+It covers 1,504 corpora; its data rows and SHA-256 remain pending until the
+candidate packet is regenerated and reviewed. The WA packet remains useful as
+the faster review fixture; the full fleet is required before endpoint selection.
 
 ## Reproducible math
 
-For every rule/depth pair, aggregate the TSV with:
+For every rule/candidate/maturity/order cell, aggregate the TSV with:
 
 ```text
-awk -F '\t' 'NR>2 {o[$1 FS $2]+=$4; f[$1 FS $2]+=$5; n[$1 FS $2]++} END {for (k in n) print k FS n[k] FS o[k] FS f[k]}' /tmp/review-depth.wa.tsv | sort
+awk -F '\t' '$1 !~ /^#/ && NR>2 {k=$1 FS $3 FS $4 FS $5 FS $6; o[k]+=$7; f[k]+=$8; n[k]++} END {for (k in n) print k FS n[k] FS o[k] FS f[k]}' /tmp/review-depth.small.candidates.tsv | sort
 ```
 
-`opportunities` is the candidate population before the emission floor:
-spacing uses the same config with `emit_score_min=0`, while casing counts sites
-where the relevant positional or intrinsic channel exists. `findings` is the
-actual emitted count at the row's native profile. Median and p90 are
+The data columns are 1-based: `rule`, `corpus`, `maturity`, `order`,
+`unusualness`, `support`, `opportunities`, `findings`, four score quantiles,
+three adjacent-cell deltas, and three representative examples. `opportunities`
+is the candidate population before the emission floor: spacing uses the same
+candidate config with `emit_score_min=0`, while casing counts sites where the
+relevant positional or intrinsic channel exists. `findings` is the emitted
+count for the independent candidate config. Median and tail columns are
 nearest-rank quantiles: scores are sorted with `f32::total_cmp`; rank is
 `ceil(p × n)`, and the selected zero-based index is `clamp(rank - 1, 0, n - 1)`.
 
-The profile fields are emitted in each row, so the Rust constants are
-reproducible from the TSV rather than being unexplained source literals.
-Continuous fields use piecewise-linear interpolation between the five rows.
-Integer fields use half-up rounding:
+The candidate grid is reproducible from the TSV header plus these constants:
+spacing unusualness `0.30/0.50/0.80`, casing unusualness `0.80/0.95/0.99`;
+strict support `(z=2.58, k=16, rate=20, trust=0.95)`, middle support
+`(1.96, 32, 40, 0.90)`, and broad support `(1.28, 64, 65, 0.75)`. The rate
+and trust values are not applicable to the rule that does not own them.
+Adjacent additions/removals/flips compare each cell with its right and lower
+neighbor in that 3×3 grid. Examples are the first three finding records in
+stable key order, so any selected endpoint can be reconstructed from the TSV.
+
+Maturity `1/5/28/120/full` takes the first N chapter blocks in canonical order
+and, for the alternate order, reverses chapter order within each book while
+preserving book order. The full-fleet run applies the ladder to the first 28
+deterministically ordered corpora and full maturity to the remainder. This is a
+stability study, not ground truth or precision.
+
+Production profiles remain provisional until the owner selects endpoints from
+this evidence. Once selected, continuous fields use piecewise-linear
+interpolation between five rows and integer fields use half-up rounding:
 
 ```text
 value(d) = round_half_up(value_left + (value_right - value_left) × (d - left) / (right - left))
 ```
 
-At depth 50, every table returns the existing native default. The selected
-endpoints and counts are:
+The following is the historical profile-response snapshot from the superseded
+circular survey. It is retained for comparison only and is not an anchor
+selection or owner approval:
 
 | Rule | Depth | Floor | z | Recurrence k | Trust gate | Rate / 10k | WA opportunities | WA findings |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -80,7 +102,7 @@ endpoints and counts are:
 | spacing anomaly | 50 | 0.50 | 1.96 | 32 | — | 40 | 8,443,970 | 7,124 |
 | spacing anomaly | 100 | 0.30 | 1.28 | 56 | — | 65 | 8,443,970 | 19,609 |
 
-The full-fleet aggregate at the shipped midpoint is 27,024 spacing findings
+The historical full-fleet aggregate at the shipped midpoint is 27,024 spacing findings
 across 69,529,074 opportunities, matching the existing spacing calibration
 count. The full-fleet pilot response is:
 
@@ -96,7 +118,7 @@ punct.spacing-anomaly               50: 27,024 findings / 69,529,074 opportuniti
 punct.spacing-anomaly              100: 66,494 findings / 69,529,074 opportunities
 ```
 
-The omitted 25 and 75 rows are present in the TSV and interpolate linearly
+The omitted 25 and 75 rows were present in that historical TSV and interpolated linearly
 between the adjacent anchors. The response is monotone for all three pilots;
 the strict end materially narrows surfaced findings, while the exploratory end
 widens the judged support/rareness region. Casing opportunity growth is
@@ -116,6 +138,6 @@ spacing's candidate population is stable while the native judge changes.
 - No runtime fit, histogram response, result cap, evidence-tier label, or wire
   change is part of this packet.
 
-The implementation treats the settled owner decision in the Review Depth plan
-as approval of these first anchor rows. A later owner review may revise the
-rule-local tables without changing the policy or wasm contract.
+Numeric owner adjudication is still required. Conceptual approval of the Review
+Depth policy does not approve these rows; the plan remains active until an
+owner signs off on the candidate-derived anchors and the final gates pass.

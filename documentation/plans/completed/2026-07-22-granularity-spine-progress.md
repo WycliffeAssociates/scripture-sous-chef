@@ -8,7 +8,8 @@ implementation reality contradicts a plan statement, it is flagged here and in
 the handoff report for the owner to adjudicate — the plan is not edited from
 here.
 
-Canonical vocabulary: `../../glossary.md`.
+Canonical vocabulary is maintained by the shipped ADRs, reference docs, and
+code contracts.
 
 ---
 

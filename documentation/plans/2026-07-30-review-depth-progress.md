@@ -289,3 +289,36 @@ Rust profiles.
 - **Ownership:** the pre-existing roadmap, per-mark suppression, deleted
   preset-derivation, and absolute-mode census edits remain outside the scoped
   commits.
+
+## Entry 5 — adversarial remediation reopened the plan
+
+- **Date:** 2026-07-30
+- **Status:** in progress; the prior completion claim is superseded by the
+  adversarial review. The plan and this log are active again.
+- **Correction:** the five-depth profile-response survey described in Entry 3
+  called the already-selected production profiles. It proved monotone output
+  volume, but not candidate selection. Its rows remain historical evidence,
+  not calibration approval.
+- **Casing isolation:** `Model` now keeps positional and intrinsic evidence
+  models separately. Intrinsic soft-censoring uses a fixed model-confidence
+  anchor while its final configured confidence remains intrinsic-only; each
+  consumer's profile fields therefore cannot mutate the sibling's trust/habit
+  state. The new field-by-field asymmetric test covers every mapped casing
+  field and passed with the focused casing suite.
+- **Resolver hardening:** `review_control` and `apply_review_policy` now match
+  every `RuleId` explicitly. A new rule must be classified in both matches
+  before the crate compiles.
+- **Independent candidate survey:**
+  `crates/core/examples/calibrate/survey/review_depth_candidates.rs` sweeps a
+  3×3 unusualness/support grid for all three mapped pilots, records adjacent
+  additions/removals/flips, representative findings, corpus medians/tails and
+  correlation, and studies maturity `1/5/28/120/full` in canonical and
+  chapter-reversed order. The small deterministic run covers 15 corpora and
+  4,320 data rows plus audit/runtime rows; SHA-256 is
+  `e5922efeeebc71b56427f83e9daec2c2b00516d250fdc76649409acea876db15`.
+- **Owner gate:** no numeric anchor approval is inferred from the settled
+  policy decision. WA/full candidate packets and explicit owner adjudication
+  remain required before the tables can be called shipped.
+- **Still pending:** optimized release wasm regeneration, generated-package
+  Review Depth smoke coverage, all documentation/link repairs, WA/full
+  candidate packets, and final oracle/release gates.

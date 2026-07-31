@@ -2,8 +2,8 @@
 
 - **Date:** 2026-07-08
 - **Status:** Accepted
-- **Extends:** [ADR 0029](0029-corpus-relative-punctuation-conventions.md)
-  (corpus-relative per-mark conventions) and [ADR 0010](0010-diagnostics-model.md)
+- **Extends:** [ADR 0029](0029-punctuation-spacing-corpus-relative.md)
+  (corpus-relative per-mark conventions) and [ADR 0010](0010-pure-analyzer-contract-v1-reset.md)
   §6 (the additive `FindingArgs` payload). Builds on the `dominance()`
   helper (ADR 0037) shared by the spacing, casing, and bracket-balance rules.
 

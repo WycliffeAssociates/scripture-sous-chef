@@ -1,23 +1,28 @@
 # Plan — Review Depth: one master control with fleet-calibrated per-rule adjustments
 
 - **Date:** 2026-07-30
-- **Status:** completed (implemented and verified 2026-07-30)
+- **Status:** in progress (remediation after adversarial review 2026-07-30)
 - **Plan depth:** exhaustive
-- **Interview:** complete through owner/steward discussion; no unresolved product
-  branch remains before Gate 0
+- **Interview:** policy shape is settled; numeric anchor adjudication and final
+  release gates remain unresolved
 - **Testing tolerance:** hardened for default-behavior identity, config resolution,
   resident-Galley isolation, and public API contracts; calibration code remains
   measurement infrastructure rather than production behavior
 - **Subsumes (deleted on promotion; retained in git history):**
   `documentation/ideas/discussing/2026-07-29-preset-derivation.md`
 - **Depends on:** the per-rule outputs of
-  [`2026-07-30-source-paired-tier-plan.md`](2026-07-30-source-paired-tier-plan.md)
+  [`2026-07-30-source-paired-tier-plan.md`](completed/2026-07-30-source-paired-tier-plan.md)
   before `prop.length-ratio` or `lex.untranslated-word` can join the mapping
 - **Companion process contract:**
-  [`.claude/skills/rule-development/SKILL.md`](../../../.claude/skills/rule-development/SKILL.md)
+  [`.claude/skills/rule-development/SKILL.md`](../../.claude/skills/rule-development/SKILL.md)
 - **Binding architecture:** ADR 0067 (typed observation substrates and resident
   Galley), ADR 0065 (packed findings wire), and ADR 0070 (Review Depth policy;
   superseding ADR 0038's single-`emit_score_min` dial decision)
+
+The first production-looking tables are provisional. They are not owner-approved
+anchors, and this plan must remain active until the independent candidate sweep,
+owner adjudication, optimized package regeneration, and documentation/link gates
+all pass.
 
 ## 0. Settled owner decisions
 
@@ -507,9 +512,9 @@ and resident transcript gate before any profile values are introduced.
 
 ### 9.1 Harness location and command
 
-Add a `review_depth` survey cluster under
-`crates/core/examples/calibrate/survey/review_depth.rs`, dispatched by the
-existing calibrator, for example:
+Add a `review_depth_candidates` survey cluster under
+`crates/core/examples/calibrate/survey/review_depth_candidates.rs`, dispatched by
+the existing calibrator, for example:
 
 ```text
 calibrate --review-depth-survey <corpus-dir-or-blob> <out-dir> <small|wa|full>
@@ -673,7 +678,7 @@ after product use shows raw evidence is insufficient.
 | Eligible `crates/core/src/signals/*.rs` modules | Rule-local anchor constants and typed `config_at_review_depth`; judging fingerprint coverage. |
 | `crates/core/src/catalog.rs` | `ReviewControl`, card eligibility, shared Review Depth copy; remove `SENSITIVITY_STOPS`. |
 | `crates/core/src/lib.rs` | Export only the minimal native Review Depth types/helper required by callers. Preserve unrelated concurrent edits. |
-| `crates/core/examples/calibrate/survey/review_depth.rs` (new) | Dev-only grid sweeps, compact per-corpus summaries, truncation/stability and correlation reports. |
+| `crates/core/examples/calibrate/survey/review_depth_candidates.rs` (new) | Dev-only two-dimensional candidate sweeps, compact per-corpus summaries, maturity/order stability, adjacent-cell deltas, and correlation reports. |
 | `crates/core/examples/calibrate/{survey.rs,main.rs}` | Dispatch only; do not reshape other survey clusters. |
 | `crates/wasm/src/lib.rs` | `ReviewPolicyInput`, fallible resolution, override precedence, catalog projection, boundary tests. |
 | `crates/galley/src/lib.rs` | Prefer tests only; production `update_config` already has the required model. Change production code only if a failing invariant proves it necessary. |

@@ -5,8 +5,9 @@ normative record of the implemented epic. The implemented program must not be
 re-opened to invent a different cache model, partial-corpus semantic, rule
 dependency system, or wire protocol without a new plan or ADR.
 
-Canonical vocabulary: [`../../glossary.md`](../../glossary.md). The terms in
-that glossary are normative for new code, comments, ADRs, and progress notes.
+Canonical vocabulary is maintained by the shipped ADRs, reference docs, and
+code contracts. Those terms are normative for new code, comments, ADRs, and
+progress notes.
 
 ### Document authority
 

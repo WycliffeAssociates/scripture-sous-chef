@@ -4,7 +4,7 @@
 - **Status:** Accepted
 - **Supersedes:** [ADR 0038](0038-rule-catalog-two-tier-config.md)'s shared
   sensitivity-stop / `emit_score_min` dial decision
-- **Relates to:** [ADR 0050](0050-corpus-relative-recurrence-knee.md),
+- **Relates to:** [ADR 0050](0050-spacing-minority-recurrence-factor.md),
   [ADR 0051](0051-casing-two-factor-word-lexicon.md),
   [ADR 0052](0052-terminal-strength-mark-trust.md),
   [ADR 0054](0054-spacing-attachment-signatures.md), and

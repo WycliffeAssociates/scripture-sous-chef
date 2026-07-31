@@ -34,7 +34,7 @@ dropped; `case.mixed-case-word` uses the *unmerged* letter-run token instead
 
 ## `case.sentence-initial-lowercase` — lowercase after a casing-convention terminal
 
-> **Severity** Info · **Default** OFF · **Scope** substrate-backed (per-book word table) · **Knobs** `emit_score_min` (0.95), `recurrence_k` (32), `confidence_z` (1.96), `trust_gate` (0.90) · **ADR** 0017, 0035, 0051, 0052
+> **Severity** Info · **Default** OFF · **Scope** substrate-backed (per-book word table) · **Knobs** `Config.casing.sentence_initial.evidence` (`emit_score_min`, `recurrence_k`, `confidence_z`) plus `trust_gate` · **Review Control** mapped · **ADR** 0017, 0035, 0051, 0052
 
 **Flags** — A forced-position lowercase word-start, scored by how established
 the corpus's capitalize-after-this-terminal habit is (measured only on words
