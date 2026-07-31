@@ -345,3 +345,29 @@ Rust profiles.
   grid, adjacent-cell deltas, maturity/order study, corpus medians/tails,
   representative findings, and correlation audit. They do not select or
   approve production anchors; that explicit owner gate is still blocking.
+
+## Entry 7 — remediation verification and remaining gate
+
+- **Date:** 2026-07-30
+- **Status:** implementation and measurement remediation complete; plan remains
+  active pending explicit numeric owner adjudication.
+- **Oracle bookend:** default `427,881` rows,
+  `1791fcb07deabdeb3e9be208ab7cd02d6348cb15edd15b6ecffc62eae50d749b`; all
+  `962,372` rows,
+  `14be8b4fbb225e83c48705cd91ff58440dbc5c3c3ec5ba43296de63383c292ea`; and
+  resident `56,958` rows,
+  `2dd7a19055e558ce7a96525208ec89d5b474c62131d928210b8d70595dab8721`. Each
+  after dump is byte-identical to its Gate 0 baseline.
+- **Tests:** 544 core unit tests, 16 wasm unit tests, 25 Galley tests, and 25
+  wire tests pass. The calibrator example checks, `git diff --check`, and the
+  generated web/bundler Review Depth smoke pass. The smoke checks catalog
+  bounds/mapped set, valid depth analysis, and invalid-depth rejection.
+- **Release output:** the repository's exact `npm run build:wasm` path produced
+  identical optimized 1,837,754-byte web and bundler wasm binaries. The prior
+  committed binaries were 2,192,989 bytes.
+- **Documentation gate:** the relative-link checker reports no broken
+  documentation links. The plan is in `documentation/plans/`, not
+  `documentation/plans/completed/`.
+- **Remaining blocker:** an owner must select/adjudicate production anchors
+  from the independent candidate packets. No curve, midpoint, or prior
+  conceptual approval is being treated as that numeric sign-off.
