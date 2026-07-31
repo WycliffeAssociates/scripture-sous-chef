@@ -314,11 +314,34 @@ Rust profiles.
   additions/removals/flips, representative findings, corpus medians/tails and
   correlation, and studies maturity `1/5/28/120/full` in canonical and
   chapter-reversed order. The small deterministic run covers 15 corpora and
-  4,320 data rows plus audit/runtime rows; SHA-256 is
+  4,050 data rows plus audit/runtime rows; SHA-256 is
   `e5922efeeebc71b56427f83e9daec2c2b00516d250fdc76649409acea876db15`.
 - **Owner gate:** no numeric anchor approval is inferred from the settled
   policy decision. WA/full candidate packets and explicit owner adjudication
   remain required before the tables can be called shipped.
-- **Still pending:** optimized release wasm regeneration, generated-package
-  Review Depth smoke coverage, all documentation/link repairs, WA/full
-  candidate packets, and final oracle/release gates.
+- **At the time of this entry, still pending:** optimized release wasm
+  regeneration, generated-package Review Depth smoke coverage, all
+  documentation/link repairs, WA/full candidate packets, and final
+  oracle/release gates. Entry 6 records the later packet completion.
+
+## Entry 6 — independent fleet candidate packets
+
+- **Date:** 2026-07-30
+- **Status:** candidate measurement complete; owner adjudication remains open,
+  so the plan is not complete.
+- **WA candidate packet:** 251 corpora, 19,602 data rows, 270 audit rows, and
+  runtime 228,578 ms. SHA-256:
+  `d2bfcd0cd53c4c3307102619a04e762f6d2673b42f72bb0be37ecaad064eb3c1`.
+- **Full candidate packet:** 1,504 corpora, 87,264 data rows, 270 audit rows,
+  and runtime 1,597,815 ms. SHA-256:
+  `8907f5d605660042dfbf0ad1bd6a487fe1d790a98a0c46a75c6cc3f6b0ecde20`.
+- **Reproducible row math:** full is
+  `1504 × 2 × 3 × 3 × 3 + 28 × 8 × 3 × 3 = 87,264`; WA is
+  `251 × 2 × 3 × 3 × 3 + 28 × 8 × 3 × 3 = 19,602`. The first term is the
+  full-maturity canonical/reverse fleet; the second is the extra
+  `1/5/28/120` ladder for the first 28 corpora, across three rules and a 3×3
+  candidate grid.
+- **Interpretation:** the packets now supply the plan's unusualness/support
+  grid, adjacent-cell deltas, maturity/order study, corpus medians/tails,
+  representative findings, and correlation audit. They do not select or
+  approve production anchors; that explicit owner gate is still blocking.

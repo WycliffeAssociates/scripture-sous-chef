@@ -31,8 +31,8 @@ cargo run --release -p ssc-core --example calibrate -- --build-blob corpora/vref
 
 | TSV | Corpora | Data rows | SHA-256 |
 | --- | ---: | ---: | --- |
-| small candidate sweep | 15 | 4,320 data rows plus audit/runtime rows | `e5922efeeebc71b56427f83e9daec2c2b00516d250fdc76649409acea876db15` |
-| WA candidate sweep | pending owner-review packet | pending | pending |
+| small candidate sweep | 15 | 4,050 data rows plus audit/runtime rows | `e5922efeeebc71b56427f83e9daec2c2b00516d250fdc76649409acea876db15` |
+| WA candidate sweep | 251 | 19,602 data rows plus audit/runtime rows | `d2bfcd0cd53c4c3307102619a04e762f6d2673b42f72bb0be37ecaad064eb3c1` |
 
 The full-fleet command is the same candidate survey command with `corpora/vref`
 and the `full` tier:
@@ -41,9 +41,17 @@ and the `full` tier:
 ./target/release/examples/calibrate --review-depth-survey corpora/vref /tmp/review-depth.full.candidates.tsv full
 ```
 
-It covers 1,504 corpora; its data rows and SHA-256 remain pending until the
-candidate packet is regenerated and reviewed. The WA packet remains useful as
-the faster review fixture; the full fleet is required before endpoint selection.
+It covers 1,504 corpora and 87,264 data rows plus audit/runtime rows; its
+SHA-256 is `8907f5d605660042dfbf0ad1bd6a487fe1d790a98a0c46a75c6cc3f6b0ecde20`.
+The WA packet remains useful as the faster review fixture; both packets are
+evidence for owner endpoint selection, not approval of the current tables.
+
+The survey runtimes were 228,578 ms for WA and 1,597,815 ms for the full
+fleet. The full output contains 270 corpus-audit rows and one runtime row; the
+data-row count is `1504 × 2 × 3 × 3 × 3 + 28 × 8 × 3 × 3 = 87,264` because the
+first 28 corpora receive eight ladder/order views and the remaining corpora
+receive two full-maturity order views. The same formula gives
+`251 × 2 × 3 × 3 × 3 + 28 × 8 × 3 × 3 = 19,602` for WA.
 
 ## Reproducible math
 
