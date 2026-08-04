@@ -1,15 +1,17 @@
-//! Punctuation signals.
+//! Punctuation signals — **extractors only**. Nothing in this module judges.
 //!
-//! `punct.spacing-anomaly` is a corpus-relative typed substrate: it retains
-//! per-book counts and chapter-local sites; ordered reduction maintains corpus
-//! evidence and judges patch only affected resident findings. Spans always
-//! slice offending characters from verse text.
+//! It owns three walks with no rule of their own, all read by the census:
 //!
-//! The module also owns two extractors with no rule of their own: the
-//! adjacent-punctuation run walk ([`adjacency_runs_all`]) and the per-lead-glyph
-//! run-start count ([`count_lead_opportunities`]), both read by the census
-//! (`punct.runs`). They outlived `punct.adjacency-anomaly`, whose deletion
-//! absorbed the judging into `uni.nonletter-usage-anomaly`.
+//! - the adjacent-punctuation run walk ([`adjacency_runs_all`]) and the
+//!   per-lead-glyph run-start count ([`count_lead_opportunities`]) → `punct.runs`;
+//! - the per-mark per-side class-conditioned attached/spaced walk
+//!   ([`SpacingAcc`], with [`for_each_spacing_opportunity`] as its independent
+//!   batch reference) → `punct.mark-spacing`.
+//!
+//! They outlived `punct.adjacency-anomaly` and `punct.spacing-anomaly`, whose
+//! deletion absorbed all the judging into `uni.nonletter-usage-anomaly`.
+//! `punct.bracket-balance`, the only rule left in the `punct.` namespace, lives
+//! in `bracket_balance.rs`.
 
 use std::collections::BTreeMap;
 

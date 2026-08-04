@@ -1672,3 +1672,203 @@ The pattern is now established by (1): core surfaces → wire (retire the
 discriminant, never reuse) → regenerate JS + vectors → wasm projection → dev
 surfaces → living docs, verifying `cargo test --workspace` plus the three node suites
 at each step.
+
+---
+
+## Entry 18 — checkpoint 4 CLOSED: all three rules deleted, drift summary written
+
+- **Date:** 2026-08-04
+- **Status:** the deletion series is complete. `punct.adjacency-anomaly`
+  (`b7923f7`) and `punct.spacing-anomaly` (`1246d52`) are gone with every closed
+  surface, following the pattern Entry 17 established. The drift summary is a
+  durable artifact. Tree green at every commit. **No oracle dump was run** —
+  checkpoint 5 owns the bookends, and the drift is intentional by construction.
+
+### The two commits
+
+| commit | rule | shape |
+| --- | --- | --- |
+| `b7923f7` | `punct.adjacency-anomaly` | 34 files, +183 / −1,865 |
+| `1246d52` | `punct.spacing-anomaly` | 32 files, +240 / −3,731 |
+
+Both message bodies enumerate every removed surface; this entry records only what
+a reader cannot get from them.
+
+### The census carve-outs held, and one moved type
+
+Both flagged census dependencies survive and the census's output is unchanged:
+
+- **adjacency:** `adjacency_runs_all` + `count_lead_opportunities` stay. What went
+  with the rule is the `include_safe` **parameter** and `adjacency_candidates`: the
+  known-safe subtraction (`...`, `--`, `?!`, `!?`, `?`-runs) was the rule's judging
+  policy, and the census only ever called the unfiltered path. So the surviving
+  extractor is the same walk with the dead branch removed — byte-identical output,
+  one fewer concept. Its test battery moved with it, rewritten to pin the surviving
+  semantics (the formerly-exempt patterns are now asserted *present*).
+- **spacing:** `SpacingAcc`/`PendingSeam`, `SIDE_CELLS`, `mark_attached_spaced`,
+  `BookPunctuationSpacing`, `SpacingSite`, `SideRead`,
+  `RawOpportunity`/`RightState`/`walk_opportunities`, `is_candidate_mark`,
+  `neighbour_class`, `is_spacing_ws` all stay.
+- **`SpacingForm`/`SpacingClass` moved** from `diagnostics.rs` into
+  `signals::punctuation` as `pub(crate)`, as flagged. They were on the public args
+  surface *because the rule published them*; the surviving extractor needs them for
+  cell indexing. The two serde byte-pin tests that guarded those published strings
+  went with the args variant they guarded — that surface no longer exists.
+
+`punctuation.rs` now judges nothing: 4,280 → 1,010 lines, three extractor walks
+and no rule. The `punct.` namespace holds one rule, `punct.bracket-balance`, which
+lives in `bracket_balance.rs`.
+
+### Deletions beyond the named lists, each with its reason
+
+1. **`evidence::odds_amplify` and its test.** ADR 0031's run-length odds amplifier
+   had exactly one consumer — adjacency's length gain — and became dead with it.
+   The evidence-library module doc and the config reference's evidence paragraph
+   were corrected in the same commit.
+2. **`catalog::message`'s `pct` helper.** Only the spacing message interpolated a
+   percentage.
+3. **The batch spacing reference walk is now `#[cfg(test)]`** —
+   `for_each_spacing_opportunity`, `spacing_opportunities`, `verse_edge_classes`.
+   Nothing in production reads it, but it is the **independent** implementation the
+   streaming `SpacingAcc` is checked against, so it is kept rather than deleted.
+   `spacing_corpus_cells` (the authority the census lane's equivalence test
+   compares to) was re-pointed onto that batch walk instead of the deleted
+   substrate, so `census::mark_spacing_matches_rule_tallies` stays a real
+   cross-check between two implementations rather than becoming a tautology.
+4. **Dev calibration spikes for the retired rules:** `survey/pooled.rs` (the ADR
+   0054 Design-A-vs-B spike), `survey/signatures.rs` (attachment signatures),
+   `--spacing-sweep`, `--punct`, and the fleet report template's rule cards.
+5. **`survey/nonletter_ledger.rs` and the probe's old-rule overlap lane.** The
+   ledger's whole subject was the three retired rules; with the last one gone it
+   has nothing to compare. Its gate was discharged end-to-end at the final
+   constants (Entry 17) and the durable TSV under `documentation/calibration/` is
+   the record. The probe's `--nonletter overlap` argument and its decision-8
+   default-on table went the same way, for the same reason.
+6. **Review Depth candidate survey:** the spacing pilot rows. The two casing pilots
+   stay; the replacement's depth anchors were calibrated in its own probe against
+   its own knob shape, so this survey is not where they are re-derived.
+
+### Test successorship — deliberate, and worth naming
+
+Several invariant tests were witnessed *through* the spacing rule because it was
+the mapped, corpus-relative substrate with real cross-chapter boundary state. That
+role is now the nonletter substrate's, so the witnesses moved rather than being
+deleted:
+
+- `CacheProbe`'s `spacing_{mapped,reduced,judged,map_route}` row is renamed
+  `nonletter_*` and reads the nonletter substrate. It carries a comment saying so.
+- `lib.rs`'s four scheduler invariants (one-chapter edit maps exactly that chapter
+  for every active participant; a judging-only change maps and reduces nothing;
+  enabling one rule maps only its own substrate; a reference-only edit maps
+  reference consumers only) all keep their witness this way.
+- Galley's `nonletter_knob_change_is_substrate_local` and
+  `nonletter_toggle_off_and_on_is_substrate_local` (was `spacing_*`) likewise.
+- `substrate.rs`'s `active_set_follows_the_final_config` re-pointed to
+  `uni.rare-glyph` (another default-off sole-consumer substrate); the generic
+  driver's three synthetic substrates re-pointed their `ID` to
+  `SubstrateId::Bracket` (an id is a cache key for them, nothing more).
+- The `a_target_only_substrate_cannot_see_the_chapters_pairing` guard re-pointed
+  from `AdjacencySubstrate` to `BracketSubstrate` — a tape-only target-only
+  substrate, matching the `PrepNeeds::TAPE` prep the test builds.
+
+**One test needed a real corpus change, not a rename.** Galley's toggle test used
+a 4-verse synthetic corpus, which the spacing rule fired on and the replacement
+correctly abstains on (placement's pool floor is 30). It now builds 40 verses
+establishing the attached-`,` convention plus one slip. That is the replacement's
+support gates working, not a regression — but it is the shape of trap a
+rule-swap sets for small synthetic fixtures, and it is worth expecting again.
+
+### Defects found and fixed in passing
+
+- **`spike-bench` did not compile**, and `cargo test --workspace` could not see it:
+  it is deliberately its own workspace. Entry 17's commit renamed a `dhat_probe`
+  arm to `"all-no-punct-only-RETIRED"` while leaving its body referencing the
+  deleted `RuleId::PunctOnlyToken`; `chapter_map_threshold` still named both
+  retired ids. Fixed. `dhat_probe` also gained an `all-no-nonletter` arm so the new
+  substrate's retained footprint is measurable by the same paired difference the
+  retired ones used — checkpoint 5 needs it.
+- **Two stale-rule-text leftovers from Entry 17's commit:** `lex.punct-only-token`
+  still had a card in the fleet report template and a live row + digest row in
+  `reference/findings-wire.md`. Both fixed; the wire doc's discriminant registry
+  also gained its missing codes 25/26, and the rules README's retired-rules table
+  gained a row for each of the three retired ids.
+- **`review_depth.rs` had a misindented match arm** left by the punct-only
+  deletion, fixed while editing the same arms.
+- The fleet report template had **no card for the new rule** (it inherits a
+  code-string fallback); it now has one, replacing the spacing card.
+
+### The drift summary
+
+[`documentation/calibration/2026-08-04-nonletter-usage-drift-summary.md`](../calibration/2026-08-04-nonletter-usage-drift-summary.md)
+— working notes for the Phase E ADR, not the ADR. It carries: the final constants;
+the volume drift on **one** consistent zeros-included 1,504-corpus base with the
+defaults rider stated separately; the ledger's `lost = 0` with the reason the
+measurement is against the observed candidate domain rather than a judged run set;
+the three moved populations (1 and 2 accepted, 3 closed by the run-membership
+basis) with the glottal-stop result as the strongest positive case; obligation (b)
+per corpus at ADR 0054's own keep-sets with the **`ayn_reg`-unverified** row
+stated as unverified rather than preserved; obligation (a) discharged at residue 0
+and the record of the `k = 2` ruling being reversed on evidence; **two falsified
+mechanisms** (the flat knee in both directions; class-conditioned topology's
+prediction) plus the methodological finding that the anchor battery was
+structurally blind to the knee and how that is now closed corpus-free; the
+`th3e`/detached-mark **message weakening** as accepted shipped behavior;
+engwebster's 19 at 0.603 as depth behavior; what the rule deliberately does not
+claim; and the follow-ups, including the pooled-table-backoff idea candidate
+recorded but not implemented.
+
+Two things in it are owed at checkpoint 5 rather than now: the depth-0 and
+depth-100 per-corpus rows (the last full-fleet depth sweep predates the
+conditioned-topology axis, so only the depth-50 row is current), and any figure
+the final pins revise.
+
+### Verification, at each commit
+
+- `cargo test --workspace`: green. Final counts 518 core / 25 galley / 24 wire /
+  16 wasm / 1 xtask. (Core fell from 590 because the two rules' own test batteries
+  went with them; every scheduler and substrate-contract invariant kept a witness,
+  per the successorship above.)
+- `cargo test -p ssc-core --features parallel`: green (519).
+- All **three node suites** green at each commit — `findings` 15, `galley` 2,
+  `package` 2 (the verification-list addition Entry 12 asked for).
+- `cargo check -p ssc-wasm --target wasm32-unknown-unknown`: clean.
+- `cargo check -p ssc-core --features bench-probes`: clean.
+- `spike-bench`: `dhat_probe` and `chapter_map_threshold` check clean. **Two
+  pre-existing breaks remain there, both predating this epic:**
+  `replay_distance.rs` calls the removed `analyze_stateful`, and
+  `warm_ladder_profile.rs` indexes a 6-wide `bench::drive_phases()` that is now 4
+  columns (the Entry 5 flag 4 consumer break). Neither is needed before
+  checkpoint 5's dhat run; the 6→4 fix is already on checkpoint 5's list for the
+  sibling playground harness and applies here too.
+- `cargo clippy --workspace --all-targets`: **25 warnings, the pre-existing
+  baseline, none in any touched region.**
+- Generated artifacts regenerated from source at each commit: `cargo xtask
+  wire-js` + `cargo xtask wire-vectors`, with the JS discriminant pins updated.
+- Formatting: touched lines only, verified by intersecting rustfmt's diff with
+  each commit's changed line ranges. The repo baseline is not rustfmt-clean, so no
+  file-wide `cargo fmt` was run.
+
+### Gate E status
+
+| requirement | status |
+| --- | --- |
+| no retired identity in source or generated packages | **PASS** — a sweep for all nine retired symbols/ids across `crates`, `xtask`, `spike-bench/src` returns nothing. Remaining mentions are prose marked "retired", plus frozen `spike-bench/archive/` profile JSONs. |
+| every accepted old-rule fixture preserved or explicitly adjudicated | **PASS** — §6 of the drift summary; `ayn_reg` explicitly unverified |
+| full drift measured and adjudicated | **PASS** — drift summary + Entries 7/9/12/14/16 |
+| new pins approved | **OWED at checkpoint 5** |
+| editor migration | **OWED at checkpoint 6** |
+
+### Next safe step — checkpoint 5
+
+1. Full-fleet default/all findings dumps from `corpora/vref` (scope=full in the
+   filenames), diffed against `before.full.{default,all}.tsv`: every retained
+   rule byte-identical, the retired trio's rows absent, the new rule's rows
+   accounted by the ledger. Re-pin as `after.full.*.tsv` with sha256s.
+2. Resident `ssc-galley` transcript oracle re-pin.
+3. Criterion benches, dhat, fleet timing. **Fix `bench::drive_phases()`'s 6→4
+   consumers first** — `spike-bench/src/bin/warm_ladder_profile.rs` and the
+   sibling playground harness both index the old width.
+4. Regenerate wasm `pkg-web` + `pkg-bundler` + TypeScript declarations from
+   source; all three node suites in the verification set.
+5. Re-measure the depth-0 and depth-100 per-corpus rows the drift summary leaves
+   marked as owed.

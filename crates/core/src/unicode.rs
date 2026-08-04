@@ -98,11 +98,12 @@ pub fn is_decimal_digit(c: char) -> bool {
 /// explicit `Pd` set that occurs in scripture corpora: ASCII hyphen-minus, the
 /// Unicode hyphen/dash block (U+2010..=U+2015), the fullwidth/small-form
 /// variants, and the Armenian, Hebrew, Mongolian, and Canadian-Syllabics
-/// dashes. Widens the `punct.spacing-anomaly` candidate domain beyond `Po`
-/// (ADR 0054 second amendment): a word-medial both-attached `-`/`‑`/maqaf is a
-/// hyphenation convention and stays silent, while a lone spaced dash in such a
-/// corpus is the anomaly. Kept out of the *adjacency* rule's separator class,
-/// which is `Po`-only (`--` em-dash substitutes are legitimate typography).
+/// dashes. Widened the per-mark spacing candidate domain beyond `Po` (ADR 0054
+/// second amendment, for the since-retired `punct.spacing-anomaly`): a
+/// word-medial both-attached `-`/`‑`/maqaf is a hyphenation convention, while a
+/// lone spaced dash in such a corpus is the anomaly. Kept out of the
+/// adjacent-run separator class, which is `Po`-only (`--` em-dash substitutes
+/// are legitimate typography).
 pub fn is_dash_punctuation(c: char) -> bool {
     matches!(
         c,
