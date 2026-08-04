@@ -235,10 +235,12 @@ fn chapter_verses(n: usize) -> u16 {
 /// chapter's own tape.
 fn map_bracket_chapter(chapter: &crate::substrate::ChapterView<'_>) -> BracketChapterObs {
     let mut events: Vec<DelimEvent> = Vec::new();
-    let mut tape = Vec::new();
-    for (vi, text) in chapter.texts.iter().enumerate() {
-        crate::tape::build(text, &mut tape);
-        collect_events(&tape, LocalKeyIdx::from_usize(vi), &mut events);
+    // The chapter's per-verse tapes come from the chapter task rather than a
+    // private per-verse `tape::build`: the same decode+classify result, read
+    // instead of recomputed.
+    let tapes = chapter.tape();
+    for vi in 0..chapter.texts.len() {
+        collect_events(tapes.verse(vi), LocalKeyIdx::from_usize(vi), &mut events);
     }
     BracketChapterObs {
         token: Arc::from(chapter.chapter),
@@ -252,6 +254,8 @@ impl crate::substrate::ObservationSubstrate for BracketSubstrate {
     // Bump on any observation/reduction schema change.
     const SCHEMA_STAMP: u64 = 1;
     type Pairing = crate::substrate::NoReference;
+    // Bracket events are scalar pairing facts read off the chapter's tape.
+    const NEEDS: crate::prep::PrepNeeds = crate::prep::PrepNeeds::TAPE;
 
     type Key = BracketKey;
     /// The unmatched-opener stack — variable size, uncapped (see
@@ -819,89 +823,44 @@ struct BracketMapWork<'a> {
     view: crate::substrate::ChapterView<'a>,
 }
 
-/// Drive the `punct.bracket-balance` observation substrate for one analysis: map the
-/// dirty chapters through the ordered chapter-map seam, replay the ordered reduction
-/// until the unmatched-opener stack converges (or the book ends — `window_verses` is
-/// NOT a pairing cutoff, ADR 0037, so there is no cap), judge each family, and
-/// materialize. When inactive, drop the cached products so an edit while it is
-/// disabled does no work for it.
-pub(crate) fn drive_bracket(
+/// Plan the `punct.bracket-balance` substrate's share of this analysis: enrol it
+/// in the chapter-outer schedule for exactly the chapters whose observation input
+/// stamp moved. When inactive, drop the cached products so an edit while it is
+/// disabled does no work for it, and enrol nothing.
+pub(crate) fn plan_bracket<'a>(
     active: bool,
     cache: &mut crate::substrate::SubstrateCache<BracketSubstrate>,
-    corpus: &Corpus,
-    cfg: &BracketBalanceConfig,
-    out: &mut Vec<Finding>,
-) {
-    use crate::substrate::{
-        ChapterView, DrivePhase, DriveProbe, ObservationInputStamp, ObservationSubstrate,
-    };
+    schedule: &mut crate::schedule::Schedule<'a>,
+) -> Option<crate::schedule::SubstratePlan<'a, BracketSubstrate>> {
+    use crate::substrate::ObservationInputStamp;
     #[cfg(any(test, feature = "test-probes"))]
     cache.reset_probes();
     if !active {
         cache.clear();
-        return;
+        return None;
     }
+    Some(schedule.enrol::<BracketSubstrate>(cache, |_slug, c| {
+        ObservationInputStamp::target_only::<BracketSubstrate>(c.hash, &())
+    }))
+}
+
+/// Reduce, judge and materialize `punct.bracket-balance` from the observations
+/// the chapter-outer scheduler mapped. Reduction replays the ordered carry fold
+/// until the unmatched-opener stack converges, or the book ends — `window_verses`
+/// is NOT a pairing cutoff (ADR 0037), so there is no cap.
+pub(crate) fn finish_bracket(
+    cache: &mut crate::substrate::SubstrateCache<BracketSubstrate>,
+    corpus: &Corpus,
+    cfg: &BracketBalanceConfig,
+    plan: crate::schedule::SubstratePlan<'_, BracketSubstrate>,
+    out: &mut Vec<Finding>,
+) {
+    use crate::substrate::{DrivePhase, DriveProbe, ObservationSubstrate};
     let mut probe = DriveProbe::new(crate::substrate::SubstrateId::Bracket);
-    let texts = corpus.texts();
     let layout = corpus.book_layout();
-    // Borrowed chapter tokens: the layout owns them and outlives the drive, so
-    // the planning pass never allocates. `update_book` takes ownership only
-    // where it rebuilds a persistent cache entry.
-    let mut stamped: Vec<Vec<(&str, ObservationInputStamp)>> = Vec::with_capacity(layout.len());
-    let mut work: Vec<BracketMapWork<'_>> = Vec::new();
-    let mut book_runs: Vec<std::ops::Range<usize>> = Vec::new();
-    let mut work_bytes = 0usize;
+    let crate::schedule::SubstratePlan { stamped, mut slots } = plan;
     for (bi, book) in layout.iter().enumerate() {
-        let run_start = work.len();
-        let mut chapters = Vec::with_capacity(book.chapters.len());
-        for (ci, c) in book.chapters.iter().enumerate() {
-            let stamp = ObservationInputStamp::target_only::<BracketSubstrate>(c.hash, &());
-            if !cache.observation_is_current(&book.slug, &c.chapter, &stamp) {
-                let verses = &texts[c.range.clone()];
-                work_bytes += verses.iter().map(String::len).sum::<usize>();
-                work.push(BracketMapWork {
-                    book: bi,
-                    chapter: ci,
-                    view: ChapterView::target(&c.chapter, verses),
-                });
-            }
-            chapters.push((&*c.chapter, stamp));
-        }
-        if work.len() > run_start {
-            book_runs.push(run_start..work.len());
-        }
-        stamped.push(chapters);
-    }
-    probe.mark(DrivePhase::Plan);
-    let route = crate::rule::map_route(&book_runs, work.len(), work_bytes);
-    #[cfg(any(test, feature = "test-probes"))]
-    {
-        cache.map_route = route.label();
-    }
-    let fresh = crate::rule::map_chapter_work(&work, &book_runs, route, |w| {
-        BracketSubstrate::map_chapter(&w.view, &(), &())
-    });
-    // Back into caller-order `(book, chapter)` slots, so reduction reads them in
-    // corpus order and never in completion order.
-    let mut slots: Vec<Vec<Option<BracketChapterObs>>> = layout
-        .iter()
-        .map(|b| (0..b.chapters.len()).map(|_| None).collect())
-        .collect();
-    for (w, obs) in work.iter().zip(fresh) {
-        slots[w.book][w.chapter] = Some(obs);
-    }
-    probe.mark(DrivePhase::Map);
-    for (bi, book) in layout.iter().enumerate() {
-        cache.update_book(&book.slug, &stamped[bi], &(), |i| {
-            slots[bi][i].take().unwrap_or_else(|| {
-                let c = &book.chapters[i];
-                BracketSubstrate::map_chapter(
-                    &ChapterView::target(&c.chapter, &texts[c.range.clone()]),
-                    &(),
-                    &(),
-                )
-            })
-        });
+        cache.update_book(&book.slug, &stamped[bi], &(), |i| slots.take(bi, i));
     }
     probe.mark(DrivePhase::Reduce);
     // Judge every family in the aggregate. A family is present only because some
@@ -926,6 +885,24 @@ pub(crate) fn drive_bracket(
     probe.mark(DrivePhase::Materialize);
 }
 
+/// The whole substrate on its own, over one caller-held cache — the shape the
+/// per-rule convenience entry points and their tests use. Same planning pass,
+/// same chapter task, same `finish_*`; only the participation mask is narrower.
+pub(crate) fn drive_bracket(
+    active: bool,
+    cache: &mut crate::substrate::SubstrateCache<BracketSubstrate>,
+    corpus: &Corpus,
+    cfg: &BracketBalanceConfig,
+    out: &mut Vec<Finding>,
+) {
+    let mut schedule = crate::schedule::Schedule::new(corpus);
+    let Some(mut plan) = plan_bracket(active, cache, &mut schedule) else {
+        return;
+    };
+    schedule.run_solo::<BracketSubstrate>(&mut plan, &(), &(), |_, _| None);
+    finish_bracket(cache, corpus, cfg, plan, out);
+}
+
 /// Fleet probe for the boundary state's real depth (plan §5.4's measured
 /// retained-size requirement): the maximum unmatched-opener stack this corpus
 /// carries across any chapter seam, and the sum of every seam's depth — the total
@@ -941,8 +918,10 @@ pub fn stack_depth_probe(corpus: &Corpus) -> (usize, usize) {
     for book in corpus.book_layout() {
         let mut carry = BracketBoundary::default();
         for c in &book.chapters {
-            let obs = BracketSubstrate::map_chapter(
-                &crate::substrate::ChapterView::target(&c.chapter, &texts[c.range.clone()]),
+            let obs = crate::schedule::map_chapter_standalone::<BracketSubstrate>(
+                &c.chapter,
+                &texts[c.range.clone()],
+                None,
                 &(),
                 &(),
             );

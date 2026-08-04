@@ -309,7 +309,9 @@ impl ChapterPrep {
     /// task adds, at the moment it is largest.
     #[cfg(any(test, feature = "bench-probes"))]
     pub(crate) fn retained_bytes(&self) -> usize {
-        self.tokens.as_ref().map_or(0, ChapterTokens::retained_bytes)
+        self.tokens
+            .as_ref()
+            .map_or(0, ChapterTokens::retained_bytes)
             + self.tape.as_ref().map_or(0, ChapterTape::retained_bytes)
             + self
                 .graphemes
@@ -760,7 +762,7 @@ mod tests {
             "\u{0915}\u{094D}\u{0937}\u{094D}\u{0923} conjunct chain",
             "\u{0E01}\u{0E48}\u{0E32} ไทย",
             "神說：「要有光」，就有了光。",
-            "\u{1100}\u{1161}\u{11A8} hangul jamo",         // COMPLEX fallback
+            "\u{1100}\u{1161}\u{11A8} hangul jamo", // COMPLEX fallback
             "flag \u{1F1FA}\u{1F1F8} and \u{1F469}\u{200D}\u{1F4BB}", // RI + emoji ZWJ
             "a  b\tc\u{0007}d\u{FEFF}e\u{FFFD}f ??? 12 ४५ a\u{200B}\u{200B}b",
             "<<<<<<< HEAD",

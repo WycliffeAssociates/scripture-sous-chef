@@ -2211,6 +2211,8 @@ impl crate::substrate::ObservationSubstrate for CasingSubstrate {
     // Bump on any observation/reduction schema change.
     const SCHEMA_STAMP: u64 = 1;
     type Pairing = crate::substrate::NoReference;
+    // Casing walks compound word tokens and the gaps between them.
+    const NEEDS: crate::prep::PrepNeeds = crate::prep::PrepNeeds::TOKENS;
 
     type Key = CasingKey;
     type BoundaryState = PositionBoundary;

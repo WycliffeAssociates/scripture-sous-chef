@@ -27,6 +27,7 @@ pub mod key;
 mod prep;
 pub mod review_depth;
 pub mod rule;
+mod schedule;
 pub mod script;
 pub mod signals;
 pub mod span;
@@ -571,6 +572,55 @@ fn transition(
     // resident state, and a whole corpus of encoded streams is not something to
     // retain between analyses.
     let mut shared_tokens = prep::SharedTokens::default();
+
+    // ── The chapter-outer map phase (epic plan §6).
+    //
+    // Every migrated participant is enrolled first, from its own stamps against
+    // its own cache; then ONE work list over the union of their dirty chapters is
+    // mapped through ONE Rayon grain, building each chapter's requested
+    // mechanical views once and dropping them before the worker moves on. Nothing
+    // here reduces, judges or publishes: after the ordered collection each
+    // substrate takes its own observations and finishes independently, exactly as
+    // its own drive used to.
+    //
+    // Substrates not yet migrated keep their own plan/map/finish drive below and
+    // are simply not enrolled. That is a transitional state, not a second
+    // execution model — the pieces are the same.
+    let mut schedule = schedule::Schedule::new(target);
+    let mut adjacency_plan = signals::punctuation::plan_adjacency(
+        active.adjacency,
+        &mut substrates.adjacency,
+        &mut schedule,
+    );
+    let mut punct_only_plan = signals::lexical::plan_punct_only(
+        active.punct_only,
+        &mut substrates.punct_only,
+        &mut schedule,
+    );
+    let mut bracket_plan = signals::bracket_balance::plan_bracket(
+        active.bracket,
+        &mut substrates.bracket,
+        &mut schedule,
+    );
+    let (work, mut mapped) = schedule.run(
+        &schedule::MapContext {
+            words: &substrates.words,
+            per_verse: &per_verse,
+        },
+        |_slug, _chapter| None,
+    );
+    if let Some(plan) = adjacency_plan.as_mut() {
+        schedule::scatter(&work, &mut mapped, plan, |b| b.adjacency.take());
+    }
+    if let Some(plan) = punct_only_plan.as_mut() {
+        schedule::scatter(&work, &mut mapped, plan, |b| b.punct_only.take());
+    }
+    if let Some(plan) = bracket_plan.as_mut() {
+        schedule::scatter(&work, &mut mapped, plan, |b| b.bracket.take());
+    }
+    drop(mapped);
+    drop(work);
+
     signals::punctuation::drive_spacing(
         active.spacing,
         &mut substrates.spacing,
@@ -578,13 +628,15 @@ fn transition(
         &config.punctuation_spacing,
         &mut substrate_lane,
     );
-    signals::punctuation::drive_adjacency(
-        active.adjacency,
-        &mut substrates.adjacency,
-        target,
-        &config.punctuation_adjacency,
-        &mut out,
-    );
+    if let Some(plan) = adjacency_plan {
+        signals::punctuation::finish_adjacency(
+            &mut substrates.adjacency,
+            target,
+            &config.punctuation_adjacency,
+            plan,
+            &mut out,
+        );
+    }
     signals::lexical::drive_repeated_run(
         active.repeated_run,
         &mut substrates.repeated_run,
@@ -593,13 +645,15 @@ fn transition(
         &config.repeated_character_run,
         &mut out,
     );
-    signals::lexical::drive_punct_only(
-        active.punct_only,
-        &mut substrates.punct_only,
-        target,
-        &config.punct_only_token,
-        &mut out,
-    );
+    if let Some(plan) = punct_only_plan {
+        signals::lexical::finish_punct_only(
+            &mut substrates.punct_only,
+            target,
+            &config.punct_only_token,
+            plan,
+            &mut out,
+        );
+    }
     signals::script_mixing::drive_mixed_script(
         active.mixed_script,
         &mut substrates.mixed_script,
@@ -646,13 +700,15 @@ fn transition(
         target,
         &mut out,
     );
-    signals::bracket_balance::drive_bracket(
-        active.bracket,
-        &mut substrates.bracket,
-        target,
-        &config.bracket_balance,
-        &mut out,
-    );
+    if let Some(plan) = bracket_plan {
+        signals::bracket_balance::finish_bracket(
+            &mut substrates.bracket,
+            target,
+            &config.bracket_balance,
+            plan,
+            &mut out,
+        );
+    }
     signals::lexical::drive_duplicate_word(
         active.duplicate_word,
         &mut substrates.duplicate_word,

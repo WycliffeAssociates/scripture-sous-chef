@@ -419,6 +419,8 @@ impl crate::substrate::ObservationSubstrate for ProportionalitySubstrate {
     // not this driver's code — is what makes its reference stamps and paired views
     // constructible at all.
     type Pairing = crate::substrate::SameSlugSameChapter;
+    // Verse lengths and a paired reference lookup: no mechanical view at all.
+    const NEEDS: crate::prep::PrepNeeds = crate::prep::PrepNeeds::NONE;
 
     type Key = RatioKey;
     // Proven from the `Corpus` chapter-token invariant — see `RatioChapterObs`.

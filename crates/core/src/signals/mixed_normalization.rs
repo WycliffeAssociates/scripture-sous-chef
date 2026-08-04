@@ -201,6 +201,9 @@ impl crate::substrate::ObservationSubstrate for NormalizationSubstrate {
     // Bump on any observation/reduction schema change.
     const SCHEMA_STAMP: u64 = 1;
     type Pairing = crate::substrate::NoReference;
+    // Normalization keys equivalent forms by grapheme cluster, and reads the tape
+    // alongside them for the NORM_RELEVANT prefilter.
+    const NEEDS: crate::prep::PrepNeeds = crate::prep::PrepNeeds::GRAPHEMES;
 
     type Key = NormKey;
     // Proven from the listener — see `NormChapterObs`.

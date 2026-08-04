@@ -150,17 +150,20 @@ pub(crate) struct AdjacencySubstrate;
 const _: crate::substrate::SubstrateId =
     <AdjacencySubstrate as crate::substrate::ObservationSubstrate>::ID;
 
-/// One chapter's adjacency map, over the chapter's own tape.
+/// One chapter's adjacency map, over the chapter task's shared scalar tape.
 fn map_adjacency_chapter(chapter: &crate::substrate::ChapterView<'_>) -> AdjacencyChapterObs {
     let mut lead: BTreeMap<char, u64> = BTreeMap::new();
     let mut patterns: BTreeMap<Box<str>, u64> = BTreeMap::new();
     let mut sites: Vec<SiteAddr> = Vec::new();
-    let mut tape = Vec::new();
+    // The chapter's per-verse tapes come from the chapter task rather than a
+    // private per-verse `tape::build`: the same decode+classify result, read
+    // instead of recomputed.
+    let tapes = chapter.tape();
     for (vi, text) in chapter.texts.iter().enumerate() {
         let local_idx = LocalKeyIdx::from_usize(vi);
-        crate::tape::build(text, &mut tape);
-        count_lead_opportunities(&tape, &mut lead);
-        for span in adjacency_candidates(&tape) {
+        let tape = tapes.verse(vi);
+        count_lead_opportunities(tape, &mut lead);
+        for span in adjacency_candidates(tape) {
             *patterns.entry(Box::from(span.slice(text))).or_default() += 1;
             sites.push(SiteAddr::pack(local_idx, span));
         }
@@ -191,6 +194,9 @@ impl crate::substrate::ObservationSubstrate for AdjacencySubstrate {
     // Bump on any observation/reduction schema change.
     const SCHEMA_STAMP: u64 = 1;
     type Pairing = crate::substrate::NoReference;
+    // Adjacency counts lead-glyph opportunities and extracts candidate runs off
+    // the chapter's scalar tape.
+    const NEEDS: crate::prep::PrepNeeds = crate::prep::PrepNeeds::TAPE;
 
     type Key = AdjacencyKey;
     // Proven from the listener — see `AdjacencyChapterObs`.
@@ -494,96 +500,45 @@ impl AdjacencyBookContribution {
     }
 }
 
-/// One chapter the substrate has to map this analysis, as the ordered map seam
-/// sees it: its caller-order `(book, chapter)` slot plus the view mapping reads.
-struct AdjacencyMapWork<'a> {
-    book: usize,
-    chapter: usize,
-    view: crate::substrate::ChapterView<'a>,
-}
-
-/// Drive the `punct.adjacency-anomaly` observation substrate for one analysis:
-/// map the dirty chapters through the ordered chapter-map seam, reduce (the
-/// identity), judge exactly the patterns its retained candidates name, and
-/// materialize. When inactive, drop the cached products so an edit while it is
-/// disabled does no work for it.
-pub(crate) fn drive_adjacency(
+/// Plan the `punct.adjacency-anomaly` substrate's share of this analysis: enrol
+/// it in the chapter-outer schedule for exactly the chapters whose observation
+/// input stamp moved. When inactive (no enabled consumer), drop the cached
+/// products so an edit while it is disabled does no work for it, and enrol
+/// nothing.
+pub(crate) fn plan_adjacency<'a>(
     active: bool,
     cache: &mut crate::substrate::SubstrateCache<AdjacencySubstrate>,
-    corpus: &Corpus,
-    cfg: &PunctuationAdjacencyConfig,
-    out: &mut Vec<Finding>,
-) {
-    use crate::substrate::{
-        ChapterView, DrivePhase, DriveProbe, ObservationInputStamp, ObservationSubstrate,
-    };
+    schedule: &mut crate::schedule::Schedule<'a>,
+) -> Option<crate::schedule::SubstratePlan<'a, AdjacencySubstrate>> {
+    use crate::substrate::ObservationInputStamp;
     #[cfg(any(test, feature = "test-probes"))]
     cache.reset_probes();
     if !active {
         cache.clear();
-        return;
+        return None;
     }
+    Some(schedule.enrol::<AdjacencySubstrate>(cache, |_slug, c| {
+        ObservationInputStamp::target_only::<AdjacencySubstrate>(c.hash, &())
+    }))
+}
+
+/// Reduce, judge and materialize `punct.adjacency-anomaly` from the observations
+/// the chapter-outer scheduler mapped. Reduction is the identity here, but it
+/// still runs through the shared ordered driver, so book folding and the corpus
+/// aggregate replacement are exactly as before.
+pub(crate) fn finish_adjacency(
+    cache: &mut crate::substrate::SubstrateCache<AdjacencySubstrate>,
+    corpus: &Corpus,
+    cfg: &PunctuationAdjacencyConfig,
+    plan: crate::schedule::SubstratePlan<'_, AdjacencySubstrate>,
+    out: &mut Vec<Finding>,
+) {
+    use crate::substrate::{DrivePhase, DriveProbe, ObservationSubstrate};
     let mut probe = DriveProbe::new(crate::substrate::SubstrateId::Adjacency);
-    let texts = corpus.texts();
     let layout = corpus.book_layout();
-    // Borrowed chapter tokens: the layout owns them and outlives the drive, so
-    // the planning pass never allocates. `update_book` takes ownership only
-    // where it rebuilds a persistent cache entry.
-    let mut stamped: Vec<Vec<(&str, ObservationInputStamp)>> = Vec::with_capacity(layout.len());
-    let mut work: Vec<AdjacencyMapWork<'_>> = Vec::new();
-    let mut book_runs: Vec<std::ops::Range<usize>> = Vec::new();
-    let mut work_bytes = 0usize;
+    let crate::schedule::SubstratePlan { stamped, mut slots } = plan;
     for (bi, book) in layout.iter().enumerate() {
-        let run_start = work.len();
-        let mut chapters = Vec::with_capacity(book.chapters.len());
-        for (ci, c) in book.chapters.iter().enumerate() {
-            let stamp = ObservationInputStamp::target_only::<AdjacencySubstrate>(c.hash, &());
-            if !cache.observation_is_current(&book.slug, &c.chapter, &stamp) {
-                let verses = &texts[c.range.clone()];
-                work_bytes += verses.iter().map(String::len).sum::<usize>();
-                work.push(AdjacencyMapWork {
-                    book: bi,
-                    chapter: ci,
-                    view: ChapterView::target(&c.chapter, verses),
-                });
-            }
-            chapters.push((&*c.chapter, stamp));
-        }
-        if work.len() > run_start {
-            book_runs.push(run_start..work.len());
-        }
-        stamped.push(chapters);
-    }
-    probe.mark(DrivePhase::Plan);
-    let route = crate::rule::map_route(&book_runs, work.len(), work_bytes);
-    #[cfg(any(test, feature = "test-probes"))]
-    {
-        cache.map_route = route.label();
-    }
-    let fresh = crate::rule::map_chapter_work(&work, &book_runs, route, |w| {
-        AdjacencySubstrate::map_chapter(&w.view, &(), &())
-    });
-    // Back into caller-order `(book, chapter)` slots, so reduction reads them in
-    // corpus order and never in completion order.
-    let mut slots: Vec<Vec<Option<AdjacencyChapterObs>>> = layout
-        .iter()
-        .map(|b| (0..b.chapters.len()).map(|_| None).collect())
-        .collect();
-    for (w, obs) in work.iter().zip(fresh) {
-        slots[w.book][w.chapter] = Some(obs);
-    }
-    probe.mark(DrivePhase::Map);
-    for (bi, book) in layout.iter().enumerate() {
-        cache.update_book(&book.slug, &stamped[bi], &(), |i| {
-            slots[bi][i].take().unwrap_or_else(|| {
-                let c = &book.chapters[i];
-                AdjacencySubstrate::map_chapter(
-                    &ChapterView::target(&c.chapter, &texts[c.range.clone()]),
-                    &(),
-                    &(),
-                )
-            })
-        });
+        cache.update_book(&book.slug, &stamped[bi], &(), |i| slots.take(bi, i));
     }
     probe.mark(DrivePhase::Reduce);
     // Judge every pattern in the aggregate. Each is named by at least one
@@ -608,6 +563,24 @@ pub(crate) fn drive_adjacency(
         }
     }
     probe.mark(DrivePhase::Materialize);
+}
+
+/// The whole substrate on its own, over one caller-held cache — the shape the
+/// per-rule convenience entry points and their tests use. Same planning pass,
+/// same chapter task, same `finish_*`; only the participation mask is narrower.
+pub(crate) fn drive_adjacency(
+    active: bool,
+    cache: &mut crate::substrate::SubstrateCache<AdjacencySubstrate>,
+    corpus: &Corpus,
+    cfg: &PunctuationAdjacencyConfig,
+    out: &mut Vec<Finding>,
+) {
+    let mut schedule = crate::schedule::Schedule::new(corpus);
+    let Some(mut plan) = plan_adjacency(active, cache, &mut schedule) else {
+        return;
+    };
+    schedule.run_solo::<AdjacencySubstrate>(&mut plan, &(), &(), |_, _| None);
+    finish_adjacency(cache, corpus, cfg, plan, out);
 }
 
 /// `punct.adjacency-anomaly` findings for a whole corpus at a given config, via
@@ -1646,6 +1619,9 @@ impl crate::substrate::ObservationSubstrate for SpacingSubstrate {
     // Bump on any observation/reduction schema change.
     const SCHEMA_STAMP: u64 = 1;
     type Pairing = crate::substrate::NoReference;
+    // Spacing reads neighbour classes and verse-edge classes at grapheme
+    // granularity, so a mark's context can never be half a cluster.
+    const NEEDS: crate::prep::PrepNeeds = crate::prep::PrepNeeds::GRAPHEMES;
 
     type Key = char;
     type BoundaryState = SpacingBoundary;

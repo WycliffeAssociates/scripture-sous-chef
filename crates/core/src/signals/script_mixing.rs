@@ -250,6 +250,8 @@ impl crate::substrate::ObservationSubstrate for MixedScriptSubstrate {
     // Bump on any observation/reduction schema change.
     const SCHEMA_STAMP: u64 = 1;
     type Pairing = crate::substrate::NoReference;
+    // Script mixing is a per-token property.
+    const NEEDS: crate::prep::PrepNeeds = crate::prep::PrepNeeds::TOKENS;
 
     type Key = MixedScriptKey;
     // Proven from the listener — see `MixedScriptCounts`.

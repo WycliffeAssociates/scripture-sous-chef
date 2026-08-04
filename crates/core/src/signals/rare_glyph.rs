@@ -518,6 +518,9 @@ impl crate::substrate::ObservationSubstrate for GlyphSubstrate {
     // Bump on any observation/reduction schema change.
     const SCHEMA_STAMP: u64 = 1;
     type Pairing = crate::substrate::NoReference;
+    // The rare-letter lane walks letter tokens (and their gaps) for the word
+    // detail; the scalar census rides the same verse walk.
+    const NEEDS: crate::prep::PrepNeeds = crate::prep::PrepNeeds::TOKENS;
 
     type Key = GlyphKey;
     /// The forced-position carry, shared with the casing substrate: a chapter's

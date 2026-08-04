@@ -320,6 +320,10 @@ impl crate::substrate::ObservationSubstrate for UntranslatedWordsSubstrate {
     // proportionality) — `SameSlugSameChapter` is a generic pairing type,
     // not proportionality-specific, so it is reused directly here.
     type Pairing = crate::substrate::SameSlugSameChapter;
+    // Target word tokens come from the chapter task; the paired SOURCE verse is
+    // tokenized privately, because reference text is not the chapter's own text
+    // and so is not a chapter-prep product.
+    const NEEDS: crate::prep::PrepNeeds = crate::prep::PrepNeeds::TOKENS;
 
     type Key = WordKey;
     type BoundaryState = ();

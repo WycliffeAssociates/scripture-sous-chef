@@ -287,9 +287,9 @@ pub(crate) struct ChapterView<'a> {
     /// non-`None` value is [`ChapterView::paired`], which will not compile for a
     /// substrate whose registry entry says `TargetOnly`.
     paired: Option<PairedView<'a>>,
-    /// This chapter's shared token stream (plan §5.1's "borrowed immutable views
-    /// to every active mapper"), present only for a substrate whose drive filled
-    /// the shared lane before the map seam.
+    /// This chapter's token streams, present only for a substrate whose
+    /// [`ObservationSubstrate::NEEDS`] declared them and whose chapter task
+    /// therefore built them.
     ///
     /// It is mechanical prep, not evidence: the encoder calls the same
     /// `tokenize_into` the consuming maps used to call themselves, so a stream
@@ -297,6 +297,11 @@ pub(crate) struct ChapterView<'a> {
     /// which chapters are dirty, which rules are on, or what any judge decides
     /// reaches this field.
     tokens: Option<&'a crate::prep::ChapterTokens>,
+    /// This chapter's per-verse scalar tapes, on the same declared-only terms as
+    /// [`tokens`](Self::tokens).
+    tape: Option<&'a crate::prep::ChapterTape>,
+    /// This chapter's per-verse grapheme spans, on the same declared-only terms.
+    graphemes: Option<&'a crate::prep::ChapterGraphemes>,
 }
 
 /// What a reference-declaring substrate reads beyond the target text: this
@@ -326,12 +331,17 @@ impl<'a> ChapterView<'a> {
             texts,
             paired: None,
             tokens: None,
+            tape: None,
+            graphemes: None,
         }
     }
 
-    /// A target-only chapter view carrying the chapter's shared token stream —
-    /// the shape a token-consuming substrate's drive builds, having filled the
-    /// shared lane for its whole dirty work set first.
+    /// A target-only chapter view carrying the chapter's token streams.
+    ///
+    /// TRANSITIONAL: the shape a not-yet-migrated substrate's own drive builds
+    /// from the call-scoped [`crate::prep::SharedTokens`] lane. It disappears with
+    /// that lane, once the last token-reading substrate takes its observations
+    /// from the chapter-outer scheduler instead.
     pub(crate) fn tokened(
         chapter: &'a str,
         texts: &'a [String],
@@ -342,17 +352,64 @@ impl<'a> ChapterView<'a> {
             texts,
             paired: None,
             tokens,
+            tape: None,
+            graphemes: None,
         }
     }
 
-    /// This chapter's shared token stream. A substrate that reads it declares so
-    /// by having its drive fill the lane for every chapter it maps, so the stream
-    /// is always there — the `expect` names a broken drive, not a missing
-    /// feature.
+    /// The view the chapter-outer scheduler hands one participant: exactly the
+    /// mechanical views that substrate's [`ObservationSubstrate::NEEDS`] declared,
+    /// and exactly the reference access its `Pairing` declared.
+    ///
+    /// Both directions are load-bearing. A view the substrate did **not** declare
+    /// is withheld even when the chapter task built it for someone else, so a
+    /// mapper cannot start reading an undeclared input and have it silently work
+    /// whenever an unrelated rule happens to be enabled. A view it **did** declare
+    /// but the task did not build stays `None`, so the accessor's `expect` names
+    /// the broken scheduler contract instead of quietly recomputing.
+    pub(crate) fn scheduled<S: ObservationSubstrate>(
+        chapter: &'a str,
+        texts: &'a [String],
+        prep: &'a crate::prep::ChapterPrep,
+        paired: Option<PairedView<'a>>,
+    ) -> Self {
+        ChapterView {
+            chapter,
+            texts,
+            paired: <S::Pairing as ReferencePairing>::select(paired),
+            tokens: S::NEEDS.tokens.then_some(prep.tokens.as_ref()).flatten(),
+            tape: S::NEEDS.tape.then_some(prep.tape.as_ref()).flatten(),
+            graphemes: S::NEEDS
+                .graphemes
+                .then_some(prep.graphemes.as_ref())
+                .flatten(),
+        }
+    }
+
+    /// This chapter's token streams. A substrate that reads them declares
+    /// [`crate::prep::PrepNeeds::tokens`], so they are always there — the
+    /// `expect` names a broken scheduler contract, not a missing feature.
     pub(crate) fn tokens(&self) -> &'a crate::prep::ChapterTokens {
         self.tokens.expect(
-            "a token-consuming substrate mapped a chapter whose shared token stream its \
-             drive never built — stop and report: the drive's prep contract broke",
+            "a token-consuming substrate mapped a chapter whose token streams were never \
+             built — stop and report: its declared PrepNeeds and the chapter task disagree",
+        )
+    }
+
+    /// This chapter's per-verse scalar tapes, on the same declared-only terms as
+    /// [`tokens`](Self::tokens).
+    pub(crate) fn tape(&self) -> &'a crate::prep::ChapterTape {
+        self.tape.expect(
+            "a tape-consuming substrate mapped a chapter whose scalar tapes were never \
+             built — stop and report: its declared PrepNeeds and the chapter task disagree",
+        )
+    }
+
+    /// This chapter's per-verse grapheme spans, on the same declared-only terms.
+    pub(crate) fn graphemes(&self) -> &'a crate::prep::ChapterGraphemes {
+        self.graphemes.expect(
+            "a grapheme-consuming substrate mapped a chapter whose grapheme spans were never \
+             built — stop and report: its declared PrepNeeds and the chapter task disagree",
         )
     }
 
@@ -373,6 +430,8 @@ impl<'a> ChapterView<'a> {
             texts,
             paired,
             tokens: None,
+            tape: None,
+            graphemes: None,
         }
     }
 
@@ -504,6 +563,17 @@ pub(crate) trait ObservationSubstrate {
     /// [`input_of`]`(Self::ID)`, which
     /// `substrate_pairing_types_pair_with_the_registry` pins.
     type Pairing: ReferencePairing;
+    /// Which chapter-transient mechanical views this substrate's
+    /// [`map_chapter`](Self::map_chapter) reads — the closed prep-needs
+    /// declaration the chapter-outer scheduler unions per chapter (epic plan
+    /// §6.1).
+    ///
+    /// A **scheduling** declaration, not a dependency: it names raw materials
+    /// derived from the chapter's own text, never another substrate. It is a
+    /// compile-time const so the scheduler's union is a closed fact and
+    /// [`ChapterView::scheduled`] can withhold every view this substrate did not
+    /// declare.
+    const NEEDS: crate::prep::PrepNeeds;
 
     /// The judge key — one aggregate/verdict per key (spacing: the mark).
     type Key: Clone + Eq + Ord;
@@ -1576,6 +1646,17 @@ pub(crate) trait ReferencePairing {
     /// and the runtime registry from drifting apart.
     #[allow(dead_code)] // read by the registry-alignment test
     const INPUT: SubstrateInput;
+
+    /// The reference access this pairing grants, given the chapter's pairing as
+    /// the scheduler resolved it.
+    ///
+    /// The chapter-outer scheduler resolves the pairing once per chapter and hands
+    /// the same value to every participant, so *this* is where a target-only
+    /// substrate's inability to read reference text is enforced on that path:
+    /// [`NoReference`]'s implementation discards its argument unconditionally.
+    /// The bound-gated [`ChapterView::paired`] constructor remains the
+    /// compile-time gate for any direct construction.
+    fn select<'a>(paired: Option<PairedView<'a>>) -> Option<PairedView<'a>>;
 }
 
 /// Target text only.
@@ -1583,6 +1664,12 @@ pub(crate) struct NoReference;
 
 impl ReferencePairing for NoReference {
     const INPUT: SubstrateInput = SubstrateInput::TargetOnly;
+
+    /// Structurally discards the pairing: a `TargetOnly` substrate's mapper reads
+    /// `None` from [`ChapterView::paired_view`] however the chapter was paired.
+    fn select<'a>(_paired: Option<PairedView<'a>>) -> Option<PairedView<'a>> {
+        None
+    }
 }
 
 /// Target text plus the reference chapter carrying the same `(slug, chapter token)`.
@@ -1590,6 +1677,10 @@ pub(crate) struct SameSlugSameChapter;
 
 impl ReferencePairing for SameSlugSameChapter {
     const INPUT: SubstrateInput = SubstrateInput::SameSlugSameChapterReference;
+
+    fn select<'a>(paired: Option<PairedView<'a>>) -> Option<PairedView<'a>> {
+        paired
+    }
 }
 
 /// Implemented only by a pairing that actually names a reference region. This is
@@ -1927,6 +2018,9 @@ mod replay {
         const ID: SubstrateId = SubstrateId::Spacing;
         const SCHEMA_STAMP: u64 = 1;
     type Pairing = crate::substrate::NoReference;
+        // A synthetic driver substrate: its map reads the chapter's verse texts
+        // directly, so it requests no mechanical view.
+        const NEEDS: crate::prep::PrepNeeds = crate::prep::PrepNeeds::NONE;
         type Key = String;
         type BoundaryState = ();
         type ChapterObservation = String;
@@ -1979,6 +2073,9 @@ mod replay {
         const ID: SubstrateId = SubstrateId::Spacing;
         const SCHEMA_STAMP: u64 = 2;
     type Pairing = crate::substrate::NoReference;
+        // A synthetic driver substrate: its map reads the chapter's verse texts
+        // directly, so it requests no mechanical view.
+        const NEEDS: crate::prep::PrepNeeds = crate::prep::PrepNeeds::NONE;
         type Key = String;
         type BoundaryState = Option<char>;
         type ChapterObservation = String;
@@ -2354,6 +2451,9 @@ mod replay {
         const ID: SubstrateId = SubstrateId::Spacing;
         const SCHEMA_STAMP: u64 = 3;
     type Pairing = crate::substrate::NoReference;
+        // A synthetic driver substrate: its map reads the chapter's verse texts
+        // directly, so it requests no mechanical view.
+        const NEEDS: crate::prep::PrepNeeds = crate::prep::PrepNeeds::NONE;
         type Key = String;
         type BoundaryState = Option<Box<str>>;
         type ChapterObservation = TokenedObs;

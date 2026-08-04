@@ -496,6 +496,8 @@ impl crate::substrate::ObservationSubstrate for MixedCaseSubstrate {
     // Bump on any observation/reduction schema change.
     const SCHEMA_STAMP: u64 = 1;
     type Pairing = crate::substrate::NoReference;
+    // Mixed case is a per-token case-shape property.
+    const NEEDS: crate::prep::PrepNeeds = crate::prep::PrepNeeds::TOKENS;
 
     type Key = MixedCaseKey;
     type BoundaryState = ();
