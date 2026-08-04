@@ -573,7 +573,6 @@ pub(crate) fn finish_mixed_script(
     probe.mark(DrivePhase::Materialize);
 }
 
-
 /// The whole substrate on its own, over one caller-held cache — the shape the
 /// per-rule convenience entry point and its tests use. Same planning pass, same
 /// chapter task, same `finish_*`; only the participation mask is narrower.
