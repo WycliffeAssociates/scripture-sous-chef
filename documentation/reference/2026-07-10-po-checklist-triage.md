@@ -205,3 +205,22 @@ From the triage's **ASK PO** rows: "Extra text / unmarked text" and
 "Optional text or untagged footnote" — meaning unclear; probably
 text-outside-any-marker → onion territory, but confirm with the PO before
 routing anywhere.
+
+
+
+space around punct - spacing-anomaly
+space aroud punct
+repeated words
+unpaired delimiters - learn what actually gets paired first and look for pairing. What's the "pairing" threshold is the question I suppose?
+unmatched angle bracket - above same. Does it pair, if not, other rule
+free-floating-mark - combining-mark-without base etc; Though I did type a ´ in my editor and got no results
+orphaned punct - punc only token (i.e. should this one actually roll into our new rule as well), i.e. likely returned as the product of "$glyph" never appears detached on both sides?
+Universally wrong - hygiene
+Repeated/doubled -> Learned via proposed rule? 
+Punctuation after quote mark
+phrase-ending (product of clinging side + capitalizaiton?)
+word-medial - 
+
+
+
+Reading:Rare-glyph / rare-letter rule — SHIPPED as uni.rare-glyph (ADR 0053; reduce page table ADR 0056). The Hawaiian case (Latn keyboard, 13-letter alphabet, a stray q): corpus-learned letter frequency, established-inventory × minority-recurrence two-factor shape, no hardcoded bad-character list. Shares its walk with the census letters.glyphs lane as planned.
