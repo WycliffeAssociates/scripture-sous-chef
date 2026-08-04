@@ -392,3 +392,119 @@ only at the end.
   over the full 1,504-corpus fleet per plan §9, and the calibration packet under
   `documentation/calibration/`. No live `RuleId`, config, catalog or wire
   behavior until the mediator adjudicates Gate 1.
+
+---
+
+## Entry 6 — checkpoint 3: the calibration packet
+
+- **Date:** 2026-08-04
+- **Status:** probe complete, packet delivered, **STOPPED for Gate 1
+  adjudication**. Nothing live changed: no `RuleId`, config, catalog, wire
+  discriminant, localization, or default. The only source added is a dev-only
+  survey module.
+- **Packet:** [`documentation/calibration/2026-08-04-nonletter-usage-probe.md`](../calibration/2026-08-04-nonletter-usage-probe.md)
+- **Durable raw output:** [`documentation/calibration/2026-08-04-nonletter-usage-fleet-survey.tsv`](../calibration/2026-08-04-nonletter-usage-fleet-survey.tsv)
+- **Probe:** `crates/core/examples/calibrate/survey/nonletter.rs`, CLI
+  `--nonletter <dir|file> [overlap]`
+- **Fleet run:** 1,504 corpora, 66–107 s wall on 10 cores including the
+  overlap ledger's three extra whole-corpus rule passes per corpus.
+
+### Headline results
+
+- **`lost = 0`.** Of 40,859 findings the three retired rules produce fleet-wide
+  at shipped defaults, the probe observes a candidate at **every span**. The
+  candidate domain is a strict superset of all three old domains.
+- Ledger: 13.2% preserved exactly, 8.6% preserved as a coalesced run span,
+  78.2% intentionally moved, 0.000% lost. Broken out per retired rule in the
+  packet.
+- Retained cost: **1.1 KB/chapter p50, 2.5 KB p90, 5.9 KB p99** — plan §7.5's
+  retained-compact-sites preference is supported; no materialization re-scan
+  needed.
+- Composed volume is monotone across floors with no cliffs or dead ranges:
+  p50 26 at 0.50 / 14 at 0.75 / 6 at 0.90.
+- Volume is stable across corpus maturity (p50 24 small vs 34 mature), so the
+  exposure gate is working — small corpora are not the flood risk.
+
+### Three model errors the probe FALSIFIED
+
+Each was found by printing the raw leave-one-out counts next to every score;
+none would have been visible from a composed `max` alone.
+
+1. **`Topology::of(Internal, Internal) = Neither` — rejected.** It pooled
+   "detached from content on both sides" with "interior of a nonletter run".
+   `?!"`'s `!` then scored placement 0.999 on evidence `0/1601`. Topology now
+   abstains when neither side is observable, exactly as each side marginal
+   already did. 1.06% of fleet occurrences are run-interior.
+2. **Exact glyph keying for directed pairs — rejected.** `3,930` is a five-member
+   nonletter run, so the comma's pair table split across all ten digits and
+   `, → 9` was a singleton in a corpus using numeric grouping constantly:
+   sequence 1.000 on evidence `0/54722`. Digit pooling took the fleet from 73,998
+   to 41,343 hits and made the `1,000` anchor go quiet.
+3. **Continuation keyed off `run.chars().count() == run_len` — rejected.** That
+   predicate is true of any run of single-scalar graphemes, so `,"` was judged
+   against the comma's *same-glyph* run histogram and scored 1.000 on the most
+   established pairing in English. An explicit `same_run` flag replaced it.
+
+A fourth, smaller defect was fixed during the clippy pass: the coalesced emitted
+span was reconstructed by walking `run.chars()`, which is wrong as soon as a run
+member is a multi-scalar grapheme. The run's start byte is now recorded directly.
+The re-run after that fix produced **byte-identical** survey output.
+
+### Strongest single validation
+
+In Mayan and Tupí–Guaraní corpora (`kbq`, `gubBl`, `cac`, `gun`) the apostrophe
+is a **glottal stop — an orthographic letter** — and its `Both` topology is
+57–97% dominant. The engine classifies it `Quote` via the fused QUOTE bit, but
+the convention-learned model goes silent there with no allow-list and no script
+special-casing, while the curly pair `“`/`”` shows exactly the complementary
+EndOnly/StartOnly split the four-state model was introduced to capture. A fixed
+prior about apostrophes would have flooded those corpora.
+
+### The one genuine coverage hole found
+
+`WA-as-ulb` `JOS 12:24` `*******` and `JOB 7:21` `****` — obvious wreckage, flagged
+by both retired adjacency and punct-only, and the probe emits nothing: rarity
+`knee(10, k=8) = 0`, placement sees `Neither` as `*`'s only topology, and
+continuation abstains below its support floor. All three channels correctly
+decline. Options are in packet §13 item 5; **this needs a Gate 1 decision before
+the live rule because two of the three options change the substrate's retained
+observations.**
+
+### Reminders honoured
+
+- Leave-one-out everywhere: the occurrence under judgment is removed from both
+  numerator and denominator. Singleton / seen-twice / seen-4× decay monotonically
+  (1.000 / 0.875 / 0.625) and a 1/1 medial `*` makes placement **abstain** rather
+  than concluding it is the corpus convention.
+- Every channel reported separately, before composition, with abstention shares
+  so an abstention is never read as a zero.
+- `<range>` placeholders are dropped by `vref_io::load_corpus` before a `Corpus`
+  exists, so they enter no denominator. Stated explicitly in the survey output.
+- Equal-corpus p50/p90/p99 throughout; small-vs-mature split; corpus-weighted
+  tail (which shows the tail is driven by **sequence**, not rarity).
+- Ledger classifies every old finding and is broken out per retired rule, with
+  40 named examples; losses would have been named but there are none.
+- All plan §9 anchor cases present, plus quote four-state topology, retained
+  bytes/chapter, and rejected formulas with what falsified them.
+
+### Verification
+
+- `cargo test -p ssc-core`: 552 pass (unchanged — the probe adds no library
+  code). `cargo clippy -p ssc-core --all-targets`: **zero** warnings in
+  `nonletter.rs`.
+- The engine was not touched, so no oracle re-dump is required or performed.
+
+### Deviations
+
+- The packet's §13 makes **recommendations** on the seven open Gate 1 items but
+  takes none of them; each is presented with the sweep evidence needed to decide
+  against it.
+- The sequence channel is flagged as the one that most needs an owner call: its
+  Wilson dominance is uninformative at these denominators (always ≈1), so the
+  knee `k` is doing all the work and the channel is closer to binary than graded.
+
+- **Next safe step:** WAIT for Gate 1 adjudication. On receipt, checkpoint 4 —
+  implement `NonletterUsageSubstrate` and `uni.nonletter-usage-anomaly` per the
+  adjudicated decisions (rule math test-first, plan §14.2), then delete the three
+  retired rules and all their surfaces in one reviewable series, and produce the
+  durable full-fleet old/new overlap TSV.

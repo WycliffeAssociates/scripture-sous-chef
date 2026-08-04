@@ -1,0 +1,234 @@
+# nonletter fleet survey
+corpora=1504
+corpora with zero candidates (excluded from rate stats)=0
+eligible corpora=1504
+`<range>` placeholder lines are dropped by the vref reader before a Corpus exists, so they never enter any denominator here.
+
+## equal-corpus opportunity distributions (one value per corpus)
+metric	p50	p90	p99
+total_graphemes	1291670	3737695	5341761
+candidate_occurrences	39144	135917	315580
+distinct_glyphs	23	30	37
+hygiene_graphemes	0	0	468
+baseless_marks	0	0	1
+retained_bytes	323414	1108511	2544392
+retained_bytes_per_chapter	1103	2529	5934
+
+## per-channel finding counts per corpus (floor 0.50) — equal-corpus
+channel	p50	p90	p99	fleet_total	corpora_firing
+absolute_rarity	6	20	32	12334	1203
+placement	7	16	30	11892	1426
+sequence	11	46	77	27127	1391
+max(composed)	26	71	106	51064	1496
+
+## channel abstention share of candidate occurrences (equal-corpus median)
+channel	p50_share	p90_share
+absolute_rarity	0.0000	0.0000
+placement	0.0069	0.0261
+sequence	0.9403	0.9922
+
+## composed-score counts by emission floor (Review Depth anchor evidence)
+floor	p50	p90	p99	fleet_total
+0.50	26	71	106	51064
+0.75	14	38	58	26740
+0.90	6	18	31	12301
+
+## small (<8000 verses) vs mature corpora
+small	corpora=1104	candidates_p50=33418	hits_p50=24	hits_p90=70	rarity_abstain_p50=0.0000
+mature	corpora=400	candidates_p50=116334	hits_p50=34	hits_p90=72	rarity_abstain_p50=0.0000
+
+## corpus-weighted tail — the 20 corpora with the most composed hits
+id	verses	candidates	distinct	rarity	placement	sequence	max	per_10k_cand
+WA-am-ulb	31079	110308	49	22	43	162	227	20.58
+portft	7896	54282	39	26	44	146	213	39.24
+WA-dso-ulb	7928	29534	44	25	34	137	195	66.03
+WA-lo-ulb	31081	137459	34	15	29	105	149	10.84
+WA-tel-x-onda-reg	4022	48314	32	6	52	78	136	28.15
+swe	11913	138130	33	7	19	110	134	9.70
+WA-tel-x-piya-reg	4015	54530	39	14	44	75	132	24.21
+dan1931	31059	145323	31	0	8	122	130	8.95
+WA-lel-reg	7941	54281	31	6	37	80	122	22.48
+eng-t4t	30635	188174	36	0	30	87	117	6.22
+WA-dje-reg	7954	26905	37	31	18	70	116	43.11
+WA-tpi-ulb	31085	115163	33	24	17	73	114	9.90
+WA-es-419-ulb	31100	130570	33	10	24	78	112	8.58
+WA-mhi-x-burolo-reg	7626	48964	33	11	34	65	109	22.26
+WA-ilo-udb	30799	141552	33	21	28	59	108	7.63
+WA-bwg-reg	7943	29271	30	35	8	63	106	36.21
+npiulb	31097	107347	37	18	27	61	106	9.87
+WA-ha-ulb	31098	137921	34	17	16	73	105	7.61
+WA-hts-reg	7955	34995	32	16	14	75	105	30.00
+tczchongthu	31051	131952	30	8	30	67	105	7.96
+
+## absolute rarity sweep (equal-corpus per-corpus counts)
+knee_k/min_exposure	p50@.50	p90@.50	p99@.50	fleet@.50	p90@.90	fleet@.90
+k=2/exp>=0	2	8	14	4534	4	2240
+k=2/exp>=2000	2	8	14	4534	4	2240
+k=4/exp>=2000	3	12	19	7093	4	2240
+k=8/exp>=0	6	20	32	12343	4	2240
+k=8/exp>=2000	6	20	32	12334	4	2240
+k=8/exp>=10000	6	19	32	11658	4	2164
+k=16/exp>=2000	14	38	59	24981	8	4534
+k=32/exp>=2000	32	72	105	52665	16	9589
+
+## placement sweep (equal-corpus per-corpus counts)
+min_pool/knee_k	p50@.50	p90@.50	p99@.50	fleet@.50	p90@.90	fleet@.90
+pool>=10/k=4	4	9	19	6884	5	3452
+pool>=30/k=4	3	8	15	5720	4	2852
+pool>=30/k=8	7	16	30	11892	4	2852
+pool>=30/k=16	14	30	55	23297	8	5361
+pool>=100/k=8	5	14	24	9820	3	2246
+pool>=100/k=16	11	25	49	19639	7	4566
+pool>=300/k=16	8	21	39	15400	5	3546
+
+## sequence (pairs + continuation) sweep (equal-corpus per-corpus counts)
+keying/denominator/min_leads/knee_k	p50@.50	p90@.50	p99@.50	fleet@.50	p90@.90	fleet@.90
+exact/all-lead/leads>=30/k=8	34	126	195	73998	27	18906
+exact/leads-run/leads>=30/k=8	20	108	169	55043	21	12887
+pool#/all-lead/leads>=30/k=8	22	58	97	41343	17	11414
+pool#/leads-run/leads>=30/k=2	3	12	23	7271	12	7271
+pool#/leads-run/leads>=30/k=8	11	46	77	27127	12	7271
+pool#/leads-run/leads>=100/k=8	6	28	57	16065	8	4590
+pool#/leads-run/leads>=300/k=8	3	18	38	9377	5	2671
+pool#/leads-run/leads>=300/k=32	10	51	125	29260	17	8518
+
+## composed hits by candidate class (fleet totals, floor 0.50)
+class	occurrences	hits	hits_per_10k_occ
+digit	4320431	14241	32.96
+quote	19236962	10153	5.28
+punct	70518271	25436	3.61
+symbol	1209874	935	7.73
+other	607049	299	4.93
+
+## four-state topology distribution over all candidate occurrences
+state	fleet_count	share
+Neither	6081222	0.06342
+StartOnly	65394296	0.68195
+EndOnly	6260122	0.06528
+Both	17142286	0.17877
+(no topology: run-interior)	1014661	0.01058
+
+## four-state topology restricted to the QUOTE class (the direction-ambiguous case the state exists for)
+state	fleet_count	share_of_quote_occurrences
+Neither	2771353	0.14406
+StartOnly	3474397	0.18061
+EndOnly	4532145	0.23560
+Both	8324504	0.43273
+(no topology: run-interior)	134563	0.00700
+
+## per-quote-glyph four-state spread — the 6 most quote-heavy corpora
+(a straight quote reads EndOnly opening and StartOnly closing, so BOTH marginals look ordinary while `Both` stays rare — which is the whole argument for keeping the state)
+corpus	glyph	Neither	StartOnly	EndOnly	Both	interior	Both_share
+cac	'	0	147243	0	192623	0	0.56676
+cac	“	0	0	33	0	0	0.00000
+cac	”	7	24	0	0	2	0.00000
+aguBl	'	0	70553	1	163655	0	0.69876
+aguBl	”	1397	70	595	0	8	0.00000
+aguBl	“	152	0	1628	0	0	0.00000
+aguBl	’	469	18	25	0	1	0.00000
+kbq	'	0	4870	1596	215971	0	0.97093
+gun	'	0	0	21956	176320	0	0.88927
+gun	“	77	0	2912	0	0	0.00000
+gun	”	675	2191	0	0	2	0.00000
+gun	‘	1	0	414	0	0	0.00000
+gubBl	'	0	0	15537	179794	0	0.92046
+zavNT	'	0	100370	0	61975	0	0.38175
+zavNT	“	27	0	471	0	0	0.00000
+zavNT	”	409	49	0	0	39	0.00000
+
+## singleton and seen-twice behavior (self-licensing)
+singleton_glyph_types p50=1 p90=4; they produce hits p50=1 p90=4 (fleet 2240)
+seen_twice_glyph_types p50=0 p90=2; they produce hits p50=0 p90=4 (fleet 2294)
+
+## old-rule overlap ledger, PER RETIRED RULE (fleet totals)
+old findings (3 retired rules, shipped defaults) = 40859
+old_rule	total	preserved	coalesced	intentionally_moved	lost	lost_share
+punct.adjacency-anomaly	9354	4100	812	4442	0	0.00000
+lex.punct-only-token	4481	704	0	3777	0	0.00000
+punct.spacing-anomaly	27024	607	2701	23716	0	0.00000
+
+disposition	count	share_of_all_old_findings
+preserved	5411	0.13243
+duplicate-coalesced	3513	0.08598
+intentionally-moved	31935	0.78159
+lost	0	0.00000
+
+## corpora with the most LOST old findings
+id	old_total	lost
+
+## named examples — LOST and INTENTIONALLY-MOVED old findings
+corpus	old_rule	disposition	key	span	context
+(no LOST findings anywhere in the fleet)
+WA-ach-SS-acholi-reg	punct.spacing-anomaly	intentionally-moved	MAT 6:23	!	…i colle doŋ bedo rom mene!…
+WA-ach-SS-acholi-reg	punct.spacing-anomaly	intentionally-moved	MAT 10:25	?	…ki nyiŋ marac ma rom mene?…
+WA-ach-SS-acholi-reg	punct.spacing-anomaly	intentionally-moved	MAT 23:24	!	…noŋo pe wuŋeyo ni tye iye!…
+WA-ach-SS-acholi-reg	punct.spacing-anomaly	intentionally-moved	LUK 12:56	?	…ko kin lanyut me kare man?…
+WA-ach-SS-acholi-reg	punct.spacing-anomaly	intentionally-moved	ACT 26:8	?	…ye ni Lubaŋa cero jo muto?…
+WA-ach-SS-acholi-reg	punct.spacing-anomaly	intentionally-moved	ROM 3:5	? 	…r pi keto akemone i komwa? (Man atye ka lok i kit …
+WA-acq-reg	punct.adjacency-anomaly	intentionally-moved	REV 12:9	،۔	…طان اللي يخدع العالم كُله،۔…
+WA-acq-reg	lex.punct-only-token	intentionally-moved	ACT 14:9	۔۔	…تسمع لبولس لما كان يتكلم ۔۔ فشاف بولس لعنده ، وشاف…
+WA-acq-reg	punct.spacing-anomaly	intentionally-moved	MAT 1:23	 ۔	…ب ابن وشيسمونه عمانوئيل " ۔ واللي يعني: " الله معن…
+WA-acq-reg	punct.spacing-anomaly	intentionally-moved	MAT 5:37	 ؛	…مكم: نعــم، إذا كان نــعم ؛ أو: لا، إذا كان لا۔ وم…
+WA-acq-reg	punct.spacing-anomaly	intentionally-moved	MAT 9:13	 ۔	…حين إنما عشان المُذنبين " ۔…
+WA-acq-reg	punct.spacing-anomaly	intentionally-moved	MAT 21:21	 ۔	…من هنا وأفلت لفوق البحر " ۔ شيحصل هذا من صدق ۔…
+WA-am-ulb	punct.adjacency-anomaly	intentionally-moved	LEV 7:14	፡፤	… በመሰዊያው ላይ ለሚረጩት ካህናት ይሰጥ፡፤…
+WA-am-ulb	punct.adjacency-anomaly	intentionally-moved	LEV 21:14	፡፤	…ታችን ሴት፣ ወይም ጋለሞታን ሴት አያግባ፡፤ እንዲያ ካሉት ሴቶች መሃል አያግባ፡…
+WA-am-ulb	punct.adjacency-anomaly	intentionally-moved	LEV 23:21	፡፤	…ራል፣ እናም የተለመደ ስራችሁን አትሰሩም፡፤ ይህ የህዝባችሁ በትውልዶች ሁሉ በም…
+WA-am-ulb	punct.adjacency-anomaly	intentionally-moved	LEV 25:42	፡፤	…ብፅ ምድር ያወጣኋቸው አገልጋዮቼ ናቸውና፡፤ እንደ ባሪያዎች አይሸጡም፡፡ …
+WA-am-ulb	punct.adjacency-anomaly	intentionally-moved	LEV 27:25	፡፤	…ሁሉ በመቅደሱ ሰቅል ዋጋ ሊተመኑ ይገባል፡፤ ሃያ ጌራ ከአንድ ሰቅል ጋር እኩል …
+WA-am-ulb	punct.adjacency-anomaly	intentionally-moved	NUM 1:34	፡፤	…መዛግብት እያንዳንዳቸው በስማቸው ተቆጠሩ፡፤ …
+WA-amo-reg	punct.spacing-anomaly	intentionally-moved	MAT 24:2	? 	…in yenju ile imone vat ba? "Idin bellu minu kidege…
+WA-amo-reg	punct.spacing-anomaly	intentionally-moved	MRK 6:2	? 	…ulele na Kutellẹ na nighe? "Kayapin katwa fiu wari…
+WA-amo-reg	punct.spacing-anomaly	intentionally-moved	MRK 12:10	? 	… cheu iyizi ni iyert inne? "Litala loe aa anan mak…
+WA-amo-reg	punct.spacing-anomaly	intentionally-moved	LUK 20:17	? 	…yari ile I yerte din belu? 'Litala loo na anan kye…
+WA-amo-reg	punct.spacing-anomaly	intentionally-moved	JHN 12:27	? 	… nene; Iyaghari mma bellu? 'Ucif sui utucu nanya k…
+WA-amo-reg	punct.spacing-anomaly	intentionally-moved	ROM 4:3	? 	…i uliru Kutellẹ na bellin? "Ibrahim na yinni ni li…
+WA-aoa-reg	punct.adjacency-anomaly	intentionally-moved	MAT 2:19	,:	…u Desu fa ku Zon ni sonhu,:…
+WA-aoa-reg	punct.adjacency-anomaly	intentionally-moved	MAT 13:15	,;	… ma vonté, só fisa we ane,; xi axe na ka sa wa, an…
+WA-aoa-reg	punct.adjacency-anomaly	intentionally-moved	LUK 3:36	,.	…m, na ri Noé na ri Lameki,.…
+WA-aoa-reg	punct.adjacency-anomaly	intentionally-moved	LUK 14:10	,:	…nu si kuvira ô ka bi fa ô,: taso nga masi buaru. A…
+WA-aoa-reg	punct.adjacency-anomaly	intentionally-moved	JHN 8:33	!.	…a pô fa: sê ka sa libertu!.…
+WA-aoa-reg	punct.adjacency-anomaly	intentionally-moved	JHN 18:39	!.	…liberta da sê Alê dy zurê!.…
+WA-arq-reg	punct.adjacency-anomaly	intentionally-moved	MAT 14:33	۔!	…يقَة أَنْتَ ابْنَ الْلَّه۔!"…
+WA-arq-reg	punct.adjacency-anomaly	intentionally-moved	MAT 21:44	۔!	…لحَجْرَة غَادِي تْسَحْقَه۔!"…
+WA-arq-reg	lex.punct-only-token	intentionally-moved	MAT 24:15	-۔	…الْ - لِيَقْرَا يَفْهَمْ -۔…
+WA-arq-reg	lex.punct-only-token	intentionally-moved	MRK 1:3	>>۔	… وْ صَڤْدُوا طُرْڤَانَهْ >>۔…
+WA-arq-reg	lex.punct-only-token	intentionally-moved	MRK 2:19	<<	…ڤَالْهُمْ يَسُوعْ << يْنَجَمْوا صْحَابْ لَع…
+WA-arq-reg	lex.punct-only-token	intentionally-moved	LUK 3:11	>>۔	…ڤَسْمَهَا مْعَ لَخْرِينْ >>۔…
+WA-as-ulb	punct.adjacency-anomaly	intentionally-moved	JOS 12:24	*******	…বমুঠ একত্ৰিশজন ৰজা আছিল৷ *******…
+WA-as-ulb	punct.adjacency-anomaly	intentionally-moved	JOB 7:21	****	…ই  বিদ্যমান হৈ নাথাকিম।” ****…
+WA-as-ulb	lex.punct-only-token	intentionally-moved	JOS 12:24	*******	…বমুঠ একত্ৰিশজন ৰজা আছিল৷ *******…
+WA-as-ulb	lex.punct-only-token	intentionally-moved	JOB 7:21	****	…ই  বিদ্যমান হৈ নাথাকিম।” ****…
+
+## named anchor cases (synthetic corpora; filler sized so every channel's support gate is cleared, so a silence is a convention and not an abstention)
+anchor	glyph	count	exposure	start	end	topology	rarity	placement	sequence	primary	max	probe
+~ once	~	1	4001	spaced	spaced	Neither	1.000	abstain	abstain	rarity	1.000	procrastinate ~ my case
+$ once	$	1	4001	spaced	spaced	Neither	1.000	abstain	abstain	rarity	1.000	the price was $ high
+{ once	{	1	4001	spaced	spaced	Neither	1.000	abstain	abstain	rarity	1.000	he wrote { on the wall
+U+00B4 spacing acute once	´	1	4001	spaced	spaced	Neither	1.000	abstain	abstain	rarity	1.000	he said ´ softly
+% once	%	1	4003	spaced	spaced	Neither	1.000	abstain	abstain	rarity	1.000	some 50 % of them
+superscript 2 once	²	1	4001	letter	spaced	StartOnly	1.000	abstain	abstain	rarity	1.000	the second² book
+emoji once	😀	1	4001	spaced	spaced	Neither	1.000	abstain	abstain	rarity	1.000	he smiled 😀 at them
+straight vs curly quote mixing	“	1	4002	spaced	letter	EndOnly	1.000	abstain	abstain	rarity	1.000	he said “go” to them
+th3e — common digit, Both topology	3	801	7201	letter	letter	Both	0.000	0.999	abstain	placement	0.999	th3e
+1,000 numeric grouping (should stay quiet)	,	1602	7210	internal	internal	interior	0.000	abstain	abstain	none	0.000	1,000
+mov$ing — symbol, Both topology	$	1	4001	letter	letter	Both	1.000	abstain	abstain	rarity	1.000	mov$ing
+wo.rd — common period, Both topology	.	801	4001	letter	letter	Both	0.000	0.999	abstain	placement	0.999	wo.rd
+wo"rd — quote marginals ordinary, Both rare	"	1601	4001	letter	letter	Both	0.000	0.999	abstain	placement	0.999	wo"rd
+detached . (spaced both sides)	.	801	4001	spaced	spaced	Neither	0.000	0.999	abstain	placement	0.999	out . and
+phrase-ending . at text start	.	801	4001	spaced	spaced	Neither	0.000	0.999	abstain	placement	0.999	leading .
+medial * established -> silent	*	2401	4801	letter	letter	Both	0.000	0.000	abstain	none	0.000	wor*d established
+medial quote established -> silent	"	2401	4801	letter	letter	Both	0.000	0.000	abstain	none	0.000	wo"rd established
+Ethiopic word separator established -> silent	፡	6403	7204	letter	spaced	StartOnly	0.000	0.000	abstain	none	0.000	Ethiopic ፡
+detached Ethiopic terminal established -> silent	።	1601	4802	spaced	boundary	Neither	0.000	0.000	abstain	none	0.000	detached ።
+. -> " established -> silent	.	801	4004	letter	internal	StartOnly	0.000	0.000	0.000	none	0.000	word."
+. -> , unseen pairing	.	801	4002	letter	internal	StartOnly	0.000	0.000	0.999	sequence	0.999	word.,
+?! over established ? and !	?	801	7205	letter	internal	StartOnly	0.000	0.000	0.999	sequence	0.999	word?!
+:: established -> silent	:	4802	5602	letter	internal	StartOnly	0.000	0.000	0.000	none	0.000	:: established
+::: over an established :: (continuation earns its keep)	:	4803	5603	letter	internal	StartOnly	0.000	0.000	1.000	sequence	1.000	::: over ::
+Amharic doubled terminal established -> silent	።	3202	7203	letter	internal	StartOnly	0.000	0.000	0.000	none	0.000	።። established
+.. over an established single .	.	802	4002	letter	internal	StartOnly	0.000	0.000	0.999	sequence	0.999	word..
+singleton ~ in a TINY corpus (must abstain)	~	1	41	spaced	spaced	Neither	abstain	abstain	abstain	none	0.000	~ tiny corpus
+seen-twice ~ (cannot license itself)	~	2	4002	spaced	spaced	Neither	0.875	abstain	abstain	rarity	0.875	~ x2
+seen-4x ~	~	4	4004	spaced	spaced	Neither	0.625	abstain	abstain	rarity	0.625	~ x4
+single medial * (1/1 must NOT self-license)	*	1	4001	letter	letter	Both	1.000	abstain	abstain	rarity	1.000	wor*d once

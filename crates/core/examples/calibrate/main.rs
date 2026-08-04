@@ -177,6 +177,21 @@ fn main() {
         // Rare-glyph calibration: tally every scalar for the future census,
         // but score only the visible L/N/P/S candidate lanes. A file prints
         // its glyph table; a vref directory aggregates the fleet sweep.
+        // `uni.nonletter-usage-anomaly` PROBE (epic plan §9) — dev-only, no live
+        // rule. A file prints its per-corpus channel detail; a vref directory
+        // runs the fleet sweep. A trailing `overlap` adds the old-rule ledger,
+        // which costs three extra rule passes per corpus.
+        [flag, path, rest @ ..] if flag == "--nonletter" && rest.len() <= 1 => {
+            let p = Path::new(path);
+            if p.is_dir() {
+                let overlap = rest.first().is_some_and(|r| r == "overlap");
+                survey::nonletter::nonletter_fleet(p, overlap);
+            } else {
+                let id = p.file_stem().unwrap().to_string_lossy().to_string();
+                survey::nonletter::nonletter_single_report(&id, &load_corpus(p));
+            }
+            return;
+        }
         [flag, path] if flag == "--glyphs" => {
             let p = Path::new(path);
             if p.is_dir() {
