@@ -142,7 +142,9 @@ pub(crate) struct ChapterMapWork<'a> {
 #[derive(Default)]
 pub(crate) struct MappedChapterBundle {
     pub(crate) direct: Option<Vec<crate::cache::CachedPerVerseFinding>>,
+    pub(crate) spacing: Option<crate::signals::punctuation::SpacingChapterObs>,
     pub(crate) adjacency: Option<crate::signals::punctuation::AdjacencyChapterObs>,
+    pub(crate) normalization: Option<crate::signals::mixed_normalization::NormChapterObs>,
     pub(crate) punct_only: Option<crate::signals::lexical::PunctOnlyChapterObs>,
     pub(crate) bracket: Option<crate::signals::bracket_balance::BracketChapterObs>,
 }
@@ -454,6 +456,11 @@ fn map_one_chapter(w: &ChapterMapWork<'_>, ctx: &MapContext<'_>) -> MappedChapte
     let _ = ctx;
     let prep = ChapterPrep::build(w.texts, w.needs);
     let mut bundle = MappedChapterBundle::default();
+    if w.participants.contains(SubstrateId::Spacing) {
+        bundle.spacing = Some(map_participant::<
+            crate::signals::punctuation::SpacingSubstrate,
+        >(w.token, w.texts, &prep, w.paired, &(), &()));
+    }
     if w.participants.contains(SubstrateId::Adjacency) {
         bundle.adjacency = Some(map_participant::<
             crate::signals::punctuation::AdjacencySubstrate,
@@ -474,6 +481,11 @@ fn map_one_chapter(w: &ChapterMapWork<'_>, ctx: &MapContext<'_>) -> MappedChapte
     if w.participants.contains(SubstrateId::Bracket) {
         bundle.bracket = Some(map_participant::<
             crate::signals::bracket_balance::BracketSubstrate,
+        >(w.token, w.texts, &prep, w.paired, &(), &()));
+    }
+    if w.participants.contains(SubstrateId::Normalization) {
+        bundle.normalization = Some(map_participant::<
+            crate::signals::mixed_normalization::NormalizationSubstrate,
         >(w.token, w.texts, &prep, w.paired, &(), &()));
     }
     bundle

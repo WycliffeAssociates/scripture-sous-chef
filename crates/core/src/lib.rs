@@ -587,9 +587,20 @@ fn transition(
     // are simply not enrolled. That is a transitional state, not a second
     // execution model — the pieces are the same.
     let mut schedule = schedule::Schedule::new(target);
+    let mut spacing_plan = signals::punctuation::plan_spacing(
+        active.spacing,
+        &mut substrates.spacing,
+        &mut schedule,
+        &mut substrate_lane,
+    );
     let mut adjacency_plan = signals::punctuation::plan_adjacency(
         active.adjacency,
         &mut substrates.adjacency,
+        &mut schedule,
+    );
+    let mut normalization_plan = signals::mixed_normalization::plan_normalization(
+        active.normalization,
+        &mut substrates.normalization,
         &mut schedule,
     );
     let mut punct_only_plan = signals::lexical::plan_punct_only(
@@ -609,8 +620,14 @@ fn transition(
         },
         |_slug, _chapter| None,
     );
+    if let Some(plan) = spacing_plan.as_mut() {
+        schedule::scatter(&work, &mut mapped, plan, |b| b.spacing.take());
+    }
     if let Some(plan) = adjacency_plan.as_mut() {
         schedule::scatter(&work, &mut mapped, plan, |b| b.adjacency.take());
+    }
+    if let Some(plan) = normalization_plan.as_mut() {
+        schedule::scatter(&work, &mut mapped, plan, |b| b.normalization.take());
     }
     if let Some(plan) = punct_only_plan.as_mut() {
         schedule::scatter(&work, &mut mapped, plan, |b| b.punct_only.take());
@@ -621,13 +638,15 @@ fn transition(
     drop(mapped);
     drop(work);
 
-    signals::punctuation::drive_spacing(
-        active.spacing,
-        &mut substrates.spacing,
-        target,
-        &config.punctuation_spacing,
-        &mut substrate_lane,
-    );
+    if let Some(plan) = spacing_plan {
+        signals::punctuation::finish_spacing(
+            &mut substrates.spacing,
+            target,
+            &config.punctuation_spacing,
+            plan,
+            &mut substrate_lane,
+        );
+    }
     if let Some(plan) = adjacency_plan {
         signals::punctuation::finish_adjacency(
             &mut substrates.adjacency,
@@ -694,12 +713,14 @@ fn transition(
         &config.untranslated_words,
         &mut out,
     );
-    signals::mixed_normalization::drive_normalization(
-        active.normalization,
-        &mut substrates.normalization,
-        target,
-        &mut out,
-    );
+    if let Some(plan) = normalization_plan {
+        signals::mixed_normalization::finish_normalization(
+            &mut substrates.normalization,
+            target,
+            plan,
+            &mut out,
+        );
+    }
     if let Some(plan) = bracket_plan {
         signals::bracket_balance::finish_bracket(
             &mut substrates.bracket,

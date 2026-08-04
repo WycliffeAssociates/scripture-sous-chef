@@ -134,17 +134,20 @@ const _: crate::substrate::SubstrateId =
 /// itself, was the measurable cost.
 fn map_norm_chapter(chapter: &crate::substrate::ChapterView<'_>) -> NormChapterObs {
     let mut forms: FxHashMap<Box<str>, (u64, FirstSite)> = FxHashMap::default();
-    let mut tape = Vec::new();
-    let mut graphemes = Vec::new();
+    // The chapter's tapes and grapheme spans come from the chapter task rather
+    // than a private per-verse `tape::build` + `segment_tape` pair: the same
+    // products, read instead of recomputed, and still the same tape the spans
+    // were segmented from (`PrepNeeds::GRAPHEMES` forces that pairing).
+    let tapes = chapter.tape();
+    let graphemes = chapter.graphemes();
     for (vi, text) in chapter.texts.iter().enumerate() {
         let local = LocalKeyIdx::from_usize(vi);
-        crate::tape::build(text, &mut tape);
-        crate::grapheme::segment_tape(text, &tape, &mut graphemes);
-        // `ti` advances monotonically in lockstep with `graphemes`: both are built
+        let tape = tapes.verse(vi);
+        // `ti` advances monotonically in lockstep with the spans: both are built
         // from the same tape in text order, so each tape entry belongs to exactly
         // one grapheme cluster and is visited once.
         let mut ti = 0usize;
-        for g in graphemes.iter() {
+        for g in graphemes.verse(vi).iter() {
             let end = g.start + g.len;
             let mut relevant = false;
             while ti < tape.len() && tape[ti].off < end {
@@ -466,95 +469,43 @@ fn materialize_corpus(
     });
 }
 
-/// One chapter the substrate has to map this analysis, as the ordered map seam
-/// sees it: its caller-order `(book, chapter)` slot plus the view mapping reads.
-struct NormMapWork<'a> {
-    book: usize,
-    chapter: usize,
-    view: crate::substrate::ChapterView<'a>,
-}
-
-/// Drive the `uni.mixed-normalization` observation substrate for one analysis: map
-/// the dirty chapters through the ordered chapter-map seam, reduce (the identity),
-/// judge the one corpus-wide key, and — only when something actually mixes —
-/// resolve the single finding's anchor in layout order. When inactive, drop the
-/// cached products so an edit while it is disabled does no work for it.
-pub(crate) fn drive_normalization(
+/// Plan the `uni.mixed-normalization` substrate's share of this analysis: enrol
+/// it in the chapter-outer schedule for exactly the chapters whose observation
+/// input stamp moved. When inactive, drop the cached products so an edit while it
+/// is disabled does no work for it, and enrol nothing.
+pub(crate) fn plan_normalization<'a>(
     active: bool,
     cache: &mut crate::substrate::SubstrateCache<NormalizationSubstrate>,
-    corpus: &Corpus,
-    out: &mut Vec<Finding>,
-) {
-    use crate::substrate::{
-        ChapterView, DrivePhase, DriveProbe, ObservationInputStamp, ObservationSubstrate,
-    };
+    schedule: &mut crate::schedule::Schedule<'a>,
+) -> Option<crate::schedule::SubstratePlan<'a, NormalizationSubstrate>> {
+    use crate::substrate::ObservationInputStamp;
     #[cfg(any(test, feature = "test-probes"))]
     cache.reset_probes();
     if !active {
         cache.clear();
-        return;
+        return None;
     }
+    Some(schedule.enrol::<NormalizationSubstrate>(cache, |_slug, c| {
+        ObservationInputStamp::target_only::<NormalizationSubstrate>(c.hash, &())
+    }))
+}
+
+/// Reduce, judge and materialize `uni.mixed-normalization` from the observations
+/// the chapter-outer scheduler mapped: fold the per-form counts, judge the one
+/// corpus-wide key, and — only when something actually mixes — resolve the single
+/// finding's anchor in layout order.
+pub(crate) fn finish_normalization(
+    cache: &mut crate::substrate::SubstrateCache<NormalizationSubstrate>,
+    corpus: &Corpus,
+    plan: crate::schedule::SubstratePlan<'_, NormalizationSubstrate>,
+    out: &mut Vec<Finding>,
+) {
+    use crate::substrate::{DrivePhase, DriveProbe, ObservationSubstrate};
     let mut probe = DriveProbe::new(crate::substrate::SubstrateId::Normalization);
-    let texts = corpus.texts();
     let layout = corpus.book_layout();
-    // Borrowed chapter tokens: the layout owns them and outlives the drive, so
-    // the planning pass never allocates. `update_book` takes ownership only
-    // where it rebuilds a persistent cache entry.
-    let mut stamped: Vec<Vec<(&str, ObservationInputStamp)>> = Vec::with_capacity(layout.len());
-    let mut work: Vec<NormMapWork<'_>> = Vec::new();
-    let mut book_runs: Vec<std::ops::Range<usize>> = Vec::new();
-    let mut work_bytes = 0usize;
+    let crate::schedule::SubstratePlan { stamped, mut slots } = plan;
     for (bi, book) in layout.iter().enumerate() {
-        let run_start = work.len();
-        let mut chapters = Vec::with_capacity(book.chapters.len());
-        for (ci, c) in book.chapters.iter().enumerate() {
-            let stamp = ObservationInputStamp::target_only::<NormalizationSubstrate>(c.hash, &());
-            if !cache.observation_is_current(&book.slug, &c.chapter, &stamp) {
-                let verses = &texts[c.range.clone()];
-                work_bytes += verses.iter().map(String::len).sum::<usize>();
-                work.push(NormMapWork {
-                    book: bi,
-                    chapter: ci,
-                    view: ChapterView::target(&c.chapter, verses),
-                });
-            }
-            chapters.push((&*c.chapter, stamp));
-        }
-        if work.len() > run_start {
-            book_runs.push(run_start..work.len());
-        }
-        stamped.push(chapters);
-    }
-    probe.mark(DrivePhase::Plan);
-    let route = crate::rule::map_route(&book_runs, work.len(), work_bytes);
-    #[cfg(any(test, feature = "test-probes"))]
-    {
-        cache.map_route = route.label();
-    }
-    let fresh = crate::rule::map_chapter_work(&work, &book_runs, route, |w| {
-        NormalizationSubstrate::map_chapter(&w.view, &(), &())
-    });
-    // Back into caller-order `(book, chapter)` slots, so reduction reads them in
-    // corpus order and never in completion order.
-    let mut slots: Vec<Vec<Option<NormChapterObs>>> = layout
-        .iter()
-        .map(|b| (0..b.chapters.len()).map(|_| None).collect())
-        .collect();
-    for (w, obs) in work.iter().zip(fresh) {
-        slots[w.book][w.chapter] = Some(obs);
-    }
-    probe.mark(DrivePhase::Map);
-    for (bi, book) in layout.iter().enumerate() {
-        cache.update_book(&book.slug, &stamped[bi], &(), |i| {
-            slots[bi][i].take().unwrap_or_else(|| {
-                let c = &book.chapters[i];
-                NormalizationSubstrate::map_chapter(
-                    &ChapterView::target(&c.chapter, &texts[c.range.clone()]),
-                    &(),
-                    &(),
-                )
-            })
-        });
+        cache.update_book(&book.slug, &stamped[bi], &(), |i| slots.take(bi, i));
     }
     probe.mark(DrivePhase::Reduce);
     // One key, one verdict — no key-discovery phase to separate.
@@ -566,6 +517,23 @@ pub(crate) fn drive_normalization(
     probe.mark(DrivePhase::Judge);
     materialize_corpus(layout, cache, outcome, out);
     probe.mark(DrivePhase::Materialize);
+}
+
+/// The whole substrate on its own, over one caller-held cache — the shape the
+/// per-rule convenience entry point and its tests use. Same planning pass, same
+/// chapter task, same `finish_*`; only the participation mask is narrower.
+pub(crate) fn drive_normalization(
+    active: bool,
+    cache: &mut crate::substrate::SubstrateCache<NormalizationSubstrate>,
+    corpus: &Corpus,
+    out: &mut Vec<Finding>,
+) {
+    let mut schedule = crate::schedule::Schedule::new(corpus);
+    let Some(mut plan) = plan_normalization(active, cache, &mut schedule) else {
+        return;
+    };
+    schedule.run_solo::<NormalizationSubstrate>(&mut plan, &(), &(), |_, _| None);
+    finish_normalization(cache, corpus, plan, out);
 }
 
 /// `uni.mixed-normalization` findings for a whole corpus, via the observation
