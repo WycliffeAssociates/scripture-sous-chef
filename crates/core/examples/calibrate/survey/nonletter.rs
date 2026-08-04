@@ -43,10 +43,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
+use ssc_core::Corpus;
 use ssc_core::charclass::class_of;
 use ssc_core::grapheme;
 use ssc_core::key::parse_key;
-use ssc_core::{Corpus, Finding, RuleId};
 
 use crate::vref_io::load_corpus;
 
@@ -263,13 +263,6 @@ struct Occurrence {
     /// Whether the whole run is repetitions of THIS glyph. Only then does the
     /// continuation component have a comparable population.
     same_run: bool,
-    /// The run's exact text — used only to group a coalesced sample and to key
-    /// the continuation histogram, never as a primary statistical identity.
-    run: Box<str>,
-    /// The run's own start byte within its verse, so a coalesced emitted span
-    /// needs no reconstruction from `run`'s scalars (which would be wrong as soon
-    /// as a run member is a multi-scalar grapheme).
-    run_byte: u32,
     /// Where to find it again, for samples.
     key: Box<str>,
     /// The verse text, for rendering a sample in context.
@@ -466,11 +459,6 @@ fn observe(id: String, corpus: &Corpus) -> CorpusObs {
             }
             let run_end = i; // exclusive
             let run_len = (run_end - run_start) as u32;
-            let run_text: String = cells[run_start..run_end]
-                .iter()
-                .map(|c| &*c.text)
-                .collect::<String>();
-
             // The run's outer contexts. `None` on either side means a book edge.
             let outer = |at: Option<&Cell>| -> NeighbourClass {
                 match at {
@@ -546,8 +534,6 @@ fn observe(id: String, corpus: &Corpus) -> CorpusObs {
                     same_run: cells[run_start..run_end]
                         .iter()
                         .all(|c| c.text == cells[run_start].text),
-                    run: Box::from(run_text.as_str()),
-                    run_byte: cells[run_start].byte,
                     key: Box::from(&*keys[cell.verse]),
                     verse: cell.verse,
                     byte: cell.byte,
@@ -1326,46 +1312,6 @@ fn anchor_table(kn: Knobs) -> Vec<Anchor> {
 }
 
 // ───────────────────────────────────────────────────────────────────────────
-// Old-rule overlap ledger
-// ───────────────────────────────────────────────────────────────────────────
-
-/// How one old finding relates to what the probe would surface at the same span.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum Disposition {
-    /// The probe surfaces a candidate whose span overlaps the old finding.
-    Preserved,
-    /// The probe surfaces something at that span, but coalesced into one span
-    /// covering a whole nonletter run rather than the old rule's exact span.
-    DuplicateCoalesced,
-    /// The probe observes a candidate there but its channels do not reach the
-    /// threshold — an intentional move, adjudicable per case.
-    IntentionallyMoved,
-    /// The probe has no candidate at that span at all — a genuine coverage LOSS.
-    Lost,
-}
-
-impl Disposition {
-    fn label(self) -> &'static str {
-        match self {
-            Self::Preserved => "preserved",
-            Self::DuplicateCoalesced => "duplicate-coalesced",
-            Self::IntentionallyMoved => "intentionally-moved",
-            Self::Lost => "lost",
-        }
-    }
-}
-
-/// The retired rules still live, in the order the ledger reports them.
-const OLD_RULES: [(&str, RuleId); 1] =
-    [("punct.spacing-anomaly", RuleId::PunctuationSpacingAnomaly)];
-
-/// Those rules' findings for one corpus, at shipped defaults.
-fn old_findings(corpus: &Corpus) -> Vec<Finding> {
-    use ssc_core::config::PunctuationSpacingConfig;
-    ssc_core::signals::punctuation::spacing_findings(corpus, &PunctuationSpacingConfig::default())
-}
-
-// ───────────────────────────────────────────────────────────────────────────
 // Per-corpus report
 // ───────────────────────────────────────────────────────────────────────────
 
@@ -1522,13 +1468,6 @@ struct FleetRow {
     rarity_sweep: Vec<[u64; 2]>,
     placement_sweep: Vec<[u64; 2]>,
     pair_sweep: Vec<[u64; 2]>,
-    /// Old-rule overlap ledger for this corpus, keyed by `(old rule, disposition)`
-    /// so a loss can be attributed to the rule that owned it.
-    old_total: u64,
-    dispositions: BTreeMap<(RuleId, Disposition), u64>,
-    /// Named examples of the two dispositions that need adjudication, with
-    /// context: `(rule, disposition, key, span text, context)`.
-    examples: Vec<(&'static str, Disposition, String, String, String)>,
 }
 
 const FLOORS: [f64; 3] = [0.50, 0.75, 0.90];
@@ -1594,7 +1533,7 @@ const PAIR_SWEEP: &[(PairKeying, PairDenominator, u64, f64)] = &[
 /// Verse count below which a corpus counts as SMALL for the maturity split.
 const SMALL_VERSES: usize = 8_000;
 
-fn fleet_row(id: String, corpus: &Corpus, kn: Knobs, with_overlap: bool) -> FleetRow {
+fn fleet_row(id: String, corpus: &Corpus, kn: Knobs) -> FleetRow {
     let obs = observe(id.clone(), corpus);
     let mut row = FleetRow {
         id,
@@ -1632,15 +1571,7 @@ fn fleet_row(id: String, corpus: &Corpus, kn: Knobs, with_overlap: bool) -> Flee
         pair_sweep: vec![[0; 2]; PAIR_SWEEP.len()],
         class_hits: BTreeMap::new(),
         class_occ: obs.class_totals.clone(),
-        old_total: 0,
-        dispositions: BTreeMap::new(),
-        examples: Vec::new(),
     };
-
-    // Spans the probe would emit at the reference floor, for the overlap ledger.
-    // A run is coalesced into ONE span, per the plan's coalescing rule.
-    let mut emitted: BTreeMap<usize, Vec<(u32, u32)>> = BTreeMap::new();
-    let mut observed: BTreeMap<usize, Vec<(u32, u32)>> = BTreeMap::new();
 
     for occ in &obs.occurrences {
         // The sweeps. Each varies one channel and reads only that channel's
@@ -1772,67 +1703,13 @@ fn fleet_row(id: String, corpus: &Corpus, kn: Knobs, with_overlap: bool) -> Flee
             if g.count == 2 {
                 row.twice_hits += 1;
             }
-            // One coalesced span per maximal run (plan §7.5): several locally
-            // firing members of one run are one finding, not several.
-            emitted
-                .entry(occ.verse)
-                .or_default()
-                .push((occ.run_byte, occ.run_byte + occ.run.len() as u32));
         }
-        observed
-            .entry(occ.verse)
-            .or_default()
-            .push((occ.byte, occ.byte + occ.glyph.len() as u32));
     }
 
-    if with_overlap {
-        let old = old_findings(corpus);
-        row.old_total = old.len() as u64;
-        for f in &old {
-            let vi = f.key_idx.get() as usize;
-            let (fs, fe) = (f.range.start, f.range.end);
-            let overlaps = |v: Option<&Vec<(u32, u32)>>| {
-                v.is_some_and(|spans| spans.iter().any(|&(s, e)| s < fe && fs < e))
-            };
-            let exact = |v: Option<&Vec<(u32, u32)>>| {
-                v.is_some_and(|spans| spans.iter().any(|&(s, e)| s == fs && e == fe))
-            };
-            let d = if overlaps(emitted.get(&vi)) {
-                if exact(emitted.get(&vi)) {
-                    Disposition::Preserved
-                } else {
-                    Disposition::DuplicateCoalesced
-                }
-            } else if overlaps(observed.get(&vi)) {
-                Disposition::IntentionallyMoved
-            } else {
-                Disposition::Lost
-            };
-            *row.dispositions.entry((f.code, d)).or_default() += 1;
-            // Keep a bounded sample of the two dispositions that need a human
-            // decision, with enough context to make one.
-            if matches!(d, Disposition::Lost | Disposition::IntentionallyMoved)
-                && row.examples.len() < 6
-            {
-                let name = OLD_RULES
-                    .iter()
-                    .find(|(_, r)| *r == f.code)
-                    .map_or("?", |(n, _)| *n);
-                let text = &corpus.texts()[vi];
-                row.examples.push((
-                    name,
-                    d,
-                    corpus.key(f.key_idx).to_string(),
-                    show(&text[fs as usize..(fe as usize).min(text.len())]),
-                    context(text, fs),
-                ));
-            }
-        }
-    }
     row
 }
 
-pub(crate) fn nonletter_fleet(dir: &Path, overlap: bool) {
+pub(crate) fn nonletter_fleet(dir: &Path) {
     let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
         .unwrap_or_else(|e| panic!("read {}: {e}", dir.display()))
         .flatten()
@@ -1841,7 +1718,7 @@ pub(crate) fn nonletter_fleet(dir: &Path, overlap: bool) {
         .collect();
     files.sort();
     let total = files.len();
-    eprintln!("nonletter fleet: {total} corpora (overlap ledger: {overlap})");
+    eprintln!("nonletter fleet: {total} corpora");
 
     let kn = DEFAULT_KNOBS;
     let done = std::sync::atomic::AtomicUsize::new(0);
@@ -1851,7 +1728,7 @@ pub(crate) fn nonletter_fleet(dir: &Path, overlap: bool) {
             .par_iter()
             .map(|f| {
                 let id = f.file_stem().unwrap().to_string_lossy().to_string();
-                let r = fleet_row(id, &load_corpus(f), kn, overlap);
+                let r = fleet_row(id, &load_corpus(f), kn);
                 let n = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
                 if n.is_multiple_of(100) {
                     eprintln!("{n}/{total}");
@@ -2235,104 +2112,6 @@ pub(crate) fn nonletter_fleet(dir: &Path, overlap: bool) {
         pct_u(&th, 0.90),
         th.iter().sum::<u64>()
     );
-
-    // ── Old-rule overlap ledger ───────────────────────────────────────────
-    if overlap {
-        println!("\n## old-rule overlap ledger, PER RETIRED RULE (fleet totals)");
-        let mut led: BTreeMap<(RuleId, Disposition), u64> = BTreeMap::new();
-        let mut old_total = 0u64;
-        for r in &rows {
-            old_total += r.old_total;
-            for (k, n) in &r.dispositions {
-                *led.entry(*k).or_default() += n;
-            }
-        }
-        println!("old findings (3 retired rules, shipped defaults) = {old_total}");
-        println!("old_rule\ttotal\tpreserved\tcoalesced\tintentionally_moved\tlost\tlost_share");
-        const DISP: [Disposition; 4] = [
-            Disposition::Preserved,
-            Disposition::DuplicateCoalesced,
-            Disposition::IntentionallyMoved,
-            Disposition::Lost,
-        ];
-        for (name, rule) in OLD_RULES {
-            let g = |d: Disposition| led.get(&(rule, d)).copied().unwrap_or(0);
-            let tot: u64 = DISP.iter().map(|&d| g(d)).sum();
-            println!(
-                "{name}\t{tot}\t{}\t{}\t{}\t{}\t{:.5}",
-                g(Disposition::Preserved),
-                g(Disposition::DuplicateCoalesced),
-                g(Disposition::IntentionallyMoved),
-                g(Disposition::Lost),
-                g(Disposition::Lost) as f64 / tot.max(1) as f64,
-            );
-        }
-        let all = |d: Disposition| -> u64 {
-            OLD_RULES
-                .iter()
-                .map(|(_, r)| led.get(&(*r, d)).copied().unwrap_or(0))
-                .sum()
-        };
-        println!("\ndisposition\tcount\tshare_of_all_old_findings");
-        for d in DISP {
-            let n = all(d);
-            println!(
-                "{}\t{}\t{:.5}",
-                d.label(),
-                n,
-                n as f64 / old_total.max(1) as f64
-            );
-        }
-
-        println!("\n## corpora with the most LOST old findings");
-        let lost_of = |r: &FleetRow| -> u64 {
-            OLD_RULES
-                .iter()
-                .map(|(_, rule)| {
-                    r.dispositions
-                        .get(&(*rule, Disposition::Lost))
-                        .copied()
-                        .unwrap_or(0)
-                })
-                .sum()
-        };
-        let mut worst: Vec<&FleetRow> = rows.iter().filter(|r| lost_of(r) > 0).collect();
-        worst.sort_by_key(|r| std::cmp::Reverse(lost_of(r)));
-        println!("id\told_total\tlost");
-        for r in worst.iter().take(20) {
-            println!("{}\t{}\t{}", r.id, r.old_total, lost_of(r));
-        }
-
-        println!("\n## named examples — LOST and INTENTIONALLY-MOVED old findings");
-        println!("corpus\told_rule\tdisposition\tkey\tspan\tcontext");
-        let mut shown = 0usize;
-        for r in rows.iter().filter(|r| !r.examples.is_empty()) {
-            for (name, d, key, span, ctx) in &r.examples {
-                if *d == Disposition::Lost {
-                    println!("{}\t{name}\t{}\t{key}\t{span}\t{ctx}", r.id, d.label());
-                    shown += 1;
-                }
-            }
-            if shown >= 40 {
-                break;
-            }
-        }
-        if shown == 0 {
-            println!("(no LOST findings anywhere in the fleet)");
-        }
-        let mut shown = 0usize;
-        for r in rows.iter().filter(|r| !r.examples.is_empty()) {
-            for (name, d, key, span, ctx) in &r.examples {
-                if *d == Disposition::IntentionallyMoved && shown < 40 {
-                    println!("{}\t{name}\t{}\t{key}\t{span}\t{ctx}", r.id, d.label());
-                    shown += 1;
-                }
-            }
-            if shown >= 40 {
-                break;
-            }
-        }
-    }
 
     // ── Anchor cases ──────────────────────────────────────────────────────
     println!(

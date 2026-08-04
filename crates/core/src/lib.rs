@@ -272,7 +272,11 @@ mod phase_f_tests {
             direct_misses, 1,
             "direct lane mapped {direct_misses} chapters"
         );
-        assert_eq!(p.spacing_mapped, 1, "spacing mapped {}", p.spacing_mapped);
+        assert_eq!(
+            p.nonletter_mapped, 1,
+            "nonletter mapped {}",
+            p.nonletter_mapped
+        );
         assert_eq!(p.casing_mapped, 1, "casing mapped {}", p.casing_mapped);
         assert_eq!(
             p.duplicate_mapped, 1,
@@ -309,11 +313,11 @@ mod phase_f_tests {
         analyze_resident(&corpus, None, &cfg, &mut cache).unwrap();
 
         // A pure judging knob: no observation stamp folds it.
-        cfg.punctuation_spacing.emit_score_min = 0.999;
+        cfg.nonletter_usage.emit_score_min = 0.999;
         let rejudged = analyze_resident(&corpus, None, &cfg, &mut cache).unwrap();
         let p = cache.probe();
-        assert_eq!(p.spacing_mapped, 0, "spacing re-mapped");
-        assert_eq!(p.spacing_reduced, 0, "spacing re-reduced");
+        assert_eq!(p.nonletter_mapped, 0, "nonletter re-mapped");
+        assert_eq!(p.nonletter_reduced, 0, "nonletter re-reduced");
         assert_eq!(p.casing_mapped, 0, "casing re-mapped");
         assert_eq!(p.duplicate_mapped, 0, "duplicate re-mapped");
         assert_eq!(rejudged, analyze_with_config(&corpus, None, &cfg));
@@ -329,12 +333,12 @@ mod phase_f_tests {
     fn enabling_one_rule_maps_only_its_own_substrate() {
         let corpus = wide(2);
         let mut cache = AnalysisCache::new();
-        // Everything on except spacing, so only its substrate is cold.
+        // Everything on except nonletter usage, so only its substrate is cold.
         let mut cfg = Config::all();
-        cfg.rules.insert(RuleId::PunctuationSpacingAnomaly, false);
+        cfg.rules.insert(RuleId::NonletterUsageAnomaly, false);
         analyze_resident(&corpus, None, &cfg, &mut cache).unwrap();
 
-        cfg.rules.insert(RuleId::PunctuationSpacingAnomaly, true);
+        cfg.rules.insert(RuleId::NonletterUsageAnomaly, true);
         let after = analyze_resident(&corpus, None, &cfg, &mut cache).unwrap();
         let p = cache.probe();
         let chapters = corpus
@@ -342,7 +346,7 @@ mod phase_f_tests {
             .iter()
             .map(|b| b.chapters.len())
             .sum::<usize>();
-        assert_eq!(p.spacing_mapped, chapters, "spacing owes every chapter");
+        assert_eq!(p.nonletter_mapped, chapters, "nonletter owes every chapter");
         assert_eq!(p.casing_mapped, 0, "casing was dragged in");
         assert_eq!(p.duplicate_mapped, 0, "duplicate-word was dragged in");
         assert_eq!(after, analyze_with_config(&corpus, None, &cfg));
@@ -369,7 +373,10 @@ mod phase_f_tests {
             0,
             "the direct lane re-mapped on a reference edit"
         );
-        assert_eq!(p.spacing_mapped, 0, "spacing re-mapped on a reference edit");
+        assert_eq!(
+            p.nonletter_mapped, 0,
+            "nonletter re-mapped on a reference edit"
+        );
         assert_eq!(p.casing_mapped, 0, "casing re-mapped on a reference edit");
         assert_eq!(
             p.duplicate_mapped, 0,
@@ -435,8 +442,7 @@ pub use catalog::{
 pub use census::{CensusOptions, Inventory, census};
 pub use config::{
     BracketBalanceConfig, CasingConfig, CasingRuleConfig, Config, InconsistentWordCasingConfig,
-    ProportionalityConfig, PunctuationSpacingConfig, RepeatedCharacterRunConfig,
-    SentenceInitialCasingConfig,
+    ProportionalityConfig, RepeatedCharacterRunConfig, SentenceInitialCasingConfig,
 };
 pub use corpus::{BookBlock, ChapterBlock, Corpus, CorpusError, KeyIdx, MutationEffect};
 pub use diagnostics::{
@@ -731,12 +737,6 @@ fn transition(
     // straight to their own partitions, and only after the judge boundary — so a
     // failed attempt publishes nothing and leaves the previous partitions intact.
     let mut substrate_lane = substrate::SubstrateLane::default();
-    let mut spacing_plan = signals::punctuation::plan_spacing(
-        active.spacing,
-        &mut substrates.spacing,
-        &mut schedule,
-        &mut substrate_lane,
-    );
     let mut normalization_plan = signals::mixed_normalization::plan_normalization(
         active.normalization,
         &mut substrates.normalization,
@@ -850,9 +850,6 @@ fn transition(
     }
     // Hand each substrate its own observations. Nothing is committed to a
     // substrate cache yet — that happens in its `finish_*`, after the fault seams.
-    if let Some(plan) = spacing_plan.as_mut() {
-        schedule::scatter(&work, &mut mapped, plan, |b| b.spacing.take());
-    }
     if let Some(plan) = normalization_plan.as_mut() {
         schedule::scatter(&work, &mut mapped, plan, |b| b.normalization.take());
     }
@@ -949,15 +946,6 @@ fn transition(
     #[cfg(feature = "bench-probes")]
     substrate::reset_drive_phases();
 
-    if let Some(plan) = spacing_plan {
-        signals::punctuation::finish_spacing(
-            &mut substrates.spacing,
-            target,
-            &config.punctuation_spacing,
-            plan,
-            &mut substrate_lane,
-        );
-    }
     if let Some(plan) = repeated_run_plan {
         signals::lexical::finish_repeated_run(
             &mut substrates.repeated_run,
@@ -1464,30 +1452,6 @@ mod tests {
     /// an explicit config entry opts in.
     #[test]
     fn p2_rules_are_default_disabled_and_opt_in() {
-        // `punct.spacing-anomaly` is corpus-relative (ADR 0029): it needs a
-        // dominant convention to judge against, so build one — commas attached
-        // corpus-wide, one spaced minority to surface.
-        let mut pairs: Vec<(&str, &str)> = (0..100).map(|_| ("v", "word, word")).collect();
-        pairs.push(("v", "word , word"));
-        let target = map(&pairs);
-        assert!(
-            analyze(&target, None)
-                .iter()
-                .all(|f| f.code != RuleId::PunctuationSpacingAnomaly),
-            "default-disabled"
-        );
-
-        let mut on = Config::v1_defaults();
-        on.rules.insert(RuleId::PunctuationSpacingAnomaly, true);
-        let findings = analyze_with_config(&target, None, &on);
-        let spacing: Vec<_> = findings
-            .iter()
-            .filter(|f| f.code == RuleId::PunctuationSpacingAnomaly)
-            .collect();
-        assert_eq!(spacing.len(), 1, "the lone spaced comma surfaces");
-        assert_eq!(spacing[0].severity, Severity::Info);
-        assert!(spacing[0].score.unwrap() > 0.85);
-
         // Casing is corpus-observed (ADR 0017, 0051): both rules default-off,
         // and once opted in the positional rule fires only where the corpus's
         // own lexicon-lowercase words establish a capital-after-`.` habit.

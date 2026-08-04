@@ -50,8 +50,6 @@ use crate::diagnostics::RuleId;
 /// that — the compiler, not a string list, proves the pairing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) enum SubstrateId {
-    /// `punct.spacing-anomaly`'s per-mark per-side attachment model.
-    Spacing,
     /// `lex.repeated-character-run`'s per-cluster / per-word recurrence counts.
     RepeatedRun,
     /// `uni.mixed-script-in-token`'s per-signature / per-script token counts.
@@ -92,7 +90,6 @@ impl SubstrateId {
     #[allow(dead_code)] // registry-completeness tests + future multi-substrate iteration
     pub(crate) const ALL: &'static [SubstrateId] =
         &[
-        SubstrateId::Spacing,
         SubstrateId::RepeatedRun,
         SubstrateId::MixedScript,
         SubstrateId::Glyph,
@@ -181,7 +178,6 @@ pub(crate) enum DrivePhase {
 /// bottom row; `substrate_names_cover_every_id` pins the pairing.
 #[cfg(feature = "bench-probes")]
 pub const SUBSTRATE_NAMES: [&str; SubstrateId::ALL.len()] = [
-    "spacing",
     "repeated-run",
     "mixed-script",
     "glyph",
@@ -1413,7 +1409,6 @@ impl<S: ObservationSubstrate> SubstrateCache<S> {
 /// registry and the final config — never per event.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct ActiveSubstrates {
-    pub(crate) spacing: bool,
     pub(crate) repeated_run: bool,
     pub(crate) mixed_script: bool,
     pub(crate) glyph: bool,
@@ -1433,7 +1428,6 @@ impl ActiveSubstrates {
     pub(crate) fn from_config(config: &Config) -> Self {
         let any = |rules: &[RuleId]| rules.iter().any(|&r| config.is_enabled(r));
         Self {
-            spacing: any(spacing_consumers()),
             repeated_run: any(repeated_run_consumers()),
             mixed_script: any(mixed_script_consumers()),
             glyph: any(glyph_consumers()),
@@ -1451,7 +1445,6 @@ impl ActiveSubstrates {
     #[allow(dead_code)] // exhaustive per-id accessor; the completeness tests walk it
     pub(crate) fn is_active(&self, id: SubstrateId) -> bool {
         match id {
-            SubstrateId::Spacing => self.spacing,
             SubstrateId::RepeatedRun => self.repeated_run,
             SubstrateId::MixedScript => self.mixed_script,
             SubstrateId::Glyph => self.glyph,
@@ -1465,13 +1458,6 @@ impl ActiveSubstrates {
             SubstrateId::NonletterUsage => self.nonletter_usage,
         }
     }
-}
-
-/// The closed registry: which rules consume the spacing substrate. `spacing`'s
-/// sole consumer today is `punct.spacing-anomaly`; a future second consumer is
-/// added here and the completeness tests keep the registry honest.
-pub(crate) fn spacing_consumers() -> &'static [RuleId] {
-    &[RuleId::PunctuationSpacingAnomaly]
 }
 
 /// The closed registry: the repeated-run substrate's sole consumer.
@@ -1638,8 +1624,7 @@ pub(crate) fn input_of(id: SubstrateId) -> SubstrateInput {
         SubstrateId::Proportionality | SubstrateId::UntranslatedWords => {
             SubstrateInput::SameSlugSameChapterReference
         }
-        SubstrateId::Spacing
-        | SubstrateId::RepeatedRun
+        SubstrateId::RepeatedRun
         | SubstrateId::MixedScript
         | SubstrateId::Glyph
         | SubstrateId::Normalization
@@ -1656,7 +1641,6 @@ pub(crate) fn input_of(id: SubstrateId) -> SubstrateInput {
 #[allow(dead_code)] // registry-completeness tests + future multi-substrate iteration
 pub(crate) fn consumers_of(id: SubstrateId) -> &'static [RuleId] {
     match id {
-        SubstrateId::Spacing => spacing_consumers(),
         SubstrateId::RepeatedRun => repeated_run_consumers(),
         SubstrateId::MixedScript => mixed_script_consumers(),
         SubstrateId::Glyph => glyph_consumers(),
@@ -1679,10 +1663,6 @@ mod tests {
     /// cache slot and the closed enum name the same substrate.
     #[test]
     fn substrate_ids_pair_with_the_registry() {
-        assert_eq!(
-            <crate::signals::punctuation::SpacingSubstrate as ObservationSubstrate>::ID,
-            SubstrateId::Spacing
-        );
         assert_eq!(
             <crate::signals::lexical::RepeatedRunSubstrate as ObservationSubstrate>::ID,
             SubstrateId::RepeatedRun
@@ -1741,7 +1721,6 @@ mod tests {
             // `is_active` matches exhaustively, so this compiles only if every
             // id is handled; assert every field reads through for its own id.
             let all_on = ActiveSubstrates {
-                spacing: true,
                 repeated_run: true,
                 mixed_script: true,
                 glyph: true,
@@ -1772,7 +1751,6 @@ mod tests {
                 S::ID
             );
         }
-        check::<crate::signals::punctuation::SpacingSubstrate>();
         check::<crate::signals::lexical::RepeatedRunSubstrate>();
         check::<crate::signals::script_mixing::MixedScriptSubstrate>();
         check::<crate::signals::rare_glyph::GlyphSubstrate>();
@@ -1889,22 +1867,23 @@ mod tests {
     fn active_set_follows_the_final_config() {
         let mut cfg = Config::v1_defaults();
         assert!(
-            !ActiveSubstrates::from_config(&cfg).spacing,
-            "spacing is default-disabled, so its substrate is inactive"
+            !ActiveSubstrates::from_config(&cfg).glyph,
+            "uni.rare-glyph is default-disabled, so its substrate is inactive"
         );
-        cfg.rules.insert(RuleId::PunctuationSpacingAnomaly, true);
+        cfg.rules.insert(RuleId::RareGlyph, true);
         assert!(
-            ActiveSubstrates::from_config(&cfg).spacing,
-            "enabling the sole consumer activates the spacing substrate"
+            ActiveSubstrates::from_config(&cfg).glyph,
+            "enabling the sole consumer activates the glyph substrate"
         );
-        cfg.rules.insert(RuleId::PunctuationSpacingAnomaly, false);
-        assert!(!ActiveSubstrates::from_config(&cfg).spacing);
+        cfg.rules.insert(RuleId::RareGlyph, false);
+        assert!(!ActiveSubstrates::from_config(&cfg).glyph);
     }
 }
 
 /// The generic driver's own replay tests (plan §12.3), driven by two synthetic
 /// substrates whose boundary state is chosen to put the convergence rule under
-/// direct control. Spacing's tests exercise the driver on real evidence; these
+/// direct control. The real substrates' own tests exercise the driver on real
+/// evidence; these
 /// exercise the *algorithm*: where the replay window starts, how far it walks,
 /// and that a carry change never re-maps a chapter.
 #[cfg(test)]
@@ -1941,7 +1920,7 @@ mod replay {
     }
 
     impl ObservationSubstrate for Local {
-        const ID: SubstrateId = SubstrateId::Spacing;
+        const ID: SubstrateId = SubstrateId::Bracket;
         const SCHEMA_STAMP: u64 = 1;
     type Pairing = crate::substrate::NoReference;
         // A synthetic driver substrate: its map reads the chapter's verse texts
@@ -1996,7 +1975,7 @@ mod replay {
     }
 
     impl ObservationSubstrate for Carry {
-        const ID: SubstrateId = SubstrateId::Spacing;
+        const ID: SubstrateId = SubstrateId::Bracket;
         const SCHEMA_STAMP: u64 = 2;
     type Pairing = crate::substrate::NoReference;
         // A synthetic driver substrate: its map reads the chapter's verse texts
@@ -2378,7 +2357,7 @@ mod replay {
     }
 
     impl ObservationSubstrate for Owned {
-        const ID: SubstrateId = SubstrateId::Spacing;
+        const ID: SubstrateId = SubstrateId::Bracket;
         const SCHEMA_STAMP: u64 = 3;
     type Pairing = crate::substrate::NoReference;
         // A synthetic driver substrate: its map reads the chapter's verse texts

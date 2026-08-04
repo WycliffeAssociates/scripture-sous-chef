@@ -97,7 +97,7 @@ fn main() {
         *casing.entry(p.casing_reduced).or_default() += 1;
         *casing_mapped.entry(p.casing_mapped).or_default() += 1;
         *dup.entry(p.duplicate_reduced).or_default() += 1;
-        *spacing.entry(p.spacing_reduced).or_default() += 1;
+        *spacing.entry(p.nonletter_reduced).or_default() += 1;
     }
     let show = |name: &str, h: &BTreeMap<usize, usize>| {
         let n: usize = h.values().sum();

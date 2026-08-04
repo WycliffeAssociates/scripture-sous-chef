@@ -1,7 +1,7 @@
 //! Cross-cluster constants and helpers: the packet floor/knee grid and the
 //! absolute recurrence-knee scorer are shared verbatim between the casing
 //! (ADR 0051) and mixed-case-word spikes, and the Wilson lower bound is
-//! shared by the signatures, mixed-case, and pooled-spacing spikes — see
+//! shared by the mixed-case spike — see
 //! each spike's own module doc for how they're used. Moved here unchanged
 //! during the `calibrate/` file split; no logic changed.
 

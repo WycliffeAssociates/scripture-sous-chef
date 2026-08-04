@@ -77,7 +77,8 @@ pub const fn wire_def(rule: RuleId) -> WireDef {
         RuleId::RepeatedCharacterRun => (16, U32),
         RuleId::MixedNumeralSystems => (17, None),
         RuleId::BracketBalance => (18, CountPair),
-        RuleId::PunctuationSpacingAnomaly => (19, CountPair),
+        // 19 is RETIRED (`punct.spacing-anomaly`, absorbed by
+        // `uni.nonletter-usage-anomaly`). Never reused, same reason.
         RuleId::SentenceInitialLowercase => (20, CountPair),
         RuleId::InconsistentWordCasing => (21, CountPair),
         RuleId::RareGlyph => (22, U32),
@@ -333,7 +334,6 @@ mod tests {
             (16, "lex.repeated-character-run", "u32", "target-only"),
             (17, "uni.mixed-numeral-systems", "none", "target-only"),
             (18, "punct.bracket-balance", "count-pair", "target-only"),
-            (19, "punct.spacing-anomaly", "count-pair", "target-only"),
             (20, "case.sentence-initial-lowercase", "count-pair", "target-only"),
             (21, "case.inconsistent-word-casing", "count-pair", "target-only"),
             (22, "uni.rare-glyph", "u32", "target-only"),

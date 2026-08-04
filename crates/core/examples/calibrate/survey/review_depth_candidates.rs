@@ -5,6 +5,11 @@
 //! adjacent cells, and repeats a deterministic maturity ladder on a bounded
 //! script-diverse sample. The output is evidence for anchor selection, not an
 //! approval of the current production tables.
+//!
+//! It covers the two casing pilots. `punct.spacing-anomaly` was the third until
+//! that rule was retired; `uni.nonletter-usage-anomaly`'s own depth anchors were
+//! calibrated in its probe (`--nonletter`) against its own knob shape, so this
+//! survey is not the place they are re-derived.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
@@ -118,7 +123,6 @@ struct PathCell {
 
 fn candidates(rule: RuleId) -> Vec<Candidate> {
     let unusualness = match rule {
-        RuleId::PunctuationSpacingAnomaly => [0.30, 0.50, 0.80],
         RuleId::SentenceInitialLowercase | RuleId::InconsistentWordCasing => [0.80, 0.95, 0.99],
         _ => unreachable!("candidate survey only covers mapped pilots"),
     };
@@ -155,13 +159,6 @@ fn config_for(rule: RuleId, candidate: Candidate) -> Config {
     let mut config = Config::v1_defaults();
     config.rules.insert(rule, true);
     match rule {
-        RuleId::PunctuationSpacingAnomaly => {
-            config.punctuation_spacing.emit_score_min = candidate.unusualness;
-            config.punctuation_spacing.confidence_z = candidate.support.confidence_z;
-            config.punctuation_spacing.minority_recurrence_k = candidate.support.recurrence_k;
-            config.punctuation_spacing.minority_rate_per_10k =
-                candidate.support.rate_per_10k.unwrap();
-        }
         RuleId::SentenceInitialLowercase => {
             config.casing.sentence_initial.evidence.emit_score_min = candidate.unusualness;
             config.casing.sentence_initial.evidence.confidence_z = candidate.support.confidence_z;
@@ -194,7 +191,6 @@ fn finding_value(f: &Finding) -> String {
 
 fn candidate_floor(rule: RuleId, config: &Config) -> f32 {
     match rule {
-        RuleId::PunctuationSpacingAnomaly => config.punctuation_spacing.emit_score_min,
         RuleId::SentenceInitialLowercase => config.casing.sentence_initial.evidence.emit_score_min,
         RuleId::InconsistentWordCasing => config.casing.inconsistent_word.evidence.emit_score_min,
         _ => unreachable!(),
@@ -214,9 +210,6 @@ fn snapshot(corpus: &Corpus, rule: RuleId, config: Config) -> Snapshot {
     let floor = candidate_floor(rule, &config);
     let mut opportunity_config = config.clone();
     match rule {
-        RuleId::PunctuationSpacingAnomaly => {
-            opportunity_config.punctuation_spacing.emit_score_min = 0.0
-        }
         RuleId::SentenceInitialLowercase => {
             opportunity_config
                 .casing
@@ -405,7 +398,6 @@ fn adjacent_counts(
 fn corpus_report(corpus_id: &str, corpus: &Corpus, include_maturity: bool) -> CorpusReport {
     let views = maturity_views(corpus, include_maturity);
     let candidates_by_rule: Vec<(RuleId, Vec<Candidate>)> = [
-        RuleId::PunctuationSpacingAnomaly,
         RuleId::SentenceInitialLowercase,
         RuleId::InconsistentWordCasing,
     ]
@@ -510,10 +502,6 @@ fn path_config(rule: RuleId, depth: u8) -> Config {
     let depth = ssc_core::ReviewDepth::new(depth).unwrap();
     let mut config = Config::v1_defaults();
     match rule {
-        RuleId::PunctuationSpacingAnomaly => {
-            config.punctuation_spacing =
-                ssc_core::signals::punctuation::config_at_review_depth(depth);
-        }
         RuleId::SentenceInitialLowercase => {
             config.casing.sentence_initial =
                 ssc_core::signals::casing::sentence_initial_config_at_review_depth(depth);
@@ -548,7 +536,6 @@ pub(crate) fn review_depth_path_survey(path: &Path, out_path: &Path, tier: &str)
         .par_iter()
         .flat_map_iter(|(corpus_id, corpus)| {
             [
-                RuleId::PunctuationSpacingAnomaly,
                 RuleId::SentenceInitialLowercase,
                 RuleId::InconsistentWordCasing,
             ]
@@ -592,7 +579,6 @@ pub(crate) fn review_depth_path_survey(path: &Path, out_path: &Path, tier: &str)
         .unwrap();
     }
     for rule in [
-        RuleId::PunctuationSpacingAnomaly,
         RuleId::SentenceInitialLowercase,
         RuleId::InconsistentWordCasing,
     ] {
@@ -661,7 +647,6 @@ pub(crate) fn review_depth_survey(path: &Path, out_path: &Path, tier: &str) {
     )
     .unwrap();
     for rule in [
-        RuleId::PunctuationSpacingAnomaly,
         RuleId::SentenceInitialLowercase,
         RuleId::InconsistentWordCasing,
     ] {

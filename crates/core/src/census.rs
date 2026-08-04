@@ -24,13 +24,13 @@
 use std::collections::BTreeMap;
 
 use crate::corpus::{self, BookGroup, Corpus};
-use crate::diagnostics::SpacingForm;
 use crate::rule;
 use crate::signals::bracket_balance::{BookDelims, BracketAcc};
 use crate::signals::case_shape::{CaseShape, case_shape};
 use crate::signals::mixed_case::is_letter_token;
 use crate::signals::punctuation::{
-    SIDE_CELLS, SpacingAcc, adjacency_runs_all, count_lead_opportunities, mark_attached_spaced,
+    SIDE_CELLS, SpacingAcc, SpacingForm, adjacency_runs_all, count_lead_opportunities,
+    mark_attached_spaced,
 };
 use crate::signals::rare_glyph::{CensusPages, is_letter_scalar};
 use crate::span::Span;

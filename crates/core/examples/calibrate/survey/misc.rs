@@ -2,8 +2,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use ssc_core::config::{
-    BracketBalanceConfig, CasingConfig, MixedScriptConfig, PunctuationSpacingConfig,
-    RepeatedCharacterRunConfig,
+    BracketBalanceConfig, CasingConfig, MixedScriptConfig, RepeatedCharacterRunConfig,
 };
 use ssc_core::signals::bracket_balance::bracket_findings;
 use ssc_core::signals::lexical::repeated_run_findings;
@@ -110,7 +109,6 @@ pub(crate) fn fleet(dir: &Path, out: &Path) {
     cfg.bracket_balance.emit_score_min = 0.0;
     cfg.casing.sentence_initial.evidence.emit_score_min = 0.0;
     cfg.casing.inconsistent_word.evidence.emit_score_min = 0.0;
-    cfg.punctuation_spacing.emit_score_min = 0.0;
     cfg.repeated_character_run.emit_score_min = 0.0;
     cfg.mixed_script.emit_score_min = 0.0;
 
@@ -120,9 +118,6 @@ pub(crate) fn fleet(dir: &Path, out: &Path) {
             RuleId::BracketBalance => Some(BracketBalanceConfig::default().emit_score_min),
             RuleId::SentenceInitialLowercase => {
                 Some(CasingConfig::default().sentence_initial.evidence.emit_score_min)
-            }
-            RuleId::PunctuationSpacingAnomaly => {
-                Some(PunctuationSpacingConfig::default().emit_score_min)
             }
             RuleId::RepeatedCharacterRun => {
                 Some(RepeatedCharacterRunConfig::default().emit_score_min)
@@ -685,124 +680,6 @@ pub(crate) fn bracket_calib(dir: &Path) {
         let inv: String = inv.chars().take(160).collect();
         println!("      inv: {inv}");
     }
-}
-
-/// Punctuation-spacing knee/floor sweep + regression over the vref fleet
-/// (ADR 0054). Drives the **production** `punct.spacing-anomaly` rule (the new
-/// 16-cell signature model) under a grid of `(minority_recurrence_k,
-/// minority_rate_per_10k)` at floor 0.5, reporting the fleet-wide finding total
-/// and the six ADR 0050 calibration corpora at each cell. This is the
-/// before/after regression counter and the ADR 0054 knee-sweep evidence: the
-/// shipped `(32, 40)` cell is the one to compare against the old binary rule's
-/// 3,928 fleet findings, and the six named corpora must keep their kept-sites.
-pub(crate) fn spacing_fleet_sweep(dir: &Path) {
-    use rayon::prelude::*;
-
-    // ADR 0050 regression corpora (short id → file stem).
-    const REG: &[&str] = &[
-        "engwebster",
-        "WA-kmr-IQ-badini-reg",
-        "udu",
-        "WA-ne-udb",
-        "WA-pa-ulb",
-        "mya",
-    ];
-    // (k, rate) grid; floor fixed at the shipped 0.5. The shipped cell is (32,40).
-    const KS: &[f32] = &[16.0, 32.0, 64.0];
-    const RATES: &[f32] = &[0.0, 20.0, 40.0, 80.0];
-
-    let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
-        .unwrap_or_else(|e| panic!("read {}: {e}", dir.display()))
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|x| x == "txt"))
-        .collect();
-    files.sort();
-    let total_corpora = files.len();
-    eprintln!("spacing sweep fleet: {total_corpora} corpora");
-
-    let count = |k: f32, rate: f32, map: &Corpus| -> usize {
-        let cfg = PunctuationSpacingConfig {
-            emit_score_min: 0.5,
-            confidence_z: 1.96,
-            minority_recurrence_k: k,
-            minority_rate_per_10k: rate,
-        };
-        ssc_core::signals::punctuation::spacing_findings(map, &cfg).len()
-    };
-
-    // Per-corpus: for each (k, rate) cell, the finding count. Reduce fleet in
-    // parallel, summing per cell.
-    let per_corpus: Vec<(String, Vec<usize>)> = files
-        .par_iter()
-        .map(|path| {
-            let id = path.file_stem().unwrap().to_string_lossy().to_string();
-            let map = load_corpus(path);
-            let mut cells = Vec::new();
-            for &k in KS {
-                for &rate in RATES {
-                    cells.push(count(k, rate, &map));
-                }
-            }
-            (id, cells)
-        })
-        .collect();
-
-    let ncells = KS.len() * RATES.len();
-    let mut totals = vec![0usize; ncells];
-    let mut corpora_with = vec![0usize; ncells];
-    for (_, cells) in &per_corpus {
-        for (i, &n) in cells.iter().enumerate() {
-            totals[i] += n;
-            if n > 0 {
-                corpora_with[i] += 1;
-            }
-        }
-    }
-
-    println!("=== punct.spacing-anomaly fleet knee/floor sweep (floor 0.5, z 1.96) ===");
-    println!(
-        "production per-side (left/right) rule; cells = total fleet findings (corpora with ≥1)"
-    );
-    print!("      {:>6}", "k\\rate");
-    for &rate in RATES {
-        print!("  {:>14}", format!("{rate:.0}/10k"));
-    }
-    println!();
-    for (ki, &k) in KS.iter().enumerate() {
-        print!("      {k:>6.0}");
-        for ri in 0..RATES.len() {
-            let i = ki * RATES.len() + ri;
-            print!("  {:>14}", format!("{} ({})", totals[i], corpora_with[i]));
-        }
-        println!();
-    }
-
-    println!("\n-- six ADR 0050 regression corpora, findings per (k, rate) cell --");
-    print!("  {:<24}", "corpus");
-    for &k in KS {
-        for &rate in RATES {
-            print!("  {:>8}", format!("{k:.0}/{rate:.0}"));
-        }
-    }
-    println!();
-    for &id in REG {
-        if let Some((_, cells)) = per_corpus.iter().find(|(cid, _)| cid == id) {
-            print!("  {id:<24}");
-            for &n in cells {
-                print!("  {n:>8}");
-            }
-            println!();
-        } else {
-            println!("  {id:<24}  (absent)");
-        }
-    }
-    let shipped_idx = KS.iter().position(|&k| k == 32.0).unwrap() * RATES.len()
-        + RATES.iter().position(|&r| r == 40.0).unwrap();
-    println!(
-        "\nshipped cell (k=32, rate=40/10k, floor 0.5): {} fleet findings across {} corpora",
-        totals[shipped_idx], corpora_with[shipped_idx]
-    );
 }
 
 /// Shared score-distribution report for the corpus-relative rules: total

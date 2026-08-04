@@ -208,7 +208,6 @@ pub(crate) struct ChapterMapWork<'a> {
 #[derive(Default)]
 pub(crate) struct MappedChapterBundle {
     pub(crate) direct: Option<Vec<crate::cache::CachedPerVerseFinding>>,
-    pub(crate) spacing: Option<crate::signals::punctuation::SpacingChapterObs>,
     pub(crate) normalization: Option<crate::signals::mixed_normalization::NormChapterObs>,
     pub(crate) bracket: Option<crate::signals::bracket_balance::BracketChapterObs>,
     pub(crate) repeated_run: Option<crate::signals::lexical::RepeatChapterObs>,
@@ -231,7 +230,6 @@ impl MappedChapterBundle {
     fn filled(&self) -> SubstrateMask {
         let mut m = SubstrateMask::EMPTY;
         for (id, present) in [
-            (SubstrateId::Spacing, self.spacing.is_some()),
             (SubstrateId::RepeatedRun, self.repeated_run.is_some()),
             (SubstrateId::MixedScript, self.mixed_script.is_some()),
             (SubstrateId::Glyph, self.glyph.is_some()),
@@ -491,7 +489,7 @@ impl<'a> Schedule<'a> {
 
 /// Route one substrate's mapped observations from the ordered bundles into its
 /// plan's layout-shaped slots. `pick` is the bundle's typed slot for that
-/// substrate — `|b| b.spacing.take()` — so the pairing is a compile-time field
+/// substrate — `|b| b.bracket.take()` — so the pairing is a compile-time field
 /// access, never a lookup.
 pub(crate) fn scatter<S: ObservationSubstrate>(
     work: &[ChapterMapWork<'_>],
@@ -560,11 +558,6 @@ fn map_one_chapter(w: &ChapterMapWork<'_>, ctx: &MapContext<'_>) -> MappedChapte
                  — stop and report: DIRECT_LANE_NEEDS and the chapter task disagree",
             ),
         ));
-    }
-    if w.participants.contains(SubstrateId::Spacing) {
-        bundle.spacing = Some(map_participant::<
-            crate::signals::punctuation::SpacingSubstrate,
-        >(w.token, w.texts, &prep, w.paired, &(), &()));
     }
     if w.participants.contains(SubstrateId::Bracket) {
         bundle.bracket = Some(map_participant::<
@@ -814,11 +807,10 @@ mod tests {
             lexical::DuplicateWordSubstrate, lexical::RepeatedRunSubstrate,
             mixed_case::MixedCaseSubstrate, mixed_normalization::NormalizationSubstrate,
             nonletter_usage::NonletterUsageSubstrate, proportionality::ProportionalitySubstrate,
-            punctuation::SpacingSubstrate, rare_glyph::GlyphSubstrate,
-            script_mixing::MixedScriptSubstrate, untranslated_words::UntranslatedWordsSubstrate,
+            rare_glyph::GlyphSubstrate, script_mixing::MixedScriptSubstrate,
+            untranslated_words::UntranslatedWordsSubstrate,
         };
         match id {
-            SubstrateId::Spacing => SpacingSubstrate::NEEDS,
             SubstrateId::RepeatedRun => RepeatedRunSubstrate::NEEDS,
             SubstrateId::MixedScript => MixedScriptSubstrate::NEEDS,
             SubstrateId::Glyph => GlyphSubstrate::NEEDS,

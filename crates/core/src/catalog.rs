@@ -20,9 +20,7 @@
 //!   it", never "Wilson lower bound"; the advanced knobs stay documented in
 //!   `documentation/reference/config.md` for calibrators, not here.
 
-use crate::diagnostics::{
-    BracketMeasure, FindingArgs, NonletterForm, NonletterReason, RuleId, SpacingClass, SpacingForm,
-};
+use crate::diagnostics::{BracketMeasure, FindingArgs, NonletterForm, NonletterReason, RuleId};
 
 /// How a rule's findings are decided — drives which caption a UI shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -230,15 +228,6 @@ pub fn card(id: RuleId) -> RuleCard {
             None,
             CorpusRelative,
         ),
-        RuleId::PunctuationSpacingAnomaly => (
-            "Inconsistent spacing around punctuation",
-            "A mark spaced away from (or attached to) its word, the opposite way from how this translation usually writes that mark.",
-            "Pure consistency review against your own dominant habit — expect many results if the text genuinely mixes both forms.",
-            Some(
-                "Turn this on when you want a spacing-consistency pass; it lists every occurrence written against your majority style, which can be a long list in a mixed text.",
-            ),
-            CorpusRelative,
-        ),
         RuleId::SentenceInitialLowercase => (
             "Lowercase sentence start",
             "A lowercase word right after a mark this translation reliably follows with a capital — measured only on words your text otherwise writes lowercase, so names starting sentences don't set the habit.",
@@ -316,18 +305,6 @@ pub fn card(id: RuleId) -> RuleCard {
 /// completeness guarantee [`card`] carries. Deliberately free of statistics
 /// vocabulary: a reviewer reads plain counts, never "Wilson" or "noisy-OR".
 pub fn message(id: RuleId, args: Option<&FindingArgs>) -> String {
-    // Majority-share percentage of `k` of `n`, to 3 decimals with trailing
-    // zeros (and a bare dot) trimmed — so a near-total share like 44229/44365
-    // reads "99.693", not a misleading rounded "100", while a clean 77 stays
-    // "77".
-    fn pct(k: u32, n: u32) -> String {
-        if n == 0 {
-            return "0".into();
-        }
-        let p = f64::from(k) / f64::from(n) * 100.0;
-        let s = format!("{p:.3}");
-        s.trim_end_matches('0').trim_end_matches('.').to_string()
-    }
     match id {
         // ── Deterministic: the finding is the fact; no counts to explain. ──
         RuleId::ExcessHWhitespace => "Two or more spaces in a row.".into(),
@@ -411,40 +388,6 @@ pub fn message(id: RuleId, args: Option<&FindingArgs>) -> String {
                  here it is lowercase."
             ),
             _ => "A word this translation usually capitalizes, written lowercase here.".into(),
-        },
-        RuleId::PunctuationSpacingAnomaly => match args {
-            Some(FindingArgs::SpacingConvention { mark, left, right }) => {
-                let clause = |s: &crate::diagnostics::SpacingSide, side: &str| {
-                    let verb = match s.form {
-                        SpacingForm::Attached => "attached",
-                        SpacingForm::Spaced => "spaced",
-                    };
-                    let nbr = match s.class {
-                        SpacingClass::Number => "a number",
-                        SpacingClass::Punct => "a mark",
-                        SpacingClass::Letter => "a word",
-                    };
-                    format!(
-                        "{verb} on the {side} to {nbr} in only {} of {} places ({}%)",
-                        s.count,
-                        s.total,
-                        pct(s.count, s.total),
-                    )
-                };
-                let parts: Vec<String> = [
-                    left.as_ref().map(|s| clause(s, "left")),
-                    right.as_ref().map(|s| clause(s, "right")),
-                ]
-                .into_iter()
-                .flatten()
-                .collect();
-                if parts.is_empty() {
-                    "This mark is spaced differently from this translation’s usual style.".into()
-                } else {
-                    format!("‘{mark}’ is {} here.", parts.join("; and "))
-                }
-            }
-            _ => "This mark is spaced differently from this translation’s usual style.".into(),
         },
         RuleId::BracketBalance => match args {
             Some(FindingArgs::BracketWindow {
@@ -633,7 +576,6 @@ mod tests {
                 RuleId::MixedScriptInToken,
                 RuleId::RepeatedCharacterRun,
                 RuleId::BracketBalance,
-                RuleId::PunctuationSpacingAnomaly,
                 RuleId::SentenceInitialLowercase,
                 RuleId::InconsistentWordCasing,
                 RuleId::RareGlyph,
@@ -646,10 +588,13 @@ mod tests {
     #[test]
     fn review_control_is_explicit_and_catalog_metadata_is_stable() {
         assert_eq!(
-            card(RuleId::PunctuationSpacingAnomaly).review_control,
+            card(RuleId::NonletterUsageAnomaly).review_control,
             ReviewControl::Mapped
         );
-        assert_eq!(card(RuleId::DuplicateWord).review_control, ReviewControl::Fixed);
+        assert_eq!(
+            card(RuleId::DuplicateWord).review_control,
+            ReviewControl::Fixed
+        );
         assert_eq!(REVIEW_DEPTH_CATALOG.default, 50);
         assert_eq!(REVIEW_DEPTH_CATALOG.minimum, 0);
         assert_eq!(REVIEW_DEPTH_CATALOG.maximum, 100);

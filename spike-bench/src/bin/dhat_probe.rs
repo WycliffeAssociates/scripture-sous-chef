@@ -58,18 +58,6 @@ fn build_config(name: &str) -> Config {
             }
             cfg
         }
-        // Every rule on EXCEPT punct.spacing-anomaly — its substrate then has no
-        // active consumer, so the cache retains none of its products. Paired with
-        // "all", the live-bytes difference after the cold seed IS the spacing
-        // substrate's retained footprint.
-        "all-no-spacing" => {
-            let mut cfg = Config::v1_defaults();
-            for &id in RuleId::ALL {
-                cfg.rules.insert(id, true);
-            }
-            cfg.rules.insert(RuleId::PunctuationSpacingAnomaly, false);
-            cfg
-        }
         // Same paired-difference trick for the other migrated substrates: with no
         // active consumer the cache retains none of that substrate's products, so
         // "all" minus this config IS its retained footprint.
@@ -127,7 +115,7 @@ fn build_config(name: &str) -> Config {
             cfg
         }
         other => panic!(
-            "unknown config {other:?} (want default|all|all-no-spacing|all-no-repeat|all-no-mixed-script|all-no-glyph|all-no-proportionality|all-no-normalization|all-no-bracket|all-no-duplicate|all-no-casing|all-no-mixed-case|all-no-nonletter)"
+            "unknown config {other:?} (want default|all|all-no-repeat|all-no-mixed-script|all-no-glyph|all-no-proportionality|all-no-normalization|all-no-bracket|all-no-duplicate|all-no-casing|all-no-mixed-case|all-no-nonletter)"
         ),
     }
 }
@@ -136,7 +124,7 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let (Some(mode), Some(config_name)) = (args.first().map(String::as_str), args.get(1)) else {
         eprintln!(
-            "usage: dhat_probe <testing|profile|warm-profile> <default|all|all-no-spacing|all-no-repeat|all-no-mixed-script|all-no-glyph|all-no-proportionality|all-no-normalization|all-no-bracket|all-no-duplicate|all-no-casing|all-no-mixed-case|all-no-nonletter> [corpus-path]"
+            "usage: dhat_probe <testing|profile|warm-profile> <default|all|all-no-repeat|all-no-mixed-script|all-no-glyph|all-no-proportionality|all-no-normalization|all-no-bracket|all-no-duplicate|all-no-casing|all-no-mixed-case|all-no-nonletter> [corpus-path]"
         );
         std::process::exit(2);
     };

@@ -19,10 +19,6 @@
 //!   cargo run --release -p ssc-core --example calibrate -- --repeat corpora/vref/WA-en-ulb.txt [rate K]
 //!   # rare-glyph inventory and recurrence-knee spike (one corpus or fleet):
 //!   cargo run --release -p ssc-core --example calibrate -- --glyphs corpora/vref
-//!   # mark attachment-signatures spike (one corpus or fleet):
-//!   cargo run --release -p ssc-core --example calibrate -- --signatures corpora/vref
-//!   # pooled class-conditioned spacing spike (Design A vs B; one corpus or fleet):
-//!   cargo run --release -p ssc-core --example calibrate -- --pooled-spacing corpora/vref
 //!   # fleet survey → self-contained HTML report (all rules, floors zeroed,
 //!   # every corpus in the directory; out defaults to target/fleet-report.html):
 //!   cargo run --release -p ssc-core --example calibrate -- --fleet corpora/vref [out.html]
@@ -67,12 +63,10 @@ use oracle::{OracleScope, dump_findings};
 use reporting::{census_fleet, census_single, time_configs};
 use survey::casing::{analyze_casing, casing_fleet, casing_single_report};
 use survey::glyphs::{analyze_glyphs, glyph_fleet, glyph_single_report};
-use survey::misc::{batch, bracket_calib, fleet, repeat_calib, spacing_fleet_sweep, zwsp_calib};
+use survey::misc::{batch, bracket_calib, fleet, repeat_calib, zwsp_calib};
 use survey::mixedcase::{analyze_mixedcase, mixedcase_fleet, mixedcase_single_report};
 use survey::paired::{paired_survey, seed_faults, uw_calibrate, uw_case_shape_simulate};
-use survey::pooled::{analyze_pooled, pooled_fleet, pooled_single_report};
 use survey::review_depth_candidates::{review_depth_path_survey, review_depth_survey};
-use survey::signatures::{analyze_signatures, signature_fleet, signature_single_report};
 use survey::terminal::{terminal_fleet, terminal_single};
 
 // terminal_strength SPIKE (shortlist 2/3) — dev-only sweep harness. The trust
@@ -101,38 +95,6 @@ fn main() {
         // findings the default-on rule emits, and confirm hygiene flags no U+200B.
         [flag, t] if flag == "--zwsp" => {
             zwsp_calib(Path::new(t));
-            return;
-        }
-        // Punctuation spacing knee/floor sweep + regression (ADR 0054 amend.):
-        // over the vref fleet, the total `punct.spacing-anomaly` finding count
-        // for a grid of (minority_recurrence_k, minority_rate_per_10k) at floor
-        // 0.5, plus the six ADR 0050 calibration corpora at each cell — the
-        // before/after regression counter and the ADR 0054 amendment knee-sweep
-        // evidence, driven by the production rule under the per-side (left/right
-        // attached-vs-spaced) denominators.
-        [flag, dir] if flag == "--spacing-sweep" => {
-            spacing_fleet_sweep(Path::new(dir));
-            return;
-        }
-        // Pooled class-conditioned spacing SPIKE (plan rule 2 amendment,
-        // 2026-07-10). Two designs head-to-head over the same sites at the
-        // shipped ADR 0050/0054 reference constants: Design A conditions the
-        // per-side attached-vs-spaced binary on the first non-whitespace
-        // neighbour's class {Letter, Number, Punct} (crossing verse seams for
-        // the class, seam ⇒ spaced), with a two-level hierarchy (class pool →
-        // top-level fallback) and a quote/non-quote sub-split inside Punct
-        // reported as data; Design B reads each side's IMMEDIATE context as a
-        // four-way category {letter, number, ws, punct} (whitespace terminal),
-        // scoring mode-dominance × recurrence on the observed category. A file
-        // prints a per-corpus report; a vref directory runs the fleet sweep.
-        [flag, path] if flag == "--pooled-spacing" => {
-            let p = Path::new(path);
-            if p.is_dir() {
-                pooled_fleet(p);
-            } else {
-                let id = p.file_stem().unwrap().to_string_lossy().to_string();
-                pooled_single_report(&analyze_pooled(id, &load_corpus(p)));
-            }
             return;
         }
         // Review Depth pilot survey: compact per-corpus TSV rows over the
@@ -168,54 +130,20 @@ fn main() {
         // Rare-glyph calibration: tally every scalar for the future census,
         // but score only the visible L/N/P/S candidate lanes. A file prints
         // its glyph table; a vref directory aggregates the fleet sweep.
-        // `uni.nonletter-usage-anomaly` PROBE (epic plan §9) — dev-only, no live
-        // rule. A file prints its per-corpus channel detail; a vref directory
-        // runs the fleet sweep. A trailing `overlap` adds the old-rule ledger,
-        // which costs three extra rule passes per corpus.
-        [flag, path, rest @ ..] if flag == "--nonletter" && rest.len() <= 1 => {
+        // `uni.nonletter-usage-anomaly` PROBE (epic plan §9) — the channel-level
+        // measurement harness behind the calibration packet. A file prints its
+        // per-corpus channel detail; a vref directory runs the fleet sweep. The
+        // old-rule overlap ledger it once carried retired with the three rules it
+        // compared against (the durable TSV under `documentation/calibration/` is
+        // its record).
+        [flag, path] if flag == "--nonletter" => {
             let p = Path::new(path);
             if p.is_dir() {
-                let overlap = rest.first().is_some_and(|r| r == "overlap");
-                survey::nonletter::nonletter_fleet(p, overlap);
+                survey::nonletter::nonletter_fleet(p);
             } else {
                 let id = p.file_stem().unwrap().to_string_lossy().to_string();
                 survey::nonletter::nonletter_single_report(&id, &load_corpus(p));
             }
-            return;
-        }
-        // THE MIGRATION LEDGER (epic plan §11.1/§14.3) — the shipped rule against
-        // the three retired rules over the fleet, plus the two obligations the
-        // sequence-`k=2` ruling attached. Writes the durable TSV to stdout.
-        // Optional trailing `sequence_k` and `placement_k` overrides, so the two
-        // knobs the FLAG 2 obligations put in question can be measured against the
-        // adjudicated wins without a rebuild.
-        [flag, path, knobs @ ..] if flag == "--nonletter-ledger" && knobs.len() <= 6 => {
-            let mut cfg = ssc_core::config::NonletterUsageConfig::default();
-            let num = |s: &String| s.parse::<f32>().expect("a knob is a number");
-            if let Some(k) = knobs.first() {
-                cfg.placement_k = num(k);
-            }
-            if let Some(k) = knobs.get(1) {
-                cfg.placement_rate_per_10k = num(k);
-            }
-            if let Some(k) = knobs.get(2) {
-                cfg.sequence_k = num(k);
-            }
-            if let Some(k) = knobs.get(3) {
-                cfg.sequence_rate_per_10k = num(k);
-            }
-            // The retired rules all emit at 0.5, so a like-for-like coverage
-            // comparison needs this rule's floor put at 0.5 too — which is its
-            // Review Depth 100 end, not its depth-50 default of 0.75.
-            if let Some(k) = knobs.get(4) {
-                cfg.emit_score_min = num(k);
-            }
-            // Directive 2's lever: class-conditioned cells are smaller, so the pool
-            // floor is what makes a thin cell abstain instead of inferring.
-            if let Some(k) = knobs.get(5) {
-                cfg.placement_min_pool = num(k) as u32;
-            }
-            survey::nonletter_ledger::nonletter_ledger_fleet(Path::new(path), cfg);
             return;
         }
         [flag, path] if flag == "--glyphs" => {
@@ -225,21 +153,6 @@ fn main() {
             } else {
                 let id = p.file_stem().unwrap().to_string_lossy().to_string();
                 glyph_single_report(&analyze_glyphs(id, &load_corpus(p)));
-            }
-            return;
-        }
-        // Mark attachment-signatures SPIKE (plan rule 2, steps 1–2). For every
-        // separator mark (GC Po minus quotes), the joint (left, right) context
-        // signature over {letter, space, punct, digit, edge}; scored corpus-
-        // relative as dominance-of-complement × minority recurrence. A file
-        // prints a per-corpus report; a vref directory runs the fleet sweep.
-        [flag, path] if flag == "--signatures" => {
-            let p = Path::new(path);
-            if p.is_dir() {
-                signature_fleet(p);
-            } else {
-                let id = p.file_stem().unwrap().to_string_lossy().to_string();
-                signature_single_report(&analyze_signatures(id, &load_corpus(p)));
             }
             return;
         }

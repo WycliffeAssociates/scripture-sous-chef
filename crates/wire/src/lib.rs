@@ -29,7 +29,6 @@ pub use schema::{
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ssc_core::diagnostics::{SpacingClass, SpacingForm, SpacingSide};
     use ssc_core::{
         analyze_with_config, AnalysisId, BracketMeasure, Config, Corpus, Finding, FindingArgs,
         LengthRatioScope, RuleId, Severity, Span, TargetContextId,
@@ -246,15 +245,6 @@ mod tests {
 
     // ---- digest round-trip for every §A.1.1 row --------------------------
 
-    fn spacing_side(count: u32, total: u32) -> SpacingSide {
-        SpacingSide {
-            form: SpacingForm::Attached,
-            class: SpacingClass::Letter,
-            count,
-            total,
-        }
-    }
-
     #[test]
     fn digest_round_trip_all_rows() {
         let base = base_finding();
@@ -275,26 +265,6 @@ mod tests {
             let rec = decode(&pack_one(f).unwrap()).unwrap().records.remove(0);
             assert_eq!(rec.digest(), want, "digest for {code}");
         }
-    }
-
-    /// Spacing: single-side, both-sides rarer selection, and the exact-tie
-    /// left-preference (§A.1.1).
-    #[test]
-    fn spacing_primary_side_selection() {
-        let base = base_finding();
-        let r = Span { start: 0, end: 1 };
-        let mk = |left: Option<SpacingSide>, right: Option<SpacingSide>| {
-            let f = synth(&base, RuleId::PunctuationSpacingAnomaly, Severity::Info, r, None, Some(FindingArgs::SpacingConvention { mark: ',', left, right }));
-            decode(&pack_one(f).unwrap()).unwrap().records.remove(0).digest()
-        };
-        // only left present
-        assert_eq!(mk(Some(spacing_side(1, 1053)), None), DecodedDigest::Pair { a: 1, b: 1053, saturated: false });
-        // only right present
-        assert_eq!(mk(None, Some(spacing_side(2, 40)), ), DecodedDigest::Pair { a: 2, b: 40, saturated: false });
-        // both present, right is rarer (2/1000 < 5/10) -> right chosen
-        assert_eq!(mk(Some(spacing_side(5, 10)), Some(spacing_side(2, 1000))), DecodedDigest::Pair { a: 2, b: 1000, saturated: false });
-        // exact tie (1/2 == 2/4) -> left chosen
-        assert_eq!(mk(Some(spacing_side(1, 2)), Some(spacing_side(2, 4))), DecodedDigest::Pair { a: 1, b: 2, saturated: false });
     }
 
     #[test]
@@ -325,9 +295,6 @@ mod tests {
         assert!(matches!(pack_one(f), Err(PackError::DigestArgsMismatch { .. })));
         // assigned code, wrong variant
         let f = synth(&base, RuleId::BracketBalance, Severity::Info, r, None, Some(FindingArgs::RareGlyph { glyph: 'x', count: 1 }));
-        assert!(matches!(pack_one(f), Err(PackError::DigestArgsMismatch { .. })));
-        // spacing with neither side present
-        let f = synth(&base, RuleId::PunctuationSpacingAnomaly, Severity::Info, r, None, Some(FindingArgs::SpacingConvention { mark: ',', left: None, right: None }));
         assert!(matches!(pack_one(f), Err(PackError::DigestArgsMismatch { .. })));
     }
 

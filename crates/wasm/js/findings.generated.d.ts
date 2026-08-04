@@ -19,7 +19,6 @@ export type WireRuleId =
   | "lex.repeated-character-run"
   | "uni.mixed-numeral-systems"
   | "punct.bracket-balance"
-  | "punct.spacing-anomaly"
   | "case.sentence-initial-lowercase"
   | "case.inconsistent-word-casing"
   | "uni.rare-glyph"

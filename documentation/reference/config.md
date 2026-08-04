@@ -353,12 +353,12 @@ Every available configuration option, set to its built-in default. Copy this and
 > This section documents the corpus-relative rule against that real surface; the
 > older reference is retained for its conceptual material.
 
-`punct.spacing-anomaly`, `lex.repeated-character-run`,
+`lex.repeated-character-run`,
 `case.sentence-initial-lowercase`, `case.inconsistent-word-casing`, and
 `punct.bracket-balance` are corpus-relative rules with typed knobs. Each emits
 a continuous `score ∈ [0, 1]` whose unit is **anomaly evidence**, not a
 correctness verdict: 1 ≈ "unlike this corpus's own conventions", 0 ≈ "ordinary
-here" (ADR 0032). For the dominance-verdict rules (spacing, casing,
+here" (ADR 0032). For the dominance-verdict rules (casing,
 bracket-balance) that evidence *is* the conservative dominance of the
 convention the flagged site violates — same number, read from the
 convention's side. All carry
@@ -394,29 +394,6 @@ consumer.)
 > `Class`-bit prefilter closed most of an initial regression. Toggle it
 > through the same `rules` map every rule uses. See the rules catalog and
 > ADR 0063.
-
-### `punct.spacing-anomaly` (`Config.punctuation_spacing`) — **default OFF**
-
-| knob | meaning |
-| --- | --- |
-| `emit_score_min` | the emission floor on the **two-factor** score (dominance × rarity). Before ADR 0050 the score was dominance alone and this read as a literal "≥ N% dominant" share; with the rarity factor folded in it is a two-factor cutoff. Default **0.5** (lowered from 0.75 once the recurrence knee collapsed the mid-mass — 2026-07-09 calibration) |
-| `minority_recurrence_k` | recurrence knee **base**: the tolerance at negligible volume, and the whole knee for thin marks. `rarity = 1 − min(minority − 1, K)/K` with `K = k + minority_rate_per_10k · N/10 000` over the mark's total occurrences `N`. A minority seen once is a rare slip (`rarity 1`); one recurring past `K` is the text's second convention (`rarity 0`, silent). Default **32** |
-| `minority_rate_per_10k` | the knee's opportunity-proportional allowance (ADR 0050 amendment): slips accumulate with volume, so at large `N` the flag boundary is a minority *rate* (~2 per 1k mark occurrences at the default) rather than a count. `0` disables (pure absolute knee). Default **40** |
-| `confidence_z` | Wilson lower-bound confidence — an **advanced** calibration knob (higher shrinks small samples harder toward "not yet a convention"); default 1.96. Omit from normal UI |
-
-`score = dominance(k_majority, N, confidence_z) × rarity(minority, K)` per mark
-(the Wilson lower bound × the recurrence knee, via `evidence.rs`), emitted only
-for **minority-form** occurrences (ADR 0029 + ADR 0050). Candidate marks are GC
-`Po` minus quotes (ADR 0033), not an ASCII list. Unlike the sibling rules there
-is no `convention_rate` and no `min_samples`. The dominance factor is
-confidence-monotone (more data flags more readily); the rarity factor makes
-**fixing minority occurrences raise the score of the rest** — clean-as-you-go
-sharpens the signal.
-
-**Stricter (fewer findings):** raise `emit_score_min`, or **lower**
-`minority_recurrence_k` (treat a smaller recurring minority as an established
-second convention → silent). **Looser:** lower `emit_score_min`, or raise
-`minority_recurrence_k` (demand more recurrence before silencing).
 
 ### `lex.repeated-character-run` (`Config.repeated_character_run`) — **default ON**
 

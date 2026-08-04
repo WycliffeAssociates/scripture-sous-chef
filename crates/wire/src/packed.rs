@@ -8,7 +8,6 @@
 //! particular UTF-16 projection goes through [`project_utf16_checked`], never
 //! `Span::to_utf16` (which assumes a valid span and indexes/casts accordingly).
 
-use ssc_core::diagnostics::SpacingSide;
 use ssc_core::{
     AnalysisId, Corpus, Finding, FindingArgs, RuleId, Severity, Span, TargetContextId,
 };
@@ -265,30 +264,6 @@ fn u32_lane(v: u32) -> Digest {
     }
 }
 
-/// For spacing, the primary side is the only present one, or the rarer
-/// (smaller `count/total`) when both are present, left on an exact tie. Compare
-/// by widened integer cross-multiplication so there is no float rounding.
-fn spacing_primary<'a>(
-    left: &'a Option<SpacingSide>,
-    right: &'a Option<SpacingSide>,
-) -> Option<&'a SpacingSide> {
-    match (left, right) {
-        (None, None) => None,
-        (Some(l), None) => Some(l),
-        (None, Some(r)) => Some(r),
-        (Some(l), Some(r)) => {
-            let lhs = (l.count as u128) * (r.total as u128);
-            let rhs = (r.count as u128) * (l.total as u128);
-            // l is rarer (or tied) when l.count/l.total <= r.count/r.total.
-            if lhs <= rhs {
-                Some(l)
-            } else {
-                Some(r)
-            }
-        }
-    }
-}
-
 /// Extract the per-code digest from a finding's args. One `match` on
 /// `(code, &args)` — the wire's only lane table home. Codes with an assigned
 /// digest reject a wrong/absent args variant; every other code writes zeros.
@@ -320,15 +295,6 @@ fn extract_digest(code: RuleId, args: Option<&FindingArgs>) -> Result<Digest, Pa
             Ok(count_pair(*majority, *total))
         }
         (RuleId::BracketBalance, _) => Err(mismatch()),
-
-        (
-            RuleId::PunctuationSpacingAnomaly,
-            Some(FindingArgs::SpacingConvention { left, right, .. }),
-        ) => match spacing_primary(left, right) {
-            Some(side) => Ok(count_pair(side.count, side.total)),
-            None => Err(mismatch()),
-        },
-        (RuleId::PunctuationSpacingAnomaly, _) => Err(mismatch()),
 
         (RuleId::SentenceInitialLowercase, Some(FindingArgs::CasingConvention { upper, total, .. })) => {
             Ok(count_pair(*upper, *total))

@@ -124,29 +124,6 @@ pub struct ReviewPolicyInput {
     pub adjustments: Option<BTreeMap<RuleId, i16>>,
 }
 
-/// Partial overrides for `punct.spacing-anomaly`'s knobs. Omitted fields keep
-/// core's defaults (ADR 0029, 0050): `emit_score_min` 0.5 (the emission floor
-/// on the two-factor score), `confidence_z` 1.96 (an advanced calibration
-/// knob), `minority_recurrence_k` 32 (the recurrence knee's absolute base),
-/// and `minority_rate_per_10k` 40 (the knee's opportunity-proportional
-/// allowance: `K = k + r·N/10 000` over the mark's total occurrences `N`).
-#[derive(Deserialize, Tsify, Default)]
-#[tsify(from_wasm_abi)]
-pub struct PunctuationSpacingOverrides {
-    #[serde(default)]
-    #[tsify(optional)]
-    pub emit_score_min: Option<f32>,
-    #[serde(default)]
-    #[tsify(optional)]
-    pub confidence_z: Option<f32>,
-    #[serde(default)]
-    #[tsify(optional)]
-    pub minority_recurrence_k: Option<f32>,
-    #[serde(default)]
-    #[tsify(optional)]
-    pub minority_rate_per_10k: Option<f32>,
-}
-
 /// Partial overrides for `lex.repeated-character-run`'s corpus-relative score.
 /// Omitted fields keep core's calibrated defaults (ADR 0028).
 #[derive(Deserialize, Tsify, Default)]
@@ -299,9 +276,6 @@ pub struct SousConfig {
     pub casing: Option<CasingOverrides>,
     #[serde(default)]
     #[tsify(optional)]
-    pub punctuation_spacing: Option<PunctuationSpacingOverrides>,
-    #[serde(default)]
-    #[tsify(optional)]
     pub repeated_character_run: Option<RepeatedCharacterRunOverrides>,
     #[serde(default)]
     #[tsify(optional)]
@@ -412,20 +386,6 @@ fn build_config(
             }
             if let Some(v) = cas.trust_gate {
                 cfg.casing.sentence_initial.trust_gate = v;
-            }
-        }
-        if let Some(p) = c.punctuation_spacing {
-            if let Some(v) = p.emit_score_min {
-                cfg.punctuation_spacing.emit_score_min = v;
-            }
-            if let Some(v) = p.confidence_z {
-                cfg.punctuation_spacing.confidence_z = v;
-            }
-            if let Some(v) = p.minority_recurrence_k {
-                cfg.punctuation_spacing.minority_recurrence_k = v;
-            }
-            if let Some(v) = p.minority_rate_per_10k {
-                cfg.punctuation_spacing.minority_rate_per_10k = v;
             }
         }
         if let Some(r) = c.repeated_character_run {
@@ -1098,12 +1058,6 @@ mod tests {
                 confidence_z: Some(1.5),
                 trust_gate: Some(0.75),
             }),
-            punctuation_spacing: Some(PunctuationSpacingOverrides {
-                emit_score_min: Some(0.6),
-                confidence_z: Some(2.2),
-                minority_recurrence_k: Some(40.0),
-                minority_rate_per_10k: Some(25.0),
-            }),
             repeated_character_run: Some(RepeatedCharacterRunOverrides {
                 convention_rate_per_10k: Some(3.0),
                 word_recurrence_k: Some(7.0),
@@ -1162,10 +1116,6 @@ mod tests {
         assert_eq!(cfg.casing.sentence_initial.evidence.confidence_z, 1.5);
         assert_eq!(cfg.casing.inconsistent_word.evidence.confidence_z, 1.5);
         assert_eq!(cfg.casing.sentence_initial.trust_gate, 0.75);
-        assert_eq!(cfg.punctuation_spacing.emit_score_min, 0.6);
-        assert_eq!(cfg.punctuation_spacing.confidence_z, 2.2);
-        assert_eq!(cfg.punctuation_spacing.minority_recurrence_k, 40.0);
-        assert_eq!(cfg.punctuation_spacing.minority_rate_per_10k, 25.0);
         assert_eq!(cfg.repeated_character_run.convention_rate_per_10k, 3.0);
         assert_eq!(cfg.repeated_character_run.word_recurrence_k, 7.0);
         assert_eq!(cfg.repeated_character_run.confidence_z, 1.5);
@@ -1257,8 +1207,8 @@ mod tests {
         let cfg = build_config(None).unwrap();
         let d = Config::v1_defaults();
         assert_eq!(
-            cfg.punctuation_spacing.emit_score_min,
-            d.punctuation_spacing.emit_score_min
+            cfg.nonletter_usage.emit_score_min,
+            d.nonletter_usage.emit_score_min
         );
         assert_eq!(cfg.repeated_character_run, d.repeated_character_run);
         assert!(cfg.is_enabled(RuleId::RedundantZeroWidthSpace));
@@ -1272,13 +1222,13 @@ mod tests {
     #[test]
     fn build_config_review_is_additive_and_advanced_overrides_win() {
         let mut adjustments = BTreeMap::new();
-        adjustments.insert(RuleId::PunctuationSpacingAnomaly, 20);
+        adjustments.insert(RuleId::NonletterUsageAnomaly, 20);
         let cfg = build_config(Some(SousConfig {
             review: Some(ReviewPolicyInput {
                 depth: Some(50),
                 adjustments: Some(adjustments),
             }),
-            punctuation_spacing: Some(PunctuationSpacingOverrides {
+            nonletter_usage: Some(NonletterUsageOverrides {
                 emit_score_min: Some(0.77),
                 ..Default::default()
             }),
@@ -1288,8 +1238,11 @@ mod tests {
 
         // 50 + 20 resolves to the depth-70 profile before the explicit native
         // floor wins field-by-field.
-        assert_eq!(cfg.punctuation_spacing.emit_score_min, 0.77);
-        assert!((cfg.punctuation_spacing.confidence_z - 1.688).abs() < 0.00001);
+        assert_eq!(cfg.nonletter_usage.emit_score_min, 0.77);
+        // 50 + 20 resolves to the depth-70 profile's support gates (interpolated,
+        // between depth 50's 30 and depth 100's looser floor) before the explicit
+        // native floor wins field-by-field.
+        assert_eq!(cfg.nonletter_usage.placement_min_pool, 21);
         assert_eq!(cfg.casing, Config::v1_defaults().casing);
     }
 

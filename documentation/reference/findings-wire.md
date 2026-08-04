@@ -107,7 +107,7 @@ existing code. `ssc-wire` pins every pair; the generated JS `CODE_TO_RULE` /
 | 16 | `lex.repeated-character-run` | u32 |
 | 17 | `uni.mixed-numeral-systems` | none |
 | 18 | `punct.bracket-balance` | count-pair |
-| 19 | `punct.spacing-anomaly` | count-pair |
+| 19 | *retired* (`punct.spacing-anomaly`) | — |
 | 20 | `case.sentence-initial-lowercase` | count-pair |
 | 21 | `case.inconsistent-word-casing` | count-pair |
 | 22 | `uni.rare-glyph` | u32 |
@@ -117,7 +117,7 @@ existing code. `ssc-wire` pins every pair; the generated JS `CODE_TO_RULE` /
 | 26 | `uni.nonletter-usage-anomaly` | count-pair |
 
 Retired discriminants are **never reused** — reuse would be a versioned layout
-change (§A.1). Both rules above were absorbed by
+change (§A.1). All three rules above were absorbed by
 `uni.nonletter-usage-anomaly` (code 26).
 
 Severity needs no export (three fixed values above).
@@ -135,7 +135,6 @@ copy that names at most one count pair (e.g. "this spacing appears in **1 of
 | --- | --- | --- |
 | `prop.length-ratio` | `(rounded_percent, 0)` | "This verse is about A% the source length." |
 | `punct.bracket-balance` | `(majority, total)` | "This bracket pattern follows the convention in A of B places." |
-| `punct.spacing-anomaly` | `(primary_side.count, primary_side.total)` | "This spacing appears in A of B comparable places." |
 | `case.sentence-initial-lowercase` | `(upper, total)` | "This position is capitalized in A of B places." |
 | `case.inconsistent-word-casing` | `(upper, total)` | "This word is capitalized in A of B places." |
 | `uni.mixed-script-in-token` | `(books, corpus)` | "This script mixture appears in A of B books." |

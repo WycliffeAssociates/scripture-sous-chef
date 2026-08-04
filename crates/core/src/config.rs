@@ -224,96 +224,6 @@ pub struct CasingConfig {
     pub inconsistent_word: InconsistentWordCasingConfig,
 }
 
-/// Knobs for `punct.spacing-anomaly`. The rule learns, per punctuation mark, **two
-/// per-side conventions** — is the mark `attached` (letter neighbour) or `spaced`
-/// (whitespace/seam) on its left, and independently on its right — and flags
-/// occurrences whose side form is *rare for that mark in this corpus*, scored by
-/// how dominant the side's majority is (ADR 0048) times the form's recurrence
-/// rarity (ADR 0050); a punct/digit neighbour abstains (ADR 0054 amendment —
-/// per-side factorization). The grapheme-governed opportunity scan is fixed;
-/// these values are the whole judgment surface. Ships **default-disabled** until
-/// the consumer opts into a spacing pass.
-/// Scores are always finite: `judge` sanitises out-of-range / NaN input here.
-#[derive(Debug, Clone, Copy, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(default))]
-pub struct PunctuationSpacingConfig {
-    /// **The user-facing decision threshold**: emit an occurrence in a rare
-    /// side form only when its two-factor evidence — the *conservative*
-    /// dominance of that side's majority (a Wilson lower bound) **times** the
-    /// form's recurrence rarity — is at least this value (ADR 0054 amendment
-    /// factors the ADR 0029/0050 minority form into two per-side binaries).
-    /// Before ADR 0050 the score was dominance alone
-    /// and this read as a literal convention share; now a strong convention
-    /// whose minority *recurs* is discounted by the rarity factor, so the floor
-    /// is a two-factor cutoff, not a share. Raising it surfaces less; it is
-    /// **not** a sensitivity dial (higher ⇒ fewer findings).
-    pub emit_score_min: f32,
-    /// Confidence `z` for the Wilson lower bound. Advanced calibration knob,
-    /// kept configurable but omitted from normal UI: it sets how hard small
-    /// samples are shrunk toward "not yet a convention," so a lopsided split
-    /// seen a handful of times stays quiet until the evidence accumulates.
-    /// `1.96` ≈ 95%.
-    pub confidence_z: f32,
-    /// How many occurrences of a rare signature (beyond the first) drive the
-    /// **rarity** factor to zero — the recurrence knee that makes the score
-    /// two-factor: `score = dominance(complement) × rarity(count)` where
-    /// `rarity = 1 − min(count − 1, K) / K` and the effective knee
-    /// `K = minority_recurrence_k + minority_rate_per_10k · N_side / 10 000`
-    /// scales with the side's judged occupancy `N_side` (ADR 0050, retained under
-    /// the per-side denominators by the ADR 0054 amendment). A form seen once is a rare slip
-    /// against a strong convention (`rarity = 1`, surfaces); one that recurs at
-    /// scale is the text's *second* convention (`rarity → 0`, silent) — the
-    /// resolution that separates ne_udb's attached `!`/`,` slips (keep, and its
-    /// 40 verse-final dandas at score ≈ 0.55, near the floor) from engwebster's
-    /// spaced-`; : ? !` period typography and kmr-IQ's 1,289 spaced ` ،`
-    /// (silence). Linear knee, mirroring `lex.repeated-character-run`'s
-    /// `word_recurrence_k` (ADR 0028); sanitised through `clamp_count`. Fixing
-    /// occurrences *raises* the score of the remaining ones (clean-as-you-go
-    /// sharpens the signal) — desired.
-    ///
-    /// This knob is the knee's **absolute base**: the tolerance at negligible
-    /// volume, and the whole tolerance for thin marks.
-    pub minority_recurrence_k: f32,
-    /// The knee's **opportunity-proportional allowance** (ADR 0050 amendment):
-    /// slips accumulate with volume — a full Bible writes ~5× an NT's commas
-    /// and honestly accrues ~5× the spacing slips — so the knee grows as
-    /// `K = k + r · N / 10 000`. At the shipped values the large-`N` flag
-    /// boundary sits near **2 minority per 1 000 mark occurrences**: the fleet
-    /// slip cloud lives ≤ 2/1k, genuinely mixed usage ≥ 5/1k. Small-`N`
-    /// behaviour is unchanged (the term vanishes). `0` disables the term
-    /// (pure absolute knee).
-    pub minority_rate_per_10k: f32,
-}
-
-impl Default for PunctuationSpacingConfig {
-    fn default() -> Self {
-        Self {
-            // Flag a mark's minority spacing form once the two-factor evidence
-            // (majority dominance × minority rarity) clears this bar. Lowered
-            // from ADR 0029's provisional 0.75 to 0.5 after the recurrence
-            // factor collapsed the mid-mass that had made 0.75 a volume policy
-            // rather than a truth cutoff (ADR 0050 / 2026-07-09 calibration).
-            emit_score_min: 0.5,
-            confidence_z: 1.96,
-            // Recurrence knee base (ADR 0050): the tolerance at negligible
-            // volume, and what thin marks get. 32 keeps ne_udb's
-            // 9-attached-`!` alive (N≈1.2k, K≈37) while excluding or-ulb's
-            // genuinely mixed 25-of-363 `!` (K≈33.5). Frozen 2026-07-09.
-            minority_recurrence_k: 32.0,
-            // Opportunity-proportional allowance (ADR 0050 amendment, same
-            // day): K = 32 + 40·N/10k puts the large-N flag boundary at ~2
-            // minority per 1k mark occurrences — restoring the slip cloud the
-            // absolute knee wrongly silenced (pa_ulb's 17 spaced `,` of
-            // 37,928, the 2026-07-06 calibration's flagship finding, back at
-            // 0.91; am-ulb's 24 `፡` of 14,543 at 0.74) while every ≥5/1k
-            // mixed-usage mark stays silent (engwebster 16/1k, or-ulb 69/1k,
-            // kmr-IQ 114/1k — all score 0.0–0.25).
-            minority_rate_per_10k: 40.0,
-        }
-    }
-}
-
 /// Knobs for `lex.repeated-character-run`. The threshold-three candidate scan
 /// is fixed; these values decide whether a detected run is unusual relative to
 /// the corpus's own orthography (ADR 0028).
@@ -649,8 +559,6 @@ pub struct Config {
     #[cfg_attr(feature = "serde", serde(default))]
     pub casing: CasingConfig,
     #[cfg_attr(feature = "serde", serde(default))]
-    pub punctuation_spacing: PunctuationSpacingConfig,
-    #[cfg_attr(feature = "serde", serde(default))]
     pub repeated_character_run: RepeatedCharacterRunConfig,
     #[cfg_attr(feature = "serde", serde(default))]
     pub mixed_script: MixedScriptConfig,
@@ -685,7 +593,6 @@ impl Config {
     pub fn v1_defaults() -> Self {
         Self::disabling(&[
             RuleId::DuplicateWord,
-            RuleId::PunctuationSpacingAnomaly,
             RuleId::SentenceInitialLowercase,
             RuleId::InconsistentWordCasing,
             RuleId::RareGlyph,

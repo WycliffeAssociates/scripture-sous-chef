@@ -151,12 +151,6 @@ export const WIRE_SCHEMA = Object.freeze(
       "input_dependency": "target-only"
     },
     {
-      "code": 19,
-      "rule_id": "punct.spacing-anomaly",
-      "digest": "count-pair",
-      "input_dependency": "target-only"
-    },
-    {
       "code": 20,
       "rule_id": "case.sentence-initial-lowercase",
       "digest": "count-pair",
@@ -251,7 +245,6 @@ export const CODE_TO_RULE = Object.freeze({
   "16": "lex.repeated-character-run",
   "17": "uni.mixed-numeral-systems",
   "18": "punct.bracket-balance",
-  "19": "punct.spacing-anomaly",
   "20": "case.sentence-initial-lowercase",
   "21": "case.inconsistent-word-casing",
   "22": "uni.rare-glyph",
@@ -279,7 +272,6 @@ export const RULE_TO_CODE = Object.freeze({
   "lex.repeated-character-run": 16,
   "uni.mixed-numeral-systems": 17,
   "punct.bracket-balance": 18,
-  "punct.spacing-anomaly": 19,
   "case.sentence-initial-lowercase": 20,
   "case.inconsistent-word-casing": 21,
   "uni.rare-glyph": 22,
@@ -307,7 +299,6 @@ export const CODE_TO_DIGEST = Object.freeze({
   "16": "u32",
   "17": "none",
   "18": "count-pair",
-  "19": "count-pair",
   "20": "count-pair",
   "21": "count-pair",
   "22": "u32",
@@ -335,7 +326,6 @@ export const CODE_TO_INPUT_DEPENDENCY = Object.freeze({
   "16": "target-only",
   "17": "target-only",
   "18": "target-only",
-  "19": "target-only",
   "20": "target-only",
   "21": "target-only",
   "22": "target-only",

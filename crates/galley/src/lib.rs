@@ -569,8 +569,8 @@ mod tests {
 
     /// A knob-only config change re-analyzes to the cold result under the new
     /// knobs and — proven by the substrate probes — maps and reduces no chapters.
-    /// The prep lane validates its whole-config fingerprint, but the spacing
-    /// substrate maps/reduces nothing: its stamps carry no
+    /// The prep lane validates its whole-config fingerprint, but the
+    /// nonletter-usage substrate maps/reduces nothing: its stamps carry no
     /// judging knob, so `update_config` (which no longer clears the cache)
     /// leaves it entirely valid. `Config::all` so both lanes are live.
     #[test]
@@ -589,98 +589,132 @@ mod tests {
         let findings = g.analyze();
         let probe = g.cache.probe();
         assert_eq!(
-            (probe.spacing_mapped, probe.spacing_reduced),
+            (probe.nonletter_mapped, probe.nonletter_reduced),
             (0, 0),
-            "the spacing substrate maps/reduces nothing on a knob-only change"
+            "the nonletter substrate maps/reduces nothing on a knob-only change"
         );
         assert_eq!(findings, cold(&corpus, &cfg2), "findings track the new knobs");
     }
 
-    /// A SPACING judging-knob change maps and reduces ZERO chapters (its
+    /// A NONLETTER-USAGE judging-knob change maps and reduces ZERO chapters (its
     /// observation stamps carry no knob), only re-judges, and leaves every
     /// unrelated rule's findings byte-identical — the plan §8 Phase C step-3
-    /// isolation, on the resident lifecycle.
+    /// isolation, on the resident lifecycle. (This test read
+    /// `punct.spacing-anomaly` until that rule was retired; the nonletter rule is
+    /// its successor as the mapped, corpus-relative substrate consumer.)
     #[test]
-    fn spacing_knob_change_is_substrate_local() {
+    fn nonletter_knob_change_is_substrate_local() {
         let cfg1 = Config::all();
         let mut cfg2 = Config::all();
-        cfg2.punctuation_spacing.emit_score_min = 0.99; // spacing knob only
+        cfg2.nonletter_usage.emit_score_min = 0.99; // nonletter knob only
         let corpus = corpus_of(vec![
             keyed("GEN", &["a, b, c, d, e, f", "g, h, i, j, k, l"]),
             keyed("EXO", &["m, n, o, p, q, r", "s, t,u"]),
         ]);
         let mut g = Galley::new(corpus.clone(), None, cfg1.clone());
         let before = g.analyze();
-        let non_spacing_before: Vec<_> = before
+        let non_nonletter_before: Vec<_> = before
             .iter()
-            .filter(|f| f.code != RuleId::PunctuationSpacingAnomaly)
+            .filter(|f| f.code != RuleId::NonletterUsageAnomaly)
             .cloned()
             .collect();
 
         g.update_config(cfg2.clone());
         let after = g.analyze();
         let probe = g.cache.probe();
-        assert_eq!(probe.spacing_mapped, 0, "spacing knob maps zero chapters");
-        assert_eq!(probe.spacing_reduced, 0, "spacing knob reduces zero chapters");
-        assert!(probe.spacing_judged >= 1, "spacing is re-judged");
+        assert_eq!(
+            probe.nonletter_mapped, 0,
+            "nonletter knob maps zero chapters"
+        );
+        assert_eq!(
+            probe.nonletter_reduced, 0,
+            "nonletter knob reduces zero chapters"
+        );
+        assert!(probe.nonletter_judged >= 1, "nonletter is re-judged");
 
-        let non_spacing_after: Vec<_> = after
+        let non_nonletter_after: Vec<_> = after
             .iter()
-            .filter(|f| f.code != RuleId::PunctuationSpacingAnomaly)
+            .filter(|f| f.code != RuleId::NonletterUsageAnomaly)
             .cloned()
             .collect();
         assert_eq!(
-            non_spacing_before, non_spacing_after,
-            "unrelated rules' findings are byte-identical across a spacing knob change"
+            non_nonletter_before, non_nonletter_after,
+            "unrelated rules' findings are byte-identical across a nonletter knob change"
         );
         assert_eq!(after, cold(&corpus, &cfg2), "resident == cold under the new knob");
     }
 
-    /// Toggling spacing off drops its substrate (edits while off do no spacing
-    /// work and no spacing findings appear), while every unrelated rule is
-    /// untouched; re-enabling rebuilds only the spacing substrate to the cold
-    /// result (plan §7.2 rule toggles / §12.4).
+    /// Toggling the nonletter rule off drops its substrate (edits while off do no
+    /// nonletter work and no nonletter findings appear), while every unrelated rule
+    /// is untouched; re-enabling rebuilds only that substrate to the cold result
+    /// (plan §7.2 rule toggles / §12.4).
     #[test]
-    fn spacing_toggle_off_and_on_is_substrate_local() {
+    fn nonletter_toggle_off_and_on_is_substrate_local() {
         let on = Config::all();
         let mut off = Config::all();
-        off.rules.insert(RuleId::PunctuationSpacingAnomaly, false);
+        off.rules.insert(RuleId::NonletterUsageAnomaly, false);
+        // The nonletter rule's placement channel needs a real pool (floor 30) with
+        // a dominant convention and a rare minority: 40 verses write `,` attached
+        // to the previous word, one writes it attached to the NEXT word instead.
+        let slip = |last: &str| -> (Vec<String>, Vec<String>) {
+            let mut texts: Vec<String> = (0..40).map(|_| "word, word here".to_string()).collect();
+            texts.push(last.to_string());
+            let keys = (1..=texts.len()).map(|v| format!("GEN 1:{v}")).collect();
+            (keys, texts)
+        };
         let corpus = corpus_of(vec![
-            keyed("GEN", &["a, b, c, d, e, f", "g, h, i, j, k, l"]),
+            slip("word ,word here"),
             keyed("EXO", &["m, n, o, p, q, r", "s, t,u"]),
         ]);
         let mut g = Galley::new(corpus.clone(), None, on.clone());
-        let with_spacing = g.analyze();
+        let with_nonletter = g.analyze();
         assert!(
-            with_spacing.iter().any(|f| f.code == RuleId::PunctuationSpacingAnomaly),
-            "spacing fires while enabled"
+            with_nonletter
+                .iter()
+                .any(|f| f.code == RuleId::NonletterUsageAnomaly),
+            "the nonletter rule fires while enabled"
         );
 
-        // Disable spacing: no spacing findings, unrelated rules unchanged, and an
-        // edit while disabled does no spacing work.
+        // Disable it: no nonletter findings, unrelated rules unchanged, and an
+        // edit while disabled does no nonletter work.
         g.update_config(off.clone());
         let disabled = g.analyze();
         assert!(
-            disabled.iter().all(|f| f.code != RuleId::PunctuationSpacingAnomaly),
-            "disabled spacing emits nothing"
+            disabled
+                .iter()
+                .all(|f| f.code != RuleId::NonletterUsageAnomaly),
+            "the disabled rule emits nothing"
         );
-        assert_eq!(disabled, cold(&corpus, &off), "resident == cold with spacing off");
-        g.update_book(book("GEN", &["a, b, c, d, e, f", "g, h,edited"]))
-            .unwrap();
+        assert_eq!(
+            disabled,
+            cold(&corpus, &off),
+            "resident == cold with the rule off"
+        );
+        let (gen_keys, gen_texts) = slip("word ,edited here");
+        g.update_book(BookBlock {
+            slug: "GEN".into(),
+            keys: gen_keys,
+            texts: gen_texts,
+        })
+        .unwrap();
         let edited = corpus_of(vec![
-            keyed("GEN", &["a, b, c, d, e, f", "g, h,edited"]),
+            slip("word ,edited here"),
             keyed("EXO", &["m, n, o, p, q, r", "s, t,u"]),
         ]);
         let after_edit = g.analyze();
         let probe = g.cache.probe();
         assert_eq!(
-            (probe.spacing_mapped, probe.spacing_reduced, probe.spacing_judged),
+            (
+                probe.nonletter_mapped,
+                probe.nonletter_reduced,
+                probe.nonletter_judged
+            ),
             (0, 0, 0),
-            "an edit while spacing is disabled does no spacing work"
+            "an edit while the rule is disabled does no nonletter work"
         );
         assert_eq!(after_edit, cold(&edited, &off));
 
-        // Re-enable: rebuild only the spacing substrate to the cold result.
+        // Re-enable: rebuild only the nonletter substrate to the cold result.
         g.update_config(on.clone());
         let reenabled = g.analyze();
         assert_eq!(reenabled, cold(&edited, &on), "re-enabling rebuilds to cold");

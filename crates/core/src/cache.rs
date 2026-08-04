@@ -21,9 +21,7 @@ use xxhash_rust::xxh3::xxh3_64;
 use crate::config::Config;
 use crate::corpus::{KeyIdx, LocalKeyIdx, rebase};
 use crate::diagnostics::{Finding, RuleId, Severity};
-use crate::signals::{
-    bracket_balance, casing, lexical, mixed_normalization, punctuation, script_mixing,
-};
+use crate::signals::{bracket_balance, casing, lexical, mixed_normalization, script_mixing};
 
 use crate::span::Span;
 use crate::substrate::SubstrateCache;
@@ -105,8 +103,6 @@ pub(crate) struct PrepSection {
 /// prep fingerprint — which is exactly why a judging-knob change reuses every
 /// slot (maps/reduces nothing).
 pub(crate) struct SubstrateSection {
-    /// `punct.spacing-anomaly`'s substrate (plan §11 ledger row, Phase C).
-    pub(crate) spacing: SubstrateCache<punctuation::SpacingSubstrate>,
     /// `struct.duplicate-word`'s substrate (Phase D).
     pub(crate) duplicate_word: SubstrateCache<lexical::DuplicateWordSubstrate>,
     /// The shared casing substrate and its two consumer judges (Phase D).
@@ -164,7 +160,6 @@ impl SubstrateSection {
     #[cfg(any(test, feature = "test-probes"))]
     pub(crate) fn note_map_route(&mut self, route: crate::rule::MapRoute) {
         let label = route.label();
-        self.spacing.map_route = label;
         self.repeated_run.map_route = label;
         self.mixed_script.map_route = label;
         self.glyph.map_route = label;
@@ -180,7 +175,6 @@ impl SubstrateSection {
 
     fn new() -> Self {
         SubstrateSection {
-            spacing: SubstrateCache::new(),
             repeated_run: SubstrateCache::new(),
             mixed_script: SubstrateCache::new(),
             glyph: SubstrateCache::new(),
@@ -200,7 +194,6 @@ impl SubstrateSection {
     /// Invalidation entry point for the substrate lane: drop every substrate's
     /// cached chapter products and corpus aggregate.
     fn clear(&mut self) {
-        self.spacing.clear();
         self.repeated_run.clear();
         self.mixed_script.clear();
         self.glyph.clear();
@@ -221,7 +214,6 @@ impl SubstrateSection {
     /// Deletion-invalidation entry point: drop a book across every substrate so a
     /// removed book cannot keep contributing to any corpus aggregate.
     fn remove_book(&mut self, slug: &str) {
-        self.spacing.remove_book(slug);
         self.repeated_run.remove_book(slug);
         self.mixed_script.remove_book(slug);
         self.glyph.remove_book(slug);
@@ -246,7 +238,6 @@ impl SubstrateSection {
     pub(crate) fn ack_committed(&mut self, id: crate::substrate::SubstrateId) {
         use crate::substrate::SubstrateId as S;
         let pending = match id {
-            S::Spacing => &mut self.spacing.pending,
             S::RepeatedRun => &mut self.repeated_run.pending,
             S::MixedScript => &mut self.mixed_script.pending,
             S::Glyph => &mut self.glyph.pending,
@@ -654,19 +645,22 @@ pub struct CacheProbe {
     /// `"serial"`, `"books"`, or `"chapters"`. A route is a wall-clock decision
     /// only: every route produces byte-identical output.
     pub direct_map_route: &'static str,
-    /// Spacing substrate work on the most recent analyze: chapters mapped,
-    /// chapters reduced, and keys (marks) judged. A judging-knob change leaves
-    /// `spacing_mapped`/`spacing_reduced` at zero (observations + reductions
-    /// reused) while `spacing_judged` reflects the re-judge; a content edit maps
-    /// only the changed chapters and reduces only the owning book; an edit while
-    /// spacing is disabled leaves all three at zero.
-    pub spacing_mapped: usize,
-    pub spacing_reduced: usize,
-    pub spacing_judged: usize,
-    /// Which single map grain the spacing substrate's chapter map used on the most
-    /// recent analyze — `"serial"`, `"books"`, or `"chapters"`. A route is a
+    /// Nonletter-usage substrate work on the most recent analyze: chapters
+    /// mapped, chapters reduced, and keys (candidate identities) judged. A
+    /// judging-knob change leaves `nonletter_mapped`/`nonletter_reduced` at zero
+    /// (observations + reductions reused) while `nonletter_judged` reflects the
+    /// re-judge; a content edit maps only the changed chapters and reduces only
+    /// the owning book; an edit while the rule is disabled leaves all three at
+    /// zero. (This probe row was `spacing_*` until that rule was retired; the
+    /// nonletter substrate is its successor — mapped, corpus-relative, and
+    /// carrying real cross-chapter boundary state.)
+    pub nonletter_mapped: usize,
+    pub nonletter_reduced: usize,
+    pub nonletter_judged: usize,
+    /// Which single map grain the nonletter substrate's chapter map used on the
+    /// most recent analyze — `"serial"`, `"books"`, or `"chapters"`. A route is a
     /// wall-clock decision only: every route produces byte-identical output.
-    pub spacing_map_route: &'static str,
+    pub nonletter_map_route: &'static str,
     /// Duplicate-word substrate work on the most recent analyze. Its boundary
     /// state is empty, so `duplicate_mapped` and `duplicate_reduced` are equal
     /// on any edit: the replay always converges at the chapter that changed.
@@ -709,10 +703,10 @@ impl AnalysisCache {
     #[cfg(any(test, feature = "test-probes"))]
     pub fn probe(&self) -> CacheProbe {
         let mut p = self.prep.probe();
-        p.spacing_mapped = self.substrates.spacing.mapped;
-        p.spacing_reduced = self.substrates.spacing.reduced;
-        p.spacing_judged = self.substrates.spacing.judged;
-        p.spacing_map_route = self.substrates.spacing.map_route;
+        p.nonletter_mapped = self.substrates.nonletter_usage.mapped;
+        p.nonletter_reduced = self.substrates.nonletter_usage.reduced;
+        p.nonletter_judged = self.substrates.nonletter_usage.judged;
+        p.nonletter_map_route = self.substrates.nonletter_usage.map_route;
         p.duplicate_mapped = self.substrates.duplicate_word.mapped;
         p.duplicate_reduced = self.substrates.duplicate_word.reduced;
         p.duplicate_map_route = self.substrates.duplicate_word.map_route;
@@ -795,11 +789,11 @@ impl PrepSection {
             direct_misses: self.direct_misses,
             direct_chapters_patched: 0,
             direct_map_route: "serial",
-            spacing_map_route: "serial",
+            nonletter_map_route: "serial",
             // Filled by `AnalysisCache::probe` from the substrate section.
-            spacing_mapped: 0,
-            spacing_reduced: 0,
-            spacing_judged: 0,
+            nonletter_mapped: 0,
+            nonletter_reduced: 0,
+            nonletter_judged: 0,
             duplicate_mapped: 0,
             duplicate_reduced: 0,
             duplicate_map_route: "serial",

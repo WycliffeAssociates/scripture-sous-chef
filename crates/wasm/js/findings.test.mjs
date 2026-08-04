@@ -102,7 +102,6 @@ const PIN = [
   [16, "lex.repeated-character-run", "u32", "target-only"],
   [17, "uni.mixed-numeral-systems", "none", "target-only"],
   [18, "punct.bracket-balance", "count-pair", "target-only"],
-  [19, "punct.spacing-anomaly", "count-pair", "target-only"],
   [20, "case.sentence-initial-lowercase", "count-pair", "target-only"],
   [21, "case.inconsistent-word-casing", "count-pair", "target-only"],
   [22, "uni.rare-glyph", "u32", "target-only"],

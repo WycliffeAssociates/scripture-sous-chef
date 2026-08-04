@@ -131,8 +131,7 @@ impl std::error::Error for ReviewPolicyError {}
 /// after its calibration packet has supplied a complete judging path.
 pub const fn review_control(rule: RuleId) -> ReviewControl {
     match rule {
-        RuleId::PunctuationSpacingAnomaly
-        | RuleId::SentenceInitialLowercase
+        RuleId::SentenceInitialLowercase
         | RuleId::InconsistentWordCasing
         | RuleId::NonletterUsageAnomaly => ReviewControl::Mapped,
         RuleId::ExcessHWhitespace
@@ -167,10 +166,6 @@ pub fn apply_review_policy(
     for &rule in RuleId::ALL {
         let depth = policy.effective_depth(rule)?;
         match rule {
-            RuleId::PunctuationSpacingAnomaly => {
-                config.punctuation_spacing =
-                    crate::signals::punctuation::config_at_review_depth(depth);
-            }
             RuleId::SentenceInitialLowercase => {
                 config.casing.sentence_initial =
                     crate::signals::casing::sentence_initial_config_at_review_depth(depth);
@@ -256,12 +251,12 @@ mod tests {
     fn additive_depth_clamps_after_widened_arithmetic() {
         let mut policy = ReviewPolicy::default();
         policy.adjustments.insert(
-            RuleId::PunctuationSpacingAnomaly,
+            RuleId::NonletterUsageAnomaly,
             ReviewAdjustment::new(20).unwrap(),
         );
         assert_eq!(
             policy
-                .effective_depth(RuleId::PunctuationSpacingAnomaly)
+                .effective_depth(RuleId::NonletterUsageAnomaly)
                 .unwrap()
                 .value(),
             70
@@ -270,18 +265,18 @@ mod tests {
         policy.depth = ReviewDepth::new(95).unwrap();
         assert_eq!(
             policy
-                .effective_depth(RuleId::PunctuationSpacingAnomaly)
+                .effective_depth(RuleId::NonletterUsageAnomaly)
                 .unwrap()
                 .value(),
             100
         );
         policy.adjustments.insert(
-            RuleId::PunctuationSpacingAnomaly,
+            RuleId::NonletterUsageAnomaly,
             ReviewAdjustment::new(-100).unwrap(),
         );
         assert_eq!(
             policy
-                .effective_depth(RuleId::PunctuationSpacingAnomaly)
+                .effective_depth(RuleId::NonletterUsageAnomaly)
                 .unwrap()
                 .value(),
             0
@@ -331,7 +326,6 @@ mod tests {
         let mut config = Config::v1_defaults();
         let expected = config.clone();
         apply_review_policy(&mut config, &ReviewPolicy::default()).unwrap();
-        assert_eq!(config.punctuation_spacing, expected.punctuation_spacing);
         assert_eq!(config.casing, expected.casing);
         assert_eq!(config.nonletter_usage, expected.nonletter_usage);
     }
@@ -346,10 +340,6 @@ mod tests {
     #[test]
     fn production_profiles_have_ordered_safe_endpoints_and_default_midpoints() {
         let depths = [0, 25, 50, 75, 100].map(|value| ReviewDepth::new(value).unwrap());
-        let spacing: Vec<_> = depths
-            .iter()
-            .map(|&depth| crate::signals::punctuation::config_at_review_depth(depth))
-            .collect();
         let positional: Vec<_> = depths
             .iter()
             .map(|&depth| crate::signals::casing::sentence_initial_config_at_review_depth(depth))
@@ -359,7 +349,6 @@ mod tests {
             .map(|&depth| crate::signals::casing::inconsistent_word_config_at_review_depth(depth))
             .collect();
 
-        assert_eq!(spacing[2], Config::v1_defaults().punctuation_spacing);
         let nonletter: Vec<_> = depths
             .iter()
             .map(|&depth| crate::signals::nonletter_usage::config_at_review_depth(depth))
@@ -382,15 +371,6 @@ mod tests {
         let close = |actual: f32, expected: f32| {
             assert!((actual - expected).abs() < 1e-6, "{actual} != {expected}");
         };
-        close(spacing[1].emit_score_min, 0.65);
-        close(spacing[1].confidence_z, 2.27);
-        assert_eq!(spacing[1].minority_recurrence_k, 24.0);
-        assert_eq!(spacing[1].minority_rate_per_10k, 30.0);
-        close(spacing[3].emit_score_min, 0.40);
-        close(spacing[3].confidence_z, 1.62);
-        assert_eq!(spacing[3].minority_recurrence_k, 48.0);
-        assert_eq!(spacing[3].minority_rate_per_10k, 53.0);
-
         for profile in [&positional[1].evidence, &intrinsic[1].evidence] {
             close(profile.emit_score_min, 0.97);
             close(profile.confidence_z, 2.27);
@@ -404,20 +384,6 @@ mod tests {
         }
         close(positional[3].trust_gate, 0.825);
 
-        for pair in spacing.windows(2) {
-            assert!(pair[0].emit_score_min >= pair[1].emit_score_min);
-            assert!(pair[0].confidence_z >= pair[1].confidence_z);
-            assert!(pair[0].minority_recurrence_k <= pair[1].minority_recurrence_k);
-            assert!(pair[0].minority_rate_per_10k <= pair[1].minority_rate_per_10k);
-            for value in [
-                pair[0].emit_score_min,
-                pair[0].confidence_z,
-                pair[0].minority_recurrence_k,
-                pair[0].minority_rate_per_10k,
-            ] {
-                assert!(value.is_finite() && value >= 0.0);
-            }
-        }
         for pair in positional.windows(2) {
             assert!(pair[0].evidence.emit_score_min >= pair[1].evidence.emit_score_min);
             assert!(pair[0].evidence.confidence_z >= pair[1].evidence.confidence_z);

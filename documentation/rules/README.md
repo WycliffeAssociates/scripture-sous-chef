@@ -24,7 +24,7 @@ args, and fix capability** (what a front end can `replace()`), see
 | [`uni.md`](uni.md) | `uni.*` | combining-mark-without-base, mixed-script-in-token, redundant-zero-width-space, rare-glyph, mixed-numeral-systems, mixed-normalization |
 | [`lex.md`](lex.md) | `lex.*` | excess-h-whitespace, duplicate-word, repeated-character-run, untranslated-word (cross-map) |
 | [`struct.md`](struct.md) | `struct.*` | source-marker-leftover, merge-conflict-marker |
-| [`punct.md`](punct.md) | `punct.*` | bracket-balance, spacing-anomaly |
+| [`punct.md`](punct.md) | `punct.*` | bracket-balance |
 | [`prop.md`](prop.md) | `prop.*` | length-ratio |
 | [`case.md`](case.md) | `case.*` | sentence-initial-lowercase, inconsistent-word-casing, mixed-case-word |
 
@@ -62,7 +62,6 @@ file where it isn't obvious.
 | `case.mixed-case-word` | Info | **off** | substrate-backed, word shape table | ✅ documented (ADR 0055) |
 | `uni.rare-glyph` | Info | **off** | substrate-backed, corpus-relative | ✅ documented (ADR 0053) |
 | `lex.repeated-character-run` | Info | on | substrate-backed, corpus-relative | ✅ documented (ADR 0028, 0032) |
-| `punct.spacing-anomaly` | Info | **off** | substrate-backed, corpus-relative | 💡 suggestion (corpus-relative; ADR 0029) |
 
 ✅ = settled write-up done · 🗣 = needs a conversation before write-up ·
 💡 = floated as observe-and-flag-above-threshold redesigns
@@ -77,4 +76,5 @@ blank.
 | --- | --- | --- | --- |
 | `uni.zero-width-space-anomaly` | [`uni.redundant-zero-width-space`](uni.md) | A corpus-relative ZWSP "conformance surprise" scorer (default-off, tunable). A cross-corpus ablation (106 corpora) found the deterministic duplicate-run check owns every demonstrated artifact, while the scorer's *unique* output was entirely spec-permitted placement (UAX #14 allows ZWSP around punctuation/digits and in-token) or sparse-use false positives (Thai's legitimate but infrequent word-breaks). No demonstrated error class survived, so the whole scorer + its config/wasm/stats surface was deleted. | 0027 (amends 0023) |
 | `lex.punct-only-token` | `uni.nonletter-usage-anomaly` | One of three narrow visible-nonletter rules with incompatible candidate domains and scorers, replaced by one convention-learned rule over visible nonalphabetic graphemes. Its whitespace-chunk domain is a strict subset of the replacement's candidate domain (full-fleet ledger: `lost = 0`). Wire discriminant 12 is retired, never reused. | Phase E ADR (pending); epic plan §11.1 |
+| `punct.spacing-anomaly` | `uni.nonletter-usage-anomaly` | Same replacement, and the largest of the three. Its per-side class-conditioned attached/spaced model is the direct ancestor of the replacement's placement channel (ADR 0050's proportional knee and ADR 0054's class conditioning both moved across); the ADR 0054 roster of adjudicated multilingual wins is a permanent regression gate on the replacement. Its extractor survives for the census's `punct.mark-spacing` lane. Wire discriminant 19 is retired, never reused. | Phase E ADR (pending); epic plan §11.1 |
 | `punct.adjacency-anomaly` | `uni.nonletter-usage-anomaly` | Same replacement. Its exact-maximal-run keying is superseded by directed grapheme pairs plus a bounded same-glyph continuation; its run extractor survives with no rule, read by the census's `punct.runs` lane. Wire discriminant 10 is retired, never reused. | Phase E ADR (pending); epic plan §11.1 |

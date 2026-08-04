@@ -33,7 +33,6 @@ fn direct_only_config() -> Config {
     for id in [
         RuleId::SentenceInitialLowercase,
         RuleId::InconsistentWordCasing,
-        RuleId::PunctuationSpacingAnomaly,
         RuleId::RepeatedCharacterRun,
         RuleId::MixedScriptInToken,
         RuleId::NonletterUsageAnomaly,
