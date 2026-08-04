@@ -370,6 +370,24 @@ only at the end.
 4. **`DRIVE_PHASE_NAMES` narrowed from 6 to 4 columns** — a shape change the
    sibling playground harness will see.
 
+### Mediator adjudication of the four flags (2026-08-04)
+
+1. Direct-lane fold into the chapter task — **approved**; oracle-proved
+   byte-identical at full scope, and leaving the tape built twice would have
+   defeated the point.
+2. Direct-lane prep keyed by the whole config fingerprint — **do not change
+   behavior in this epic**. Recorded as
+   [`2026-08-04-direct-lane-prep-config-fingerprint.md`](../ideas/candidates/2026-08-04-direct-lane-prep-config-fingerprint.md)
+   so it is not lost.
+3. `bench::schedule_phases` + the `shared_prep_bytes` repointing — **approved**.
+4. `DRIVE_PHASE_NAMES` 6 → 4 — **acceptable, and hereby a KNOWN CONSUMER
+   BREAK**: the sibling `sousChefPlayground` survey/perf harness reads
+   `DRIVE_PHASE_NAMES` and `bench::drive_phases()` and indexes a 6-wide table.
+   It needs a matching tweak (4 columns, plus reading
+   `bench::schedule_phases()` for the plan/map figures that used to be columns
+   0 and 1) **before the final measurement packet at checkpoint 5**. The sibling
+   repo is deliberately not touched now.
+
 - **Next safe step:** checkpoint 3 — the dev-only grapheme observation/survey
   over the full 1,504-corpus fleet per plan §9, and the calibration packet under
   `documentation/calibration/`. No live `RuleId`, config, catalog or wire
