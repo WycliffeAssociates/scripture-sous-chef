@@ -1872,3 +1872,253 @@ the final pins revise.
    source; all three node suites in the verification set.
 5. Re-measure the depth-0 and depth-100 per-corpus rows the drift summary leaves
    marked as owed.
+
+---
+
+## Entry 19 — checkpoint 5: pins re-pinned and CLEAN; **WARM-PATH STOP** on the new rule's materialize
+
+- **Date:** 2026-08-04
+- **Status:** the oracle work is **complete and clean** — the retained rules are
+  byte-identical at full-fleet scope on both configs, the retired trio is absent,
+  and the new rule's rows reconcile exactly against the ledger. Transcript
+  re-pinned, depth table measured, wasm packages regenerated, all node suites
+  green. **But the measurement packet found a 3.7× warm-path regression on the
+  shipped default set, entirely inside the new rule's `materialize`** — plan §16
+  stop clause 3. I stop with the numbers and the located cause rather than
+  redesigning inside checkpoint 5.
+
+### The gate — all three requirements PASS
+
+Same corpus-directory input path as the before-pins, `RAYON_NUM_THREADS=4`,
+scope marked in every filename.
+
+| pin | rows | bytes | sha256 | wall |
+| --- | ---: | ---: | --- | --- |
+| `before.full.default.tsv` | 427,881 | 61,671,630 | `1791fcb07deabdeb3e9be208ab7cd02d6348cb15edd15b6ecffc62eae50d749b` | — |
+| `before.full.all.tsv` | 962,372 | 97,028,880 | `14be8b4fbb225e83c48705cd91ff58440dbc5c3c3ec5ba43296de63383c292ea` | — |
+| **`after.full.default.tsv`** | 447,311 | 66,038,960 | `5edf2940b3eada76401279b0262955d7b9ecc8abca51866ac5b6b4f07053b7f3` | 1 m 23.5 s |
+| **`after.full.all.tsv`** | 954,778 | 96,383,868 | `f548f5d1e03e61ea9c2a3ded2b430c729fabbc920175f983b8c33791bfdfc315` | 4 m 13.7 s |
+
+Both after-dumps reported `scope=full`, `1504 corpora`.
+
+**(i) Every retained rule byte-identical.** Projection: drop the retired trio's
+rows from the before-pin, drop the new rule's rows from the after-pin, compare the
+remainder byte-for-byte.
+
+| config | retained-rule projection sha256 | rows | verdict |
+| --- | --- | ---: | --- |
+| default | `30e245abf1bf6c26e2a901342f61be91a6a1d04b36ab54078f4ec0b87c0c2064` | 414,046 | **BYTE-IDENTICAL** |
+| all | `32e5498868c8fcd82212dc01903e8ab2360bc5326397c6faaf73cd010608d044` | 921,513 | **BYTE-IDENTICAL** |
+
+So nothing outside the replacement moved a byte, at full scope, on both configs —
+across the scheduler movement AND the whole rule movement.
+
+**(ii) The retired trio's rows are absent.** 0 rows at both configs (13,835 at
+defaults and 40,859 at `all` in the before-pins).
+
+**(iii) The new rule's rows are accounted by the ledger.** 33,265 rows at *both*
+configs — exactly the durable ledger's figure. Identical at `default` and `all` is
+the expected shape: the rule is default-on and its config is judging-only, so
+`Config::all()` changes nothing about it.
+
+### Resident transcript re-pin
+
+`ssc-galley --example transcript_oracle --dump-incremental corpora/vref … full`
+(188 corpora after the transcript's own subsampling):
+
+| pin | rows | bytes | sha256 |
+| --- | ---: | ---: | --- |
+| `after.transcript.full.default.tsv` | 59,138 | 8,468,002 | `c342eac95838f3efc573dd4582c3f67718c032ed25446158feeba4d9f1ba77a5` |
+| `after.transcript.full.all.tsv` | 118,193 | 12,003,974 | `fef0858337b985fac3ceb9147fb1b8a79094249a0cb2dd020ef7920a66e0df16` |
+
+Retired-trio rows: 0 in both. New-rule rows: 4,308 in both.
+
+All pins live under `/tmp/oracle/nonletter-usage/`.
+
+### The owed depth-0 / depth-100 rows — measured
+
+New dev surface `calibrate --nonletter-depths <dir>`, driving the **shipped**
+`nonletter_usage_findings` at `config_at_review_depth`. Zeros included over all
+1,504 corpora, ceil-rank percentiles.
+
+| depth | floor | p50 | p90 | p99 | max | fleet | corpora firing |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 0 | 0.90 | 5 | 23 | 54 | 280 | 14,010 | 1,366 |
+| **50** | **0.75** | **12** | **52** | **128** | **282** | **33,265** | **1,452** |
+| 100 | 0.50 | 30 | 110 | 272 | 562 | 73,541 | 1,491 |
+
+Monotone, no cliffs, no dead ranges. The depth-50 fleet total independently
+reproduces the oracle dump's 33,265 — which is what makes the table trustworthy.
+
+### TWO CORRECTIONS to figures already in this log, both computed one way
+
+Recomputed from the pins themselves, zeros-included over 1,504 corpora with one
+percentile convention for every series:
+
+| series | p50 | p90 | p99 | max | fleet |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| retired **trio** | 18 | 61 | 170 | 308 | 40,859 |
+| retired default-**ON** pair | 3 | 27 | **75** | 172 | 13,835 |
+| `punct.spacing-anomaly` alone | 12 | 37 | 132 | 278 | 27,024 |
+| **this rule at depth 50** | 12 | 52 | **128** | 282 | 33,265 |
+
+1. **This rule's p99 is 128, not 127.** Entries 15/16 and the drift summary say
+   127; it is an off-by-one from a different percentile convention. Against my own
+   case, marginally. The ruling's comparison is unchanged: 12 vs 18, 52 vs 61,
+   128 vs 170, 0.81× fleet.
+2. **The retired pair's p99 is 75, not 71.** Entry 16's reconciliation said 71 and
+   concluded "gate (iii)'s original 75 ceiling was the right number for the pair
+   after all". Measured here it is **exactly 75** — so gate (iii)'s ceiling was
+   literally the pair's p99, which strengthens Entry 16's ground (b): 75 was the
+   *pair's* number, and the pair excludes the spacing domain whose own p99 is 132.
+
+The drift summary needs both corrected at checkpoint 6.
+
+### Cold path: the scheduler movement PAID OFF
+
+Criterion, same box, `RAYON_NUM_THREADS=4`, master (`70dda25`) vs this branch — so
+this is the scheduler AND the rule movement together, measured through a saved
+baseline in a shared target dir:
+
+| bench | master | epic | delta |
+| --- | ---: | ---: | ---: |
+| `analyze/full_bible` | 285.06 ms | 282.90 ms | **−0.8%** |
+| `analyze/nt` | 69.79 ms | 65.53 ms | **−6.1%** |
+| `analyze/full_devanagari` | 395.55 ms | 363.57 ms | **−8.1%** |
+| `proportionality/nt_vs_bible` | 6.711 ms | 6.810 ms | +1.5% |
+
+The whole-corpus one-shot got **faster while adding a grapheme-reading rule and
+removing three cheap tape-only ones** — ADR 0068's named escape route (shared
+tape and grapheme walks at chapter lifetime) delivering, and more than paying for
+the new rule's cold cost. `bench::schedule_phases()` on the cold seed:
+plan 224.6 µs, map 277.4 ms — the map is now one shared phase for every
+participant, which is why it is reported whole.
+
+### THE STOP — warm path, 3.7×, and it is `materialize`
+
+Criterion `ssc-galley --bench warm_edit` (the resident keystroke path,
+`Config::v1_defaults()`), master vs epic:
+
+| bench | master | epic | delta |
+| --- | ---: | ---: | ---: |
+| `galley_warm_edit_3JN` | 2.385 ms | 8.851 ms | **+271%** |
+| `galley_warm_edit_MAT` | 2.680 ms | 9.397 ms | **+251%** |
+| `galley_warm_edit_PSA` | 2.784 ms | 9.329 ms | **+235%** |
+
+Isolated with the new `default-no-nonletter` paired lever
+(`warm_ladder_profile`, WA-en-ulb, batch median):
+
+| config | 3JN warm total | PSA warm total |
+| --- | ---: | ---: |
+| `default` (shipped) | 6.74 ms | 7.11 ms |
+| `default-no-nonletter` | **0.39 ms** | **0.69 ms** |
+
+So the new rule contributes **~6.3 ms, fixed** — 3JN is a **15-verse** book, and
+its cost is the same as PSA's 2,500. It is not proportional to the edit; it is a
+whole-corpus per-analyze cost.
+
+Located exactly, with the now-fixed `--drive-phases` table (warm batch, 3JN):
+
+| substrate | reduce | keys | judge | materialize | row total |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| repeated-run | 0.0103 | 0.0038 | 0.0001 | 0.0070 | 0.0213 |
+| mixed-script | 0.0104 | 0.0000 | 0.0001 | 0.0078 | 0.0183 |
+| proportionality | 0.0101 | 0.0000 | 0.0065 | 0.0102 | 0.0267 |
+| bracket | 0.0133 | 0.0000 | 0.0003 | 0.0090 | 0.0226 |
+| **nonletter-usage** | 0.0124 | 0.0000 | 0.0107 | **6.1918** | **6.2149** |
+
+(ms; scheduler plan 160.8 µs, map 107.6 µs.) Reduction is cheap, judging is cheap;
+**materialize is ~600× every other substrate's** and is the entire regression.
+
+**Root cause, named.** `NonletterBookContribution::materialize` has **no
+dirty-chapter restriction**, so every analyze re-materializes every retained site
+in the whole corpus — and per site it re-segments graphemes
+(`grapheme::segment(run, &mut spans)`), then scans every member against every
+channel. The rule it replaced had exactly the restriction that is missing:
+`punct.spacing-anomaly`'s `materialize(…, dirty: Option<&BTreeSet<&str>>, …)` —
+plan §6.4's partial-partition patch, `None` rewrites the whole partition and
+`Some(set)` emits only for the chapters whose partition groups this call replaces.
+So this is a mechanism the codebase already had and the new substrate did not
+adopt, not a new design problem.
+
+Two candidate remedies, both existing patterns, both judging-side (no observation
+schema change, no re-map, no oracle movement outside the emitted set):
+
+1. **Adopt the dirty-chapter set**, as spacing did. Directly attacks the "whole
+   corpus every keystroke" shape. Needs the honest changed-key contract: an
+   aggregate move changes verdicts corpus-wide, so a config or content change that
+   moves the corpus stats must still rewrite whole — the win is on the common
+   case where only one chapter's sites moved and the aggregate did not.
+2. **Stop re-segmenting at materialize.** The per-site grapheme walk is repeated
+   work the map already did; retaining the member spans (or member count + class)
+   costs retained bytes against the §7.5 budget, so it is a measured trade.
+
+I did not implement either. Plan §16 clause 3 makes a material warm regression an
+owner stop, and §17 says stop rather than blend scopes.
+
+### Memory (dhat, WA-en-ulb, live bytes after the cold seed)
+
+| config | live after seed | paired delta |
+| --- | ---: | ---: |
+| `all` | 69,015,291 | |
+| `all-no-nonletter` | 65,001,856 | **+4.01 MB** |
+| `default` | 12,403,736 | |
+| `default-no-nonletter` | 8,390,301 | **+4.01 MB** |
+
+The substrate retains **~4.01 MB** for WA-en-ulb (31,086 verses, ~1,189
+chapters) ≈ **3.4 KB/chapter** — above the packet's 1.1 KB/chapter p50, which was
+the probe model's figure and predates both the conditioned topology table and the
+deferred-edge identity strings. Against the **shipped default** set's 12.4 MB
+total it is **32% of the whole resident footprint**, where the three rules it
+replaced were cheap tape-only count tables. Worth flagging beside the warm number
+because remedy 2 above would trade against exactly this budget.
+
+Whole-corpus re-analyze wall (dhat harness): `default` 35.3 ms vs
+`default-no-nonletter` 21.8 ms. Cold seed: 287 ms vs 234 ms (**+53 ms, +23%**).
+
+### Fleet timing
+
+| dump | before (Entry 4) | after |
+| --- | --- | --- |
+| full default | 1 m 37 s | **1 m 23.5 s** |
+| full all | 3 m 35 s | **4 m 13.7 s** |
+| depth table (3 configs × 1,504) | — | 1 m 09 s |
+| transcript default / all (188) | — | 21.4 s / 43.2 s |
+
+Not a like-for-like comparison — the after-runs pin `RAYON_NUM_THREADS=4` and the
+rule set changed — so these are recorded as run cost, not as a perf claim. The
+criterion table above is the perf claim.
+
+### Packages and suites
+
+`npm run build:wasm` regenerated `pkg-bundler` and `pkg-web` from source
+(wasm-opt release, 1,774,615 bytes each). No retired id appears in either
+package's declarations; `NonletterUsage` appears 7× in `sous_chef_web.d.ts`. All
+three node suites pass **against the built packages**: `findings` 15, `galley` 2,
+`package` 2.
+
+### Other verification
+
+`cargo test --workspace` green (518 core / 25 galley / 24 wire / 16 wasm /
+1 xtask); clippy clean in the touched dev surfaces; touched-lines-only formatting.
+
+### Deviation and a recorded pre-existing break
+
+- **`DRIVE_PHASE_NAMES` 6 → 4 fixed in `spike-bench/warm_ladder_profile.rs`**
+  (mediator ruling: our break). Sized and labelled from `DRIVE_PHASE_NAMES.len()`
+  now, with plan/map reported whole from `bench::schedule_phases()`. **This fix is
+  what located the stop** — without it the phase table would not build. The
+  sibling `sousChefPlayground` harness still needs the same tweak.
+- **`spike-bench/src/bin/replay_distance.rs` does not compile**: it calls the
+  removed `ssc_core::analyze_stateful`. **Pre-existing, from before this epic** —
+  recorded here so it is not attributed to this work, and left alone per
+  adjudication.
+
+### Next safe step
+
+Adjudicate the warm-path stop. The oracle bookends are clean and the pins above
+stand regardless of the choice, because both remedies are emission-side: they
+change which chapters are re-emitted, not what any finding says, so a fix is
+gated by re-running these same two full-fleet dumps and requiring the **new**
+pins byte-identical to the `after.full.*` pins recorded here. Nothing published
+depends on the choice yet — checkpoint 6's editor migration has not started.
