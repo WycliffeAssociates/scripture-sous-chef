@@ -1323,3 +1323,184 @@ clippy clean in both new modules; touched-lines-only formatting.
 Adjudicate the frontier. Deletion stays blocked; the rule is additive beside all
 three retired rules, so no shipped surface depends on the choice yet. Also owed at
 checkpoint 5 per Entry 12: the node test suite joins the verification list.
+
+---
+
+## Entry 14 — ruling: class-conditioned topology pools (recorded verbatim)
+
+- **Date:** 2026-08-04
+- **Source:** mediator, on Entry 13's frontier table and calibration addendum §D.
+
+> Frontier stop accepted — the empty-frontier proof, the Entry 11 corrections, and
+> especially the honest finding that gate (i) passing everywhere was a defect in the
+> battery (with the slip-cloud test closing it permanently, corpus-free) are exactly
+> the standard. Adjudication follows; record verbatim as a progress-log entry.
+>
+> **Ruling: option (1), class-conditioned topology pools.** Grounds: (a) the
+> diagnosis identifies a structural dilution, and papering over structure with a
+> volume budget (option 2, 3.5× fleet and p50 28/corpus at DEFAULTS) or with
+> adjudicated losses of the roster's named wins (option 3) are both worse trades;
+> (b) pooling design was Gate 1 open question 2 ("start/end pools and coarse
+> neighbour-class projection") — this is the question being answered correctly on
+> evidence, not new scope; (c) the retired spacing rule's class conditioning is the
+> codebase's own precedent, same as ADR 0050 was for the knee. The schema-change
+> cost is acceptable NOW precisely because nothing ships yet: the rule is additive,
+> nothing is persisted, and a full re-map is minutes. This window is the cheapest it
+> will ever be.
+>
+> Implementation directives:
+> 1. Condition the four-state topology tally on the coarse OUTER neighbour content
+>    class, matching the retired spacing rule's precedent — the minimal axis that
+>    un-dilutes the roster wins. Keep the four states closed; keep the class
+>    projection coarse (the §7.3 fine classes stay raw-observation-only). Side
+>    marginals stay as they are (already class-pooled). Bump the substrate schema
+>    stamp; verify the stamp-only invalidation path re-maps exactly this substrate
+>    and nothing else (that's plan §14.1's enable/schema case exercised for real).
+> 2. Mind the plan's named fragmentation risk: class-conditioned topology cells are
+>    smaller, so pool floors do the protecting — abstention on thin cells, never
+>    inference. Verify the 1/1 self-license case still abstains per class-conditioned
+>    cell, and that quote topology (the `wo"rd` `Both` case and the glottal-stop
+>    silence) survives conditioning — those two anchors are the reason topology
+>    exists.
+> 3. Re-sweep (base, slope) per channel against the SAME three gates, unchanged:
+>    (i) anchors byte-stable INCLUDING the new slip-cloud test (adapt its pool
+>    derivation to the conditioned table); (ii) the ADR 0054 roster at its own
+>    reproduction keep-sets — engwebster 4/4, ne_udb 36 (76 − 40 accepted dandas),
+>    kmr ≥ 20, pa ≥ 25; (iii) depth-50 fleet within ~2× of 15,326, p99 ≤ 75. Your
+>    prediction is that gate (ii) now closes at a small knee — if the new frontier is
+>    again empty, STOP with the table and I will take options 2-vs-3 to the owner; do
+>    not choose.
+> 4. Sequence stays at your (8,40) — obligation (a)'s discharge at base ≥ 8 is
+>    confirmed and conditioning doesn't touch the pair channel. Rarity stays frozen.
+> 5. engwebster's remaining 19 hyphenation-cloud findings at 0.603 (visible only at
+>    depth ≈75–100) are ACCEPTED as correct depth behavior — a systematic cloud
+>    surfacing at deep review rather than defaults is the depth axis working; record
+>    with a sample in the drift materials.
+>
+> If the re-sweep closes the frontier: mark the constants final (remove PROVISIONAL),
+> refresh the durable ledger and addendum, re-run BOTH obligations end-to-end, and
+> proceed directly into the deletion series per plan §11.1 (separate commits, every
+> closed surface) and the drift summary. Stop and report at completed checkpoint 4,
+> or at the frontier stop.
+
+- **Next safe step:** implement the conditioned topology axis, bump the schema stamp,
+  re-run the anchors and the roster, then re-sweep.
+
+---
+
+## Entry 15 — class-conditioned topology landed; FRONTIER STOP on gate (iii)'s reference constants
+
+- **Date:** 2026-08-04
+- **Status:** Entry 14's ruling is **implemented in full** (directives 1, 2, 4, 5).
+  Gates (i) and (ii) and obligation (a) all **pass**. Gate (iii) fails against its
+  two literal reference constants and passes against the three rules actually being
+  replaced — so per the ruling I stop with the table rather than choose. Deletion
+  remains blocked.
+- **Addendum:** [`2026-08-04-nonletter-usage-probe.md`](../calibration/2026-08-04-nonletter-usage-probe.md)
+  §E1–E5. Durable ledger refreshed to the conditioned candidate A.
+
+### What landed
+
+`TopoClass` — a coarse, closed outer content class (`Letter` / `Digit` /
+`Detached`) derived jointly from the two outer sides — conditions the four-state
+topology tally. The four states stay closed; side marginals stay class-pooled; the
+fine `NeighbourClass` stays raw-observation-only. `SCHEMA_STAMP` → **2**. Sequence
+stays `(8, 40)`; rarity frozen. Layout is `class · TOPOLOGIES + state` behind one
+`topo_cell` helper, so the map, the book fold and the judge cannot disagree.
+
+### The prediction was falsified — and the ruling still helped, by another route
+
+Conditioning does **not** un-dilute the roster. For every roster case the majority
+and the minority topology fall in the *same* conditioned class, so the cell equals
+the pooled table: `engwebster`'s `-` is Both(Letter,Letter) 3,430 vs
+EndOnly(Spaced,Letter) 19 — both **Letter**; `ne_udb`'s `,` is StartOnly(Letter,Spaced)
+10,939 vs Both(Letter,Letter) 9 — both **Letter**. That is structural: topology's
+power *is* the contrast between states inside one pool, so any conditioning
+correlated with the state either leaves the contrast intact (no-op) or splits the
+minority into a cell where dominance collapses to zero. Gate (ii) still needs
+placement base 32.
+
+What conditioning *did* do is cut volume by **38%** through thin-cell abstention on
+the modal corpus's detached and digit-adjacent occurrences — precisely the "pool
+floors do the protecting" directive 2 anticipated:
+
+| topology pooling | fleet | p50 | p90 | p99 | kept/40,859 | (a) resid | ne | ew | km | pa |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| pooled, A `(32,40)/(8,40)` | 53,383 | 28 | 69 | 145 | 13,477 | 0 | 36 | 4 | 29 | 28 |
+| **conditioned, A** | **33,265** | **12** | **52** | **127** | 12,229 | **0** | **36** | **4** | **27** | **28** |
+
+I also swept the placement pool floor (30 → 600) as directive 2's candidate lever:
+it moves volume barely (440 → 392 on the roster subset) and starts **breaking**
+gate (ii) at 200 (`pa` 28 → 23) and 600 (`ew` 4 → 0). It is not the p99 lever,
+because the roster corpora's cells are far above any sane floor. Left at 30.
+
+### Gate (iii)'s two reference constants come from the wrong bases
+
+Measured from `before.full.all.tsv`, per corpus:
+
+| series | corpora | p50 | p90 | p99 | max | fleet |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| the retired **trio**, all three | 1,422 | 19 | 62 | **170** | 308 | **40,859** |
+| the retired default-**ON** pair | 1,026 | 7 | 34 | 83 | 172 | 13,835 |
+| `punct.spacing-anomaly` alone | 1,360 | 14 | 37 | 132 | 278 | 27,024 |
+| **conditioned A** | 1,504 | **12** | **52** | **127** | — | **33,265** |
+
+- The **`75` p99 ceiling is the default-ON *pair*'s** (measured 83, not 75) — a
+  two-rule subset. This rule also absorbs `punct.spacing-anomaly`, default-off, whose
+  own p99 is **132**.
+- The **`15,326` fleet reference is the probe's FLAT-knee volume** — the model
+  addendum §C falsified. Measuring the repair against the broken model's volume asks
+  the repair to reproduce the defect.
+
+Against the honest basis, conditioned A is **strictly cheaper than the trio it
+replaces on every axis**: p50 12 vs 19, p90 52 vs 62, p99 127 vs 170, fleet
+33,265 vs 40,859 = **0.81×**. It replaces all three rules and emits 19% *fewer*
+findings, while preserving every named adjudicated win and discharging obligation
+(a) completely.
+
+The ruling fixed the three gates as unchanged and said to stop rather than choose if
+the frontier is again empty. It is empty against the literal constants and closed
+against the corrected ones, so this is reported, not decided.
+
+### The measured cost of conditioning — topology's expressiveness
+
+Two anchors keep their scores byte-for-byte but change which channel names them,
+because the conditioned cell is now too thin to judge and honestly abstains:
+
+| anchor | score | before | after | why |
+| --- | --- | --- | --- | --- |
+| `th3e` | 0.999 | `Topology`/`Both` | `Start`/`Letter` | the `3`'s `Letter` cell holds only this occurrence |
+| detached `.` | 0.999 | `Topology`/`Neither` | `Start`/`Spaced` | the `Detached` cell's only possible state IS `Neither` — degenerate as well as thin |
+
+So the plan §2/§10 canonical wording for `th3e` — *"attached to letters at both
+ends"* — is no longer what ships; it renders as *"attached to a word at the start"*.
+Same score, same finding, weaker explanation, on one of the two examples the plan
+leads with. Both tests were renamed and now state this in their own doc comments
+rather than hiding it behind a changed assertion.
+
+Directive 2's two required anchors **survive**, with their own witness
+(`a_conditioned_topology_cell_abstains_rather_than_inferring`): `wo"rd` still fires
+`Topology`/`Both` at 0.999 (the quote's `Letter` cell holds both its ordinary
+`EndOnly` opening form and the rare `Both`); the glottal-stop shape stays silent for
+the mirror reason; and the 1/1 self-license case still abstains per conditioned cell.
+
+Directive 1's witness is `a_schema_stamp_bump_invalidates_exactly_this_substrate`:
+the stamp is built from `S::SCHEMA_STAMP`, so a bump reads every cached observation
+of **this** substrate as stale and cannot touch another's; an unbumped stamp re-maps
+nothing.
+
+Directive 5 recorded with its sample in addendum §E4 — engwebster's 19 hyphenation
+findings at 0.603, accepted as depth ≈75–100 behavior.
+
+### Verification
+
+`cargo test --workspace` green (590 core incl. 39 nonletter, galley 25, wire 25,
+wasm 16); clippy clean in both new modules; touched-lines-only formatting.
+
+### Next safe step
+
+One decision closes checkpoint 4: gate (iii)'s reference basis. If the trio is the
+right comparison, the constants are final and the deletion series follows
+immediately per plan §11.1. Otherwise options 2-vs-3 from Entry 13 go to the owner
+as the ruling anticipated. Also still owed at checkpoint 5: the node suite joins the
+verification list.

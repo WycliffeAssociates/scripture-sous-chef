@@ -304,6 +304,47 @@ enum Topology {
 
 const TOPOLOGIES: usize = 4;
 
+/// The **coarse outer content class** the four-state topology tally is conditioned
+/// on, matching `punct.spacing-anomaly`'s precedent: a mark's binary was judged
+/// against the pool of its own neighbour-content class, never against every
+/// occurrence of the mark. Three closed values, deliberately coarser than the fine
+/// [`NeighbourClass`] the raw observation retains.
+///
+/// Derived from the occurrence's outer sides jointly, because topology is a joint
+/// statement: `Letter` when either side touches a letter, `Digit` when neither does
+/// but one touches a digit, `Detached` when neither side touches content at all.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum TopoClass {
+    Letter,
+    Digit,
+    Detached,
+}
+
+const TOPO_CLASSES: usize = 3;
+
+impl TopoClass {
+    fn of(start: NeighbourClass, end: NeighbourClass) -> Self {
+        if start == NeighbourClass::Letter || end == NeighbourClass::Letter {
+            Self::Letter
+        } else if start == NeighbourClass::Digit || end == NeighbourClass::Digit {
+            Self::Digit
+        } else {
+            Self::Detached
+        }
+    }
+
+    fn slot(self) -> usize {
+        self as usize
+    }
+}
+
+/// The conditioned topology cell an occurrence falls in: `class · TOPOLOGIES +
+/// state`. The one place the two axes are combined, so the map, the book fold and
+/// the judge cannot disagree about the layout.
+fn topo_cell(class: TopoClass, t: Topology) -> usize {
+    class.slot() * TOPOLOGIES + t.slot()
+}
+
 impl Topology {
     /// The four-state topology, or `None` when the candidate has no outer context
     /// on EITHER side.
@@ -352,7 +393,7 @@ const RUN_SLOTS: usize = 6;
 /// The fixed integer counters one identity carries, as **one array** so an
 /// exactly-subtractable book replacement is a single elementwise loop rather than
 /// a field list a new counter could silently fall off.
-const COUNTERS: usize = 19;
+const COUNTERS: usize = 27;
 /// Maximal nonletter runs this identity appears in — the rarity numerator basis.
 const C_RUNS: usize = 0;
 /// Raw occurrences. Retained for census parity and for a future alternate judge;
@@ -362,13 +403,14 @@ const C_COUNT: usize = 1;
 const C_START: usize = 2;
 /// End-side marginals, `OBSERVABLE` wide.
 const C_END: usize = 5;
-/// Four-state topology counts.
+/// Four-state topology counts, **conditioned on the coarse outer content class** —
+/// `TOPO_CLASSES · TOPOLOGIES` wide, laid out by [`topo_cell`].
 const C_TOPO: usize = 8;
 /// Same-glyph run-length histogram, `RUN_SLOTS` wide.
-const C_SAME_RUN: usize = 12;
+const C_SAME_RUN: usize = 20;
 /// Occurrences of this identity that lead SOME nonletter — the directed-pair
 /// channel's conditional ("given a run continues") denominator.
-const C_PAIR_LEADS: usize = 18;
+const C_PAIR_LEADS: usize = 26;
 
 /// One identity's integer tallies as a chapter or a book holds them. Sorted
 /// slices, so `Eq` is deterministic and a book replacement is a merge-join.
@@ -657,7 +699,7 @@ fn map_nonletter_chapter(chapter: &crate::substrate::ChapterView<'_>) -> Nonlett
                     && end != NeighbourClass::Deferred
                     && let Some(t) = Topology::of(start, end)
                 {
-                    entry.counters[C_TOPO + t.slot()] += 1;
+                    entry.counters[C_TOPO + topo_cell(TopoClass::of(start, end), t)] += 1;
                 }
                 if offset + 1 < len {
                     let next = glyph_at(k + 1);
@@ -772,7 +814,11 @@ pub(crate) struct IdentityVerdict {
     rarity: Judged,
     start: [Judged; OBSERVABLE],
     end: [Judged; OBSERVABLE],
-    topology: [Judged; TOPOLOGIES],
+    /// Conditioned topology cells, laid out by [`topo_cell`]. A class-conditioned
+    /// cell is smaller than the pooled table was, so the **pool floor** is what
+    /// protects it: a thin cell abstains rather than inferring a convention from a
+    /// handful of occurrences (the plan's named topology-fragmentation risk).
+    topology: [Judged; TOPO_CLASSES * TOPOLOGIES],
     /// The pooled follower keys this identity has been seen leading, sorted.
     pairs: Box<[(Box<str>, Channel)]>,
     /// The score any pairing this identity has NEVER led takes. With the
@@ -926,7 +972,9 @@ fn judge_identity(kn: &Knobs, key: &str, stats: &NonletterCorpusStats) -> Identi
     let pool = |base: usize, width: usize| -> u64 { t.counters[base..base + width].iter().sum() };
     let start_pool = pool(C_START, OBSERVABLE);
     let end_pool = pool(C_END, OBSERVABLE);
-    let topo_pool = pool(C_TOPO, TOPOLOGIES);
+    // One pool per conditioned class, not one pool across the whole table.
+    let topo_pools: [u64; TOPO_CLASSES] =
+        std::array::from_fn(|c| pool(C_TOPO + c * TOPOLOGIES, TOPOLOGIES));
     let placement = |base: usize, pool: u64, slot: usize| {
         judged_form(
             t.counters[base + slot],
@@ -938,7 +986,8 @@ fn judge_identity(kn: &Knobs, key: &str, stats: &NonletterCorpusStats) -> Identi
     };
     let start = std::array::from_fn(|slot| placement(C_START, start_pool, slot));
     let end = std::array::from_fn(|slot| placement(C_END, end_pool, slot));
-    let topology = std::array::from_fn(|slot| placement(C_TOPO, topo_pool, slot));
+    let topology =
+        std::array::from_fn(|cell| placement(C_TOPO, topo_pools[cell / TOPOLOGIES], cell));
 
     // ── Channel 3: sequence ───────────────────────────────────────────────
     // "Are these individually ordinary graphemes placed beside one another in a
@@ -1044,7 +1093,7 @@ fn add_edge(
     into: &mut BTreeMap<Box<str>, Tally>,
     glyph: &str,
     side: Option<(usize, NeighbourClass)>,
-    topology: Option<Topology>,
+    topology: Option<(TopoClass, Topology)>,
 ) {
     let e = into.entry(Box::from(glyph)).or_default();
     if let Some((base, class)) = side
@@ -1052,8 +1101,8 @@ fn add_edge(
     {
         e.counters[base + slot] += 1;
     }
-    if let Some(t) = topology {
-        e.counters[C_TOPO + t.slot()] += 1;
+    if let Some((class, t)) = topology {
+        e.counters[C_TOPO + topo_cell(class, t)] += 1;
     }
 }
 
@@ -1072,7 +1121,7 @@ fn fold_edges(reduced: &NonletterReduced, into: &mut BTreeMap<Box<str>, Tally>) 
             into,
             glyph,
             Some((C_START, start)),
-            Topology::of(start, end),
+            Topology::of(start, end).map(|t| (TopoClass::of(start, end), t)),
         );
     }
     // The TRAILING edge's occurrence — the SAME occurrence when its start is
@@ -1083,15 +1132,17 @@ fn fold_edges(reduced: &NonletterReduced, into: &mut BTreeMap<Box<str>, Tally>) 
             into,
             glyph,
             Some((C_END, end)),
-            start_known.and_then(|start| Topology::of(start, end)),
+            start_known
+                .and_then(|start| Topology::of(start, end).map(|t| (TopoClass::of(start, end), t))),
         );
     }
 }
 
 impl crate::substrate::ObservationSubstrate for NonletterUsageSubstrate {
     const ID: crate::substrate::SubstrateId = crate::substrate::SubstrateId::NonletterUsage;
-    // Bump on any observation/reduction schema change.
-    const SCHEMA_STAMP: u64 = 1;
+    // Bump on any observation/reduction schema change. 2: the topology tally gained
+    // its coarse outer-content-class axis.
+    const SCHEMA_STAMP: u64 = 2;
     type Pairing = crate::substrate::NoReference;
     // The candidate atom is one extended grapheme cluster, so the chapter's
     // grapheme spans (and the tape they are segmented from) are the whole input.
@@ -1369,7 +1420,11 @@ fn for_each_channel(
         emit(NonletterReason::End, member.end.form(), v.end[slot]);
     }
     if let Some(t) = Topology::of(member.start, member.end) {
-        emit(NonletterReason::Topology, t.form(), v.topology[t.slot()]);
+        emit(
+            NonletterReason::Topology,
+            t.form(),
+            v.topology[topo_cell(TopoClass::of(member.start, member.end), t)],
+        );
     }
     if let Some((_, key)) = member.leads {
         emit(NonletterReason::Pair, NonletterForm::None, v.pair(key));
@@ -1886,14 +1941,23 @@ mod tests {
 
     /// `th3e` — the case the idea document was written for and no shipped rule
     /// provides. The digit is common (digits appear in 2,400 runs), so rarity is
-    /// silent; the *placement* is unique, so topology carries it.
+    /// silent; the *placement* is unique, so a placement channel carries it.
+    ///
+    /// MEASURED CONSEQUENCE OF CLASS-CONDITIONED TOPOLOGY: the score is unchanged,
+    /// but the channel that names it moved from `Topology` to `Start`. Conditioning
+    /// puts this `Both` occurrence in the identity's `Letter` cell, where it is the
+    /// *only* member — this translation writes no other letter-adjacent `3` — so
+    /// that cell falls under the pool floor and honestly abstains, and the
+    /// class-pooled start marginal becomes the witness. The plan's canonical wording
+    /// for this case ("attached to letters at both ends") is therefore no longer
+    /// what ships; see the epic progress log's Entry 15.
     #[test]
-    fn a_common_digit_in_an_unusual_placement_fires_through_topology() {
+    fn a_common_digit_in_an_unusual_placement_fires_through_placement() {
         let (s, reason, form, count, total) =
             judged(&synth(EN_NUM, N, &["he entered th3e house"]), &open(), "3").unwrap();
         close(s, 0.999);
-        assert_eq!(reason, NonletterReason::Topology);
-        assert_eq!(form, NonletterForm::Both);
+        assert_eq!(reason, NonletterReason::Start);
+        assert_eq!(form, NonletterForm::Letter);
         assert_eq!(
             (count, total),
             (0, 800),
@@ -1918,15 +1982,20 @@ mod tests {
         }
     }
 
-    /// A detached mark, and a phrase-ending mark at the start of a verse. Both are
-    /// `Neither` topologies against a translation that always attaches the mark.
+    /// A detached mark, and a phrase-ending mark at the start of a verse — both
+    /// against a translation that always attaches the mark.
+    ///
+    /// Same measured consequence as `th3e`: conditioning isolates these in the
+    /// identity's `Detached` cell, whose only possible state IS `Neither`, so the
+    /// cell is degenerate as well as thin and abstains. The score is unchanged and
+    /// the start marginal names it.
     #[test]
-    fn detached_and_verse_leading_marks_fire_through_topology() {
+    fn detached_and_verse_leading_marks_fire_through_placement() {
         for probe in ["he went out . and returned", ". and then he went out"] {
             let (s, reason, form, ..) = judged(&synth(EN, N, &[probe]), &open(), ".").unwrap();
             close(s, 0.999);
-            assert_eq!(reason, NonletterReason::Topology, "{probe:?}");
-            assert_eq!(form, NonletterForm::Neither, "{probe:?}");
+            assert_eq!(reason, NonletterReason::Start, "{probe:?}");
+            assert_eq!(form, NonletterForm::Spaced, "{probe:?}");
         }
     }
 
@@ -1945,6 +2014,98 @@ mod tests {
             NonletterReason::Rarity,
             "placement must abstain at a pool of one"
         );
+    }
+
+    /// DIRECTIVE 2's WITNESS. Class-conditioned topology cells are smaller, so the
+    /// **pool floor** is what protects them: a thin cell abstains, never infers. And
+    /// the two anchors topology exists for must survive the conditioning.
+    ///
+    /// `wo"rd` survives because the quote's `Letter` cell holds BOTH its ordinary
+    /// `EndOnly` opening form and the rare `Both` — conditioning does not separate
+    /// them, so the contrast that makes `wo"rd` visible is intact. The glottal-stop
+    /// case survives for the mirror reason: where `Both` is the dominant form in its
+    /// own cell, dominance collapses and the rule stays silent with no allow-list.
+    #[test]
+    fn a_conditioned_topology_cell_abstains_rather_than_inferring() {
+        // `wo"rd`: the conditioned cell keeps the contrast, so topology still names it.
+        let (s, reason, form, count, _) =
+            judged(&synth(EN, N, &["he saw the wo\"rd there"]), &open(), "\"").unwrap();
+        close(s, 0.999);
+        assert_eq!(reason, NonletterReason::Topology);
+        assert_eq!(form, NonletterForm::Both);
+        assert_eq!(count, 0);
+
+        // The glottal-stop shape: `Both` established as the convention in its own
+        // cell — silent, with no language allow-list and no script special-casing.
+        let glottal = synth(
+            "ru'ux ri' k'aslemal ri' xtz'ib'aj ri' chupam ri' wuj ri'.",
+            N,
+            &["ja ri' xub'ij chi re"],
+        );
+        close(score(&glottal, "'").unwrap(), 0.0);
+
+        // A single medial mark still cannot license itself, now per conditioned
+        // cell: its `Letter` cell holds exactly one occurrence, leave-one-out empties
+        // it, and it abstains rather than declaring medial `*` the convention.
+        let (s, reason, ..) = judged(&synth(EN, N, &["a new wor*d came"]), &open(), "*").unwrap();
+        close(s, 1.000);
+        assert_eq!(reason, NonletterReason::Rarity);
+    }
+
+    /// DIRECTIVE 1's WITNESS. The schema stamp is what invalidates a cached
+    /// observation when the observation's SHAPE changes, and it is folded per
+    /// substrate — so a bump re-maps exactly this substrate's chapters and cannot
+    /// touch another's. Pinned on the stamp itself rather than on a rebuild, because
+    /// `SCHEMA_STAMP` is a compile-time const: what a test can honestly check is
+    /// that the stamp carries it and that a mismatch reads as stale.
+    #[test]
+    fn a_schema_stamp_bump_invalidates_exactly_this_substrate() {
+        use crate::substrate::{ObservationInputStamp, ObservationSubstrate};
+        let corpus = synth(EN, 4, &["a ~ b"]);
+        let mut cache = crate::substrate::SubstrateCache::new();
+        let mut out = Vec::new();
+        drive_nonletter_usage(
+            true,
+            &mut cache,
+            &corpus,
+            &NonletterUsageConfig::default(),
+            &mut out,
+        );
+        let book = &corpus.book_layout()[0];
+        let chapter = &book.chapters[0];
+        let current =
+            ObservationInputStamp::target_only::<NonletterUsageSubstrate>(chapter.hash, &());
+        assert!(
+            cache.observation_is_current(&book.slug, &chapter.chapter, &current),
+            "the freshly mapped chapter is current at its own stamp"
+        );
+        // The same chapter under a DIFFERENT schema stamp is stale — which is the
+        // whole mechanism, and it is scoped to this substrate because the stamp is
+        // built from `S::SCHEMA_STAMP`.
+        // `reference` is module-private on purpose (only the two gated constructors
+        // may choose it), so the bump is expressed by mutating the public field.
+        let mut bumped = current;
+        bumped.schema_stamp = NonletterUsageSubstrate::SCHEMA_STAMP + 1;
+        assert!(
+            !cache.observation_is_current(&book.slug, &chapter.chapter, &bumped),
+            "a schema-stamp bump must read every cached observation as stale"
+        );
+        // And a stamp mismatch really does re-map, rather than being reported stale
+        // and then reused.
+        cache.reset_probes();
+        let mut again = Vec::new();
+        drive_nonletter_usage(
+            true,
+            &mut cache,
+            &corpus,
+            &NonletterUsageConfig::default(),
+            &mut again,
+        );
+        assert_eq!(
+            cache.mapped, 0,
+            "an unbumped stamp reuses every observation"
+        );
+        assert_eq!(again, out);
     }
 
     /// The same shapes, established by the translation, go quiet — and quiet because
@@ -2316,15 +2477,20 @@ mod tests {
         let t = &tallies(&middle)[&Box::from(".")];
         assert_eq!(t.counters[C_START + 2], 1, "spaced start across the seam");
         assert_eq!(t.counters[C_END + 2], 1, "spaced end across the seam");
-        assert_eq!(t.counters[C_TOPO], 1, "attached to content on neither side");
+        assert_eq!(
+            t.counters[C_TOPO + topo_cell(TopoClass::Detached, Topology::Neither)],
+            1,
+            "attached to content on neither side"
+        );
 
         let alone = rows(&[("GEN", "1", 1, ".")]);
         let t = &tallies(&alone)[&Box::from(".")];
         assert_eq!(t.counters[C_START + 2], 0, "no neighbour at a book edge");
         assert_eq!(t.counters[C_END + 2], 0);
-        assert_eq!(
-            t.counters[C_TOPO..C_TOPO + TOPOLOGIES],
-            [0, 0, 0, 0],
+        assert!(
+            t.counters[C_TOPO..C_TOPO + TOPO_CLASSES * TOPOLOGIES]
+                .iter()
+                .all(|&c| c == 0),
             "both sides unobservable ⇒ topology abstains rather than reading Neither"
         );
     }
@@ -2343,7 +2509,11 @@ mod tests {
         // The `!` sits between `?` and `”`: interior on both sides, so it
         // contributes no topology at all.
         let t = &tallies(&corpus)[&Box::from("!")];
-        assert_eq!(t.counters[C_TOPO..C_TOPO + TOPOLOGIES], [0, 0, 0, 0]);
+        assert!(
+            t.counters[C_TOPO..C_TOPO + TOPO_CLASSES * TOPOLOGIES]
+                .iter()
+                .all(|&c| c == 0)
+        );
     }
 
     // ── Coalescing, ordering and the args ─────────────────────────────────
@@ -2405,8 +2575,8 @@ mod tests {
         let rendered = crate::catalog::message(RuleId::NonletterUsageAnomaly, f.args.as_ref());
         assert_eq!(
             rendered,
-            "\u{2018}3\u{2019} is attached to text at both ends here; this translation writes it \
-             that way in 0 of 800 other places."
+            "\u{2018}3\u{2019} is attached to a word at the start here; this translation writes \
+             it that way in 0 of 800 other places."
         );
         let rare = synth(EN, N, &["procrastinate ~ my case"]);
         let f = probe_finding(&rare, &open(), "~").unwrap();

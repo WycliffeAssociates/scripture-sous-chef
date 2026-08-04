@@ -198,7 +198,7 @@ fn main() {
         // Optional trailing `sequence_k` and `placement_k` overrides, so the two
         // knobs the FLAG 2 obligations put in question can be measured against the
         // adjudicated wins without a rebuild.
-        [flag, path, knobs @ ..] if flag == "--nonletter-ledger" && knobs.len() <= 5 => {
+        [flag, path, knobs @ ..] if flag == "--nonletter-ledger" && knobs.len() <= 6 => {
             let mut cfg = ssc_core::config::NonletterUsageConfig::default();
             let num = |s: &String| s.parse::<f32>().expect("a knob is a number");
             if let Some(k) = knobs.first() {
@@ -218,6 +218,11 @@ fn main() {
             // Review Depth 100 end, not its depth-50 default of 0.75.
             if let Some(k) = knobs.get(4) {
                 cfg.emit_score_min = num(k);
+            }
+            // Directive 2's lever: class-conditioned cells are smaller, so the pool
+            // floor is what makes a thin cell abstain instead of inferring.
+            if let Some(k) = knobs.get(5) {
+                cfg.placement_min_pool = num(k) as u32;
             }
             survey::nonletter_ledger::nonletter_ledger_fleet(Path::new(path), cfg);
             return;

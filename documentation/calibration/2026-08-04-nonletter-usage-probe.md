@@ -1257,3 +1257,140 @@ Three ways forward, for adjudication:
 3. **Accept a partial roster**, i.e. amend gate (ii): take C or D (fleet 33.7k/38.6k,
    obligation (a) discharged at D) and adjudicate engwebster's named four and
    WA-ne-udb's remaining 24 as accepted drift, with samples.
+
+---
+
+# Addendum 5 — class-conditioned topology lands; the frontier turns on gate (iii)'s two reference constants
+
+- **Date:** 2026-08-04, on the ruling recorded verbatim in the epic progress log's
+  Entry 14.
+- **Implemented:** the four-state topology tally is now conditioned on a coarse
+  outer content class (`TopoClass` — `Letter` / `Digit` / `Detached`, derived
+  jointly from the two outer sides). Side marginals stay class-pooled as directed;
+  the fine `NeighbourClass` stays raw-observation-only; `SCHEMA_STAMP` → **2**.
+  Sequence stays `(8, 40)`; rarity frozen.
+- **Durable artifact refreshed** to the conditioned candidate A.
+
+## E1. The prediction was falsified; the ruling helped anyway, by a different route
+
+The predicted mechanism — that conditioning would un-dilute the roster wins and let
+gate (ii) close at a small knee — is **wrong, and measurably so**. For every roster
+case the majority topology and the minority topology fall in the *same* conditioned
+class, so the conditioned cell is identical to the pooled table:
+
+| case | identity's states | classes | conditioned effect |
+| --- | --- | --- | --- |
+| `engwebster` `-` | Both 3,430 · EndOnly 19 | (Letter,Letter) · (Spaced,Letter) → both **Letter** | none |
+| `WA-ne-udb` `,ब` | StartOnly 10,939 · Both 9 | (Letter,Spaced) · (Letter,Letter) → both **Letter** | none |
+
+That is structural, not incidental: topology's discriminating power *is* the
+contrast between states within one pool, so any conditioning correlated with the
+state either leaves the contrast intact (a no-op) or separates the minority into a
+cell where dominance collapses to zero. Gate (ii) is therefore unmoved — placement
+base 32 is still required (`ne_udb` 13 at base 8/16, 36 at base 32).
+
+**But conditioning cut volume hard, through thin-cell abstention** on the modal
+corpus's detached and digit-adjacent occurrences — which is exactly where the volume
+was, and exactly the "pool floors do the protecting" the ruling's directive 2
+anticipated:
+
+| topology pooling | fleet | p50 | p90 | p99 | kept/40,859 | (a) residue | ne | ew | km | pa |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| pooled, A `(32,40)/(8,40)` | 53,383 | 28 | 69 | 145 | 13,477 | 0 | 36 | 4 | 29 | 28 |
+| **conditioned, A** | **33,265** | **12** | **52** | **127** | 12,229 | **0** | **36** | **4** | **27** | **28** |
+
+−38% fleet, p50 28 → 12, and **gate (ii) fully intact**. So the ruling was right to
+take option (1) even though its stated mechanism was not the operative one.
+
+## E2. Gate (iii)'s two reference constants are drawn from the wrong bases
+
+Against gate (iii) *as literally written* — fleet ≤ ~30,650 (2× of 15,326) and
+p99 ≤ 75 — conditioned A still fails, by 8.5% and 1.7×. But both reference
+constants exclude what this rule absorbs, and that is now measurable rather than
+arguable. From `before.full.all.tsv`, per corpus:
+
+| series | corpora | p50 | p90 | p99 | max | fleet |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| the retired **trio**, all three | 1,422 | 19 | 62 | **170** | 308 | **40,859** |
+| the retired default-**ON** pair | 1,026 | 7 | 34 | 83 | 172 | 13,835 |
+| `punct.spacing-anomaly` alone | 1,360 | 14 | 37 | 132 | 278 | 27,024 |
+| **`uni.nonletter-usage-anomaly`, conditioned A** | 1,504 | **12** | **52** | **127** | — | **33,265** |
+
+- **The `75` p99 ceiling is the default-ON *pair*'s** (measured: 83, not 75) — a
+  two-rule subset. This rule also absorbs `punct.spacing-anomaly`, which is
+  default-off and carries a p99 of **132** on its own.
+- **The `15,326` fleet reference is the probe's FLAT-knee volume** — the model
+  addendum §C falsified. Measuring a repaired model against the broken model's
+  volume asks the repair to reproduce the defect.
+
+Against the honest basis — the three rules actually being replaced — conditioned A
+is **strictly cheaper on every axis**: p50 12 vs 19, p90 52 vs 62, p99 127 vs 170,
+fleet 33,265 vs 40,859 (**0.81×**). It replaces all three and emits 19% *fewer*
+findings than they do, while preserving every named adjudicated win and discharging
+obligation (a) completely.
+
+The ruling fixed the three gates as unchanged and said to stop rather than choose if
+the frontier is again empty. It is empty against the literal constants and closed
+against the corrected ones, so this is reported, not decided. It is a one-constant
+correction away from closing, not a structural impasse.
+
+## E3. The measured cost of conditioning: topology's expressiveness
+
+Two anchors keep their scores byte-for-byte but change which channel names them,
+because their conditioned cell is now too thin to judge and honestly abstains:
+
+| anchor | score | reason before | reason after | why |
+| --- | --- | --- | --- | --- |
+| `th3e` | 0.999 | `Topology`/`Both` | `Start`/`Letter` | the `3`'s `Letter` cell holds only this occurrence — the translation writes no other letter-adjacent `3` |
+| detached `.` | 0.999 | `Topology`/`Neither` | `Start`/`Spaced` | the `Detached` cell's only possible state IS `Neither`, so it is degenerate as well as thin |
+
+The plan §2/§10 canonical wording for `th3e` — *"`3` is attached to letters at both
+ends here, a placement this translation does not otherwise use"* — is therefore no
+longer what ships; it renders as *"attached to a word at the start"*. Same score,
+same finding, weaker explanation, on one of the two examples the plan leads with.
+Both replacement tests now state this in their own doc comments rather than hiding
+it behind a renamed assertion.
+
+The two anchors topology exists for **survive**, as directive 2 required, and have
+their own witness (`a_conditioned_topology_cell_abstains_rather_than_inferring`):
+`wo"rd` still fires `Topology`/`Both` at 0.999 because the quote's `Letter` cell
+holds both its ordinary `EndOnly` opening form and the rare `Both`; the glottal-stop
+shape stays silent for the mirror reason, dominance collapsing where `Both` is the
+cell's own convention. The 1/1 self-license case still abstains per conditioned cell.
+
+Directive 1's stamp witness is `a_schema_stamp_bump_invalidates_exactly_this_substrate`:
+the stamp is built from `S::SCHEMA_STAMP`, a mismatch reads every cached
+observation as stale, and an unbumped stamp re-maps nothing.
+
+## E4. Directive 5 recorded — engwebster's hyphenation cloud
+
+ACCEPTED as correct depth behavior: 19 findings scoring **0.603**, so visible at
+Review Depth ≈ 75–100 rather than at the default. A systematic cloud surfacing at
+deep review is the depth axis working. Sample, all one defect — a hyphenation pass
+that split words across a space:
+
+```
+LEV 18:18   …besides the other in her life -time .
+LEV 26:22   …few in number, and your high -ways shall be desolate.
+NUM 20:17   …will go by the king's high -way, we will not turn…
+NUM 21:22   …go along by the king's high -way, until we have past…
+JOS 21:11   …(Hebron) in the hill -country of Judah, with its…
+JDG 20:16   …could sling stones to a hair -breadth , and not miss.
+```
+
+ADR 0054's own named keep-set for engwebster is **4**, and those 4 are recovered at
+conditioned A; these 19 are the `Pd` widening's separate coverage, which the ADR
+itself calls a gain rather than a regression.
+
+## E5. Where this stands
+
+| gate | verdict at conditioned A |
+| --- | --- |
+| (i) anchors | **PASS** — 39 tests, every score byte-stable; two reasons moved (§E3), both documented in the tests themselves; the slip-cloud witness holds on the conditioned table |
+| (ii) ADR 0054 roster | **PASS** — engwebster 4/4 named, ne_udb 36 = 76 − 40 accepted dandas, kmr 27 ≥ 20, pa 28 ≥ 25 |
+| (a) obligation | **DISCHARGED** — residue 0 |
+| (iii) volume, literal constants | FAIL — 33,265 vs 30,650; p99 127 vs 75 |
+| (iii) volume, vs the trio replaced | **PASS on every axis** — 0.81× fleet, p50 12 vs 19, p90 52 vs 62, p99 127 vs 170 |
+
+Deletion remains blocked pending the gate (iii) reference decision. Nothing ships:
+the rule is still additive beside all three retired rules.

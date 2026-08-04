@@ -227,9 +227,7 @@ fn ledger_for(id: &str, corpus: &Corpus, tuned: NonletterUsageConfig) -> CorpusL
     // For a roster corpus only: what the rule would say about each span with the
     // floor removed, so an unpreserved adjudicated win is diagnosable — which
     // channel spoke, and on what leave-one-out counts — instead of guessed at.
-    let unfloored: BTreeMap<u32, Vec<(Span, String)>> = if ADJUDICATED
-        .iter()
-        .any(|&(c, _)| c == id)
+    let unfloored: BTreeMap<u32, Vec<(Span, String)>> = if ADJUDICATED.iter().any(|&(c, _)| c == id)
     {
         let mut m: BTreeMap<u32, Vec<(Span, String)>> = BTreeMap::new();
         for f in ssc_core::signals::nonletter_usage::nonletter_usage_findings(
@@ -245,14 +243,12 @@ fn ledger_for(id: &str, corpus: &Corpus, tuned: NonletterUsageConfig) -> CorpusL
                     count,
                     total,
                     ..
-                }) => format!(
-                    "{:.3} {:?} {count}/{total}",
-                    f.score.unwrap_or(0.0),
-                    reason
-                ),
+                }) => format!("{:.3} {:?} {count}/{total}", f.score.unwrap_or(0.0), reason),
                 _ => "-".to_string(),
             };
-            m.entry(f.key_idx.get()).or_default().push((f.range, detail));
+            m.entry(f.key_idx.get())
+                .or_default()
+                .push((f.range, detail));
         }
         m
     } else {
@@ -436,7 +432,9 @@ pub(crate) fn nonletter_ledger_fleet(dir: &Path, tuned: NonletterUsageConfig) {
 
     // ── Obligation (a).
     println!();
-    println!("## obligation (a) — adjacency findings the FLAT knee would emit and this one does not");
+    println!(
+        "## obligation (a) — adjacency findings the FLAT knee would emit and this one does not"
+    );
     println!("# the recovery target set: 908 under the flat k=2, and the residue here");
     println!("k2_specific_movers\t{k2_total}");
     println!(
