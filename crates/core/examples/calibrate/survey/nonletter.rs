@@ -283,6 +283,10 @@ struct GlyphObs {
     /// Same-glyph run-length histogram, for the continuation question: index
     /// `n-1` counts runs of exactly `n` of this glyph. Capped at 6+.
     same_runs: [u64; 6],
+    /// The number of maximal nonletter runs this identity appears in — counted
+    /// ONCE per run however many times the identity occurs inside it. The
+    /// run-membership rarity basis (decision 5).
+    run_memberships: u64,
 }
 
 /// One corpus's whole observation set.
@@ -529,6 +533,18 @@ fn observe(id: String, corpus: &Corpus) -> CorpusObs {
                 });
             }
 
+            // Run memberships: once per run per distinct identity in it.
+            for glyph in cells[run_start..run_end]
+                .iter()
+                .map(|c| c.text.clone())
+                .collect::<BTreeSet<Box<str>>>()
+            {
+                obs.glyphs
+                    .get_mut(&glyph)
+                    .expect("every run member was just inserted")
+                    .run_memberships += 1;
+            }
+
             // The same-glyph run-length histogram, for the continuation question.
             // Only a run that is entirely ONE glyph contributes: that is exactly
             // the `::` vs `:::` case pairs cannot separate.
@@ -596,6 +612,22 @@ struct Scored {
 }
 
 /// Tunables the probe sweeps rather than freezes.
+/// What the absolute-rarity channel counts.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RarityBasis {
+    /// Raw occurrences of the identity.
+    Occurrences,
+    /// The number of maximal nonletter RUNS the identity appears in — option (d).
+    ///
+    /// The defect this repairs is identity-level self-licensing: wreckage inflates
+    /// its own rarity count past the knee. In `WA-as-ulb` all 11 occurrences of `*`
+    /// ARE the two junk runs (`*******` and `****`), so occurrence counting reads
+    /// `*` as recurring 11 times and `knee(10, k=8) = 0`. Counting run memberships
+    /// reads it as appearing in 2 places, and since findings are already coalesced
+    /// per run, leave-one-out excludes the whole run under judgment.
+    RunMemberships,
+}
+
 /// How the pair channel keys its participants.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum PairKeying {
@@ -619,6 +651,12 @@ enum PairDenominator {
 
 #[derive(Clone, Copy)]
 struct Knobs {
+    /// What absolute rarity counts (decision 5).
+    rarity_basis: RarityBasis,
+    /// The continuation component's own support floor, separate from the pair
+    /// channel's — option (a) lowers this so a glyph whose only occurrences are
+    /// the anomaly can still be judged on run length.
+    continuation_min_support: u64,
     /// Absolute rarity: the recurrence knee, and the minimum corpus exposure
     /// (candidate occurrences) below which rarity abstains — the "one `$` in a
     /// tiny corpus is thin evidence" gate.
@@ -637,17 +675,40 @@ struct Knobs {
     pair_denominator: PairDenominator,
 }
 
+/// The Gate-1-adjudicated knobs (progress log Entry 7): rarity exposure >= 2000
+/// with k = 8 on the run-membership basis, placement pool >= 30 with k = 8,
+/// sequence pooled-digits / leads-a-run with leads >= 100 and k = 2.
 const DEFAULT_KNOBS: Knobs = Knobs {
+    rarity_basis: RarityBasis::RunMemberships,
+    continuation_min_support: 100,
     rarity_k: 8.0,
     rarity_min_exposure: 2_000,
     placement_min_pool: 30,
     placement_z: 1.0,
     placement_k: 8.0,
-    pair_min_leads: 30,
+    pair_min_leads: 100,
     pair_z: 1.0,
-    pair_k: 8.0,
+    pair_k: 2.0,
     pair_keying: PairKeying::PoolDigits,
     pair_denominator: PairDenominator::LeadsARun,
+};
+
+/// The pre-decision-5 baseline, for the option (a)/(b)/(d) comparison.
+const OCCURRENCE_BASIS: Knobs = Knobs {
+    rarity_basis: RarityBasis::Occurrences,
+    ..DEFAULT_KNOBS
+};
+
+/// Option (a): keep occurrence-based rarity but lower the continuation
+/// component's support floor so run length can carry a low-frequency glyph.
+/// Option (b) — "run length exceeds this identity's observed maximum" — collapses
+/// into the same measurement: both reduce to letting the run-length histogram
+/// speak on a tiny population, and the histogram already IS the comparison
+/// against the identity's other run lengths.
+const OPTION_A: Knobs = Knobs {
+    rarity_basis: RarityBasis::Occurrences,
+    continuation_min_support: 2,
+    ..DEFAULT_KNOBS
 };
 
 /// Score one occurrence, each channel independently.
@@ -661,10 +722,19 @@ fn score(occ: &Occurrence, obs: &CorpusObs, kn: Knobs) -> Scored {
     // corpus exposure, not the glyph's own count — one `$` in a large corpus is
     // well-supported rarity; one `$` in a tiny corpus is thin.
     let rarity_abstained = obs.candidate_occurrences < kn.rarity_min_exposure;
+    // Leave-one-out on the selected basis. On the run-membership basis the unit
+    // excluded is the whole RUN under judgment, which is sound because a finding
+    // is already coalesced per run — so one run is one piece of evidence, and
+    // wreckage can no longer inflate its own recurrence by being long.
+    let rarity_numerator = match kn.rarity_basis {
+        RarityBasis::Occurrences => g.count,
+        RarityBasis::RunMemberships => g.run_memberships,
+    }
+    .saturating_sub(1);
     let rarity = if rarity_abstained {
         0.0
     } else {
-        knee(g.count.saturating_sub(1), kn.rarity_k)
+        knee(rarity_numerator, kn.rarity_k)
     };
 
     // ── Channel 2: placement ──────────────────────────────────────────────
@@ -750,7 +820,7 @@ fn score(occ: &Occurrence, obs: &CorpusObs, kn: Knobs) -> Scored {
         .then(|| {
             let hist = &g.same_runs;
             let total_loo = hist.iter().sum::<u64>().saturating_sub(1);
-            if total_loo < kn.pair_min_leads {
+            if total_loo < kn.continuation_min_support {
                 return None;
             }
             let slot = ((occ.run_len as usize).min(6)) - 1;
@@ -794,7 +864,7 @@ fn score(occ: &Occurrence, obs: &CorpusObs, kn: Knobs) -> Scored {
         rarity_abstained,
         placement_abstained,
         sequence_abstained,
-        ev_glyph: (g.count.saturating_sub(1), obs.candidate_occurrences),
+        ev_glyph: (rarity_numerator, obs.candidate_occurrences),
         ev_start: start_part.map_or((0, 0), |(_, e)| e),
         ev_end: end_part.map_or((0, 0), |(_, e)| e),
         ev_topo: topo.map_or((0, 0), |(_, e)| e),
@@ -1375,6 +1445,14 @@ struct FleetRow {
     /// pool of its own.
     class_hits: BTreeMap<CandClass, u64>,
     class_occ: BTreeMap<CandClass, u64>,
+    /// Decision-5 comparison: composed hits at the three depth floors under
+    /// (d) run memberships, the occurrence baseline, and option (a).
+    basis_d: [u64; 3],
+    basis_occ: [u64; 3],
+    basis_a: [u64; 3],
+    /// The two RETIRED DEFAULT-ON rules' finding counts for this corpus — the
+    /// baseline decision 8's default-on check compares against.
+    old_default_on: u64,
     /// Per-variant hit counts, `[at 0.50, at 0.90]` per sweep row.
     rarity_sweep: Vec<[u64; 2]>,
     placement_sweep: Vec<[u64; 2]>,
@@ -1480,6 +1558,10 @@ fn fleet_row(id: String, corpus: &Corpus, kn: Knobs, with_overlap: bool) -> Flee
         twice_glyphs: obs.glyphs.values().filter(|o| o.count == 2).count(),
         singleton_hits: 0,
         twice_hits: 0,
+        basis_d: [0; 3],
+        basis_occ: [0; 3],
+        basis_a: [0; 3],
+        old_default_on: 0,
         rarity_sweep: vec![[0; 2]; RARITY_SWEEP.len()],
         placement_sweep: vec![[0; 2]; PLACEMENT_SWEEP.len()],
         pair_sweep: vec![[0; 2]; PAIR_SWEEP.len()],
@@ -1557,6 +1639,24 @@ fn fleet_row(id: String, corpus: &Corpus, kn: Knobs, with_overlap: bool) -> Flee
                 }
             }
         }
+        // Decision-5 comparison: (d) run memberships vs the occurrence baseline
+        // vs option (a) (occurrences + a lowered continuation support floor).
+        for (variant, which) in [
+            (DEFAULT_KNOBS, 0usize),
+            (OCCURRENCE_BASIS, 1),
+            (OPTION_A, 2),
+        ] {
+            let v = score(occ, &obs, variant);
+            for (i, f) in FLOORS.iter().enumerate() {
+                if v.max >= *f {
+                    match which {
+                        0 => row.basis_d[i] += 1,
+                        1 => row.basis_occ[i] += 1,
+                        _ => row.basis_a[i] += 1,
+                    }
+                }
+            }
+        }
         let s = score(occ, &obs, kn);
         let slot = Topology::of(occ.start, occ.end)
             .map(|t| Topology::ALL.iter().position(|x| *x == t).unwrap());
@@ -1621,6 +1721,15 @@ fn fleet_row(id: String, corpus: &Corpus, kn: Knobs, with_overlap: bool) -> Flee
     if with_overlap {
         let old = old_findings(corpus);
         row.old_total = old.len() as u64;
+        row.old_default_on = old
+            .iter()
+            .filter(|f| {
+                matches!(
+                    f.code,
+                    RuleId::PunctuationAdjacencyAnomaly | RuleId::PunctOnlyToken
+                )
+            })
+            .count() as u64;
         for f in &old {
             let vi = f.key_idx.get() as usize;
             let (fs, fe) = (f.range.start, f.range.end);
@@ -1846,6 +1955,64 @@ pub(crate) fn nonletter_fleet(dir: &Path, overlap: bool) {
             r.max_hits as f64 * 10_000.0 / r.candidates as f64,
         );
     }
+
+    // ── Decision 5: the rarity numerator basis ────────────────────────────
+    println!(
+        "\n## decision 5 — rarity numerator basis, composed volume at the adjudicated \
+         depth floors\n(d) run memberships | baseline = raw occurrences | (a) occurrences \
+         + continuation support floor 2"
+    );
+    println!(
+        "variant\tdepth0(.90)_p50\tdepth50(.75)_p50\tdepth100(.50)_p50\tfleet@.90\tfleet@.75\tfleet@.50"
+    );
+    for (label, get) in [
+        (
+            "(d) run memberships",
+            (|r: &FleetRow| &r.basis_d) as fn(&FleetRow) -> &[u64; 3],
+        ),
+        ("baseline occurrences", |r| &r.basis_occ),
+        ("(a) occ + cont floor 2", |r| &r.basis_a),
+    ] {
+        let col = |i: usize| -> Vec<u64> { eligible.iter().map(|r| get(r)[i]).collect() };
+        let (c50, c75, c90) = (col(0), col(1), col(2));
+        println!(
+            "{label}\t{}\t{}\t{}\t{}\t{}\t{}",
+            pct_u(&c90, 0.50),
+            pct_u(&c75, 0.50),
+            pct_u(&c50, 0.50),
+            c90.iter().sum::<u64>(),
+            c75.iter().sum::<u64>(),
+            c50.iter().sum::<u64>(),
+        );
+    }
+
+    // ── Decision 8: the default-on volume check ───────────────────────────
+    println!(
+        "\n## decision 8 — default-on volume check\n(the two RETIRED default-on rules' \
+         per-corpus counts vs this rule at the adjudicated depth-50 floor 0.75)"
+    );
+    let old_on: Vec<u64> = eligible.iter().map(|r| r.old_default_on).collect();
+    let new_50: Vec<u64> = eligible.iter().map(|r| r.basis_d[1]).collect();
+    println!("series\tp50\tp90\tp99\tfleet_total");
+    println!(
+        "retired default-on pair (adjacency + punct-only)\t{}\t{}\t{}\t{}",
+        pct_u(&old_on, 0.50),
+        pct_u(&old_on, 0.90),
+        pct_u(&old_on, 0.99),
+        old_on.iter().sum::<u64>()
+    );
+    println!(
+        "uni.nonletter-usage-anomaly at depth 50\t{}\t{}\t{}\t{}",
+        pct_u(&new_50, 0.50),
+        pct_u(&new_50, 0.90),
+        pct_u(&new_50, 0.99),
+        new_50.iter().sum::<u64>()
+    );
+    let (a, b) = (pct_u(&old_on, 0.50), pct_u(&new_50, 0.50));
+    println!(
+        "p50 ratio new/retired = {:.2} (mediator's flag threshold: > 2.00)",
+        b as f64 / a.max(1) as f64
+    );
 
     // ── Knob sweeps, per channel, independently ───────────────────────────
     let sweep_table = |name: &str,

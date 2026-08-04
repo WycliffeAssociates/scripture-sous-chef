@@ -16,60 +16,74 @@ retained_bytes_per_chapter	1103	2529	5934
 
 ## per-channel finding counts per corpus (floor 0.50) — equal-corpus
 channel	p50	p90	p99	fleet_total	corpora_firing
-absolute_rarity	6	20	32	12334	1203
+absolute_rarity	7	25	40	15139	1221
 placement	7	16	30	11892	1426
-sequence	11	46	77	27127	1391
-max(composed)	26	71	106	51064	1496
+sequence	2	8	18	4590	1071
+max(composed)	17	42	64	31521	1489
 
 ## channel abstention share of candidate occurrences (equal-corpus median)
 channel	p50_share	p90_share
 absolute_rarity	0.0000	0.0000
 placement	0.0069	0.0261
-sequence	0.9403	0.9922
+sequence	0.9447	0.9943
 
 ## composed-score counts by emission floor (Review Depth anchor evidence)
 floor	p50	p90	p99	fleet_total
-0.50	26	71	106	51064
-0.75	14	38	58	26740
-0.90	6	18	31	12301
+0.50	17	42	64	31521
+0.75	10	26	44	18787
+0.90	5	15	27	10102
 
 ## small (<8000 verses) vs mature corpora
-small	corpora=1104	candidates_p50=33418	hits_p50=24	hits_p90=70	rarity_abstain_p50=0.0000
-mature	corpora=400	candidates_p50=116334	hits_p50=34	hits_p90=72	rarity_abstain_p50=0.0000
+small	corpora=1104	candidates_p50=33418	hits_p50=18	hits_p90=43	rarity_abstain_p50=0.0000
+mature	corpora=400	candidates_p50=116334	hits_p50=17	hits_p90=39	rarity_abstain_p50=0.0000
 
 ## corpus-weighted tail — the 20 corpora with the most composed hits
 id	verses	candidates	distinct	rarity	placement	sequence	max	per_10k_cand
-WA-am-ulb	31079	110308	49	22	43	162	227	20.58
-portft	7896	54282	39	26	44	146	213	39.24
-WA-dso-ulb	7928	29534	44	25	34	137	195	66.03
-WA-lo-ulb	31081	137459	34	15	29	105	149	10.84
-WA-tel-x-onda-reg	4022	48314	32	6	52	78	136	28.15
-swe	11913	138130	33	7	19	110	134	9.70
-WA-tel-x-piya-reg	4015	54530	39	14	44	75	132	24.21
-dan1931	31059	145323	31	0	8	122	130	8.95
-WA-lel-reg	7941	54281	31	6	37	80	122	22.48
-eng-t4t	30635	188174	36	0	30	87	117	6.22
-WA-dje-reg	7954	26905	37	31	18	70	116	43.11
-WA-tpi-ulb	31085	115163	33	24	17	73	114	9.90
-WA-es-419-ulb	31100	130570	33	10	24	78	112	8.58
-WA-mhi-x-burolo-reg	7626	48964	33	11	34	65	109	22.26
-WA-ilo-udb	30799	141552	33	21	28	59	108	7.63
-WA-bwg-reg	7943	29271	30	35	8	63	106	36.21
-npiulb	31097	107347	37	18	27	61	106	9.87
-WA-ha-ulb	31098	137921	34	17	16	73	105	7.61
-WA-hts-reg	7955	34995	32	16	14	75	105	30.00
-tczchongthu	31051	131952	30	8	30	67	105	7.96
+portft	7896	54282	39	26	44	23	93	17.13
+WA-am-ulb	31079	110308	49	22	43	24	89	8.07
+WA-dje-reg	7954	26905	37	48	18	19	85	31.59
+WA-dso-ulb	7928	29534	44	25	34	20	79	26.75
+WA-lo-ulb	31081	137459	34	15	29	31	75	5.46
+WA-tel-x-piya-reg	4015	54530	39	14	44	17	75	13.75
+WA-mhi-x-burolo-reg	7626	48964	33	27	34	13	74	15.11
+WA-tel-x-onda-reg	4022	48314	32	6	52	16	74	15.32
+WA-lee-reg	7958	50915	39	32	31	8	70	13.75
+WA-tel-x-kovi-reg	3898	33456	34	13	47	10	70	20.92
+bsj	7821	22214	29	54	5	9	68	30.61
+WA-nl-ulb	7957	29754	34	32	26	9	67	22.52
+WA-gaz-ulb	7935	38087	36	25	31	10	66	17.33
+WA-byn-reg	7582	33546	33	26	25	14	65	19.38
+WA-mr-udb	7899	31638	24	15	43	7	65	20.54
+WA-ilo-udb	30799	141552	33	21	28	15	64	4.52
+WA-lel-reg	7941	54281	31	6	37	22	64	11.79
+oyde	7929	41399	43	40	20	4	64	15.46
+WA-ngw-reg	7932	21997	29	46	10	8	63	28.64
+WA-or-udb	7958	25765	38	40	20	3	63	24.45
+
+## decision 5 — rarity numerator basis, composed volume at the adjudicated depth floors
+(d) run memberships | baseline = raw occurrences | (a) occurrences + continuation support floor 2
+variant	depth0(.90)_p50	depth50(.75)_p50	depth100(.50)_p50	fleet@.90	fleet@.75	fleet@.50
+(d) run memberships	5	10	17	10102	18787	31521
+baseline occurrences	5	9	16	9629	17327	28716
+(a) occ + cont floor 2	5	9	16	9811	17633	29073
+
+## decision 8 — default-on volume check
+(the two RETIRED default-on rules' per-corpus counts vs this rule at the adjudicated depth-50 floor 0.75)
+series	p50	p90	p99	fleet_total
+retired default-on pair (adjacency + punct-only)	3	27	75	13835
+uni.nonletter-usage-anomaly at depth 50	10	26	44	18787
+p50 ratio new/retired = 3.33 (mediator's flag threshold: > 2.00)
 
 ## absolute rarity sweep (equal-corpus per-corpus counts)
 knee_k/min_exposure	p50@.50	p90@.50	p99@.50	fleet@.50	p90@.90	fleet@.90
-k=2/exp>=0	2	8	14	4534	4	2240
-k=2/exp>=2000	2	8	14	4534	4	2240
-k=4/exp>=2000	3	12	19	7093	4	2240
-k=8/exp>=0	6	20	32	12343	4	2240
-k=8/exp>=2000	6	20	32	12334	4	2240
-k=8/exp>=10000	6	19	32	11658	4	2164
-k=16/exp>=2000	14	38	59	24981	8	4534
-k=32/exp>=2000	32	72	105	52665	16	9589
+k=2/exp>=0	2	9	18	5540	5	2713
+k=2/exp>=2000	2	9	18	5540	5	2713
+k=4/exp>=2000	4	14	23	8553	5	2713
+k=8/exp>=0	7	25	40	15154	5	2713
+k=8/exp>=2000	7	25	40	15139	5	2713
+k=8/exp>=10000	7	25	40	14443	5	2631
+k=16/exp>=2000	16	46	69	29522	9	5540
+k=32/exp>=2000	34	84	127	59555	19	11636
 
 ## placement sweep (equal-corpus per-corpus counts)
 min_pool/knee_k	p50@.50	p90@.50	p99@.50	fleet@.50	p90@.90	fleet@.90
@@ -83,22 +97,22 @@ pool>=300/k=16	8	21	39	15400	5	3546
 
 ## sequence (pairs + continuation) sweep (equal-corpus per-corpus counts)
 keying/denominator/min_leads/knee_k	p50@.50	p90@.50	p99@.50	fleet@.50	p90@.90	fleet@.90
-exact/all-lead/leads>=30/k=8	34	126	195	73998	27	18906
-exact/leads-run/leads>=30/k=8	20	108	169	55043	21	12887
-pool#/all-lead/leads>=30/k=8	22	58	97	41343	17	11414
-pool#/leads-run/leads>=30/k=2	3	12	23	7271	12	7271
-pool#/leads-run/leads>=30/k=8	11	46	77	27127	12	7271
+exact/all-lead/leads>=30/k=8	34	126	195	73797	27	18833
+exact/leads-run/leads>=30/k=8	20	107	169	54783	21	12797
+pool#/all-lead/leads>=30/k=8	21	57	96	41096	17	11328
+pool#/leads-run/leads>=30/k=2	3	12	22	7176	12	7176
+pool#/leads-run/leads>=30/k=8	11	45	77	26841	12	7176
 pool#/leads-run/leads>=100/k=8	6	28	57	16065	8	4590
-pool#/leads-run/leads>=300/k=8	3	18	38	9377	5	2671
-pool#/leads-run/leads>=300/k=32	10	51	125	29260	17	8518
+pool#/leads-run/leads>=300/k=8	3	18	39	9608	5	2755
+pool#/leads-run/leads>=300/k=32	10	52	127	29822	17	8705
 
 ## composed hits by candidate class (fleet totals, floor 0.50)
 class	occurrences	hits	hits_per_10k_occ
-digit	4320431	14241	32.96
-quote	19236962	10153	5.28
-punct	70518271	25436	3.61
-symbol	1209874	935	7.73
-other	607049	299	4.93
+digit	4320431	10059	23.28
+quote	19236962	4637	2.41
+punct	70518271	15732	2.23
+symbol	1209874	921	7.61
+other	607049	172	2.83
 
 ## four-state topology distribution over all candidate occurrences
 state	fleet_count	share
@@ -143,14 +157,14 @@ seen_twice_glyph_types p50=0 p90=2; they produce hits p50=0 p90=4 (fleet 2294)
 ## old-rule overlap ledger, PER RETIRED RULE (fleet totals)
 old findings (3 retired rules, shipped defaults) = 40859
 old_rule	total	preserved	coalesced	intentionally_moved	lost	lost_share
-punct.adjacency-anomaly	9354	4100	812	4442	0	0.00000
-lex.punct-only-token	4481	704	0	3777	0	0.00000
-punct.spacing-anomaly	27024	607	2701	23716	0	0.00000
+punct.adjacency-anomaly	9354	1528	281	7545	0	0.00000
+lex.punct-only-token	4481	624	0	3857	0	0.00000
+punct.spacing-anomaly	27024	368	2465	24191	0	0.00000
 
 disposition	count	share_of_all_old_findings
-preserved	5411	0.13243
-duplicate-coalesced	3513	0.08598
-intentionally-moved	31935	0.78159
+preserved	2520	0.06168
+duplicate-coalesced	2746	0.06721
+intentionally-moved	35593	0.87112
 lost	0	0.00000
 
 ## corpora with the most LOST old findings
@@ -159,46 +173,46 @@ id	old_total	lost
 ## named examples — LOST and INTENTIONALLY-MOVED old findings
 corpus	old_rule	disposition	key	span	context
 (no LOST findings anywhere in the fleet)
+WA-ach-SS-acholi-reg	punct.adjacency-anomaly	intentionally-moved	ACT 18:27	,.	… bot lupwonnye wek gujole,. Ka ceŋ oo kunnu, ci ok…
+WA-ach-SS-acholi-reg	punct.adjacency-anomaly	intentionally-moved	GAL 4:10	,.	…ywu me gwoko nino, ki dwe,. ki kare mapatpat, ki m…
+WA-ach-SS-acholi-reg	punct.adjacency-anomaly	intentionally-moved	REV 11:13	,.	… madit twatwal oyeŋo piny,. ci dul acel me apar me…
 WA-ach-SS-acholi-reg	punct.spacing-anomaly	intentionally-moved	MAT 6:23	!	…i colle doŋ bedo rom mene!…
 WA-ach-SS-acholi-reg	punct.spacing-anomaly	intentionally-moved	MAT 10:25	?	…ki nyiŋ marac ma rom mene?…
 WA-ach-SS-acholi-reg	punct.spacing-anomaly	intentionally-moved	MAT 23:24	!	…noŋo pe wuŋeyo ni tye iye!…
-WA-ach-SS-acholi-reg	punct.spacing-anomaly	intentionally-moved	LUK 12:56	?	…ko kin lanyut me kare man?…
-WA-ach-SS-acholi-reg	punct.spacing-anomaly	intentionally-moved	ACT 26:8	?	…ye ni Lubaŋa cero jo muto?…
-WA-ach-SS-acholi-reg	punct.spacing-anomaly	intentionally-moved	ROM 3:5	? 	…r pi keto akemone i komwa? (Man atye ka lok i kit …
-WA-acq-reg	punct.adjacency-anomaly	intentionally-moved	REV 12:9	،۔	…طان اللي يخدع العالم كُله،۔…
-WA-acq-reg	lex.punct-only-token	intentionally-moved	ACT 14:9	۔۔	…تسمع لبولس لما كان يتكلم ۔۔ فشاف بولس لعنده ، وشاف…
-WA-acq-reg	punct.spacing-anomaly	intentionally-moved	MAT 1:23	 ۔	…ب ابن وشيسمونه عمانوئيل " ۔ واللي يعني: " الله معن…
-WA-acq-reg	punct.spacing-anomaly	intentionally-moved	MAT 5:37	 ؛	…مكم: نعــم، إذا كان نــعم ؛ أو: لا، إذا كان لا۔ وم…
-WA-acq-reg	punct.spacing-anomaly	intentionally-moved	MAT 9:13	 ۔	…حين إنما عشان المُذنبين " ۔…
-WA-acq-reg	punct.spacing-anomaly	intentionally-moved	MAT 21:21	 ۔	…من هنا وأفلت لفوق البحر " ۔ شيحصل هذا من صدق ۔…
+WA-acq-reg	punct.adjacency-anomaly	intentionally-moved	MAT 22:28	۔!	… السبعة؟ لإنو الكل تزوجها۔!"…
+WA-acq-reg	punct.adjacency-anomaly	intentionally-moved	MRK 1:3	۔!	…ربنا ،وخلوا طريقه مستقيم ۔!"…
+WA-acq-reg	punct.adjacency-anomaly	intentionally-moved	MRK 1:27	۔!	…اطين يأمرهم أمر ويطيعونُه۔!"…
+WA-acq-reg	punct.adjacency-anomaly	intentionally-moved	MRK 7:5	؟۔	…م ياكلوا الاكل بيد وسخانه؟۔…
+WA-acq-reg	punct.adjacency-anomaly	intentionally-moved	MRK 12:36	؟۔	… اعدائك واحطهم تحت أرجلك ؟۔ "…
+WA-acq-reg	punct.adjacency-anomaly	intentionally-moved	JHN 14:5	؟۔	…ت رايح ، كيف شنعرف الطريق؟۔"…
 WA-am-ulb	punct.adjacency-anomaly	intentionally-moved	LEV 7:14	፡፤	… በመሰዊያው ላይ ለሚረጩት ካህናት ይሰጥ፡፤…
+WA-am-ulb	punct.adjacency-anomaly	intentionally-moved	LEV 19:26	፤፡፡	…ሆኑ ኃይላት ሌሎችን ለመቆጣጠር አትፈልጉ፤፡፡ …
 WA-am-ulb	punct.adjacency-anomaly	intentionally-moved	LEV 21:14	፡፤	…ታችን ሴት፣ ወይም ጋለሞታን ሴት አያግባ፡፤ እንዲያ ካሉት ሴቶች መሃል አያግባ፡…
 WA-am-ulb	punct.adjacency-anomaly	intentionally-moved	LEV 23:21	፡፤	…ራል፣ እናም የተለመደ ስራችሁን አትሰሩም፡፤ ይህ የህዝባችሁ በትውልዶች ሁሉ በም…
 WA-am-ulb	punct.adjacency-anomaly	intentionally-moved	LEV 25:42	፡፤	…ብፅ ምድር ያወጣኋቸው አገልጋዮቼ ናቸውና፡፤ እንደ ባሪያዎች አይሸጡም፡፡ …
 WA-am-ulb	punct.adjacency-anomaly	intentionally-moved	LEV 27:25	፡፤	…ሁሉ በመቅደሱ ሰቅል ዋጋ ሊተመኑ ይገባል፡፤ ሃያ ጌራ ከአንድ ሰቅል ጋር እኩል …
-WA-am-ulb	punct.adjacency-anomaly	intentionally-moved	NUM 1:34	፡፤	…መዛግብት እያንዳንዳቸው በስማቸው ተቆጠሩ፡፤ …
+WA-amo-reg	punct.adjacency-anomaly	intentionally-moved	MAT 9:6	,...	…n likara nyi a wese alapi,..." A woro nnan konu nr…
+WA-amo-reg	punct.adjacency-anomaly	intentionally-moved	MRK 11:32	,...	… una nuzu kiti 'na nitari,...' Iwa din lanzu fiu n…
+WA-amo-reg	punct.adjacency-anomaly	intentionally-moved	ACT 9:15	!,	…i usu, "Can kitin Shawulu!, Bara nan nfereghe a su…
+WA-amo-reg	punct.adjacency-anomaly	intentionally-moved	ROM 10:18	!,	…nworo, "Iwa lanza ba?" Eh!, Nanere gbardang. "Liwo…
 WA-amo-reg	punct.spacing-anomaly	intentionally-moved	MAT 24:2	? 	…in yenju ile imone vat ba? "Idin bellu minu kidege…
 WA-amo-reg	punct.spacing-anomaly	intentionally-moved	MRK 6:2	? 	…ulele na Kutellẹ na nighe? "Kayapin katwa fiu wari…
-WA-amo-reg	punct.spacing-anomaly	intentionally-moved	MRK 12:10	? 	… cheu iyizi ni iyert inne? "Litala loe aa anan mak…
-WA-amo-reg	punct.spacing-anomaly	intentionally-moved	LUK 20:17	? 	…yari ile I yerte din belu? 'Litala loo na anan kye…
-WA-amo-reg	punct.spacing-anomaly	intentionally-moved	JHN 12:27	? 	… nene; Iyaghari mma bellu? 'Ucif sui utucu nanya k…
-WA-amo-reg	punct.spacing-anomaly	intentionally-moved	ROM 4:3	? 	…i uliru Kutellẹ na bellin? "Ibrahim na yinni ni li…
 WA-aoa-reg	punct.adjacency-anomaly	intentionally-moved	MAT 2:19	,:	…u Desu fa ku Zon ni sonhu,:…
+WA-aoa-reg	punct.adjacency-anomaly	intentionally-moved	MAT 6:3	..	…ua má mom deto so ka giwa..…
+WA-aoa-reg	punct.adjacency-anomaly	intentionally-moved	MAT 6:25	?.	…uê non sa maxi ku ka bixi?.…
 WA-aoa-reg	punct.adjacency-anomaly	intentionally-moved	MAT 13:15	,;	… ma vonté, só fisa we ane,; xi axe na ka sa wa, an…
-WA-aoa-reg	punct.adjacency-anomaly	intentionally-moved	LUK 3:36	,.	…m, na ri Noé na ri Lameki,.…
-WA-aoa-reg	punct.adjacency-anomaly	intentionally-moved	LUK 14:10	,:	…nu si kuvira ô ka bi fa ô,: taso nga masi buaru. A…
-WA-aoa-reg	punct.adjacency-anomaly	intentionally-moved	JHN 8:33	!.	…a pô fa: sê ka sa libertu!.…
-WA-aoa-reg	punct.adjacency-anomaly	intentionally-moved	JHN 18:39	!.	…liberta da sê Alê dy zurê!.…
+WA-aoa-reg	punct.adjacency-anomaly	intentionally-moved	MRK 4:21	..	…Jizu fa.., Se sa bi ki un a kand…
+WA-aoa-reg	punct.adjacency-anomaly	intentionally-moved	MRK 4:21	..,	…Jizu fa.., Se sa bi ki un a kand…
 WA-arq-reg	punct.adjacency-anomaly	intentionally-moved	MAT 14:33	۔!	…يقَة أَنْتَ ابْنَ الْلَّه۔!"…
 WA-arq-reg	punct.adjacency-anomaly	intentionally-moved	MAT 21:44	۔!	…لحَجْرَة غَادِي تْسَحْقَه۔!"…
-WA-arq-reg	lex.punct-only-token	intentionally-moved	MAT 24:15	-۔	…الْ - لِيَقْرَا يَفْهَمْ -۔…
-WA-arq-reg	lex.punct-only-token	intentionally-moved	MRK 1:3	>>۔	… وْ صَڤْدُوا طُرْڤَانَهْ >>۔…
-WA-arq-reg	lex.punct-only-token	intentionally-moved	MRK 2:19	<<	…ڤَالْهُمْ يَسُوعْ << يْنَجَمْوا صْحَابْ لَع…
-WA-arq-reg	lex.punct-only-token	intentionally-moved	LUK 3:11	>>۔	…ڤَسْمَهَا مْعَ لَخْرِينْ >>۔…
-WA-as-ulb	punct.adjacency-anomaly	intentionally-moved	JOS 12:24	*******	…বমুঠ একত্ৰিশজন ৰজা আছিল৷ *******…
-WA-as-ulb	punct.adjacency-anomaly	intentionally-moved	JOB 7:21	****	…ই  বিদ্যমান হৈ নাথাকিম।” ****…
-WA-as-ulb	lex.punct-only-token	intentionally-moved	JOS 12:24	*******	…বমুঠ একত্ৰিশজন ৰজা আছিল৷ *******…
-WA-as-ulb	lex.punct-only-token	intentionally-moved	JOB 7:21	****	…ই  বিদ্যমান হৈ নাথাকিম।” ****…
+WA-arq-reg	punct.adjacency-anomaly	intentionally-moved	MRK 7:28	!:	…بَاتَهْ:"وَاهْ، يَاسَيدِي!: حَتَى لَكْلاَبْ ياَكْل…
+WA-arq-reg	punct.adjacency-anomaly	intentionally-moved	LUK 11:11	؟!	…خُبْزْ، وْيَعْطِهْ حْجَرْ؟! ولاَ يَطْلَبْ منّهْ حُ…
+WA-arq-reg	punct.adjacency-anomaly	intentionally-moved	LUK 11:45	؟!	…يَرْ فِينَا حْنَا تَانِي ؟!"۔…
+WA-arq-reg	punct.adjacency-anomaly	intentionally-moved	JHN 16:19	!:	…ِيَاتْكُمْ مِينِْ ڤُولْتْ!: دَرْوَكْ شْوِيَة مَغَا…
+WA-as-ulb	punct.adjacency-anomaly	intentionally-moved	LEV 23:37	।,	…ীয়া যিহোৱাৰ পৰ্ব্ব এইবোৰ।,…
+WA-as-ulb	punct.adjacency-anomaly	intentionally-moved	DEU 33:11	;।	…ত্রুবোৰৰ কঁকাল ভাঙি দিয়া;। তেওঁক ঘিণাওঁতা সকলৰ কঁ…
+WA-as-ulb	punct.adjacency-anomaly	intentionally-moved	NEH 8:6	!,	…াত দাঙি উত্তৰ দিলে, “আমেন!, আমেন!” তাৰ পাছত মুৰ দো…
+WA-as-ulb	punct.adjacency-anomaly	intentionally-moved	JOB 11:6	!,	…য়ে তোমাক প্ৰকাশ কৰিলে হয়!, কিয়নো প্ৰজ্ঞাৰ অনেক দি…
 
 ## named anchor cases (synthetic corpora; filler sized so every channel's support gate is cleared, so a silence is a convention and not an abstention)
 anchor	glyph	count	exposure	start	end	topology	rarity	placement	sequence	primary	max	probe

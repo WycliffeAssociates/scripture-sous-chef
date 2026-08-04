@@ -503,7 +503,211 @@ observations.**
   Wilson dominance is uninformative at these denominators (always ≈1), so the
   knee `k` is doing all the work and the channel is closer to binary than graded.
 
-- **Next safe step:** WAIT for Gate 1 adjudication. On receipt, checkpoint 4 —
+---
+
+## Entry 7 — Gate 1 adjudication (recorded verbatim)
+
+- **Date:** 2026-08-04
+- **Source:** mediator, on the packet
+  [`2026-08-04-nonletter-usage-probe.md`](../calibration/2026-08-04-nonletter-usage-probe.md).
+  Recorded verbatim below; this is the decision of record for the live rule.
+
+> Gate 1 adjudication follows. Record it verbatim in the progress log as the
+> adjudication entry, then proceed to checkpoint 4. I read the full packet; the
+> §7 falsifications and the LOO-counts-beside-scores methodology are exactly
+> right.
+>
+> **Decisions on §13, in order:**
+>
+> 1. **Absolute rarity: ADOPTED as recommended.** Exposure denominator = visible
+>    nonletter occurrences, exposure ≥ 2000, k = 8 — subject to decision 5 below,
+>    which changes the numerator basis.
+> 2. **Placement: ADOPTED as recommended.** pool ≥ 30, k = 8.
+> 3. **Sequence: ADOPTED, k = 2, leads ≥ 100.** Your honesty argument decides it:
+>    dominance is uninformative at these denominators, and the plan's own
+>    canonical message — "`. → ,` occurs here but nowhere else" — is an
+>    unseen-pairing claim. A binary channel scoring ~1.0 also lands correctly on
+>    the depth axis: strong convention contradictions visible even at strict
+>    depth. Digit pooling for pairs is settled per §7.2.
+> 4. **Continuation: ADOPTED into production state.** The `:::`/`..` anchors prove
+>    recovery pairs cannot reach, at one 6-slot histogram per identity.
+> 5. **The `*******` gap: probe option (d) first — run-membership counting for the
+>    rarity numerator.** Count each candidate identity by the number of maximal
+>    nonletter runs it appears in, not raw occurrences; leave-one-out excludes the
+>    entire run under judgment (findings are already coalesced per run). Why: the
+>    real defect in §12.3 is identity-level self-licensing — the wreckage inflates
+>    its own rarity count past the knee (11 of `*`'s 11 occurrences ARE the two
+>    runs). Run counting fixes the cause rather than patching a symptom: `*` has 2
+>    runs, LOO → knee(1, k=8) = 0.875, both runs fire through rarity with an honest
+>    "appears in only 2 places" message. Predicted properties you must verify:
+>    every singleton/×2/×4 anchor is unchanged (single occurrences are single
+>    runs); established anchors unchanged (high run counts); fleet volume moves
+>    little (most glyphs' run counts ≈ occurrence counts). Measure (d) against (a)
+>    and (b): adopt (d) if it recovers both `*******` and `****` with no anchor
+>    regressions and small fleet distortion; else (b); else (a); stop and report if
+>    all three distort badly. You have decision authority within that procedure —
+>    record the measurements and choice in the packet as an addendum and in the
+>    progress log.
+> 6. **Digit placement pooling: DEFERRED as recommended.** Watch item: if the live
+>    rule's fleet run shows digit placement dominating, surface it at checkpoint 4
+>    rather than silently adding a pool.
+> 7. **Review Depth anchors: ADOPTED.** depth 0 → floor 0.90, depth 50 → 0.75,
+>    depth 100 → 0.50; support floors relax faster than unusualness per ADR 0070.
+>    Volumes will shift with decisions 3/5 — anchors are floor semantics, not
+>    volume targets; re-report the per-depth p50/p90 with final knobs.
+> 8. **Default enablement: DEFAULT-ON at Info, overriding your recommendation.**
+>    Rationale: this rule REPLACES two default-on rules; shipping it default-off is
+>    a silent coverage regression for every default user, which contradicts the
+>    replacement intent. With sequence at k=2 the depth-50 volume will land well
+>    below the packet's 26,740 reference figure anyway. Re-measure depth-50 fleet
+>    volume with final knobs and report it at checkpoint 4 — if p50 per corpus at
+>    depth 50 exceeds ~2× the retired default-on pair's per-corpus p50, flag it
+>    before finalizing. I am flagging this decision to the owner as the most
+>    reviewable one.
+> 9. **Normalization overlap: ACCEPTED as residual ownership row.** Exact raw
+>    grapheme bytes identity; `uni.mixed-normalization` owns equivalence claims;
+>    record in the §11.4 ownership wording pass.
+>
+> **Drift populations (§12):** populations 1 (organically established
+> conventions, incl. Ethiopic `፡ → ፤`) and 2 (verse-edge terminals — the old
+> behavior is precisely the verse-initial ≈ sentence-initial error the domain
+> invariant forbids) are ACCEPTED as intentional drift; both go in the Phase E ADR
+> with the sampled examples.
+>
+> **§14 comparability caveat:** once knobs are fixed, add a small cross-channel
+> comparability check to the packet addendum — sample findings near the 0.75 and
+> 0.90 floors from each channel and confirm they read as comparable unusualness;
+> if one channel's 0.9 reads like another's 0.5, stop and report before wiring
+> depth.
+>
+> Proceed to checkpoint 4: NonletterUsageSubstrate + live rule test-first per plan
+> §14.2, then the three-rule deletion series per §11.1, durable overlap TSV, and
+> the drift summary. Two movements stay separate in commits (substrate/rule
+> commits vs deletion commits). Remember: no compatibility surfaces of any kind;
+> hygiene > structural > this rule at exact spans; no generic span deduper; census
+> untouched. Stop and report.
+
+- **Next safe step:** decision 5's measurement procedure in the probe (option (d)
+  run-membership counting, measured against (a) and (b)), then the packet
+  addendum, then the live substrate and rule.
+
+---
+
+## Entry 8 — decision 5 measured and adopted; THREE FLAGS raised before implementing
+
+- **Date:** 2026-08-04
+- **Status:** Gate 1 knobs implemented in the probe and measured over the full
+  fleet. Decision 5 resolved under delegated authority. **Live rule NOT started**
+  — three flags are raised for adjudication first, two of them threshold or
+  consequence breaches created by the adjudication itself.
+- **Packet addendum:** [`2026-08-04-nonletter-usage-probe.md`](../calibration/2026-08-04-nonletter-usage-probe.md)
+  §A1–A5. Durable `.tsv` refreshed to the adjudicated-knob run.
+
+### Decision 5 — option (d) ADOPTED
+
+The procedure's three criteria are all met:
+
+- **Recovers the case:** `WA-as-ulb` `JOS 12:24` `*******` and `JOB 7:21` `****`
+  both fire at **rarity 0.875** on evidence `1/128772` — `knee(1, k=8)`, exactly
+  the mediator's prediction, supporting the honest message "`*` appears in only 2
+  places in this translation".
+- **No anchor regressions:** all 30 anchors byte-identical. Singleton/×2/×4 stays
+  1.000 / 0.875 / 0.625; the tiny-corpus singleton still abstains; every
+  established-convention anchor still 0.000; `th3e` still placement 0.999.
+- **Small fleet distortion:** +8.4% at depth 50 (17,327 → 18,787), per-corpus
+  median +1.
+
+(a) and (b) rejected with reasons: (a) does **not** recover the case at floor 2
+(`*`'s run histogram totals 2, LOO leaves 1 < 2, so continuation still abstains);
+at floor 1 it produces ~0.5 resting on a comparison against exactly **one** other
+run, which reintroduces the "hallucinate a convention from nothing" failure the
+pool floors exist to prevent. (b) collapses into (a) — the run-length histogram
+already *is* the comparison against the identity's other run lengths, so the only
+free parameter is (a)'s floor.
+
+### Review Depth volumes under final knobs (decision 7)
+
+| depth | floor | p50 | p90 | p99 | fleet |
+| --- | --- | --- | --- | --- | --- |
+| 0 | 0.90 | 5 | 15 | 27 | 10,102 |
+| 50 | 0.75 | 10 | 26 | 44 | 18,787 |
+| 100 | 0.50 | 17 | 42 | 64 | 31,521 |
+
+Monotone, no cliffs. Sequence at k=2 removed the fat tail (p99 106 → 64) and
+inverted the channel balance: rarity is now the largest channel (15,139) and
+sequence the smallest (4,590).
+
+### Cross-channel comparability check (§14 caveat) — PASSES
+
+Samples at the ~0.90 and ~0.75 bands from three corpora read as the same grade of
+unusualness across channels; no channel's 0.9 reads like another's 0.5. Recorded
+in addendum §A3 with contexts. One honest note: at equal score the placement
+examples are more *actionable* (a missing space after a comma) than the rarity
+ones (a curly apostrophe in 2 places), but that is actionability, not
+unusualness, and the rule's claim is unusualness — so it does not block depth.
+
+### FLAG 1 — decision 8's guard is TRIPPED: p50 ratio 3.33 vs the ~2.00 threshold
+
+| series | p50 | p90 | p99 | fleet |
+| --- | --- | --- | --- | --- |
+| retired default-on pair (adjacency + punct-only) | **3** | 27 | 75 | 13,835 |
+| this rule at depth 50 | **10** | 26 | 44 | 18,787 |
+
+Flagged as instructed rather than finalized. Context: the adjudication's own
+prediction **held** (18,787, well below the 26,740 reference); fleet volume is
+**+36%**, not +233%; **p90 is flat** (26 vs 27) and **p99 is 41% lower** (44 vs
+75). The ratio is inflated because the retired pair's p50 is a very small number —
+the old rules are concentrated, the new rule is flatter. The honest
+characterisation is **redistribution, not inflation**: the median corpus gains 7
+findings, the worst corpus loses 31.
+
+### FLAG 2 — decision 3 materially reduces old-rule preservation
+
+| disposition | at packet knobs (seq k=8) | at adjudicated knobs (seq k=2) |
+| --- | --- | --- |
+| preserved | 5,411 (13.2%) | 2,520 (6.2%) |
+| coalesced | 3,513 (8.6%) | 2,746 (6.7%) |
+| intentionally moved | 31,935 (78.2%) | 35,593 (87.1%) |
+| **lost** | **0** | **0** |
+
+`punct.adjacency-anomaly` preservation falls hardest: 4,100 → **1,528** of 9,354
+(44% → 16%). **`lost` remains exactly 0** — every old span still has an observed
+candidate. Decision 3 was argued on channel honesty, and its preservation cost was
+not visible when it was taken; the Phase E ADR will have to defend it, so it is
+raised now.
+
+### FLAG 3 — decision 6's watch item has fired, in RARITY not placement
+
+Digits fire at **23.28 per 10k occurrences** against punctuation's 2.23 (~10×).
+Decision 5 contributes: on the run-membership basis a digit inside a numeric
+grouping gets a run count far below its occurrence count — the run `175` counts
+**once** for each of `1`, `7`, `5` — so a frequent digit can appear in few runs and
+read as rare. Surfaced rather than silently patched, as instructed. Note the
+deferred remedy (a digit *placement* pool) would **not** address this, because it
+manifests in rarity. Unapplied candidates: count digit run memberships over
+maximal *digit* sub-runs; or exempt digits from the run-membership basis.
+
+### Why the live rule was not started
+
+All three flags feed directly into the checkpoint-4 deliverables: FLAG 1 decides
+whether the rule ships default-on, FLAG 2 is the justification the deletion series
+and Phase E ADR rest on, and FLAG 3 may change the substrate's retained
+observations (a digit sub-run basis is an observation-schema change, not a judging
+knob). Implementing the substrate and deleting three rules on top of unadjudicated
+answers to those would bake them in and make reversal expensive. The adjudication's
+own instruction on decision 8 was to "flag it before finalizing", and the
+threshold it named is exceeded.
+
+- **Next safe step:** adjudicate FLAGS 1–3. On receipt, checkpoint 4 proper —
+  `NonletterUsageSubstrate` and `uni.nonletter-usage-anomaly` test-first per plan
+  §14.2, then the three-rule deletion series per §11.1 in separate commits, the
+  durable full-fleet old/new overlap TSV, and the drift summary.
+
+---
+
+## Entry 6 continued — original next-safe-step note (superseded by Entry 7)
+
+- On receipt of Gate 1, checkpoint 4 —
   implement `NonletterUsageSubstrate` and `uni.nonletter-usage-anomaly` per the
   adjudicated decisions (rule math test-first, plan §14.2), then delete the three
   retired rules and all their surfaces in one reviewable series, and produce the

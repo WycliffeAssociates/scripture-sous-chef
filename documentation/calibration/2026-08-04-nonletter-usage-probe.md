@@ -524,3 +524,224 @@ I am **not** taking these. Each has the measurement it needs above.
   Each channel is on its own `dominance × knee` scale; whether those scales are
   *comparable* enough for `max` to be meaningful is the first thing to verify once
   the Gate 1 knobs are fixed.
+
+---
+
+# Addendum — Gate 1 adjudicated knobs, decision 5 measurement, and three flags
+
+- **Date:** 2026-08-04, after the Gate 1 adjudication recorded in progress-log
+  Entry 7.
+- **Raw output refreshed:** the accompanying `.tsv` is now the run under the
+  **adjudicated** knobs. Reproduce with `RAYON_NUM_THREADS=4` (see §A5).
+- **Adjudicated knobs, as measured here:**
+  rarity — **run-membership basis** (decision 5, adopted below), exposure ≥ 2000,
+  k = 8; placement — pool ≥ 30, k = 8; sequence — pooled digits, leads-a-run
+  denominator, **leads ≥ 100, k = 2**; continuation in production.
+  Depth floors: 0 → 0.90, 50 → 0.75, 100 → 0.50.
+
+## A1. Decision 5 — option (d) MEASURED AND ADOPTED
+
+The procedure was: adopt (d) if it recovers both `*******` and `****` with no
+anchor regressions and small fleet distortion; else (b); else (a).
+
+### Does (d) recover the case? YES — both runs
+
+`WA-as-ulb`, `*` has 11 occurrences in exactly **2 maximal runs**:
+
+| site | run | rarity | evidence (LOO) | primary | max |
+| --- | --- | --- | --- | --- | --- |
+| `JOS 12:24` | `*******` | **0.875** | `1/128772` | rarity | 0.875 |
+| `JOB 7:21` | `****` | **0.875** | `1/128772` | rarity | 0.875 |
+
+`knee(1, k=8) = 0.875`, exactly as predicted. The message this supports is the
+honest one: *"`*` appears in only 2 places in this translation."* Every member of a
+run fires, and findings coalesce per run, so this is two findings.
+
+### Anchor regressions? NONE
+
+All 30 anchors are **identical** to the pre-decision-5 table:
+
+| property | before | after (d) |
+| --- | --- | --- |
+| `~` ×1 / ×2 / ×4 | 1.000 / 0.875 / 0.625 | 1.000 / 0.875 / 0.625 |
+| singleton in TINY corpus | abstain → 0.000 | abstain → 0.000 |
+| single medial `*` (1/1) | rarity 1.000, placement abstain | unchanged |
+| every established-convention anchor | 0.000 | 0.000 |
+| `th3e` | placement 0.999 | placement 0.999 |
+
+The mediator's prediction held on all three counts: single occurrences are single
+runs, so the singleton/×2/×4 ladder is untouched; established identities have high
+run counts, so their silences are untouched.
+
+### Fleet distortion? SMALL — ~9%
+
+| variant | depth 0 (.90) p50 | depth 50 (.75) p50 | depth 100 (.50) p50 | fleet @.90 | fleet @.75 | fleet @.50 |
+| --- | --- | --- | --- | --- | --- | --- |
+| **(d) run memberships** | **5** | **10** | **17** | **10,102** | **18,787** | **31,521** |
+| baseline (occurrences) | 5 | 9 | 16 | 9,629 | 17,327 | 28,716 |
+| (a) occurrences + continuation floor 2 | 5 | 9 | 16 | 9,811 | 17,633 | 29,073 |
+
+(d) costs +8.4% fleet volume at depth 50 and moves the per-corpus median by one
+finding. That is a small distortion for repairing an identity-level
+self-licensing defect.
+
+### Why (a) and (b) were rejected
+
+- **(a) does not even recover the case at the floor it was measured with.** `*`'s
+  same-glyph run histogram totals 2, so leave-one-out leaves 1, which is below a
+  support floor of 2 — continuation still abstains. Dropping the floor to 1 does
+  recover it, but then the score is `wilson_lb(1/1, z=1) × knee(0) ≈ 0.5`: a
+  verdict resting on a comparison against exactly **one** other run. That is the
+  "hallucinate a convention from nothing" failure the pool floors exist to
+  prevent, and it would reintroduce it deliberately.
+- **(b) collapses into (a).** "Run length exceeds this identity's observed
+  maximum" is what the run-length histogram already compares; the only free
+  parameter is how small a population may speak, which is (a)'s floor. Measured
+  as one option for that reason.
+
+**DECISION: option (d) adopted**, using the authority delegated in the procedure.
+Rarity counts run memberships; leave-one-out excludes the whole run under
+judgment, which is sound because findings are already coalesced per run.
+
+## A2. Review Depth volumes under final knobs (decision 7)
+
+| depth | floor | p50 | p90 | p99 | fleet total |
+| --- | --- | --- | --- | --- | --- |
+| 0 | 0.90 | 5 | 15 | 27 | 10,102 |
+| 50 | 0.75 | 10 | 26 | 44 | 18,787 |
+| 100 | 0.50 | 17 | 42 | 64 | 31,521 |
+
+Monotone, no cliffs, no dead ranges. Sequence at k=2 removed the fat tail: p99
+falls from 106 (packet §4) to 64.
+
+Per-channel, under final knobs:
+
+| channel | p50 | p90 | p99 | fleet | corpora firing |
+| --- | --- | --- | --- | --- | --- |
+| absolute rarity | 7 | 25 | 40 | 15,139 | 1,221 |
+| placement | 7 | 16 | 30 | 11,892 | 1,426 |
+| sequence | 2 | 8 | 18 | 4,590 | 1,071 |
+| `max` | 17 | 42 | 64 | 31,521 | 1,489 |
+
+The channel balance inverted: sequence went from the dominant channel (27,127) to
+the smallest (4,590), and rarity is now the largest. That is decision 3 working as
+intended.
+
+## A3. Cross-channel comparability check (the §14 caveat) — PASSES
+
+Samples drawn at each floor band from three corpora.
+
+**~0.90 band:**
+
+| channel | score | glyph | context |
+| --- | --- | --- | --- |
+| rarity | 0.875 | `’` | `a man marries his brother’s wife` (curly apostrophe, 2 places, in a straight-quote corpus) |
+| rarity | 0.875 | `！` | `ባበረታታኋችሁ！` (fullwidth `!` in Amharic, 2 places) |
+| rarity | 0.875 | `7` | `অব্ৰাহাম মুঠ 175 বছৰ` (Assamese digit, 2 runs) |
+| placement | 0.873 | `:` | `that never say, "Enough":` (`:` letter-attached where normally spaced) |
+| placement | 0.872 | `:` | `দৰ্শন দিলে   :` (detached `:`) |
+| placement | 0.873 | `«` | `ደግሞም «'የውበት` (unusual attachment) |
+
+**~0.75 band:**
+
+| channel | score | glyph | context |
+| --- | --- | --- | --- |
+| rarity | 0.750 | `“` | `For I have said, “Covenant faithfulness` (3 places) |
+| rarity | 0.750 | `[` / `]` | Amharic editorial bracketing (3 places) |
+| placement | 0.750 | `,` | `king of Egypt,in order to bring out` (**missing space after comma**) |
+| placement | 0.750 | `,` | `The sun rises,and it goes down` (same defect) |
+
+**Verdict: comparable.** Every sample at a given band reads as the same grade of
+"worth an eyeball, not certainly wrong". No channel's 0.9 reads like another's
+0.5. Depth wiring is safe on this evidence.
+
+One honest observation: at equal score the placement examples are the more
+*actionable* defects (a missing space after a comma is unambiguous; a curly
+apostrophe in 2 places may be deliberate). That is a difference in
+**actionability**, not in unusualness, and the rule's claim is unusualness — so it
+does not block depth. Worth revisiting if user feedback ever ranks channels.
+
+## A4. THREE FLAGS — raised before finalizing
+
+### FLAG 1 — decision 8's guard is TRIPPED (3.33× vs the ~2× threshold)
+
+| series | p50 | p90 | p99 | fleet total |
+| --- | --- | --- | --- | --- |
+| retired default-on pair (`punct.adjacency-anomaly` + `lex.punct-only-token`) | **3** | 27 | 75 | 13,835 |
+| `uni.nonletter-usage-anomaly` at depth 50 | **10** | 26 | 44 | 18,787 |
+
+**p50 ratio = 3.33**, above the ~2.00 flag threshold, so this is flagged as
+instructed rather than finalized.
+
+Context that matters for the judgement, because the ratio alone overstates it:
+
+- The **prediction in the adjudication held**: depth-50 volume is 18,787, well
+  below the 26,740 reference figure.
+- **Fleet volume is +36%**, not +233%.
+- **p90 is flat** (26 vs 27) and **p99 is 41% LOWER** (44 vs 75).
+- The p50 ratio is large because the retired pair's p50 is a very small number
+  (3). The old rules are *concentrated* — most corpora get almost nothing, a few
+  get many. The new rule is *flatter*: it spreads comparable total coverage more
+  evenly across corpora.
+
+So the honest characterisation is **redistribution, not inflation**: the median
+corpus gains 7 findings while the worst corpus loses 31. Whether that is
+acceptable for a default-on rule is the owner's call; I have not finalized it.
+
+### FLAG 2 — decision 3 materially reduces old-rule preservation
+
+Under the adjudicated sequence knobs (k=2, leads≥100), the ledger moves:
+
+| disposition | at packet knobs (k=8) | at adjudicated knobs (k=2) |
+| --- | --- | --- |
+| preserved | 5,411 (13.2%) | 2,520 (6.2%) |
+| coalesced | 3,513 (8.6%) | 2,746 (6.7%) |
+| intentionally moved | 31,935 (78.2%) | 35,593 (87.1%) |
+| **lost** | **0** | **0** |
+
+Per retired rule, `punct.adjacency-anomaly` preservation falls hardest —
+4,100 → **1,528** of 9,354 (44% → 16%).
+
+**`lost` is still exactly 0**: every old finding's span still has an observed
+candidate. But decision 3 was argued on channel *honesty*, not on preservation,
+and its preservation cost was not visible when it was taken. Raising it now
+because the Phase E ADR will have to defend it.
+
+### FLAG 3 — decision 6's watch item has fired, in RARITY not placement
+
+| class | occurrences | hits | hits per 10k |
+| --- | --- | --- | --- |
+| digit | 4,320,431 | 10,059 | **23.28** |
+| symbol | 1,209,874 | 921 | 7.61 |
+| other | 607,049 | 172 | 2.83 |
+| quote | 19,236,962 | 4,637 | 2.41 |
+| punctuation | 70,518,271 | 15,732 | 2.23 |
+
+Digits fire **~10× the punctuation rate**, and decision 5 contributes to it: on
+the run-membership basis a digit inside a numeric grouping gets a run count far
+below its occurrence count — the run `175` counts **once** for each of `1`, `7`
+and `5`. So a digit that occurs hundreds of times may appear in only a handful of
+runs and read as rare. The `WA-as-ulb` samples in §A3 (`7`, `3` at 0.875 inside
+`175` and `137`) are exactly this.
+
+This is the decision-6 watch item, surfaced rather than silently patched as
+instructed — but it manifests in the **rarity** channel, not placement, so the
+deferred remedy (a digit *placement* pool) would not address it. Candidate
+remedies, not applied: count a digit's run memberships over *maximal digit
+sub-runs* rather than whole nonletter runs; or exempt digits from the
+run-membership basis and keep occurrence counting for them.
+
+## A5. Reproduction note — sandbox read flakiness
+
+The fleet sweep intermittently hit `Operation not permitted (os error 1)` reading
+random corpus files under 10-way Rayon parallelism (three separate runs died on
+`tet.txt`, `xed.txt`, `wal.txt`; each file read fine individually straight
+afterwards). Running with `RAYON_NUM_THREADS=4` completed cleanly:
+
+```
+RAYON_NUM_THREADS=4 ./target/release/examples/calibrate --nonletter corpora/vref overlap
+```
+
+3 m 10 s for 1,504 corpora including the overlap ledger. This is an environment
+artifact, not a probe defect — earlier identical runs at full parallelism
+succeeded twice — but it is recorded so the next person does not chase it.
