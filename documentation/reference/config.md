@@ -353,8 +353,7 @@ Every available configuration option, set to its built-in default. Copy this and
 > This section documents the corpus-relative rule against that real surface; the
 > older reference is retained for its conceptual material.
 
-`punct.adjacency-anomaly`, `punct.spacing-anomaly`,
-`lex.repeated-character-run`,
+`punct.spacing-anomaly`, `lex.repeated-character-run`,
 `case.sentence-initial-lowercase`, `case.inconsistent-word-casing`, and
 `punct.bracket-balance` are corpus-relative rules with typed knobs. Each emits
 a continuous `score ∈ [0, 1]` whose unit is **anomaly evidence**, not a
@@ -371,13 +370,13 @@ table**, raw and mergeable, from which the lexicon and per-glyph habit are
 derived at judge. (`punct.bracket-balance` is a whole-map project rule that
 recomputes its family tallies per call.)
 
-All seven share one scoring library, `crates/core/src/evidence.rs` (ADR 0032):
+They share one scoring library, `crates/core/src/evidence.rs` (ADR 0032):
 `strength(k, n, rate, z)` — Wilson-shrunk convention strength;
-`dominance(k_major, n, z)` — Wilson lower bound of a majority form;
+`dominance(k_major, n, z)` — Wilson lower bound of a majority form; and
 `from_strengths(&[s])` — the noisy-OR residual `∏(1 − sᵢ)` for independent
-convention axes; and `odds_amplify(e, gain)` for magnitude modifiers such as
-run length. Every `confidence_z` knob below feeds the same Wilson
-arithmetic, and every rule ships `1.96`.
+convention axes. Every `confidence_z` knob below feeds the same Wilson
+arithmetic. (`odds_amplify` went with `punct.adjacency-anomaly`, its only
+consumer.)
 
 > **Zero-width space is no longer scored corpus-relative.** The
 > `uni.zero-width-space-anomaly` scorer (and its `Config.zero_width_space` knobs)
@@ -395,27 +394,6 @@ arithmetic, and every rule ships `1.96`.
 > `Class`-bit prefilter closed most of an initial regression. Toggle it
 > through the same `rules` map every rule uses. See the rules catalog and
 > ADR 0063.
-
-### `punct.adjacency-anomaly` (`Config.punctuation_adjacency`) — **default ON**
-
-| knob | meaning |
-| --- | --- |
-| `convention_rate` | share of a lead glyph's run-start opportunities above which a pattern is "established" by **frequency** (coarse); default 0.5 |
-| `confidence_z` | Wilson confidence — load-bearing when a lead glyph is exclusive to one pattern; default 1.96 |
-| `breadth_convention_rate` | share of a corpus's books above which a pattern is "established" by **breadth** (ADR 0031); default 0.12 |
-| `breadth_z` | Wilson confidence for the breadth axis; default 1.96 |
-| `breadth_min_books` | minimum corpus book count before breadth is consulted (dispersion is meaningless below it); default 8 |
-| `length_gain_slope` | run-length odds amplifier per extra character (ADR 0031); `0.5` ⇒ an 8-long run ≈ 4× the odds of a doubling |
-| `emit_score_min` | surfacing floor; **default 0.5**. Retained for the exclusive-glyph seen-twice tradeoff (ADR 0024); moderate-frequency conventions like Arabic `۔۔` now suppress on the breadth axis instead |
-
-Per exact pattern (ADR 0024, 0031): frequency and breadth are independent
-convention evidence combined by noisy-OR, then run length amplifies the residual
-as an odds multiplier —
-`score = odds_amplify((1−freq_strength)·(1−breadth_strength), 1 + length_gain_slope·(len−2))`.
-
-**Stricter (fewer findings):** raise `emit_score_min` toward 1.0 (surface only
-near-certain anomalies) and/or lower the `*_convention_rate` (more patterns count
-as established → silent). **Looser:** lower `emit_score_min`.
 
 ### `punct.spacing-anomaly` (`Config.punctuation_spacing`) — **default OFF**
 

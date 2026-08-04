@@ -69,7 +69,6 @@ define_rule_ids! {
     ProjectLengthRatio       => "prop.length-ratio",
     SourceMarkerLeftover     => "struct.source-marker-leftover",
     MergeConflictMarker      => "struct.merge-conflict-marker",
-    PunctuationAdjacencyAnomaly => "punct.adjacency-anomaly",
     DuplicateWord            => "lex.duplicate-word",
     CombiningMarkWithoutBase => "uni.combining-mark-without-base",
     RedundantZeroWidthSpace  => "uni.redundant-zero-width-space",
@@ -133,7 +132,6 @@ impl RuleId {
             | RuleId::ReplacementRun
             | RuleId::SourceMarkerLeftover
             | RuleId::MergeConflictMarker
-            | RuleId::PunctuationAdjacencyAnomaly
             | RuleId::DuplicateWord
             | RuleId::CombiningMarkWithoutBase
             | RuleId::RedundantZeroWidthSpace
@@ -439,18 +437,6 @@ pub enum FindingArgs {
         word: String,
         upper: u32,
         total: u32,
-    },
-    /// `punct.adjacency-anomaly`: the two independent convention axes behind
-    /// the score, as raw counts (ADR 0048). `pattern` is the flagged run;
-    /// `k / lead_n` is how often it occurs among that lead glyph's runs;
-    /// `books / corpus` is how many books use it. No single %, so both ship.
-    #[cfg_attr(feature = "serde", serde(rename = "adjacency-evidence"))]
-    AdjacencyEvidence {
-        pattern: String,
-        k: u32,
-        lead_n: u32,
-        books: u32,
-        corpus: u32,
     },
     /// `uni.mixed-script-in-token`: the convention axes behind the score, as
     /// raw counts (ADR 0048). `k / n` is this script mix's share of its

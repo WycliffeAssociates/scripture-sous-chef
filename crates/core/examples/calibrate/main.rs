@@ -67,10 +67,7 @@ use oracle::{OracleScope, dump_findings};
 use reporting::{census_fleet, census_single, time_configs};
 use survey::casing::{analyze_casing, casing_fleet, casing_single_report};
 use survey::glyphs::{analyze_glyphs, glyph_fleet, glyph_single_report};
-use survey::misc::{
-    batch, bracket_calib, fleet, punct_calib, repeat_calib,
-    spacing_fleet_sweep, zwsp_calib,
-};
+use survey::misc::{batch, bracket_calib, fleet, repeat_calib, spacing_fleet_sweep, zwsp_calib};
 use survey::mixedcase::{analyze_mixedcase, mixedcase_fleet, mixedcase_single_report};
 use survey::paired::{paired_survey, seed_faults, uw_calibrate, uw_case_shape_simulate};
 use survey::pooled::{analyze_pooled, pooled_fleet, pooled_single_report};
@@ -104,12 +101,6 @@ fn main() {
         // findings the default-on rule emits, and confirm hygiene flags no U+200B.
         [flag, t] if flag == "--zwsp" => {
             zwsp_calib(Path::new(t));
-            return;
-        }
-        // Punctuation adjacency calibration (ADR 0024): the rule is default-on;
-        // report its score distribution at floor 0.
-        [flag, t] if flag == "--punct" => {
-            punct_calib(Path::new(t));
             return;
         }
         // Punctuation spacing knee/floor sweep + regression (ADR 0054 amend.):

@@ -42,8 +42,6 @@ accounted for:
   represent it (ADR 0063).
 - Counts are `u32` / rates are `f32` — `Copy`, set at `judge`, no extra alloc
   beyond the `Finding` itself.
-- The only unavoidable per-finding string is `punct.adjacency-anomaly`'s
-  2–4-char pattern run (a rare rule).
 - Per-finding args are ≤ ~24 bytes. No whole-verse or token-array round-trips.
 - Fix *capability* is a **static** `FixKind` on the `RuleCard` (zero
   per-finding cost); only genuine runtime values (dominant form, target
@@ -85,7 +83,6 @@ is larger); the engine ships the counts, not the derived value.
 | `case.mixed-case-word` | Corpus | Odd capital inside a word | "‘{word}’ has a capital in the middle here — this translation writes it that way {other} of {total} times." | `MixedCaseWord { word, other, total }` |
 | `punct.spacing-anomaly` | Corpus | Inconsistent spacing around punctuation | "‘{mark}’ is {form} on the {side} to {a word/a number/a mark} in only {count} of {total} places ({pct}%)." — one clause per violated side, joined by "; and " | `SpacingConvention { mark, left: Option<SpacingSide>, right: Option<SpacingSide> }` (each `SpacingSide { form, class, count, total }`, ADR 0054) |
 | `punct.bracket-balance` | Corpus | Unmatched bracket | pairing: "This bracket has no partner — the translation pairs it in {majority} of {total} places." · short-span: "This bracket pair stays open unusually long — {majority} of {total} pairs close within a few verses." | `BracketWindow { window, measure, majority, total }` |
-| `punct.adjacency-anomaly` | Corpus | Unusual punctuation combination | "The punctuation ‘{pattern}’ is unusual here — it appears {k} of {lead_n} times, in {books} of {corpus} books." | `AdjacencyEvidence { pattern, k, lead_n, books, corpus }` |
 | `uni.mixed-script-in-token` | Corpus | Mixed alphabets in one word | "This word mixes writing systems — a mix this translation uses in only {books} of {corpus} books." | `ScriptMixEvidence { k, n, books, corpus }` |
 | `lex.repeated-character-run` | Corpus | Repeated letter | "‘{ch}’ repeats {run} times here — a repetition this translation doesn't otherwise use." | `RepeatEvidence { ch, run }` |
 | `uni.rare-glyph` | Corpus | Barely-used letter | "The letter ‘{glyph}’ appears only {count} times in this whole translation." | `RareGlyph { glyph, count }` |
@@ -112,7 +109,6 @@ from the op + the finding's `range` + verse text; only `ToDominantForm` /
 | `punct.spacing-anomaly` | ToDominantForm | drop/insert a space (direction from `spaced` vs `attached`) | ✅ |
 | `uni.mixed-numeral-systems` | ToTarget | span digit → `target` (same value, dominant system) | ✅ (needs `target` arg) |
 | `uni.mixed-script-in-token` | None *(deferred)* | homoglyph → majority script — needs a confusables table | ❌ |
-| `punct.adjacency-anomaly` | None | collapse target ambiguous (`,,`→`,`? `?.`→`?`) | ❌ |
 | `lex.repeated-character-run` | None | target repetition count unknown | ❌ |
 | `case.mixed-case-word` | None | correct clean shape unknown (could be all-lower or titlecase) — review | ❌ |
 | `uni.rare-glyph` | None | the intended letter is unknown — a stray that needs review or re-import | ❌ |

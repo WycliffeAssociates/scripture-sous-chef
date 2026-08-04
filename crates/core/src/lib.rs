@@ -435,8 +435,8 @@ pub use catalog::{
 pub use census::{CensusOptions, Inventory, census};
 pub use config::{
     BracketBalanceConfig, CasingConfig, CasingRuleConfig, Config, InconsistentWordCasingConfig,
-    ProportionalityConfig, PunctuationAdjacencyConfig,
-    PunctuationSpacingConfig, RepeatedCharacterRunConfig, SentenceInitialCasingConfig,
+    ProportionalityConfig, PunctuationSpacingConfig, RepeatedCharacterRunConfig,
+    SentenceInitialCasingConfig,
 };
 pub use corpus::{BookBlock, ChapterBlock, Corpus, CorpusError, KeyIdx, MutationEffect};
 pub use diagnostics::{
@@ -737,11 +737,6 @@ fn transition(
         &mut schedule,
         &mut substrate_lane,
     );
-    let mut adjacency_plan = signals::punctuation::plan_adjacency(
-        active.adjacency,
-        &mut substrates.adjacency,
-        &mut schedule,
-    );
     let mut normalization_plan = signals::mixed_normalization::plan_normalization(
         active.normalization,
         &mut substrates.normalization,
@@ -858,9 +853,6 @@ fn transition(
     if let Some(plan) = spacing_plan.as_mut() {
         schedule::scatter(&work, &mut mapped, plan, |b| b.spacing.take());
     }
-    if let Some(plan) = adjacency_plan.as_mut() {
-        schedule::scatter(&work, &mut mapped, plan, |b| b.adjacency.take());
-    }
     if let Some(plan) = normalization_plan.as_mut() {
         schedule::scatter(&work, &mut mapped, plan, |b| b.normalization.take());
     }
@@ -964,15 +956,6 @@ fn transition(
             &config.punctuation_spacing,
             plan,
             &mut substrate_lane,
-        );
-    }
-    if let Some(plan) = adjacency_plan {
-        signals::punctuation::finish_adjacency(
-            &mut substrates.adjacency,
-            target,
-            &config.punctuation_adjacency,
-            plan,
-            &mut out,
         );
     }
     if let Some(plan) = repeated_run_plan {
@@ -1475,25 +1458,6 @@ mod tests {
                 .iter()
                 .all(|f| f.code != RuleId::ProjectLengthRatio)
         );
-    }
-
-    /// `punct.adjacency-anomaly` is default-on and, unlike before, actually
-    /// wired into the stateful registry (it was implemented but unregistered,
-    /// so it never ran through `analyze`). A rare mixed run against many period
-    /// run-starts must surface as an Info finding through the default entry.
-    #[test]
-    fn adjacency_anomaly_runs_through_analyze() {
-        let mut pairs: Vec<(&str, &str)> = (0..200).map(|_| ("v", "He said. She left.")).collect();
-        pairs.push(("v", "word., word")); // one rare `.,`
-        let target = map(&pairs);
-        let f = analyze(&target, None);
-        let adj: Vec<_> = f
-            .iter()
-            .filter(|f| f.code == RuleId::PunctuationAdjacencyAnomaly)
-            .collect();
-        assert_eq!(adj.len(), 1, "the rare `.,` surfaces through analyze");
-        assert_eq!(adj[0].severity, Severity::Info);
-        assert!(adj[0].score.unwrap() > 0.9);
     }
 
     /// The shipped defaults keep convention-dependent (P2) rules off;

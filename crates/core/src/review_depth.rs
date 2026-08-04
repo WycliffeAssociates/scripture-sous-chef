@@ -145,7 +145,6 @@ pub const fn review_control(rule: RuleId) -> ReviewControl {
         | RuleId::ProjectLengthRatio
         | RuleId::SourceMarkerLeftover
         | RuleId::MergeConflictMarker
-        | RuleId::PunctuationAdjacencyAnomaly
         | RuleId::DuplicateWord
         | RuleId::CombiningMarkWithoutBase
         | RuleId::RedundantZeroWidthSpace
@@ -194,9 +193,8 @@ pub fn apply_review_policy(
             | RuleId::ProjectLengthRatio
             | RuleId::SourceMarkerLeftover
             | RuleId::MergeConflictMarker
-            | RuleId::PunctuationAdjacencyAnomaly
             | RuleId::DuplicateWord
-                | RuleId::CombiningMarkWithoutBase
+            | RuleId::CombiningMarkWithoutBase
             | RuleId::RedundantZeroWidthSpace
             | RuleId::MixedScriptInToken
             | RuleId::RepeatedCharacterRun

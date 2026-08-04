@@ -1,7 +1,8 @@
 // ═══════════════════════════════════════════════════════════════════════════
-// THE MIGRATION LEDGER — dev-only. The gate that must pass before
+// THE MIGRATION LEDGER — dev-only. The gate that had to pass before
 // `punct.spacing-anomaly`, `punct.adjacency-anomaly` and `lex.punct-only-token`
-// are deleted (epic plan §11.1/§13 Phase E, §14.3).
+// were deleted (epic plan §11.1/§13 Phase E, §14.3). Only `punct.spacing-anomaly`
+// is still live, so only its row is still measurable.
 //
 // The probe's ledger measured a MODEL. This one measures the SHIPPED RULE: it
 // calls `nonletter_usage_findings` and `nonletter_candidate_runs` — the same
@@ -22,25 +23,19 @@
 // observed, so "emits nothing" and "sees nothing" are different answers and only
 // the second is a coverage loss.
 //
-// It also discharges the two obligations attached to the sequence-`k=2` ruling
-// (progress log Entry 9):
-//
-//   (a) the adjacency findings that moved SPECIFICALLY because k=2 admits only an
-//       unseen pairing — i.e. those the same rule at k=8 would have emitted —
-//       sampled with context so a reader can confirm they are conventions rather
-//       than systematic errors;
-//   (b) the corpora ADR 0024 and ADR 0054 name as adjudicated multilingual wins,
-//       reported per corpus so each win is visibly preserved or visibly accepted
-//       drift.
+// It also discharges obligation (b) of the sequence-`k=2` ruling (progress log
+// Entry 9): the corpora ADR 0024 and ADR 0054 name as adjudicated multilingual
+// wins, reported per corpus so each win is visibly preserved or visibly accepted
+// drift. Obligation (a) — the adjacency findings that moved specifically because
+// `k=2` admitted only an unseen pairing — was discharged at residue 0 (progress
+// log Entries 13 and 17) and its lane went with `punct.adjacency-anomaly`.
 // ═══════════════════════════════════════════════════════════════════════════
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::Path;
 
-use ssc_core::config::{
-    NonletterUsageConfig, PunctuationAdjacencyConfig, PunctuationSpacingConfig,
-};
+use ssc_core::config::{NonletterUsageConfig, PunctuationSpacingConfig};
 use ssc_core::{Corpus, Finding, RuleId, Span};
 
 use crate::vref_io::load_corpus;
@@ -90,17 +85,9 @@ impl Disposition {
     }
 }
 
-/// The three retired rules' findings at shipped defaults, tagged by rule.
+/// The still-live retired rules' findings at shipped defaults, tagged by rule.
 fn old_findings(corpus: &Corpus) -> Vec<Finding> {
-    let mut out = ssc_core::signals::punctuation::adjacency_findings(
-        corpus,
-        &PunctuationAdjacencyConfig::default(),
-    );
-    out.extend(ssc_core::signals::punctuation::spacing_findings(
-        corpus,
-        &PunctuationSpacingConfig::default(),
-    ));
-    out
+    ssc_core::signals::punctuation::spacing_findings(corpus, &PunctuationSpacingConfig::default())
 }
 
 fn overlaps(a: Span, b: Span) -> bool {
@@ -111,13 +98,8 @@ fn overlaps(a: Span, b: Span) -> bool {
 struct CorpusLedger {
     id: String,
     /// `[rule index][disposition]` counts, rule index in `OLD_RULES` order.
-    counts: [[u64; 4]; 2],
+    counts: [[u64; 4]; 1],
     new_findings: usize,
-    /// Old adjacency findings the same rule at `sequence_k = 8` WOULD have
-    /// emitted — the population obligation (a) is about.
-    k2_moved: u64,
-    /// Up to three sampled `k=2` movers, rendered with context.
-    k2_samples: Vec<String>,
     /// Present only for a corpus on the obligation (b) roster.
     adjudicated: Option<AdjudicatedRow>,
 }
@@ -132,19 +114,14 @@ struct AdjudicatedRow {
     samples: Vec<String>,
 }
 
-const OLD_RULES: [(&str, RuleId); 2] = [
-    (
-        "punct.adjacency-anomaly",
-        RuleId::PunctuationAdjacencyAnomaly,
-    ),
-    ("punct.spacing-anomaly", RuleId::PunctuationSpacingAnomaly),
-];
+const OLD_RULES: [(&str, RuleId); 1] =
+    [("punct.spacing-anomaly", RuleId::PunctuationSpacingAnomaly)];
 
 fn rule_index(code: RuleId) -> usize {
     OLD_RULES
         .iter()
         .position(|&(_, r)| r == code)
-        .expect("only the three retired rules enter the ledger")
+        .expect("only the retired rules enter the ledger")
 }
 
 /// A short window of the verse around a span, escaped so a TSV row stays one row.
@@ -179,20 +156,6 @@ fn ledger_for(id: &str, corpus: &Corpus, tuned: NonletterUsageConfig) -> CorpusL
     // is what makes `lost` a real coverage answer.
     let observed = ssc_core::signals::nonletter_usage::nonletter_candidate_runs(corpus);
 
-    // The obligation (a) counterfactual: the FLAT knee the ledger falsified — a
-    // pure absolute k = 8 in both channels, with no opportunity-proportional term.
-    // An old finding this rule declines while the flat model emits it is a
-    // regression the proportional knee was adopted to remove.
-    let at_k8 = ssc_core::signals::nonletter_usage::nonletter_usage_findings(
-        corpus,
-        &NonletterUsageConfig {
-            sequence_k: 8.0,
-            sequence_rate_per_10k: 0.0,
-            placement_rate_per_10k: 0.0,
-            ..default
-        },
-    );
-
     // Index the three span sets by verse, so classification is a small local scan
     // rather than a cross product over the corpus.
     let mut by_verse_new: BTreeMap<u32, Vec<Span>> = BTreeMap::new();
@@ -206,17 +169,7 @@ fn ledger_for(id: &str, corpus: &Corpus, tuned: NonletterUsageConfig) -> CorpusL
     for (k, s) in &observed {
         by_verse_obs.entry(k.get()).or_default().push(*s);
     }
-    let mut by_verse_k8: BTreeMap<u32, Vec<Span>> = BTreeMap::new();
-    for f in &at_k8 {
-        by_verse_k8
-            .entry(f.key_idx.get())
-            .or_default()
-            .push(f.range);
-    }
-
-    let mut counts = [[0u64; 4]; 2];
-    let mut k2_moved = 0u64;
-    let mut k2_samples: Vec<String> = Vec::new();
+    let mut counts = [[0u64; 4]; 1];
     let mut adj_samples: Vec<String> = Vec::new();
     // For a roster corpus only: what the rule would say about each span with the
     // floor removed, so an unpreserved adjudicated win is diagnosable — which
@@ -275,28 +228,6 @@ fn ledger_for(id: &str, corpus: &Corpus, tuned: NonletterUsageConfig) -> CorpusL
         };
         counts[rule_index(f.code)][disposition as usize] += 1;
 
-        // Obligation (a): an adjacency finding the new rule declines at k = 2 but
-        // WOULD have emitted at k = 8 moved specifically because the pairing was
-        // already seen 2..7 times — i.e. because this translation already writes
-        // it, which is the definition of a convention.
-        if f.code == RuleId::PunctuationAdjacencyAnomaly
-            && disposition == Disposition::Moved
-            && by_verse_k8
-                .get(&v)
-                .is_some_and(|ss| ss.iter().any(|s| overlaps(*s, f.range)))
-        {
-            k2_moved += 1;
-            if k2_samples.len() < 3 {
-                let text = corpus.text(f.key_idx);
-                k2_samples.push(format!(
-                    "{}\t{}\t{}",
-                    corpus.key(f.key_idx),
-                    f.range.slice(text),
-                    context(text, f.range)
-                ));
-            }
-        }
-
         if let Some(row) = adj.as_mut() {
             row.old_total += 1;
             match disposition {
@@ -335,8 +266,6 @@ fn ledger_for(id: &str, corpus: &Corpus, tuned: NonletterUsageConfig) -> CorpusL
         id: id.to_string(),
         counts,
         new_findings: new.len(),
-        k2_moved,
-        k2_samples,
         adjudicated: adj,
     }
 }
@@ -367,7 +296,9 @@ pub(crate) fn nonletter_ledger_fleet(dir: &Path, tuned: NonletterUsageConfig) {
         })
         .collect();
 
-    println!("# nonletter-usage migration ledger — the SHIPPED rule vs the three retired rules");
+    println!(
+        "# nonletter-usage migration ledger — the SHIPPED rule vs the retired rules still live"
+    );
     println!("# corpora={total}");
     println!(
         "# knobs: floor={} placement=({},{}) sequence=({},{}) pools=({},{},{})",
@@ -382,9 +313,8 @@ pub(crate) fn nonletter_ledger_fleet(dir: &Path, tuned: NonletterUsageConfig) {
     );
 
     // ── Fleet totals, per retired rule and overall.
-    let mut fleet = [[0u64; 4]; 2];
+    let mut fleet = [[0u64; 4]; 1];
     let mut new_total = 0usize;
-    let mut k2_total = 0u64;
     for r in &rows {
         for (i, per_rule) in r.counts.iter().enumerate() {
             for (d, n) in per_rule.iter().enumerate() {
@@ -392,7 +322,6 @@ pub(crate) fn nonletter_ledger_fleet(dir: &Path, tuned: NonletterUsageConfig) {
             }
         }
         new_total += r.new_findings;
-        k2_total += r.k2_moved;
     }
     println!();
     println!("## fleet ledger");
@@ -423,30 +352,6 @@ pub(crate) fn nonletter_ledger_fleet(dir: &Path, tuned: NonletterUsageConfig) {
             grand[3] as f64 / grand_total as f64
         }
     );
-
-    // ── Obligation (a).
-    println!();
-    println!(
-        "## obligation (a) — adjacency findings the FLAT knee would emit and this one does not"
-    );
-    println!("# the recovery target set: 908 under the flat k=2, and the residue here");
-    println!("k2_specific_movers\t{k2_total}");
-    println!(
-        "share_of_adjacency_moved\t{:.6}",
-        if fleet[0][2] == 0 {
-            0.0
-        } else {
-            k2_total as f64 / fleet[0][2] as f64
-        }
-    );
-    println!("corpus\tsid\tpattern\tcontext");
-    let mut sampled: Vec<&CorpusLedger> = rows.iter().filter(|r| r.k2_moved > 0).collect();
-    sampled.sort_by(|a, b| b.k2_moved.cmp(&a.k2_moved).then(a.id.cmp(&b.id)));
-    for r in sampled.iter().take(40) {
-        for s in &r.k2_samples {
-            println!("{}\t{s}", r.id);
-        }
-    }
 
     // ── Obligation (b).
     println!();
@@ -483,9 +388,8 @@ pub(crate) fn nonletter_ledger_fleet(dir: &Path, tuned: NonletterUsageConfig) {
     println!();
     println!("## per corpus");
     println!(
-        "corpus\tnew_findings\tadj_total\tadj_preserved\tadj_coalesced\tadj_moved\tadj_lost\t\
-         spacing_total\tspacing_preserved\tspacing_coalesced\tspacing_moved\tspacing_lost\t\
-         k2_movers"
+        "corpus\tnew_findings\tspacing_total\tspacing_preserved\tspacing_coalesced\t\
+         spacing_moved\tspacing_lost"
     );
     let mut sorted: Vec<&CorpusLedger> = rows.iter().collect();
     sorted.sort_by(|a, b| a.id.cmp(&b.id));
@@ -498,6 +402,6 @@ pub(crate) fn nonletter_ledger_fleet(dir: &Path, tuned: NonletterUsageConfig) {
                 per_rule[0], per_rule[1], per_rule[2], per_rule[3]
             );
         }
-        println!("\t{}", r.k2_moved);
+        println!();
     }
 }

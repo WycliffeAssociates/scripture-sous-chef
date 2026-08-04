@@ -224,92 +224,6 @@ pub struct CasingConfig {
     pub inconsistent_word: InconsistentWordCasingConfig,
 }
 
-/// Knobs for `punct.adjacency-anomaly`. The rule keeps the prior conservative
-/// candidate extraction (identical and mixed punctuation runs, minus the
-/// known-safe `...`/`--`/`?!`/`!?` set) but replaces the fixed allow-list
-/// *verdict* with a corpus-rate one: each exact candidate pattern is scored
-/// against its lead glyph's corpus-wide run-start opportunities, at
-/// `Severity::Info` (ADR: punctuation adjacency anomaly). Ships **default-on**
-/// (the deterministic predecessor was on). Scores are always finite: `judge`
-/// clamps out-of-range / NaN input here.
-#[derive(Debug, Clone, Copy, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(default))]
-pub struct PunctuationAdjacencyConfig {
-    /// The share-of-lead-glyph-opportunities above which an exact pattern is
-    /// taken to be an established convention (and so falls below the floor). A
-    /// doubled Ethiopic `፤፤` that is most of the corpus's `፤` run-starts clears
-    /// this; a `.,` that is a sliver of all period run-starts does not. Coarse
-    /// by design (see `confidence_z`).
-    pub convention_rate: f32,
-    /// Confidence `z` for the Wilson lower bound. Load-bearing at the anomaly
-    /// end: a pattern whose lead glyph is *exclusive* to it has observed rate
-    /// pinned at 1.0, so only this `z` (via the sample size) separates a novel
-    /// mark seen twice from an entrenched convention seen thousands of times.
-    /// Calibrate this before the rate knob. `1.96` ≈ 95%.
-    pub confidence_z: f32,
-    /// Share-of-books above which a pattern is taken to be an established
-    /// convention on **dispersion** grounds alone (ADR 0031). Frequency and
-    /// breadth are *independent* evidence combined by noisy-OR: `፡፡` (frequent)
-    /// and a modest-frequency Arabic ellipsis `۔۔۔` spread across ~42% of books
-    /// both clear the convention bar, but by different axes. A pattern
-    /// concentrated in a handful of books (`?????` mojibake in 3/66) does not.
-    /// Analogue of `convention_rate` for the breadth axis; coarse by design.
-    pub breadth_convention_rate: f32,
-    /// Confidence `z` for the breadth Wilson lower bound — support-aware, so a
-    /// pattern "seen once in two books" cannot masquerade as widespread. Kept
-    /// separate from `confidence_z` unless calibration proves they should share
-    /// one (ADR 0031). `1.96` ≈ 95%.
-    pub breadth_z: f32,
-    /// Minimum number of books a corpus must contain before the breadth axis is
-    /// consulted at all (ADR 0031). Dispersion is a corpus-scale signal: in a
-    /// one- or two-book analysis every pattern trivially spans "all" books, so a
-    /// fraction carries no information and would wrongly read as a corpus-wide
-    /// convention. Below this floor the rule judges on frequency + length alone;
-    /// above it, breadth participates. The census conventions all live at ≥26
-    /// books, so `8` leaves them fully covered while sparing small projects.
-    pub breadth_min_books: u32,
-    /// Per-extra-character slope of the run-length odds amplifier (ADR 0031).
-    /// Length only *amplifies* an already-anomalous score, never fabricates one:
-    /// `length_gain(len) = 1 + slope·(len − 2)`, applied as an odds multiplier,
-    /// so a doubling is neutral (`gain = 1`) and longer identical runs — for
-    /// which no punctuation convention exists past the ellipsis — climb steeply.
-    /// `0.5` puts an 8-long run at ~4× the odds of a doubling.
-    pub length_gain_slope: f32,
-    /// Minimum `evidence` a site must reach to be emitted — keeps an
-    /// established convention (e.g. `፤፤`, `۔۔`) from serialising as findings.
-    pub emit_score_min: f32,
-}
-
-impl Default for PunctuationAdjacencyConfig {
-    fn default() -> Self {
-        Self {
-            convention_rate: 0.5,
-            confidence_z: 1.96,
-            // Breadth axis (ADR 0031). `breadth_convention_rate` 0.12 lets the
-            // real doubled-danda conventions establish on dispersion alone
-            // (`।।` at 13/66 ≈ 20% and 20/66 ≈ 30%; `۔۔۔` at 11/26 ≈ 42%) while
-            // leaving `?????` mojibake (3/66 ≈ 4.5%) anomalous. Calibrated
-            // 2026-07-06 — see the calibration note.
-            breadth_convention_rate: 0.12,
-            breadth_z: 1.96,
-            breadth_min_books: 8,
-            // Length amplifier slope (ADR 0031): 0.5 ⇒ an 8-long run carries ~4×
-            // the odds of a doubling, matching the observation that nothing but
-            // the ellipsis is legitimately tripled. Calibrated 2026-07-06.
-            length_gain_slope: 0.5,
-            // 0.5 (calibration 2026-07-01, revisited 2026-07-06 under ADR 0031).
-            // Most corpora are bimodal (conventions ≈0, anomalies ≈1) so the
-            // floor value is insensitive there. The moderate-frequency Arabic
-            // convention `۔۔` (ayn_reg) that once forced the floor high now
-            // establishes on the breadth axis (9/26 books), so it is suppressed
-            // by evidence rather than by the floor — but the floor stays 0.5 so
-            // exclusive-glyph seen-twice novelties remain opt-in. See ADR 0024.
-            emit_score_min: 0.5,
-        }
-    }
-}
-
 /// Knobs for `punct.spacing-anomaly`. The rule learns, per punctuation mark, **two
 /// per-side conventions** — is the mark `attached` (letter neighbour) or `spaced`
 /// (whitespace/seam) on its left, and independently on its right — and flags
@@ -442,7 +356,7 @@ impl Default for RepeatedCharacterRunConfig {
 /// but replaces the fixed "two scripts ⇒ flag" verdict with a corpus-rate one
 /// (ADR 0047): each script signature is scored on a frequency axis (share of
 /// its **dominant** script's tokens) noisy-OR'd with a breadth axis (share of
-/// books), exactly like `punct.adjacency-anomaly`. Ships **default-on** (the
+/// books). Ships **default-on** (the
 /// deterministic predecessor was on). Scores are always finite: `judge` clamps
 /// out-of-range / NaN input here.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -673,7 +587,8 @@ pub struct NonletterUsageConfig {
     ///
     /// A flat knee was tried twice and failed twice, in opposite directions. Flat
     /// `k = 2` (the channel as an honestly binary "unseen pairing") declined 908
-    /// old adjacency findings across 263 corpora that read as plain errors — `,;`
+    /// findings of the retired `punct.adjacency-anomaly` across 263 corpora that
+    /// read as plain errors — `,;`
     /// `.;;` `,.` `.!` `,,` `,......` — because a *second* occurrence counted as
     /// proof of convention. Flat `k = 8` carries placement's volume-blindness
     /// instead: a pairing slipped a dozen times in a very large translation dies at
@@ -733,8 +648,6 @@ pub struct Config {
     pub bracket_balance: BracketBalanceConfig,
     #[cfg_attr(feature = "serde", serde(default))]
     pub casing: CasingConfig,
-    #[cfg_attr(feature = "serde", serde(default))]
-    pub punctuation_adjacency: PunctuationAdjacencyConfig,
     #[cfg_attr(feature = "serde", serde(default))]
     pub punctuation_spacing: PunctuationSpacingConfig,
     #[cfg_attr(feature = "serde", serde(default))]

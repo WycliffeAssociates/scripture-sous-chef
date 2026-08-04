@@ -176,10 +176,10 @@ words died:
 - `wo???rd` → the mid-word triple
 
 **Clean** — `what?` and `really??` (run length ≤ 2 — `??` is plausibly
-rhetoric, and `punct.adjacency-anomaly` judges it corpus-relatively); `؟؟؟`
+rhetoric, and `uni.nonletter-usage-anomaly` judges it corpus-relatively); `؟؟؟`
 and other script question marks (they are not the lossy-conversion glyph, so
 the rule is ASCII-only); a `?` mixed into a run of other marks (`?!` etc. —
-adjacency's business).
+the corpus-relative rule's business).
 
 **Why it matters** — A run of `?` is what a destroyed encoding conversion
 looks like in valid Unicode: U+FFFD is the modern decode-failure marker
@@ -192,11 +192,11 @@ deterministic hygiene, not a corpus-relative score.
 **Config** — On/off only.
 
 **Nuance & ADR ties** — This rule *owns* the phenomenon (ADR 0034):
-previously my_juds' damage was double-reported by a score-1.0 bypass in
-`punct.adjacency-anomaly`'s identical-run pass — two findings, two severities,
-two scores per site. The corpus-relative rule now **excludes the pattern from
-candidacy**: adjacency's identical-run pass skips 3+ `?` runs. `??` stays
-theirs. Two neighbouring damage classes are explicit **non-goals**, recorded
+previously my_juds' damage was double-reported by a score-1.0 bypass in the
+retired `punct.adjacency-anomaly`'s identical-run pass — two findings, two
+severities, two scores per site. That rule excluded 3+ `?` runs from candidacy;
+its replacement `uni.nonletter-usage-anomaly` keeps the same ownership order
+(deterministic hygiene wins at an exact span). Two neighbouring damage classes are explicit **non-goals**, recorded
 rather than half-detected: a *single* mid-word `?` substitution (occurs ~7×
 across all 106 corpora, and Thai's are plausibly real question marks inside
 unspaced text — unreliable exactly where it looks tempting) and

@@ -52,8 +52,6 @@ use crate::diagnostics::RuleId;
 pub(crate) enum SubstrateId {
     /// `punct.spacing-anomaly`'s per-mark per-side attachment model.
     Spacing,
-    /// `punct.adjacency-anomaly`'s per-pattern / per-lead-glyph run counts.
-    Adjacency,
     /// `lex.repeated-character-run`'s per-cluster / per-word recurrence counts.
     RepeatedRun,
     /// `uni.mixed-script-in-token`'s per-signature / per-script token counts.
@@ -95,7 +93,6 @@ impl SubstrateId {
     pub(crate) const ALL: &'static [SubstrateId] =
         &[
         SubstrateId::Spacing,
-        SubstrateId::Adjacency,
         SubstrateId::RepeatedRun,
         SubstrateId::MixedScript,
         SubstrateId::Glyph,
@@ -185,7 +182,6 @@ pub(crate) enum DrivePhase {
 #[cfg(feature = "bench-probes")]
 pub const SUBSTRATE_NAMES: [&str; SubstrateId::ALL.len()] = [
     "spacing",
-    "adjacency",
     "repeated-run",
     "mixed-script",
     "glyph",
@@ -1418,7 +1414,6 @@ impl<S: ObservationSubstrate> SubstrateCache<S> {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct ActiveSubstrates {
     pub(crate) spacing: bool,
-    pub(crate) adjacency: bool,
     pub(crate) repeated_run: bool,
     pub(crate) mixed_script: bool,
     pub(crate) glyph: bool,
@@ -1439,7 +1434,6 @@ impl ActiveSubstrates {
         let any = |rules: &[RuleId]| rules.iter().any(|&r| config.is_enabled(r));
         Self {
             spacing: any(spacing_consumers()),
-            adjacency: any(adjacency_consumers()),
             repeated_run: any(repeated_run_consumers()),
             mixed_script: any(mixed_script_consumers()),
             glyph: any(glyph_consumers()),
@@ -1458,7 +1452,6 @@ impl ActiveSubstrates {
     pub(crate) fn is_active(&self, id: SubstrateId) -> bool {
         match id {
             SubstrateId::Spacing => self.spacing,
-            SubstrateId::Adjacency => self.adjacency,
             SubstrateId::RepeatedRun => self.repeated_run,
             SubstrateId::MixedScript => self.mixed_script,
             SubstrateId::Glyph => self.glyph,
@@ -1479,11 +1472,6 @@ impl ActiveSubstrates {
 /// added here and the completeness tests keep the registry honest.
 pub(crate) fn spacing_consumers() -> &'static [RuleId] {
     &[RuleId::PunctuationSpacingAnomaly]
-}
-
-/// The closed registry: the adjacency substrate's sole consumer.
-pub(crate) fn adjacency_consumers() -> &'static [RuleId] {
-    &[RuleId::PunctuationAdjacencyAnomaly]
 }
 
 /// The closed registry: the repeated-run substrate's sole consumer.
@@ -1651,7 +1639,6 @@ pub(crate) fn input_of(id: SubstrateId) -> SubstrateInput {
             SubstrateInput::SameSlugSameChapterReference
         }
         SubstrateId::Spacing
-        | SubstrateId::Adjacency
         | SubstrateId::RepeatedRun
         | SubstrateId::MixedScript
         | SubstrateId::Glyph
@@ -1670,7 +1657,6 @@ pub(crate) fn input_of(id: SubstrateId) -> SubstrateInput {
 pub(crate) fn consumers_of(id: SubstrateId) -> &'static [RuleId] {
     match id {
         SubstrateId::Spacing => spacing_consumers(),
-        SubstrateId::Adjacency => adjacency_consumers(),
         SubstrateId::RepeatedRun => repeated_run_consumers(),
         SubstrateId::MixedScript => mixed_script_consumers(),
         SubstrateId::Glyph => glyph_consumers(),
@@ -1696,10 +1682,6 @@ mod tests {
         assert_eq!(
             <crate::signals::punctuation::SpacingSubstrate as ObservationSubstrate>::ID,
             SubstrateId::Spacing
-        );
-        assert_eq!(
-            <crate::signals::punctuation::AdjacencySubstrate as ObservationSubstrate>::ID,
-            SubstrateId::Adjacency
         );
         assert_eq!(
             <crate::signals::lexical::RepeatedRunSubstrate as ObservationSubstrate>::ID,
@@ -1760,7 +1742,6 @@ mod tests {
             // id is handled; assert every field reads through for its own id.
             let all_on = ActiveSubstrates {
                 spacing: true,
-                adjacency: true,
                 repeated_run: true,
                 mixed_script: true,
                 glyph: true,
@@ -1792,7 +1773,6 @@ mod tests {
             );
         }
         check::<crate::signals::punctuation::SpacingSubstrate>();
-        check::<crate::signals::punctuation::AdjacencySubstrate>();
         check::<crate::signals::lexical::RepeatedRunSubstrate>();
         check::<crate::signals::script_mixing::MixedScriptSubstrate>();
         check::<crate::signals::rare_glyph::GlyphSubstrate>();

@@ -124,23 +124,6 @@ pub struct ReviewPolicyInput {
     pub adjustments: Option<BTreeMap<RuleId, i16>>,
 }
 
-/// Partial overrides for `punct.adjacency-anomaly`'s knobs. Omitted fields
-/// keep core's defaults (`convention_rate` 0.5, `confidence_z` 1.96,
-/// `emit_score_min` 0.5). See ADR 0024.
-#[derive(Deserialize, Tsify, Default)]
-#[tsify(from_wasm_abi)]
-pub struct PunctuationAdjacencyOverrides {
-    #[serde(default)]
-    #[tsify(optional)]
-    pub convention_rate: Option<f32>,
-    #[serde(default)]
-    #[tsify(optional)]
-    pub confidence_z: Option<f32>,
-    #[serde(default)]
-    #[tsify(optional)]
-    pub emit_score_min: Option<f32>,
-}
-
 /// Partial overrides for `punct.spacing-anomaly`'s knobs. Omitted fields keep
 /// core's defaults (ADR 0029, 0050): `emit_score_min` 0.5 (the emission floor
 /// on the two-factor score), `confidence_z` 1.96 (an advanced calibration
@@ -316,9 +299,6 @@ pub struct SousConfig {
     pub casing: Option<CasingOverrides>,
     #[serde(default)]
     #[tsify(optional)]
-    pub punctuation_adjacency: Option<PunctuationAdjacencyOverrides>,
-    #[serde(default)]
-    #[tsify(optional)]
     pub punctuation_spacing: Option<PunctuationSpacingOverrides>,
     #[serde(default)]
     #[tsify(optional)]
@@ -432,17 +412,6 @@ fn build_config(
             }
             if let Some(v) = cas.trust_gate {
                 cfg.casing.sentence_initial.trust_gate = v;
-            }
-        }
-        if let Some(p) = c.punctuation_adjacency {
-            if let Some(v) = p.convention_rate {
-                cfg.punctuation_adjacency.convention_rate = v;
-            }
-            if let Some(v) = p.confidence_z {
-                cfg.punctuation_adjacency.confidence_z = v;
-            }
-            if let Some(v) = p.emit_score_min {
-                cfg.punctuation_adjacency.emit_score_min = v;
             }
         }
         if let Some(p) = c.punctuation_spacing {
@@ -1129,11 +1098,6 @@ mod tests {
                 confidence_z: Some(1.5),
                 trust_gate: Some(0.75),
             }),
-            punctuation_adjacency: Some(PunctuationAdjacencyOverrides {
-                convention_rate: Some(0.4),
-                confidence_z: Some(2.1),
-                emit_score_min: Some(0.7),
-            }),
             punctuation_spacing: Some(PunctuationSpacingOverrides {
                 emit_score_min: Some(0.6),
                 confidence_z: Some(2.2),
@@ -1198,9 +1162,6 @@ mod tests {
         assert_eq!(cfg.casing.sentence_initial.evidence.confidence_z, 1.5);
         assert_eq!(cfg.casing.inconsistent_word.evidence.confidence_z, 1.5);
         assert_eq!(cfg.casing.sentence_initial.trust_gate, 0.75);
-        assert_eq!(cfg.punctuation_adjacency.convention_rate, 0.4);
-        assert_eq!(cfg.punctuation_adjacency.confidence_z, 2.1);
-        assert_eq!(cfg.punctuation_adjacency.emit_score_min, 0.7);
         assert_eq!(cfg.punctuation_spacing.emit_score_min, 0.6);
         assert_eq!(cfg.punctuation_spacing.confidence_z, 2.2);
         assert_eq!(cfg.punctuation_spacing.minority_recurrence_k, 40.0);
@@ -1296,8 +1257,8 @@ mod tests {
         let cfg = build_config(None).unwrap();
         let d = Config::v1_defaults();
         assert_eq!(
-            cfg.punctuation_adjacency.emit_score_min,
-            d.punctuation_adjacency.emit_score_min
+            cfg.punctuation_spacing.emit_score_min,
+            d.punctuation_spacing.emit_score_min
         );
         assert_eq!(cfg.repeated_character_run, d.repeated_character_run);
         assert!(cfg.is_enabled(RuleId::RedundantZeroWidthSpace));

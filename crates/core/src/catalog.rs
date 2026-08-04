@@ -177,13 +177,6 @@ pub fn card(id: RuleId) -> RuleCard {
             None,
             Deterministic,
         ),
-        RuleId::PunctuationAdjacencyAnomaly => (
-            "Unusual punctuation combination",
-            "Punctuation doubled or combined in a way this translation almost never writes — a one-off \u{201C}?.\u{201D} or \u{201C},,\u{201D}.",
-            "Your own text defines what's normal: patterns it uses throughout (doubled marks, local conventions) are respected; the flagged ones stand alone against that habit.",
-            None,
-            CorpusRelative,
-        ),
         RuleId::DuplicateWord => (
             "Doubled word",
             "The same word twice in a row with only space between (\u{201C}the the\u{201D}).",
@@ -476,19 +469,6 @@ pub fn message(id: RuleId, args: Option<&FindingArgs>) -> String {
             }
             _ => "An opening or closing bracket with no partner.".into(),
         },
-        RuleId::PunctuationAdjacencyAnomaly => match args {
-            Some(FindingArgs::AdjacencyEvidence {
-                pattern,
-                k,
-                lead_n,
-                books,
-                corpus,
-            }) => format!(
-                "The punctuation ‘{pattern}’ is unusual here — it appears {k} of {lead_n} times, \
-                 in {books} of {corpus} books."
-            ),
-            _ => "Punctuation combined in a way this translation almost never uses.".into(),
-        },
         RuleId::MixedScriptInToken => match args {
             Some(FindingArgs::ScriptMixEvidence { books, corpus, .. }) => format!(
                 "This word mixes writing systems — a mix this translation uses in only \
@@ -650,7 +630,6 @@ mod tests {
         assert_eq!(
             scored,
             vec![
-                RuleId::PunctuationAdjacencyAnomaly,
                 RuleId::MixedScriptInToken,
                 RuleId::RepeatedCharacterRun,
                 RuleId::BracketBalance,

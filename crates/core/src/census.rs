@@ -59,7 +59,7 @@ pub enum SectionId {
     /// Letters: every letter-class scalar observed (the glyph census).
     #[cfg_attr(feature = "serde", serde(rename = "letters.glyphs"))]
     LetterGlyphs,
-    /// Punctuation: exact adjacency runs — including the rule's known-safe set.
+    /// Punctuation: every exact adjacent-punctuation run, none filtered.
     #[cfg_attr(feature = "serde", serde(rename = "punct.runs"))]
     PunctRuns,
     /// Punctuation: per-mark attached/spaced profile.
@@ -311,7 +311,7 @@ impl BookCensusAcc {
             }
         }
 
-        // ── Punct runs: the rule's extraction, safe set included.
+        // ── Punct runs: every adjacent-punctuation run, none filtered.
         count_lead_opportunities(v.tape, &mut self.lead_opportunities);
         for span in adjacency_runs_all(v.tape) {
             let run = span.slice(v.text);
@@ -880,10 +880,10 @@ mod tests {
         assert_eq!(glyphs.lane_total, expected.values().sum::<u64>());
     }
 
-    /// Punct-run counts equal the adjacency rule's candidate counts *plus*
-    /// the known-safe set the rule subtracts.
+    /// Punct-run counts cover every adjacent-punctuation run, including the set
+    /// the retired `punct.adjacency-anomaly` exempted from its own candidates.
     #[test]
-    fn punct_runs_match_adjacency_candidates_plus_safe_set() {
+    fn punct_runs_count_every_run_including_the_formerly_exempt_set() {
         let corpus = book("GEN", &["wait,, what... yes?!", "end.. next -- more"]);
         let inv = run(&corpus);
         let runs = section(&inv, SectionId::PunctRuns);
@@ -895,8 +895,8 @@ mod tests {
                 _ => panic!(),
             })
             .collect();
-        // The rule's candidates (`,,`, `..`) plus the safe set (`...`, `--`,
-        // `?!`) — all counted here, none judged.
+        // The formerly-judged runs (`,,`, `..`) plus the formerly-exempt set
+        // (`...`, `--`, `?!`) — all counted here, none judged.
         let expected: BTreeMap<String, u64> = [
             (",,".to_string(), 1),
             ("...".to_string(), 1),

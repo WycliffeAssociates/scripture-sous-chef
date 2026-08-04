@@ -116,8 +116,6 @@ pub(crate) struct SubstrateSection {
     /// that moved neither rebuilds nothing. It is a memo, not state: dropping it
     /// costs one rebuild and can never change output.
     pub(crate) casing_model: Option<casing::CasingModel>,
-    /// `punct.adjacency-anomaly`'s substrate (Phase E).
-    pub(crate) adjacency: SubstrateCache<punctuation::AdjacencySubstrate>,
     /// `lex.repeated-character-run`'s substrate (Phase E).
     pub(crate) repeated_run: SubstrateCache<lexical::RepeatedRunSubstrate>,
     /// `uni.mixed-script-in-token`'s substrate (Phase E).
@@ -167,7 +165,6 @@ impl SubstrateSection {
     pub(crate) fn note_map_route(&mut self, route: crate::rule::MapRoute) {
         let label = route.label();
         self.spacing.map_route = label;
-        self.adjacency.map_route = label;
         self.repeated_run.map_route = label;
         self.mixed_script.map_route = label;
         self.glyph.map_route = label;
@@ -184,7 +181,6 @@ impl SubstrateSection {
     fn new() -> Self {
         SubstrateSection {
             spacing: SubstrateCache::new(),
-            adjacency: SubstrateCache::new(),
             repeated_run: SubstrateCache::new(),
             mixed_script: SubstrateCache::new(),
             glyph: SubstrateCache::new(),
@@ -205,7 +201,6 @@ impl SubstrateSection {
     /// cached chapter products and corpus aggregate.
     fn clear(&mut self) {
         self.spacing.clear();
-        self.adjacency.clear();
         self.repeated_run.clear();
         self.mixed_script.clear();
         self.glyph.clear();
@@ -227,7 +222,6 @@ impl SubstrateSection {
     /// removed book cannot keep contributing to any corpus aggregate.
     fn remove_book(&mut self, slug: &str) {
         self.spacing.remove_book(slug);
-        self.adjacency.remove_book(slug);
         self.repeated_run.remove_book(slug);
         self.mixed_script.remove_book(slug);
         self.glyph.remove_book(slug);
@@ -253,7 +247,6 @@ impl SubstrateSection {
         use crate::substrate::SubstrateId as S;
         let pending = match id {
             S::Spacing => &mut self.spacing.pending,
-            S::Adjacency => &mut self.adjacency.pending,
             S::RepeatedRun => &mut self.repeated_run.pending,
             S::MixedScript => &mut self.mixed_script.pending,
             S::Glyph => &mut self.glyph.pending,

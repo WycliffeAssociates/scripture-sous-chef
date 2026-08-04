@@ -2,12 +2,11 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use ssc_core::config::{
-    BracketBalanceConfig, CasingConfig, MixedScriptConfig,
-    PunctuationAdjacencyConfig, PunctuationSpacingConfig, RepeatedCharacterRunConfig,
+    BracketBalanceConfig, CasingConfig, MixedScriptConfig, PunctuationSpacingConfig,
+    RepeatedCharacterRunConfig,
 };
 use ssc_core::signals::bracket_balance::bracket_findings;
 use ssc_core::signals::lexical::repeated_run_findings;
-use ssc_core::signals::punctuation::adjacency_findings;
 use ssc_core::{
     BracketMeasure, Config, Corpus, Finding, FindingArgs, RuleId, analyze, analyze_with_config,
 };
@@ -111,7 +110,6 @@ pub(crate) fn fleet(dir: &Path, out: &Path) {
     cfg.bracket_balance.emit_score_min = 0.0;
     cfg.casing.sentence_initial.evidence.emit_score_min = 0.0;
     cfg.casing.inconsistent_word.evidence.emit_score_min = 0.0;
-    cfg.punctuation_adjacency.emit_score_min = 0.0;
     cfg.punctuation_spacing.emit_score_min = 0.0;
     cfg.repeated_character_run.emit_score_min = 0.0;
     cfg.mixed_script.emit_score_min = 0.0;
@@ -122,9 +120,6 @@ pub(crate) fn fleet(dir: &Path, out: &Path) {
             RuleId::BracketBalance => Some(BracketBalanceConfig::default().emit_score_min),
             RuleId::SentenceInitialLowercase => {
                 Some(CasingConfig::default().sentence_initial.evidence.emit_score_min)
-            }
-            RuleId::PunctuationAdjacencyAnomaly => {
-                Some(PunctuationAdjacencyConfig::default().emit_score_min)
             }
             RuleId::PunctuationSpacingAnomaly => {
                 Some(PunctuationSpacingConfig::default().emit_score_min)
@@ -690,28 +685,6 @@ pub(crate) fn bracket_calib(dir: &Path) {
         let inv: String = inv.chars().take(160).collect();
         println!("      inv: {inv}");
     }
-}
-
-/// Punctuation adjacency calibration (ADR 0024) at floor 0.
-pub(crate) fn punct_calib(dir: &Path) {
-    let target = load_corpus(dir);
-    eprintln!("{} verses", target.len());
-    let cfg = PunctuationAdjacencyConfig {
-        emit_score_min: 0.0,
-        ..Default::default()
-    };
-    let t0 = std::time::Instant::now();
-    let findings = adjacency_findings(&target, &cfg);
-    eprintln!("punct map+reduce+judge: {:?}", t0.elapsed());
-    report_scored("punct.adjacency-anomaly", &target, &findings);
-
-    // How many the shipped default config surfaces (default-on rule).
-    let shipped = analyze_with_config(&target, None, &Config::v1_defaults());
-    let shipped_n = shipped
-        .iter()
-        .filter(|f| f.code == RuleId::PunctuationAdjacencyAnomaly)
-        .count();
-    println!("\nshipped default surfaces: {shipped_n}");
 }
 
 /// Punctuation-spacing knee/floor sweep + regression over the vref fleet

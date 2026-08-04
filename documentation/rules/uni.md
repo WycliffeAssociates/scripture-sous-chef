@@ -87,8 +87,9 @@ categorical hits corpus-wide, the overwhelming majority pervasive conventions).
 So this rule learns the corpus's own habits and flags only the rare, out-of-place
 mixes.
 
-**Config** — The verdict is corpus-relative, scored like `punct.adjacency-anomaly`
-(ADR 0031): each **script signature** (`Latin+Cyrillic`) is judged on a
+**Config** — The verdict is corpus-relative (frequency × breadth noisy-OR, the
+shape the retired `punct.adjacency-anomaly` also used; ADR 0031): each
+**script signature** (`Latin+Cyrillic`) is judged on a
 **frequency** axis (its share of the *dominant* script's tokens) noisy-OR'd with
 a **breadth** axis (its share of books). Either axis establishing a convention
 silences the signature. `emit_score_min` is the sensitivity dial; the other

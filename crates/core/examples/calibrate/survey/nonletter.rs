@@ -1355,27 +1355,14 @@ impl Disposition {
     }
 }
 
-/// The three retired rules, in the order the ledger reports them.
-const OLD_RULES: [(&str, RuleId); 2] = [
-    (
-        "punct.adjacency-anomaly",
-        RuleId::PunctuationAdjacencyAnomaly,
-    ),
-    ("punct.spacing-anomaly", RuleId::PunctuationSpacingAnomaly),
-];
+/// The retired rules still live, in the order the ledger reports them.
+const OLD_RULES: [(&str, RuleId); 1] =
+    [("punct.spacing-anomaly", RuleId::PunctuationSpacingAnomaly)];
 
-/// The three retired rules' findings for one corpus, at shipped defaults.
+/// Those rules' findings for one corpus, at shipped defaults.
 fn old_findings(corpus: &Corpus) -> Vec<Finding> {
-    use ssc_core::config::{PunctuationAdjacencyConfig, PunctuationSpacingConfig};
-    let mut out = ssc_core::signals::punctuation::adjacency_findings(
-        corpus,
-        &PunctuationAdjacencyConfig::default(),
-    );
-    out.extend(ssc_core::signals::punctuation::spacing_findings(
-        corpus,
-        &PunctuationSpacingConfig::default(),
-    ));
-    out
+    use ssc_core::config::PunctuationSpacingConfig;
+    ssc_core::signals::punctuation::spacing_findings(corpus, &PunctuationSpacingConfig::default())
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -1531,9 +1518,6 @@ struct FleetRow {
     basis_occ: [u64; 3],
     basis_unpooled: [u64; 3],
     basis_a: [u64; 3],
-    /// The two RETIRED DEFAULT-ON rules' finding counts for this corpus — the
-    /// baseline decision 8's default-on check compares against.
-    old_default_on: u64,
     /// Per-variant hit counts, `[at 0.50, at 0.90]` per sweep row.
     rarity_sweep: Vec<[u64; 2]>,
     placement_sweep: Vec<[u64; 2]>,
@@ -1643,7 +1627,6 @@ fn fleet_row(id: String, corpus: &Corpus, kn: Knobs, with_overlap: bool) -> Flee
         basis_occ: [0; 3],
         basis_unpooled: [0; 3],
         basis_a: [0; 3],
-        old_default_on: 0,
         rarity_sweep: vec![[0; 2]; RARITY_SWEEP.len()],
         placement_sweep: vec![[0; 2]; PLACEMENT_SWEEP.len()],
         pair_sweep: vec![[0; 2]; PAIR_SWEEP.len()],
@@ -1805,12 +1788,6 @@ fn fleet_row(id: String, corpus: &Corpus, kn: Knobs, with_overlap: bool) -> Flee
     if with_overlap {
         let old = old_findings(corpus);
         row.old_total = old.len() as u64;
-        row.old_default_on = old
-            .iter()
-            .filter(|f| {
-                matches!(f.code, RuleId::PunctuationAdjacencyAnomaly)
-            })
-            .count() as u64;
         for f in &old {
             let vi = f.key_idx.get() as usize;
             let (fs, fe) = (f.range.start, f.range.end);
@@ -2068,34 +2045,6 @@ pub(crate) fn nonletter_fleet(dir: &Path, overlap: bool) {
             c50.iter().sum::<u64>(),
         );
     }
-
-    // ── Decision 8: the default-on volume check ───────────────────────────
-    println!(
-        "\n## decision 8 — default-on volume check\n(the two RETIRED default-on rules' \
-         per-corpus counts vs this rule at the adjudicated depth-50 floor 0.75)"
-    );
-    let old_on: Vec<u64> = eligible.iter().map(|r| r.old_default_on).collect();
-    let new_50: Vec<u64> = eligible.iter().map(|r| r.basis_d[1]).collect();
-    println!("series\tp50\tp90\tp99\tfleet_total");
-    println!(
-        "retired default-on pair (adjacency + punct-only)\t{}\t{}\t{}\t{}",
-        pct_u(&old_on, 0.50),
-        pct_u(&old_on, 0.90),
-        pct_u(&old_on, 0.99),
-        old_on.iter().sum::<u64>()
-    );
-    println!(
-        "uni.nonletter-usage-anomaly at depth 50\t{}\t{}\t{}\t{}",
-        pct_u(&new_50, 0.50),
-        pct_u(&new_50, 0.90),
-        pct_u(&new_50, 0.99),
-        new_50.iter().sum::<u64>()
-    );
-    let (a, b) = (pct_u(&old_on, 0.50), pct_u(&new_50, 0.50));
-    println!(
-        "p50 ratio new/retired = {:.2} (mediator's flag threshold: > 2.00)",
-        b as f64 / a.max(1) as f64
-    );
 
     // ── Knob sweeps, per channel, independently ───────────────────────────
     let sweep_table = |name: &str,

@@ -12,7 +12,6 @@ export type WireRuleId =
   | "prop.length-ratio"
   | "struct.source-marker-leftover"
   | "struct.merge-conflict-marker"
-  | "punct.adjacency-anomaly"
   | "lex.duplicate-word"
   | "uni.combining-mark-without-base"
   | "uni.redundant-zero-width-space"

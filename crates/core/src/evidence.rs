@@ -13,11 +13,9 @@
 //! - [`dominance`] — *"how established is the majority form?"* The Wilson
 //!   lower bound of the majority share, for rules that learn a two-sided
 //!   convention and flag the minority form (ADR 0029).
-//! - [`from_strengths`] + [`odds_amplify`] — composition. Anomaly evidence is
-//!   the noisy-OR residual `∏(1 − sᵢ)` over independent convention axes
-//!   (either axis fully establishing a convention zeroes the evidence);
-//!   magnitude-style modifiers then multiply the *odds*, so they can push an
-//!   anomaly toward 1 but never resurrect a convention (ADR 0031).
+//! - [`from_strengths`] — composition. Anomaly evidence is
+//!   the noisy-OR residual over independent convention axes: either axis fully
+//!   establishing a convention zeroes the evidence.
 //!
 //! Everything here is finite for all inputs once configs pass through the
 //! `clamp_*` sanitisers — the single ingestion path all rules share. This is
@@ -59,19 +57,6 @@ pub(crate) fn from_strengths(strengths: &[f64]) -> f64 {
         .iter()
         .fold(1.0_f64, |acc, s| acc * (1.0 - s.clamp(0.0, 1.0)))
         .clamp(0.0, 1.0)
-}
-
-/// Apply an odds multiplier `gain` (≥ 1) to a probability `e ∈ [0, 1]`,
-/// returning a probability. Multiplies the odds `e/(1−e)` by `gain` and maps
-/// back: `e = 0 → 0`, `e = 1 → 1`, monotone in both arguments. This is how a
-/// magnitude signal (e.g. run length) enters a score — it can push anomalous
-/// base evidence toward 1 but can never resurrect a fully-established
-/// convention (`base = 0 → 0`), which a plain multiply-and-clamp would not
-/// guarantee (ADR 0031).
-pub(crate) fn odds_amplify(e: f64, gain: f64) -> f64 {
-    let g = gain.max(1.0);
-    let denom = 1.0 - e + g * e; // = 1 + (g−1)·e ≥ 1 for e ∈ [0,1], g ≥ 1
-    (g * e / denom).clamp(0.0, 1.0)
 }
 
 /// Wilson score-interval lower bound for `k` successes in `n` trials at
@@ -194,26 +179,6 @@ mod tests {
         // Out-of-range inputs are clamped, never amplify.
         assert!((from_strengths(&[-1.0]) - 1.0).abs() < 1e-12);
         assert_eq!(from_strengths(&[2.0]), 0.0);
-    }
-
-    #[test]
-    fn odds_amplify_invariants() {
-        for &g in &[1.0, 1.5, 2.0, 4.0] {
-            assert_eq!(odds_amplify(0.0, g), 0.0);
-            assert!((odds_amplify(1.0, g) - 1.0).abs() < 1e-12);
-        }
-        for &e in &[0.1, 0.5, 0.9] {
-            assert!(
-                odds_amplify(e, 2.0) > odds_amplify(e, 1.0),
-                "gain raises e={e}"
-            );
-            for &g in &[1.0, 2.0, 8.0] {
-                let r = odds_amplify(e, g);
-                assert!((0.0..=1.0).contains(&r) && r.is_finite());
-            }
-        }
-        // gain < 1 is treated as 1 (no de-amplification path).
-        assert!((odds_amplify(0.4, 0.2) - 0.4).abs() < 1e-12);
     }
 
     #[test]

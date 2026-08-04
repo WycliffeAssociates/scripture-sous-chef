@@ -1,9 +1,12 @@
 # `punct.*` — Punctuation integrity
 
 The `punct.` namespace spans two source files: `punctuation.rs`
-(`adjacency-anomaly` and `spacing-anomaly` — both corpus-relative substrates)
-and `bracket_balance.rs` (`bracket-balance`, the corpus-relative book-stream
-matcher).
+(`spacing-anomaly`, a corpus-relative substrate) and `bracket_balance.rs`
+(`bracket-balance`, the corpus-relative book-stream matcher).
+
+`punct.adjacency-anomaly` was **retired** and absorbed into
+`uni.nonletter-usage-anomaly`. Its run extractor survives with no rule of its
+own, read by the census's `punct.runs` lane.
 
 ---
 
@@ -87,80 +90,6 @@ quote-balance rule must declare its own boundary state and substrate contract.
 
 ---
 
-## `punct.adjacency-anomaly` — corpus-relative repeated / mixed punctuation
-
-> **Severity** Info · **Default** on · **Scope** substrate-backed (aggregate evidence) · **Knobs** `convention_rate`, `confidence_z`, `breadth_convention_rate`, `breadth_z`, `breadth_min_books`, `length_gain_slope`, `emit_score_min` · **Source** `punctuation.rs` · **ADR** 0024, 0031
-
-**Flags** — A repeated or mixed punctuation run that is **neither frequent nor
-widespread** in the corpus, amplified by run length, with a continuous `score`:
-- `end., next` in an English corpus of clean periods → high score
-- `wait,, what`, `what?!? yes` where the corpus doesn't otherwise double/mix
-- non-ASCII mixed wrecks like ur-deva `?।` and `,।` — visible since the
-  mixed-run separator class widened to GC `Po` (ADR 0033)
-
-**Clean (learned silent)** — `፤፤` (Ethiopic) or `۔۔` (Arabic) in a corpus that
-doubles them corpus-wide (established by **frequency**); a modest-frequency
-`۔۔۔` ellipsis spread across many books (established by **breadth**); a `::`
-that is a corpus's only `:` run form even in few books (frequency). Also the
-known-safe `...` / `--` / `?!` / `!?` set and quote runs (`''`, `""`), which
-never enter the candidate domain, and identical runs of 3+ `?` — encoding
-damage owned by `hyg.replacement-run`, excluded from candidacy so one
-phenomenon gets one finding (ADR 0034; `??` stays this rule's to judge).
-
-**Why it matters** — A doubled or mixed cluster is *sometimes* a typo and
-*sometimes* an orthographic convention; only the corpus can say which. The rule
-keeps the prior conservative candidate extraction but replaces the fixed
-Latin-centric allow-list verdict with a corpus-rate one: each exact pattern's
-project count `k` is judged against `N_start(a)`, the number of positions where
-its lead glyph `a` begins a maximal same-glyph run (a single clean period, a
-`..`, and the `.` of a `.,` each count once toward `.`). A pattern that is a
-meaningful share of its lead glyph's opportunities is a convention and goes
-silent; a rare one surfaces at Info.
-
-**Verdict model (ADR 0031)** — Frequency and breadth are **independent** evidence
-of a convention, combined by noisy-OR; run length then amplifies the residual as
-an odds multiplier:
-```
-base  = (1 − freq_strength) · (1 − breadth_strength)
-score = odds_amplify(base, 1 + length_gain_slope·(len − 2))
-```
-`freq_strength = strength(k, N_start(a), …)` (share of lead-glyph run-starts);
-`breadth_strength = strength(pattern_books, corpus_books, …)` (share of books,
-gated off below `breadth_min_books`). Either axis fully establishing a convention
-zeroes `base`, so length can raise an anomaly toward 1 but never resurrect a
-convention.
-
-**Config** — `convention_rate` / `confidence_z` (frequency axis; the `z` is
-load-bearing where a lead glyph is exclusive to its pattern), `breadth_convention_rate`
-/ `breadth_z` (breadth axis, same Wilson primitive), `breadth_min_books`
-(dispersion is meaningless below a handful of books), `length_gain_slope` (odds
-per extra character; `0.5` ⇒ 8-long ≈ 4× a doubling), `emit_score_min` (surfacing
-floor). Calibrated 2026-07-06 — see ADR 0031.
-
-**Nuance & ADR ties** — Exact run strings are distinct patterns (`??` ≠ `???` ≠
-`????`); one long run is one event, and its length feeds the amplifier. The
-mixed-run pass extends runs through the **separator class** — GC `Po`
-(Other_Punctuation) minus quotes (ADR 0033), replacing the literal ASCII
-`. , ; : ? !` list that had made a `?।` double-punctuation wreck invisible.
-Recurring non-ASCII adjacencies suppress through the same frequency/breadth
-axes as their ASCII peers (the widening added +480 findings across 106
-corpora, e.g. ur-deva `?।` ×30 and hi `,*`/`;*` footnote asterisks — see the
-2026-07-06 calibration report). The `...`/`--`/`?!`/`!?` exclusions stay
-hardcoded in v1: a stray `...` in a never-otherwise-ellipsis corpus is
-unflaggable (it never enters stats). Severity is **Info** with a score, not a
-Warning verdict. See ADR 0024 (frequency verdict), ADR 0031 (breadth +
-length), ADR 0033 (separator class), and ADR 0034 (`?`-run exclusion).
-
-**Open issues / future work** — Broadening the candidate domain further
-(quotes, brackets, cross-glyph families beyond the `Po` separators) and
-relaxing the hardcoded exclusions are deferred, calibration-backed changes.
-hi-style footnote-asterisk adjacency (`,*`) rides the sparse-convention
-margin; a project whose apparatus leans on it disables per-project or raises
-the floor. Corpus-wide systematic corruption (spread across *all* books)
-still reads as broad ⇒ suppressed — an ingest-level concern, out of per-verse
-scope.
-
----
 ## `punct.spacing-anomaly` — pooled class-conditioned spacing
 
 > **Severity** Info · **Default** off · **Scope** substrate-backed (aggregate evidence) · **Knobs** `emit_score_min` (default 0.5), `confidence_z` (default 1.96), `minority_recurrence_k` (default 32), `minority_rate_per_10k` (default 40) · **Review Control** mapped · **Source** `punctuation.rs` · **ADR** 0029, 0033, 0050, 0054 (2nd amendment)

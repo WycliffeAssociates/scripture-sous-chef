@@ -65,11 +65,12 @@ pub const fn wire_def(rule: RuleId) -> WireDef {
         RuleId::ProjectLengthRatio => (7, CountPair),
         RuleId::SourceMarkerLeftover => (8, None),
         RuleId::MergeConflictMarker => (9, None),
-        RuleId::PunctuationAdjacencyAnomaly => (10, CountPair),
-        RuleId::DuplicateWord => (11, None),
-        // 12 is RETIRED (`lex.punct-only-token`, absorbed by
+        // 10 is RETIRED (`punct.adjacency-anomaly`, absorbed by
         // `uni.nonletter-usage-anomaly`). Never reused — reuse would be a
         // versioned layout change (§A.1).
+        RuleId::DuplicateWord => (11, None),
+        // 12 is RETIRED (`lex.punct-only-token`, absorbed by
+        // `uni.nonletter-usage-anomaly`). Never reused, same reason.
         RuleId::CombiningMarkWithoutBase => (13, None),
         RuleId::RedundantZeroWidthSpace => (14, None),
         RuleId::MixedScriptInToken => (15, CountPair),
@@ -325,7 +326,6 @@ mod tests {
             ),
             (8, "struct.source-marker-leftover", "none", "target-only"),
             (9, "struct.merge-conflict-marker", "none", "target-only"),
-            (10, "punct.adjacency-anomaly", "count-pair", "target-only"),
             (11, "lex.duplicate-word", "none", "target-only"),
             (13, "uni.combining-mark-without-base", "none", "target-only"),
             (14, "uni.redundant-zero-width-space", "none", "target-only"),

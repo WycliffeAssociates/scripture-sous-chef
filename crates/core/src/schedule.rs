@@ -209,7 +209,6 @@ pub(crate) struct ChapterMapWork<'a> {
 pub(crate) struct MappedChapterBundle {
     pub(crate) direct: Option<Vec<crate::cache::CachedPerVerseFinding>>,
     pub(crate) spacing: Option<crate::signals::punctuation::SpacingChapterObs>,
-    pub(crate) adjacency: Option<crate::signals::punctuation::AdjacencyChapterObs>,
     pub(crate) normalization: Option<crate::signals::mixed_normalization::NormChapterObs>,
     pub(crate) bracket: Option<crate::signals::bracket_balance::BracketChapterObs>,
     pub(crate) repeated_run: Option<crate::signals::lexical::RepeatChapterObs>,
@@ -233,7 +232,6 @@ impl MappedChapterBundle {
         let mut m = SubstrateMask::EMPTY;
         for (id, present) in [
             (SubstrateId::Spacing, self.spacing.is_some()),
-            (SubstrateId::Adjacency, self.adjacency.is_some()),
             (SubstrateId::RepeatedRun, self.repeated_run.is_some()),
             (SubstrateId::MixedScript, self.mixed_script.is_some()),
             (SubstrateId::Glyph, self.glyph.is_some()),
@@ -493,7 +491,7 @@ impl<'a> Schedule<'a> {
 
 /// Route one substrate's mapped observations from the ordered bundles into its
 /// plan's layout-shaped slots. `pick` is the bundle's typed slot for that
-/// substrate — `|b| b.adjacency.take()` — so the pairing is a compile-time field
+/// substrate — `|b| b.spacing.take()` — so the pairing is a compile-time field
 /// access, never a lookup.
 pub(crate) fn scatter<S: ObservationSubstrate>(
     work: &[ChapterMapWork<'_>],
@@ -566,11 +564,6 @@ fn map_one_chapter(w: &ChapterMapWork<'_>, ctx: &MapContext<'_>) -> MappedChapte
     if w.participants.contains(SubstrateId::Spacing) {
         bundle.spacing = Some(map_participant::<
             crate::signals::punctuation::SpacingSubstrate,
-        >(w.token, w.texts, &prep, w.paired, &(), &()));
-    }
-    if w.participants.contains(SubstrateId::Adjacency) {
-        bundle.adjacency = Some(map_participant::<
-            crate::signals::punctuation::AdjacencySubstrate,
         >(w.token, w.texts, &prep, w.paired, &(), &()));
     }
     if w.participants.contains(SubstrateId::Bracket) {
@@ -786,7 +779,7 @@ mod tests {
     #[test]
     fn a_target_only_substrate_cannot_see_the_chapters_pairing() {
         use crate::signals::{
-            proportionality::ProportionalitySubstrate, punctuation::AdjacencySubstrate,
+            bracket_balance::BracketSubstrate, proportionality::ProportionalitySubstrate,
         };
         let texts: Vec<String> = vec!["a target verse".to_string()];
         let keys: Vec<String> = vec!["GEN 1:1".to_string()];
@@ -799,7 +792,7 @@ mod tests {
         let prep = ChapterPrep::build(&texts, PrepNeeds::TAPE);
 
         // A target-only substrate: the pairing is withheld.
-        let view = ChapterView::scheduled::<AdjacencySubstrate>("1", &texts, &prep, paired);
+        let view = ChapterView::scheduled::<BracketSubstrate>("1", &texts, &prep, paired);
         assert!(
             view.paired_view().is_none(),
             "a TargetOnly substrate was handed the chapter's reference pairing"
@@ -818,15 +811,14 @@ mod tests {
     fn needs_of(id: SubstrateId) -> PrepNeeds {
         use crate::signals::{
             bracket_balance::BracketSubstrate, casing::CasingSubstrate,
-            lexical::DuplicateWordSubstrate, lexical::RepeatedRunSubstrate, mixed_case::MixedCaseSubstrate,
-            mixed_normalization::NormalizationSubstrate, nonletter_usage::NonletterUsageSubstrate,
-            proportionality::ProportionalitySubstrate, punctuation::AdjacencySubstrate,
+            lexical::DuplicateWordSubstrate, lexical::RepeatedRunSubstrate,
+            mixed_case::MixedCaseSubstrate, mixed_normalization::NormalizationSubstrate,
+            nonletter_usage::NonletterUsageSubstrate, proportionality::ProportionalitySubstrate,
             punctuation::SpacingSubstrate, rare_glyph::GlyphSubstrate,
             script_mixing::MixedScriptSubstrate, untranslated_words::UntranslatedWordsSubstrate,
         };
         match id {
             SubstrateId::Spacing => SpacingSubstrate::NEEDS,
-            SubstrateId::Adjacency => AdjacencySubstrate::NEEDS,
             SubstrateId::RepeatedRun => RepeatedRunSubstrate::NEEDS,
             SubstrateId::MixedScript => MixedScriptSubstrate::NEEDS,
             SubstrateId::Glyph => GlyphSubstrate::NEEDS,

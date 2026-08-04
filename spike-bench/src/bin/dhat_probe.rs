@@ -70,22 +70,12 @@ fn build_config(name: &str) -> Config {
             cfg.rules.insert(RuleId::PunctuationSpacingAnomaly, false);
             cfg
         }
-        // Same paired-difference trick for the other two migrated substrates:
-        // with no active consumer the cache retains none of that substrate's
-        // products, so "all" minus this config IS its retained footprint.
-        "all-no-adjacency" => {
-            let mut cfg = build_config("all");
-            cfg.rules.insert(RuleId::PunctuationAdjacencyAnomaly, false);
-            cfg
-        }
+        // Same paired-difference trick for the other migrated substrates: with no
+        // active consumer the cache retains none of that substrate's products, so
+        // "all" minus this config IS its retained footprint.
         "all-no-repeat" => {
             let mut cfg = build_config("all");
             cfg.rules.insert(RuleId::RepeatedCharacterRun, false);
-            cfg
-        }
-        "all-no-punct-only-RETIRED" => {
-            let mut cfg = build_config("all");
-            cfg.rules.insert(RuleId::PunctOnlyToken, false);
             cfg
         }
         "all-no-mixed-script" => {
@@ -129,8 +119,15 @@ fn build_config(name: &str) -> Config {
             cfg.rules.insert(RuleId::MixedCaseWord, false);
             cfg
         }
+        // The nonletter-usage substrate's own retained footprint — plan §7.5's
+        // retained-compact-sites decision is the one this pair measures.
+        "all-no-nonletter" => {
+            let mut cfg = build_config("all");
+            cfg.rules.insert(RuleId::NonletterUsageAnomaly, false);
+            cfg
+        }
         other => panic!(
-            "unknown config {other:?} (want default|all|all-no-spacing|all-no-adjacency|all-no-repeat|all-no-punct-only|all-no-mixed-script|all-no-glyph|all-no-proportionality|all-no-normalization|all-no-bracket|all-no-duplicate|all-no-casing|all-no-mixed-case)"
+            "unknown config {other:?} (want default|all|all-no-spacing|all-no-repeat|all-no-mixed-script|all-no-glyph|all-no-proportionality|all-no-normalization|all-no-bracket|all-no-duplicate|all-no-casing|all-no-mixed-case|all-no-nonletter)"
         ),
     }
 }
@@ -139,7 +136,7 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let (Some(mode), Some(config_name)) = (args.first().map(String::as_str), args.get(1)) else {
         eprintln!(
-            "usage: dhat_probe <testing|profile|warm-profile> <default|all|all-no-spacing|all-no-adjacency|all-no-repeat|all-no-punct-only|all-no-mixed-script|all-no-glyph|all-no-proportionality|all-no-normalization|all-no-bracket|all-no-duplicate|all-no-casing|all-no-mixed-case> [corpus-path]"
+            "usage: dhat_probe <testing|profile|warm-profile> <default|all|all-no-spacing|all-no-repeat|all-no-mixed-script|all-no-glyph|all-no-proportionality|all-no-normalization|all-no-bracket|all-no-duplicate|all-no-casing|all-no-mixed-case|all-no-nonletter> [corpus-path]"
         );
         std::process::exit(2);
     };

@@ -24,7 +24,7 @@ args, and fix capability** (what a front end can `replace()`), see
 | [`uni.md`](uni.md) | `uni.*` | combining-mark-without-base, mixed-script-in-token, redundant-zero-width-space, rare-glyph, mixed-numeral-systems, mixed-normalization |
 | [`lex.md`](lex.md) | `lex.*` | excess-h-whitespace, duplicate-word, repeated-character-run, untranslated-word (cross-map) |
 | [`struct.md`](struct.md) | `struct.*` | source-marker-leftover, merge-conflict-marker |
-| [`punct.md`](punct.md) | `punct.*` | bracket-balance, adjacency-anomaly, spacing-anomaly |
+| [`punct.md`](punct.md) | `punct.*` | bracket-balance, spacing-anomaly |
 | [`prop.md`](prop.md) | `prop.*` | length-ratio |
 | [`case.md`](case.md) | `case.*` | sentence-initial-lowercase, inconsistent-word-casing, mixed-case-word |
 
@@ -57,7 +57,6 @@ file where it isn't obvious.
 | `uni.mixed-normalization` | Warning | **off** | substrate-backed, corpus-scoped | ✅ documented (ADR 0063, perf-gated default-off) |
 | `prop.length-ratio` | Warning | on | substrate-backed, target/reference | ✅ documented (ADR 0013, 0017, 0069) |
 | `lex.untranslated-word` | Warning | **off** (standing stop clause) | substrate-backed, target/reference | ✅ documented (2026-07-30 calibration + case-shape excusal) |
-| `punct.adjacency-anomaly` | Info | on | substrate-backed, corpus-relative | ✅ documented (ADR 0024, 0031) |
 | `case.sentence-initial-lowercase` | Info | **off** | substrate-backed, word table | ✅ documented (ADR 0035, 0051, 0052) |
 | `case.inconsistent-word-casing` | Info | **off** | substrate-backed, word table | ✅ documented (ADR 0051, 0052) |
 | `case.mixed-case-word` | Info | **off** | substrate-backed, word shape table | ✅ documented (ADR 0055) |
@@ -77,3 +76,5 @@ blank.
 | Retired rule | Replaced by | Why | ADR |
 | --- | --- | --- | --- |
 | `uni.zero-width-space-anomaly` | [`uni.redundant-zero-width-space`](uni.md) | A corpus-relative ZWSP "conformance surprise" scorer (default-off, tunable). A cross-corpus ablation (106 corpora) found the deterministic duplicate-run check owns every demonstrated artifact, while the scorer's *unique* output was entirely spec-permitted placement (UAX #14 allows ZWSP around punctuation/digits and in-token) or sparse-use false positives (Thai's legitimate but infrequent word-breaks). No demonstrated error class survived, so the whole scorer + its config/wasm/stats surface was deleted. | 0027 (amends 0023) |
+| `lex.punct-only-token` | `uni.nonletter-usage-anomaly` | One of three narrow visible-nonletter rules with incompatible candidate domains and scorers, replaced by one convention-learned rule over visible nonalphabetic graphemes. Its whitespace-chunk domain is a strict subset of the replacement's candidate domain (full-fleet ledger: `lost = 0`). Wire discriminant 12 is retired, never reused. | Phase E ADR (pending); epic plan §11.1 |
+| `punct.adjacency-anomaly` | `uni.nonletter-usage-anomaly` | Same replacement. Its exact-maximal-run keying is superseded by directed grapheme pairs plus a bounded same-glyph continuation; its run extractor survives with no rule, read by the census's `punct.runs` lane. Wire discriminant 10 is retired, never reused. | Phase E ADR (pending); epic plan §11.1 |

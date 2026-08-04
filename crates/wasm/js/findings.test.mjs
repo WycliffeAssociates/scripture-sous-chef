@@ -95,7 +95,6 @@ const PIN = [
   [7, "prop.length-ratio", "count-pair", "target-and-reference-silent-when-absent"],
   [8, "struct.source-marker-leftover", "none", "target-only"],
   [9, "struct.merge-conflict-marker", "none", "target-only"],
-  [10, "punct.adjacency-anomaly", "count-pair", "target-only"],
   [11, "lex.duplicate-word", "none", "target-only"],
   [13, "uni.combining-mark-without-base", "none", "target-only"],
   [14, "uni.redundant-zero-width-space", "none", "target-only"],

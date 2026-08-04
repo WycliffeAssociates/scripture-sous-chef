@@ -98,9 +98,9 @@ existing code. `ssc-wire` pins every pair; the generated JS `CODE_TO_RULE` /
 | 7 | `prop.length-ratio` | count-pair |
 | 8 | `struct.source-marker-leftover` | none |
 | 9 | `struct.merge-conflict-marker` | none |
-| 10 | `punct.adjacency-anomaly` | count-pair |
+| 10 | *retired* (`punct.adjacency-anomaly`) | — |
 | 11 | `lex.duplicate-word` | none |
-| 12 | `lex.punct-only-token` | count-pair |
+| 12 | *retired* (`lex.punct-only-token`) | — |
 | 13 | `uni.combining-mark-without-base` | none |
 | 14 | `uni.redundant-zero-width-space` | none |
 | 15 | `uni.mixed-script-in-token` | count-pair |
@@ -113,6 +113,12 @@ existing code. `ssc-wire` pins every pair; the generated JS `CODE_TO_RULE` /
 | 22 | `uni.rare-glyph` | u32 |
 | 23 | `case.mixed-case-word` | count-pair |
 | 24 | `uni.mixed-normalization` | u32 |
+| 25 | `lex.untranslated-word` | none |
+| 26 | `uni.nonletter-usage-anomaly` | count-pair |
+
+Retired discriminants are **never reused** — reuse would be a versioned layout
+change (§A.1). Both rules above were absorbed by
+`uni.nonletter-usage-anomaly` (code 26).
 
 Severity needs no export (three fixed values above).
 
@@ -132,8 +138,6 @@ copy that names at most one count pair (e.g. "this spacing appears in **1 of
 | `punct.spacing-anomaly` | `(primary_side.count, primary_side.total)` | "This spacing appears in A of B comparable places." |
 | `case.sentence-initial-lowercase` | `(upper, total)` | "This position is capitalized in A of B places." |
 | `case.inconsistent-word-casing` | `(upper, total)` | "This word is capitalized in A of B places." |
-| `lex.punct-only-token` | `(count, units)` | "This standalone mark appears A times across B words of text." |
-| `punct.adjacency-anomaly` | `(books, corpus)` | "This punctuation combination appears in A of B books." |
 | `uni.mixed-script-in-token` | `(books, corpus)` | "This script mixture appears in A of B books." |
 | `case.mixed-case-word` | `(other, total)` | "This word has this mixed-case shape in A of B places." |
 | `lex.repeated-character-run` | u32 `run` | "A character repeats A times here." |
