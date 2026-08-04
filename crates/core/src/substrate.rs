@@ -83,6 +83,11 @@ pub(crate) enum SubstrateId {
     /// Landed with its consumer excluded from both oracle configs; the
     /// oracle pin-move that enables it is a separate, adjudicated commit.
     UntranslatedWords,
+    /// `uni.nonletter-usage-anomaly`'s per-identity visible-nonletter model: run
+    /// memberships, logical side marginals, four-state attachment topology,
+    /// directed pooled pairs and a bounded same-glyph run histogram, plus the two
+    /// corpus scalars every judged rate reads.
+    NonletterUsage,
 }
 
 impl SubstrateId {
@@ -104,6 +109,7 @@ impl SubstrateId {
         SubstrateId::Casing,
         SubstrateId::MixedCase,
         SubstrateId::UntranslatedWords,
+        SubstrateId::NonletterUsage,
     ];
 
     /// This id's row in the drive-phase probe table — its position in
@@ -194,6 +200,7 @@ pub const SUBSTRATE_NAMES: [&str; SubstrateId::ALL.len()] = [
     "casing",
     "mixed-case",
     "untranslated-words",
+    "nonletter-usage",
 ];
 
 /// Column labels for [`drive_phase_table`] — [`DrivePhase`] declaration order.
@@ -1427,6 +1434,7 @@ pub(crate) struct ActiveSubstrates {
     pub(crate) casing: bool,
     pub(crate) mixed_case: bool,
     pub(crate) untranslated_words: bool,
+    pub(crate) nonletter_usage: bool,
 }
 
 impl ActiveSubstrates {
@@ -1448,6 +1456,7 @@ impl ActiveSubstrates {
             casing: any(casing_consumers()),
             mixed_case: any(mixed_case_consumers()),
             untranslated_words: any(untranslated_words_consumers()),
+            nonletter_usage: any(nonletter_usage_consumers()),
         }
     }
 
@@ -1467,6 +1476,7 @@ impl ActiveSubstrates {
             SubstrateId::Casing => self.casing,
             SubstrateId::MixedCase => self.mixed_case,
             SubstrateId::UntranslatedWords => self.untranslated_words,
+            SubstrateId::NonletterUsage => self.nonletter_usage,
         }
     }
 }
@@ -1546,6 +1556,11 @@ pub(crate) fn mixed_case_consumers() -> &'static [RuleId] {
 /// `every_rule_has_one_executable_owner`) are honest about the closed set.
 pub(crate) fn untranslated_words_consumers() -> &'static [RuleId] {
     &[RuleId::UntranslatedWord]
+}
+
+/// The closed registry: the nonletter-usage substrate's sole consumer.
+pub(crate) fn nonletter_usage_consumers() -> &'static [RuleId] {
+    &[RuleId::NonletterUsageAnomaly]
 }
 
 /// What semantic inputs a substrate's MAP consumes, and — when it consumes a
@@ -1657,7 +1672,8 @@ pub(crate) fn input_of(id: SubstrateId) -> SubstrateInput {
         | SubstrateId::Bracket
         | SubstrateId::DuplicateWord
         | SubstrateId::Casing
-        | SubstrateId::MixedCase => SubstrateInput::TargetOnly,
+        | SubstrateId::MixedCase
+        | SubstrateId::NonletterUsage => SubstrateInput::TargetOnly,
     }
 }
 
@@ -1679,6 +1695,7 @@ pub(crate) fn consumers_of(id: SubstrateId) -> &'static [RuleId] {
         SubstrateId::Casing => casing_consumers(),
         SubstrateId::MixedCase => mixed_case_consumers(),
         SubstrateId::UntranslatedWords => untranslated_words_consumers(),
+        SubstrateId::NonletterUsage => nonletter_usage_consumers(),
     }
 }
 
@@ -1742,6 +1759,10 @@ mod tests {
             <crate::signals::untranslated_words::UntranslatedWordsSubstrate as ObservationSubstrate>::ID,
             SubstrateId::UntranslatedWords
         );
+        assert_eq!(
+            <crate::signals::nonletter_usage::NonletterUsageSubstrate as ObservationSubstrate>::ID,
+            SubstrateId::NonletterUsage
+        );
     }
 
     /// Every substrate id has at least one consumer, and the active-set fields
@@ -1769,6 +1790,7 @@ mod tests {
                 casing: true,
                 mixed_case: true,
                 untranslated_words: true,
+                nonletter_usage: true,
             };
             assert!(all_on.is_active(id), "{id:?} has no active-set field");
             assert!(!ActiveSubstrates::default().is_active(id));
@@ -1801,6 +1823,7 @@ mod tests {
         check::<crate::signals::casing::CasingSubstrate>();
         check::<crate::signals::mixed_case::MixedCaseSubstrate>();
         check::<crate::signals::untranslated_words::UntranslatedWordsSubstrate>();
+        check::<crate::signals::nonletter_usage::NonletterUsageSubstrate>();
     }
 
     /// THE SEAM PLAN §5.2 ASKS FOR, both directions. A substrate's declared input

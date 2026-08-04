@@ -27,7 +27,8 @@ export type WireRuleId =
   | "uni.rare-glyph"
   | "case.mixed-case-word"
   | "uni.mixed-normalization"
-  | "lex.untranslated-word";
+  | "lex.untranslated-word"
+  | "uni.nonletter-usage-anomaly";
 
 export type Severity = "error" | "warning" | "info";
 

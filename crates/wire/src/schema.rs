@@ -84,6 +84,11 @@ pub const fn wire_def(rule: RuleId) -> WireDef {
         // `analyze_with_config`, so no consumer packs its args today — `None`
         // until Phase D decides whether/how a digest is worth assigning.
         RuleId::UntranslatedWord => (25, None),
+        // The three narrow punctuation rules this replaces held codes 10, 12 and
+        // 19; those numbers are retired, never reused (§A.1 — reuse would be a
+        // versioned layout change). Its digest is the ADR 0048 descriptive-share
+        // pair, which is exactly the leave-one-out `count / total` its args carry.
+        RuleId::NonletterUsageAnomaly => (26, CountPair),
     };
     WireDef { code, digest }
 }
@@ -338,6 +343,12 @@ mod tests {
                 "lex.untranslated-word",
                 "none",
                 "target-and-reference-silent-when-absent",
+            ),
+            (
+                26,
+                "uni.nonletter-usage-anomaly",
+                "count-pair",
+                "target-only",
             ),
         ];
 

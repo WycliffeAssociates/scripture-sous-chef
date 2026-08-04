@@ -613,6 +613,98 @@ impl Default for MixedCaseConfig {
     }
 }
 
+/// Knobs for `uni.nonletter-usage-anomaly`. Every field is a **judging** knob —
+/// the observation substrate has no extraction config at all — so a change here
+/// (including a Review Depth move) re-judges from retained observations and maps
+/// zero chapters.
+///
+/// The candidate scan (visible nonalphabetic extended grapheme clusters, with
+/// hygiene's domain and baseless marks excluded) is fixed. These values are the
+/// whole judgment surface, and they are the frozen Gate 1 knobs
+/// (`documentation/calibration/2026-08-04-nonletter-usage-probe.md`, owner-ratified
+/// in the epic progress log's Entry 9). Ships **default-on** at `Severity::Info`:
+/// it replaces two default-on rules, so shipping it off would be a silent coverage
+/// regression for every default user.
+///
+/// The three support gates are the honest answer to "how much evidence backs this
+/// judgment": below its gate a channel **abstains** rather than inventing a
+/// convention from nothing, and an abstention never counts as a zero that could
+/// cancel another well-supported channel.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
+pub struct NonletterUsageConfig {
+    /// **The user-facing decision threshold**: emit a nonletter run only when its
+    /// strongest channel reaches this. Not a share and not a sensitivity dial in
+    /// the intuitive direction — higher ⇒ fewer, surer findings. `0.75` is the
+    /// adjudicated Review Depth midpoint; the mapped profile runs 0.90 (strict) to
+    /// 0.50 (exploratory).
+    pub emit_score_min: f32,
+    /// Absolute rarity's **support** gate: below this many visible-nonletter
+    /// occurrences corpus-wide, the rarity channel abstains entirely. This is what
+    /// makes one `$` in a large translation well-supported rarity and one `$` in a
+    /// tiny one thin evidence. Fleet-measured: moving it barely moves the fleet
+    /// (12,343 → 11,658 across 0 → 10,000), because its whole effect is confined to
+    /// genuinely tiny corpora — which is where it is wanted.
+    pub rarity_min_exposure: u32,
+    /// Absolute rarity's recurrence knee: a grapheme appearing in `k` or more of
+    /// the translation's separate nonletter **runs** is established and scores 0.
+    /// Counting runs rather than occurrences is what stops wreckage licensing
+    /// itself — `*******` plus `****` is 11 occurrences but only 2 places.
+    pub rarity_k: f32,
+    /// Placement's **support** gate: the minimum judged pool (a side's marginal
+    /// table, or the four-state topology table) before that component speaks. It is
+    /// what makes a single medial `*` abstain instead of concluding that medial `*`
+    /// is the translation's convention.
+    pub placement_min_pool: u32,
+    /// Placement's recurrence knee: a placement recurring `k` or more times is the
+    /// translation's second convention, not a slip.
+    pub placement_k: f32,
+    /// Wilson confidence for placement's dominance estimates. Shrinks a
+    /// small-sample majority toward 0.5, so a barely-observed form cannot assert a
+    /// convention.
+    pub placement_z: f32,
+    /// Sequence's **support** gate: the minimum number of occurrences of the lead
+    /// grapheme that actually lead a nonletter run, before its directed pairings
+    /// are judged at all.
+    pub sequence_min_leads: u32,
+    /// Sequence's recurrence knee. `2` is deliberate and makes the channel honestly
+    /// **binary**: at these denominators the dominance term is uninformative
+    /// (always ≈1), so pretending the channel is graded would be dishonest, and the
+    /// claim it actually supports is "this pairing occurs here and nowhere else".
+    pub sequence_k: f32,
+    /// Wilson confidence for sequence's dominance estimates.
+    pub sequence_z: f32,
+    /// The bounded same-glyph continuation component's own support gate: the
+    /// minimum number of same-glyph runs of the identity before its run-length
+    /// histogram may speak. It recovers `:::` over an established `::`, and `..`
+    /// over an established single `.`, which directed pairs cannot reach because
+    /// both edges of `:::` are familiar.
+    pub continuation_min_support: u32,
+}
+
+impl Default for NonletterUsageConfig {
+    fn default() -> Self {
+        Self {
+            // The adjudicated Review Depth midpoint (depth 50).
+            emit_score_min: 0.75,
+            rarity_min_exposure: 2_000,
+            rarity_k: 8.0,
+            placement_min_pool: 30,
+            placement_k: 8.0,
+            // 1.0 rather than 1.96: measured on the fleet, these pools are large
+            // enough that a 95% bound is indistinguishable from a 68% one on the
+            // bulk while a wider bound only shrinks the thin identities the support
+            // gates already own.
+            placement_z: 1.0,
+            sequence_min_leads: 100,
+            sequence_k: 2.0,
+            sequence_z: 1.0,
+            continuation_min_support: 100,
+        }
+    }
+}
+
 /// Which rules to run, plus per-rule knobs. A rule **absent** from
 /// `rules` is enabled (default-on); map it to `false` to disable.
 /// Disabled rules are skipped before they run, not filtered after — so
@@ -644,6 +736,8 @@ pub struct Config {
     pub mixed_case: MixedCaseConfig,
     #[cfg_attr(feature = "serde", serde(default))]
     pub untranslated_words: UntranslatedWordsConfig,
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub nonletter_usage: NonletterUsageConfig,
 }
 
 impl Config {
@@ -659,6 +753,11 @@ impl Config {
     /// the deterministic-batch ADR. `DuplicateWord` is here because
     /// reduplication is grammar, not typo, in much of the audience
     /// (calibration: 600+ legitimate doublings per reduplicative NT).
+    ///
+    /// `uni.nonletter-usage-anomaly` is deliberately **absent** from this list, so
+    /// it is on: it replaces two default-on rules, and shipping the replacement off
+    /// would be a silent coverage regression for every default user. Owner-ratified;
+    /// the volume table it rests on is the calibration packet's §B5.
     pub fn v1_defaults() -> Self {
         Self::disabling(&[
             RuleId::DuplicateWord,

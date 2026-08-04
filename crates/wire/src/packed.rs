@@ -373,6 +373,12 @@ fn extract_digest(code: RuleId, args: Option<&FindingArgs>) -> Result<Digest, Pa
         }
         (RuleId::MixedNormalization, _) => Err(mismatch()),
 
+        (
+            RuleId::NonletterUsageAnomaly,
+            Some(FindingArgs::NonletterUsage { count, total, .. }),
+        ) => Ok(count_pair(*count, *total)),
+        (RuleId::NonletterUsageAnomaly, _) => Err(mismatch()),
+
         // Every other v1 code: four zero bytes, whatever args it carries.
         _ => Ok(Digest::none()),
     }

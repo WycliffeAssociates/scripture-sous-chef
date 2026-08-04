@@ -85,6 +85,7 @@ define_rule_ids! {
     MixedCaseWord            => "case.mixed-case-word",
     MixedNormalization       => "uni.mixed-normalization",
     UntranslatedWord         => "lex.untranslated-word",
+    NonletterUsageAnomaly    => "uni.nonletter-usage-anomaly",
 }
 
 impl std::fmt::Display for RuleId {
@@ -147,7 +148,8 @@ impl RuleId {
             | RuleId::InconsistentWordCasing
             | RuleId::RareGlyph
             | RuleId::MixedCaseWord
-            | RuleId::MixedNormalization => InputDependency::TargetOnly,
+            | RuleId::MixedNormalization
+            | RuleId::NonletterUsageAnomaly => InputDependency::TargetOnly,
         }
     }
 }
@@ -285,6 +287,76 @@ pub enum LengthRatioScope {
     Book { z: f32 },
     Project { z: f32 },
     Both { book_z: f32, project_z: f32 },
+}
+
+/// Which of `uni.nonletter-usage-anomaly`'s channels set a finding's score — the
+/// **primary reason**, chosen by a fixed priority when several tie. Three
+/// independently sufficient channels (absolute rarity, placement, sequence)
+/// compose with `max`, and placement/sequence each split into the sub-reasons
+/// below, so a consumer can name the exact convention the occurrence stands
+/// against rather than a single opaque "unusual".
+///
+/// Explicitly renamed per variant: these strings are a published localisation
+/// surface and must never depend on an inferred naming convention.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+pub enum NonletterReason {
+    /// The grapheme itself is barely used in this translation.
+    #[cfg_attr(feature = "serde", serde(rename = "rarity"))]
+    Rarity,
+    /// Its logical **start** side's attachment is unusual for it.
+    #[cfg_attr(feature = "serde", serde(rename = "start"))]
+    Start,
+    /// Its logical **end** side's attachment is unusual for it.
+    #[cfg_attr(feature = "serde", serde(rename = "end"))]
+    End,
+    /// Its bounded four-state outer attachment topology is unusual for it — the
+    /// channel that surfaces `wo"rd` while both one-sided forms stay ordinary.
+    #[cfg_attr(feature = "serde", serde(rename = "topology"))]
+    Topology,
+    /// It leads a directed pairing this translation does not otherwise use.
+    #[cfg_attr(feature = "serde", serde(rename = "pair"))]
+    Pair,
+    /// It repeats in a same-glyph run longer than this translation's other runs of
+    /// it — the `::` vs `:::` case directed pairs cannot separate.
+    #[cfg_attr(feature = "serde", serde(rename = "continuation"))]
+    Continuation,
+}
+
+/// The form a `uni.nonletter-usage-anomaly` finding's primary reason names: the
+/// neighbour class for a side reason, the four-state topology for `Topology`, and
+/// `None` for the reasons that name no form (rarity, pair, continuation).
+///
+/// Start/end are **logical**, never visual left/right, so a finding does not move
+/// when text direction does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+pub enum NonletterForm {
+    #[cfg_attr(feature = "serde", serde(rename = "none"))]
+    None,
+    /// Attached directly to an alphabetic grapheme on the named side.
+    #[cfg_attr(feature = "serde", serde(rename = "letter"))]
+    Letter,
+    /// Attached directly to a digit on the named side.
+    #[cfg_attr(feature = "serde", serde(rename = "digit"))]
+    Digit,
+    /// Whitespace (or a verse/chapter seam) on the named side.
+    #[cfg_attr(feature = "serde", serde(rename = "spaced"))]
+    Spaced,
+    /// Attached to content on neither side — the detached mark.
+    #[cfg_attr(feature = "serde", serde(rename = "neither"))]
+    Neither,
+    /// Attached to content on the logical start side only.
+    #[cfg_attr(feature = "serde", serde(rename = "start-only"))]
+    StartOnly,
+    /// Attached to content on the logical end side only.
+    #[cfg_attr(feature = "serde", serde(rename = "end-only"))]
+    EndOnly,
+    /// Attached to content at both ends — `th3e`, `wo.rd`, `wo"rd`.
+    #[cfg_attr(feature = "serde", serde(rename = "both"))]
+    Both,
 }
 
 /// Structured message arguments — the additive payload ADR 0010 §6
@@ -447,6 +519,30 @@ pub enum FindingArgs {
     /// spans the whole verse instead).
     #[cfg_attr(feature = "serde", serde(rename = "untranslated-word"))]
     UntranslatedWord { copied_pct: f32, run_len: u16 },
+    /// `uni.nonletter-usage-anomaly`: which of this translation's own conventions
+    /// the flagged occurrence stands against, and the plain counts behind it (ADR
+    /// 0048). The finding's `range` covers the whole maximal nonletter run, because
+    /// several firing members of one run coalesce into one finding.
+    ///
+    /// `glyph` is a `String`, not a `char`: identity is an exact extended grapheme
+    /// cluster, never one scalar. `count / total` is the reason's own
+    /// **leave-one-out** evidence — this occurrence is excluded from both, so `0 of
+    /// 1601` reads honestly as "nowhere else" rather than "1 of 1601". `also` lists
+    /// every other channel that independently cleared the floor at the same run, in
+    /// a fixed order, so no violated fact is lost to the `max`.
+    #[cfg_attr(feature = "serde", serde(rename = "nonletter-usage"))]
+    NonletterUsage {
+        glyph: String,
+        reason: NonletterReason,
+        form: NonletterForm,
+        /// The follower grapheme of the directed pairing, for
+        /// [`NonletterReason::Pair`]; empty for every other reason. Digits pool for
+        /// judging, but this is the digit actually written.
+        partner: String,
+        count: u32,
+        total: u32,
+        also: Vec<NonletterReason>,
+    },
 }
 
 /// One addressable content finding in one verse.

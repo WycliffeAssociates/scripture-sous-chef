@@ -259,6 +259,51 @@ pub struct MixedCaseOverrides {
     pub confidence_z: Option<f32>,
 }
 
+/// Partial overrides for `uni.nonletter-usage-anomaly`'s corpus-relative score.
+/// Omitted fields keep core's calibrated defaults — the frozen Gate 1 knobs:
+/// `emit_score_min` 0.75 (the adjudicated Review Depth midpoint), `rarity_k` 8,
+/// `placement_min_pool` 30, `sequence_k` 2 (the channel is honestly binary at
+/// these denominators), and the three support gates below which a channel
+/// abstains rather than inventing a convention.
+///
+/// Prefer moving Review Depth to a per-knob override: depth resolves all five
+/// policy values together, so a hand-set support gate can silently contradict the
+/// floor it ships with.
+#[derive(Deserialize, Tsify, Default)]
+#[tsify(from_wasm_abi)]
+pub struct NonletterUsageOverrides {
+    #[serde(default)]
+    #[tsify(optional)]
+    pub emit_score_min: Option<f32>,
+    #[serde(default)]
+    #[tsify(optional)]
+    pub rarity_min_exposure: Option<u32>,
+    #[serde(default)]
+    #[tsify(optional)]
+    pub rarity_k: Option<f32>,
+    #[serde(default)]
+    #[tsify(optional)]
+    pub placement_min_pool: Option<u32>,
+    #[serde(default)]
+    #[tsify(optional)]
+    pub placement_k: Option<f32>,
+    #[serde(default)]
+    #[tsify(optional)]
+    pub placement_z: Option<f32>,
+    #[serde(default)]
+    #[tsify(optional)]
+    pub sequence_min_leads: Option<u32>,
+    #[serde(default)]
+    #[tsify(optional)]
+    pub sequence_k: Option<f32>,
+    #[serde(default)]
+    #[tsify(optional)]
+    pub sequence_z: Option<f32>,
+    #[serde(default)]
+    #[tsify(optional)]
+    pub continuation_min_support: Option<u32>,
+}
+
 /// Which rules to run, plus per-rule knobs. `rules` maps a rule code to a
 /// flag; omit a rule to keep it enabled (default-on). TS: `{ rules?:
 /// Partial<Record<RuleId, boolean>>, proportionality?: … }` — `RuleId` is
@@ -303,6 +348,9 @@ pub struct SousConfig {
     #[serde(default)]
     #[tsify(optional)]
     pub untranslated_words: Option<UntranslatedWordsOverrides>,
+    #[serde(default)]
+    #[tsify(optional)]
+    pub nonletter_usage: Option<NonletterUsageOverrides>,
 }
 
 /// The analysis-input set every entry point takes as one typed object:
@@ -478,6 +526,38 @@ fn build_config(
             }
             if let Some(v) = g.emit_score_min {
                 cfg.rare_glyph.emit_score_min = v;
+            }
+        }
+        if let Some(p) = c.nonletter_usage {
+            if let Some(v) = p.emit_score_min {
+                cfg.nonletter_usage.emit_score_min = v;
+            }
+            if let Some(v) = p.rarity_min_exposure {
+                cfg.nonletter_usage.rarity_min_exposure = v;
+            }
+            if let Some(v) = p.rarity_k {
+                cfg.nonletter_usage.rarity_k = v;
+            }
+            if let Some(v) = p.placement_min_pool {
+                cfg.nonletter_usage.placement_min_pool = v;
+            }
+            if let Some(v) = p.placement_k {
+                cfg.nonletter_usage.placement_k = v;
+            }
+            if let Some(v) = p.placement_z {
+                cfg.nonletter_usage.placement_z = v;
+            }
+            if let Some(v) = p.sequence_min_leads {
+                cfg.nonletter_usage.sequence_min_leads = v;
+            }
+            if let Some(v) = p.sequence_k {
+                cfg.nonletter_usage.sequence_k = v;
+            }
+            if let Some(v) = p.sequence_z {
+                cfg.nonletter_usage.sequence_z = v;
+            }
+            if let Some(v) = p.continuation_min_support {
+                cfg.nonletter_usage.continuation_min_support = v;
             }
         }
         if let Some(m) = c.mixed_case {
@@ -1102,6 +1182,18 @@ mod tests {
                 recurrence_k: Some(3.0),
                 emit_score_min: Some(0.6),
             }),
+            nonletter_usage: Some(NonletterUsageOverrides {
+                emit_score_min: Some(0.66),
+                rarity_min_exposure: Some(1_500),
+                rarity_k: Some(9.0),
+                placement_min_pool: Some(44),
+                placement_k: Some(7.0),
+                placement_z: Some(1.1),
+                sequence_min_leads: Some(120),
+                sequence_k: Some(3.0),
+                sequence_z: Some(1.2),
+                continuation_min_support: Some(90),
+            }),
             mixed_case: Some(MixedCaseOverrides {
                 emit_score_min: Some(0.85),
                 recurrence_k: Some(20.0),
@@ -1153,6 +1245,16 @@ mod tests {
         assert_eq!(cfg.mixed_case.emit_score_min, 0.85);
         assert_eq!(cfg.mixed_case.recurrence_k, 20.0);
         assert_eq!(cfg.mixed_case.confidence_z, 1.5);
+        assert_eq!(cfg.nonletter_usage.emit_score_min, 0.66);
+        assert_eq!(cfg.nonletter_usage.rarity_min_exposure, 1_500);
+        assert_eq!(cfg.nonletter_usage.rarity_k, 9.0);
+        assert_eq!(cfg.nonletter_usage.placement_min_pool, 44);
+        assert_eq!(cfg.nonletter_usage.placement_k, 7.0);
+        assert_eq!(cfg.nonletter_usage.placement_z, 1.1);
+        assert_eq!(cfg.nonletter_usage.sequence_min_leads, 120);
+        assert_eq!(cfg.nonletter_usage.sequence_k, 3.0);
+        assert_eq!(cfg.nonletter_usage.sequence_z, 1.2);
+        assert_eq!(cfg.nonletter_usage.continuation_min_support, 90);
         assert_eq!(cfg.untranslated_words.corpus_gate_share, 0.4);
         assert_eq!(cfg.untranslated_words.word_recurrence_k, 30.0);
         assert_eq!(cfg.untranslated_words.run_bonus, 0.3);

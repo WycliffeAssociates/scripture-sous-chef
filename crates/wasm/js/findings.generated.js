@@ -203,6 +203,12 @@ export const WIRE_SCHEMA = Object.freeze(
       "rule_id": "lex.untranslated-word",
       "digest": "none",
       "input_dependency": "target-and-reference-silent-when-absent"
+    },
+    {
+      "code": 26,
+      "rule_id": "uni.nonletter-usage-anomaly",
+      "digest": "count-pair",
+      "input_dependency": "target-only"
     }
   ]
 }
@@ -266,6 +272,7 @@ export const CODE_TO_RULE = Object.freeze({
   "23": "case.mixed-case-word",
   "24": "uni.mixed-normalization",
   "25": "lex.untranslated-word",
+  "26": "uni.nonletter-usage-anomaly",
 });
 
 export const RULE_TO_CODE = Object.freeze({
@@ -295,6 +302,7 @@ export const RULE_TO_CODE = Object.freeze({
   "case.mixed-case-word": 23,
   "uni.mixed-normalization": 24,
   "lex.untranslated-word": 25,
+  "uni.nonletter-usage-anomaly": 26,
 });
 
 export const CODE_TO_DIGEST = Object.freeze({
@@ -324,6 +332,7 @@ export const CODE_TO_DIGEST = Object.freeze({
   "23": "count-pair",
   "24": "u32",
   "25": "none",
+  "26": "count-pair",
 });
 
 export const CODE_TO_INPUT_DEPENDENCY = Object.freeze({
@@ -353,4 +362,5 @@ export const CODE_TO_INPUT_DEPENDENCY = Object.freeze({
   "23": "target-only",
   "24": "target-only",
   "25": "target-and-reference-silent-when-absent",
+  "26": "target-only",
 });

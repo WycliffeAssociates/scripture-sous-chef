@@ -10,6 +10,7 @@ pub mod hygiene;
 pub mod lexical;
 pub mod mixed_case;
 pub mod mixed_normalization;
+pub mod nonletter_usage;
 pub mod proportionality;
 pub mod punctuation;
 pub mod rare_glyph;

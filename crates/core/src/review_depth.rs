@@ -133,7 +133,8 @@ pub const fn review_control(rule: RuleId) -> ReviewControl {
     match rule {
         RuleId::PunctuationSpacingAnomaly
         | RuleId::SentenceInitialLowercase
-        | RuleId::InconsistentWordCasing => ReviewControl::Mapped,
+        | RuleId::InconsistentWordCasing
+        | RuleId::NonletterUsageAnomaly => ReviewControl::Mapped,
         RuleId::ExcessHWhitespace
         | RuleId::TabInBody
         | RuleId::ControlChars
@@ -179,6 +180,10 @@ pub fn apply_review_policy(
             RuleId::InconsistentWordCasing => {
                 config.casing.inconsistent_word =
                     crate::signals::casing::inconsistent_word_config_at_review_depth(depth);
+            }
+            RuleId::NonletterUsageAnomaly => {
+                config.nonletter_usage =
+                    crate::signals::nonletter_usage::config_at_review_depth(depth);
             }
             RuleId::ExcessHWhitespace
             | RuleId::TabInBody
@@ -332,6 +337,7 @@ mod tests {
         apply_review_policy(&mut config, &ReviewPolicy::default()).unwrap();
         assert_eq!(config.punctuation_spacing, expected.punctuation_spacing);
         assert_eq!(config.casing, expected.casing);
+        assert_eq!(config.nonletter_usage, expected.nonletter_usage);
     }
 
     #[test]
@@ -358,6 +364,22 @@ mod tests {
             .collect();
 
         assert_eq!(spacing[2], Config::v1_defaults().punctuation_spacing);
+        let nonletter: Vec<_> = depths
+            .iter()
+            .map(|&depth| crate::signals::nonletter_usage::config_at_review_depth(depth))
+            .collect();
+        assert_eq!(nonletter[2], Config::v1_defaults().nonletter_usage);
+        // The adjudicated unusualness anchors, and monotone support relaxation.
+        for (i, want) in [(0usize, 0.90f32), (2, 0.75), (4, 0.50)] {
+            assert!((nonletter[i].emit_score_min - want).abs() < 1e-6);
+        }
+        for pair in nonletter.windows(2) {
+            assert!(pair[0].emit_score_min >= pair[1].emit_score_min);
+            assert!(pair[0].rarity_min_exposure >= pair[1].rarity_min_exposure);
+            assert!(pair[0].placement_min_pool >= pair[1].placement_min_pool);
+            assert!(pair[0].sequence_min_leads >= pair[1].sequence_min_leads);
+            assert!(pair[0].continuation_min_support >= pair[1].continuation_min_support);
+        }
         assert_eq!(positional[2], Config::v1_defaults().casing.sentence_initial);
         assert_eq!(intrinsic[2], Config::v1_defaults().casing.inconsistent_word);
 

@@ -20,7 +20,9 @@
 //!   it", never "Wilson lower bound"; the advanced knobs stay documented in
 //!   `documentation/reference/config.md` for calibrators, not here.
 
-use crate::diagnostics::{BracketMeasure, FindingArgs, RuleId, SpacingClass, SpacingForm};
+use crate::diagnostics::{
+    BracketMeasure, FindingArgs, NonletterForm, NonletterReason, RuleId, SpacingClass, SpacingForm,
+};
 
 /// How a rule's findings are decided — drives which caption a UI shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -301,6 +303,13 @@ pub fn card(id: RuleId) -> RuleCard {
             None,
             SourceRelative,
         ),
+        RuleId::NonletterUsageAnomaly => (
+            "Unusual nonletter usage",
+            "A punctuation mark, quote, symbol, digit or other non-letter used in a way this translation almost never uses it \u{2014} barely used at all, attached where it is normally spaced (or the reverse), sitting inside a word, or beside a neighbour it is never otherwise written beside.",
+            "Your own text defines what is normal: marks, quotes and numbers it uses the same way throughout are respected as house style, whatever the writing system, and only the odd ones out are shown. Each result says which habit it stands against and how many places back that habit up.",
+            None,
+            CorpusRelative,
+        ),
     };
     RuleCard {
         code: id,
@@ -525,6 +534,19 @@ pub fn message(id: RuleId, args: Option<&FindingArgs>) -> String {
             _ => "This text writes the same character in two different encodings.".into(),
         },
 
+        RuleId::NonletterUsageAnomaly => match args {
+            Some(FindingArgs::NonletterUsage {
+                glyph,
+                reason,
+                form,
+                partner,
+                count,
+                total,
+                ..
+            }) => nonletter_message(glyph, *reason, *form, partner, *count, *total),
+            _ => "A non-letter used in a way this translation almost never uses it.".into(),
+        },
+
         // ── Source-relative. ──
         RuleId::UntranslatedWord => match args {
             Some(FindingArgs::UntranslatedWord { copied_pct, .. }) => format!(
@@ -534,6 +556,69 @@ pub fn message(id: RuleId, args: Option<&FindingArgs>) -> String {
             _ => "This verse closely matches the source text's wording.".into(),
         },
     }
+}
+
+/// `uni.nonletter-usage-anomaly`'s message: name the exact habit the occurrence
+/// stands against, then the plain counts that back that habit up.
+///
+/// Every count pair is **leave-one-out** — the occurrence being described is
+/// excluded from both — so "in 0 of 1,601 other places" is literally true and
+/// needs no hedging. The wording says "this translation", never "this language",
+/// and never calls the occurrence wrong.
+fn nonletter_message(
+    glyph: &str,
+    reason: NonletterReason,
+    form: NonletterForm,
+    partner: &str,
+    count: u32,
+    total: u32,
+) -> String {
+    // Absolute rarity counts *places* (maximal non-letter runs), not occurrences,
+    // and is reported leave-one-out — so the honest number of places is `count + 1`.
+    if reason == NonletterReason::Rarity {
+        return match count {
+            0 => format!("\u{2018}{glyph}\u{2019} appears in only one place in this translation."),
+            n => format!(
+                "\u{2018}{glyph}\u{2019} appears in only {} places in this translation.",
+                n + 1
+            ),
+        };
+    }
+    let habit = match (reason, form) {
+        (NonletterReason::Start, NonletterForm::Letter) => {
+            "attached to a word at the start".to_string()
+        }
+        (NonletterReason::Start, NonletterForm::Digit) => {
+            "attached to a number at the start".to_string()
+        }
+        (NonletterReason::Start, _) => "spaced away at the start".to_string(),
+        (NonletterReason::End, NonletterForm::Letter) => {
+            "attached to a word at the end".to_string()
+        }
+        (NonletterReason::End, NonletterForm::Digit) => {
+            "attached to a number at the end".to_string()
+        }
+        (NonletterReason::End, _) => "spaced away at the end".to_string(),
+        (NonletterReason::Topology, NonletterForm::Both) => {
+            "attached to text at both ends".to_string()
+        }
+        (NonletterReason::Topology, NonletterForm::StartOnly) => {
+            "attached to text at the start only".to_string()
+        }
+        (NonletterReason::Topology, NonletterForm::EndOnly) => {
+            "attached to text at the end only".to_string()
+        }
+        (NonletterReason::Topology, _) => "standing detached from the text".to_string(),
+        (NonletterReason::Pair, _) => {
+            format!("written directly before \u{2018}{partner}\u{2019}")
+        }
+        (NonletterReason::Continuation, _) => "repeated in a longer run".to_string(),
+        (NonletterReason::Rarity, _) => unreachable!("handled above"),
+    };
+    format!(
+        "\u{2018}{glyph}\u{2019} is {habit} here; this translation writes it that way in \
+         {count} of {total} other places."
+    )
 }
 
 #[cfg(test)]
@@ -588,6 +673,7 @@ mod tests {
                 RuleId::InconsistentWordCasing,
                 RuleId::RareGlyph,
                 RuleId::MixedCaseWord,
+                RuleId::NonletterUsageAnomaly,
             ]
         );
     }

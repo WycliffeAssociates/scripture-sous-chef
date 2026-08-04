@@ -221,6 +221,7 @@ pub(crate) struct MappedChapterBundle {
     pub(crate) casing: Option<crate::signals::casing::CasingChapterObs>,
     pub(crate) proportionality: Option<crate::signals::proportionality::RatioChapterObs>,
     pub(crate) untranslated_words: Option<crate::signals::untranslated_words::WordChapterObs>,
+    pub(crate) nonletter_usage: Option<crate::signals::nonletter_usage::NonletterChapterObs>,
 }
 
 impl MappedChapterBundle {
@@ -248,6 +249,7 @@ impl MappedChapterBundle {
                 SubstrateId::UntranslatedWords,
                 self.untranslated_words.is_some(),
             ),
+            (SubstrateId::NonletterUsage, self.nonletter_usage.is_some()),
         ] {
             if present {
                 m.insert(id);
@@ -590,6 +592,11 @@ fn map_one_chapter(w: &ChapterMapWork<'_>, ctx: &MapContext<'_>) -> MappedChapte
             crate::signals::bracket_balance::BracketSubstrate,
         >(w.token, w.texts, &prep, w.paired, &(), &()));
     }
+    if w.participants.contains(SubstrateId::NonletterUsage) {
+        bundle.nonletter_usage = Some(map_participant::<
+            crate::signals::nonletter_usage::NonletterUsageSubstrate,
+        >(w.token, w.texts, &prep, w.paired, &(), &()));
+    }
     if w.participants.contains(SubstrateId::Normalization) {
         bundle.normalization = Some(map_participant::<
             crate::signals::mixed_normalization::NormalizationSubstrate,
@@ -827,10 +834,10 @@ mod tests {
             bracket_balance::BracketSubstrate, casing::CasingSubstrate,
             lexical::DuplicateWordSubstrate, lexical::PunctOnlySubstrate,
             lexical::RepeatedRunSubstrate, mixed_case::MixedCaseSubstrate,
-            mixed_normalization::NormalizationSubstrate, proportionality::ProportionalitySubstrate,
-            punctuation::AdjacencySubstrate, punctuation::SpacingSubstrate,
-            rare_glyph::GlyphSubstrate, script_mixing::MixedScriptSubstrate,
-            untranslated_words::UntranslatedWordsSubstrate,
+            mixed_normalization::NormalizationSubstrate, nonletter_usage::NonletterUsageSubstrate,
+            proportionality::ProportionalitySubstrate, punctuation::AdjacencySubstrate,
+            punctuation::SpacingSubstrate, rare_glyph::GlyphSubstrate,
+            script_mixing::MixedScriptSubstrate, untranslated_words::UntranslatedWordsSubstrate,
         };
         match id {
             SubstrateId::Spacing => SpacingSubstrate::NEEDS,
@@ -846,6 +853,7 @@ mod tests {
             SubstrateId::Casing => CasingSubstrate::NEEDS,
             SubstrateId::MixedCase => MixedCaseSubstrate::NEEDS,
             SubstrateId::UntranslatedWords => UntranslatedWordsSubstrate::NEEDS,
+            SubstrateId::NonletterUsage => NonletterUsageSubstrate::NEEDS,
         }
     }
 }

@@ -110,6 +110,8 @@ const PIN = [
   [22, "uni.rare-glyph", "u32", "target-only"],
   [23, "case.mixed-case-word", "count-pair", "target-only"],
   [24, "uni.mixed-normalization", "u32", "target-only"],
+  [25, "lex.untranslated-word", "none", "target-and-reference-silent-when-absent"],
+  [26, "uni.nonletter-usage-anomaly", "count-pair", "target-only"],
 ];
 
 test("generated schema tables equal the pinned §A.2/§A.1.1 mapping", () => {

@@ -780,6 +780,11 @@ fn transition(
         &mut schedule,
         &mut substrate_lane,
     );
+    let mut nonletter_usage_plan = signals::nonletter_usage::plan_nonletter_usage(
+        active.nonletter_usage,
+        &mut substrates.nonletter_usage,
+        &mut schedule,
+    );
     let mut casing_plan = signals::casing::plan_casing(
         config.is_enabled(RuleId::SentenceInitialLowercase),
         config.is_enabled(RuleId::InconsistentWordCasing),
@@ -893,6 +898,9 @@ fn transition(
     }
     if let Some(plan) = untranslated_words_plan.as_mut() {
         schedule::scatter(&work, &mut mapped, plan, |b| b.untranslated_words.take());
+    }
+    if let Some(plan) = nonletter_usage_plan.as_mut() {
+        schedule::scatter(&work, &mut mapped, plan, |b| b.nonletter_usage.take());
     }
     // Every chapter's mechanical views are already gone (dropped inside their own
     // chapter tasks); these are the bundles that carried the observations out.
@@ -1033,6 +1041,15 @@ fn transition(
             &mut substrates.untranslated_words,
             target,
             &config.untranslated_words,
+            plan,
+            &mut out,
+        );
+    }
+    if let Some(plan) = nonletter_usage_plan {
+        signals::nonletter_usage::finish_nonletter_usage(
+            &mut substrates.nonletter_usage,
+            target,
+            &config.nonletter_usage,
             plan,
             &mut out,
         );

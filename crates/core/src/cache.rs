@@ -143,6 +143,10 @@ pub(crate) struct SubstrateSection {
     /// the oracle pin-move that activates it is a separate commit.
     pub(crate) untranslated_words:
         SubstrateCache<crate::signals::untranslated_words::UntranslatedWordsSubstrate>,
+    /// `uni.nonletter-usage-anomaly`'s substrate — the replacement for the three
+    /// retired narrow punctuation rules.
+    pub(crate) nonletter_usage:
+        SubstrateCache<crate::signals::nonletter_usage::NonletterUsageSubstrate>,
     /// The shared folded-word table every word-keyed substrate names its word
     /// types through (casing and `case.mixed-case-word`). It lives here,
     /// beside the substrate slots rather than inside one, for two reasons: a
@@ -177,6 +181,7 @@ impl SubstrateSection {
         self.casing.map_route = label;
         self.mixed_case.map_route = label;
         self.untranslated_words.map_route = label;
+        self.nonletter_usage.map_route = label;
     }
 
     fn new() -> Self {
@@ -195,6 +200,7 @@ impl SubstrateSection {
             casing_model: None,
             mixed_case: SubstrateCache::new(),
             untranslated_words: SubstrateCache::new(),
+            nonletter_usage: SubstrateCache::new(),
             words: crate::interner::WordInterner::default(),
         }
     }
@@ -216,6 +222,7 @@ impl SubstrateSection {
         self.casing_model = None;
         self.mixed_case.clear();
         self.untranslated_words.clear();
+        self.nonletter_usage.clear();
         // Every observation that could hold a symbol is gone, so the table's
         // symbols have no readers left — the one point it is safe to drop.
         self.words = crate::interner::WordInterner::default();
@@ -237,6 +244,7 @@ impl SubstrateSection {
         self.casing.remove_book(slug);
         self.mixed_case.remove_book(slug);
         self.untranslated_words.remove_book(slug);
+        self.nonletter_usage.remove_book(slug);
     }
 
     /// The finding lane committed `id`'s patch: its partition owes nothing and now
@@ -263,6 +271,7 @@ impl SubstrateSection {
             S::Casing => &mut self.casing.pending,
             S::MixedCase => &mut self.mixed_case.pending,
             S::UntranslatedWords => &mut self.untranslated_words.pending,
+            S::NonletterUsage => &mut self.nonletter_usage.pending,
         };
         pending.promote();
     }
