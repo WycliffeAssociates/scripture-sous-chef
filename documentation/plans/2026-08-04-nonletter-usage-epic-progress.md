@@ -149,3 +149,228 @@ the gate is byte identity of the whole file.
   token/tape/grapheme prep, substrate migration off internal map loops,
   removal of call-scoped whole-corpus shared prep), commit per substrate
   group, then re-dump both WA pins and diff byte-identical.
+
+---
+
+## Entry 4 — mediator directive: full-fleet before-pins added
+
+- **Date:** 2026-08-04
+- **Reason:** the end-loaded final verification must prove the RETAINED rules
+  stayed byte-identical at full scope, and that diff needs a full *before*
+  pin. Entry 2 end-loads the bookends; it does not eliminate them.
+- **Same input path as the WA pins:** `corpora/vref` directory, no blob built.
+
+```
+./target/release/examples/calibrate --dump-findings corpora/vref \
+    /tmp/oracle/nonletter-usage/before.full.default.tsv default full
+./target/release/examples/calibrate --dump-findings corpora/vref \
+    /tmp/oracle/nonletter-usage/before.full.all.tsv     all     full
+```
+
+Both reported `scope=full`, `1504 corpora`.
+
+| pin | rows | bytes | sha256 | wall |
+| --- | --- | --- | --- | --- |
+| `before.full.default.tsv` | 427,881 | 61,671,630 | `1791fcb07deabdeb3e9be208ab7cd02d6348cb15edd15b6ecffc62eae50d749b` | 1 m 37 s |
+| `before.full.all.tsv` | 962,372 | 97,028,880 | `14be8b4fbb225e83c48705cd91ff58440dbc5c3c3ec5ba43296de63383c292ea` | 3 m 35 s |
+
+Retired-trio row counts at full scope, for the replacement movement's
+reference: `punct.adjacency-anomaly` 9,354 and `lex.punct-only-token` 4,481
+(both on at defaults), plus `punct.spacing-anomaly` 27,024 (`all` only) —
+13,835 rows at defaults, 40,859 at `all`.
+
+---
+
+## Entry 5 — checkpoint 2: the chapter-outer scheduler landed
+
+- **Date:** 2026-08-04
+- **Status:** execution-only movement complete. Every lane maps chapter-outer;
+  findings are byte-identical at full-fleet scope on both configs. No scoring or
+  rule change is in any of these commits.
+
+### What landed, and why the design is what it is
+
+ADR 0068 accepted a 16–35% serial cold regression and named the escape route it
+could not take: sharing the tape (~9 ms × 6 consumers) and grapheme (~17 ms × 4
+consumers) walks was **blocked on memory, not design** — a whole-corpus product
+is 12–24× the transient budget. The missing ingredient was a *lifetime*. A
+chapter task supplies it: build the views one chapter's participants asked for,
+map them, drop the views before the worker takes another chapter.
+
+Everything ADR 0067 established is intact and was deliberately not touched:
+
+- **No rule dependencies.** A participant declares which mechanical views its
+  own mapper reads (`PrepNeeds`, a compile-time const on the substrate trait);
+  it never declares, reads, or is ordered against another participant.
+  `SubstrateMask` is a scheduling fact, not an executable dependency graph — a
+  substrate's bit comes from its own `ObservationInputStamp` against its own
+  cache, using the same `observation_is_current` predicate `update_book` reuses
+  by.
+- **Reduction, judgment and publication unchanged.** The scheduler hands each
+  substrate its own mapped observations and steps aside. Reduction is still a
+  per-book serial carry fold from that substrate's own cache; partitions still
+  commit at the single atomic boundary.
+- **No dynamic payloads.** `MappedChapterBundle` is one typed `Option` slot per
+  closed participant. No `dyn Any`, no downcast, no id-keyed map.
+- **One Rayon grain.** One work list, one route from the existing `map_route`
+  policy, workers map their chapter's participants *serially*. Nothing nests.
+  Collection is indexed and every scatter writes into the layout position its
+  work item came from, so serial/parallel at any thread count are identical.
+- **Parallel closures mutate nothing.** They read the corpus and the shared word
+  table (which is *naming*, not evidence — appending cannot change what an
+  observation says) and write only into their own returned bundle. Observations
+  are committed serially afterwards.
+
+Two closure rules in `PrepNeeds` are load-bearing and worth flagging, because
+without them enabling an unrelated rule could change what a mapper observes:
+`graphemes` implies `tape` and graphemes are **always** segmented via
+`segment_tape`; `tape_mask` implies `tape`. Derivation must not depend on which
+*other* participants happen to be scheduled.
+
+### Commits (each independently revertible, each its own group)
+
+| commit | scope |
+| --- | --- |
+| `d6b7f2a` | `prep`: `PrepNeeds`, `ChapterTape`, `ChapterGraphemes`, `ChapterPrep` + equality tests. No consumers, no behavior. |
+| `0cf6039` | `schedule.rs`: the scheduler itself + tape-only substrates (adjacency, punct-only, bracket). |
+| `873ef36` | grapheme readers (spacing, normalization). |
+| `0a280e3` | token readers (repeated-run, mixed-script, rare-glyph, duplicate-word, mixed-case, casing) + **`prep::SharedTokens` deleted**. |
+| `7c6b37a` | one missed rustfmt line. |
+| `e131b67` | reference-declaring substrates (proportionality, untranslated-words) + shared `ReferencePairingIndex`. |
+| `6cf9b7e` | the direct per-verse lane folded in; retired surfaces deleted. |
+
+Net: 16 files, +2,909 / −2,060 in `crates/core/src`.
+
+### Prep-needs declarations (the closed table)
+
+| participant | tokens | tape | mask | graphemes |
+| --- | --- | --- | --- | --- |
+| direct per-verse lane | | ● | ● | |
+| `punct.spacing-anomaly` | | ● | | ● |
+| `punct.adjacency-anomaly` | | ● | | |
+| `lex.punct-only-token` | | ● | | |
+| `punct.bracket-balance` | | ● | | |
+| `uni.mixed-normalization` | | ● | | ● |
+| `lex.repeated-character-run` | ● | ● | | ● |
+| `uni.mixed-script-in-token` | ● | | | |
+| `uni.rare-glyph` | ● | | | |
+| `struct.duplicate-word` | ● | | | |
+| `case.mixed-case-word` | ● | | | |
+| casing (2 consumers) | ● | | | |
+| `proj.length-ratio` | | | | |
+| `lex.untranslated-word` | ● | | | |
+
+So six tape readers and three grapheme readers now share one walk each per
+chapter — exactly the sharing ADR 0068 listed as not taken.
+
+### Deliberate removals (pre-alpha, no shims)
+
+- `prep::SharedTokens` — the call-scoped whole-corpus token lane. Superseded by
+  a strictly shorter lifetime.
+- `ChapterView::target` / `tokened` / `paired` — every construction goes through
+  `scheduled`, which hands a mapper exactly the views its `NEEDS` declared
+  (withholding one the task built for someone else) and exactly the reference
+  access its `Pairing` declared.
+- `DrivePhase::Plan` / `Map` and two `DRIVE_PHASE_NAMES` columns. Planning and
+  mapping are no longer one substrate's own work, so per-substrate attribution
+  would be a fiction. Replaced by `bench::schedule_phases() -> (plan, map)`.
+  **Note for the final perf packet:** the sibling playground harness reads
+  `DRIVE_PHASE_NAMES`/`drive_phases`, which is now 4 columns wide.
+- `bench::shared_prep_bytes` re-pointed from a lane total to the per-worker
+  high-water mark of one chapter task's prep — the honest transient figure here.
+- Each substrate's private `unwrap_or_else(|| map_chapter(..))` fallback in
+  `update_book`. It could never fire; `MappedSlots::take` now **panics** on a
+  missing slot, per the "missing declared prep is a loud invariant failure, not
+  an implicit recompute" constraint.
+- `untranslated_words`' duplicated reference index (its own doc comment admitted
+  the duplication). Both reference substrates now read one
+  `ReferencePairingIndex` built once per analyze.
+
+### The retained scheduler gate — and its full-fleet bookend
+
+Same corpus-directory input path as the before-pins; scope marked in every
+filename.
+
+| dump | scope | corpora | sha256 | verdict |
+| --- | --- | --- | --- | --- |
+| `after-scheduler.wa.default.tsv` | wa | 251 | `a93691c04a096054ce2f56bab0c73c837816e0de0744bfc988857894ca62c76a` | **byte-identical** to `before.wa.default.tsv` |
+| `after-scheduler.wa.all.tsv` | wa | 251 | `7693356d9ba82d56f7b88352a3e169cae1669acb3a4d5041803b2dda8931b725` | **byte-identical** to `before.wa.all.tsv` |
+| `after-scheduler.full.default.tsv` | full | 1,504 | `1791fcb07deabdeb3e9be208ab7cd02d6348cb15edd15b6ecffc62eae50d749b` | **byte-identical** to `before.full.default.tsv` |
+| `after-scheduler.full.all.tsv` | full | 1,504 | `14be8b4fbb225e83c48705cd91ff58440dbc5c3c3ec5ba43296de63383c292ea` | **byte-identical** to `before.full.all.tsv` |
+
+The full-fleet pair was not required at this checkpoint (Entry 2 end-loads the
+bookends) but the before-pins existed after Entry 4 and the dumps cost ~4.5
+minutes, so the scheduler movement is now proved at full scope rather than only
+on the WA slice. That makes the end-of-epic retained-rule diff a clean
+comparison against a scheduler that is already known-neutral.
+
+Intermediate WA diffs were also run and passed after **every** group commit, not
+only at the end.
+
+### Other verification
+
+- `cargo test -p ssc-core`: 552 pass. `--features parallel`: 553 pass
+  (serial/parallel identity by construction, enforced by running both).
+- `cargo test -p ssc-galley`: 25. `cargo test -p ssc-wire`: 25.
+- `cargo check -p ssc-wasm --target wasm32-unknown-unknown`: clean. No wasm
+  threads, `SharedArrayBuffer`, worker protocol or async analyze added; the
+  browser package stays serial by platform.
+- `cargo check -p ssc-core --features bench-probes`: clean.
+- `cargo clippy --workspace --all-targets`: 25 warnings, all pre-existing and
+  all outside the new modules (`ssc-core` alone had 39 on the base commit).
+  `schedule.rs` and `prep.rs` are clippy-clean.
+- Formatting: touched lines only, via a script that intersects rustfmt's diff
+  with this branch's changed line ranges. The repo baseline is **not**
+  rustfmt-clean (several `crates/core/examples/*` files differ), so a file-wide
+  `cargo fmt` was never run.
+
+### New tests worth naming
+
+- `schedule::tests::the_chapter_task_maps_every_substrate_it_is_given` — the
+  closed-set guard. For every `SubstrateId`, a chapter task given exactly that
+  participant must fill exactly that bundle slot. **Both** failure modes it
+  covers were real defects during this work: a missing arm leaves the bit set
+  and the slot empty (discoverable only as a runtime panic on the first corpus
+  that reaches it), and an arm keyed to the wrong id would hand one substrate
+  another's observation. Every arm is well typed on its own, so the compiler
+  catches neither.
+- `schedule::tests::a_target_only_substrate_cannot_see_the_chapters_pairing` —
+  the guarantee that moved from a trait bound to `ReferencePairing::select`.
+- `prep::tests::{a_chapter_tape_equals_the_per_verse_tape_it_replaces,
+  chapter_graphemes_equal_the_char_walk_they_replace}` — the two equalities the
+  whole migration rests on, over a battery covering Devanagari conjunct chains,
+  Thai, Han, Hangul jamo, regional indicators, emoji ZWJ, empty verses and every
+  mask family.
+- `phase_f_tests::{one_chapter_edit_maps_exactly_that_chapter_for_every_active_participant,
+  a_judging_only_change_maps_and_reduces_nothing, enabling_one_rule_maps_only_its_own_substrate,
+  a_reference_only_edit_maps_reference_consumers_only, chapter_prep_stays_chapter_sized}`
+  — plan §14.1's external invariants.
+
+### Deviations and findings to flag
+
+1. **The direct per-verse lane was brought into the chapter task**, which the
+   checkpoint brief did not explicitly require (it named substrates). Without
+   it the chapter tape would be built twice per chapter — once for the lane,
+   once for the substrate union — and ADR 0068's "6 tape consumers" figure
+   would stay unrealized. It is the sixth reader; leaving it out would have made
+   the shared tape a partial win and left one lane walking privately.
+2. **A discovered pre-existing behaviour, asserted rather than changed:** the
+   direct lane's prep is keyed by the *whole* config fingerprint
+   (`PrepSection::ensure_fingerprint`), so **any** config change — including a
+   purely judging-only one — clears it and re-maps every chapter. ADR 0067's
+   "judging-only maps zero" property holds for every substrate but not for this
+   lane. It is sound (a per-verse rule's records are a function of the enabled
+   set) and this epic does not change it, but it is worth an owner decision
+   later: a resident editor moving the Review Depth slider re-maps the whole
+   direct lane for nothing. Recorded in the two tests' doc comments.
+3. **No timing or memory numbers in this entry.** Per Entry 2 the intermediate
+   criterion/dhat packets are waived and ADR 0068's numbers stand as the
+   baseline; the measurement is end-loaded. `bench::schedule_phases()` and the
+   re-pointed `shared_prep_bytes` were added *for* that packet.
+4. **`DRIVE_PHASE_NAMES` narrowed from 6 to 4 columns** — a shape change the
+   sibling playground harness will see.
+
+- **Next safe step:** checkpoint 3 — the dev-only grapheme observation/survey
+  over the full 1,504-corpus fleet per plan §9, and the calibration packet under
+  `documentation/calibration/`. No live `RuleId`, config, catalog or wire
+  behavior until the mediator adjudicates Gate 1.
