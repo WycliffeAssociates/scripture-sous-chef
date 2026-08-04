@@ -393,6 +393,7 @@ pub(crate) fn finish_duplicate_word(
 /// The whole substrate on its own, over one caller-held cache — the shape the
 /// per-rule convenience entry point and its tests use. Same planning pass, same
 /// chapter task, same `finish_*`; only the participation mask is narrower.
+#[cfg(test)]
 pub(crate) fn drive_duplicate_word(
     active: bool,
     cache: &mut crate::substrate::SubstrateCache<DuplicateWordSubstrate>,
@@ -1761,19 +1762,21 @@ mod tests {
         texts.push("he said".to_string());
         texts.push("said unto them".to_string());
         texts.push("परमेश्वर परमेश्वर ने".to_string());
-        let packed = crate::prep::ChapterTokens::build(&texts);
-        let verbatim = crate::prep::ChapterTokens::escaped_only(&texts);
         use crate::substrate::ObservationSubstrate;
-        let view = |t: &crate::prep::ChapterTokens| {
+        let needs = <DuplicateWordSubstrate as ObservationSubstrate>::NEEDS;
+        let view = |tokens: crate::prep::ChapterTokens| {
+            let prep = crate::prep::ChapterPrep::with_tokens(&texts, needs, tokens);
             DuplicateWordSubstrate::map_chapter(
-                &crate::substrate::ChapterView::tokened("1", &texts, Some(t)),
+                &crate::substrate::ChapterView::scheduled::<DuplicateWordSubstrate>(
+                    "1", &texts, &prep, None,
+                ),
                 &(),
                 &(),
             )
         };
-        let packed_obs = view(&packed);
+        let packed_obs = view(crate::prep::ChapterTokens::build(&texts));
         assert!(
-            packed_obs == view(&verbatim),
+            packed_obs == view(crate::prep::ChapterTokens::escaped_only(&texts)),
             "the packed shared stream mapped a different observation than the same \
              tokenizer output stored verbatim"
         );

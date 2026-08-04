@@ -985,6 +985,7 @@ pub(crate) fn shape_totals(corpus: &Corpus) -> [u64; 4] {
 /// The whole substrate on its own, over one caller-held cache — the shape the
 /// per-rule convenience entry point and its tests use. Same planning pass, same
 /// chapter task, same `finish_*`; only the participation mask is narrower.
+#[cfg(any(test, feature = "bench-probes"))]
 pub(crate) fn drive_mixed_case(
     active: bool,
     state: MixedCaseState<'_>,
@@ -1058,18 +1059,21 @@ mod tests {
         ]
         .to_vec();
         let symbols = WordInterner::default();
-        let packed = crate::prep::ChapterTokens::build(&texts);
-        let verbatim = crate::prep::ChapterTokens::escaped_only(&texts);
-        let map = |t: &crate::prep::ChapterTokens| {
-            <MixedCaseSubstrate as crate::substrate::ObservationSubstrate>::map_chapter(
-                &crate::substrate::ChapterView::tokened("1", &texts, Some(t)),
+        use crate::substrate::ObservationSubstrate;
+        let needs = <MixedCaseSubstrate as ObservationSubstrate>::NEEDS;
+        let map = |tokens: crate::prep::ChapterTokens| {
+            let prep = crate::prep::ChapterPrep::with_tokens(&texts, needs, tokens);
+            MixedCaseSubstrate::map_chapter(
+                &crate::substrate::ChapterView::scheduled::<MixedCaseSubstrate>(
+                    "1", &texts, &prep, None,
+                ),
                 &(),
                 &symbols,
             )
         };
-        let packed_obs = map(&packed);
+        let packed_obs = map(crate::prep::ChapterTokens::build(&texts));
         assert!(
-            packed_obs == map(&verbatim),
+            packed_obs == map(crate::prep::ChapterTokens::escaped_only(&texts)),
             "the packed shared stream mapped a different observation than the same \
              tokenizer output stored verbatim"
         );

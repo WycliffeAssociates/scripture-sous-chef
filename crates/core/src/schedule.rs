@@ -316,7 +316,6 @@ impl<S: ObservationSubstrate> MappedSlots<S> {
 pub(crate) struct Schedule<'a> {
     layout: &'a [BookLayout],
     texts: &'a [String],
-    keys: &'a [String],
     grid: Vec<Vec<Cell>>,
 }
 
@@ -326,24 +325,11 @@ impl<'a> Schedule<'a> {
         Schedule {
             layout,
             texts: corpus.texts(),
-            keys: corpus.keys(),
             grid: layout
                 .iter()
                 .map(|b| vec![Cell::default(); b.chapters.len()])
                 .collect(),
         }
-    }
-
-    pub(crate) fn layout(&self) -> &'a [BookLayout] {
-        self.layout
-    }
-
-    pub(crate) fn texts(&self) -> &'a [String] {
-        self.texts
-    }
-
-    pub(crate) fn keys(&self) -> &'a [String] {
-        self.keys
     }
 
     /// Enrol one substrate: stamp every chapter of every book, ask that
@@ -404,7 +390,11 @@ impl<'a> Schedule<'a> {
         &self,
         ctx: &MapContext<'_>,
         paired_of: impl Fn(&'a str, &'a ChapterLayout) -> Option<PairedView<'a>>,
-    ) -> (Vec<ChapterMapWork<'a>>, Vec<MappedChapterBundle>) {
+    ) -> (
+        Vec<ChapterMapWork<'a>>,
+        Vec<MappedChapterBundle>,
+        crate::rule::MapRoute,
+    ) {
         let mut work: Vec<ChapterMapWork<'a>> = Vec::new();
         let mut book_runs: Vec<std::ops::Range<usize>> = Vec::new();
         // The work's size, for the route decision only: summing already-known
@@ -438,7 +428,7 @@ impl<'a> Schedule<'a> {
         let route = crate::rule::map_route(&book_runs, work.len(), work_bytes);
         let mapped =
             crate::rule::map_chapter_work(&work, &book_runs, route, |w| map_one_chapter(w, ctx));
-        (work, mapped)
+        (work, mapped, route)
     }
 
     /// The single-participant path: plan, map and scatter one substrate on its
@@ -531,8 +521,8 @@ pub(crate) fn scatter<S: ObservationSubstrate>(
 
 /// The direct lane's mapped records, in work order, with the layout position each
 /// came from.
-pub(crate) fn scatter_direct<'w>(
-    work: &'w [ChapterMapWork<'_>],
+pub(crate) fn scatter_direct(
+    work: &[ChapterMapWork<'_>],
     mapped: &mut [MappedChapterBundle],
 ) -> Vec<(usize, usize, Vec<crate::cache::CachedPerVerseFinding>)> {
     work.iter()
@@ -563,6 +553,16 @@ pub(crate) fn scatter_direct<'w>(
 fn map_one_chapter(w: &ChapterMapWork<'_>, ctx: &MapContext<'_>) -> MappedChapterBundle {
     let prep = ChapterPrep::build(w.texts, w.needs);
     let mut bundle = MappedChapterBundle::default();
+    if w.direct {
+        bundle.direct = Some(crate::chapter_verse_records(
+            w.texts,
+            ctx.per_verse,
+            prep.tape.as_ref().expect(
+                "the direct lane participated in a chapter whose masked tape was never built \
+                 — stop and report: DIRECT_LANE_NEEDS and the chapter task disagree",
+            ),
+        ));
+    }
     if w.participants.contains(SubstrateId::Spacing) {
         bundle.spacing = Some(map_participant::<
             crate::signals::punctuation::SpacingSubstrate,
@@ -778,6 +778,45 @@ mod tests {
                  participant arm is missing or keyed to the wrong id"
             );
         }
+    }
+
+    /// A `TargetOnly` substrate reads no reference text on the scheduled path, even
+    /// when the chapter task resolved a pairing for someone else.
+    ///
+    /// Before the schedule this was a compile-time bound: `ChapterView::paired`
+    /// would not typecheck for a substrate declaring `NoReference`. The chapter
+    /// task resolves ONE pairing per chapter and hands the same value to every
+    /// participant, so the guarantee now lives in
+    /// [`ReferencePairing::select`](crate::substrate::ReferencePairing::select) —
+    /// `NoReference`'s implementation discards its argument. That is an
+    /// implementation fact rather than a signature, so it is pinned here.
+    #[test]
+    fn a_target_only_substrate_cannot_see_the_chapters_pairing() {
+        use crate::signals::{
+            proportionality::ProportionalitySubstrate, punctuation::AdjacencySubstrate,
+        };
+        let texts: Vec<String> = vec!["a target verse".to_string()];
+        let keys: Vec<String> = vec!["GEN 1:1".to_string()];
+        let reference_texts: Vec<String> = vec!["a reference verse".to_string()];
+        let paired = Some(PairedView {
+            keys: &keys,
+            reference_keys: &keys,
+            reference_texts: &reference_texts,
+        });
+        let prep = ChapterPrep::build(&texts, PrepNeeds::TAPE);
+
+        // A target-only substrate: the pairing is withheld.
+        let view = ChapterView::scheduled::<AdjacencySubstrate>("1", &texts, &prep, paired);
+        assert!(
+            view.paired_view().is_none(),
+            "a TargetOnly substrate was handed the chapter's reference pairing"
+        );
+        // A reference-declaring one: the same pairing is granted.
+        let view = ChapterView::scheduled::<ProportionalitySubstrate>("1", &texts, &prep, paired);
+        assert!(
+            view.paired_view().is_some(),
+            "a reference-declaring substrate was denied the chapter's pairing"
+        );
     }
 
     /// The declared needs of one substrate by id — the exhaustive match that lets

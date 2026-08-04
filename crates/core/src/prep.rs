@@ -137,12 +137,6 @@ impl PrepNeeds {
         }
     }
 
-    /// Whether anything at all is requested — a chapter task whose participants
-    /// need nothing builds no prep.
-    pub(crate) const fn is_empty(self) -> bool {
-        !(self.tokens || self.tape || self.graphemes)
-    }
-
     /// The closure the two implication rules describe, applied once where a
     /// declaration enters the scheduler so no later reader has to remember them.
     const fn closed(self) -> Self {
@@ -305,6 +299,17 @@ impl ChapterPrep {
         #[cfg(feature = "bench-probes")]
         note_prep_peak(prep.retained_bytes());
         prep
+    }
+
+    /// A chapter prep built for `needs` but carrying the given token streams — the
+    /// shape a packed-vs-verbatim encoding comparison needs, so a migrated map can
+    /// be run over two independent encodings of one `tokenize_into` result.
+    #[cfg(test)]
+    pub(crate) fn with_tokens(texts: &[String], needs: PrepNeeds, tokens: ChapterTokens) -> Self {
+        ChapterPrep {
+            tokens: Some(tokens),
+            ..Self::build(texts, needs)
+        }
     }
 
     /// The bytes this chapter's views retain — the transient cost one chapter
@@ -632,7 +637,6 @@ mod tests {
         // (a mask is never the only thing built).
         let u = PrepNeeds::TOKENS.union(PrepNeeds::GRAPHEMES);
         assert_eq!(u, PrepNeeds::TOKENS_AND_GRAPHEMES);
-        assert!(PrepNeeds::NONE.is_empty() && !PrepNeeds::TAPE.is_empty());
         assert!(ChapterPrep::build(&texts, PrepNeeds::MASKED_TAPE).retained_bytes() > 0);
     }
 }

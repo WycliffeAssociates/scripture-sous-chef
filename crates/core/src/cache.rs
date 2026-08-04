@@ -158,6 +158,27 @@ pub(crate) struct SubstrateSection {
 }
 
 impl SubstrateSection {
+    /// Record the chapter-outer map's single grain against every substrate's work
+    /// probe. Before the scheduler each substrate chose its own route; now there is
+    /// genuinely one decision per analyze, so every row reports the same value.
+    #[cfg(any(test, feature = "test-probes"))]
+    pub(crate) fn note_map_route(&mut self, route: crate::rule::MapRoute) {
+        let label = route.label();
+        self.spacing.map_route = label;
+        self.adjacency.map_route = label;
+        self.repeated_run.map_route = label;
+        self.punct_only.map_route = label;
+        self.mixed_script.map_route = label;
+        self.glyph.map_route = label;
+        self.proportionality.map_route = label;
+        self.normalization.map_route = label;
+        self.bracket.map_route = label;
+        self.duplicate_word.map_route = label;
+        self.casing.map_route = label;
+        self.mixed_case.map_route = label;
+        self.untranslated_words.map_route = label;
+    }
+
     fn new() -> Self {
         SubstrateSection {
             spacing: SubstrateCache::new(),
@@ -743,32 +764,6 @@ impl AnalysisCache {
             .is_some_and(|c| c.hash == hash)
     }
 
-    pub(crate) fn store_direct_chapter(
-        &mut self,
-        slug: &str,
-        chapter: &str,
-        hash: u128,
-        records: Vec<CachedPerVerseFinding>,
-    ) {
-        self.prep.store_direct_chapter(slug, chapter, hash, records);
-    }
-
-    pub(crate) fn retain_direct(&mut self, keep: impl Fn(&str, &str) -> bool) {
-        self.prep.retain_direct(keep);
-    }
-
-    /// Record the direct lane's per-chapter hit/miss counts for this call.
-    #[cfg(any(test, feature = "test-probes"))]
-    pub(crate) fn note_direct(&mut self, hits: usize, misses: usize) {
-        self.prep.note_direct(hits, misses);
-    }
-
-    /// Record the direct lane's map grain for this call.
-    #[cfg(any(test, feature = "test-probes"))]
-    pub(crate) fn note_direct_route(&mut self, route: crate::rule::MapRoute) {
-        self.prep.direct_route = route.label();
-    }
-
     /// Assemble the findings the resident partitions currently describe, in the
     /// returned order — a witness for the atomic finding boundary. Assembling
     /// only from the lane (never the working `out`) is exactly what a failed
@@ -860,7 +855,7 @@ impl PrepSection {
     /// Record the planning pass's per-chapter hit/miss counts. The direct lane's
     /// work unit is a chapter, so these count chapters, not books.
     #[cfg(any(test, feature = "test-probes"))]
-    fn note_direct(&mut self, hits: usize, misses: usize) {
+    pub(crate) fn note_direct(&mut self, hits: usize, misses: usize) {
         self.direct_hits += hits;
         self.direct_misses += misses;
     }
@@ -878,7 +873,14 @@ impl PrepSection {
             .records
     }
 
-    fn store_direct_chapter(
+    /// Record the direct lane's map grain for this call. One grain is selected per
+    /// chapter-outer map call, so this is the schedule's single decision.
+    #[cfg(any(test, feature = "test-probes"))]
+    pub(crate) fn note_direct_route(&mut self, route: crate::rule::MapRoute) {
+        self.direct_route = route.label();
+    }
+
+    pub(crate) fn store_direct_chapter(
         &mut self,
         slug: &str,
         chapter: &str,
@@ -899,7 +901,7 @@ impl PrepSection {
     /// Drop every cached direct-lane chapter `keep` rejects — the lane's own
     /// removal invalidation, so a chapter dropped by a whole-book replacement
     /// cannot linger and later be patched back into a partition.
-    fn retain_direct(&mut self, keep: impl Fn(&str, &str) -> bool) {
+    pub(crate) fn retain_direct(&mut self, keep: impl Fn(&str, &str) -> bool) {
         let mut kept = 0;
         self.direct.retain(|slug, chapters| {
             chapters.retain(|chapter, _| keep(slug, chapter));
@@ -944,7 +946,7 @@ mod tests {
         let mut cache = AnalysisCache::new();
         let cfg = Config::v1_defaults();
         cache.ensure_fingerprint(&cfg);
-        cache.store_direct_chapter("GEN", "1", 7, Vec::new());
+        cache.prep.store_direct_chapter("GEN", "1", 7, Vec::new());
 
         let mut changed = cfg.clone();
         changed.rules.insert(crate::RuleId::BracketBalance, false);
@@ -961,8 +963,8 @@ mod tests {
     fn direct_lane_validity_is_per_chapter() {
         let mut cache = AnalysisCache::new();
         cache.ensure_fingerprint(&Config::v1_defaults());
-        cache.store_direct_chapter("GEN", "1", 11, Vec::new());
-        cache.store_direct_chapter("GEN", "2", 22, Vec::new());
+        cache.prep.store_direct_chapter("GEN", "1", 11, Vec::new());
+        cache.prep.store_direct_chapter("GEN", "2", 22, Vec::new());
 
         assert!(cache.direct_chapter_valid("GEN", "1", 11));
         assert!(cache.direct_chapter_valid("GEN", "2", 22));
@@ -980,9 +982,11 @@ mod tests {
     fn retain_direct_drops_absent_chapters() {
         let mut cache = AnalysisCache::new();
         cache.ensure_fingerprint(&Config::v1_defaults());
-        cache.store_direct_chapter("GEN", "1", 11, Vec::new());
-        cache.store_direct_chapter("GEN", "2", 22, Vec::new());
-        cache.retain_direct(|slug, chapter| (slug, chapter) == ("GEN", "1"));
+        cache.prep.store_direct_chapter("GEN", "1", 11, Vec::new());
+        cache.prep.store_direct_chapter("GEN", "2", 22, Vec::new());
+        cache
+            .prep
+            .retain_direct(|slug, chapter| (slug, chapter) == ("GEN", "1"));
         assert!(cache.direct_chapter_valid("GEN", "1", 11));
         assert!(!cache.direct_chapter_valid("GEN", "2", 22));
     }
@@ -992,7 +996,7 @@ mod tests {
     fn remove_book_reports_presence_and_clears_entry() {
         let mut cache = AnalysisCache::new();
         cache.ensure_fingerprint(&Config::v1_defaults());
-        cache.store_direct_chapter("GEN", "1", 11, Vec::new());
+        cache.prep.store_direct_chapter("GEN", "1", 11, Vec::new());
         assert!(cache.remove_book("GEN"));
         assert!(!cache.remove_book("GEN"), "a second removal is a no-op");
         assert!(!cache.direct_chapter_valid("GEN", "1", 11));

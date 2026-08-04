@@ -612,14 +612,6 @@ impl RatioBookContribution {
     }
 }
 
-/// One chapter the substrate has to map this analysis, as the ordered map seam
-/// sees it: its caller-order `(book, chapter)` slot plus the view mapping reads.
-struct RatioMapWork<'a> {
-    book: usize,
-    chapter: usize,
-    view: crate::substrate::ChapterView<'a>,
-}
-
 /// Plan the `proj.length-ratio` substrate's share of this analysis: enrol it in
 /// the chapter-outer schedule for exactly the chapters whose observation input
 /// stamp moved. When inactive, drop the cached products so an edit while it is

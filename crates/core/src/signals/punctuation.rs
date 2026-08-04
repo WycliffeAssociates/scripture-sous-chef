@@ -17,7 +17,7 @@ use crate::diagnostics::{
 use crate::evidence::{
     clamp_count, clamp_rate, clamp_unit, clamp_z, dominance, from_strengths, odds_amplify, strength,
 };
-use crate::grapheme::{self, GSpan};
+use crate::grapheme::GSpan;
 use crate::span::Span;
 use crate::stream;
 use crate::tape::TapeEntry;
@@ -1156,7 +1156,7 @@ fn for_each_spacing_opportunity(
     let mut per_verse: Vec<Vec<GSpan>> = Vec::with_capacity(group.texts.len());
     for text in group.texts {
         let mut g = Vec::new();
-        grapheme::segment(text, &mut g);
+        crate::grapheme::segment(text, &mut g);
         per_verse.push(g);
     }
     let edges: Vec<(Option<SpacingClass>, Option<SpacingClass>)> = group
@@ -2944,7 +2944,7 @@ mod tests {
         r: Option<SpacingClass>,
     ) -> Vec<SpacingOpportunity> {
         let mut g = Vec::new();
-        grapheme::segment(text, &mut g);
+        crate::grapheme::segment(text, &mut g);
         spacing_opportunities(text, &g, l, r)
     }
     fn read(class: SpacingClass, form: SpacingForm) -> Option<SideRead> {

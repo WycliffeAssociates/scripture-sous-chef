@@ -1134,18 +1134,21 @@ mod tests {
             format!("{}x tail", "x".repeat(200)),
         ]
         .to_vec();
-        let packed = crate::prep::ChapterTokens::build(&texts);
-        let verbatim = crate::prep::ChapterTokens::escaped_only(&texts);
-        let map = |t: &crate::prep::ChapterTokens| {
-            <GlyphSubstrate as crate::substrate::ObservationSubstrate>::map_chapter(
-                &crate::substrate::ChapterView::tokened("1", &texts, Some(t)),
+        use crate::substrate::ObservationSubstrate;
+        let needs = <GlyphSubstrate as ObservationSubstrate>::NEEDS;
+        let map = |tokens: crate::prep::ChapterTokens| {
+            let prep = crate::prep::ChapterPrep::with_tokens(&texts, needs, tokens);
+            GlyphSubstrate::map_chapter(
+                &crate::substrate::ChapterView::scheduled::<GlyphSubstrate>(
+                    "1", &texts, &prep, None,
+                ),
                 &(),
                 &(),
             )
         };
-        let packed_obs = map(&packed);
+        let packed_obs = map(crate::prep::ChapterTokens::build(&texts));
         assert!(
-            packed_obs == map(&verbatim),
+            packed_obs == map(crate::prep::ChapterTokens::escaped_only(&texts)),
             "the packed shared stream mapped a different observation than the same \
              tokenizer output stored verbatim"
         );

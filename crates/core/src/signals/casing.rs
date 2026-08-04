@@ -4000,14 +4000,18 @@ mod tests {
         ]
         .to_vec();
         let symbols = WordInterner::default();
-        let packed = crate::prep::ChapterTokens::build(&texts);
-        let verbatim = crate::prep::ChapterTokens::escaped_only(&texts);
-        let map = |t: &crate::prep::ChapterTokens| {
-            CasingSubstrate::map_chapter(&ChapterView::tokened("1", &texts, Some(t)), &(), &symbols)
+        let needs = <CasingSubstrate as ObservationSubstrate>::NEEDS;
+        let map = |tokens: crate::prep::ChapterTokens| {
+            let prep = crate::prep::ChapterPrep::with_tokens(&texts, needs, tokens);
+            CasingSubstrate::map_chapter(
+                &ChapterView::scheduled::<CasingSubstrate>("1", &texts, &prep, None),
+                &(),
+                &symbols,
+            )
         };
-        let packed_obs = map(&packed);
+        let packed_obs = map(crate::prep::ChapterTokens::build(&texts));
         assert!(
-            packed_obs == map(&verbatim),
+            packed_obs == map(crate::prep::ChapterTokens::escaped_only(&texts)),
             "the packed shared stream mapped a different observation than the same \
              tokenizer output stored verbatim"
         );
@@ -4029,9 +4033,10 @@ mod tests {
     /// chapters and needs their symbols to be comparable.
     fn map_one_with(token: &str, verses: &[&str], symbols: &WordInterner) -> CasingChapterObs {
         let texts: Vec<String> = verses.iter().map(|v| (*v).to_string()).collect();
-        let tokens = crate::prep::ChapterTokens::build(&texts);
-        CasingSubstrate::map_chapter(
-            &ChapterView::tokened(token, &texts, Some(&tokens)),
+        crate::schedule::map_chapter_standalone::<CasingSubstrate>(
+            token,
+            &texts,
+            None,
             &(),
             symbols,
         )

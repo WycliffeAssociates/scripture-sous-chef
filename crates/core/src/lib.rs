@@ -113,6 +113,45 @@ pub mod bench {
     /// per-worker high-water mark rather than a whole-corpus retention (which ADR
     /// 0068 measured at 12–24× the transient budget and rejected).
     pub use crate::prep::shared_prep_bytes;
+
+    /// The chapter-outer scheduler's own split for the most recent analyze:
+    /// `(plan, map)`.
+    ///
+    /// These were per-substrate columns of [`drive_phases`] before the schedule,
+    /// because each substrate planned and mapped inside its own drive. They are one
+    /// shared phase now — one planning pass and one chapter-outer map serve every
+    /// participant — so attributing them per substrate would be a fiction, and they
+    /// are reported whole here instead. `drive_phases` keeps the four phases that
+    /// are still genuinely one substrate's own work.
+    pub use crate::schedule_phases;
+}
+
+/// The chapter-outer scheduler's own phase split, for the measurement harness
+/// (`bench-probes` only). See [`bench::schedule_phases`].
+#[cfg(feature = "bench-probes")]
+mod schedule_probe {
+    use std::cell::Cell;
+    use std::time::Duration;
+
+    thread_local! {
+        static LAST: Cell<(Duration, Duration)> =
+            const { Cell::new((Duration::ZERO, Duration::ZERO)) };
+    }
+
+    pub(crate) fn record(plan: Duration, map: Duration) {
+        LAST.with(|c| c.set((plan, map)));
+    }
+
+    pub(crate) fn last() -> (Duration, Duration) {
+        LAST.with(Cell::get)
+    }
+}
+
+/// The chapter-outer planning and map cost of the most recent analyze on this
+/// thread, as `(plan, map)`.
+#[cfg(feature = "bench-probes")]
+pub fn schedule_phases() -> (std::time::Duration, std::time::Duration) {
+    schedule_probe::last()
 }
 
 #[cfg(test)]
@@ -165,6 +204,205 @@ mod phase_f_tests {
         let resident = analyze_resident(&edited, None, &cfg, &mut cache).unwrap();
         assert_eq!(resident, analyze_with_config(&edited, None, &cfg));
         assert_eq!(cache.partition_findings(&edited), resident);
+    }
+
+    /// A three-book, multi-chapter corpus rich enough that every substrate has
+    /// something to observe.
+    fn wide(pad: usize) -> Corpus {
+        let mut keys = Vec::new();
+        let mut texts = Vec::new();
+        for slug in ["GEN", "EXO", "LEV"] {
+            for c in 1..=4 {
+                for v in 1..=3 {
+                    keys.push(format!("{slug} {c}:{v}"));
+                    texts.push(format!(
+                        "{slug}{c}v{v} word, word) \"quoted\" e\u{0301} {}",
+                        "filler ".repeat(pad)
+                    ));
+                }
+            }
+        }
+        Corpus::try_from_parts(keys, texts).unwrap()
+    }
+
+    /// Replace one chapter of `base` with new text, leaving every other chapter
+    /// byte-identical.
+    fn edit_one_chapter(base: &Corpus, slug: &str, chapter: &str, text: &str) -> Corpus {
+        let mut keys = Vec::new();
+        let mut texts = Vec::new();
+        for (i, key) in base.keys().iter().enumerate() {
+            keys.push(key.clone());
+            let in_chapter = key.starts_with(&format!("{slug} {chapter}:"));
+            texts.push(if in_chapter {
+                text.to_string()
+            } else {
+                base.texts()[i].clone()
+            });
+        }
+        Corpus::try_from_parts(keys, texts).unwrap()
+    }
+
+    /// SCHEDULER INVARIANT — one target-chapter edit refreshes every active
+    /// target-reading participant's observation for that chapter, and no unrelated
+    /// chapter's.
+    ///
+    /// This is the property the chapter-outer schedule could most plausibly break:
+    /// it unions participation across the corpus, so an over-broad union would show
+    /// up as extra mapped chapters here rather than as a wrong finding. Asserted on
+    /// the three substrates the work probes expose plus the direct lane.
+    #[test]
+    fn one_chapter_edit_maps_exactly_that_chapter_for_every_active_participant() {
+        let cfg = Config::all();
+        let base = wide(2);
+        let mut cache = AnalysisCache::new();
+        analyze_resident(&base, None, &cfg, &mut cache).unwrap();
+
+        let edited = edit_one_chapter(&base, "EXO", "2", "one) two, \"three\" e\u{0301} word");
+        // The prep lane's hit/miss counters accumulate across calls; only the
+        // substrate work probes reset per analyze. So the direct lane is read as a
+        // delta.
+        let before = cache.probe();
+        let resident = analyze_resident(&edited, None, &cfg, &mut cache).unwrap();
+        let p = cache.probe();
+        let direct_misses = p.direct_misses - before.direct_misses;
+        let direct_hits = p.direct_hits - before.direct_hits;
+        // One chapter of one book moved, so exactly its three verses' worth of
+        // work: one chapter per participant, never the corpus.
+        assert_eq!(
+            direct_misses, 1,
+            "direct lane mapped {direct_misses} chapters"
+        );
+        assert_eq!(p.spacing_mapped, 1, "spacing mapped {}", p.spacing_mapped);
+        assert_eq!(p.casing_mapped, 1, "casing mapped {}", p.casing_mapped);
+        assert_eq!(
+            p.duplicate_mapped, 1,
+            "duplicate mapped {}",
+            p.duplicate_mapped
+        );
+        // Every other chapter was served from cache.
+        let chapters = base
+            .book_layout()
+            .iter()
+            .map(|b| b.chapters.len())
+            .sum::<usize>();
+        assert_eq!(direct_hits, chapters - 1);
+        // And the answer still equals a cold rebuild.
+        assert_eq!(resident, analyze_with_config(&edited, None, &cfg));
+    }
+
+    /// SCHEDULER INVARIANT — a judging-only config change enrols no SUBSTRATE, so
+    /// every substrate's map and reduction do zero chapters while the findings
+    /// still move. This is ADR 0067's central property, and the chapter-outer union
+    /// must not weaken it.
+    ///
+    /// The direct per-verse lane is deliberately excluded: its prep is keyed by the
+    /// whole config fingerprint (`PrepSection::ensure_fingerprint`), so ANY config
+    /// move clears it and it re-maps. That is pre-existing behaviour this epic does
+    /// not change, and it is sound — a per-verse rule's records are a function of
+    /// the enabled set — but it means the lane is not a witness for judging-only
+    /// reuse.
+    #[test]
+    fn a_judging_only_change_maps_and_reduces_nothing() {
+        let corpus = wide(2);
+        let mut cache = AnalysisCache::new();
+        let mut cfg = Config::all();
+        analyze_resident(&corpus, None, &cfg, &mut cache).unwrap();
+
+        // A pure judging knob: no observation stamp folds it.
+        cfg.punctuation_spacing.emit_score_min = 0.999;
+        let rejudged = analyze_resident(&corpus, None, &cfg, &mut cache).unwrap();
+        let p = cache.probe();
+        assert_eq!(p.spacing_mapped, 0, "spacing re-mapped");
+        assert_eq!(p.spacing_reduced, 0, "spacing re-reduced");
+        assert_eq!(p.casing_mapped, 0, "casing re-mapped");
+        assert_eq!(p.duplicate_mapped, 0, "duplicate re-mapped");
+        assert_eq!(rejudged, analyze_with_config(&corpus, None, &cfg));
+    }
+
+    /// SCHEDULER INVARIANT — enabling one rule enrols only its own SUBSTRATE.
+    ///
+    /// The union is per chapter, so the risk is that a newly enabled substrate's
+    /// missing observations drag every *other* substrate into the work list too.
+    /// (The direct lane re-maps because a config move clears its
+    /// fingerprint-keyed prep — see the judging-only test's note.)
+    #[test]
+    fn enabling_one_rule_maps_only_its_own_substrate() {
+        let corpus = wide(2);
+        let mut cache = AnalysisCache::new();
+        // Everything on except spacing, so only its substrate is cold.
+        let mut cfg = Config::all();
+        cfg.rules.insert(RuleId::PunctuationSpacingAnomaly, false);
+        analyze_resident(&corpus, None, &cfg, &mut cache).unwrap();
+
+        cfg.rules.insert(RuleId::PunctuationSpacingAnomaly, true);
+        let after = analyze_resident(&corpus, None, &cfg, &mut cache).unwrap();
+        let p = cache.probe();
+        let chapters = corpus
+            .book_layout()
+            .iter()
+            .map(|b| b.chapters.len())
+            .sum::<usize>();
+        assert_eq!(p.spacing_mapped, chapters, "spacing owes every chapter");
+        assert_eq!(p.casing_mapped, 0, "casing was dragged in");
+        assert_eq!(p.duplicate_mapped, 0, "duplicate-word was dragged in");
+        assert_eq!(after, analyze_with_config(&corpus, None, &cfg));
+    }
+
+    /// SCHEDULER INVARIANT — a reference-only edit refreshes reference consumers
+    /// only. Every target-only substrate's stamps are untouched by reference
+    /// movement, so the union must not carry them along.
+    #[test]
+    fn a_reference_only_edit_maps_reference_consumers_only() {
+        let cfg = Config::all();
+        let target = wide(2);
+        let source = wide(2);
+        let mut cache = AnalysisCache::new();
+        analyze_resident(&target, Some(&source), &cfg, &mut cache).unwrap();
+
+        let edited_source =
+            edit_one_chapter(&source, "LEV", "3", "a rather different source verse");
+        let before = cache.probe();
+        let after = analyze_resident(&target, Some(&edited_source), &cfg, &mut cache).unwrap();
+        let p = cache.probe();
+        assert_eq!(
+            p.direct_misses - before.direct_misses,
+            0,
+            "the direct lane re-mapped on a reference edit"
+        );
+        assert_eq!(p.spacing_mapped, 0, "spacing re-mapped on a reference edit");
+        assert_eq!(p.casing_mapped, 0, "casing re-mapped on a reference edit");
+        assert_eq!(
+            p.duplicate_mapped, 0,
+            "duplicate re-mapped on a reference edit"
+        );
+        assert_eq!(
+            after,
+            analyze_with_config(&target, Some(&edited_source), &cfg)
+        );
+    }
+
+    /// SCHEDULER INVARIANT — the transient chapter views do not become resident.
+    ///
+    /// `shared_prep_bytes` is a per-worker high-water mark of one chapter task's
+    /// prep, so it must stay far below the corpus's own text size however large the
+    /// corpus is. Whole-corpus retention is what ADR 0068 rejected on memory
+    /// evidence, and it is the failure this would catch.
+    #[cfg(feature = "bench-probes")]
+    #[test]
+    fn chapter_prep_stays_chapter_sized() {
+        let corpus = wide(60);
+        let bytes: usize = corpus.texts().iter().map(String::len).sum();
+        let _ = analyze_with_config(&corpus, None, &Config::all());
+        let peak = bench::shared_prep_bytes();
+        assert!(peak > 0, "the probe never recorded a chapter task");
+        // One chapter is 1/12th of a book and 1/36th of the corpus here; the tape
+        // is ~12 bytes a scalar, so a chapter's prep is a small multiple of a
+        // chapter's text and a tiny fraction of a whole-corpus product.
+        assert!(
+            peak < bytes,
+            "chapter prep peaked at {peak} bytes against {bytes} bytes of corpus text — \
+             a view is being retained across chapters"
+        );
     }
 
     #[test]
@@ -229,19 +467,21 @@ pub fn analyze(target: &Corpus, source: Option<&Corpus>) -> Vec<Finding> {
 /// index is computed, so the product is position-independent: it stays valid and
 /// correctly addressed wherever the chapter later sits in the corpus.
 ///
-/// Each verse's scalar tape (ADR 0045) is built once into the reused `tape`
-/// buffer and shared by every per-verse rule. Records come out in emission order:
-/// verse ascending, then per-verse registry order within a verse — the order the
-/// stable final sort must preserve among equal keys.
+/// Each verse's scalar tape and dirty-bits mask (ADR 0045 / 0046) come from the
+/// chapter task, which built them once for every participant that declared them
+/// rather than once per lane — the direct lane is the sixth tape reader. Records
+/// come out in emission order: verse ascending, then per-verse registry order
+/// within a verse — the order the stable final sort must preserve among equal
+/// keys.
 fn chapter_verse_records(
     texts: &[String],
     per_verse: &[Box<dyn rule::PerVerseRule>],
+    tapes: &prep::ChapterTape,
 ) -> Vec<cache::CachedPerVerseFinding> {
     let mut out = Vec::new();
-    let mut tape = Vec::new();
     for (vi, text) in texts.iter().enumerate() {
         let local_idx = LocalKeyIdx::from_usize(vi);
-        let mask = tape::build_masked(text, &mut tape);
+        let (tape, mask) = (tapes.verse(vi), tapes.mask(vi));
         for r in per_verse {
             // Skip the clean majority: a rule runs only when the verse's
             // dirty-bits mask opens its gate (ADR 0046). The gate is a safe
@@ -250,7 +490,7 @@ fn chapter_verse_records(
                 continue;
             }
             let (code, severity) = (r.id(), r.severity());
-            for range in r.check(text, &tape) {
+            for range in r.check(text, tape) {
                 out.push(cache::CachedPerVerseFinding {
                     local_idx,
                     code,
@@ -261,16 +501,6 @@ fn chapter_verse_records(
         }
     }
     out
-}
-
-/// One dirty chapter's direct-lane map work: its identity, its validity hash, and
-/// the verse texts to map. It carries no book position and no global base —
-/// mapping a chapter cannot depend on where the chapter sits.
-struct DirectWork<'a> {
-    slug: &'a str,
-    chapter: &'a str,
-    hash: u128,
-    texts: &'a [String],
 }
 
 /// Analyze a corpus, running only the rules `config` enables.
@@ -408,65 +638,70 @@ fn transition(
     #[cfg(feature = "bench-probes")]
     let bench_map_start = std::time::Instant::now();
 
-    // The per-verse phase is embarrassingly parallel — each verse is judged
-    // from its own text by `Sync` rules. Under the `parallel` feature it fans
-    // out over rayon (ADR 0018); otherwise it stays serial. Output is the same
-    // either way: `out` is sorted before return, so order never depends on the
-    // feature.
-    // The verse's scalar tape (ADR 0045) is built once per verse into a reused
-    // buffer — a `map_init` per-worker buffer under `parallel`, a plain reused
-    // `Vec` serially — and shared by every per-verse rule, replacing their ~10
-    // separate `char_indices()` walks with one decode+classify pass.
-    // The one core transition always maps through the cache — the one-shot path
-    // hands in a fresh empty one (plan §1 decision 16), so it is all misses and
-    // maps every book exactly as a no-cache walk would, then drops the cache.
-    // The direct (per-verse) lane's planning pass. A per-verse rule reads one
-    // verse and nothing else, so its map unit is the smallest thing a mutation
-    // replaces: a chapter. A chapter is dirty iff its cached product was not
-    // derived from this exact chapter content — stamp-derived, never a caller
-    // dirty hint, because `Corpus` owns the chapter hashes and maintains them at
-    // every mutation. A cold call finds nothing cached and so marks every
-    // chapter dirty; a one-chapter edit marks exactly that chapter.
+    // ── The chapter-outer planning pass (epic plan §6.2).
+    //
+    // Every participant is enrolled from its OWN stamps against its OWN cache —
+    // the direct per-verse lane from its content-hashed chapter products, each
+    // substrate from its `ObservationInputStamp`. Nothing here reads another
+    // participant's state, and a judging-only config change enrols nobody and so
+    // maps and reduces zero chapters.
+    //
+    // The pass visits every chapter of every book, so it stays cheap per chapter:
+    // per-book maps are hoisted out of the inner loop (one slug hash per book, not
+    // per chapter), and nothing whole-corpus is built unless the O(1) count check
+    // below proves something stale is retained.
+    //
+    // Cache sections are split here rather than after the map: the direct lane's
+    // plan reads prep AND the finding lane's committed stamps, and stores its
+    // products back into prep.
+    let cache::AnalysisCache {
+        prep,
+        substrates,
+        findings: finding_lane,
+    } = &mut *cache;
+
+    // The direct (per-verse) lane. A per-verse rule reads one verse and nothing
+    // else, so its map unit is the smallest thing a mutation replaces: a chapter.
+    // A chapter is dirty iff its cached product was not derived from this exact
+    // chapter content — stamp-derived, never a caller dirty hint, because `Corpus`
+    // owns the chapter hashes and maintains them at every mutation. A cold call
+    // finds nothing cached and so marks every chapter dirty; a one-chapter edit
+    // marks exactly that chapter.
+    //
     // Two independent stamps, two dirty sets, unioned: a chapter is *mapped* when
     // its cached product does not match this chapter's content, and its committed
-    // records are *patched* when the partition lane's own stamp does not — which
-    // a failed attempt can leave behind after warming prep (§3.3 retry safety).
-    // Mapping is therefore never inferred from the partition stamp, nor patching
-    // from prep's warm state.
-    //
-    // The pass visits every chapter of every book, so it must stay cheap per
-    // chapter: both lanes' per-book maps are hoisted out of the inner loop (one
-    // slug hash per book, not per chapter), and nothing whole-corpus is built
-    // unless the O(1) count check below proves something stale is retained.
-    let target_texts = target.texts();
-    let mut direct_work: Vec<DirectWork<'_>> = Vec::new();
-    let mut direct_book_runs: Vec<std::ops::Range<usize>> = Vec::new();
+    // records are *patched* when the partition lane's own stamp does not — which a
+    // failed attempt can leave behind after warming prep (retry safety). Mapping is
+    // therefore never inferred from the partition stamp, nor patching from prep's
+    // warm state.
+    // The chapter-outer planning pass and map are one shared phase for every
+    // participant, so the measurement build times them as a whole here rather than
+    // per substrate.
+    #[cfg(feature = "bench-probes")]
+    let bench_plan_start = std::time::Instant::now();
+    #[cfg(feature = "bench-probes")]
+    prep::reset_prep_peak();
+    let mut schedule = schedule::Schedule::new(target);
     let mut direct_dirty: Vec<(Box<str>, Box<str>, u128)> = Vec::new();
-    // The dirty work's size, for the map seam's route decision only. Summing
-    // already-known string lengths, so it costs one integer add per dirty verse
-    // and reads no text.
-    let mut direct_bytes = 0usize;
     let mut chapter_count = 0usize;
     #[cfg(any(test, feature = "test-probes"))]
     let mut direct_hits = 0usize;
-    for book in target.book_layout() {
-        let run_start = direct_work.len();
-        let cached = cache.prep.direct_book(&book.slug);
-        let stamps = cache.findings.direct_stamps_for(&book.slug);
-        for chapter in &book.chapters {
+    #[cfg(any(test, feature = "test-probes"))]
+    let mut direct_misses = 0usize;
+    for (bi, book) in target.book_layout().iter().enumerate() {
+        let cached = prep.direct_book(&book.slug);
+        let stamps = finding_lane.direct_stamps_for(&book.slug);
+        for (ci, chapter) in book.chapters.iter().enumerate() {
             chapter_count += 1;
             let map_needed = cached
                 .and_then(|book| book.get(&*chapter.chapter))
                 .is_none_or(|c| !c.matches(chapter.hash));
             if map_needed {
-                let texts = &target_texts[chapter.range.clone()];
-                direct_bytes += texts.iter().map(String::len).sum::<usize>();
-                direct_work.push(DirectWork {
-                    slug: &book.slug,
-                    chapter: &chapter.chapter,
-                    hash: chapter.hash,
-                    texts,
-                });
+                schedule.enrol_direct(bi, ci);
+                #[cfg(any(test, feature = "test-probes"))]
+                {
+                    direct_misses += 1;
+                }
             } else {
                 #[cfg(any(test, feature = "test-probes"))]
                 {
@@ -482,107 +717,20 @@ fn transition(
                 ));
             }
         }
-        if direct_work.len() > run_start {
-            direct_book_runs.push(run_start..direct_work.len());
-        }
     }
     #[cfg(any(test, feature = "test-probes"))]
-    cache.note_direct(direct_hits, direct_work.len());
-    // Map the dirty chapters (one Rayon grain — see `map_chapter_work`) and warm
-    // each product into the lane. The records are chapter-local, so they are
-    // stored exactly as produced; nothing is rebased here.
-    let direct_route = rule::map_route(&direct_book_runs, direct_work.len(), direct_bytes);
-    #[cfg(any(test, feature = "test-probes"))]
-    cache.note_direct_route(direct_route);
-    let fresh = rule::map_chapter_work(&direct_work, &direct_book_runs, direct_route, |w| {
-        chapter_verse_records(w.texts, &per_verse)
-    });
-    for (w, records) in direct_work.iter().zip(fresh) {
-        cache.store_direct_chapter(w.slug, w.chapter, w.hash, records);
-    }
-    // Removal invalidation, entered only when it can possibly apply. Every
-    // chapter the corpus presents is now resident in both lanes, so a resident
-    // count above the corpus's chapter count is exactly the signal that a chapter
-    // left the corpus (a whole-book replacement dropping one) and stale products,
-    // records and stamps must go. Equal counts prove there is nothing stale, in
-    // O(1) — a whole-corpus chapter set built every analyze would be a fixed cost
-    // on every edit, however small.
-    let direct_stale = cache.prep.direct_chapter_count() > chapter_count
-        || cache.findings.direct_stamp_count() > chapter_count;
-    let direct_present: Option<std::collections::BTreeSet<(&str, &str)>> = direct_stale.then(|| {
-        target
-            .book_layout()
-            .iter()
-            .flat_map(|b| b.chapters.iter().map(|c| (&*b.slug, &*c.chapter)))
-            .collect()
-    });
-    if let Some(present) = direct_present.as_ref() {
-        cache.retain_direct(|slug, chapter| present.contains(&(slug, chapter)));
-    }
+    prep.note_direct(direct_hits, direct_misses);
 
-    // MAP boundary. The direct lane may be warm now, but no resident finding
-    // partition has changed. A failed attempt may retain those self-validating
-    // map products; the later commit still owns semantic publication.
-    #[cfg(any(test, feature = "test-probes"))]
-    if fault::fires(fault::Phase::Map) {
-        return Err(AnalyzeError { phase: "map" });
-    }
-
-    // MAP boundary reached: `reduce` runs from here through the JUDGE boundary.
-    #[cfg(feature = "bench-probes")]
-    let bench_reduce_start = std::time::Instant::now();
-
-    // Split the cache: direct records stay borrowed for the later patch while
-    // substrates may update their self-validating products. Finding partitions
-    // remain uncommitted until the final atomic boundary.
-    let cache::AnalysisCache {
-        prep,
-        substrates,
-        findings: finding_lane,
-    } = &mut *cache;
-    let prep: &cache::PrepSection = prep;
-    let mut out: Vec<Finding> = Vec::new();
-
-    // REDUCE boundary. No resident finding partition has been committed.
-    #[cfg(any(test, feature = "test-probes"))]
-    if fault::fires(fault::Phase::Reduce) {
-        return Err(AnalyzeError { phase: "reduce" });
-    }
-
-    // JUDGE boundary reached. Every typed substrate drives below.
-    #[cfg(feature = "bench-probes")]
-    let bench_judge_start = std::time::Instant::now();
-    // Every substrate drive runs inside the judge window, so its per-phase
-    // sub-split is zeroed here — a substrate this call did not drive then reads
-    // as zero rather than as the previous call's row.
-    #[cfg(feature = "bench-probes")]
-    substrate::reset_drive_phases();
-
-    // Typed observation substrates (plan §5.2) own stamp-derived validity: each maps only chapters whose
-    // observation input stamp changed and re-reduces an owning book only when a
-    // chapter changed, so a judging-knob change reuses every observation and
-    // reduction (maps/reduces zero) and re-judges from the cached corpus
-    // aggregate. A disabled substrate (no active consumer) drops its products so
-    // edits while it is inactive do no work for it.
-    // The converted substrates' patches (plan §6.4). They never enter `out`:
-    // their records go straight to their own partitions, and only after the judge
-    // boundary — so a failed attempt publishes nothing and leaves the previous
-    // partitions intact.
+    // The typed observation substrates. Each owns stamp-derived validity: it is
+    // enrolled only for chapters whose observation input stamp changed, so a
+    // judging-knob change reuses every observation and reduction and re-judges from
+    // the cached corpus aggregate. A disabled substrate (no active consumer) drops
+    // its products so edits while it is inactive do no work for it.
+    //
+    // The converted substrates' patches never enter `out`: their records go
+    // straight to their own partitions, and only after the judge boundary — so a
+    // failed attempt publishes nothing and leaves the previous partitions intact.
     let mut substrate_lane = substrate::SubstrateLane::default();
-    // ── The chapter-outer map phase (epic plan §6).
-    //
-    // Every migrated participant is enrolled first, from its own stamps against
-    // its own cache; then ONE work list over the union of their dirty chapters is
-    // mapped through ONE Rayon grain, building each chapter's requested
-    // mechanical views once and dropping them before the worker moves on. Nothing
-    // here reduces, judges or publishes: after the ordered collection each
-    // substrate takes its own observations and finishes independently, exactly as
-    // its own drive used to.
-    //
-    // Substrates not yet migrated keep their own plan/map/finish drive below and
-    // are simply not enrolled. That is a transitional state, not a second
-    // execution model — the pieces are the same.
-    let mut schedule = schedule::Schedule::new(target);
     let mut spacing_plan = signals::punctuation::plan_spacing(
         active.spacing,
         &mut substrates.spacing,
@@ -632,9 +780,17 @@ fn transition(
         &mut schedule,
         &mut substrate_lane,
     );
-    // One reference pairing index for the whole analyze, read by every
-    // reference-declaring participant. Two identical whole-reference walks used to
-    // happen whenever both were active.
+    let mut casing_plan = signals::casing::plan_casing(
+        config.is_enabled(RuleId::SentenceInitialLowercase),
+        config.is_enabled(RuleId::InconsistentWordCasing),
+        &mut substrates.casing,
+        &mut substrates.casing_model,
+        &mut schedule,
+        &mut substrate_lane,
+    );
+    // One reference pairing index for the whole analyze, read by both
+    // reference-declaring participants. Each drive used to build its own, so two
+    // identical whole-reference walks happened whenever both were active.
     let reference = schedule::ReferencePairingIndex::new(source);
     let target_keys = target.keys();
     let mut proportionality_plan = signals::proportionality::plan_proportionality(
@@ -649,15 +805,22 @@ fn transition(
         &mut schedule,
         reference.as_ref(),
     );
-    let mut casing_plan = signals::casing::plan_casing(
-        config.is_enabled(RuleId::SentenceInitialLowercase),
-        config.is_enabled(RuleId::InconsistentWordCasing),
-        &mut substrates.casing,
-        &mut substrates.casing_model,
-        &mut schedule,
-        &mut substrate_lane,
-    );
-    let (work, mut mapped) = schedule.run(
+
+    // ── The chapter-outer map phase (epic plan §6.3).
+    //
+    // ONE work list over the union of every participant's dirty chapters, mapped
+    // through ONE outer Rayon grain. Each chapter task builds only the mechanical
+    // views its own participants requested, maps them serially, and drops those
+    // views before its worker takes another chapter — the lifetime that makes tape
+    // and grapheme sharing possible at all (ADR 0068).
+    //
+    // The closures read the corpus and write nothing: no resident cache is mutated
+    // here. Collection is indexed, so a bundle's position is its work item's
+    // position whatever the completion order, and every scatter below writes into
+    // the layout position its work item came from.
+    #[cfg(feature = "bench-probes")]
+    let bench_chapter_map_start = std::time::Instant::now();
+    let (work, mut mapped, route) = schedule.run(
         &schedule::MapContext {
             words: &substrates.words,
             per_verse: &per_verse,
@@ -668,6 +831,30 @@ fn transition(
             })
         },
     );
+    #[cfg(feature = "bench-probes")]
+    schedule_probe::record(
+        bench_chapter_map_start - bench_plan_start,
+        std::time::Instant::now() - bench_chapter_map_start,
+    );
+    // One grain per call, so one route to record. Every participant's probe reads
+    // the same value because there is now genuinely one decision.
+    #[cfg(any(test, feature = "test-probes"))]
+    {
+        prep.note_direct_route(route);
+        substrates.note_map_route(route);
+    }
+    #[cfg(not(any(test, feature = "test-probes")))]
+    let _ = route;
+
+    // Warm the direct lane's products. The records are chapter-local, so they are
+    // stored exactly as produced; nothing is rebased here.
+    for (bi, ci, records) in schedule::scatter_direct(&work, &mut mapped) {
+        let book = &target.book_layout()[bi];
+        let chapter = &book.chapters[ci];
+        prep.store_direct_chapter(&book.slug, &chapter.chapter, chapter.hash, records);
+    }
+    // Hand each substrate its own observations. Nothing is committed to a
+    // substrate cache yet — that happens in its `finish_*`, after the fault seams.
     if let Some(plan) = spacing_plan.as_mut() {
         schedule::scatter(&work, &mut mapped, plan, |b| b.spacing.take());
     }
@@ -707,8 +894,68 @@ fn transition(
     if let Some(plan) = untranslated_words_plan.as_mut() {
         schedule::scatter(&work, &mut mapped, plan, |b| b.untranslated_words.take());
     }
+    // Every chapter's mechanical views are already gone (dropped inside their own
+    // chapter tasks); these are the bundles that carried the observations out.
     drop(mapped);
     drop(work);
+    drop(schedule);
+
+    // Removal invalidation, entered only when it can possibly apply. Every chapter
+    // the corpus presents is now resident in both lanes, so a resident count above
+    // the corpus's chapter count is exactly the signal that a chapter left the
+    // corpus (a whole-book replacement dropping one) and stale products, records
+    // and stamps must go. Equal counts prove there is nothing stale, in O(1) — a
+    // whole-corpus chapter set built every analyze would be a fixed cost on every
+    // edit, however small.
+    let direct_stale = prep.direct_chapter_count() > chapter_count
+        || finding_lane.direct_stamp_count() > chapter_count;
+    let direct_present: Option<std::collections::BTreeSet<(&str, &str)>> = direct_stale.then(|| {
+        target
+            .book_layout()
+            .iter()
+            .flat_map(|b| b.chapters.iter().map(|c| (&*b.slug, &*c.chapter)))
+            .collect()
+    });
+    if let Some(present) = direct_present.as_ref() {
+        prep.retain_direct(|slug, chapter| present.contains(&(slug, chapter)));
+    }
+
+    // MAP boundary. The direct lane may be warm now, but no substrate observation
+    // has been committed and no resident finding partition has changed. A failed
+    // attempt may retain those self-validating map products; the later commit still
+    // owns semantic publication. Mapped substrate observations this attempt
+    // produced are simply dropped — a retry re-plans and re-maps them, because
+    // their stamps still read stale.
+    #[cfg(any(test, feature = "test-probes"))]
+    if fault::fires(fault::Phase::Map) {
+        return Err(AnalyzeError { phase: "map" });
+    }
+
+    // MAP boundary reached: `reduce` runs from here through the JUDGE boundary.
+    #[cfg(feature = "bench-probes")]
+    let bench_reduce_start = std::time::Instant::now();
+
+    // Direct records stay borrowed for the later patch while substrates update
+    // their self-validating products. Finding partitions remain uncommitted until
+    // the final atomic boundary.
+    let prep: &cache::PrepSection = prep;
+    let mut out: Vec<Finding> = Vec::new();
+
+    // REDUCE boundary. No resident finding partition has been committed.
+    #[cfg(any(test, feature = "test-probes"))]
+    if fault::fires(fault::Phase::Reduce) {
+        return Err(AnalyzeError { phase: "reduce" });
+    }
+
+    // JUDGE boundary reached. Every substrate reduces and judges below, from its
+    // own cache and its own configuration.
+    #[cfg(feature = "bench-probes")]
+    let bench_judge_start = std::time::Instant::now();
+    // Every substrate's reduce/judge/materialize runs inside the judge window, so
+    // its per-phase sub-split is zeroed here — a substrate this call did not drive
+    // then reads as zero rather than as the previous call's row.
+    #[cfg(feature = "bench-probes")]
+    substrate::reset_drive_phases();
 
     if let Some(plan) = spacing_plan {
         signals::punctuation::finish_spacing(

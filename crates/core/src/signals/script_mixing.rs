@@ -672,18 +672,16 @@ mod tests {
     #[test]
     fn the_shared_stream_maps_what_a_private_token_walk_mapped() {
         let texts = tricky_chapter();
-        let packed = crate::prep::ChapterTokens::build(&texts);
-        let verbatim = crate::prep::ChapterTokens::escaped_only(&texts);
-        let packed_obs = map_mixed_script_chapter(&crate::substrate::ChapterView::tokened(
-            "1",
-            &texts,
-            Some(&packed),
-        ));
-        let verbatim_obs = map_mixed_script_chapter(&crate::substrate::ChapterView::tokened(
-            "1",
-            &texts,
-            Some(&verbatim),
-        ));
+        use crate::substrate::ObservationSubstrate;
+        let needs = <MixedScriptSubstrate as ObservationSubstrate>::NEEDS;
+        let map = |tokens: crate::prep::ChapterTokens| {
+            let prep = crate::prep::ChapterPrep::with_tokens(&texts, needs, tokens);
+            map_mixed_script_chapter(&crate::substrate::ChapterView::scheduled::<
+                MixedScriptSubstrate,
+            >("1", &texts, &prep, None))
+        };
+        let packed_obs = map(crate::prep::ChapterTokens::build(&texts));
+        let verbatim_obs = map(crate::prep::ChapterTokens::escaped_only(&texts));
         assert!(
             packed_obs == verbatim_obs,
             "the packed shared stream mapped a different observation than the same \

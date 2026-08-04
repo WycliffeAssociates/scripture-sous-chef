@@ -154,15 +154,16 @@ pub(crate) fn chapter_base(layout: &crate::corpus::ChapterLayout, token: &str) -
 // inlined body — the shipped path carries no timers.
 // ─────────────────────────────────────────────────────────────────────
 
-/// The phases of one `drive_*` call, in the order a drive performs them.
+/// The phases of one substrate's `finish_*`, in the order it performs them.
+///
+/// Planning and mapping are deliberately absent. Before the chapter-outer
+/// schedule each substrate planned and mapped inside its own drive, so both were
+/// attributable per substrate; now one planning pass and one chapter-outer map
+/// serve every participant at once, and splitting their cost per substrate would
+/// be a fiction. The scheduler's own share is measured as a whole by
+/// [`crate::bench::schedule_phases`].
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum DrivePhase {
-    /// Walk the whole layout, build every chapter's `ObservationInputStamp`,
-    /// ask the cache which chapters are dirty, collect the map work.
-    Plan,
-    /// The ordered chapter-map seam: `map_chapter` over the dirty chapters plus
-    /// slotting the results back into caller order.
-    Map,
     /// `update_book` for every book — the ordered reduction-to-convergence
     /// replay, the book fold, and the corpus-aggregate replacement.
     Reduce,
@@ -197,15 +198,15 @@ pub const SUBSTRATE_NAMES: [&str; SubstrateId::ALL.len()] = [
 
 /// Column labels for [`drive_phase_table`] — [`DrivePhase`] declaration order.
 #[cfg(feature = "bench-probes")]
-pub const DRIVE_PHASE_NAMES: [&str; 6] = ["plan", "map", "reduce", "keys", "judge", "materialize"];
+pub const DRIVE_PHASE_NAMES: [&str; 4] = ["reduce", "keys", "judge", "materialize"];
 
 #[cfg(feature = "bench-probes")]
-type DrivePhaseTable = [[std::time::Duration; 6]; SubstrateId::ALL.len()];
+type DrivePhaseTable = [[std::time::Duration; 4]; SubstrateId::ALL.len()];
 
 #[cfg(feature = "bench-probes")]
 thread_local! {
     static DRIVE_PHASES: std::cell::Cell<DrivePhaseTable> =
-        const { std::cell::Cell::new([[std::time::Duration::ZERO; 6]; SubstrateId::ALL.len()]) };
+        const { std::cell::Cell::new([[std::time::Duration::ZERO; 4]; SubstrateId::ALL.len()]) };
 }
 
 /// Zero the drive-phase table. `transition` calls this once per analyze so a
@@ -213,7 +214,7 @@ thread_local! {
 /// row from the previous one.
 #[cfg(feature = "bench-probes")]
 pub(crate) fn reset_drive_phases() {
-    DRIVE_PHASES.with(|t| t.set([[std::time::Duration::ZERO; 6]; SubstrateId::ALL.len()]));
+    DRIVE_PHASES.with(|t| t.set([[std::time::Duration::ZERO; 4]; SubstrateId::ALL.len()]));
 }
 
 /// The most recent analyze's per-substrate × per-phase split on this thread.
@@ -321,42 +322,6 @@ pub(crate) struct PairedView<'a> {
 }
 
 impl<'a> ChapterView<'a> {
-    /// A target-only chapter view — the shape every substrate but
-    /// `ProportionalitySubstrate` maps from. Deliberately NOT generic: a
-    /// reference-declaring substrate may legitimately map a chapter with no paired
-    /// reference (the `Absent` case), so this constructor has to stay open to it.
-    pub(crate) fn target(chapter: &'a str, texts: &'a [String]) -> Self {
-        ChapterView {
-            chapter,
-            texts,
-            paired: None,
-            tokens: None,
-            tape: None,
-            graphemes: None,
-        }
-    }
-
-    /// A target-only chapter view carrying the chapter's token streams.
-    ///
-    /// TRANSITIONAL: the shape a not-yet-migrated substrate's own drive builds
-    /// from the call-scoped [`crate::prep::SharedTokens`] lane. It disappears with
-    /// that lane, once the last token-reading substrate takes its observations
-    /// from the chapter-outer scheduler instead.
-    pub(crate) fn tokened(
-        chapter: &'a str,
-        texts: &'a [String],
-        tokens: Option<&'a crate::prep::ChapterTokens>,
-    ) -> Self {
-        ChapterView {
-            chapter,
-            texts,
-            paired: None,
-            tokens,
-            tape: None,
-            graphemes: None,
-        }
-    }
-
     /// The view the chapter-outer scheduler hands one participant: exactly the
     /// mechanical views that substrate's [`ObservationSubstrate::NEEDS`] declared,
     /// and exactly the reference access its `Pairing` declared.
@@ -411,28 +376,6 @@ impl<'a> ChapterView<'a> {
             "a grapheme-consuming substrate mapped a chapter whose grapheme spans were never \
              built — stop and report: its declared PrepNeeds and the chapter task disagree",
         )
-    }
-
-    /// A chapter view carrying its declared paired reference. The
-    /// `S::Pairing: DeclaresReference` bound means a substrate declaring
-    /// [`NoReference`] cannot call this at all: a target-only driver reaching for
-    /// reference text does not typecheck.
-    pub(crate) fn paired<S: ObservationSubstrate>(
-        chapter: &'a str,
-        texts: &'a [String],
-        paired: Option<PairedView<'a>>,
-    ) -> Self
-    where
-        S::Pairing: DeclaresReference,
-    {
-        ChapterView {
-            chapter,
-            texts,
-            paired,
-            tokens: None,
-            tape: None,
-            graphemes: None,
-        }
     }
 
     /// The declared paired reference view, if this chapter has one.
@@ -2158,9 +2101,13 @@ mod replay {
             .iter()
             .map(|(_, c)| vec![(*c).to_string()])
             .collect();
+        // Both replay substrates declare `PrepNeeds::NONE` (their maps read the
+        // verse texts directly), so an empty prep is exactly what the scheduler
+        // would hand them.
+        let prep = crate::prep::ChapterPrep::default();
         cache.update_book(slug, &stamped, &(), |i| {
             S::map_chapter(
-                &ChapterView::target(chapters[i].0, &texts[i]),
+                &ChapterView::scheduled::<S>(chapters[i].0, &texts[i], &prep, None),
                 &(),
                 &(),
             )
@@ -2546,9 +2493,12 @@ mod replay {
             .iter()
             .map(|(_, c)| vec![(*c).to_string()])
             .collect();
+        // `Owned` declares `PrepNeeds::NONE`, so an empty prep is exactly what the
+        // scheduler would hand it.
+        let prep = crate::prep::ChapterPrep::default();
         cache.update_book(slug, &stamped, &(), |i| {
             Owned::map_chapter(
-                &ChapterView::target(chapters[i].0, &texts[i]),
+                &ChapterView::scheduled::<Owned>(chapters[i].0, &texts[i], &prep, None),
                 &(),
                 &(),
             )
