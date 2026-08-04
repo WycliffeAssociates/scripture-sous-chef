@@ -1124,3 +1124,202 @@ observations and maps zero chapters.
 
 Until (1) and (2) are adjudicated the three retired rules stay live beside the new
 one. That is a safe intermediate state: the new rule is purely additive today.
+
+---
+
+## Entry 12 — Gate 1 reopening: ADR 0050's proportional shape for BOTH channels
+
+- **Date:** 2026-08-04
+- **Source:** mediator, on Entry 11 and calibration addendum §C. Recorded verbatim
+  below; this is the decision of record for the placement and sequence knees.
+
+> Checkpoint 4 accepted as reported; the block was correct and obligation (b)'s
+> root-cause work is exactly what the stop clause existed to buy. Adjudication of
+> the reopening follows. Record it verbatim as a progress-log entry.
+>
+> **First, approvals of what landed:**
+> - Both Entry 10 deviations APPROVED: identity unpooled for placement (matching
+>   every measured anchor beats matching a blueprint summary) and the `"\u{1}#"`
+>   sentinel pair key (a literal-`#` collision would have been a real bug).
+> - The JS discriminant pin fix for code 25 is a good pre-existing catch.
+>   Consequence: add the node test suite to the checkpoint 5 verification list so
+>   wire coverage cannot silently rot outside the cargo gate again.
+> - The three old rules staying live beside the additive new rule is the correct
+>   holding state.
+>
+> **Gate 1 reopening — the ruling: ADR 0050's proportional shape for BOTH
+> channels.**
+>
+> 1. **Placement: adopt the proportional knee** `K = base + slope·N/10⁴` (N = the
+>    judged pool's opportunity volume) as a two-knob config, recalibrated. The
+>    diagnosis is accepted in full: a flat knee silences slip clouds that grow with
+>    volume, ADR 0050's amendment is the codebase's own precedent, and the probe's
+>    blind spot (synthetic anchors + aggregate volumes, never the adjudicated
+>    roster) is now closed by making the **ADR 0054 roster a permanent regression
+>    gate** — engwebster, WA-ne-udb (MAT 4:9 `,ब` by name), kmr-IQ, WA-pa-ulb, with
+>    per-corpus preserved counts recorded.
+> 2. **Sequence: same shape, not flat k=8.** My k=2 ruling is overturned by
+>    obligation (a)'s evidence — but flat k=8 has the identical volume-blindness:
+>    `. → ,` slipped 12 times in a huge corpus dies at flat 8 just as engwebster's
+>    slip cloud died at flat 8 in placement. The honest graded question was never
+>    Wilson dominance; it is "how many sightings still count as unusual given this
+>    much opportunity," and that is precisely what the proportional knee answers. K
+>    over directed lead opportunities, recalibrated. The 908 are the recovery
+>    target set for re-running obligation (a): they should now substantially fire;
+>    any that still decline must read as conventions on inspection, with samples.
+> 3. **Rarity: NOT reopened** — no measured failure, and the exposure gate plus
+>    run-membership basis already handled its known cases. But while re-running the
+>    ledger, check whether any remaining unpreserved old wins trace to rarity's
+>    flat knee; report if so, leave frozen if not.
+>
+> **Calibration procedure and authority:** sweep (base, slope) per channel against
+> three simultaneous gates: (i) all ~30 synthetic anchors byte-stable — the
+> singleton ladder, tiny-corpus abstention, every established silence, `*******`
+> recovery; (ii) the ADR 0054 roster preserved (engwebster 23/23 or any exception
+> individually adjudicated with a sample; WA-ne-udb/kmr-IQ/WA-pa-ulb substantially
+> recovered); (iii) volume sanity — depth-50 fleet within ~2× the current 15,326,
+> p50 per corpus in single-to-low-double digits, p99 at or below the retired pair's
+> 75. You have authority to pick constants inside that frontier; if the frontier is
+> empty or the trade-off is stark, STOP and report the frontier table instead of
+> choosing. Record the sweep, choice, and re-run FLAG 1 default-on table + depth
+> p50/p90/p99 in the packet addendum.
+>
+> **Also record:** `ayn_reg` absent from the fleet — ADR 0024's Arabic `۔۔` win is
+> unverifiable on this corpus set; list it in the drift ADR as explicitly
+> unverified rather than silently preserved.
+>
+> Both remedies are judging knobs re-judged from retained observations — confirm the
+> config-only path maps zero chapters when you apply them. Then re-run the full
+> ledger and both obligations, and if they pass, proceed directly into the deletion
+> series per plan §11.1 (separate commits) and the drift summary. Stop and report at
+> the completed checkpoint 4, or at a frontier stop.
+
+- **Next safe step:** implement `K = base + slope·N/10⁴` in both channels' shared
+  `judged_form`, sweep against the three gates, re-run the ledger and both
+  obligations, then the deletion series.
+
+---
+
+## Entry 13 — the proportional knee landed; FRONTIER STOP on its constants
+
+- **Date:** 2026-08-04
+- **Status:** Entry 12's ruling is **implemented** — ADR 0050's shape
+  `K = base + slope·N/10 000` in both the placement and sequence channels, as one
+  shared knee. The **constants are not chosen**: no `(base, slope)` pair satisfies
+  gates (ii) and (iii) together, and the ruling's own instruction for that case is
+  to report the frontier table. The deletion series remains blocked.
+- **Addendum:** [`2026-08-04-nonletter-usage-probe.md`](../calibration/2026-08-04-nonletter-usage-probe.md)
+  §D1–D5. Durable ledger refreshed to candidate A.
+
+### The frontier (full fleet, floor 0.75 = depth 50)
+
+| point | placement | sequence | fleet | p50 | p90 | p99 | kept/40,859 | (a) residue | ne_udb | engw | kmr | pa |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| flat (as shipped) | (8, 0) | (2, 0) | 13,709 | 7 | 19 | 33 | 3,550 | **908** | 3 | **0** | 6 | 5 |
+| C | (8, 40) | (2, 40) | 33,662 | 16 | 47 | 108 | 9,646 | 380 | 12 | **0** | 10 | 24 |
+| D | (8, 40) | (8, 40) | 38,641 | 18 | 56 | 120 | 10,738 | **0** | 13 | **0** | 10 | 24 |
+| B | (16, 40) | (4, 40) | 41,113 | 21 | 55 | 124 | 11,335 | **0** | 12 | 4 | 10 | 28 |
+| **A** | **(32, 40)** | **(8, 40)** | **53,383** | 28 | 69 | 145 | **13,477** | **0** | **36** | **4** | **29** | **28** |
+
+- **Gate (i): passes everywhere**, all 37 anchors byte-stable including at A.
+- **Gate (ii): only A.** Targets are ADR 0054's own reproduction table — engwebster
+  **4**, kmr-IQ **20**, WA-ne-udb **76**, WA-pa-ulb **25** — not the shipped totals
+  Entry 11 used; the ADR states the larger current totals are the `Pd`/number/punct
+  widening's own new coverage, "not a regression". A recovers engwebster's named
+  4/4, WA-ne-udb **36 = 76 − the 40 accepted verse-final dandas** (exact), kmr-IQ
+  29 ≥ 20, WA-pa-ulb 28 ≥ 25 with exactly 25 coalesced.
+- **Gate (iii): only the flat point.** A is 3.9× the fleet budget with p99 145
+  against a 75 ceiling. Even the gentlest proportional point, C, is 2.2× with
+  p99 108 — over budget while still recovering none of engwebster's named four.
+
+No crossing point exists; the gap is ~2× in both fleet volume and p99, in the same
+direction.
+
+### Obligation (a) is discharged at every point with sequence base ≥ 8
+
+The 908 recovery target falls to 380 at sequence base 2 with slope 40, and to
+**0** at base 8 (D, B at base 4, A). So the junk-pair population §C2 sampled is
+fully readmitted, and no residue needs a convention reading.
+
+### Rarity checked as instructed, NOT implicated
+
+Every unpreserved old win traces to placement's or sequence's knee. The
+rarity-attributed residues in the roster samples are correct silences: kmr-IQ's
+`:،` / `،؟` / `:!` at `2401/26962` and `11282/26962`, and WA-pa-ulb's `(` at
+`64/78167`, are all glyphs those translations genuinely use constantly. Rarity
+stays frozen.
+
+### The anchor battery is structurally blind to the knee — now fixed
+
+Gate (i) passing at every point is a **defect in the battery**, not reassurance,
+and it is why the packet could never have caught the flat-knee failure: every
+anchor is built so the judged occurrence's leave-one-out minority is either **0**
+(fires at `knee = 1` regardless of width) or **the whole pool** (silenced by
+`dominance = 0` regardless of width). The knee only decides the middle — a handful
+against thousands — and the slip cloud *is* the middle.
+
+Closed permanently by one new synthetic witness,
+`a_slip_cloud_that_grew_with_volume_survives_the_recurrence_knee`: it builds
+engwebster's shape, asserts it clears the shipped floor, and asserts the same cloud
+does **not** clear it at `placement_rate_per_10k = 0`. Both the slip count and the
+pool volume are derived from the shipped config, so it survives recalibration — it
+asks only that the proportional term do real work. This is the ADR 0054 roster gate
+in a form the cargo suite can enforce without corpora.
+
+### Why the frontier is empty — and the axis I removed
+
+Not a search-resolution problem. The two gates are the same measurement at the same
+magnitude: the roster wins sit at leave-one-out minorities of **8–19 against pools
+of 1,435–10,947** (1–6 per 1,000), and gate (iii)'s budget is set by the modal
+corpus, where a knee admitting 1–6 per 1,000 also admits every ordinary
+punctuation identity's own 1–6 per 1,000 residue. A scalar knee only chooses where
+the shared cut falls.
+
+`punct.spacing-anomaly` had an axis this rule dropped: it conditioned each
+attached/spaced binary on the **neighbour content class**, so a mark's `Letter`-pool
+slip cloud was judged against `Letter`-pool opportunities only (ADR 0054's second
+amendment is explicit that this is what dissolved the old special cases). This rule
+records the neighbour class but pools the **topology** table across all of them —
+and topology is the channel every roster win fires through. So the roster cases are
+judged against a pool several times larger than the comparable one, diluting the
+minority by exactly the factor the knee is then asked to make up.
+
+**Prediction:** conditioning the topology table on the outer neighbour class shrinks
+`N` for the roster cases while leaving the modal corpus alone, recovering gate (ii)
+at a much smaller knee. That is an **observation-schema change** — new tally axis,
+bumped `SCHEMA_STAMP`, full re-map — not a judging knob, so it is outside both my
+authority and Entry 12's "both remedies are judging knobs" premise.
+
+### Committed state
+
+Proportional shape in both channels, two new knobs (`placement_rate_per_10k`,
+`sequence_rate_per_10k`, projected through wasm), constants at **A** — ADR 0050's
+own pair and the only measured point preserving the adjudicated wins — marked
+**PROVISIONAL** in `NonletterUsageConfig`'s doc comment with the volume-gate
+failure named there. The four-knob ledger sweep tool (`--nonletter-ledger <dir>
+[placement_k] [placement_rate] [sequence_k] [sequence_rate] [floor]`).
+
+Confirmed as required: a config-only change **maps and reduces zero chapters**
+(`a_judging_only_change_maps_and_reduces_nothing`), so either remedy re-judges from
+retained observations.
+
+Verification: `cargo test --workspace` all green (37 nonletter tests, 588 core);
+clippy clean in both new modules; touched-lines-only formatting.
+
+### Three ways forward, for adjudication
+
+1. **Class-conditioned topology pools** — the design fix; an observation-schema
+   change with its own re-map and re-pin.
+2. **Amend gate (iii)**, accepting A's volume. Honest framing: the retired rules'
+   own floor was **0.5** and this rule's depth-50 floor is **0.75**, so a
+   like-for-like coverage comparison belongs at depth 100. Cost: p50 28 / p99 145
+   per corpus at the default.
+3. **Amend gate (ii)**, taking C or D (obligation (a) discharged at D) and
+   adjudicating engwebster's named 4 and WA-ne-udb's remaining 24 as accepted drift
+   with samples.
+
+### Next safe step
+
+Adjudicate the frontier. Deletion stays blocked; the rule is additive beside all
+three retired rules, so no shipped surface depends on the choice yet. Also owed at
+checkpoint 5 per Entry 12: the node test suite joins the verification list.

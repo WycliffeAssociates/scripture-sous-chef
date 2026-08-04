@@ -289,6 +289,9 @@ pub struct NonletterUsageOverrides {
     pub placement_k: Option<f32>,
     #[serde(default)]
     #[tsify(optional)]
+    pub placement_rate_per_10k: Option<f32>,
+    #[serde(default)]
+    #[tsify(optional)]
     pub placement_z: Option<f32>,
     #[serde(default)]
     #[tsify(optional)]
@@ -296,6 +299,9 @@ pub struct NonletterUsageOverrides {
     #[serde(default)]
     #[tsify(optional)]
     pub sequence_k: Option<f32>,
+    #[serde(default)]
+    #[tsify(optional)]
+    pub sequence_rate_per_10k: Option<f32>,
     #[serde(default)]
     #[tsify(optional)]
     pub sequence_z: Option<f32>,
@@ -544,6 +550,9 @@ fn build_config(
             if let Some(v) = p.placement_k {
                 cfg.nonletter_usage.placement_k = v;
             }
+            if let Some(v) = p.placement_rate_per_10k {
+                cfg.nonletter_usage.placement_rate_per_10k = v;
+            }
             if let Some(v) = p.placement_z {
                 cfg.nonletter_usage.placement_z = v;
             }
@@ -552,6 +561,9 @@ fn build_config(
             }
             if let Some(v) = p.sequence_k {
                 cfg.nonletter_usage.sequence_k = v;
+            }
+            if let Some(v) = p.sequence_rate_per_10k {
+                cfg.nonletter_usage.sequence_rate_per_10k = v;
             }
             if let Some(v) = p.sequence_z {
                 cfg.nonletter_usage.sequence_z = v;
@@ -1188,9 +1200,11 @@ mod tests {
                 rarity_k: Some(9.0),
                 placement_min_pool: Some(44),
                 placement_k: Some(7.0),
+                placement_rate_per_10k: Some(21.0),
                 placement_z: Some(1.1),
                 sequence_min_leads: Some(120),
                 sequence_k: Some(3.0),
+                sequence_rate_per_10k: Some(19.0),
                 sequence_z: Some(1.2),
                 continuation_min_support: Some(90),
             }),
@@ -1250,9 +1264,11 @@ mod tests {
         assert_eq!(cfg.nonletter_usage.rarity_k, 9.0);
         assert_eq!(cfg.nonletter_usage.placement_min_pool, 44);
         assert_eq!(cfg.nonletter_usage.placement_k, 7.0);
+        assert_eq!(cfg.nonletter_usage.placement_rate_per_10k, 21.0);
         assert_eq!(cfg.nonletter_usage.placement_z, 1.1);
         assert_eq!(cfg.nonletter_usage.sequence_min_leads, 120);
         assert_eq!(cfg.nonletter_usage.sequence_k, 3.0);
+        assert_eq!(cfg.nonletter_usage.sequence_rate_per_10k, 19.0);
         assert_eq!(cfg.nonletter_usage.sequence_z, 1.2);
         assert_eq!(cfg.nonletter_usage.continuation_min_support, 90);
         assert_eq!(cfg.untranslated_words.corpus_gate_share, 0.4);

@@ -198,13 +198,26 @@ fn main() {
         // Optional trailing `sequence_k` and `placement_k` overrides, so the two
         // knobs the FLAG 2 obligations put in question can be measured against the
         // adjudicated wins without a rebuild.
-        [flag, path, knobs @ ..] if flag == "--nonletter-ledger" && knobs.len() <= 2 => {
+        [flag, path, knobs @ ..] if flag == "--nonletter-ledger" && knobs.len() <= 5 => {
             let mut cfg = ssc_core::config::NonletterUsageConfig::default();
+            let num = |s: &String| s.parse::<f32>().expect("a knob is a number");
             if let Some(k) = knobs.first() {
-                cfg.sequence_k = k.parse().expect("sequence_k is a number");
+                cfg.placement_k = num(k);
             }
             if let Some(k) = knobs.get(1) {
-                cfg.placement_k = k.parse().expect("placement_k is a number");
+                cfg.placement_rate_per_10k = num(k);
+            }
+            if let Some(k) = knobs.get(2) {
+                cfg.sequence_k = num(k);
+            }
+            if let Some(k) = knobs.get(3) {
+                cfg.sequence_rate_per_10k = num(k);
+            }
+            // The retired rules all emit at 0.5, so a like-for-like coverage
+            // comparison needs this rule's floor put at 0.5 too — which is its
+            // Review Depth 100 end, not its depth-50 default of 0.75.
+            if let Some(k) = knobs.get(4) {
+                cfg.emit_score_min = num(k);
             }
             survey::nonletter_ledger::nonletter_ledger_fleet(Path::new(path), cfg);
             return;

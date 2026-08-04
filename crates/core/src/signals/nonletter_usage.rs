@@ -803,10 +803,10 @@ struct Knobs {
     rarity_min_exposure: u64,
     rarity_k: f64,
     placement_min_pool: u64,
-    placement_k: f64,
+    placement_knee: Knee,
     placement_z: f64,
     sequence_min_leads: u64,
-    sequence_k: f64,
+    sequence_knee: Knee,
     sequence_z: f64,
     continuation_min_support: u64,
 }
@@ -818,13 +818,45 @@ impl Knobs {
             rarity_min_exposure: u64::from(cfg.rarity_min_exposure),
             rarity_k: clamp_count(cfg.rarity_k),
             placement_min_pool: u64::from(cfg.placement_min_pool),
-            placement_k: clamp_count(cfg.placement_k),
+            placement_knee: Knee::of(cfg.placement_k, cfg.placement_rate_per_10k),
             placement_z: clamp_z(cfg.placement_z),
             sequence_min_leads: u64::from(cfg.sequence_min_leads),
-            sequence_k: clamp_count(cfg.sequence_k),
+            sequence_knee: Knee::of(cfg.sequence_k, cfg.sequence_rate_per_10k),
             sequence_z: clamp_z(cfg.sequence_z),
             continuation_min_support: u64::from(cfg.continuation_min_support),
         }
+    }
+}
+
+/// ADR 0050's **opportunity-proportional** recurrence knee:
+/// `K = base + slope · N / 10 000`, where `N` is the judged pool's opportunity
+/// volume.
+///
+/// The absolute base is the tolerance at negligible volume, and the whole
+/// tolerance for a thin identity. The proportional term is what a flat knee gets
+/// wrong: slips accumulate with volume, so a translation that writes ten times the
+/// commas honestly accrues about ten times the comma slips, and a flat knee
+/// silences exactly the slip clouds a large translation produces. The migration
+/// ledger caught that empirically — see [`NonletterUsageConfig`]'s two rate knobs.
+#[derive(Clone, Copy)]
+struct Knee {
+    base: f64,
+    slope: f64,
+}
+
+impl Knee {
+    fn of(base: f32, rate_per_10k: f32) -> Self {
+        Knee {
+            base: clamp_count(base),
+            // A negative or NaN rate degrades to the flat knee rather than to a
+            // knee that shrinks with volume, which would be non-monotone nonsense.
+            slope: f64::from(rate_per_10k).max(0.0),
+        }
+    }
+
+    /// This knee's width at a judged pool of `n`.
+    fn at(self, n: u64) -> f64 {
+        self.base + self.slope * n as f64 / 10_000.0
     }
 }
 
@@ -836,14 +868,15 @@ impl Knobs {
 /// and the pool, so a form seen only here reads as `0 of n-1` rather than `1 of n`
 /// — which is what stops a candidate licensing itself at `1/1`. A pool that falls
 /// below its support floor **abstains** rather than hallucinating a convention.
-fn judged_form(mine: u64, pool: u64, min_pool: u64, z: f64, k: f64) -> Judged {
+fn judged_form(mine: u64, pool: u64, min_pool: u64, z: f64, knee_of: Knee) -> Judged {
     let total_loo = pool.saturating_sub(1);
     if total_loo < min_pool {
         return None;
     }
     let mine_loo = mine.saturating_sub(1).min(total_loo);
     Some(Channel {
-        score: dominance(total_loo - mine_loo, total_loo, z) * knee(mine_loo, k),
+        score: dominance(total_loo - mine_loo, total_loo, z)
+            * knee(mine_loo, knee_of.at(total_loo)),
         count: mine_loo,
         total: total_loo,
     })
@@ -900,7 +933,7 @@ fn judge_identity(kn: &Knobs, key: &str, stats: &NonletterCorpusStats) -> Identi
             pool,
             kn.placement_min_pool,
             kn.placement_z,
-            kn.placement_k,
+            kn.placement_knee,
         )
     };
     let start = std::array::from_fn(|slot| placement(C_START, start_pool, slot));
@@ -922,7 +955,7 @@ fn judge_identity(kn: &Knobs, key: &str, stats: &NonletterCorpusStats) -> Identi
             leads,
             kn.sequence_min_leads,
             kn.sequence_z,
-            kn.sequence_k,
+            kn.sequence_knee,
         )
     };
     let pairs: Box<[(Box<str>, Channel)]> = t
@@ -939,7 +972,7 @@ fn judge_identity(kn: &Knobs, key: &str, stats: &NonletterCorpusStats) -> Identi
             cont_pool,
             kn.continuation_min_support,
             kn.sequence_z,
-            kn.sequence_k,
+            kn.sequence_knee,
         )
     });
 
@@ -2385,6 +2418,69 @@ mod tests {
 
     // ── Monotonicity, config isolation and resident equivalence ───────────
 
+    /// THE PERMANENT GATE AGAINST THE FLAT KNEE. A slip cloud whose size grew with
+    /// the translation's volume must survive the recurrence knee — and must NOT
+    /// survive it when the opportunity-proportional term is switched off.
+    ///
+    /// This is the defect the migration ledger's obligation (b) caught, in
+    /// synthetic form so it cannot come back outside a fleet run. `engwebster`
+    /// writes `-` attached 3,430 times and spaced 19 — a 5.5-per-1,000 slip cloud,
+    /// every member a broken hyphenation (`life -time`, `high -ways`) that ADR 0054
+    /// shipped as a finding. Under a flat knee of 8 all 19 scored **0.173**;
+    /// ADR 0050's proportional knee is what readmits them.
+    ///
+    /// Both the slip count and the volume are DERIVED from the shipped config, so
+    /// the test keeps its meaning through a recalibration: it asks only that the
+    /// proportional term do real work, never that it be any particular size.
+    #[test]
+    fn a_slip_cloud_that_grew_with_volume_survives_the_recurrence_knee() {
+        let cfg = NonletterUsageConfig::default();
+        assert!(
+            cfg.placement_rate_per_10k > 0.0,
+            "a flat placement knee silences volume-grown slip clouds — ADR 0050"
+        );
+        // Two slips past the flat knee's base, so a flat knee scores exactly zero.
+        let slips = cfg.placement_k.ceil() as usize + 2;
+        // The pool volume at which the proportional term lifts that same cloud
+        // clear of the floor: knee(slips - 1, K) >= target  =>  K >= (slips-1)/(1-target).
+        let target = f64::from(cfg.emit_score_min) + 0.05;
+        let need_knee = (slips as f64 - 1.0) / (1.0 - target);
+        let need_pool = ((need_knee - f64::from(cfg.placement_k))
+            / f64::from(cfg.placement_rate_per_10k)
+            * 10_000.0)
+            .ceil()
+            .max(0.0) as usize;
+        // Filler establishing the attached form; ten hyphens a verse keeps the
+        // verse count down.
+        const PER_VERSE: usize = 10;
+        const FILLER: &str = "a-b c-d e-f g-h i-j k-l m-n o-p q-r s-t.";
+        let verses = need_pool / PER_VERSE + 1;
+        let probes: Vec<&str> = (0..slips).map(|_| "the high -way there").collect();
+        let corpus = synth(FILLER, verses, &probes);
+
+        let hit = judged(&corpus, &cfg, "-way")
+            .expect("the slip cloud must produce a finding at the shipped floor");
+        assert_eq!(hit.1, NonletterReason::Topology);
+        assert!(
+            hit.0 >= cfg.emit_score_min,
+            "the slip cloud scored {} against a floor of {}",
+            hit.0,
+            cfg.emit_score_min
+        );
+
+        // The same cloud under a FLAT knee: silenced, which is the regression.
+        let flat = NonletterUsageConfig {
+            placement_rate_per_10k: 0.0,
+            ..cfg
+        };
+        let flat_score = judged(&corpus, &flat, "-way").map_or(0.0, |h| h.0);
+        assert!(
+            flat_score < cfg.emit_score_min,
+            "a flat knee must NOT reach the floor here ({flat_score}); if it does, \
+             this witness has stopped testing the proportional term"
+        );
+    }
+
     /// REMOVAL MONOTONICITY: correcting one of two anomalous occurrences must make
     /// the remaining one MORE suspicious, never less. Clean-as-you-go sharpens the
     /// signal; a non-monotone denominator accident would punish the translator for
@@ -2435,10 +2531,16 @@ mod tests {
             assert!(pair[0].placement_min_pool >= pair[1].placement_min_pool);
             assert!(pair[0].sequence_min_leads >= pair[1].sequence_min_leads);
             assert!(pair[0].continuation_min_support >= pair[1].continuation_min_support);
-            // The knees are the model, not the policy.
+            // The knees are the model, not the policy — depth moves the floor and
+            // the support gates, never the recurrence shape.
             assert_eq!(pair[0].rarity_k, pair[1].rarity_k);
             assert_eq!(pair[0].placement_k, pair[1].placement_k);
+            assert_eq!(
+                pair[0].placement_rate_per_10k,
+                pair[1].placement_rate_per_10k
+            );
             assert_eq!(pair[0].sequence_k, pair[1].sequence_k);
+            assert_eq!(pair[0].sequence_rate_per_10k, pair[1].sequence_rate_per_10k);
         }
         // Support relaxes FASTER: from the midpoint to the exploratory end every
         // support gate falls by a larger fraction than the unusualness floor does.

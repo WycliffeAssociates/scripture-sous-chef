@@ -613,7 +613,19 @@ impl Default for MixedCaseConfig {
     }
 }
 
-/// Knobs for `uni.nonletter-usage-anomaly`. Every field is a **judging** knob —
+/// Knobs for `uni.nonletter-usage-anomaly`.
+///
+/// **The two recurrence-knee constants are PROVISIONAL.** They are ADR 0050's own
+/// shipped pair (base 32, slope 40), adopted because that is the codebase's
+/// calibrated answer to this exact question, and they are the only setting measured
+/// to preserve the ADR 0054 adjudicated multilingual wins. They also **fail** the
+/// depth-50 volume gate — 53,383 fleet findings against a ~30,650 budget, p99 145
+/// against a 75 ceiling — and no `(base, slope)` pair satisfies both at once. That
+/// frontier is reported, not resolved; see calibration addendum §D and the epic
+/// progress log's Entry 13. The rule is additive until the three retired rules are
+/// deleted, and that deletion is blocked on this adjudication.
+///
+/// Every field is a **judging** knob —
 /// the observation substrate has no extraction config at all — so a change here
 /// (including a Review Depth move) re-judges from retained observations and maps
 /// zero chapters.
@@ -657,9 +669,24 @@ pub struct NonletterUsageConfig {
     /// what makes a single medial `*` abstain instead of concluding that medial `*`
     /// is the translation's convention.
     pub placement_min_pool: u32,
-    /// Placement's recurrence knee: a placement recurring `k` or more times is the
-    /// translation's second convention, not a slip.
+    /// Placement's recurrence knee at **negligible volume** — the base of ADR
+    /// 0050's opportunity-proportional knee
+    /// `K = placement_k + placement_rate_per_10k · N_pool / 10 000`. A placement
+    /// recurring `K` or more times is the translation's second convention, not a
+    /// slip.
     pub placement_k: f32,
+    /// Placement's knee **allowance per 10,000 judged opportunities** (ADR 0050's
+    /// amendment). Slips accumulate with volume: a full Bible writes several times
+    /// an NT's commas and honestly accrues several times the spacing slips, so a
+    /// flat knee silences exactly the slip clouds a large translation produces.
+    ///
+    /// This knob is not decorative — reintroducing a flat knee here is the defect
+    /// the migration ledger's obligation (b) caught: `engwebster`'s 23
+    /// spaced-hyphen slips (`life -time`, `high -ways`) and `WA-ne-udb`'s missing
+    /// space after a comma all scored zero, and all were findings ADR 0054
+    /// explicitly adjudicated as keep. `0` disables the term (a pure absolute
+    /// knee), which is the behavior that failed.
+    pub placement_rate_per_10k: f32,
     /// Wilson confidence for placement's dominance estimates. Shrinks a
     /// small-sample majority toward 0.5, so a barely-observed form cannot assert a
     /// convention.
@@ -668,11 +695,22 @@ pub struct NonletterUsageConfig {
     /// grapheme that actually lead a nonletter run, before its directed pairings
     /// are judged at all.
     pub sequence_min_leads: u32,
-    /// Sequence's recurrence knee. `2` is deliberate and makes the channel honestly
-    /// **binary**: at these denominators the dominance term is uninformative
-    /// (always ≈1), so pretending the channel is graded would be dishonest, and the
-    /// claim it actually supports is "this pairing occurs here and nowhere else".
+    /// Sequence's recurrence knee at negligible volume — the base of the same
+    /// proportional knee, over the identity's directed **lead** opportunities.
+    ///
+    /// A flat knee was tried twice and failed twice, in opposite directions. Flat
+    /// `k = 2` (the channel as an honestly binary "unseen pairing") declined 908
+    /// old adjacency findings across 263 corpora that read as plain errors — `,;`
+    /// `.;;` `,.` `.!` `,,` `,......` — because a *second* occurrence counted as
+    /// proof of convention. Flat `k = 8` carries placement's volume-blindness
+    /// instead: a pairing slipped a dozen times in a very large translation dies at
+    /// 8 exactly as `engwebster`'s slip cloud died at 8. The graded question was
+    /// never Wilson dominance (uninformative at these denominators); it is *how
+    /// many sightings still count as unusual given this much opportunity*, and that
+    /// is what the proportional knee answers.
     pub sequence_k: f32,
+    /// Sequence's knee allowance per 10,000 directed lead opportunities.
+    pub sequence_rate_per_10k: f32,
     /// Wilson confidence for sequence's dominance estimates.
     pub sequence_z: f32,
     /// The bounded same-glyph continuation component's own support gate: the
@@ -691,14 +729,16 @@ impl Default for NonletterUsageConfig {
             rarity_min_exposure: 2_000,
             rarity_k: 8.0,
             placement_min_pool: 30,
-            placement_k: 8.0,
+            placement_k: 32.0,
+            placement_rate_per_10k: 40.0,
             // 1.0 rather than 1.96: measured on the fleet, these pools are large
             // enough that a 95% bound is indistinguishable from a 68% one on the
             // bulk while a wider bound only shrinks the thin identities the support
             // gates already own.
             placement_z: 1.0,
             sequence_min_leads: 100,
-            sequence_k: 2.0,
+            sequence_k: 8.0,
+            sequence_rate_per_10k: 40.0,
             sequence_z: 1.0,
             continuation_min_support: 100,
         }

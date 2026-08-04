@@ -185,12 +185,16 @@ fn ledger_for(id: &str, corpus: &Corpus, tuned: NonletterUsageConfig) -> CorpusL
     // is what makes `lost` a real coverage answer.
     let observed = ssc_core::signals::nonletter_usage::nonletter_candidate_runs(corpus);
 
-    // The obligation (a) counterfactual: the same rule with the sequence knee at
-    // the packet's original k = 8, so pairings seen 2..7 still count as unseen.
+    // The obligation (a) counterfactual: the FLAT knee the ledger falsified — a
+    // pure absolute k = 8 in both channels, with no opportunity-proportional term.
+    // An old finding this rule declines while the flat model emits it is a
+    // regression the proportional knee was adopted to remove.
     let at_k8 = ssc_core::signals::nonletter_usage::nonletter_usage_findings(
         corpus,
         &NonletterUsageConfig {
             sequence_k: 8.0,
+            sequence_rate_per_10k: 0.0,
+            placement_rate_per_10k: 0.0,
             ..default
         },
     );
@@ -220,6 +224,40 @@ fn ledger_for(id: &str, corpus: &Corpus, tuned: NonletterUsageConfig) -> CorpusL
     let mut k2_moved = 0u64;
     let mut k2_samples: Vec<String> = Vec::new();
     let mut adj_samples: Vec<String> = Vec::new();
+    // For a roster corpus only: what the rule would say about each span with the
+    // floor removed, so an unpreserved adjudicated win is diagnosable — which
+    // channel spoke, and on what leave-one-out counts — instead of guessed at.
+    let unfloored: BTreeMap<u32, Vec<(Span, String)>> = if ADJUDICATED
+        .iter()
+        .any(|&(c, _)| c == id)
+    {
+        let mut m: BTreeMap<u32, Vec<(Span, String)>> = BTreeMap::new();
+        for f in ssc_core::signals::nonletter_usage::nonletter_usage_findings(
+            corpus,
+            &NonletterUsageConfig {
+                emit_score_min: 0.0,
+                ..default
+            },
+        ) {
+            let detail = match &f.args {
+                Some(ssc_core::FindingArgs::NonletterUsage {
+                    reason,
+                    count,
+                    total,
+                    ..
+                }) => format!(
+                    "{:.3} {:?} {count}/{total}",
+                    f.score.unwrap_or(0.0),
+                    reason
+                ),
+                _ => "-".to_string(),
+            };
+            m.entry(f.key_idx.get()).or_default().push((f.range, detail));
+        }
+        m
+    } else {
+        BTreeMap::new()
+    };
     let mut adj = ADJUDICATED
         .iter()
         .find(|&&(c, _)| c == id)
@@ -279,12 +317,21 @@ fn ledger_for(id: &str, corpus: &Corpus, tuned: NonletterUsageConfig) -> CorpusL
             }
             if adj_samples.len() < 6 {
                 let text = corpus.text(f.key_idx);
+                let detail = unfloored
+                    .get(&v)
+                    .and_then(|ss| {
+                        ss.iter()
+                            .find(|(s, _)| overlaps(*s, f.range))
+                            .map(|(_, d)| d.clone())
+                    })
+                    .unwrap_or_else(|| "NO CANDIDATE".to_string());
                 adj_samples.push(format!(
-                    "{}\t{}\t{}\t{}\t{}",
+                    "{}\t{}\t{}\t{}\t{}\t{}",
                     f.code.code(),
                     disposition.label(),
                     corpus.key(f.key_idx),
                     f.range.slice(text),
+                    detail,
                     context(text, f.range)
                 ));
             }
@@ -333,8 +380,15 @@ pub(crate) fn nonletter_ledger_fleet(dir: &Path, tuned: NonletterUsageConfig) {
     println!("# nonletter-usage migration ledger — the SHIPPED rule vs the three retired rules");
     println!("# corpora={total}");
     println!(
-        "# knobs: floor={} sequence_k={} placement_k={} placement_min_pool={}",
-        tuned.emit_score_min, tuned.sequence_k, tuned.placement_k, tuned.placement_min_pool
+        "# knobs: floor={} placement=({},{}) sequence=({},{}) pools=({},{},{})",
+        tuned.emit_score_min,
+        tuned.placement_k,
+        tuned.placement_rate_per_10k,
+        tuned.sequence_k,
+        tuned.sequence_rate_per_10k,
+        tuned.placement_min_pool,
+        tuned.sequence_min_leads,
+        tuned.continuation_min_support
     );
 
     // ── Fleet totals, per retired rule and overall.
@@ -382,9 +436,8 @@ pub(crate) fn nonletter_ledger_fleet(dir: &Path, tuned: NonletterUsageConfig) {
 
     // ── Obligation (a).
     println!();
-    println!("## obligation (a) — adjacency findings that moved because sequence k = 2");
-    println!("# an old adjacency finding the rule declines at k=2 but WOULD emit at k=8:");
-    println!("# the pairing was already seen 2..7 times in this translation.");
+    println!("## obligation (a) — adjacency findings the FLAT knee would emit and this one does not");
+    println!("# the recovery target set: 908 under the flat k=2, and the residue here");
     println!("k2_specific_movers\t{k2_total}");
     println!(
         "share_of_adjacency_moved\t{:.6}",
@@ -420,7 +473,7 @@ pub(crate) fn nonletter_ledger_fleet(dir: &Path, tuned: NonletterUsageConfig) {
         }
     }
     println!();
-    println!("rule\tdisposition\tcorpus\tsid\tspan\tcontext");
+    println!("rule\tdisposition\tcorpus\tsid\tspan\tunfloored_verdict\tcontext");
     for (id, _) in ADJUDICATED {
         if let Some(r) = rows.iter().find(|r| r.id == id)
             && let Some(a) = r.adjudicated.as_ref()
