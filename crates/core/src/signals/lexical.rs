@@ -232,7 +232,7 @@ impl crate::substrate::ObservationSubstrate for DuplicateWordSubstrate {
         // The carry starts empty at the chapter's first verse — that IS the
         // shipped chapter reset, not an approximation of it.
         let mut tail: Option<Tail<'_>> = None;
-        // The chapter's tokens come from the shared prep lane rather than a private
+        // The chapter's tokens come from the chapter task rather than a private
         // per-verse walk: the same `tokenize_into` result, decoded instead of
         // recomputed, and into one reused buffer instead of a fresh `Vec` a verse.
         let shared = chapter.tokens();
@@ -337,114 +337,41 @@ impl DuplicateBookContribution {
     }
 }
 
-/// One chapter the substrate has to map this analysis, as the ordered map seam
-/// sees it: its caller-order `(book, chapter)` slot plus the view mapping reads.
-struct DuplicateMapWork {
-    book: usize,
-    chapter: usize,
-}
-
-/// Drive the `struct.duplicate-word` observation substrate for one analysis:
-/// map the dirty chapters through the ordered chapter-map seam, reduce (the
-/// identity), and materialize every book's hits into `out`. When inactive, drop
-/// the cached products so an edit while it is disabled does no work for it.
-pub(crate) fn drive_duplicate_word(
+/// Plan the `struct.duplicate-word` substrate's share of this analysis: enrol it
+/// in the chapter-outer schedule for exactly the chapters whose observation input
+/// stamp moved. When inactive, drop the cached products so an edit while it is
+/// disabled does no work for it, and enrol nothing.
+pub(crate) fn plan_duplicate_word<'a>(
     active: bool,
     cache: &mut crate::substrate::SubstrateCache<DuplicateWordSubstrate>,
-    shared: &mut crate::prep::SharedTokens,
-    corpus: &Corpus,
-    out: &mut Vec<Finding>,
-) {
-    use crate::substrate::{
-        ChapterView, DrivePhase, DriveProbe, ObservationInputStamp, ObservationSubstrate,
-    };
+    schedule: &mut crate::schedule::Schedule<'a>,
+) -> Option<crate::schedule::SubstratePlan<'a, DuplicateWordSubstrate>> {
+    use crate::substrate::ObservationInputStamp;
     #[cfg(any(test, feature = "test-probes"))]
     cache.reset_probes();
     if !active {
         cache.clear();
-        return;
+        return None;
     }
+    Some(schedule.enrol::<DuplicateWordSubstrate>(cache, |_slug, c| {
+        ObservationInputStamp::target_only::<DuplicateWordSubstrate>(c.hash, &())
+    }))
+}
+
+/// Reduce (the identity) and materialize `struct.duplicate-word` from the
+/// observations the chapter-outer scheduler mapped.
+pub(crate) fn finish_duplicate_word(
+    cache: &mut crate::substrate::SubstrateCache<DuplicateWordSubstrate>,
+    corpus: &Corpus,
+    plan: crate::schedule::SubstratePlan<'_, DuplicateWordSubstrate>,
+    out: &mut Vec<Finding>,
+) {
+    use crate::substrate::{DrivePhase, DriveProbe, ObservationSubstrate};
     let mut probe = DriveProbe::new(crate::substrate::SubstrateId::DuplicateWord);
-    let texts = corpus.texts();
     let layout = corpus.book_layout();
-    // Borrowed chapter tokens: the layout owns them and outlives the drive, so
-    // the planning pass never allocates. `update_book` takes ownership only
-    // where it rebuilds a persistent cache entry.
-    let mut stamped: Vec<Vec<(&str, ObservationInputStamp)>> = Vec::with_capacity(layout.len());
-    let mut work: Vec<DuplicateMapWork> = Vec::new();
-    let mut book_runs: Vec<std::ops::Range<usize>> = Vec::new();
-    let mut work_bytes = 0usize;
+    let crate::schedule::SubstratePlan { stamped, mut slots } = plan;
     for (bi, book) in layout.iter().enumerate() {
-        let run_start = work.len();
-        let mut chapters = Vec::with_capacity(book.chapters.len());
-        for (ci, c) in book.chapters.iter().enumerate() {
-            let stamp = ObservationInputStamp::target_only::<DuplicateWordSubstrate>(c.hash, &());
-            if !cache.observation_is_current(&book.slug, &c.chapter, &stamp) {
-                work_bytes += texts[c.range.clone()]
-                    .iter()
-                    .map(String::len)
-                    .sum::<usize>();
-                work.push(DuplicateMapWork {
-                    book: bi,
-                    chapter: ci,
-                });
-            }
-            chapters.push((&*c.chapter, stamp));
-        }
-        if work.len() > run_start {
-            book_runs.push(run_start..work.len());
-        }
-        stamped.push(chapters);
-    }
-    probe.mark(DrivePhase::Plan);
-    // Fill the shared token lane for exactly this drive's work set before the map
-    // seam opens. Separate from the seam, not nested inside it: one Rayon grain is
-    // live at a time, and a chapter already streamed by an earlier drive is not
-    // rebuilt.
-    let wanted: Vec<(usize, usize)> = work.iter().map(|w| (w.book, w.chapter)).collect();
-    shared.ensure(layout, texts, &wanted);
-    let shared: &crate::prep::SharedTokens = shared;
-    let route = crate::rule::map_route(&book_runs, work.len(), work_bytes);
-    #[cfg(any(test, feature = "test-probes"))]
-    {
-        cache.map_route = route.label();
-    }
-    let fresh = crate::rule::map_chapter_work(&work, &book_runs, route, |w| {
-        let c = &layout[w.book].chapters[w.chapter];
-        DuplicateWordSubstrate::map_chapter(
-            &ChapterView::tokened(
-                &c.chapter,
-                &texts[c.range.clone()],
-                shared.get(w.book, w.chapter),
-            ),
-            &(),
-            &(),
-        )
-    });
-    let mut slots: Vec<Vec<Option<DuplicateChapterObs>>> = layout
-        .iter()
-        .map(|b| (0..b.chapters.len()).map(|_| None).collect())
-        .collect();
-    for (w, obs) in work.iter().zip(fresh) {
-        slots[w.book][w.chapter] = Some(obs);
-    }
-    probe.mark(DrivePhase::Map);
-    for (bi, book) in layout.iter().enumerate() {
-        cache.update_book(&book.slug, &stamped[bi], &(), |i| {
-            slots[bi][i].take().unwrap_or_else(|| {
-                // The reduction demanded an observation the planning pass did not
-                // name, so this chapter has no shared stream: build one for it
-                // alone, from the same encoder the lane uses.
-                let c = &book.chapters[i];
-                let verses = &texts[c.range.clone()];
-                let tokens = crate::prep::ChapterTokens::build(verses);
-                DuplicateWordSubstrate::map_chapter(
-                    &ChapterView::tokened(&c.chapter, verses, Some(&tokens)),
-                    &(),
-                    &(),
-                )
-            })
-        });
+        cache.update_book(&book.slug, &stamped[bi], &(), |i| slots.take(bi, i));
     }
     probe.mark(DrivePhase::Reduce);
     // One key, one verdict — no key-discovery phase to separate.
@@ -462,6 +389,24 @@ pub(crate) fn drive_duplicate_word(
     probe.mark(DrivePhase::Materialize);
 }
 
+
+/// The whole substrate on its own, over one caller-held cache — the shape the
+/// per-rule convenience entry point and its tests use. Same planning pass, same
+/// chapter task, same `finish_*`; only the participation mask is narrower.
+pub(crate) fn drive_duplicate_word(
+    active: bool,
+    cache: &mut crate::substrate::SubstrateCache<DuplicateWordSubstrate>,
+    corpus: &Corpus,
+    out: &mut Vec<Finding>,
+) {
+    let mut schedule = crate::schedule::Schedule::new(corpus);
+    let Some(mut plan) = plan_duplicate_word(active, cache, &mut schedule) else {
+        return;
+    };
+    schedule.run_solo::<DuplicateWordSubstrate>(&mut plan, &(), &(), |_, _| None);
+    finish_duplicate_word(cache, corpus, plan, out);
+}
+
 /// `struct.duplicate-word` findings for a whole corpus, via the observation
 /// substrate over a fresh transient cache — the single duplicate-word
 /// implementation, for tests and callers that used to construct the retired
@@ -470,8 +415,7 @@ pub(crate) fn drive_duplicate_word(
 pub(crate) fn duplicate_findings(corpus: &Corpus) -> Vec<Finding> {
     let mut cache = crate::substrate::SubstrateCache::new();
     let mut out = Vec::new();
-    let mut shared = crate::prep::SharedTokens::default();
-    drive_duplicate_word(true, &mut cache, &mut shared, corpus, &mut out);
+    drive_duplicate_word(true, &mut cache, corpus, &mut out);
     out.sort_by_key(|f| (f.key_idx, f.range.start));
     out
 }
@@ -847,14 +791,6 @@ impl PunctOnlyBookContribution {
     }
 }
 
-/// One chapter the substrate has to map this analysis, as the ordered map seam
-/// sees it: its caller-order `(book, chapter)` slot plus the view mapping reads.
-struct PunctOnlyMapWork<'a> {
-    book: usize,
-    chapter: usize,
-    view: crate::substrate::ChapterView<'a>,
-}
-
 /// Plan the `lex.punct-only-token` substrate's share of this analysis: enrol it
 /// in the chapter-outer schedule for exactly the chapters whose observation input
 /// stamp moved. When inactive, drop the cached products so an edit while it is
@@ -1220,20 +1156,19 @@ fn map_repeat_chapter(chapter: &crate::substrate::ChapterView<'_>) -> RepeatChap
     let mut intern: BTreeMap<RepeatKey, RepeatKeyId> = BTreeMap::new();
     let mut keys: Vec<RepeatKey> = Vec::new();
     let mut sites: Vec<RepeatSite> = Vec::new();
-    let mut tape = Vec::new();
-    let mut graphemes = Vec::new();
+    // A word-local buffer: this fold is over a LOWERCASED word rather than chapter
+    // text, so it is not a chapter-prep product.
     let mut word_graphemes = Vec::new();
-    // The chapter's tokens come from the shared prep lane rather than a private
-    // per-verse walk: the same `tokenize_into` result, decoded instead of
-    // recomputed, and into one reused buffer instead of a fresh `Vec` a verse.
+    // The chapter's tokens and grapheme spans come from the chapter task rather
+    // than private per-verse walks: the same `tokenize_into` and
+    // `tape::build` + `segment_tape` results, read instead of recomputed.
     let shared = chapter.tokens();
+    let graphemes = chapter.graphemes();
     let mut tokens: Vec<crate::token::Token> = Vec::new();
     for (vi, text) in chapter.texts.iter().enumerate() {
         let local_idx = LocalKeyIdx::from_usize(vi);
-        crate::tape::build(text, &mut tape);
-        segment_tape(text, &tape, &mut graphemes);
         shared.verse(vi, &mut tokens);
-        for span in scan_repeated_character_run(text, &graphemes) {
+        for span in scan_repeated_character_run(text, graphemes.verse(vi)) {
             let cluster = repeated_run_cluster(span.slice(text));
             *clusters.entry(Box::from(cluster.as_str())).or_default() += 1;
             let key = RepeatKey {
@@ -1557,118 +1492,42 @@ impl RepeatBookContribution {
     }
 }
 
-/// One chapter the substrate has to map this analysis, as the ordered map seam
-/// sees it: its caller-order `(book, chapter)` slot plus the view mapping reads.
-struct RepeatMapWork {
-    book: usize,
-    chapter: usize,
-}
-
-/// Drive the `lex.repeated-character-run` observation substrate for one analysis:
-/// map the dirty chapters through the ordered chapter-map seam, reduce (the
-/// identity), judge exactly the keys its retained candidates name, and
-/// materialize. When inactive, drop the cached products so an edit while it is
-/// disabled does no work for it.
-pub(crate) fn drive_repeated_run(
+/// Plan the `lex.repeated-character-run` substrate's share of this analysis:
+/// enrol it in the chapter-outer schedule for exactly the chapters whose
+/// observation input stamp moved. When inactive, drop the cached products so an
+/// edit while it is disabled does no work for it, and enrol nothing.
+pub(crate) fn plan_repeated_run<'a>(
     active: bool,
     cache: &mut crate::substrate::SubstrateCache<RepeatedRunSubstrate>,
-    shared: &mut crate::prep::SharedTokens,
-    corpus: &Corpus,
-    cfg: &RepeatedCharacterRunConfig,
-    out: &mut Vec<Finding>,
-) {
-    use crate::substrate::{
-        ChapterView, DrivePhase, DriveProbe, ObservationInputStamp, ObservationSubstrate,
-    };
+    schedule: &mut crate::schedule::Schedule<'a>,
+) -> Option<crate::schedule::SubstratePlan<'a, RepeatedRunSubstrate>> {
+    use crate::substrate::ObservationInputStamp;
     #[cfg(any(test, feature = "test-probes"))]
     cache.reset_probes();
     if !active {
         cache.clear();
-        return;
+        return None;
     }
+    Some(schedule.enrol::<RepeatedRunSubstrate>(cache, |_slug, c| {
+        ObservationInputStamp::target_only::<RepeatedRunSubstrate>(c.hash, &())
+    }))
+}
+
+/// Reduce, judge and materialize `lex.repeated-character-run` from the
+/// observations the chapter-outer scheduler mapped.
+pub(crate) fn finish_repeated_run(
+    cache: &mut crate::substrate::SubstrateCache<RepeatedRunSubstrate>,
+    corpus: &Corpus,
+    cfg: &RepeatedCharacterRunConfig,
+    plan: crate::schedule::SubstratePlan<'_, RepeatedRunSubstrate>,
+    out: &mut Vec<Finding>,
+) {
+    use crate::substrate::{DrivePhase, DriveProbe, ObservationSubstrate};
     let mut probe = DriveProbe::new(crate::substrate::SubstrateId::RepeatedRun);
-    let texts = corpus.texts();
     let layout = corpus.book_layout();
-    // Borrowed chapter tokens: the layout owns them and outlives the drive, so
-    // the planning pass never allocates. `update_book` takes ownership only
-    // where it rebuilds a persistent cache entry.
-    let mut stamped: Vec<Vec<(&str, ObservationInputStamp)>> = Vec::with_capacity(layout.len());
-    let mut work: Vec<RepeatMapWork> = Vec::new();
-    let mut book_runs: Vec<std::ops::Range<usize>> = Vec::new();
-    let mut work_bytes = 0usize;
+    let crate::schedule::SubstratePlan { stamped, mut slots } = plan;
     for (bi, book) in layout.iter().enumerate() {
-        let run_start = work.len();
-        let mut chapters = Vec::with_capacity(book.chapters.len());
-        for (ci, c) in book.chapters.iter().enumerate() {
-            let stamp = ObservationInputStamp::target_only::<RepeatedRunSubstrate>(c.hash, &());
-            if !cache.observation_is_current(&book.slug, &c.chapter, &stamp) {
-                work_bytes += texts[c.range.clone()]
-                    .iter()
-                    .map(String::len)
-                    .sum::<usize>();
-                work.push(RepeatMapWork {
-                    book: bi,
-                    chapter: ci,
-                });
-            }
-            chapters.push((&*c.chapter, stamp));
-        }
-        if work.len() > run_start {
-            book_runs.push(run_start..work.len());
-        }
-        stamped.push(chapters);
-    }
-    probe.mark(DrivePhase::Plan);
-    // Fill the shared token lane for exactly this drive's work set before the map
-    // seam opens. Separate from the seam, not nested inside it: one Rayon grain is
-    // live at a time, and a chapter already streamed by an earlier drive is not
-    // rebuilt.
-    let wanted: Vec<(usize, usize)> = work.iter().map(|w| (w.book, w.chapter)).collect();
-    shared.ensure(layout, texts, &wanted);
-    let shared: &crate::prep::SharedTokens = shared;
-    let route = crate::rule::map_route(&book_runs, work.len(), work_bytes);
-    #[cfg(any(test, feature = "test-probes"))]
-    {
-        cache.map_route = route.label();
-    }
-    let fresh = crate::rule::map_chapter_work(&work, &book_runs, route, |w| {
-        let c = &layout[w.book].chapters[w.chapter];
-        RepeatedRunSubstrate::map_chapter(
-            &ChapterView::tokened(
-                &c.chapter,
-                &texts[c.range.clone()],
-                shared.get(w.book, w.chapter),
-            ),
-            &(),
-            &(),
-        )
-    });
-    // Back into caller-order `(book, chapter)` slots, so reduction reads them in
-    // corpus order and never in completion order.
-    let mut slots: Vec<Vec<Option<RepeatChapterObs>>> = layout
-        .iter()
-        .map(|b| (0..b.chapters.len()).map(|_| None).collect())
-        .collect();
-    for (w, obs) in work.iter().zip(fresh) {
-        slots[w.book][w.chapter] = Some(obs);
-    }
-    probe.mark(DrivePhase::Map);
-    for (bi, book) in layout.iter().enumerate() {
-        cache.update_book(&book.slug, &stamped[bi], &(), |i| {
-            slots[bi][i].take().unwrap_or_else(|| {
-                // The reduction demanded an observation the planning pass did not
-                // name, so this chapter has no shared stream: build one for it
-                // alone, from the same encoder the lane uses.
-                let c = &book.chapters[i];
-                let verses = &texts[c.range.clone()];
-                let tokens = crate::prep::ChapterTokens::build(verses);
-                RepeatedRunSubstrate::map_chapter(
-                    &ChapterView::tokened(&c.chapter, verses, Some(&tokens)),
-                    &(),
-                    &(),
-                )
-            })
-        });
+        cache.update_book(&book.slug, &stamped[bi], &(), |i| slots.take(bi, i));
     }
     probe.mark(DrivePhase::Reduce);
     // The judge key set is exactly the keys the retained candidates name — the
@@ -1702,6 +1561,24 @@ pub(crate) fn drive_repeated_run(
     probe.mark(DrivePhase::Materialize);
 }
 
+/// The whole substrate on its own, over one caller-held cache — the shape the
+/// per-rule convenience entry point and its tests use. Same planning pass, same
+/// chapter task, same `finish_*`; only the participation mask is narrower.
+pub(crate) fn drive_repeated_run(
+    active: bool,
+    cache: &mut crate::substrate::SubstrateCache<RepeatedRunSubstrate>,
+    corpus: &Corpus,
+    cfg: &RepeatedCharacterRunConfig,
+    out: &mut Vec<Finding>,
+) {
+    let mut schedule = crate::schedule::Schedule::new(corpus);
+    let Some(mut plan) = plan_repeated_run(active, cache, &mut schedule) else {
+        return;
+    };
+    schedule.run_solo::<RepeatedRunSubstrate>(&mut plan, &(), &(), |_, _| None);
+    finish_repeated_run(cache, corpus, cfg, plan, out);
+}
+
 /// `lex.repeated-character-run` findings for a whole corpus at a given config, via
 /// the observation substrate over a fresh transient cache — the single
 /// repeated-run implementation, for tests and calibration callers. Findings are in
@@ -1711,9 +1588,8 @@ pub fn repeated_run_findings(
     cfg: &RepeatedCharacterRunConfig,
 ) -> Vec<Finding> {
     let mut cache = crate::substrate::SubstrateCache::new();
-    let mut shared = crate::prep::SharedTokens::default();
     let mut out = Vec::new();
-    drive_repeated_run(true, &mut cache, &mut shared, corpus, cfg, &mut out);
+    drive_repeated_run(true, &mut cache, corpus, cfg, &mut out);
     out.sort_by_key(|f| (f.key_idx, f.range.start, f.range.end));
     out
 }
@@ -1825,19 +1701,22 @@ mod tests {
     /// back correctly by the same code that wrote it wrong.
     #[test]
     fn the_shared_stream_maps_what_a_private_repeat_token_walk_mapped() {
+        use crate::substrate::ObservationSubstrate;
         let texts = tricky_chapter();
-        let packed = crate::prep::ChapterTokens::build(&texts);
-        let verbatim = crate::prep::ChapterTokens::escaped_only(&texts);
-        let packed_obs = map_repeat_chapter(&crate::substrate::ChapterView::tokened(
-            "1",
-            &texts,
-            Some(&packed),
-        ));
-        let verbatim_obs = map_repeat_chapter(&crate::substrate::ChapterView::tokened(
-            "1",
-            &texts,
-            Some(&verbatim),
-        ));
+        // Two chapter preps identical but for the token encoding: the shipped
+        // packed form, and one storing every span verbatim. The substrate also
+        // reads grapheme spans, so both preps are built from its own declared
+        // `NEEDS` rather than hand-assembled.
+        let needs = <RepeatedRunSubstrate as ObservationSubstrate>::NEEDS;
+        let packed_prep = crate::prep::ChapterPrep::build(&texts, needs);
+        let mut verbatim_prep = crate::prep::ChapterPrep::build(&texts, needs);
+        verbatim_prep.tokens = Some(crate::prep::ChapterTokens::escaped_only(&texts));
+        let packed_obs = map_repeat_chapter(&crate::substrate::ChapterView::scheduled::<
+            RepeatedRunSubstrate,
+        >("1", &texts, &packed_prep, None));
+        let verbatim_obs = map_repeat_chapter(&crate::substrate::ChapterView::scheduled::<
+            RepeatedRunSubstrate,
+        >("1", &texts, &verbatim_prep, None));
         assert!(
             packed_obs == verbatim_obs,
             "the packed shared stream mapped a different observation than the same \
@@ -2100,8 +1979,7 @@ mod tests {
         corpus: &Corpus,
     ) -> Vec<Finding> {
         let mut out = Vec::new();
-        let mut shared = crate::prep::SharedTokens::default();
-        drive_duplicate_word(true, cache, &mut shared, corpus, &mut out);
+        drive_duplicate_word(true, cache, corpus, &mut out);
         out.sort_by_key(|f| (f.key_idx, f.range.start));
         out
     }
@@ -2630,8 +2508,7 @@ mod tests {
         cfg: &RepeatedCharacterRunConfig,
     ) -> Vec<Finding> {
         let mut out = Vec::new();
-        let mut shared = crate::prep::SharedTokens::default();
-        drive_repeated_run(true, cache, &mut shared, corpus, cfg, &mut out);
+        drive_repeated_run(true, cache, corpus, cfg, &mut out);
         out.sort_by_key(|f| (f.key_idx, f.range.start, f.range.end));
         out
     }

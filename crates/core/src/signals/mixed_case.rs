@@ -764,13 +764,6 @@ pub(crate) struct MixedCaseState<'a> {
     pub(crate) symbols: &'a WordInterner,
 }
 
-/// One chapter the substrate has to map this analysis, as the ordered map seam
-/// sees it: its caller-order `(book, chapter)` slot plus the view mapping reads.
-struct MixedCaseMapWork {
-    book: usize,
-    chapter: usize,
-}
-
 /// The rules this substrate emits through — its complete consumer set, used to
 /// drop the partition of a consumer that is off.
 const CONSUMERS: &[RuleId] = &[MIXED_CASE_WORD];
@@ -783,37 +776,22 @@ fn judging_fp(cfg: &MixedCaseConfig) -> u64 {
     crate::substrate::judging_fp(&[cfg.emit_score_min, cfg.recurrence_k, cfg.confidence_z])
 }
 
-/// Drive the `case.mixed-case-word` observation substrate for one analysis: map
-/// the dirty chapters through the ordered chapter-map seam, reduce (the
-/// identity), judge exactly the word types its retained sites name, and patch its
-/// resident partition. When inactive, drop the cached products so an edit while it
-/// is disabled does no work for it.
-///
-/// The delta this drive consumes is the union of two independent sets (plan §6.2):
-/// the chapters whose ordered sites moved (accumulated by `update_book`), and the
-/// chapters naming a word whose corpus aggregate moved (this substrate's exact
-/// stats-delta, merge-joined out of `replace_book_in_corpus_stats`). Equal counts
-/// are never taken as proof of equal sites: the two sets are unioned, never
-/// substituted for one another.
-pub(crate) fn drive_mixed_case(
+/// Plan the `case.mixed-case-word` substrate's share of this analysis: enrol it
+/// in the chapter-outer schedule for exactly the chapters whose observation input
+/// stamp moved. When inactive, drop the substrate's cached products AND its
+/// resident finding partition — retained records would keep publishing for a
+/// disabled rule — and enrol nothing.
+pub(crate) fn plan_mixed_case<'a>(
     active: bool,
-    state: MixedCaseState<'_>,
-    shared: &mut crate::prep::SharedTokens,
-    corpus: &Corpus,
-    cfg: &MixedCaseConfig,
+    cache: &mut crate::substrate::SubstrateCache<MixedCaseSubstrate>,
+    schedule: &mut crate::schedule::Schedule<'a>,
     lane: &mut crate::substrate::SubstrateLane,
-) {
-    use crate::substrate::{
-        ChapterView, DrivePhase, DriveProbe, ObservationInputStamp, ObservationSubstrate,
-        SubstratePatch,
-    };
-    let MixedCaseState { cache, symbols } = state;
+) -> Option<crate::schedule::SubstratePlan<'a, MixedCaseSubstrate>> {
+    use crate::substrate::{ObservationInputStamp, SubstratePatch};
     #[cfg(any(test, feature = "test-probes"))]
     cache.reset_probes();
     if !active {
         cache.clear();
-        // The partition must be dropped, not merely left unwritten: retained
-        // records would keep publishing for a disabled rule.
         lane.patches.push(SubstratePatch {
             substrate: crate::substrate::SubstrateId::MixedCase,
             rules: CONSUMERS,
@@ -822,96 +800,39 @@ pub(crate) fn drive_mixed_case(
             dirty: Vec::new(),
             all_dirty: true,
         });
-        return;
+        return None;
     }
+    Some(schedule.enrol::<MixedCaseSubstrate>(cache, |_slug, c| {
+        ObservationInputStamp::target_only::<MixedCaseSubstrate>(c.hash, &())
+    }))
+}
+
+/// Reduce, judge and patch `case.mixed-case-word`'s resident partition from the
+/// observations the chapter-outer scheduler mapped.
+///
+/// The delta this consumes is the union of two independent sets (ADR 0067): the
+/// chapters whose ordered sites moved (accumulated by `update_book`), and the
+/// chapters naming a word whose corpus aggregate moved (this substrate's exact
+/// stats-delta, merge-joined out of `replace_book_in_corpus_stats`). Equal counts
+/// are never taken as proof of equal sites: the two sets are unioned, never
+/// substituted for one another.
+pub(crate) fn finish_mixed_case(
+    state: MixedCaseState<'_>,
+    corpus: &Corpus,
+    cfg: &MixedCaseConfig,
+    plan: crate::schedule::SubstratePlan<'_, MixedCaseSubstrate>,
+    lane: &mut crate::substrate::SubstrateLane,
+) {
+    use crate::substrate::{DrivePhase, DriveProbe, ObservationSubstrate, SubstratePatch};
+    let MixedCaseState { cache, symbols } = state;
     let mut probe = DriveProbe::new(crate::substrate::SubstrateId::MixedCase);
-    let texts = corpus.texts();
     let layout = corpus.book_layout();
-    // Borrowed chapter tokens: the layout owns them and outlives the drive, so
-    // the planning pass never allocates. `update_book` takes ownership only
-    // where it rebuilds a persistent cache entry.
-    let mut stamped: Vec<Vec<(&str, ObservationInputStamp)>> = Vec::with_capacity(layout.len());
-    let mut work: Vec<MixedCaseMapWork> = Vec::new();
-    let mut book_runs: Vec<std::ops::Range<usize>> = Vec::new();
-    let mut work_bytes = 0usize;
+    let crate::schedule::SubstratePlan { stamped, mut slots } = plan;
+    let mut stats_delta: Vec<std::sync::Arc<str>> = Vec::new();
     for (bi, book) in layout.iter().enumerate() {
-        let run_start = work.len();
-        let mut chapters = Vec::with_capacity(book.chapters.len());
-        for (ci, c) in book.chapters.iter().enumerate() {
-            let stamp = ObservationInputStamp::target_only::<MixedCaseSubstrate>(c.hash, &());
-            if !cache.observation_is_current(&book.slug, &c.chapter, &stamp) {
-                work_bytes += texts[c.range.clone()]
-                    .iter()
-                    .map(String::len)
-                    .sum::<usize>();
-                work.push(MixedCaseMapWork {
-                    book: bi,
-                    chapter: ci,
-                });
-            }
-            chapters.push((&*c.chapter, stamp));
-        }
-        if work.len() > run_start {
-            book_runs.push(run_start..work.len());
-        }
-        stamped.push(chapters);
-    }
-    probe.mark(DrivePhase::Plan);
-    // Fill the shared token lane for exactly this drive's work set before the map
-    // seam opens. Separate from the seam, not nested inside it: one Rayon grain is
-    // live at a time, and a chapter already streamed by an earlier drive is not
-    // rebuilt.
-    let wanted: Vec<(usize, usize)> = work.iter().map(|w| (w.book, w.chapter)).collect();
-    shared.ensure(layout, texts, &wanted);
-    let shared: &crate::prep::SharedTokens = shared;
-    let route = crate::rule::map_route(&book_runs, work.len(), work_bytes);
-    #[cfg(any(test, feature = "test-probes"))]
-    {
-        cache.map_route = route.label();
-    }
-    let fresh = crate::rule::map_chapter_work(&work, &book_runs, route, |w| {
-        let c = &layout[w.book].chapters[w.chapter];
-        MixedCaseSubstrate::map_chapter(
-            &ChapterView::tokened(
-                &c.chapter,
-                &texts[c.range.clone()],
-                shared.get(w.book, w.chapter),
-            ),
-            &(),
-            symbols,
-        )
-    });
-    // Back into caller-order `(book, chapter)` slots, so reduction reads them in
-    // corpus order and never in completion order.
-    let mut slots: Vec<Vec<Option<MixedCaseChapterObs>>> = layout
-        .iter()
-        .map(|b| (0..b.chapters.len()).map(|_| None).collect())
-        .collect();
-    for (w, obs) in work.iter().zip(fresh) {
-        slots[w.book][w.chapter] = Some(obs);
-    }
-    probe.mark(DrivePhase::Map);
-    let mut stats_delta: std::collections::BTreeSet<MixedCaseKey> =
-        std::collections::BTreeSet::new();
-    for (bi, book) in layout.iter().enumerate() {
-        let delta = cache.update_book(&book.slug, &stamped[bi], symbols, |i| {
-            slots[bi][i].take().unwrap_or_else(|| {
-                // The reduction demanded an observation the planning pass did not
-                // name, so this chapter has no shared stream: build one for it
-                // alone, from the same encoder the lane uses.
-                let c = &book.chapters[i];
-                let verses = &texts[c.range.clone()];
-                let tokens = crate::prep::ChapterTokens::build(verses);
-                MixedCaseSubstrate::map_chapter(
-                    &ChapterView::tokened(&c.chapter, verses, Some(&tokens)),
-                    &(),
-                    symbols,
-                )
-            })
-        });
+        let delta = cache.update_book(&book.slug, &stamped[bi], symbols, |i| slots.take(bi, i));
         stats_delta.extend(delta);
     }
-
     probe.mark(DrivePhase::Reduce);
     // ── Aggregate half of the judge-dirty set. A word whose corpus sum moved is
     // judged differently everywhere it occurs, so every chapter naming one owes
@@ -1046,7 +967,6 @@ pub(crate) fn shape_totals(corpus: &Corpus) -> [u64; 4] {
             cache: &mut cache,
             symbols: &symbols,
         },
-        &mut crate::prep::SharedTokens::default(),
         corpus,
         &MixedCaseConfig::default(),
         &mut lane,
@@ -1059,6 +979,26 @@ pub(crate) fn shape_totals(corpus: &Corpus) -> [u64; 4] {
         totals[3] += u64::from(p.other);
     }
     totals
+}
+
+
+/// The whole substrate on its own, over one caller-held cache — the shape the
+/// per-rule convenience entry point and its tests use. Same planning pass, same
+/// chapter task, same `finish_*`; only the participation mask is narrower.
+pub(crate) fn drive_mixed_case(
+    active: bool,
+    state: MixedCaseState<'_>,
+    corpus: &Corpus,
+    cfg: &MixedCaseConfig,
+    lane: &mut crate::substrate::SubstrateLane,
+) {
+    let MixedCaseState { cache, symbols } = state;
+    let mut schedule = crate::schedule::Schedule::new(corpus);
+    let Some(mut plan) = plan_mixed_case(active, cache, &mut schedule, lane) else {
+        return;
+    };
+    schedule.run_solo::<MixedCaseSubstrate>(&mut plan, &(), symbols, |_, _| None);
+    finish_mixed_case(MixedCaseState { cache, symbols }, corpus, cfg, plan, lane);
 }
 
 /// `case.mixed-case-word` findings for a whole corpus at a given config, via the
@@ -1076,7 +1016,6 @@ pub fn mixed_case_findings(corpus: &Corpus, cfg: &MixedCaseConfig) -> Vec<Findin
             cache: &mut cache,
             symbols: &symbols,
         },
-        &mut crate::prep::SharedTokens::default(),
         corpus,
         cfg,
         &mut lane,
@@ -1511,7 +1450,6 @@ mod tests {
                     cache: &mut self.cache,
                     symbols,
                 },
-                &mut crate::prep::SharedTokens::default(),
                 corpus,
                 cfg,
                 &mut lane,

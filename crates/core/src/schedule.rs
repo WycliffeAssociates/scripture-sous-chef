@@ -147,6 +147,12 @@ pub(crate) struct MappedChapterBundle {
     pub(crate) normalization: Option<crate::signals::mixed_normalization::NormChapterObs>,
     pub(crate) punct_only: Option<crate::signals::lexical::PunctOnlyChapterObs>,
     pub(crate) bracket: Option<crate::signals::bracket_balance::BracketChapterObs>,
+    pub(crate) repeated_run: Option<crate::signals::lexical::RepeatChapterObs>,
+    pub(crate) mixed_script: Option<crate::signals::script_mixing::MixedScriptChapterObs>,
+    pub(crate) glyph: Option<crate::signals::rare_glyph::GlyphChapterObs>,
+    pub(crate) duplicate_word: Option<crate::signals::lexical::DuplicateChapterObs>,
+    pub(crate) mixed_case: Option<crate::signals::mixed_case::MixedCaseChapterObs>,
+    pub(crate) casing: Option<crate::signals::casing::CasingChapterObs>,
 }
 
 /// The inputs a chapter task needs beyond the corpus text: the shared
@@ -453,7 +459,6 @@ pub(crate) fn scatter_direct<'w>(
 /// prepared views separately; nothing fuses two participants' collectors into one
 /// loop, which would couple their ownership for a win that has not been measured.
 fn map_one_chapter(w: &ChapterMapWork<'_>, ctx: &MapContext<'_>) -> MappedChapterBundle {
-    let _ = ctx;
     let prep = ChapterPrep::build(w.texts, w.needs);
     let mut bundle = MappedChapterBundle::default();
     if w.participants.contains(SubstrateId::Spacing) {
@@ -487,6 +492,52 @@ fn map_one_chapter(w: &ChapterMapWork<'_>, ctx: &MapContext<'_>) -> MappedChapte
         bundle.normalization = Some(map_participant::<
             crate::signals::mixed_normalization::NormalizationSubstrate,
         >(w.token, w.texts, &prep, w.paired, &(), &()));
+    }
+    if w.participants.contains(SubstrateId::RepeatedRun) {
+        bundle.repeated_run = Some(map_participant::<
+            crate::signals::lexical::RepeatedRunSubstrate,
+        >(w.token, w.texts, &prep, w.paired, &(), &()));
+    }
+    if w.participants.contains(SubstrateId::MixedScript) {
+        bundle.mixed_script = Some(map_participant::<
+            crate::signals::script_mixing::MixedScriptSubstrate,
+        >(w.token, w.texts, &prep, w.paired, &(), &()));
+    }
+    if w.participants.contains(SubstrateId::Glyph) {
+        bundle.glyph = Some(
+            map_participant::<crate::signals::rare_glyph::GlyphSubstrate>(
+                w.token,
+                w.texts,
+                &prep,
+                w.paired,
+                &(),
+                &(),
+            ),
+        );
+    }
+    if w.participants.contains(SubstrateId::DuplicateWord) {
+        bundle.duplicate_word = Some(map_participant::<
+            crate::signals::lexical::DuplicateWordSubstrate,
+        >(w.token, w.texts, &prep, w.paired, &(), &()));
+    }
+    // The two interning participants name their observations through the shared
+    // append-only word table. It is NAMING, never evidence: appending to it cannot
+    // change what an observation says, only which integer stands for a word, which
+    // is why it may be read from a parallel closure at all.
+    if w.participants.contains(SubstrateId::MixedCase) {
+        bundle.mixed_case = Some(map_participant::<
+            crate::signals::mixed_case::MixedCaseSubstrate,
+        >(w.token, w.texts, &prep, w.paired, &(), ctx.words));
+    }
+    if w.participants.contains(SubstrateId::Casing) {
+        bundle.casing = Some(map_participant::<crate::signals::casing::CasingSubstrate>(
+            w.token,
+            w.texts,
+            &prep,
+            w.paired,
+            &(),
+            ctx.words,
+        ));
     }
     bundle
 }

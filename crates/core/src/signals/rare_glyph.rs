@@ -381,7 +381,7 @@ fn map_glyph_chapter(chapter: &crate::substrate::ChapterView<'_>) -> GlyphChapte
     // state does to it is not known at map time.
     let mut pending: Option<casing::Pending> = None;
     let mut tokens_buf: Vec<crate::token::Token> = Vec::new();
-    // The chapter's tokens come from the shared prep lane rather than a private
+    // The chapter's tokens come from the chapter task rather than a private
     // per-verse walk: the same `tokenize_into` result, decoded instead of
     // recomputed.
     let shared = chapter.tokens();
@@ -966,119 +966,44 @@ impl GlyphBookContribution {
     }
 }
 
-/// One chapter the substrate has to map this analysis, as the ordered map seam
-/// sees it: its caller-order `(book, chapter)` slot plus the view mapping reads.
-struct GlyphMapWork {
-    book: usize,
-    chapter: usize,
-}
-
-/// Drive the `uni.rare-glyph` observation substrate for one analysis: map the
-/// dirty chapters through the ordered chapter-map seam, reduce to boundary
-/// convergence (this substrate carries the forced-position state), judge every
-/// letter scalar the corpus inventory holds, and materialize by re-scan. When
-/// inactive, drop the cached products so an edit while it is disabled does no
-/// work for it.
-pub(crate) fn drive_rare_glyph(
+/// Plan the `uni.rare-glyph` substrate's share of this analysis: enrol it in the
+/// chapter-outer schedule for exactly the chapters whose observation input stamp
+/// moved. When inactive, drop the cached products so an edit while it is disabled
+/// does no work for it, and enrol nothing.
+pub(crate) fn plan_rare_glyph<'a>(
     active: bool,
     cache: &mut crate::substrate::SubstrateCache<GlyphSubstrate>,
-    shared: &mut crate::prep::SharedTokens,
-    corpus: &Corpus,
-    cfg: &RareGlyphConfig,
-    out: &mut Vec<Finding>,
-) {
-    use crate::substrate::{
-        ChapterView, DrivePhase, DriveProbe, ObservationInputStamp, ObservationSubstrate,
-    };
+    schedule: &mut crate::schedule::Schedule<'a>,
+) -> Option<crate::schedule::SubstratePlan<'a, GlyphSubstrate>> {
+    use crate::substrate::ObservationInputStamp;
     #[cfg(any(test, feature = "test-probes"))]
     cache.reset_probes();
     if !active {
         cache.clear();
-        return;
+        return None;
     }
+    Some(schedule.enrol::<GlyphSubstrate>(cache, |_slug, c| {
+        ObservationInputStamp::target_only::<GlyphSubstrate>(c.hash, &())
+    }))
+}
+
+/// Reduce, judge and materialize `uni.rare-glyph` from the observations the
+/// chapter-outer scheduler mapped: fold the scalar inventory and rare-letter word
+/// detail, judge every letter scalar the corpus inventory holds, and materialize
+/// by re-scan.
+pub(crate) fn finish_rare_glyph(
+    cache: &mut crate::substrate::SubstrateCache<GlyphSubstrate>,
+    corpus: &Corpus,
+    cfg: &RareGlyphConfig,
+    plan: crate::schedule::SubstratePlan<'_, GlyphSubstrate>,
+    out: &mut Vec<Finding>,
+) {
+    use crate::substrate::{DrivePhase, DriveProbe, ObservationSubstrate};
     let mut probe = DriveProbe::new(crate::substrate::SubstrateId::Glyph);
-    let texts = corpus.texts();
     let layout = corpus.book_layout();
-    // Borrowed chapter tokens: the layout owns them and outlives the drive, so
-    // the planning pass never allocates. `update_book` takes ownership only
-    // where it rebuilds a persistent cache entry.
-    let mut stamped: Vec<Vec<(&str, ObservationInputStamp)>> = Vec::with_capacity(layout.len());
-    let mut work: Vec<GlyphMapWork> = Vec::new();
-    let mut book_runs: Vec<std::ops::Range<usize>> = Vec::new();
-    let mut work_bytes = 0usize;
+    let crate::schedule::SubstratePlan { stamped, mut slots } = plan;
     for (bi, book) in layout.iter().enumerate() {
-        let run_start = work.len();
-        let mut chapters = Vec::with_capacity(book.chapters.len());
-        for (ci, c) in book.chapters.iter().enumerate() {
-            let stamp = ObservationInputStamp::target_only::<GlyphSubstrate>(c.hash, &());
-            if !cache.observation_is_current(&book.slug, &c.chapter, &stamp) {
-                work_bytes += texts[c.range.clone()]
-                    .iter()
-                    .map(String::len)
-                    .sum::<usize>();
-                work.push(GlyphMapWork {
-                    book: bi,
-                    chapter: ci,
-                });
-            }
-            chapters.push((&*c.chapter, stamp));
-        }
-        if work.len() > run_start {
-            book_runs.push(run_start..work.len());
-        }
-        stamped.push(chapters);
-    }
-    probe.mark(DrivePhase::Plan);
-    // Fill the shared token lane for exactly this drive's work set before the map
-    // seam opens. Separate from the seam, not nested inside it: one Rayon grain is
-    // live at a time, and a chapter already streamed by an earlier drive is not
-    // rebuilt.
-    let wanted: Vec<(usize, usize)> = work.iter().map(|w| (w.book, w.chapter)).collect();
-    shared.ensure(layout, texts, &wanted);
-    let shared: &crate::prep::SharedTokens = shared;
-    let route = crate::rule::map_route(&book_runs, work.len(), work_bytes);
-    #[cfg(any(test, feature = "test-probes"))]
-    {
-        cache.map_route = route.label();
-    }
-    let fresh = crate::rule::map_chapter_work(&work, &book_runs, route, |w| {
-        let c = &layout[w.book].chapters[w.chapter];
-        GlyphSubstrate::map_chapter(
-            &ChapterView::tokened(
-                &c.chapter,
-                &texts[c.range.clone()],
-                shared.get(w.book, w.chapter),
-            ),
-            &(),
-            &(),
-        )
-    });
-    // Back into caller-order `(book, chapter)` slots, so reduction reads them in
-    // corpus order and never in completion order.
-    let mut slots: Vec<Vec<Option<GlyphChapterObs>>> = layout
-        .iter()
-        .map(|b| (0..b.chapters.len()).map(|_| None).collect())
-        .collect();
-    for (w, obs) in work.iter().zip(fresh) {
-        slots[w.book][w.chapter] = Some(obs);
-    }
-    probe.mark(DrivePhase::Map);
-    for (bi, book) in layout.iter().enumerate() {
-        cache.update_book(&book.slug, &stamped[bi], &(), |i| {
-            slots[bi][i].take().unwrap_or_else(|| {
-                // The reduction demanded an observation the planning pass did not
-                // name, so this chapter has no shared stream: build one for it
-                // alone, from the same encoder the lane uses.
-                let c = &book.chapters[i];
-                let verses = &texts[c.range.clone()];
-                let tokens = crate::prep::ChapterTokens::build(verses);
-                GlyphSubstrate::map_chapter(
-                    &ChapterView::tokened(&c.chapter, verses, Some(&tokens)),
-                    &(),
-                    &(),
-                )
-            })
-        });
+        cache.update_book(&book.slug, &stamped[bi], &(), |i| slots.take(bi, i));
     }
     probe.mark(DrivePhase::Reduce);
     // The judge key set is the corpus inventory's letter scalars — the aggregate's
@@ -1117,6 +1042,25 @@ pub(crate) fn drive_rare_glyph(
     probe.mark(DrivePhase::Materialize);
 }
 
+
+/// The whole substrate on its own, over one caller-held cache — the shape the
+/// per-rule convenience entry point and its tests use. Same planning pass, same
+/// chapter task, same `finish_*`; only the participation mask is narrower.
+pub(crate) fn drive_rare_glyph(
+    active: bool,
+    cache: &mut crate::substrate::SubstrateCache<GlyphSubstrate>,
+    corpus: &Corpus,
+    cfg: &RareGlyphConfig,
+    out: &mut Vec<Finding>,
+) {
+    let mut schedule = crate::schedule::Schedule::new(corpus);
+    let Some(mut plan) = plan_rare_glyph(active, cache, &mut schedule) else {
+        return;
+    };
+    schedule.run_solo::<GlyphSubstrate>(&mut plan, &(), &(), |_, _| None);
+    finish_rare_glyph(cache, corpus, cfg, plan, out);
+}
+
 /// `uni.rare-glyph` findings for a whole corpus at a given config, via the
 /// observation substrate over a fresh transient cache — the single rare-glyph
 /// implementation, for tests and calibration callers. Findings are in the final
@@ -1124,14 +1068,7 @@ pub(crate) fn drive_rare_glyph(
 pub fn rare_glyph_findings(corpus: &Corpus, cfg: &RareGlyphConfig) -> Vec<Finding> {
     let mut cache = crate::substrate::SubstrateCache::new();
     let mut out = Vec::new();
-    drive_rare_glyph(
-        true,
-        &mut cache,
-        &mut crate::prep::SharedTokens::default(),
-        corpus,
-        cfg,
-        &mut out,
-    );
+    drive_rare_glyph(true, &mut cache, corpus, cfg, &mut out);
     out.sort_by_key(|f| (f.key_idx, f.range.start, f.range.end));
     out
 }
@@ -1148,7 +1085,6 @@ pub(crate) fn corpus_letter_inventory(corpus: &Corpus) -> BTreeMap<char, u64> {
     drive_rare_glyph(
         true,
         &mut cache,
-        &mut crate::prep::SharedTokens::default(),
         corpus,
         &RareGlyphConfig::default(),
         &mut out,
@@ -1258,14 +1194,7 @@ mod tests {
         cfg: &RareGlyphConfig,
     ) -> Vec<Finding> {
         let mut out = Vec::new();
-        drive_rare_glyph(
-            true,
-            cache,
-            &mut crate::prep::SharedTokens::default(),
-            map,
-            cfg,
-            &mut out,
-        );
+        drive_rare_glyph(true, cache, map, cfg, &mut out);
         out.sort_by_key(|f| (f.key_idx, f.range.start, f.range.end));
         out
     }

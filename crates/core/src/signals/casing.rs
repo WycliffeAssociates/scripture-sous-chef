@@ -2805,39 +2805,28 @@ pub(crate) struct CasingState<'a> {
     pub(crate) symbols: &'a WordInterner,
 }
 
-/// One chapter the substrate has to map this analysis, as the ordered map seam
-/// sees it: its caller-order `(book, chapter)` slot plus the view mapping reads.
-struct CasingMapWork {
-    book: usize,
-    chapter: usize,
-}
-
-/// Drive the casing observation substrate and both its consumer judges for one
-/// analysis: map the dirty chapters through the ordered chapter-map seam, replay
-/// each book's ordered reduction to convergence, build (or reuse) the corpus
-/// model, and materialize every book's findings for the enabled consumers.
+/// Plan the casing substrate's share of this analysis: enrol it in the
+/// chapter-outer schedule for exactly the chapters whose observation input stamp
+/// moved.
 ///
-/// Mapping fans out; **reduction does not**. Chapter `n + 1` consumes chapter
-/// `n`'s boundary state, so a book's reduction is a sequential carry fold — it
-/// walks compact cached observations, not text, and stays deterministic.
-pub(crate) fn drive_casing(
+/// The substrate is shared by two consumers, so "inactive" means *both* are
+/// disabled. When that happens, drop the cached products and the retained model,
+/// drop the resident finding partition — retained records would keep publishing
+/// for disabled rules — and enrol nothing. `emitting` is returned so
+/// `finish_casing` publishes under exactly the consumer set this call planned,
+/// in a fixed order so the committed set compares equal across calls.
+pub(crate) fn plan_casing<'a>(
     positional: bool,
     intrinsic: bool,
-    state: CasingState<'_>,
-    shared: &mut crate::prep::SharedTokens,
-    corpus: &Corpus,
-    cfg: &CasingConfig,
+    cache: &mut crate::substrate::SubstrateCache<CasingSubstrate>,
+    retained: &mut Option<CasingModel>,
+    schedule: &mut crate::schedule::Schedule<'a>,
     lane: &mut crate::substrate::SubstrateLane,
-) {
-    let CasingState {
-        cache,
-        retained,
-        symbols,
-    } = state;
-    use crate::substrate::{
-        ChapterView, DrivePhase, DriveProbe, ObservationInputStamp, ObservationSubstrate,
-        SubstratePatch,
-    };
+) -> Option<(
+    crate::schedule::SubstratePlan<'a, CasingSubstrate>,
+    Vec<RuleId>,
+)> {
+    use crate::substrate::{ObservationInputStamp, SubstratePatch};
     #[cfg(any(test, feature = "test-probes"))]
     cache.reset_probes();
     // Fixed order, so the committed consumer set compares equal across calls.
@@ -2859,98 +2848,45 @@ pub(crate) fn drive_casing(
             dirty: Vec::new(),
             all_dirty: true,
         });
-        return;
+        return None;
     }
-    let mut probe = DriveProbe::new(crate::substrate::SubstrateId::Casing);
-    let texts = corpus.texts();
-    let layout = corpus.book_layout();
-    // Planning pass. Stamps are built once and handed to both the seam and the
-    // driver; the dirty question is put to the cache with the same predicate the
-    // driver reuses by, so the two cannot disagree.
-    // Borrowed chapter tokens: the layout owns them and outlives the drive, so
-    // the planning pass never allocates. `update_book` takes ownership only
-    // where it rebuilds a persistent cache entry.
-    let mut stamped: Vec<Vec<(&str, ObservationInputStamp)>> = Vec::with_capacity(layout.len());
-    let mut work: Vec<CasingMapWork> = Vec::new();
-    let mut book_runs: Vec<std::ops::Range<usize>> = Vec::new();
-    let mut work_bytes = 0usize;
-    for (bi, book) in layout.iter().enumerate() {
-        let run_start = work.len();
-        let mut chapters = Vec::with_capacity(book.chapters.len());
-        for (ci, c) in book.chapters.iter().enumerate() {
-            let stamp = ObservationInputStamp::target_only::<CasingSubstrate>(c.hash, &());
-            if !cache.observation_is_current(&book.slug, &c.chapter, &stamp) {
-                work_bytes += texts[c.range.clone()]
-                    .iter()
-                    .map(String::len)
-                    .sum::<usize>();
-                work.push(CasingMapWork {
-                    book: bi,
-                    chapter: ci,
-                });
-            }
-            chapters.push((&*c.chapter, stamp));
-        }
-        if work.len() > run_start {
-            book_runs.push(run_start..work.len());
-        }
-        stamped.push(chapters);
-    }
-    probe.mark(DrivePhase::Plan);
-    // Fill the shared token lane for exactly this drive's work set before the map
-    // seam opens. Separate from the seam, not nested inside it: one Rayon grain is
-    // live at a time, and a chapter already streamed by an earlier drive is not
-    // rebuilt.
-    let wanted: Vec<(usize, usize)> = work.iter().map(|w| (w.book, w.chapter)).collect();
-    shared.ensure(layout, texts, &wanted);
-    let shared: &crate::prep::SharedTokens = shared;
-    let route = crate::rule::map_route(&book_runs, work.len(), work_bytes);
-    #[cfg(any(test, feature = "test-probes"))]
-    {
-        cache.map_route = route.label();
-    }
-    let fresh = crate::rule::map_chapter_work(&work, &book_runs, route, |w| {
-        let c = &layout[w.book].chapters[w.chapter];
-        CasingSubstrate::map_chapter(
-            &ChapterView::tokened(
-                &c.chapter,
-                &texts[c.range.clone()],
-                shared.get(w.book, w.chapter),
-            ),
-            &(),
-            symbols,
-        )
+    let plan = schedule.enrol::<CasingSubstrate>(cache, |_slug, c| {
+        ObservationInputStamp::target_only::<CasingSubstrate>(c.hash, &())
     });
-    // Back into caller-order `(book, chapter)` slots. Reduction reads them in
-    // corpus order, never completion order, so serial and parallel builds — and
-    // any thread count — produce identical reductions.
-    let mut slots: Vec<Vec<Option<CasingChapterObs>>> = layout
-        .iter()
-        .map(|b| (0..b.chapters.len()).map(|_| None).collect())
-        .collect();
-    for (w, obs) in work.iter().zip(fresh) {
-        slots[w.book][w.chapter] = Some(obs);
-    }
-    probe.mark(DrivePhase::Map);
-    for (bi, book) in layout.iter().enumerate() {
-        cache.update_book(&book.slug, &stamped[bi], symbols, |i| {
-            // Pre-mapped above. The planning pass asked the cache the same
-            // question the driver asks, so this slot is filled whenever the
-            // driver wants it; mapping in place is the correct answer if it ever
-            // is not.
-            slots[bi][i].take().unwrap_or_else(|| {
-                let c = &book.chapters[i];
-                let verses = &texts[c.range.clone()];
-                let tokens = crate::prep::ChapterTokens::build(verses);
-                CasingSubstrate::map_chapter(
-                    &ChapterView::tokened(&c.chapter, verses, Some(&tokens)),
-                    &(),
-                    symbols,
-                )
-            })
-        });
-    }
+    Some((plan, emitting))
+}
 
+/// Reduce, build (or reuse) the corpus model, judge and materialize both casing
+/// consumers from the observations the chapter-outer scheduler mapped.
+///
+/// Mapping fans out; **reduction does not**. Chapter `n + 1` consumes chapter
+/// `n`'s boundary state, so a book's reduction is a sequential carry fold — it
+/// walks compact cached observations, not text, and stays deterministic.
+pub(crate) fn finish_casing(
+    state: CasingState<'_>,
+    corpus: &Corpus,
+    cfg: &CasingConfig,
+    plan: crate::schedule::SubstratePlan<'_, CasingSubstrate>,
+    emitting: Vec<RuleId>,
+    lane: &mut crate::substrate::SubstrateLane,
+) {
+    let CasingState {
+        cache,
+        retained,
+        symbols,
+    } = state;
+    use crate::substrate::{DrivePhase, DriveProbe, ObservationSubstrate, SubstratePatch};
+    let mut probe = DriveProbe::new(crate::substrate::SubstrateId::Casing);
+    let layout = corpus.book_layout();
+    let crate::schedule::SubstratePlan { stamped, mut slots } = plan;
+    // The two consumers, recovered from the set `plan_casing` planned under, so
+    // materialization and the committed partition identity cannot disagree about
+    // who is emitting.
+    let positional = emitting.contains(&SENTENCE_INITIAL_LOWERCASE);
+    let intrinsic = emitting.contains(&INCONSISTENT_WORD_CASING);
+    for (bi, book) in layout.iter().enumerate() {
+        cache.update_book(&book.slug, &stamped[bi], symbols, |i| slots.take(bi, i));
+    }
     probe.mark(DrivePhase::Reduce);
     // Emergent gate: no cased word-starts, no convention to violate.
     if !cache.corpus_stats().any_cased() {
@@ -3084,6 +3020,44 @@ pub(crate) fn drive_casing(
     }
 }
 
+
+/// Both consumers on their own, over one caller-held cache — the shape the
+/// convenience entry point and the casing tests use. Same planning pass, same
+/// chapter task, same `finish_*`; only the participation mask is narrower.
+pub(crate) fn drive_casing(
+    positional: bool,
+    intrinsic: bool,
+    state: CasingState<'_>,
+    corpus: &Corpus,
+    cfg: &CasingConfig,
+    lane: &mut crate::substrate::SubstrateLane,
+) {
+    let CasingState {
+        cache,
+        retained,
+        symbols,
+    } = state;
+    let mut schedule = crate::schedule::Schedule::new(corpus);
+    let Some((mut plan, emitting)) =
+        plan_casing(positional, intrinsic, cache, retained, &mut schedule, lane)
+    else {
+        return;
+    };
+    schedule.run_solo::<CasingSubstrate>(&mut plan, &(), symbols, |_, _| None);
+    finish_casing(
+        CasingState {
+            cache,
+            retained,
+            symbols,
+        },
+        corpus,
+        cfg,
+        plan,
+        emitting,
+        lane,
+    );
+}
+
 /// Casing findings for a whole corpus at a given config, via the observation
 /// substrate over a fresh transient cache — the single casing implementation,
 /// for tests and calibration callers. Findings are in the final stable order.
@@ -3106,7 +3080,6 @@ pub(crate) fn casing_findings(
             retained: &mut retained,
             symbols: &symbols,
         },
-        &mut crate::prep::SharedTokens::default(),
         corpus,
         cfg,
         &mut lane,
@@ -3208,7 +3181,6 @@ pub fn evaluate(corpus: &Corpus, cfg: &CasingConfig) -> Vec<SiteEval> {
             retained: &mut retained,
             symbols: &symbols,
         },
-        &mut crate::prep::SharedTokens::default(),
         corpus,
         cfg,
         &mut lane,
@@ -3522,7 +3494,6 @@ mod tests {
                     retained: &mut self.retained,
                     symbols,
                 },
-                &mut crate::prep::SharedTokens::default(),
                 corpus,
                 cfg,
                 &mut lane,

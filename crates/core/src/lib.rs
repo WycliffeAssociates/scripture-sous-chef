@@ -105,9 +105,13 @@ pub mod bench {
     /// ceiling measurement for a verdict-level materialize delta.
     pub use crate::signals::casing::flip_probe::{FlipStats, last as casing_flips};
 
-    /// The bytes the shared token lane (plan §5.1) held at the end of the most
-    /// recent analyze — the transient cost the lane adds, measured rather than
-    /// reasoned about, at the moment the lane is largest.
+    /// The largest per-chapter mechanical-prep footprint any chapter task held
+    /// during the most recent analyze — the transient cost the chapter-outer
+    /// scheduler adds, measured rather than reasoned about, at its peak.
+    ///
+    /// One chapter task's views are alive at a time per worker, so this is the
+    /// per-worker high-water mark rather than a whole-corpus retention (which ADR
+    /// 0068 measured at 12–24× the transient budget and rejected).
     pub use crate::prep::shared_prep_bytes;
 }
 
@@ -565,14 +569,6 @@ fn transition(
     // boundary — so a failed attempt publishes nothing and leaves the previous
     // partitions intact.
     let mut substrate_lane = substrate::SubstrateLane::default();
-    // The shared token lane (plan §5.1). Several substrates open their map by
-    // tokenizing every verse of every dirty chapter with the same call; this holds
-    // that product once per chapter so the second and later ones decode it instead
-    // of re-deriving it. A local, so it is dropped with this call: it is prep, not
-    // resident state, and a whole corpus of encoded streams is not something to
-    // retain between analyses.
-    let mut shared_tokens = prep::SharedTokens::default();
-
     // ── The chapter-outer map phase (epic plan §6).
     //
     // Every migrated participant is enrolled first, from its own stamps against
@@ -613,6 +609,37 @@ fn transition(
         &mut substrates.bracket,
         &mut schedule,
     );
+    let mut repeated_run_plan = signals::lexical::plan_repeated_run(
+        active.repeated_run,
+        &mut substrates.repeated_run,
+        &mut schedule,
+    );
+    let mut mixed_script_plan = signals::script_mixing::plan_mixed_script(
+        active.mixed_script,
+        &mut substrates.mixed_script,
+        &mut schedule,
+    );
+    let mut glyph_plan =
+        signals::rare_glyph::plan_rare_glyph(active.glyph, &mut substrates.glyph, &mut schedule);
+    let mut duplicate_word_plan = signals::lexical::plan_duplicate_word(
+        active.duplicate_word,
+        &mut substrates.duplicate_word,
+        &mut schedule,
+    );
+    let mut mixed_case_plan = signals::mixed_case::plan_mixed_case(
+        active.mixed_case,
+        &mut substrates.mixed_case,
+        &mut schedule,
+        &mut substrate_lane,
+    );
+    let mut casing_plan = signals::casing::plan_casing(
+        config.is_enabled(RuleId::SentenceInitialLowercase),
+        config.is_enabled(RuleId::InconsistentWordCasing),
+        &mut substrates.casing,
+        &mut substrates.casing_model,
+        &mut schedule,
+        &mut substrate_lane,
+    );
     let (work, mut mapped) = schedule.run(
         &schedule::MapContext {
             words: &substrates.words,
@@ -635,6 +662,24 @@ fn transition(
     if let Some(plan) = bracket_plan.as_mut() {
         schedule::scatter(&work, &mut mapped, plan, |b| b.bracket.take());
     }
+    if let Some(plan) = repeated_run_plan.as_mut() {
+        schedule::scatter(&work, &mut mapped, plan, |b| b.repeated_run.take());
+    }
+    if let Some(plan) = mixed_script_plan.as_mut() {
+        schedule::scatter(&work, &mut mapped, plan, |b| b.mixed_script.take());
+    }
+    if let Some(plan) = glyph_plan.as_mut() {
+        schedule::scatter(&work, &mut mapped, plan, |b| b.glyph.take());
+    }
+    if let Some(plan) = duplicate_word_plan.as_mut() {
+        schedule::scatter(&work, &mut mapped, plan, |b| b.duplicate_word.take());
+    }
+    if let Some(plan) = mixed_case_plan.as_mut() {
+        schedule::scatter(&work, &mut mapped, plan, |b| b.mixed_case.take());
+    }
+    if let Some((plan, _)) = casing_plan.as_mut() {
+        schedule::scatter(&work, &mut mapped, plan, |b| b.casing.take());
+    }
     drop(mapped);
     drop(work);
 
@@ -656,14 +701,15 @@ fn transition(
             &mut out,
         );
     }
-    signals::lexical::drive_repeated_run(
-        active.repeated_run,
-        &mut substrates.repeated_run,
-        &mut shared_tokens,
-        target,
-        &config.repeated_character_run,
-        &mut out,
-    );
+    if let Some(plan) = repeated_run_plan {
+        signals::lexical::finish_repeated_run(
+            &mut substrates.repeated_run,
+            target,
+            &config.repeated_character_run,
+            plan,
+            &mut out,
+        );
+    }
     if let Some(plan) = punct_only_plan {
         signals::lexical::finish_punct_only(
             &mut substrates.punct_only,
@@ -673,22 +719,24 @@ fn transition(
             &mut out,
         );
     }
-    signals::script_mixing::drive_mixed_script(
-        active.mixed_script,
-        &mut substrates.mixed_script,
-        &mut shared_tokens,
-        target,
-        &config.mixed_script,
-        &mut out,
-    );
-    signals::rare_glyph::drive_rare_glyph(
-        active.glyph,
-        &mut substrates.glyph,
-        &mut shared_tokens,
-        target,
-        &config.rare_glyph,
-        &mut out,
-    );
+    if let Some(plan) = mixed_script_plan {
+        signals::script_mixing::finish_mixed_script(
+            &mut substrates.mixed_script,
+            target,
+            &config.mixed_script,
+            plan,
+            &mut out,
+        );
+    }
+    if let Some(plan) = glyph_plan {
+        signals::rare_glyph::finish_rare_glyph(
+            &mut substrates.glyph,
+            target,
+            &config.rare_glyph,
+            plan,
+            &mut out,
+        );
+    }
     signals::proportionality::drive_proportionality(
         active.proportionality,
         &mut substrates.proportionality,
@@ -730,42 +778,40 @@ fn transition(
             &mut out,
         );
     }
-    signals::lexical::drive_duplicate_word(
-        active.duplicate_word,
-        &mut substrates.duplicate_word,
-        &mut shared_tokens,
-        target,
-        &mut out,
-    );
-    signals::mixed_case::drive_mixed_case(
-        active.mixed_case,
-        signals::mixed_case::MixedCaseState {
-            cache: &mut substrates.mixed_case,
-            symbols: &substrates.words,
-        },
-        &mut shared_tokens,
-        target,
-        &config.mixed_case,
-        &mut substrate_lane,
-    );
-    signals::casing::drive_casing(
-        config.is_enabled(RuleId::SentenceInitialLowercase),
-        config.is_enabled(RuleId::InconsistentWordCasing),
-        signals::casing::CasingState {
-            cache: &mut substrates.casing,
-            retained: &mut substrates.casing_model,
-            symbols: &substrates.words,
-        },
-        &mut shared_tokens,
-        target,
-        &config.casing,
-        &mut substrate_lane,
-    );
-
-    // Every drive has run, so the shared token lane holds every chapter any of
-    // them mapped: its largest point, and the only honest place to read its size.
-    #[cfg(feature = "bench-probes")]
-    shared_tokens.record_retained();
+    if let Some(plan) = duplicate_word_plan {
+        signals::lexical::finish_duplicate_word(
+            &mut substrates.duplicate_word,
+            target,
+            plan,
+            &mut out,
+        );
+    }
+    if let Some(plan) = mixed_case_plan {
+        signals::mixed_case::finish_mixed_case(
+            signals::mixed_case::MixedCaseState {
+                cache: &mut substrates.mixed_case,
+                symbols: &substrates.words,
+            },
+            target,
+            &config.mixed_case,
+            plan,
+            &mut substrate_lane,
+        );
+    }
+    if let Some((plan, emitting)) = casing_plan {
+        signals::casing::finish_casing(
+            signals::casing::CasingState {
+                cache: &mut substrates.casing,
+                retained: &mut substrates.casing_model,
+                symbols: &substrates.words,
+            },
+            target,
+            &config.casing,
+            plan,
+            emitting,
+            &mut substrate_lane,
+        );
+    }
 
     // JUDGE boundary. The products above may be warm, but findings remain
     // unpublished until the partition commit below.
