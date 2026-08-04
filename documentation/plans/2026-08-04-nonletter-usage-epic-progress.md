@@ -1603,3 +1603,72 @@ were. That is exactly the owner-ratified default-on intent from Entry 9's FLAG 1
 ruling: the replacement must not be a silent coverage regression for default users.
 
 - **Next safe step:** the deletion series per plan §11.1.
+
+---
+
+## Entry 17 — deletion series begun: 1 of 3 landed
+
+- **Date:** 2026-08-04
+- **Status:** constants final and recorded (Entry 16); obligations re-run end to end
+  for the record at the final constants; **`lex.punct-only-token` deleted** with
+  every closed surface (`afb121b`). The other two retired rules are still live.
+  Tree green at every point.
+
+### Both obligations, re-run end-to-end at the FINAL constants
+
+The durable ledger `2026-08-04-nonletter-usage-migration-ledger.tsv` is the
+full-fleet run at conditioned A — the shipped constants — so it *is* the end-to-end
+record, not a proxy:
+
+| retired rule | total | preserved | coalesced | intentionally moved | **lost** |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `punct.adjacency-anomaly` | 9,354 | — | — | — | **0** |
+| `lex.punct-only-token` | 4,481 | — | — | — | **0** |
+| `punct.spacing-anomaly` | 27,024 | — | — | — | **0** |
+| **all** | **40,859** | \|—— 12,229 kept ——\| | 28,630 | **0 (0.000%)** |
+
+- **Obligation (a): DISCHARGED.** Residue **0** — every one of the 908 findings the
+  flat knee declined now fires, so no population needs a convention reading.
+- **Obligation (b): SATISFIED** at ADR 0054's own reproduction keep-sets —
+  engwebster **4/4** named, `WA-ne-udb` **36** (= 76 − the 40 verse-final dandas
+  already accepted as drift), kmr-IQ **27 ≥ 20**, `WA-pa-ulb` **28 ≥ 25**.
+  `ayn_reg` is **absent from the fleet**, so ADR 0024's Arabic `۔۔` win is recorded
+  as explicitly **unverified** rather than silently preserved.
+- **`lost = 0`** on all three, measured against `nonletter_candidate_runs` (the
+  observed candidate domain) rather than a judged run set.
+
+### `lex.punct-only-token` — deleted (`afb121b`)
+
+Every closed surface: `RuleId`, `FindingArgs::PunctOnlyRate`, `PunctOnlyTokenConfig`
++ its `Config` field + its `v1_defaults` row, catalog card + message + verdict pin,
+Review Depth rows, `SubstrateId::PunctOnly` + registry + cache slot + bundle slot +
+`map_one_chapter` arm + closed-set-guard arm, the whole substrate and its
+`scan_punct_only_token` extractor and private helpers (805 lines from
+`signals/lexical.rs`, tests included), wire discriminant **12 retired with a comment
+and never reused**, its digest arm, the Rust and JS discriminant pins, the
+cross-language vector (`__vectors__.json` regenerated), the wasm overrides struct +
+field + projection + assertions, the `--punct-only` calibration report and CLI entry,
+and the living-doc rows in `rules/lex.md`, `reference/config.md`, `rules/README.md`,
+`rules/messaging-and-fixes.md` and `rules/hyg.md`.
+
+**Census untouched, and structurally so:** it never consumed this rule's extractor —
+it reads `SpacingAcc` / `adjacency_runs_all` / `count_lead_opportunities`, none of
+which move.
+
+### Still owed to close checkpoint 4
+
+1. `punct.adjacency-anomaly` — its own commit. Note its extractor
+   (`adjacency_runs_all`, `count_lead_opportunities`) **is** a census dependency and
+   must survive the rule.
+2. `punct.spacing-anomaly` — its own commit, and the largest. `SpacingAcc`,
+   `SIDE_CELLS` and `mark_attached_spaced` are census dependencies and must survive;
+   `SpacingForm`/`SpacingClass` are needed by that extractor's cell indexing, so they
+   should move out of `diagnostics.rs` into `signals::punctuation` as `pub(crate)`
+   rather than be left as dead public wire vocabulary. `FindingArgs::SpacingConvention`
+   and `SpacingSide` go.
+3. The drift summary, and the `ayn_reg`-unverified row, into the Phase E ADR.
+
+The pattern is now established by (1): core surfaces → wire (retire the
+discriminant, never reuse) → regenerate JS + vectors → wasm projection → dev
+surfaces → living docs, verifying `cargo test --workspace` plus the three node suites
+at each step.
