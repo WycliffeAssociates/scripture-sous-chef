@@ -824,7 +824,132 @@ aborting a multi-minute sweep from a rayon worker.
 | Review Depth | depth 0 → 0.90, 50 → 0.75, 100 → 0.50 |
 | default | **on**, `Info` |
 
-- **Next safe step:** checkpoint 4 proper — `NonletterUsageSubstrate` and
+---
+
+## Entry 10 — substrate design derived and specified; implementation NOT started
+
+- **Date:** 2026-08-04
+- **Status:** checkpoint 4 attempted; **halted on budget, not on design
+  uncertainty.** The worktree is clean at `5217b3b` + this entry — a partially
+  written `signals/nonletter_usage.rs` was removed rather than committed
+  non-compiling.
+- **Why this entry exists:** writing the substrate surfaced **two non-obvious
+  design problems** that a naive second attempt would hit in the same order.
+  Both are solved below. This is the blueprint the next unit builds from; it is
+  worth more than 40% of an untested substrate.
+
+### The boundary-state derivation (the hard part, now settled)
+
+The repo invariant is that discourse flows across verse and chapter seams and
+resets only at book boundaries, with **one** legitimate seam effect: a mark
+opening verse N is not *attached* to the last letter of verse N−1. So a seam reads
+as **spaced continuity**. That single fact collapses this substrate's cross-chapter
+dependency to almost nothing:
+
+1. a nonletter run **never spans a seam**, because the seam is a spaced break;
+2. therefore the only context a chapter cannot resolve alone is the outer context
+   of a run touching its **first** or **last** grapheme;
+3. and because a seam is spaced, that context is `Spaced` whenever a neighbouring
+   chapter exists in the book, and `Boundary` (abstain) only at a **true book
+   edge**.
+
+So the map is predecessor-free and marks those two edges `Deferred`. Ordered
+reduction resolves the **leading** edge from its entering state, and routes the
+**trailing** edge's resolution into the owning chapter through `carry_out` —
+exactly the mechanism `SpacingSubstrate` already uses via `pending_owner`.
+`finish_book` resolves a still-deferred trailing edge as `Boundary`.
+
+### PROBLEM 1 — a chapter with no candidates is indistinguishable from book start
+
+`BoundaryState = Option<pending_tail>` is **wrong**. A chapter that contains no
+candidate at all leaves `pending: None`, which is byte-identical to the
+book-start default — so the next chapter's leading edge would resolve to
+`Boundary` (abstain) instead of `Spaced`, silently, and only in corpora that
+happen to have a punctuation-free chapter.
+
+**Fix:** the state needs an explicit presence flag, independent of the pending
+tail:
+
+```rust
+struct Boundary {
+    /// A previous chapter exists in this book. FALSE only at book start — this is
+    /// what makes a leading edge `Spaced` rather than `Boundary`, and it must not
+    /// be inferred from `pending`, because a candidate-free chapter carries no
+    /// pending tail yet still proves a neighbour exists.
+    seen_previous: bool,
+    pending: Option<(Box<str>, PendingTail)>,
+}
+```
+
+Every `reduce_chapter` sets `seen_previous: true` in its leaving state. `Default`
+is `{ false, None }` = book start. This is the reset-at-book-boundaries contract.
+
+### PROBLEM 2 — reduction needs a deferred edge's identity but has no text
+
+Retained sites are deliberately compact (byte offsets only; the probe measured
+1.1 KB/chapter p50 on that shape). But `reduce_chapter` must tally the resolved
+edge under its **pooled identity**, and it has no chapter text to recover that
+identity from — `map_chapter`'s `ChapterView` is long gone by reduction.
+
+**Fix:** the map records the two deferred edges' identities directly in the
+observation, since there are at most two per chapter:
+
+```rust
+lead_edge: Option<(u32, Box<str>)>,   // (site index, pooled identity)
+tail_edge: Option<(u32, Box<str>)>,
+```
+
+Do **not** try to recover the identity from the site's byte span in reduction, and
+do **not** widen `Site` to carry an identity per site — that would multiply
+retained memory by the identity length across every occurrence, against the §7.5
+measurement that justified compact sites in the first place.
+
+### Remaining specification (unchanged from Entry 9's frozen knobs)
+
+- **Candidate domain:** visible nonalphabetic extended grapheme cluster. An
+  alphabetic base is context and its combining marks stay part of it. Controls,
+  zero-width/format, invalid code points **and a combining mark with no base** are
+  hygiene's — excluded from candidacy, so hygiene and this rule cannot both own a
+  span.
+- **Pooled identity:** Nd digits collapse to one key (a sentinel that cannot
+  collide with a real grapheme, e.g. prefixed with U+0001 — a control is never a
+  candidate); No/Nl and everything else are exact grapheme bytes.
+- **`Tally` per identity:** `runs` (rarity numerator basis), `count`,
+  `start_forms[3]`, `end_forms[3]`, `topology[4]`, `pairs` (sorted, pooled next
+  key), `pair_leads`, `same_runs[6]`. All integers, so `add`/`sub` make a book
+  contribution exactly subtractable; a key reaching zero is removed.
+- **Corpus scalars:** `exposure` (visible nonletter occurrences) and
+  `digit_class_runs` (addendum §B2).
+- **`replace_book_in_corpus_stats` returns an EMPTY stats delta** — every judged
+  rate reads a corpus-global denominator, so the honest delta is empty or every
+  key, never a subset. Same structural reason as punct-only, repeated-run and
+  casing.
+- **Materialization:** retained sites, coalesced to **one finding per maximal
+  run** (several firing members of one run are one finding). The site carries its
+  run's byte span so the coalesced span needs no reconstruction — walking the
+  run's scalars would be wrong the moment a member is a multi-scalar grapheme.
+- **Surfaces still to add:** `RuleId::NonletterUsageAnomaly` +
+  `uni.nonletter-usage-anomaly`; `InputDependency::TargetOnly`;
+  `FindingArgs::NonletterUsage`; `NonletterUsageConfig`; **absent from
+  `v1_defaults`' disable list** (default-on per FLAG 1); `SubstrateId::NonletterUsage`
+  + `ALL` + consumers + `is_active` + `input_of` + `SUBSTRATE_NAMES`;
+  `SubstrateSection` slot; `MappedChapterBundle` slot + `map_one_chapter` arm +
+  the closed-set guard's `needs_of` arm; `plan_*`/`finish_*` in `transition`;
+  catalog card + message; `review_control` → `Mapped` with the 0/50/100 profile
+  (floors 0.90/0.75/0.50); `ssc-wire` discriminant + digest.
+
+### Note on the closed-set guard
+
+`schedule::tests::the_chapter_task_maps_every_substrate_it_is_given` will fail
+until the new substrate has both a `map_one_chapter` arm and a bundle slot. That
+is the guard working as designed — it is the test that caught two real defects
+during the scheduler migration.
+
+- **Next safe step:** implement from this blueprint —
+
+## Entry 9 continued — original next-safe-step note
+
+- checkpoint 4 proper — `NonletterUsageSubstrate` and
   `uni.nonletter-usage-anomaly` test-first per plan §14.2 against the frozen knobs
   above, then the three-rule deletion series per §11.1 in separate commits (the two
   movements never share a commit), the durable full-fleet old/new overlap TSV, and
