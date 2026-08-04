@@ -10,6 +10,7 @@ pub(crate) mod glyphs;
 pub(crate) mod misc;
 pub(crate) mod mixedcase;
 pub(crate) mod nonletter;
+pub(crate) mod nonletter_ledger;
 pub(crate) mod paired;
 pub(crate) mod pooled;
 pub(crate) mod review_depth_candidates;

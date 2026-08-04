@@ -1,0 +1,1680 @@
+# nonletter-usage migration ledger — the SHIPPED rule vs the three retired rules
+# corpora=1504
+
+## fleet ledger
+retired_rule	total	preserved	coalesced	intentionally-moved	lost
+punct.adjacency-anomaly	9354	1252	256	7846	0
+lex.punct-only-token	4481	393	0	4088	0
+punct.spacing-anomaly	27024	231	1418	25375	0
+ALL	40859	1876	1674	37309	0
+
+new_rule_findings_at_defaults	13709
+lost_share	0.000000
+
+## obligation (a) — adjacency findings that moved because sequence k = 2
+# an old adjacency finding the rule declines at k=2 but WOULD emit at k=8:
+# the pairing was already seen 2..7 times in this translation.
+k2_specific_movers	908
+share_of_adjacency_moved	0.115728
+corpus	sid	pattern	context
+WA-dav-reg	MRK 14:51	,;	…gho wakifunika kumzunguluka,; wamwhada ela…
+WA-dav-reg	LUK 5:27	,:	…andu amweri kodi. Akamgoria,: Nnuge."…
+WA-dav-reg	LUK 14:23	,;	…Mzuri akawagoria mtumishi,;'Genda katika chia mbaha n…
+WA-dig-reg	LUK 1:34	?,	…Hiri rindaturukira chiviphi?, kwa kukara sidzambwe kura…
+WA-dig-reg	LUK 1:42	.;;	… na kunena kwa sauti mbalia.;; ukabarikiwa uwe kahi za …
+WA-dig-reg	LUK 1:42	;;	…na kunena kwa sauti mbalia.;; ukabarikiwa uwe kahi za a…
+WA-mgz-reg	MRK 12:34	,.	…eya na osungati wa Moolongo,. Keento afo taariko baa oo…
+WA-mgz-reg	LUK 13:9	.!	… lakini akunja tayaye oteme.!"…
+WA-mgz-reg	LUK 14:30	.;	… akatole ngulu ja wekererya.;…
+WA-dso-ulb	MAT 1:25	*:	…दाय ले हाँय तार लगे ना गला *: आऊरी हाँय तार नाओ यीशु सौ…
+WA-dso-ulb	MAT 19:16	?*	…म करुआय कि अनन्त जीवन पायबी?*"…
+WA-dso-ulb	MRK 2:19	,?	…, काय हाय उपवास करके सकू आत,? अतः जब तक दूल्हा हातार सं…
+WA-gay-reg	MRK 6:2	,?	…ari hi mendepeten mehne oya,? hikmah hana si kona usahe…
+WA-gay-reg	MRK 12:26	,?	…llah Ishak, nye Allah Yakub,?…
+WA-gay-reg	MRK 13:7	.,	…, hal-hal ini turah terjadi., tapi akhir ari mehne gile…
+WA-now-reg	MAT 10:29	??	…bhili tizigura shilingi emo?? Kandi taliho n'emo eyakuk…
+WA-now-reg	ACT 7:49	?,	… Ninjuki ehimuranyombhekera?, nagambha Mukama: nanga ni…
+WA-now-reg	ACT 8:36	?,	…ki echokuntanga ntabhatizwa?,…
+portft	MAT 8:18	.,	…barco ao outro lado do lago., porque precisava descansa…
+portft	MAT 17:21	!,	… monte: ‘Saia daqui para lá!, e ele iria aonde vocês lh…
+portft	LUK 7:49	?,	…Quem este homem pensa que é?, dizendo que pode perdoar …
+WA-vid-reg	MAT 12:7	!.	…kuwalukumu wewelehaa chinhu!.…
+WA-vid-reg	MAT 19:7	.?	…tasi yaluleka na kulechigwa.?…
+WA-vid-reg	MRK 8:24	,,	…neka kota migodi jangujenda,,…
+WA-ha-ulb	NUM 7:89	.,	…dake a kan akwatin alƙawari., daga tsakanin kerubim biy…
+WA-ha-ulb	DEU 28:13	.,	…ahnku da nake umartanku yau., domin ku lura ku yi su,…
+WA-ha-ulb	RUT 3:16	?.	…a ce, "Yaya ki ka yi ɗiyata?." Rut ta faɗa ma ta duk ab…
+WA-haq-reg	MAT 19:3	,!	…lamjalibu, habhamubwila, je,! nineza ukumleka umgole kw…
+WA-haq-reg	MAT 20:21	.!!	…to hagati mubhufalme bwanje.!!…
+WA-haq-reg	MAT 20:21	!!	…o hagati mubhufalme bwanje.!!…
+WA-ida-x-isukha-reg	MAT 6:30	?\	… vamuli nilisuvila litititi?\…
+WA-ida-x-isukha-reg	MAT 7:9	?\	…kati alavukula lichina amue?\VI0 Inoho lwa mwana amusav…
+WA-ida-x-isukha-reg	MAT 25:38	,?	…nuli mucheni nikhukhwinjita,? inoho nulisiechenye nikhu…
+WA-old-x-ngasa-reg	MRK 9:43	;;	…oko kuliko urukumiwe motoni;; moto uteruma'' kwete mavo…
+WA-old-x-ngasa-reg	MRK 14:37	;;	…elala, alafu kammbia Petiro;; Simoni shoo walal, tawaid…
+WA-old-x-ngasa-reg	JHN 7:36	./	…gilienda, timweidima ishika./…
+WA-sde-ulb	MAT 9:6	,......	…usuru urikuya ku guzu ivang,......" I woh upigbwanu mi,…
+WA-sde-ulb	MAT 9:6	......	…suru urikuya ku guzu ivang,......" I woh upigbwanu mi, …
+WA-sde-ulb	MRK 10:41	,,	…bekseni rikiri apokoro kini,, an semu rah nazeh nasuwu …
+benirv	NEH 13:17	?।	…ত্র করছ, এ কি খারাপ কাজ করছ?।…
+benirv	PSA 25:10	।।	…ং বিশ্বাসযোগ্যতা দিয়ে তৈরী।।…
+benirv	EZK 22:12	।;	…ষ নিয়েছে রক্তপাত করার জন্য।; তুমি সুদ ও প্রচুর লাভ নিয…
+guj2017	NUM 14:2	.!	…મ્યા હોત તો કેવું સારું થાત.!…
+guj2017	1SA 12:12	,!	… તમે મને કહ્યું કે, ‘એમ નહિ,! પણ અમારા પર એક રાજા અધિકા…
+guj2017	NEH 8:6	!,	…ાથ ઊંચા કરીને કહ્યું, “આમીન!, આમીન!” પછી તેઓએ પોતાના મા…
+WA-atg-reg	LUK 7:20	.?	…ẹ mugha kee khi ọgbọ ọvhese.?"…
+WA-atg-reg	ROM 14:11	,:	…arhi khi a kẹkẹ ọli shi ekẹ,:”Abhi mhi li nyele ena” Ọn…
+WA-atg-reg	1CO 8:10	?.	…le elamhi ni a rhọ lasẹ obo?.…
+WA-mr-udb	LUK 9:19	.!	…ध्ये परत जिवंत होऊन आला आहे.!”…
+WA-mr-udb	2CO 4:14	..	…न जाईल हे आम्हाला माहीत आहे..…
+WA-mr-udb	2CO 8:19	..	…ा पैशाचे योगदान करू इच्छितो..…
+WA-xem-x-hibun-reg	MRK 1:7	..	… ngan lopah tohis sulup-Dee..…
+WA-xem-x-hibun-reg	MRK 9:21	.,	…sus misek kone pak sade han.," Jeh kudu kotai hal to te…
+WA-xem-x-hibun-reg	MRK 12:33	..	…ta mengasihi sesama pati de.. todek, memang lobeh ponte…
+WA-zmb-x-kwange-reg	MAT 18:1	.....	…yesu nakonobocha", ni nanii..... mokoo koeta basee ko m…
+WA-zmb-x-kwange-reg	MAT 26:41	.....	…mombe nde kuingiiya katiika..... kwemakana roho ye bwac…
+WA-zmb-x-kwange-reg	JHN 18:9	,;;	…lyee olelee, alya aochangee,;; monda mwe balya bambecha…
+tczchongthu	EXO 3:13	?,	… chu iti ka donbut ding ham?,” ati.…
+tczchongthu	EXO 14:4	.*	…angho nung ahin delding ahi.* Ajeh chu keiman ka gontup…
+tczchongthu	2KI 10:9	?,	…ho cheng hi koitha hija ham?,” atin ahi.…
+WA-arq-reg	MRK 7:28	!:	…جْبَاتَهْ:"وَاهْ، يَاسَيدِي!: حَتَى لَكْلاَبْ ياَكْلُوا…
+WA-arq-reg	LUK 11:11	؟!	…ْ خُبْزْ، وْيَعْطِهْ حْجَرْ؟! ولاَ يَطْلَبْ منّهْ حُوتْ…
+WA-arq-reg	LUK 11:45	؟!	…َايَرْ فِينَا حْنَا تَانِي ؟!"۔…
+WA-asa-reg	MAT 4:10	!!	…esu akamti vuka aha shetani!! Ambu cheandikwe kuti!! Md…
+WA-asa-reg	MAT 4:10	!!	…tani!! Ambu cheandikwe kuti!! Mdunkutie mfumwa mrungu w…
+WA-asa-reg	MRK 11:3	?,	…nemuti,'Hanini mweketa huvo?, Muendwa mumti,' Mfumwa ee…
+WA-bds-reg	MRK 11:3	?,	…e, ' haagi sooyi gweetiiri'?, kukuray sugu kaadee ubee,…
+WA-bds-reg	MRK 13:6	,;	…oy, hari tay kaakamuya tuba,; awa si ndiyee', hari afaa…
+WA-bds-reg	LUK 13:9	.!	…aqwala. lugumaa asu dahhada.!"…
+WA-bez-reg	MRK 9:28	,,	…Wakati Yesu peakengie mgati,, vanafunzi vake vamuuchile…
+WA-bez-reg	LUK 13:9	.!	…ni ngita seubaba, ulidumute.!''…
+WA-bez-reg	JHN 16:16	,,	… baada ya muda mufupi yangi,, uniwona.''…
+WA-bn-ulb	PSA 25:10	।।	…বং বিশ্বাসযোগ্যতা দিয়ে তৈরী।।…
+WA-bn-ulb	PSA 70:1	,;	…ঈশ্বর, আমার রক্ষা কর,; সদাপ্রভুু, আমার তাড়াতাড়ি …
+WA-bn-ulb	EZK 22:12	।;	…ুষ নিয়েছে রক্তপাত করার জন্য।; তুমি সুদ ও প্রচুর লাভ নিয়…
+WA-enb-x-kiptani-reg	MAT 3:7	?.	… oyestae nerekek che bwonii?.…
+WA-enb-x-kiptani-reg	MAT 10:29	?.	…bebertab taman nebo denarit?. Amaibutyini ing'weny agen…
+WA-enb-x-kiptani-reg	JHN 5:5	.,	…an kenyisyek Sosom ak Sisit.,…
+WA-es-419-udb	MAT 22:4	.¡	… cocinadas. Todo está listo.¡Es tiempo ahora para usted…
+WA-es-419-udb	MRK 2:16	.?	…bres que colectan impuestos.?"…
+WA-es-419-udb	MRK 2:18	.?	…nudo se abstienen de comida.? ¿Por qué tus discípulos n…
+WA-hke-x-bakobo-reg	MAT 14:8	,:	…wa na nyinya uwe, ame neena,: "ameleta mbale ati munyih…
+WA-hke-x-bakobo-reg	MAT 20:17	,:	…ibiri, omonzira ama bwirabo,:…
+WA-hke-x-bakobo-reg	LUK 22:38	.,	…ali mipangi biri amabwirabo.,"Athi nakiyahatoya."…
+WA-ilo-udb	1KI 13:1	,.	…n isuna a napan idiay Betel,. Dimteng isuna sadiay iti …
+WA-ilo-udb	2KI 20:13	----	…inanna kadagiti kinabaknang---- dagiti pirak ken balito…
+WA-ilo-udb	JOB 3:25	----	…ankanayonko a pagdandanagan----napasamak kaniak dagitoy…
+WA-kdc-reg	MAT 19:24	.,	…wingila muundewa wa Mulungu.,"…
+WA-kdc-reg	MAT 25:20	.,	… mhata mifuko mitano iyagwe.,…
+WA-kdc-reg	MAT 27:40	,!	…zenga kabili kwa siku ndatu,! Lelo humuluka mumsalaba u…
+WA-kdx-reg	MAT 7:5	!!	…Nya nyi gumsi!! sang mturu barra nun nya …
+WA-kdx-reg	MRK 10:23	.!	…idini ri ye hgwoug kurki ra.!''…
+WA-kdx-reg	LUK 4:35	.!	…b yi a leb deri nya vangnne.! mam bama jujjurag sha'ibe…
+WA-knl-x-kenyilu-reg	MAT 5:23	,,	…o ikint morik di atas altar,,…
+WA-knl-x-kenyilu-reg	MAT 10:21	,.	…i, dan apok tehadap anak ah,. Dan, anak-anak akan ngela…
+WA-knl-x-kenyilu-reg	MRK 7:22	,.	…pezinoh,.…
+WA-kvb-reg	LUK 12:13	,:	…t iye bekehato kepado Yesus,: Guru, suruhlah dolor- dol…
+WA-kvb-reg	LUK 23:14	,:	…kehato kepado rombongon iye,: Kowe ngundah Urang nie ke…
+WA-kvb-reg	JHN 3:21	.?	… delakukonye de delom Allah.? Yohanes Besaksi tentang Y…
+WA-lur-reg	MAT 14:3	.,	…e gollodana orona Herodiasa., maghinnei Filipusa, oleda…
+WA-lur-reg	MRK 12:26	,?	…i Ishak, monno Mori Yakubpa,?…
+WA-lur-reg	LUK 16:6	.;	…iighu monno tulisaza 50 bat.;…
+WA-mhd-reg	LUK 13:9	.!	…o; m mira kai teukasa, uute.!"…
+WA-mhd-reg	JHN 15:19	.;	…idi leseemudumuye sa vakini.; Mira kwaite kune si va id…
+WA-mhd-reg	ROM 13:2	.;	…u kacho elhi amri ja Kiumbi.; nahuvo velhi venedoriya h…
+WA-mji-x-daoaodai-reg	LUK 10:24	.:	…ngz woac, yâuc max tuz numđ.:…
+WA-mji-x-daoaodai-reg	LUK 13:13	.,	…ih gongx hayh stâuđ tuz zac., songđ tanv Tênb-Hungh."…
+WA-mji-x-daoaodai-reg	JHN 11:42	.:	…een tingc Pha paiđ yaz taih.:…
+WA-mzm-x-zing-reg	LUK 2:38	..	…gaa raaniyuu ɓee Urushelima..…
+WA-mzm-x-zing-reg	1CO 14:7	---	…ãa--ana jegong ko vũngtaa---yii na de kaayãa ɓa toto…
+WA-mzm-x-zing-reg	EPH 3:9	---	…ni shɔng ɓeweya aru kaseni --- vi vɔ̃ɔseni Laa a lakooy…
+WA-nbh-ulb	MAT 7:10	.?	…ko dol ko kerwo a oni samma.?…
+WA-nbh-ulb	LUK 22:39	,,	…dgo, nzuni ka goshok zaitun,, majirakui dahangko si.…
+WA-nbh-ulb	JHN 9:24	,:	… ngoi woi ka makum ye anita,:" nam ka Ndeyi mu manangko…
+WA-nih-reg	MAT 5:47	,?	…mukuvalamuha avajenzi vinyu,? mukupata ishoni nkani lya…
+WA-nih-reg	ACT 7:26	,?	… mukukoselana imwe kwa imwe,?…
+WA-nih-reg	ACT 8:36	?,	…honi shikundila intahozelwe?,…
+WA-nim-reg	MRK 7:29	,:	…Numuila,: Kunsooko watambula itii, …
+WA-nim-reg	LUK 13:9	.!	…kina sikalikilela, uuliteme.!…
+WA-nim-reg	LUK 13:27	.!	…umuane, inyee atenda madobu.!…
+
+## obligation (b) — the ADR 0024 / ADR 0054 adjudicated multilingual wins
+corpus	total	preserved	coalesced	intentionally-moved	lost	adjudication
+WA-ne-udb	103	2	1	100	0	ADR 0054: `,`/`!` anchors kept AND the 40 verse-final dandas kept at ~0.549
+engwebster	23	0	0	23	0	ADR 0054: spaced period-typography collapses; the genuine spaced-`!` slips kept
+WA-kmr-IQ-badini-reg	69	3	3	63	0	ADR 0054: the 1,289 spaced ` ،` convention collapses; slips kept
+WA-pa-ulb	68	3	2	63	0	ADR 0054: the spaced `? !` convention collapses; slips kept
+ayn_reg	MISSING FROM THE FLEET	-	-	-	-
+
+rule	disposition	corpus	sid	span	context
+lex.punct-only-token	preserved	WA-ne-udb	LUK 3:23	(	… योसेफका छोरा हुनुहुन्थ्यो ( अथवा यस्तो विचार गरिन्थ्यो…
+lex.punct-only-token	preserved	WA-ne-udb	ACT 15:34	(	…चिन पाण्डुलिपि हटाएका छन्, ( प्रेरित १५:४० मा हेर्नुहोस…
+punct.spacing-anomaly	intentionally-moved	WA-ne-udb	MAT 4:4	न!	…ूले त्यसलाई भन्‍नुभयो, “होइन! म यो गर्ने छैन किनभने धर्…
+punct.spacing-anomaly	intentionally-moved	WA-ne-udb	MAT 4:9	,ब	… र मेरो आराधना गर्नुभयो भने,बम तपाईंलाई यी सबै राज्‍यहर…
+punct.spacing-anomaly	intentionally-moved	WA-ne-udb	MAT 4:10	ल!	… छैन, शैतान, यसैले दूर गइहाल! परमेश्‍वरले धर्मशास्‍त्रम…
+punct.spacing-anomaly	intentionally-moved	WA-ne-udb	MAT 6:23	!	… तिमीहरू कति लालची हुने छौ !…
+punct.spacing-anomaly	intentionally-moved	engwebster	LEV 18:18	 -	…sides the other in her life -time .…
+punct.spacing-anomaly	intentionally-moved	engwebster	LEV 26:22	 -	…ew in number, and your high -ways shall be desolate.…
+punct.spacing-anomaly	intentionally-moved	engwebster	NUM 20:17	 -	… will go by the king's high -way, we will not turn to t…
+punct.spacing-anomaly	intentionally-moved	engwebster	NUM 21:22	 -	…go along by the king's high -way, until we have past th…
+punct.spacing-anomaly	intentionally-moved	engwebster	JOS 21:11	 -	…city is Hebron) in the hill -country of Judah, with its…
+punct.spacing-anomaly	intentionally-moved	engwebster	JDG 20:16	 -	…ould sling stones to a hair -breadth , and not miss.…
+punct.adjacency-anomaly	preserved	WA-kmr-IQ-badini-reg	MAT 3:14	؟!	…افیر کرن و تویێ دهێیە نک من؟! )…
+punct.adjacency-anomaly	intentionally-moved	WA-kmr-IQ-badini-reg	MAT 4:3	!۔	…ی ، بێژە ڤان بەران ببنە نان!۔)…
+punct.adjacency-anomaly	intentionally-moved	WA-kmr-IQ-badini-reg	MAT 16:22	:،	… ڤەدەر كر و پاشڤە بر و گۆتێ:، دویری تە!  ئەی پەروەردگار…
+punct.adjacency-anomaly	intentionally-moved	WA-kmr-IQ-badini-reg	MRK 2:25	،؟	…فتینە هەوجەییێ و برسی بووین،؟…
+punct.adjacency-anomaly	intentionally-moved	WA-kmr-IQ-badini-reg	MRK 9:25	:!	… ل گیانێ پیس حەیتاند و گۆتێ:! هەی گیانێ كەڕ و لال، ئەز …
+punct.adjacency-anomaly	intentionally-moved	WA-kmr-IQ-badini-reg	MRK 10:2	،:	…دا تاقی بکەن  پرسیار ژێ كرن،: (ئەرێ رەوایە مێر  ژنا خۆ …
+punct.adjacency-anomaly	preserved	WA-pa-ulb	ZEC 4:7	!।	…ਇਹ ਦੇ ਲਈ ਕਿਰਪਾ ਹੋਵੇ, ਕਿਰਪਾ !।…
+lex.punct-only-token	intentionally-moved	WA-pa-ulb	NUM 3:47	(	…ਰ ਸਥਾਨ ਦੇ ਸ਼ੇਕਲ ਅਨੁਸਾਰ ਲਵੀਂ ( ਅਰਥਾਤ ਇੱਕ ਸ਼ੇਕਲ ਵੀਹ ਗੇਰਾਹ ਦ…
+lex.punct-only-token	intentionally-moved	WA-pa-ulb	NUM 34:2	(	…ਂ ਕਨਾਨ ਦੇਸ ਵਿੱਚ ਪ੍ਰਵੇਸ਼ ਕਰੋ ( ਉਹ ਦੇਸ ਜਿਹੜਾ ਤੁਹਾਡੀ ਵਿਰਾਸਤ…
+lex.punct-only-token	intentionally-moved	WA-pa-ulb	JDG 8:24	(	…ਚੋਂ ਵਾਲੀਆਂ ਮੈਨੂੰ ਦੇ ਦਿਉ ।" ( ਕਿਉਂ ਜੋ ਉਹ ਵਾਲੀਆਂ ਸੋਨੇ ਦੀਆ…
+lex.punct-only-token	intentionally-moved	WA-pa-ulb	2SA 21:2	(	…ਨੂੰ ਸੱਦ ਕੇ ਉਨ੍ਹਾਂ ਨੂੰ ਆਖਿਆ ( ਇਹ ਇਸਰਾਏਲ ਦੀ ਸੰਤਾਨ ਵਿੱਚੋਂ …
+lex.punct-only-token	intentionally-moved	WA-pa-ulb	2KI 7:13	(	…ੀਂ ਉਨ੍ਹਾਂ ਨੂੰ ਘੱਲ ਕੇ ਵੇਖੀਏ ( ਉਹ ਇਸਰਾਏਲ ਦੇ ਸਾਰੇ ਦਲ ਦੀ ਤਰ…
+
+## per corpus
+corpus	new_findings	adj_total	adj_preserved	adj_coalesced	adj_moved	adj_lost	punctonly_total	punctonly_preserved	punctonly_coalesced	punctonly_moved	punctonly_lost	spacing_total	spacing_preserved	spacing_coalesced	spacing_moved	spacing_lost	k2_movers
+WA-ach-SS-acholi-reg	16	4	1	0	3	0	1	0	0	1	0	9	0	0	9	0	0
+WA-acq-reg	16	13	3	2	8	0	5	2	0	3	0	12	0	0	12	0	0
+WA-am-ulb	57	57	8	0	49	0	30	0	0	30	0	83	1	0	82	0	2
+WA-amo-reg	9	4	0	0	4	0	1	1	0	0	0	12	0	0	12	0	2
+WA-aoa-reg	17	24	3	0	21	0	4	2	0	2	0	19	0	3	16	0	2
+WA-arq-reg	23	10	1	1	8	0	16	1	0	15	0	22	2	1	19	0	6
+WA-as-ulb	23	14	4	0	10	0	2	2	0	0	0	168	1	6	161	0	0
+WA-asa-reg	25	25	4	1	20	0	2	2	0	0	0	12	0	0	12	0	6
+WA-atg-reg	19	18	3	0	15	0	0	0	0	0	0	24	0	1	23	0	7
+WA-auh-reg	14	5	3	0	2	0	0	0	0	0	0	19	0	1	18	0	1
+WA-ayn-ulb	10	19	2	0	17	0	2	1	0	1	0	34	0	1	33	0	2
+WA-bap-x-rai-reg	12	6	3	0	3	0	0	0	0	0	0	15	0	2	13	0	2
+WA-bbm-reg	15	0	0	0	0	0	0	0	0	0	0	19	0	2	17	0	0
+WA-bds-reg	22	61	5	1	55	0	7	0	0	7	0	20	0	2	18	0	6
+WA-bem-reg	9	6	2	0	4	0	0	0	0	0	0	19	0	2	17	0	4
+WA-bez-reg	12	27	3	0	24	0	10	2	0	8	0	6	0	0	6	0	6
+WA-bgd-x-pawari-reg	21	13	7	1	5	0	0	0	0	0	0	17	1	1	15	0	2
+WA-bil-reg	26	29	6	1	22	0	1	1	0	0	0	9	0	1	8	0	1
+WA-bji-reg	9	4	1	0	3	0	0	0	0	0	0	44	0	2	42	0	0
+WA-bkr-x-pajuepat-reg	23	33	7	0	26	0	2	1	0	1	0	28	1	6	21	0	2
+WA-bn-ulb	30	20	3	1	16	0	0	0	0	0	0	115	0	7	108	0	6
+WA-bnx-x-kasenga-reg	16	33	5	0	28	0	4	1	0	3	0	13	0	1	12	0	0
+WA-bnx-x-mikebwe-reg	21	63	9	1	53	0	24	4	0	20	0	34	0	4	30	0	4
+WA-bsj-reg	11	19	2	0	17	0	0	0	0	0	0	11	0	0	11	0	0
+WA-btm-reg	16	24	3	0	21	0	0	0	0	0	0	37	1	0	36	0	2
+WA-bwc-reg	18	20	5	1	14	0	0	0	0	0	0	34	0	1	33	0	2
+WA-bwg-reg	24	35	5	1	29	0	4	1	0	3	0	28	0	2	26	0	3
+WA-byi-reg	13	24	3	0	21	0	4	1	0	3	0	2	0	2	0	0	0
+WA-byn-reg	32	23	2	0	21	0	6	5	0	1	0	68	4	5	59	0	2
+WA-ceb-ulb	32	20	4	2	14	0	16	0	0	16	0	8	1	0	7	0	0
+WA-ckb-reg	13	6	0	0	6	0	0	0	0	0	0	70	0	3	67	0	0
+WA-coh-x-jibana-reg	18	8	2	0	6	0	0	0	0	0	0	12	0	2	10	0	0
+WA-coh-x-kauma-reg	28	18	5	0	13	0	0	0	0	0	0	13	0	0	13	0	2
+WA-cwe-reg	23	31	4	0	27	0	1	1	0	0	0	8	0	1	7	0	0
+WA-dav-reg	16	22	3	1	18	0	2	0	0	2	0	10	0	0	10	0	11
+WA-dgo-x-dogripun-reg	19	31	0	1	30	0	3	1	0	2	0	56	0	3	53	0	2
+WA-dig-reg	17	42	2	2	38	0	1	1	0	0	0	29	0	4	25	0	11
+WA-dje-reg	44	62	6	2	54	0	24	6	0	18	0	17	0	4	13	0	5
+WA-doe-reg	19	32	5	0	27	0	1	0	0	1	0	20	0	1	19	0	0
+WA-dso-ulb	44	50	8	1	41	0	20	3	0	17	0	34	2	0	32	0	10
+WA-ekp-reg	29	12	7	0	5	0	1	1	0	0	0	19	0	1	18	0	0
+WA-ema-x-emai-reg	16	2	2	0	0	0	1	1	0	0	0	20	0	0	20	0	0
+WA-en-ulb	24	2	1	1	0	0	0	0	0	0	0	34	0	1	33	0	0
+WA-enb-x-kiptani-reg	9	28	3	0	25	0	1	0	0	1	0	13	0	2	11	0	6
+WA-es-419-udb	15	22	3	0	19	0	1	1	0	0	0	32	0	2	30	0	6
+WA-es-419-ulb	43	64	8	2	54	0	6	0	0	6	0	57	1	7	49	0	4
+WA-fr-ulb	17	6	3	0	3	0	10	0	0	10	0	15	2	0	13	0	3
+WA-gay-reg	19	39	2	1	36	0	2	1	0	1	0	20	0	2	18	0	10
+WA-gaz-ulb	33	24	6	3	15	0	0	0	0	0	0	40	0	5	35	0	0
+WA-geg-reg	22	23	3	0	20	0	4	0	0	4	0	13	0	3	10	0	0
+WA-gey-reg	10	15	2	0	13	0	0	0	0	0	0	17	0	2	15	0	2
+WA-gl-reg	10	10	2	0	8	0	0	0	0	0	0	23	1	1	21	0	0
+WA-gnh-reg	21	23	3	0	20	0	0	0	0	0	0	18	0	2	16	0	0
+WA-gog-reg	25	23	3	1	19	0	5	1	0	4	0	17	0	0	17	0	2
+WA-gqa-x-kabinda-reg	18	24	3	2	19	0	3	1	0	2	0	9	0	0	9	0	0
+WA-gu-udb	19	4	2	2	0	0	1	1	0	0	0	27	0	3	24	0	0
+WA-gu-ulb	7	6	2	0	4	0	0	0	0	0	0	20	0	2	18	0	4
+WA-gux-reg	7	1	0	0	1	0	0	0	0	0	0	13	0	0	13	0	0
+WA-gux-x-gourmantche-reg	18	19	1	0	18	0	3	3	0	0	0	26	0	0	26	0	0
+WA-ha-ulb	32	36	2	1	33	0	1	0	0	1	0	28	0	1	27	0	8
+WA-hac-reg	9	31	2	0	29	0	1	0	0	1	0	36	1	2	33	0	2
+WA-haq-reg	28	47	3	0	44	0	1	1	0	0	0	13	0	1	12	0	8
+WA-hi-udb	18	20	3	0	17	0	1	1	0	0	0	161	0	4	157	0	2
+WA-hi-ulb	21	75	2	2	71	0	0	0	0	0	0	80	0	2	78	0	0
+WA-hi-x-waradhi-reg	11	28	2	0	26	0	8	1	0	7	0	18	0	0	18	0	2
+WA-hke-x-bakobo-reg	26	25	6	0	19	0	1	0	0	1	0	32	0	1	31	0	6
+WA-hts-reg	27	58	4	4	50	0	11	0	0	11	0	50	0	0	50	0	2
+WA-ida-x-isukha-reg	14	41	3	0	38	0	3	0	0	3	0	29	0	4	25	0	8
+WA-ida-x-tiriki-reg	22	35	7	1	27	0	3	0	0	3	0	31	3	0	28	0	0
+WA-ihi-reg	19	49	3	0	46	0	2	0	0	2	0	36	0	0	36	0	2
+WA-ilo-udb	34	20	2	0	18	0	0	0	0	0	0	39	0	1	38	0	6
+WA-ilo-ulb	31	15	1	2	12	0	7	0	0	7	0	12	0	0	12	0	4
+WA-ish-ulb	12	33	0	2	31	0	2	1	0	1	0	19	0	0	19	0	0
+WA-isi-reg	13	28	3	0	25	0	0	0	0	0	0	18	0	0	18	0	4
+WA-jid-reg	23	10	4	0	6	0	2	1	0	1	0	8	0	3	5	0	0
+WA-jit-x-hambwe-reg	16	24	3	1	20	0	0	0	0	0	0	20	0	0	20	0	2
+WA-jni-reg	13	15	1	0	14	0	1	1	0	0	0	8	0	0	8	0	5
+WA-kan-x-koungaru-reg	32	31	3	2	26	0	23	0	0	23	0	31	0	2	29	0	2
+WA-kas-reg	10	17	3	1	13	0	9	0	0	9	0	29	0	0	29	0	0
+WA-kdc-reg	13	44	4	1	39	0	2	2	0	0	0	22	0	1	21	0	6
+WA-kdi-reg	17	25	2	1	22	0	1	0	0	1	0	12	0	0	12	0	0
+WA-kdp-reg	10	14	1	0	13	0	2	1	0	1	0	28	0	1	27	0	0
+WA-kdx-reg	18	33	4	2	27	0	0	0	0	0	0	4	1	1	2	0	6
+WA-khx-reg	9	17	3	0	14	0	4	2	0	2	0	22	0	1	21	0	2
+WA-kiz-reg	6	4	0	0	4	0	2	1	0	1	0	21	0	0	21	0	4
+WA-kki-ulb	13	12	2	0	10	0	0	0	0	0	0	22	0	0	22	0	2
+WA-kls-reg	13	13	0	0	13	0	0	0	0	0	0	8	0	0	8	0	0
+WA-km-ulb	26	30	0	0	30	0	0	0	0	0	0	75	0	3	72	0	2
+WA-kmr-IQ-badini-reg	13	12	2	0	10	0	6	0	0	6	0	51	1	3	47	0	4
+WA-kmr-x-afrini-reg	21	7	1	0	6	0	1	0	0	1	0	38	0	4	34	0	3
+WA-kmw-x-punia-reg	18	12	3	0	9	0	8	3	0	5	0	19	0	1	18	0	4
+WA-kn-ulb	20	22	4	0	18	0	12	0	0	12	0	111	0	6	105	0	2
+WA-kng-x-kindibu-reg	14	18	1	1	16	0	0	0	0	0	0	0	0	0	0	0	4
+WA-knl-x-kenyilu-reg	7	13	1	0	12	0	1	0	0	1	0	23	0	0	23	0	6
+WA-knx-x-bajare-reg	13	51	3	0	48	0	13	1	0	12	0	28	0	4	24	0	0
+WA-kod-reg	21	38	4	1	33	0	0	0	0	0	0	38	0	2	36	0	4
+WA-kpk-reg	22	35	5	0	30	0	5	0	0	5	0	18	0	2	16	0	0
+WA-ksv-reg	25	17	4	0	13	0	0	0	0	0	0	23	1	0	22	0	4
+WA-kty-reg	16	141	4	0	137	0	1	0	0	1	0	17	0	0	17	0	2
+WA-kuh-reg	10	12	2	0	10	0	1	0	0	1	0	15	0	1	14	0	2
+WA-kvb-reg	23	32	3	1	28	0	6	2	0	4	0	28	1	2	25	0	6
+WA-kxv-reg	5	0	0	0	0	0	10	1	0	9	0	9	0	0	9	0	0
+WA-kya-x-ruri-reg	20	23	2	0	21	0	6	1	0	5	0	8	0	2	6	0	0
+WA-lai-TZ-kilambya-reg	21	34	3	0	31	0	2	1	0	1	0	11	0	0	11	0	2
+WA-lee-reg	33	29	4	1	24	0	11	0	0	11	0	31	1	3	27	0	2
+WA-lel-reg	33	17	3	1	13	0	11	2	0	9	0	43	0	3	40	0	0
+WA-lke-reg	6	2	0	0	2	0	0	0	0	0	0	0	0	0	0	0	2
+WA-lko-reg	6	0	0	0	0	0	5	0	0	5	0	17	0	0	17	0	0
+WA-lks-reg	18	31	2	1	28	0	1	1	0	0	0	10	0	0	10	0	4
+WA-lmn-x-anjara-reg	12	2	1	0	1	0	0	0	0	0	0	32	0	2	30	0	0
+WA-lmy-reg	21	20	4	0	16	0	2	2	0	0	0	27	0	2	25	0	4
+WA-lno-x-okolie-reg	25	5	3	1	1	0	1	1	0	0	0	8	0	0	8	0	0
+WA-lo-ulb	59	25	2	0	23	0	0	0	0	0	0	13	0	0	13	0	2
+WA-lot-reg	6	3	0	0	3	0	0	0	0	0	0	28	0	0	28	0	0
+WA-lpx-reg	13	9	3	0	6	0	0	0	0	0	0	25	0	0	25	0	2
+WA-lto-reg	19	17	2	1	14	0	4	2	0	2	0	13	1	1	11	0	0
+WA-lts-reg	13	37	5	0	32	0	2	0	0	2	0	4	0	3	1	0	0
+WA-lul-reg	31	24	2	1	21	0	0	0	0	0	0	24	0	2	22	0	4
+WA-lur-reg	33	67	8	0	59	0	1	0	0	1	0	20	2	6	12	0	6
+WA-mgq-reg	13	23	3	1	19	0	3	0	0	3	0	11	0	1	10	0	4
+WA-mgs-reg	14	12	2	1	9	0	1	1	0	0	0	12	0	1	11	0	0
+WA-mgv-reg	25	24	6	1	17	0	12	2	0	10	0	30	0	1	29	0	0
+WA-mgy-reg	16	30	5	3	22	0	0	0	0	0	0	34	0	1	33	0	2
+WA-mgz-reg	15	36	3	1	32	0	1	0	0	1	0	22	0	0	22	0	11
+WA-mhd-reg	24	36	6	0	30	0	1	0	0	1	0	12	0	3	9	0	6
+WA-mhi-x-burolo-reg	34	35	6	0	29	0	3	3	0	0	0	21	0	2	19	0	0
+WA-mjh-reg	14	10	3	0	7	0	0	0	0	0	0	19	0	1	18	0	2
+WA-mji-x-daoaodai-reg	16	24	2	2	20	0	1	1	0	0	0	30	0	4	26	0	6
+WA-mko-reg	19	40	5	0	35	0	0	0	0	0	0	21	1	0	20	0	4
+WA-ml-ulb	23	38	2	0	36	0	2	1	0	1	0	53	0	5	48	0	0
+WA-mlp-x-kurum-reg	16	1	1	0	0	0	5	1	0	4	0	18	0	0	18	0	0
+WA-mmn-reg	7	2	2	0	0	0	0	0	0	0	0	11	1	0	10	0	0
+WA-mpa-reg	18	16	3	1	12	0	0	0	0	0	0	16	0	0	16	0	0
+WA-mr-udb	23	12	3	1	8	0	4	0	0	4	0	47	0	3	44	0	7
+WA-mr-ulb	3	0	0	0	0	0	0	0	0	0	0	68	0	0	68	0	0
+WA-msh-udb	13	14	2	1	11	0	19	0	0	19	0	33	1	2	30	0	0
+WA-mve-reg	18	21	2	1	18	0	0	0	0	0	0	18	0	1	17	0	0
+WA-mvw-reg	18	21	5	1	15	0	1	1	0	0	0	15	0	0	15	0	2
+WA-my-ulb	4	16	2	0	14	0	10	0	0	10	0	215	0	2	213	0	2
+WA-mzm-x-zing-reg	11	17	2	1	14	0	0	0	0	0	0	7	0	0	7	0	6
+WA-nar-reg	27	34	5	1	28	0	7	1	0	6	0	27	0	1	26	0	3
+WA-nbh-ulb	17	27	6	1	20	0	0	0	0	0	0	9	0	2	7	0	6
+WA-ndc-x-chiducua-reg	19	32	4	1	27	0	1	1	0	0	0	36	1	4	31	0	4
+WA-ne-udb	28	0	0	0	0	0	2	2	0	0	0	101	0	1	100	0	0
+WA-ne-ulb	22	4	1	1	2	0	4	2	0	2	0	132	0	4	128	0	2
+WA-nfd-reg	15	22	2	0	20	0	1	0	0	1	0	7	2	1	4	0	4
+WA-ngo-reg	29	29	9	2	18	0	5	1	0	4	0	13	0	1	12	0	4
+WA-ngp-ulb	11	8	3	0	5	0	0	0	0	0	0	24	0	0	24	0	2
+WA-ngw-reg	17	31	3	0	28	0	3	1	0	2	0	31	0	6	25	0	2
+WA-nih-reg	11	30	1	2	27	0	2	0	0	2	0	33	0	1	32	0	6
+WA-nim-reg	16	36	5	0	31	0	4	2	0	2	0	21	0	0	21	0	6
+WA-njd-reg	16	25	6	1	18	0	1	1	0	0	0	30	0	0	30	0	6
+WA-nl-ulb	19	7	4	0	3	0	3	0	0	3	0	53	0	3	50	0	2
+WA-nnq-reg	27	42	4	1	37	0	3	1	0	2	0	16	0	0	16	0	2
+WA-now-reg	34	32	4	0	28	0	2	1	0	1	0	18	0	3	15	0	10
+WA-nue-reg	9	21	3	0	18	0	1	0	0	1	0	35	1	2	32	0	0
+WA-nww-reg	18	31	4	1	26	0	0	0	0	0	0	18	0	1	17	0	4
+WA-nxi-reg	17	32	3	0	29	0	1	0	0	1	0	12	0	0	12	0	2
+WA-nyf-x-kambe-reg	12	1	1	0	0	0	0	0	0	0	0	22	1	1	20	0	0
+WA-nyf-x-rabai-reg	3	0	0	0	0	0	0	0	0	0	0	17	0	0	17	0	0
+WA-nyf-x-ribe-reg	3	3	0	0	3	0	0	0	0	0	0	16	0	0	16	0	0
+WA-nyg-reg	22	22	4	0	18	0	2	0	0	2	0	40	1	3	36	0	0
+WA-nyj-reg	8	13	0	0	13	0	1	1	0	0	0	1	0	0	1	0	0
+WA-nym-x-nyikungu-reg	23	49	4	1	44	0	3	1	0	2	0	20	0	1	19	0	4
+WA-nyn-x-runyaruguru-reg	5	0	0	0	0	0	1	0	0	1	0	4	0	0	4	0	0
+WA-old-x-ngasa-reg	24	38	6	1	31	0	0	0	0	0	0	18	0	2	16	0	8
+WA-omt-reg	20	52	4	3	45	0	3	0	0	3	0	8	0	0	8	0	2
+WA-or-udb	21	26	0	0	26	0	2	1	0	1	0	39	2	1	36	0	0
+WA-or-ulb	17	3	1	0	2	0	23	0	0	23	0	176	0	6	170	0	2
+WA-orz-x-rarankwa-reg	41	24	6	0	18	0	3	3	0	0	0	17	1	2	14	0	2
+WA-pa-ulb	9	1	1	0	0	0	21	1	0	20	0	46	1	2	43	0	0
+WA-pbn-reg	23	22	2	0	20	0	0	0	0	0	0	8	2	1	5	0	4
+WA-pcn-x-ribang-reg	19	29	1	1	27	0	2	2	0	0	0	13	1	4	8	0	2
+WA-plt-ulb	28	39	3	1	35	0	37	0	0	37	0	65	2	2	61	0	0
+WA-pse-x-riauasli-reg	19	28	4	1	23	0	6	0	0	6	0	46	0	2	44	0	2
+WA-pt-br-ulb	15	1	1	0	0	0	18	0	0	18	0	50	1	1	48	0	0
+WA-ret-reg	15	9	2	0	7	0	0	0	0	0	0	33	1	0	32	0	0
+WA-rim-reg	21	34	5	0	29	0	1	1	0	0	0	25	0	1	24	0	4
+WA-rmn-BG-horohane-reg	14	27	2	0	25	0	7	2	0	5	0	14	0	3	11	0	3
+WA-rmn-x-lahoirom-reg	13	37	2	0	35	0	29	2	0	27	0	34	1	4	29	0	0
+WA-rmn-x-yerliroman-reg	11	2	0	0	2	0	3	2	0	1	0	8	1	3	4	0	0
+WA-rof-reg	15	47	1	0	46	0	5	0	0	5	0	23	0	2	21	0	4
+WA-ruf-reg	24	30	3	3	24	0	1	1	0	0	0	17	0	1	16	0	4
+WA-sah-reg	26	13	4	1	8	0	2	2	0	0	0	20	0	0	20	0	0
+WA-sbk-reg	13	14	3	0	11	0	1	0	0	1	0	22	0	1	21	0	0
+WA-sbm-reg	21	36	4	1	31	0	0	0	0	0	0	16	0	0	16	0	6
+WA-sbp-reg	23	44	3	1	40	0	2	1	0	1	0	33	0	2	31	0	0
+WA-scg-x-mayau-reg	18	44	3	3	38	0	4	0	0	4	0	14	0	0	14	0	4
+WA-sde-ulb	21	21	7	0	14	0	1	1	0	0	0	22	0	1	21	0	8
+WA-skg-x-vezo-udb	11	8	3	0	5	0	0	0	0	0	0	11	0	0	11	0	4
+WA-skv-reg	11	40	1	0	39	0	5	0	0	5	0	23	0	2	21	0	2
+WA-sob-reg	11	22	6	1	15	0	1	1	0	0	0	14	0	1	13	0	0
+WA-soz-reg	18	23	2	1	20	0	9	4	0	5	0	42	0	4	38	0	4
+WA-spy-x-kony-reg	10	27	3	1	23	0	0	0	0	0	0	24	0	0	24	0	0
+WA-spy-x-subiny-reg	16	36	4	2	30	0	5	1	0	4	0	25	0	3	22	0	0
+WA-ss-reg	19	19	3	0	16	0	2	1	0	1	0	28	0	2	26	0	6
+WA-ssc-x-kiroba-reg	15	29	7	2	20	0	1	0	0	1	0	7	0	0	7	0	2
+WA-ssn-x-sanye-reg	10	1	0	0	1	0	0	0	0	0	0	7	0	1	6	0	0
+WA-suj-reg	5	7	3	0	4	0	0	0	0	0	0	7	0	0	7	0	2
+WA-suw-reg	19	19	4	1	14	0	0	0	0	0	0	16	0	0	16	0	0
+WA-svr-reg	13	22	2	0	20	0	6	1	0	5	0	1	0	1	0	0	0
+WA-sw-ulb	26	9	2	0	7	0	3	1	0	2	0	14	0	1	13	0	0
+WA-swr-reg	22	27	8	1	18	0	2	1	0	1	0	23	0	2	21	0	2
+WA-ta-ulb	9	8	3	0	5	0	0	0	0	0	0	6	0	0	6	0	0
+WA-tap-TZ-taabwa-reg	24	25	6	2	17	0	0	0	0	0	0	9	0	4	5	0	5
+WA-tdx-x-mahafaly-reg	13	20	0	1	19	0	3	0	0	3	0	39	0	2	37	0	2
+WA-te-ulb	24	8	0	1	7	0	38	0	0	38	0	78	0	4	74	0	2
+WA-tel-x-gusavu-reg	8	20	1	0	19	0	8	1	0	7	0	6	1	3	2	0	0
+WA-tel-x-kovi-reg	36	19	1	0	18	0	0	0	0	0	0	21	0	4	17	0	2
+WA-tel-x-onda-reg	48	27	4	1	22	0	0	0	0	0	0	43	0	1	42	0	4
+WA-tel-x-orku-reg	9	5	2	0	3	0	0	0	0	0	0	10	0	0	10	0	0
+WA-tel-x-osti-reg	12	7	2	0	5	0	0	0	0	0	0	5	0	0	5	0	0
+WA-tel-x-otiya-reg	18	11	4	0	7	0	0	0	0	0	0	25	0	3	22	0	0
+WA-tel-x-piya-reg	32	16	3	1	12	0	0	0	0	0	0	69	0	0	69	0	6
+WA-tel-x-pusala-reg	16	20	2	1	17	0	12	1	0	11	0	52	0	2	50	0	3
+WA-th-ulb	17	0	0	0	0	0	1	1	0	0	0	13	0	3	10	0	0
+WA-tkg-reg	18	31	1	0	30	0	5	2	0	3	0	32	0	3	29	0	0
+WA-tl-udb	25	16	1	1	14	0	0	0	0	0	0	46	0	0	46	0	6
+WA-tl-ulb	30	32	3	0	29	0	9	0	0	9	0	17	1	1	15	0	6
+WA-tnw-reg	18	31	3	0	28	0	15	0	0	15	0	50	0	0	50	0	5
+WA-tpi-ulb	32	36	1	3	32	0	22	1	0	21	0	69	0	2	67	0	2
+WA-txy-reg	20	24	4	2	18	0	16	1	0	15	0	37	0	0	37	0	2
+WA-ukv-reg	23	6	2	0	4	0	6	1	0	5	0	15	2	0	13	0	0
+WA-ur-deva-ulb	31	98	6	1	91	0	56	3	0	53	0	43	0	1	42	0	0
+WA-uz-reg	21	1	1	0	0	0	0	0	0	0	0	39	0	1	38	0	0
+WA-vi-udb	17	7	2	0	5	0	2	2	0	0	0	40	0	3	37	0	4
+WA-vi-ulb	29	2	2	0	0	0	11	1	0	10	0	157	1	1	155	0	0
+WA-vid-reg	16	34	4	0	30	0	6	1	0	5	0	3	0	0	3	0	9
+WA-vin-reg	15	38	3	0	35	0	1	1	0	0	0	9	0	2	7	0	0
+WA-vmw-x-nahara-reg	17	26	3	0	23	0	3	0	0	3	0	19	0	2	17	0	0
+WA-vun-reg	13	30	5	0	25	0	4	0	0	4	0	18	0	1	17	0	2
+WA-wbf-reg	16	49	3	0	46	0	34	0	0	34	0	16	0	3	13	0	2
+WA-wbi-reg	13	8	3	1	4	0	1	1	0	0	0	27	0	1	26	0	2
+WA-wbj-reg	14	10	4	0	6	0	0	0	0	0	0	16	0	2	14	0	0
+WA-wbq-x-kusburva-reg	20	10	2	0	8	0	3	3	0	0	0	12	0	6	6	0	0
+WA-wci-reg	31	27	1	1	25	0	10	1	0	9	0	13	0	5	8	0	0
+WA-wnk-reg	20	25	3	0	22	0	2	1	0	1	0	20	1	2	17	0	4
+WA-wud-reg	17	23	4	2	17	0	1	1	0	0	0	11	0	2	9	0	2
+WA-xem-x-hibun-reg	22	56	2	3	51	0	11	1	0	10	0	41	0	3	38	0	7
+WA-xkd-reg	14	12	1	3	8	0	0	0	0	0	0	17	0	1	16	0	0
+WA-xsj-reg	28	33	8	0	25	0	8	2	0	6	0	17	0	2	15	0	4
+WA-xwg-reg	15	15	2	0	13	0	1	1	0	0	0	66	0	2	64	0	6
+WA-ybj-reg	24	21	4	1	16	0	1	0	0	1	0	11	0	1	10	0	4
+WA-yun-ulb	16	27	1	1	25	0	3	1	0	2	0	19	0	2	17	0	2
+WA-zaj-reg	21	37	7	0	30	0	3	3	0	0	0	14	0	2	12	0	0
+WA-zga-reg	16	21	3	3	15	0	0	0	0	0	0	5	0	1	4	0	4
+WA-zga-x-mahanji-reg	10	9	3	1	5	0	0	0	0	0	0	28	0	0	28	0	0
+WA-ziw-reg	16	10	0	0	10	0	0	0	0	0	0	1	0	0	1	0	0
+WA-zlm-x-sandai-reg	18	46	4	1	41	0	1	0	0	1	0	33	0	5	28	0	4
+WA-zmb-x-kwange-reg	27	43	5	0	38	0	3	3	0	0	0	19	0	5	14	0	7
+WA-zms-reg	19	28	5	0	23	0	5	3	0	2	0	23	1	3	19	0	4
+aai	4	0	0	0	0	0	0	0	0	0	0	19	0	0	19	0	0
+aak	3	0	0	0	0	0	0	0	0	0	0	22	0	0	22	0	0
+aau	9	0	0	0	0	0	4	0	0	4	0	6	0	1	5	0	0
+aaz	8	0	0	0	0	0	0	0	0	0	0	21	0	0	21	0	0
+abc	11	0	0	0	0	0	0	0	0	0	0	17	0	0	17	0	0
+abt-maprik	6	0	0	0	0	0	1	0	0	1	0	22	0	0	22	0	0
+abt-wosera	4	0	0	0	0	0	1	0	0	1	0	4	0	0	4	0	0
+abx	4	0	0	0	0	0	0	0	0	0	0	8	0	0	8	0	0
+aby	4	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0
+acfNT	5	0	0	0	0	0	15	0	0	15	0	18	0	0	18	0	0
+acr-acc	7	0	0	0	0	0	0	0	0	0	0	20	0	0	20	0	0
+acrNNT	3	2	0	1	1	0	0	0	0	0	0	0	0	0	0	0	0
+acrTNT	3	2	0	1	1	0	0	0	0	0	0	0	0	0	0	0	0
+acuNT	8	1	0	0	1	0	0	0	0	0	0	4	0	2	2	0	0
+adz	3	0	0	0	0	0	0	0	0	0	0	6	0	0	6	0	0
+aer	4	0	0	0	0	0	0	0	0	0	0	18	0	0	18	0	0
+aey	10	0	0	0	0	0	10	0	0	10	0	6	0	0	6	0	0
+agd	4	0	0	0	0	0	0	0	0	0	0	1	0	0	1	0	0
+agg	13	1	0	1	0	0	1	1	0	0	0	11	0	0	11	0	0
+agm	1	2	0	0	2	0	0	0	0	0	0	1	0	0	1	0	2
+agn	6	1	1	0	0	0	0	0	0	0	0	17	0	0	17	0	0
+agr	9	8	1	0	7	0	0	0	0	0	0	13	0	2	11	0	0
+agt	8	5	0	3	2	0	6	0	0	6	0	9	0	0	9	0	0
+aguBl	4	2	0	0	2	0	0	0	0	0	0	6	0	0	6	0	2
+ahr	0	0	0	0	0	0	0	0	0	0	0	4	0	0	4	0	0
+aia	3	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0
+aii	5	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0
+akeNT	8	1	1	0	0	0	2	0	0	2	0	16	0	1	15	0	0
+alpNT	1	1	0	0	1	0	9	0	0	9	0	46	0	0	46	0	0
+alqALGNT	2	0	0	0	0	0	4	0	0	4	0	7	0	0	7	0	0
+alw	10	1	1	0	0	0	4	0	0	4	0	27	0	0	27	0	0
+aly	2	0	0	0	0	0	0	0	0	0	0	19	0	0	19	0	0
+ameNT	3	1	0	0	1	0	0	0	0	0	0	17	0	0	17	0	0
+amf	5	0	0	0	0	0	0	0	0	0	0	11	0	0	11	0	0
+amh	0	1	0	0	1	0	0	0	0	0	0	0	0	0	0	0	0
+amk	13	0	0	0	0	0	6	0	0	6	0	3	0	0	3	0	0
+amm	11	0	0	0	0	0	0	0	0	0	0	3	0	1	2	0	0
+amn-amanab	8	0	0	0	0	0	0	0	0	0	0	7	0	0	7	0	0
+amn-n	8	0	0	0	0	0	0	0	0	0	0	7	0	0	7	0	0
+amo	12	7	2	1	4	0	4	4	0	0	0	18	1	2	15	0	2
+amp	5	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0
+amrNT	4	0	0	0	0	0	0	0	0	0	0	3	0	1	2	0	0
+amuNT	5	4	0	0	4	0	0	0	0	0	0	1	0	0	1	0	0
+amx	10	0	0	0	0	0	0	0	0	0	0	7	0	1	6	0	0
+anh	7	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0
+anvNT	4	0	0	0	0	0	0	0	0	0	0	11	0	1	10	0	0
+aoi	5	0	0	0	0	0	0	0	0	0	0	8	0	0	8	0	0
+aoj	7	1	1	0	0	0	0	0	0	0	0	10	0	0	10	0	0
+aoj-filifita	9	1	1	0	0	0	11	0	0	11	0	3	0	0	3	0	0
+aom	1	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0
+aon	6	0	0	0	0	0	3	0	0	3	0	12	0	0	12	0	0
+apb	4	0	0	0	0	0	0	0	0	0	0	2	0	1	1	0	0
+apeB	4	0	0	0	0	0	7	0	0	7	0	23	0	0	23	0	0
+apec	8	0	0	0	0	0	3	0	0	3	0	33	0	2	31	0	0
+apnNT	6	0	0	0	0	0	0	0	0	0	0	3	0	0	3	0	0
+apr	2	0	0	0	0	0	0	0	0	0	0	8	0	0	8	0	0
+apuNT	4	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0
+apwNT	4	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0
+apz	0	0	0	0	0	0	5	0	0	5	0	0	0	0	0	0	0
+aqk	8	2	1	1	0	0	0	0	0	0	0	16	0	1	15	0	0
+arb-vd	12	12	1	0	11	0	0	0	0	0	0	29	0	6	23	0	0
+arbnav	7	0	0	0	0	0	0	0	0	0	0	20	1	1	18	0	0
+are	4	0	0	0	0	0	0	0	0	0	0	9	0	0	9	0	0
+arlNT	6	8	2	0	6	0	0	0	0	0	0	4	0	0	4	0	0
+arnNT	8	3	0	0	3	0	2	2	0	0	0	5	1	2	2	0	1
+arp	2	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0
+asg	8	1	1	0	0	0	18	1	0	17	0	43	0	2	41	0	0
+asj	2	0	0	0	0	0	7	0	0	7	0	0	0	0	0	0	0
+asmfb	30	18	8	0	10	0	0	0	0	0	0	115	0	6	109	0	4
+aso	2	1	0	0	1	0	5	0	0	5	0	2	0	2	0	0	0
+ata	9	0	0	0	0	0	0	0	0	0	0	3	0	0	3	0	0
+atbNT	1	0	0	0	0	0	0	0	0	0	0	28	0	0	28	0	0
+atdNT	2	0	0	0	0	0	0	0	0	0	0	1	0	0	1	0	0
+atgNT	0	0	0	0	0	0	0	0	0	0	0	18	0	0	18	0	0
+att	3	0	0	0	0	0	0	0	0	0	0	14	0	0	14	0	0
+aucNT	2	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0
+aui	5	0	0	0	0	0	0	0	0	0	0	9	0	0	9	0	0
+auy	4	0	0	0	0	0	3	3	0	0	0	18	0	0	18	0	0
+avt	8	2	0	0	2	0	4	0	0	4	0	16	0	0	16	0	0
+awb	3	0	0	0	0	0	1	0	0	1	0	3	0	0	3	0	0
+awk	6	2	0	0	2	0	0	0	0	0	0	24	0	0	24	0	0
+awx	6	0	0	0	0	0	0	0	0	0	0	20	0	1	19	0	0
+azb	7	0	0	0	0	0	0	0	0	0	0	11	0	0	11	0	0
+azgNT	9	1	1	0	0	0	0	0	0	0	0	9	0	4	5	0	0
+azzNT	8	2	1	0	1	0	0	0	0	0	0	2	2	0	0	0	0
+baoNT	3	0	0	0	0	0	1	0	0	1	0	0	0	0	0	0	0
+bba	2	0	0	0	0	0	17	0	0	17	0	30	0	0	30	0	0
+bbb	4	1	0	0	1	0	0	0	0	0	0	0	0	0	0	0	0
+bbr	8	3	2	1	0	0	14	0	0	14	0	14	0	0	14	0	0
+bbr2013	8	3	2	1	0	0	14	0	0	14	0	14	0	0	14	0	0
+bch	0	0	0	0	0	0	0	0	0	0	0	8	0	0	8	0	0
+bco	2	0	0	0	0	0	0	0	0	0	0	11	0	0	11	0	0
+bdd	2	6	0	0	6	0	0	0	0	0	0	12	0	0	12	0	0
+bdv	2	0	0	0	0	0	0	0	0	0	0	8	0	1	7	0	0
+bea	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0
+bef	4	0	0	0	0	0	0	0	0	0	0	3	0	0	3	0	0
+bel	6	4	1	0	3	0	0	0	0	0	0	21	1	2	18	0	2
+beln	15	2	2	0	0	0	0	0	0	0	0	45	0	4	41	0	0
+benirv	13	17	2	1	14	0	0	0	0	0	0	16	0	1	15	0	8
+benobcv	12	0	0	0	0	0	1	1	0	0	0	1	0	1	0	0	0
+beo	22	49	3	0	46	0	22	0	0	22	0	166	0	1	165	0	6
+beu	4	1	1	0	0	0	0	0	0	0	0	3	0	0	3	0	0
+bfz	6	3	2	0	1	0	0	0	0	0	0	22	0	0	22	0	0
+bgc	2	13	0	0	13	0	0	0	0	0	0	15	0	0	15	0	2
+bgg	15	0	0	0	0	0	12	0	0	12	0	17	0	3	14	0	0
+bgs	3	0	0	0	0	0	0	0	0	0	0	8	0	0	8	0	0
+bgt	5	0	0	0	0	0	0	0	0	0	0	11	0	0	11	0	0
+bhd	1	0	0	0	0	0	0	0	0	0	0	7	0	0	7	0	0
+bhg	15	0	0	0	0	0	0	0	0	0	0	13	0	0	13	0	0
+bhi	8	0	0	0	0	0	0	0	0	0	0	27	0	1	26	0	0
+bhl	6	5	0	0	5	0	0	0	0	0	0	18	0	0	18	0	0
+bht	6	2	2	0	0	0	0	0	0	0	0	10	0	3	7	0	0
+bhu	5	0	0	0	0	0	0	0	0	0	0	9	0	2	7	0	0
+big	3	1	1	0	0	0	0	0	0	0	0	0	0	0	0	0	0
+big2013	3	1	1	0	0	0	0	0	0	0	0	0	0	0	0	0	0
+bjk	1	1	0	0	1	0	0	0	0	0	0	11	0	0	11	0	0
+bjp	3	0	0	0	0	0	0	0	0	0	0	12	0	0	12	0	0
+bjr	8	0	0	0	0	0	15	0	0	15	0	4	0	2	2	0	0
+bjvNT	5	7	0	0	7	0	10	0	0	10	0	22	0	0	22	0	0
+bjz	4	0	0	0	0	0	0	0	0	0	0	29	0	0	29	0	0
+bkd	0	0	0	0	0	0	0	0	0	0	0	6	0	0	6	0	0
+bki	6	6	0	0	6	0	0	0	0	0	0	9	0	0	9	0	0
+bkqNT	4	0	0	0	0	0	4	0	0	4	0	4	0	0	4	0	0
+bkw	8	0	0	0	0	0	15	0	0	15	0	19	0	0	19	0	0
+bkx	5	0	0	0	0	0	0	0	0	0	0	16	0	1	15	0	0
+bla	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0
+blw	6	0	0	0	0	0	2	0	0	2	0	0	0	0	0	0	0
+blzNT	6	0	0	0	0	0	15	1	0	14	0	2	0	0	2	0	0
+bmh	1	0	0	0	0	0	15	0	0	15	0	16	0	0	16	0	0
+bmk	7	13	0	0	13	0	0	0	0	0	0	18	0	1	17	0	0
+bmrNT	2	1	1	0	0	0	0	0	0	0	0	1	1	0	0	0	0
+bmu	15	0	0	0	0	0	2	0	0	2	0	25	1	0	24	0	0
+bnp	17	0	0	0	0	0	9	1	0	8	0	10	0	1	9	0	0
+boaNT	6	2	0	0	2	0	0	0	0	0	0	8	0	0	8	0	0
+bodn	4	0	0	0	0	0	4	2	0	2	0	278	0	0	278	0	0
+boj	8	0	0	0	0	0	0	0	0	0	0	28	0	0	28	0	0
+boj2014	8	0	0	0	0	0	0	0	0	0	0	28	0	0	28	0	0
+bon	10	0	0	0	0	0	1	1	0	0	0	12	0	0	12	0	0
+bou	6	6	2	0	4	0	0	0	0	0	0	14	0	0	14	0	4
+boxNT	3	0	0	0	0	0	2	1	0	1	0	1	0	0	1	0	0
+bpr	3	0	0	0	0	0	0	0	0	0	0	7	0	1	6	0	0
+bps	3	0	0	0	0	0	3	0	0	3	0	10	0	0	10	0	0
+bpx	0	0	0	0	0	0	0	0	0	0	0	3	0	0	3	0	0
+bqcsim	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0
+bqp	4	26	0	0	26	0	0	0	0	0	0	1	0	0	1	0	2
+breBRG	8	4	1	0	3	0	3	3	0	0	0	5	0	2	3	0	0
+bsj	16	19	2	0	17	0	1	0	0	1	0	11	0	0	11	0	0
+bsnNT	2	0	0	0	0	0	0	0	0	0	0	22	0	0	22	0	0
+bsp	8	2	0	0	2	0	0	0	0	0	0	19	0	3	16	0	2
+bssNT	4	0	0	0	0	0	0	0	0	0	0	5	0	0	5	0	0
+bswe	4	5	2	0	3	0	5	0	0	5	0	13	0	0	13	0	0
+bswl	4	5	2	0	3	0	4	0	0	4	0	29	0	0	29	0	0
+buj	9	17	0	0	17	0	6	1	0	5	0	22	0	3	19	0	0
+buk	1	0	0	0	0	0	8	0	0	8	0	18	0	0	18	0	0
+bus	1	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0
+bvd	1	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0
+bvr	10	2	0	2	0	0	0	0	0	0	0	55	0	1	54	0	0
+bvw	5	0	0	0	0	0	0	0	0	0	0	3	0	0	3	0	0
+bwc	8	0	0	0	0	0	0	0	0	0	0	31	0	0	31	0	0
+bwd	4	0	0	0	0	0	9	0	0	9	0	5	0	0	5	0	0
+bwo	7	15	2	0	13	0	9	0	0	9	0	14	0	0	14	0	0
+bxh	10	0	0	0	0	0	1	1	0	0	0	10	0	0	10	0	0
+byr	7	1	1	0	0	0	5	0	0	5	0	7	0	1	6	0	0
+byx	12	1	0	0	1	0	0	0	0	0	0	18	0	0	18	0	0
+bzdNTpo	5	0	0	0	0	0	1	0	0	1	0	17	0	1	16	0	0
+bzh	6	4	0	1	3	0	0	0	0	0	0	12	1	0	11	0	0
+bzj	12	0	0	0	0	0	0	0	0	0	0	22	0	1	21	0	0
+caa	10	1	1	0	0	0	0	0	0	0	0	1	0	1	0	0	0
+cabNT	3	6	0	0	6	0	0	0	0	0	0	17	0	0	17	0	0
+cac	11	6	0	0	6	0	0	0	0	0	0	11	0	2	9	0	0
+cafNT	15	3	0	0	3	0	0	0	0	0	0	10	0	1	9	0	0
+cak	8	0	0	0	0	0	0	0	0	0	0	2	0	0	2	0	0
+cakCNT	4	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0
+cakENT	1	3	0	0	3	0	0	0	0	0	0	8	1	0	7	0	0
+cakNT	0	1	0	0	1	0	0	0	0	0	0	1	0	0	1	0	0
+cakSNT	3	0	0	0	0	0	0	0	0	0	0	2	0	0	2	0	0
+cakWNT	1	0	0	0	0	0	0	0	0	0	0	1	0	0	1	0	0
+cakYNT	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0
+caoNT	4	2	0	0	2	0	0	0	0	0	0	17	0	0	17	0	0
+capNT	5	0	0	0	0	0	0	0	0	0	0	5	0	0	5	0	0
+cavNT	3	7	1	0	6	0	0	0	0	0	0	24	0	0	24	0	1
+caxNT	2	0	0	0	0	0	0	0	0	0	0	1	0	1	0	0	0
+cbcNT	2	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0
+cbiNTpo	7	10	1	0	9	0	0	0	0	0	0	37	1	2	34	0	0
+cbk	3	1	1	0	0	0	0	0	0	0	0	30	0	0	30	0	0
+cbrNT	5	6	1	0	5	0	0	0	0	0	0	27	1	1	25	0	0
+cbsNT	6	2	0	0	2	0	0	0	0	0	0	15	1	0	14	0	2
+cbtNTpo	2	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0
+cbuNT	12	14	0	0	14	0	0	0	0	0	0	16	0	2	14	0	0
+cbv	15	2	0	0	2	0	0	0	0	0	0	12	3	5	4	0	0
+ccoNT	6	4	0	0	4	0	0	0	0	0	0	1	0	1	0	0	0
+cdz	12	0	0	0	0	0	0	0	0	0	0	65	0	7	58	0	0
+cebocb	7	0	0	0	0	0	16	0	0	16	0	0	0	0	0	0	0
+cebulb	33	7	4	2	1	0	16	0	0	16	0	6	1	0	5	0	0
+cekak	6	0	0	0	0	0	0	0	0	0	0	3	0	0	3	0	0
+ces1613	3	0	0	0	0	0	0	0	0	0	0	7	0	0	7	0	0
+ceslb	12	0	0	0	0	0	2	0	0	2	0	9	0	1	8	0	0
+cesnkb	10	1	1	0	0	0	6	2	0	4	0	12	1	0	11	0	0
+cfm	6	1	0	1	0	0	3	2	0	1	0	2	0	0	2	0	0
+cgc	2	0	0	0	0	0	0	0	0	0	0	24	0	0	24	0	0
+cha	3	1	0	0	1	0	0	0	0	0	0	0	0	0	0	0	0
+chdNT	4	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0
+chfNT	2	5	0	0	5	0	0	0	0	0	0	12	0	1	11	0	0
+chk	8	0	0	0	0	0	0	0	0	0	0	112	0	2	110	0	0
+chqNT	6	4	0	0	4	0	0	0	0	0	0	25	0	0	25	0	0
+chzNTps	7	3	0	0	3	0	1	0	0	1	0	10	0	1	9	0	0
+cjoNT	3	1	0	1	0	0	0	0	0	0	0	6	0	0	6	0	0
+cjv	7	4	0	0	4	0	1	1	0	0	0	7	0	0	7	0	4
+ckb	9	5	2	0	3	0	9	0	0	9	0	0	0	0	0	0	0
+cleNT	4	5	0	0	5	0	0	0	0	0	0	7	0	1	6	0	0
+clu	7	0	0	0	0	0	9	0	0	9	0	9	0	0	9	0	0
+cmeNT	8	0	0	0	0	0	0	0	0	0	0	10	0	0	10	0	0
+cmn-cu89s	12	1	1	0	0	0	3	0	0	3	0	93	0	2	91	0	0
+cmn-cu89t	18	3	3	0	0	0	6	1	0	5	0	49	0	5	44	0	0
+cmncbs	8	0	0	0	0	0	0	0	0	0	0	12	0	0	12	0	0
+cmncbt	9	0	0	0	0	0	0	0	0	0	0	12	0	0	12	0	0
+cmnfeb	21	11	5	0	6	0	0	0	0	0	0	14	0	1	13	0	4
+cniNT	1	0	0	0	0	0	5	0	0	5	0	4	0	0	4	0	0
+cnlNT	6	5	0	0	5	0	0	0	0	0	0	21	0	1	20	0	0
+cntNT	15	7	2	1	4	0	1	1	0	0	0	10	0	1	9	0	0
+cofNT	2	0	0	0	0	0	0	0	0	0	0	1	1	0	0	0	0
+conNTpo	8	2	2	0	0	0	0	0	0	0	0	2	0	2	0	0	0
+copbhc	3	0	0	0	0	0	7	1	0	6	0	0	0	0	0	0	0
+copcnt	12	6	2	0	4	0	19	1	0	18	0	34	0	1	33	0	3
+copshc	3	6	1	0	5	0	1	0	0	1	0	12	1	0	11	0	0
+cotNT	10	4	2	0	2	0	0	0	0	0	0	6	0	0	6	0	0
+cpaNT	5	7	0	0	7	0	0	0	0	0	0	0	0	0	0	0	0
+cpbNT	4	2	1	1	0	0	0	0	0	0	0	0	0	0	0	0	0
+cpcNT	6	1	0	0	1	0	0	0	0	0	0	0	0	0	0	0	0
+cpuNT	4	13	1	1	11	0	0	0	0	0	0	0	0	0	0	0	2
+cpy	13	11	3	0	8	0	0	0	0	0	0	0	0	0	0	0	4
+crnNT	3	6	0	0	6	0	0	0	0	0	0	4	0	1	3	0	0
+crxNTpo	18	5	0	2	3	0	0	0	0	0	0	1	0	0	1	0	0
+csoNT	7	5	0	0	5	0	0	0	0	0	0	6	0	1	5	0	0
+csy	4	3	0	0	3	0	0	0	0	0	0	0	0	0	0	0	0
+ctaNT	2	3	0	0	3	0	0	0	0	0	0	12	0	0	12	0	0
+cth	16	13	1	0	12	0	8	0	0	8	0	132	2	5	125	0	2
+ctpNT	4	8	0	0	8	0	2	0	0	2	0	10	0	0	10	0	0
+ctu76	1	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0
+ctuBl	5	4	0	0	4	0	0	0	0	0	0	7	0	0	7	0	0
+ctucti	1	1	0	0	1	0	0	0	0	0	0	0	0	0	0	0	0
+cubNT	0	0	0	0	0	0	0	0	0	0	0	10	0	0	10	0	0
+cucNT	6	0	0	0	0	0	0	0	0	0	0	8	0	0	8	0	0
+cug	0	0	0	0	0	0	8	0	0	8	0	14	0	0	14	0	0
+cui	4	0	0	0	0	0	0	0	0	0	0	15	0	2	13	0	0
+cuk	16	1	1	0	0	0	1	1	0	0	0	5	0	0	5	0	0
+cuk09	2	14	0	0	14	0	0	0	0	0	0	1	0	0	1	0	0
+cutNT	5	4	0	0	4	0	0	0	0	0	0	4	0	0	4	0	0
+cuxNT	4	4	0	0	4	0	0	0	0	0	0	13	1	0	12	0	0
+cwe	4	8	0	0	8	0	0	0	0	0	0	13	0	0	13	0	0
+cya	4	0	0	0	0	0	0	0	0	0	0	23	1	2	20	0	0
+daaNT	1	0	0	0	0	0	11	0	0	11	0	1	0	1	0	0	0
+dad	2	0	0	0	0	0	0	0	0	0	0	8	0	0	8	0	0
+dah	8	0	0	0	0	0	2	2	0	0	0	10	0	0	10	0	0
+dan1931	14	51	0	0	51	0	30	1	0	29	0	22	1	1	20	0	2
+dao	12	0	0	0	0	0	9	1	0	8	0	17	0	3	14	0	0
+ded	10	0	0	0	0	0	0	0	0	0	0	9	0	0	9	0	0
+deu1912	5	4	0	0	4	0	5	0	0	5	0	14	0	0	14	0	2
+deu1951	18	2	0	0	2	0	0	0	0	0	0	24	0	2	22	0	0
+deuelbbk	21	13	2	0	11	0	35	1	0	34	0	76	0	9	67	0	0
+deuelo	3	12	1	0	11	0	0	0	0	0	0	35	1	0	34	0	0
+deutkw	16	8	1	0	7	0	37	4	0	33	0	50	0	3	47	0	0
+dgc	7	1	1	0	0	0	0	0	0	0	0	20	0	0	20	0	0
+dgrDOGNT	8	0	0	0	0	0	0	0	0	0	0	17	0	0	17	0	0
+dgz	3	0	0	0	0	0	0	0	0	0	0	16	0	0	16	0	0
+dhg	12	20	2	0	18	0	0	0	0	0	0	15	0	3	12	0	0
+dhgduwadha	5	1	1	0	0	0	1	1	0	0	0	26	0	0	26	0	0
+dhn	4	0	0	0	0	0	0	0	0	0	0	23	0	0	23	0	0
+dif	7	0	0	0	0	0	1	1	0	0	0	23	0	2	21	0	0
+dikNT	5	0	0	0	0	0	8	0	0	8	0	10	0	0	10	0	0
+dji	2	0	0	0	0	0	0	0	0	0	0	27	0	0	27	0	0
+djkNT	1	13	0	0	13	0	0	0	0	0	0	11	0	0	11	0	0
+djr	9	8	1	0	7	0	0	0	0	0	0	8	0	1	7	0	0
+dne	10	4	1	1	2	0	0	0	0	0	0	13	0	0	13	0	2
+dnv	7	0	0	0	0	0	4	3	0	1	0	10	0	0	10	0	0
+dob	4	0	0	0	0	0	0	0	0	0	0	9	0	0	9	0	0
+dop	6	2	2	0	0	0	16	0	0	16	0	3	0	2	1	0	0
+dov	20	17	2	0	15	0	0	0	0	0	0	11	3	1	7	0	2
+dso	14	2	1	0	1	0	1	1	0	0	0	39	0	3	36	0	0
+dwrENT	14	0	0	0	0	0	0	0	0	0	0	21	0	0	21	0	0
+dwrNT	10	0	0	0	0	0	0	0	0	0	0	20	0	0	20	0	0
+dwrl	7	0	0	0	0	0	0	0	0	0	0	3	1	0	2	0	0
+dww	10	0	0	0	0	0	12	0	0	12	0	19	0	1	18	0	0
+dwy	2	19	0	0	19	0	0	0	0	0	0	12	0	0	12	0	0
+ebk	3	0	0	0	0	0	0	0	0	0	0	21	0	1	20	0	0
+eka	36	20	4	1	15	0	31	1	0	30	0	177	0	5	172	0	4
+ekk	3	0	0	0	0	0	9	0	0	9	0	7	0	0	7	0	0
+ekkpkp	9	0	0	0	0	0	1	0	0	1	0	9	0	3	6	0	0
+eko	6	4	0	0	4	0	0	0	0	0	0	11	0	3	8	0	0
+emi	5	0	0	0	0	0	0	0	0	0	0	16	0	0	16	0	0
+empNTpo	13	0	0	0	0	0	12	0	0	12	0	27	0	0	27	0	0
+ena	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0
+eng-Brenton	7	0	0	0	0	0	0	0	0	0	0	3	0	3	0	0	0
+eng-asv	1	0	0	0	0	0	0	0	0	0	0	1	0	0	1	0	0
+eng-glw	4	0	0	0	0	0	0	0	0	0	0	3	0	0	3	0	0
+eng-kjv	5	0	0	0	0	0	0	0	0	0	0	2	0	0	2	0	0
+eng-kjv2006	7	0	0	0	0	0	0	0	0	0	0	2	0	0	2	0	0
+eng-lxx2012	8	0	0	0	0	0	0	0	0	0	0	4	0	4	0	0	0
+eng-rv	6	5	3	0	2	0	1	1	0	0	0	4	0	2	2	0	0
+eng-t4t	36	19	3	1	15	0	0	0	0	0	0	36	1	10	25	0	0
+eng-uk-lxx2012	8	0	0	0	0	0	0	0	0	0	0	4	0	4	0	0	0
+eng-web	9	1	1	0	0	0	0	0	0	0	0	22	0	1	21	0	0
+eng-web-c	8	1	1	0	0	0	0	0	0	0	0	22	0	1	21	0	0
+eng-webbe	9	1	1	0	0	0	0	0	0	0	0	22	0	1	21	0	0
+engBBE	6	1	1	0	0	0	17	0	0	17	0	35	0	2	33	0	0
+engDBY	9	7	1	0	6	0	0	0	0	0	0	38	0	0	38	0	0
+engDRA	2	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0
+engPEV	7	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0
+engULB	18	2	1	1	0	0	0	0	0	0	0	31	0	2	29	0	0
+engWycliffe	4	0	0	0	0	0	0	0	0	0	0	25	0	0	25	0	0
+engaoi	7	0	0	0	0	0	0	0	0	0	0	6	0	2	4	0	0
+engasvbt	2	0	0	0	0	0	0	0	0	0	0	2	0	0	2	0	0
+engbarkley	4	0	0	0	0	0	0	0	0	0	0	6	0	0	6	0	0
+engbarkly	11	0	0	0	0	0	0	0	0	0	0	18	0	0	18	0	0
+engbsb	9	1	1	0	0	0	0	0	0	0	0	28	0	2	26	0	0
+engemtv	5	0	0	0	0	0	0	0	0	0	0	25	0	1	24	0	0
+engf35	6	3	1	0	2	0	2	1	0	1	0	24	0	0	24	0	2
+engfbv	11	10	1	0	9	0	0	0	0	0	0	40	0	1	39	0	4
+enggnv	0	3	0	0	3	0	0	0	0	0	0	13	0	0	13	0	0
+engjps	8	0	0	0	0	0	0	0	0	0	0	18	0	6	12	0	0
+engkjvcpb	6	0	0	0	0	0	0	0	0	0	0	2	0	0	2	0	0
+englee	6	2	2	0	0	0	1	1	0	0	0	22	0	0	22	0	0
+englsv	8	0	0	0	0	0	2	2	0	0	0	17	1	1	15	0	0
+englxxup	1	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0
+engmsb	9	1	1	0	0	0	0	0	0	0	0	10	0	1	9	0	0
+engnet	20	19	1	3	15	0	4	1	0	3	0	19	0	4	15	0	4
+engnna	17	4	0	1	3	0	6	1	0	5	0	27	0	11	16	0	2
+engnoy	15	3	1	0	2	0	0	0	0	0	0	9	0	0	9	0	0
+engoebcw	5	1	1	0	0	0	0	0	0	0	0	17	0	0	17	0	0
+engoebus	4	1	1	0	0	0	0	0	0	0	0	17	0	0	17	0	0
+engojb	22	3	0	0	3	0	19	2	0	17	0	71	0	4	67	0	0
+engoke	16	3	0	0	3	0	0	0	0	0	0	1	0	1	0	0	0
+engourb	29	6	1	0	5	0	0	0	0	0	0	100	0	6	94	0	2
+engtcent	7	1	1	0	0	0	0	0	0	0	0	25	0	0	25	0	0
+engtnt	9	1	1	0	0	0	0	0	0	0	0	0	0	0	0	0	0
+engwebp	9	0	0	0	0	0	0	0	0	0	0	20	2	0	18	0	0
+engwebpb	9	0	0	0	0	0	0	0	0	0	0	20	2	0	18	0	0
+engwebster	0	0	0	0	0	0	0	0	0	0	0	23	0	0	23	0	0
+engwebu	9	1	1	0	0	0	0	0	0	0	0	22	0	1	21	0	0
+engwmb	9	0	0	0	0	0	0	0	0	0	0	20	2	0	18	0	0
+engwmbb	9	0	0	0	0	0	0	0	0	0	0	20	2	0	18	0	0
+engwyc2017	4	17	0	0	17	0	1	1	0	0	0	16	0	2	14	0	2
+engwyc2018	13	24	5	0	19	0	5	0	0	5	0	127	0	7	120	0	1
+engylt	12	0	0	0	0	0	0	0	0	0	0	18	0	5	13	0	0
+enq2	3	0	0	0	0	0	0	0	0	0	0	19	0	0	19	0	0
+epo	6	0	0	0	0	0	0	0	0	0	0	14	0	3	11	0	0
+eri	8	0	0	0	0	0	0	0	0	0	0	12	0	0	12	0	0
+eseNT	7	0	0	0	0	0	0	0	0	0	0	17	0	2	15	0	0
+eskNT	10	0	0	0	0	0	0	0	0	0	0	11	0	0	11	0	0
+etr	17	2	2	0	0	0	3	3	0	0	0	6	0	6	0	0	0
+ewe	8	0	0	0	0	0	18	0	0	18	0	0	0	0	0	0	0
+faa	6	1	1	0	0	0	0	0	0	0	0	3	0	0	3	0	0
+fad	2	0	0	0	0	0	0	0	0	0	0	2	0	0	2	0	0
+fai	7	2	2	0	0	0	0	0	0	0	0	6	0	0	6	0	0
+far	3	0	0	0	0	0	0	0	0	0	0	19	0	0	19	0	0
+ffm	3	4	1	0	3	0	0	0	0	0	0	18	0	0	18	0	0
+fin	9	0	0	0	0	0	6	2	0	4	0	16	0	1	15	0	0
+for	7	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0
+fraLSG	6	7	0	0	7	0	0	0	0	0	0	229	1	2	226	0	0
+fra_fob	4	1	0	0	1	0	0	0	0	0	0	19	0	0	19	0	0
+frajnd	11	41	0	0	41	0	70	0	0	70	0	13	0	1	12	0	0
+francl	12	39	0	0	39	0	37	0	0	37	0	39	1	3	35	0	0
+frasbl	11	12	0	1	11	0	10	1	0	9	0	74	1	1	72	0	0
+fue	9	0	0	0	0	0	4	0	0	4	0	15	0	0	15	0	0
+fuf	7	0	0	0	0	0	1	1	0	0	0	26	0	4	22	0	0
+fuhbkf	2	1	1	0	0	0	0	0	0	0	0	49	0	15	34	0	0
+gah	9	0	0	0	0	0	2	2	0	0	0	0	0	0	0	0	0
+gai	3	0	0	0	0	0	0	0	0	0	0	7	0	0	7	0	0
+gam	2	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0
+gaq	12	0	0	0	0	0	0	0	0	0	0	20	0	2	18	0	0
+gaw	4	0	0	0	0	0	0	0	0	0	0	27	0	0	27	0	0
+gax	5	5	0	0	5	0	16	0	0	16	0	5	0	0	5	0	0
+gaz	9	0	0	0	0	0	18	0	0	18	0	26	0	3	23	0	0
+gaze	11	0	0	0	0	0	18	0	0	18	0	48	0	3	45	0	0
+gbl	3	8	0	0	8	0	1	1	0	0	0	13	0	0	13	0	4
+gdf	4	3	0	0	3	0	0	0	0	0	0	2	0	0	2	0	0
+gdn	3	2	0	0	2	0	4	0	0	4	0	0	0	0	0	0	2
+gdr	8	0	0	0	0	0	0	0	0	0	0	5	0	0	5	0	0
+geb	10	0	0	0	0	0	0	0	0	0	0	17	0	0	17	0	0
+gel	5	0	0	0	0	0	1	0	0	1	0	1	0	0	1	0	0
+gfk	0	0	0	0	0	0	6	0	0	6	0	7	0	0	7	0	0
+gfkh	2	1	0	1	0	0	0	0	0	0	0	7	0	0	7	0	0
+gfks	2	1	1	0	0	0	0	0	0	0	0	8	0	0	8	0	0
+ghn	8	3	1	0	2	0	0	0	0	0	0	8	0	0	8	0	2
+ghs	5	0	0	0	0	0	0	0	0	0	0	3	0	0	3	0	0
+glk	6	0	0	0	0	0	0	0	0	0	0	3	0	0	3	0	0
+glwl	10	2	1	0	1	0	5	0	0	5	0	35	0	2	33	0	0
+gmvRNT	9	0	0	0	0	0	0	0	0	0	0	14	0	0	14	0	0
+gmve	17	0	0	0	0	0	0	0	0	0	0	7	0	0	7	0	0
+gmvggm	16	4	2	0	2	0	4	0	0	4	0	9	0	0	9	0	0
+gmvl	10	0	0	0	0	0	0	0	0	0	0	8	1	1	6	0	0
+gngNT	5	0	0	0	0	0	7	0	0	7	0	11	0	0	11	0	0
+gnn	8	3	1	0	2	0	0	0	0	0	0	6	0	0	6	0	0
+gnwNT	4	0	0	0	0	0	0	0	0	0	0	7	0	1	6	0	0
+gofENT	5	0	0	0	0	0	2	0	0	2	0	20	0	0	20	0	0
+gofRNT	4	0	0	0	0	0	2	0	0	2	0	18	0	0	18	0	0
+gofe	17	2	1	0	1	0	0	0	0	0	0	5	0	3	2	0	0
+gofl	8	0	0	0	0	0	0	0	0	0	0	5	3	2	0	0	0
+gofwftw	5	1	1	0	0	0	2	0	0	2	0	18	1	0	17	0	0
+goj	9	1	0	0	1	0	0	0	0	0	0	55	0	7	48	0	0
+gok	11	3	0	0	3	0	0	0	0	0	0	42	0	6	36	0	2
+grc-tisch	2	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0
+grcbrent	9	7	5	0	2	0	0	0	0	0	0	0	0	0	0	0	0
+grcbyz	9	0	0	0	0	0	0	0	0	0	0	5	0	0	5	0	0
+grcf35	5	7	0	0	7	0	0	0	0	0	0	20	0	0	20	0	0
+grclxx	14	0	0	0	0	0	2	1	0	1	0	12	0	1	11	0	0
+grcmt	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0
+grcsr	2	1	1	0	0	0	0	0	0	0	0	1	0	0	1	0	0
+grctcgnt	2	1	0	0	1	0	0	0	0	0	0	0	0	0	0	0	0
+grctr	3	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0
+gubBl	6	0	0	0	0	0	45	0	0	45	0	5	1	0	4	0	0
+guh	11	1	1	0	0	0	0	0	0	0	0	6	4	0	2	0	0
+guiNT	8	0	0	0	0	0	0	0	0	0	0	17	1	1	15	0	0
+guj2017	10	22	5	1	16	0	0	0	0	0	0	22	0	2	20	0	8
+gulNT	3	0	0	0	0	0	17	0	0	17	0	6	0	0	6	0	0
+gum	9	6	2	0	4	0	0	0	0	0	0	17	0	0	17	0	0
+gun	11	0	0	0	0	0	2	1	0	1	0	16	1	2	13	0	0
+guoNT	13	0	0	0	0	0	5	0	0	5	0	3	0	3	0	0	0
+gup	16	3	2	1	0	0	0	0	0	0	0	9	0	6	3	0	0
+gux	13	3	1	0	2	0	0	0	0	0	0	43	1	2	40	0	0
+guxg	20	27	6	0	21	0	3	3	0	0	0	44	1	4	39	0	0
+gvc	8	1	1	0	0	0	0	0	0	0	0	4	0	2	2	0	0
+gvf	1	0	0	0	0	0	4	0	0	4	0	15	0	0	15	0	0
+gvn	11	0	0	0	0	0	0	0	0	0	0	6	0	1	5	0	0
+gvs	14	0	0	0	0	0	8	0	0	8	0	31	0	0	31	0	0
+gwiNT	13	1	1	0	0	0	1	0	0	1	0	1	0	1	0	0	0
+gyl	4	0	0	0	0	0	3	0	0	3	0	2	0	0	2	0	0
+gymNT	5	1	1	0	0	0	0	0	0	0	0	6	3	0	3	0	0
+gyrNT	4	3	3	0	0	0	0	0	0	0	0	12	1	0	11	0	0
+gyz	7	0	0	0	0	0	4	0	0	4	0	12	0	1	11	0	0
+hat	17	4	0	0	4	0	0	0	0	0	0	18	0	6	12	0	2
+hatbsa	18	6	1	0	5	0	2	2	0	0	0	52	0	5	47	0	0
+hausa	12	0	0	0	0	0	1	0	0	1	0	11	0	4	7	0	0
+hauulb	21	2	2	0	0	0	6	0	0	6	0	6	2	0	4	0	0
+hav	2	0	0	0	0	0	4	0	0	4	0	6	0	0	6	0	0
+haw1868	6	6	6	0	0	0	0	0	0	0	0	0	0	0	0	0	0
+hbo	1	0	0	0	0	0	6	0	0	6	0	1	0	0	1	0	0
+hboWLC	1	0	0	0	0	0	5	0	0	5	0	98	0	1	97	0	0
+hch	6	5	0	0	5	0	1	0	0	1	0	52	0	1	51	0	0
+hchNT	1	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0
+heb	0	1	0	0	1	0	5	0	0	5	0	0	0	0	0	0	0
+heblb	17	11	0	1	10	0	0	0	0	0	0	8	0	0	8	0	0
+hebsg	1	0	0	0	0	0	0	0	0	0	0	1	0	1	0	0	0
+hebwlc	1	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0
+hegNTpo	4	0	0	0	0	0	0	0	0	0	0	15	0	0	15	0	0
+hil	16	0	0	0	0	0	0	0	0	0	0	43	0	2	41	0	0
+hin2017	14	10	2	2	6	0	0	0	0	0	0	52	0	3	49	0	2
+hincv	8	0	0	0	0	0	13	0	0	13	0	1	1	0	0	0	0
+hixNT	2	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0
+hla	13	1	1	0	0	0	6	0	0	6	0	15	0	6	9	0	0
+hlb	4	10	0	0	10	0	0	0	0	0	0	5	0	1	4	0	0
+hlt	10	16	0	0	16	0	0	0	0	0	0	73	0	4	69	0	4
+hltmcsb	8	24	0	0	24	0	1	0	0	1	0	35	0	2	33	0	4
+hltthb	12	13	3	1	9	0	0	0	0	0	0	5	1	0	4	0	0
+hmo	17	3	2	1	0	0	2	2	0	0	0	25	0	4	21	0	0
+hne	8	0	0	0	0	0	1	1	0	0	0	2	0	2	0	0	0
+hnsNT	2	1	0	0	1	0	11	0	0	11	0	13	0	0	13	0	0
+hopNT	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0
+hot	8	0	0	0	0	0	0	0	0	0	0	34	0	0	34	0	0
+hoy	5	0	0	0	0	0	0	0	0	0	0	16	0	0	16	0	0
+hrebt	7	4	1	0	3	0	0	0	0	0	0	21	1	3	17	0	0
+hru	13	1	1	0	0	0	0	0	0	0	0	15	1	0	14	0	0
+hrv	15	4	3	1	0	0	5	2	0	3	0	63	0	5	58	0	0
+hrvbib	19	7	3	2	2	0	1	1	0	0	0	11	1	0	10	0	0
+hrw	5	2	0	0	2	0	0	0	0	0	0	4	0	0	4	0	1
+hto	6	0	0	0	0	0	0	0	0	0	0	7	0	0	7	0	0
+hubNT	1	1	0	0	1	0	0	0	0	0	0	8	0	0	8	0	0
+hui	4	0	0	0	0	0	15	0	0	15	0	20	0	2	18	0	0
+hun	7	3	1	2	0	0	1	1	0	0	0	26	0	0	26	0	0
+husNT1971	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0
+husNT2005	0	8	0	0	8	0	0	0	0	0	0	0	0	0	0	0	0
+huuNT	2	1	0	0	1	0	0	0	0	0	0	15	0	0	15	0	0
+huvNT	3	2	0	0	2	0	0	0	0	0	0	12	0	2	10	0	0
+hvn	3	0	0	0	0	0	0	0	0	0	0	9	0	0	9	0	0
+hwo	5	0	0	0	0	0	0	0	0	0	0	14	0	2	12	0	0
+ian	5	2	0	0	2	0	0	0	0	0	0	0	0	0	0	0	0
+ibo	6	0	0	0	0	0	1	0	0	1	0	46	0	2	44	0	0
+idc	7	14	1	0	13	0	0	0	0	0	0	22	0	0	22	0	2
+ignNT	8	0	0	0	0	0	0	0	0	0	0	14	0	0	14	0	0
+ikkNT	5	9	0	0	9	0	7	0	0	7	0	31	0	0	31	0	0
+ikwNT	4	0	0	0	0	0	0	0	0	0	0	13	0	0	13	0	0
+ikz	4	0	0	0	0	0	0	0	0	0	0	13	0	1	12	0	0
+iloulb	32	12	1	2	9	0	7	0	0	7	0	3	0	0	3	0	4
+imo	4	0	0	0	0	0	0	0	0	0	0	3	0	0	3	0	0
+inb	6	4	1	0	3	0	0	0	0	0	0	11	0	0	11	0	2
+ind	6	0	0	0	0	0	0	0	0	0	0	2	0	0	2	0	0
+indags	10	7	2	1	4	0	0	0	0	0	0	13	1	0	12	0	0
+indayt	13	3	2	1	0	0	1	0	0	1	0	2	0	2	0	0	0
+ino	2	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0
+ino2013	2	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0
+iou	8	3	0	0	3	0	7	0	0	7	0	2	0	2	0	0	0
+ipi	0	0	0	0	0	0	0	0	0	0	0	1	0	0	1	0	0
+isl	7	4	1	0	3	0	1	1	0	0	0	18	0	1	17	0	2
+isn	15	2	1	0	1	0	8	0	0	8	0	19	0	0	19	0	0
+ita1885	2	0	0	0	0	0	0	0	0	0	0	7	0	0	7	0	0
+ita1927	11	3	1	0	2	0	0	0	0	0	0	24	0	3	21	0	0
+iws	8	2	2	0	0	0	0	0	0	0	0	5	0	0	5	0	0
+ixlCNT	7	4	0	0	4	0	0	0	0	0	0	19	0	0	19	0	0
+ixlNNT	6	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0
+iyx	6	0	0	0	0	0	15	0	0	15	0	24	0	0	24	0	0
+jacNT	1	0	0	0	0	0	0	0	0	0	0	15	0	0	15	0	0
+jae	27	0	0	0	0	0	12	1	0	11	0	6	0	4	2	0	0
+jao	8	0	0	0	0	0	0	0	0	0	0	12	0	0	12	0	0
+jicNT	13	0	0	0	0	0	1	1	0	0	0	5	0	0	5	0	0
+jid	23	7	2	0	5	0	4	3	0	1	0	10	0	4	6	0	0
+jivNT	3	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0
+jni	19	5	1	0	4	0	0	0	0	0	0	12	1	1	10	0	2
+jnje	12	12	7	0	5	0	5	0	0	5	0	25	1	0	24	0	4
+jnjl	10	9	6	0	3	0	5	0	0	5	0	26	1	0	25	0	2
+jpn1965	6	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0
+jum	1	0	0	0	0	0	0	0	0	0	0	8	0	0	8	0	0
+juy	6	0	0	0	0	0	0	0	0	0	0	16	0	1	15	0	0
+jvnNT	0	0	0	0	0	0	13	0	0	13	0	13	0	0	13	0	0
+kanirv	16	27	3	0	24	0	0	0	0	0	0	121	1	5	115	0	2
+kanokcv	4	0	0	0	0	0	0	0	0	0	0	7	0	2	5	0	0
+kans	11	17	2	0	15	0	0	0	0	0	0	58	0	0	58	0	4
+kaqNT	6	0	0	0	0	0	0	0	0	0	0	6	0	0	6	0	0
+kbcNT	3	0	0	0	0	0	0	0	0	0	0	11	0	0	11	0	0
+kbh	4	8	1	0	7	0	0	0	0	0	0	4	0	3	1	0	0
+kbm	6	0	0	0	0	0	0	0	0	0	0	3	0	1	2	0	0
+kbq	7	0	0	0	0	0	0	0	0	0	0	23	0	0	23	0	0
+kca	10	0	0	0	0	0	0	0	0	0	0	7	0	2	5	0	0
+kdc	6	2	1	1	0	0	0	0	0	0	0	7	0	0	7	0	0
+kdc2014	6	2	1	1	0	0	0	0	0	0	0	7	0	0	7	0	0
+kde	3	6	0	0	6	0	6	0	0	6	0	16	0	0	16	0	0
+kdl	1	0	0	0	0	0	3	0	0	3	0	2	0	0	2	0	0
+kdlNT	5	7	2	0	5	0	13	0	0	13	0	21	0	0	21	0	0
+kekNT	5	0	0	0	0	0	0	0	0	0	0	12	0	0	12	0	0
+kenNT	7	1	1	0	0	0	0	0	0	0	0	28	0	2	26	0	0
+kew	7	0	0	0	0	0	0	0	0	0	0	1	0	1	0	0	0
+kfcp	7	0	0	0	0	0	0	0	0	0	0	20	0	3	17	0	0
+kff	9	0	0	0	0	0	0	0	0	0	0	17	0	4	13	0	0
+kfw	10	0	0	0	0	0	0	0	0	0	0	17	0	1	16	0	0
+kgf	9	1	0	0	1	0	0	0	0	0	0	5	0	0	5	0	0
+kgkNT	3	0	0	0	0	0	2	0	0	2	0	9	0	0	9	0	0
+kgpNT	3	4	0	0	4	0	0	0	0	0	0	0	0	0	0	0	0
+khj	7	5	0	0	5	0	0	0	0	0	0	12	0	1	11	0	0
+khs	14	13	4	0	9	0	0	0	0	0	0	19	0	1	18	0	0
+khz	9	0	0	0	0	0	0	0	0	0	0	5	0	2	3	0	0
+kij	32	20	1	1	18	0	9	4	0	5	0	26	0	0	26	0	0
+kik	8	0	0	0	0	0	8	0	0	8	0	11	0	0	11	0	0
+kiw	1	1	0	0	1	0	0	0	0	0	0	18	0	0	18	0	0
+kiz	17	3	1	0	2	0	2	0	0	2	0	25	0	1	24	0	0
+kjeNT	2	2	0	0	2	0	11	0	0	11	0	5	0	0	5	0	2
+kjs	2	0	0	0	0	0	0	0	0	0	0	1	0	1	0	0	0
+kkc	5	0	0	0	0	0	10	0	0	10	0	4	0	0	4	0	0
+kkl	8	2	0	1	1	0	2	1	0	1	0	12	0	0	12	0	0
+klg	4	1	1	0	0	0	0	0	0	0	0	23	0	1	22	0	0
+klt	7	0	0	0	0	0	0	0	0	0	0	10	0	0	10	0	0
+klv	3	0	0	0	0	0	0	0	0	0	0	22	0	0	22	0	0
+kmg	11	0	0	0	0	0	8	0	0	8	0	41	0	2	39	0	0
+kmh	6	0	0	0	0	0	1	0	0	1	0	24	0	0	24	0	0
+kmh-m	5	0	0	0	0	0	0	0	0	0	0	16	0	0	16	0	0
+kmk	3	0	0	0	0	0	0	0	0	0	0	16	0	0	16	0	0
+kmo	8	2	2	0	0	0	4	0	0	4	0	19	0	0	19	0	0
+kms	7	0	0	0	0	0	0	0	0	0	0	17	0	1	16	0	0
+kmu	8	8	1	1	6	0	0	0	0	0	0	3	0	1	2	0	0
+kne	9	0	0	0	0	0	2	2	0	0	0	13	0	1	12	0	0
+knf	3	0	0	0	0	0	8	0	0	8	0	25	0	1	24	0	0
+knjNT	8	1	0	0	1	0	4	0	0	4	0	2	0	0	2	0	0
+knv-aramia	3	0	0	0	0	0	0	0	0	0	0	6	0	0	6	0	0
+knv-fly_river	5	0	0	0	0	0	0	0	0	0	0	8	0	0	8	0	0
+kor	7	0	0	0	0	0	37	2	0	35	0	20	0	3	17	0	0
+kos	9	2	1	0	1	0	59	0	0	59	0	7	1	1	5	0	0
+kpf	8	2	1	1	0	0	6	1	0	5	0	6	0	0	6	0	0
+kpg	19	0	0	0	0	0	8	2	0	6	0	3	0	3	0	0	0
+kpjNT	4	1	0	0	1	0	0	0	0	0	0	3	0	1	2	0	0
+kpr	13	2	2	0	0	0	0	0	0	0	0	5	0	0	5	0	0
+kpw	4	3	0	0	3	0	0	0	0	0	0	15	0	0	15	0	0
+kpx	8	0	0	0	0	0	1	1	0	0	0	1	0	0	1	0	0
+kqa	2	0	0	0	0	0	0	0	0	0	0	5	0	0	5	0	0
+kqc	18	1	1	0	0	0	2	2	0	0	0	29	0	4	25	0	0
+kqf	7	0	0	0	0	0	0	0	0	0	0	10	0	0	10	0	0
+kql	7	11	0	0	11	0	0	0	0	0	0	12	0	0	12	0	0
+kqw	8	0	0	0	0	0	5	0	0	5	0	5	0	3	2	0	0
+krh	5	0	0	0	0	0	0	0	0	0	0	11	0	1	10	0	0
+ksd	16	25	2	0	23	0	23	0	0	23	0	6	0	1	5	0	0
+ksj	12	5	1	0	4	0	3	0	0	3	0	18	0	1	17	0	0
+ksr	11	0	0	0	0	0	20	0	0	20	0	15	0	0	15	0	0
+ktm	5	0	0	0	0	0	0	0	0	0	0	15	0	1	14	0	0
+kto	5	0	0	0	0	0	5	0	0	5	0	24	0	0	24	0	0
+kud	10	2	0	0	2	0	3	0	0	3	0	15	0	0	15	0	0
+kud2014	10	2	0	0	2	0	3	0	0	3	0	15	0	0	15	0	0
+kue	5	0	0	0	0	0	0	0	0	0	0	19	0	0	19	0	0
+kup	11	0	0	0	0	0	15	2	0	13	0	2	0	0	2	0	0
+kvg	3	0	0	0	0	0	0	0	0	0	0	6	0	0	6	0	0
+kvnNT	2	0	0	0	0	0	12	0	0	12	0	2	0	0	2	0	0
+kwd	1	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0
+kwf	8	0	0	0	0	0	0	0	0	0	0	5	0	0	5	0	0
+kwi	2	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0
+kwj	8	1	1	0	0	0	4	0	0	4	0	9	0	0	9	0	0
+kwo	4	0	0	0	0	0	0	0	0	0	0	13	0	0	13	0	0
+kxv	9	0	0	0	0	0	0	0	0	0	0	15	0	2	13	0	0
+kxw	3	0	0	0	0	0	0	0	0	0	0	33	0	0	33	0	0
+kyc	2	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0
+kyf	7	0	0	0	0	0	1	1	0	0	0	23	0	0	23	0	0
+kyg	5	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0
+kyq	5	0	0	0	0	0	5	0	0	5	0	30	0	2	28	0	0
+kyzNT	6	0	0	0	0	0	0	0	0	0	0	22	0	0	22	0	0
+kze	1	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0
+lacNT	8	2	1	0	1	0	0	0	0	0	0	32	1	0	31	0	0
+lag	12	0	0	0	0	0	14	0	0	14	0	10	0	2	8	0	0
+latVUC	3	0	0	0	0	0	0	0	0	0	0	3	0	0	3	0	0
+lbb	6	0	0	0	0	0	0	0	0	0	0	12	0	2	10	0	0
+lbk	4	0	0	0	0	0	7	0	0	7	0	14	0	0	14	0	0
+lbm	2	0	0	0	0	0	0	0	0	0	0	5	0	1	4	0	0
+lcm	13	1	1	0	0	0	1	1	0	0	0	12	0	0	12	0	0
+ldb	1	0	0	0	0	0	7	0	0	7	0	18	0	0	18	0	0
+leu	6	1	0	1	0	0	0	0	0	0	0	36	0	0	36	0	0
+lex	9	0	0	0	0	0	0	0	0	0	0	1	0	0	1	0	0
+lga	11	5	2	1	2	0	0	0	0	0	0	8	0	0	8	0	2
+lgl	11	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0
+lid	5	1	0	1	0	0	11	0	0	11	0	14	0	0	14	0	0
+lifNT	6	1	0	1	0	0	0	0	0	0	0	38	0	0	38	0	0
+lifNT2	4	1	0	1	0	0	0	0	0	0	0	32	0	0	32	0	0
+lin	5	0	0	0	0	0	19	0	0	19	0	8	0	2	6	0	0
+lit	21	1	1	0	0	0	1	0	0	1	0	25	0	6	19	0	0
+litb	4	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0
+llg	9	3	1	0	2	0	0	0	0	0	0	4	0	1	3	0	2
+lth	2	0	0	0	0	0	0	0	0	0	0	11	0	1	10	0	0
+lug	5	0	0	0	0	0	0	0	0	0	0	17	0	2	15	0	0
+luo	11	0	0	0	0	0	17	1	0	16	0	5	0	1	4	0	0
+lww	4	6	0	0	6	0	0	0	0	0	0	1	0	0	1	0	2
+lyn	11	4	2	0	2	0	7	0	0	7	0	43	0	4	39	0	2
+maaNT	4	10	0	0	10	0	0	0	0	0	0	1	0	1	0	0	0
+majNT	5	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0
+mal	9	29	1	0	28	0	0	0	0	0	0	32	0	0	32	0	0
+mal2015	11	1	1	0	0	0	0	0	0	0	0	11	0	0	11	0	0
+malc	5	0	0	0	0	0	1	1	0	0	0	12	0	3	9	0	0
+mamC	0	0	0	0	0	0	0	0	0	0	0	4	0	0	4	0	0
+mamNT	2	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0
+maqNT	6	12	0	0	12	0	0	0	0	0	0	0	0	0	0	0	0
+mar	1	0	0	0	0	0	0	0	0	0	0	11	0	0	11	0	0
+marc	7	0	0	0	0	0	1	0	0	1	0	6	0	2	4	0	0
+mauNT	5	0	0	0	0	0	0	0	0	0	0	1	0	0	1	0	0
+mavNT	4	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0
+mazNT	2	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0
+mbbOT	9	0	0	0	0	0	0	0	0	0	0	19	0	1	18	0	0
+mbcNT	4	1	1	0	0	0	4	0	0	4	0	3	0	0	3	0	0
+mbh	3	0	0	0	0	0	0	0	0	0	0	4	0	0	4	0	0
+mbjNT	3	0	0	0	0	0	17	0	0	17	0	3	0	0	3	0	0
+mblNT	10	4	1	0	3	0	0	0	0	0	0	1	1	0	0	0	0
+mbs	1	0	0	0	0	0	16	0	0	16	0	18	0	0	18	0	0
+mbtNT	7	0	0	0	0	0	0	0	0	0	0	16	0	0	16	0	0
+mbu	8	0	0	0	0	0	6	0	0	6	0	21	0	5	16	0	0
+mca	7	1	0	0	1	0	0	0	0	0	0	8	0	4	4	0	0
+mcbNT	3	1	1	0	0	0	0	0	0	0	0	21	0	0	21	0	0
+mcdNT	10	0	0	0	0	0	0	0	0	0	0	6	0	0	6	0	0
+mcfNT	5	1	1	0	0	0	0	0	0	0	0	6	0	0	6	0	0
+mcoNT	3	1	0	0	1	0	0	0	0	0	0	12	0	0	12	0	0
+mcp	5	0	0	0	0	0	0	0	0	0	0	25	1	1	23	0	0
+mcq	1	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0
+mcr	3	0	0	0	0	0	0	0	0	0	0	17	0	0	17	0	0
+mdybse	7	1	1	0	0	0	0	0	0	0	0	17	1	0	16	0	0
+mdyeth	6	8	3	0	5	0	12	0	0	12	0	6	1	3	2	0	1
+med	12	3	1	0	2	0	4	0	0	4	0	10	0	0	10	0	2
+mee	4	1	0	1	0	0	11	1	0	10	0	12	0	1	11	0	0
+mek	5	0	0	0	0	0	2	2	0	0	0	20	0	0	20	0	0
+meq	4	0	0	0	0	0	15	0	0	15	0	3	0	0	3	0	0
+met	15	2	1	1	0	0	0	0	0	0	0	34	1	1	32	0	0
+meu	14	2	1	0	1	0	34	0	0	34	0	69	0	7	62	0	0
+mey	0	0	0	0	0	0	0	0	0	0	0	20	0	0	20	0	0
+mfm	11	2	2	0	0	0	0	0	0	0	0	22	0	5	17	0	0
+mfo	5	2	2	0	0	0	0	0	0	0	0	8	0	0	8	0	0
+mfxe	16	0	0	0	0	0	2	0	0	2	0	23	0	1	22	0	0
+mfxl	2	0	0	0	0	0	2	0	0	2	0	18	0	0	18	0	0
+mgc	9	1	0	0	1	0	0	0	0	0	0	7	0	1	6	0	0
+mgh	5	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0
+mgh2016	9	3	1	1	1	0	0	0	0	0	0	7	0	0	7	0	0
+mgj	8	0	0	0	0	0	3	0	0	3	0	18	0	1	17	0	0
+mgv	12	1	0	1	0	0	0	0	0	0	0	31	0	2	29	0	0
+mgw	4	3	1	1	1	0	0	0	0	0	0	20	0	0	20	0	0
+mhl	8	0	0	0	0	0	1	0	0	1	0	9	0	0	9	0	0
+mibNT	1	0	0	0	0	0	0	0	0	0	0	14	0	0	14	0	0
+micMIQNT	5	2	0	0	2	0	4	0	0	4	0	23	0	1	22	0	2
+mieNT	1	0	0	0	0	0	0	0	0	0	0	5	0	0	5	0	0
+migNT	3	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0
+mihNT	3	2	0	0	2	0	0	0	0	0	0	15	0	0	15	0	0
+milNT	2	4	0	0	4	0	0	0	0	0	0	24	1	2	21	0	0
+mioNT	6	1	0	0	1	0	0	0	0	0	0	13	0	0	13	0	0
+mirNT	4	0	0	0	0	0	0	0	0	0	0	2	0	1	1	0	0
+mitNT	1	1	0	0	1	0	0	0	0	0	0	40	0	1	39	0	0
+mizNT	1	11	0	0	11	0	0	0	0	0	0	12	0	1	11	0	0
+mjcNT	14	9	2	0	7	0	0	0	0	0	0	13	1	3	9	0	0
+mkj	7	1	1	0	0	0	1	0	0	1	0	30	0	1	29	0	0
+mkl	3	0	0	0	0	0	0	0	0	0	0	14	0	0	14	0	0
+mkn	11	0	0	0	0	0	0	0	0	0	0	29	0	1	28	0	0
+mksNT	1	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0
+mkw	9	5	1	0	4	0	18	0	0	18	0	49	0	1	48	0	4
+mle	3	1	0	1	0	0	0	0	0	0	0	14	0	0	14	0	0
+mlh	8	0	0	0	0	0	1	0	0	1	0	9	0	0	9	0	0
+mlp	2	0	0	0	0	0	18	0	0	18	0	4	0	0	4	0	0
+mmo	13	0	0	0	0	0	0	0	0	0	0	8	0	0	8	0	0
+mmx	7	0	0	0	0	0	0	0	0	0	0	2	0	0	2	0	0
+mna	5	2	1	1	0	0	8	0	0	8	0	17	0	0	17	0	0
+mni	8	2	0	0	2	0	1	0	0	1	0	23	0	2	21	0	2
+mopNT	3	3	1	0	2	0	0	0	0	0	0	1	0	0	1	0	2
+mox	6	0	0	0	0	0	2	0	0	2	0	7	0	0	7	0	0
+mpa	3	0	0	0	0	0	0	0	0	0	0	30	0	0	30	0	0
+mph	2	0	0	0	0	0	0	0	0	0	0	11	0	0	11	0	0
+mpj	1	6	0	0	6	0	0	0	0	0	0	5	0	0	5	0	0
+mpmNT	2	0	0	0	0	0	0	0	0	0	0	15	0	0	15	0	0
+mpp	8	0	0	0	0	0	0	0	0	0	0	10	0	1	9	0	0
+mps	13	10	0	0	10	0	1	0	0	1	0	10	0	0	10	0	6
+mpt	3	0	0	0	0	0	3	0	0	3	0	1	0	0	1	0	0
+mpx	11	0	0	0	0	0	0	0	0	0	0	21	0	2	19	0	0
+mqbNT	2	0	0	0	0	0	16	0	0	16	0	3	0	0	3	0	0
+mqjNT	3	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0
+mri	6	0	0	0	0	0	0	0	0	0	0	23	0	0	23	0	0
+mri2012	3	0	0	0	0	0	0	0	0	0	0	11	1	1	9	0	0
+msb	0	0	0	0	0	0	0	0	0	0	0	22	0	0	22	0	0
+msc	5	0	0	0	0	0	0	0	0	0	0	7	0	1	6	0	0
+msk	13	0	0	0	0	0	0	0	0	0	0	1	0	0	1	0	0
+msmNT	7	2	0	0	2	0	1	1	0	0	0	15	0	0	15	0	2
+msy	14	1	0	0	1	0	0	0	0	0	0	14	0	0	14	0	0
+msy2020	5	0	0	0	0	0	0	0	0	0	0	13	0	0	13	0	0
+mti	6	1	0	0	1	0	0	0	0	0	0	37	0	0	37	0	0
+mtoNT	3	2	0	0	2	0	0	0	0	0	0	13	0	3	10	0	0
+mux	16	0	0	0	0	0	0	0	0	0	0	14	0	5	9	0	0
+muy	4	0	0	0	0	0	19	0	0	19	0	15	0	2	13	0	0
+mva	6	2	0	2	0	0	0	0	0	0	0	2	0	0	2	0	0
+mvn	17	0	0	0	0	0	2	2	0	0	0	6	0	0	6	0	0
+mwc	10	1	1	0	0	0	0	0	0	0	0	16	0	0	16	0	0
+mwe	8	1	1	0	0	0	0	0	0	0	0	20	0	0	20	0	0
+mwf2018	5	1	1	0	0	0	0	0	0	0	0	8	0	0	8	0	0
+mwp	7	10	1	0	9	0	0	0	0	0	0	18	1	0	17	0	0
+mxbNT	6	3	1	0	2	0	0	0	0	0	0	3	0	1	2	0	0
+mxm	3	0	0	0	0	0	0	0	0	0	0	13	0	0	13	0	0
+mxpNT	3	10	0	0	10	0	0	0	0	0	0	0	0	0	0	0	0
+mxqNT	3	11	0	0	11	0	0	0	0	0	0	0	0	0	0	0	0
+mxtNT	9	1	0	0	1	0	0	0	0	0	0	8	0	0	8	0	0
+mya	15	38	1	1	36	0	7	0	0	7	0	65	0	1	64	0	0
+myajvb	7	77	3	0	74	0	68	0	0	68	0	163	0	0	163	0	0
+myk	10	0	0	0	0	0	14	0	0	14	0	19	0	0	19	0	0
+myu	8	1	0	0	1	0	2	2	0	0	0	12	0	1	11	0	0
+myw	10	1	1	0	0	0	0	0	0	0	0	16	0	1	15	0	0
+myy	3	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0
+mzq	3	0	0	0	0	0	2	0	0	2	0	7	0	0	7	0	0
+mzz	5	10	1	1	8	0	0	0	0	0	0	13	0	0	13	0	0
+nabNT	0	0	0	0	0	0	0	0	0	0	0	5	0	0	5	0	0
+naf	8	2	0	0	2	0	0	0	0	0	0	9	0	0	9	0	2
+nag	4	1	0	0	1	0	1	0	0	1	0	34	0	1	33	0	0
+nak	0	0	0	0	0	0	8	0	0	8	0	10	0	0	10	0	0
+nal	3	0	0	0	0	0	0	0	0	0	0	13	0	0	13	0	0
+nas	3	0	0	0	0	0	2	0	0	2	0	4	0	0	4	0	0
+nbq	3	0	0	0	0	0	3	0	0	3	0	7	0	0	7	0	0
+nca	4	0	0	0	0	0	15	0	0	15	0	11	0	0	11	0	0
+nce	4	0	0	0	0	0	0	0	0	0	0	2	0	0	2	0	0
+ncf	7	1	1	0	0	0	0	0	0	0	0	14	0	0	14	0	0
+nchBl	6	5	0	0	5	0	0	0	0	0	0	20	0	0	20	0	0
+ncjNT	4	4	1	0	3	0	0	0	0	0	0	0	0	0	0	0	0
+nclNT	7	3	0	0	3	0	0	0	0	0	0	1	0	1	0	0	0
+ncr	1	0	0	0	0	0	6	0	0	6	0	29	0	0	29	0	0
+ncuNT	1	6	0	0	6	0	18	0	0	18	0	0	0	0	0	0	0
+nde	4	0	0	0	0	0	17	0	0	17	0	9	0	1	8	0	0
+ndg	17	3	2	0	1	0	2	2	0	0	0	23	0	1	22	0	0
+ndj	7	13	2	1	10	0	0	0	0	0	0	9	0	0	9	0	2
+nfa	6	0	0	0	0	0	0	0	0	0	0	4	0	0	4	0	0
+ngp	5	4	3	0	1	0	0	0	0	0	0	15	0	0	15	0	0
+nguNT	1	4	0	0	4	0	0	0	0	0	0	0	0	0	0	0	0
+nheBl	14	1	1	0	0	0	0	0	0	0	0	37	0	0	37	0	0
+nheNT	3	1	0	0	1	0	0	0	0	0	0	30	0	2	28	0	0
+nhgNT	8	0	0	0	0	0	4	0	0	4	0	11	1	0	10	0	0
+nhiNT	4	0	0	0	0	0	0	0	0	0	0	2	0	1	1	0	0
+nho	6	0	0	0	0	0	1	0	0	1	0	12	0	0	12	0	0
+nhr	8	1	0	1	0	0	0	0	0	0	0	26	0	0	26	0	0
+nhuNT	4	0	0	0	0	0	7	0	0	7	0	7	0	0	7	0	0
+nhwBl	12	2	0	0	2	0	0	0	0	0	0	56	0	0	56	0	2
+nhyNT	7	0	0	0	0	0	0	0	0	0	0	11	0	0	11	0	0
+nif	3	0	0	0	0	0	0	0	0	0	0	26	0	2	24	0	0
+nii	7	0	0	0	0	0	0	0	0	0	0	28	0	0	28	0	0
+ninNT	5	0	0	0	0	0	15	0	0	15	0	28	0	0	28	0	0
+nit	6	0	0	0	0	0	0	0	0	0	0	16	0	0	16	0	0
+njd	0	0	0	0	0	0	0	0	0	0	0	10	0	0	10	0	0
+nkn	3	0	0	0	0	0	2	1	0	1	0	20	0	1	19	0	0
+nkoNT	9	0	0	0	0	0	0	0	0	0	0	32	0	0	32	0	0
+nld	0	0	0	0	0	0	0	0	0	0	0	13	0	0	13	0	0
+nld1939	9	17	2	1	14	0	0	0	0	0	0	36	0	4	32	0	0
+nldgbv	3	0	0	0	0	0	0	0	0	0	0	24	0	1	23	0	0
+nldnbg	7	2	0	0	2	0	81	1	0	80	0	23	0	0	23	0	0
+nlg	27	10	6	1	3	0	0	0	0	0	0	14	0	0	14	0	0
+nmws	5	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0
+nmx	5	0	0	0	0	0	0	0	0	0	0	3	0	0	3	0	0
+nna	8	8	0	0	8	0	8	0	0	8	0	67	0	0	67	0	0
+nnq	4	0	0	0	0	0	0	0	0	0	0	10	0	0	10	0	0
+noaE	7	0	0	0	0	0	16	0	0	16	0	10	0	0	10	0	0
+noaH	7	0	0	0	0	0	16	0	0	16	0	12	0	0	12	0	0
+noblb	13	0	0	0	0	0	1	1	0	0	0	9	0	0	9	0	0
+nop	12	2	2	0	0	0	2	0	0	2	0	2	0	0	2	0	0
+notNT	8	0	0	0	0	0	0	0	0	0	0	16	0	1	15	0	0
+nou	6	0	0	0	0	0	1	1	0	0	0	22	0	0	22	0	0
+npioncb	6	0	0	0	0	0	1	0	0	1	0	17	0	2	15	0	0
+npiulb	24	4	1	1	2	0	7	2	0	5	0	132	0	4	128	0	2
+nplNT	10	2	2	0	0	0	0	0	0	0	0	7	1	0	6	0	0
+nrz	9	0	0	0	0	0	0	0	0	0	0	12	0	1	11	0	0
+nsn	4	0	0	0	0	0	4	0	0	4	0	7	0	1	6	0	0
+nss	12	0	0	0	0	0	0	0	0	0	0	34	0	5	29	0	0
+ntj	7	0	0	0	0	0	0	0	0	0	0	14	0	2	12	0	0
+ntpNT	9	2	1	0	1	0	0	0	0	0	0	3	0	3	0	0	0
+ntu	19	2	0	0	2	0	0	0	0	0	0	2	0	2	0	0	2
+nuq	3	2	0	0	2	0	1	0	0	1	0	15	0	0	15	0	0
+nuy	3	1	0	0	1	0	0	0	0	0	0	25	0	0	25	0	0
+nvm	1	0	0	0	0	0	0	0	0	0	0	5	0	0	5	0	0
+nwi	8	0	0	0	0	0	0	0	0	0	0	15	0	2	13	0	0
+nww	0	0	0	0	0	0	0	0	0	0	0	7	0	0	7	0	0
+nya	16	0	0	0	0	0	1	1	0	0	0	7	0	0	7	0	0
+nys	12	0	0	0	0	0	0	0	0	0	0	23	0	0	23	0	0
+oboNT	2	0	0	0	0	0	0	0	0	0	0	4	0	0	4	0	0
+okv	5	1	1	0	0	0	12	0	0	12	0	9	0	0	9	0	0
+okvh	4	1	1	0	0	0	0	0	0	0	0	7	0	0	7	0	0
+omb	10	0	0	0	0	0	0	0	0	0	0	16	0	2	14	0	0
+omw	2	0	0	0	0	0	0	0	0	0	0	8	0	0	8	0	0
+omw-a	3	1	0	0	1	0	0	0	0	0	0	2	0	0	2	0	0
+ong	13	1	0	1	0	0	7	1	0	6	0	4	0	2	2	0	0
+ons	8	2	2	0	0	0	0	0	0	0	0	24	0	0	24	0	0
+oodNT	4	0	0	0	0	0	13	0	0	13	0	6	0	1	5	0	0
+opm	2	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0
+ory	6	0	0	0	0	0	0	0	0	0	0	11	0	1	10	0	0
+oteNT	6	5	0	0	5	0	0	0	0	0	0	19	0	1	18	0	0
+otmNT	1	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0
+otnNT	9	0	0	0	0	0	0	0	0	0	0	5	2	0	3	0	0
+otqNT	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0
+otsNT	9	2	0	0	2	0	0	0	0	0	0	5	0	0	5	0	2
+oyde	14	0	0	0	0	0	2	0	0	2	0	25	0	1	24	0	0
+oydl	6	0	0	0	0	0	2	0	0	2	0	29	0	2	27	0	0
+pabNT	10	0	0	0	0	0	0	0	0	0	0	10	0	1	9	0	0
+padNT	3	0	0	0	0	0	0	0	0	0	0	2	0	1	1	0	0
+pahNT	1	0	0	0	0	0	6	0	0	6	0	8	0	0	8	0	0
+pan	7	10	3	0	7	0	0	0	0	0	0	1	0	1	0	0	0
+paoNT	4	0	0	0	0	0	0	0	0	0	0	1	0	0	1	0	0
+pdo	11	0	0	0	0	0	2	2	0	0	0	10	0	0	10	0	0
+peg	3	0	0	0	0	0	0	0	0	0	0	19	0	2	17	0	0
+pesOPV	13	1	0	0	1	0	1	1	0	0	0	34	0	4	30	0	0
+pesopcb	12	4	0	0	4	0	0	0	0	0	0	20	0	1	19	0	0
+pibNT	2	1	0	0	1	0	0	0	0	0	0	0	0	0	0	0	0
+pioNT	3	2	0	0	2	0	0	0	0	0	0	8	0	0	8	0	0
+pirNT	2	0	0	0	0	0	13	0	0	13	0	1	0	0	1	0	0
+piu2006	4	2	0	0	2	0	0	0	0	0	0	23	0	0	23	0	2
+pjt	12	0	0	0	0	0	0	0	0	0	0	9	0	0	9	0	0
+plj	20	3	0	3	0	0	16	0	0	16	0	12	0	4	8	0	0
+pll	8	0	0	0	0	0	0	0	0	0	0	14	0	0	14	0	0
+plsNT	4	0	0	0	0	0	0	0	0	0	0	10	0	0	10	0	0
+plu	2	0	0	0	0	0	0	0	0	0	0	2	0	0	2	0	0
+pma	12	2	0	0	2	0	3	1	0	2	0	2	0	0	2	0	0
+poeNT	12	2	1	0	1	0	0	0	0	0	0	3	0	2	1	0	0
+pohNT	2	1	1	0	0	0	0	0	0	0	0	1	0	1	0	0	0
+poiNT	7	0	0	0	0	0	0	0	0	0	0	1	0	0	1	0	0
+polsz	11	6	0	0	6	0	0	0	0	0	0	9	0	0	9	0	4
+polubg	1	0	0	0	0	0	0	0	0	0	0	3	0	0	3	0	0
+pon	10	3	2	0	1	0	0	0	0	0	0	0	0	0	0	0	0
+pon-pdn	9	0	0	0	0	0	1	1	0	0	0	0	0	0	0	0	0
+pon2006	22	5	0	1	4	0	15	0	0	15	0	37	0	5	32	0	0
+pon2006a	35	4	0	1	3	0	31	0	0	31	0	50	0	5	45	0	0
+porblt	12	9	3	0	6	0	0	0	0	0	0	7	0	0	7	0	2
+porbr2018	10	18	2	0	16	0	5	0	0	5	0	229	1	2	226	0	0
+porbrbsl	14	0	0	0	0	0	0	0	0	0	0	38	0	2	36	0	0
+poronbv	6	3	1	0	2	0	5	0	0	5	0	3	0	0	3	0	2
+portft	42	29	4	1	24	0	4	2	0	2	0	115	0	4	111	0	10
+poy	8	3	0	1	2	0	0	0	0	0	0	12	0	0	12	0	2
+ppo	2	5	0	0	5	0	0	0	0	0	0	13	0	2	11	0	0
+prfNT	5	0	0	0	0	0	0	0	0	0	0	20	0	0	20	0	0
+priNT	14	1	0	0	1	0	15	0	0	15	0	30	0	0	30	0	0
+ptp	4	0	0	0	0	0	0	0	0	0	0	25	0	0	25	0	0
+ptu	1	0	0	0	0	0	0	0	0	0	0	7	0	0	7	0	0
+pub	2	0	0	0	0	0	1	1	0	0	0	3	0	0	3	0	0
+puu	4	0	0	0	0	0	0	0	0	0	0	3	0	0	3	0	0
+pwg	6	0	0	0	0	0	17	0	0	17	0	0	0	0	0	0	0
+pwr	12	4	3	0	1	0	0	0	0	0	0	60	1	5	54	0	0
+qub	4	2	0	0	2	0	11	0	0	11	0	26	0	0	26	0	2
+qucNNT	2	0	0	0	0	0	0	0	0	0	0	1	0	0	1	0	0
+qucTNT	2	0	0	0	0	0	0	0	0	0	0	1	0	0	1	0	0
+quctt	12	9	0	0	9	0	0	0	0	0	0	40	0	6	34	0	0
+qufNT	9	4	1	0	3	0	7	0	0	7	0	10	0	2	8	0	0
+quhNT	5	0	0	0	0	0	0	0	0	0	0	18	0	0	18	0	0
+qulNT	5	3	1	0	2	0	0	0	0	0	0	0	0	0	0	0	0
+qupNT	1	1	1	0	0	0	0	0	0	0	0	29	1	0	28	0	0
+qvcNT	8	0	0	0	0	0	2	0	0	2	0	26	0	0	26	0	0
+qveNT	11	1	1	0	0	0	5	0	0	5	0	19	1	1	17	0	0
+qvhNT	9	0	0	0	0	0	0	0	0	0	0	3	0	0	3	0	0
+qvmNT	8	0	0	0	0	0	0	0	0	0	0	3	0	0	3	0	0
+qvnNT	2	1	1	0	0	0	4	0	0	4	0	0	0	0	0	0	0
+qvsNT	3	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0
+qvwNT	6	1	0	0	1	0	11	0	0	11	0	11	0	0	11	0	0
+qvzNT	3	0	0	0	0	0	0	0	0	0	0	2	0	0	2	0	0
+qwhNT	12	0	0	0	0	0	0	0	0	0	0	7	0	0	7	0	0
+qxhNT	5	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0
+qxnNT	8	0	0	0	0	0	0	0	0	0	0	3	0	0	3	0	0
+qxoNT	4	0	0	0	0	0	0	0	0	0	0	15	0	0	15	0	0
+rai	2	0	0	0	0	0	8	0	0	8	0	8	0	0	8	0	0
+reg	18	2	2	0	0	0	0	0	0	0	0	18	0	0	18	0	0
+rei	4	0	0	0	0	0	0	0	0	0	0	25	0	1	24	0	0
+rgu	4	2	0	0	2	0	0	0	0	0	0	26	0	0	26	0	0
+rhg	5	1	1	0	0	0	0	0	0	0	0	16	0	2	14	0	0
+rhgc	7	0	0	0	0	0	0	0	0	0	0	25	0	2	23	0	0
+rifa	20	25	4	1	20	0	3	2	0	1	0	197	2	5	190	0	4
+rifl	21	21	2	1	18	0	3	2	0	1	0	72	3	6	63	0	2
+rift	20	21	2	1	18	0	3	2	0	1	0	69	3	6	60	0	2
+rkbNT	4	0	0	0	0	0	6	0	0	6	0	8	0	1	7	0	0
+rki	7	0	0	0	0	0	6	3	0	3	0	15	0	0	15	0	0
+rmc	9	2	1	1	0	0	16	0	0	16	0	24	0	0	24	0	0
+rmczrb	2	0	0	0	0	0	0	0	0	0	0	3	0	0	3	0	0
+rmn	7	0	0	0	0	0	0	0	0	0	0	3	0	1	2	0	0
+rmna	7	1	0	1	0	0	0	0	0	0	0	15	0	1	14	0	0
+rmyArli	5	0	0	0	0	0	0	0	0	0	0	2	0	1	1	0	0
+rmyChergash	4	0	0	0	0	0	0	0	0	0	0	2	0	0	2	0	0
+rmyGurbet	6	0	0	0	0	0	0	0	0	0	0	6	0	0	6	0	0
+rmyservi	8	0	0	0	0	0	0	0	0	0	0	5	0	3	2	0	0
+rmyvlakh	7	0	0	0	0	0	0	0	0	0	0	3	0	2	1	0	0
+ron1924	15	11	0	0	11	0	27	0	0	27	0	20	0	6	14	0	0
+ronBayash	5	1	0	0	1	0	0	0	0	0	0	5	0	0	5	0	0
+ronbtf	6	0	0	0	0	0	0	0	0	0	0	14	0	0	14	0	0
+ronlsb	14	1	1	0	0	0	3	0	0	3	0	19	0	1	18	0	0
+ronludari	5	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0
+roo	8	0	0	0	0	0	1	1	0	0	0	17	0	0	17	0	0
+rop	4	0	0	0	0	0	0	0	0	0	0	45	0	0	45	0	0
+row	5	8	1	1	6	0	0	0	0	0	0	4	0	0	4	0	2
+rro	11	0	0	0	0	0	1	1	0	0	0	4	0	1	3	0	0
+ruf	3	0	0	0	0	0	0	0	0	0	0	23	0	0	23	0	0
+rug	6	16	2	0	14	0	0	0	0	0	0	26	0	0	26	0	4
+rup	10	0	0	0	0	0	0	0	0	0	0	21	0	0	21	0	0
+russyn	7	7	1	0	6	0	0	0	0	0	0	7	0	0	7	0	0
+rwo-karo	8	0	0	0	0	0	0	0	0	0	0	5	0	0	5	0	0
+rwo-rawa	10	8	0	0	8	0	2	2	0	0	0	19	0	0	19	0	0
+sabNT	3	3	0	0	3	0	0	0	0	0	0	0	0	0	0	0	0
+sanasm	13	1	0	0	1	0	2	2	0	0	0	37	2	1	34	0	0
+sanben	13	1	0	0	1	0	2	2	0	0	0	37	2	1	34	0	0
+sanbur	16	3	0	0	3	0	1	1	0	0	0	38	2	2	34	0	0
+sancol	15	1	0	0	1	0	2	2	0	0	0	37	2	1	34	0	0
+sandev	16	4	1	0	3	0	1	1	0	0	0	60	2	3	55	0	0
+sanguj	13	1	0	0	1	0	2	2	0	0	0	37	2	1	34	0	0
+sanhk	15	1	0	0	1	0	2	2	0	0	0	37	2	1	34	0	0
+sanias	15	1	0	0	1	0	2	2	0	0	0	37	2	1	34	0	0
+saniso	15	1	0	0	1	0	2	2	0	0	0	37	2	1	34	0	0
+sanitr	15	1	0	0	1	0	2	2	0	0	0	37	2	1	34	0	0
+sankan	13	1	0	0	1	0	2	2	0	0	0	37	2	1	34	0	0
+sankhm	15	3	0	0	3	0	1	1	0	0	0	38	2	2	34	0	0
+sanmal	14	1	0	0	1	0	2	2	0	0	0	37	2	1	34	0	0
+sanori	13	1	0	0	1	0	2	2	0	0	0	37	2	1	34	0	0
+sanpun	18	1	0	0	1	0	2	2	0	0	0	37	2	1	34	0	0
+sansin	16	1	0	0	1	0	2	2	0	0	0	37	2	1	34	0	0
+santam	30	0	0	0	0	0	2	2	0	0	0	41	2	1	38	0	0
+santel	14	1	0	0	1	0	2	2	0	0	0	37	2	1	34	0	0
+santha	16	0	0	0	0	0	1	1	0	0	0	41	2	1	38	0	0
+santib	16	3	0	0	3	0	1	1	0	0	0	38	2	2	34	0	0
+sanurd	14	3	0	0	3	0	1	1	0	0	0	38	2	2	34	0	0
+sanvel	15	1	0	0	1	0	2	2	0	0	0	37	2	1	34	0	0
+sbe	12	2	2	0	0	0	0	0	0	0	0	25	0	2	23	0	0
+sbk	15	6	1	0	5	0	3	0	0	3	0	15	0	0	15	0	0
+sbs	13	2	1	0	1	0	1	1	0	0	0	3	0	0	3	0	0
+sby	10	4	0	2	2	0	0	0	0	0	0	17	0	4	13	0	2
+sce	4	0	0	0	0	0	4	0	0	4	0	13	0	1	12	0	0
+sch	9	1	1	0	0	0	1	1	0	0	0	0	0	0	0	0	0
+seh	5	0	0	0	0	0	0	0	0	0	0	24	0	2	22	0	0
+seyNT	12	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0
+sgb	5	0	0	0	0	0	0	0	0	0	0	13	0	2	11	0	0
+sgz	3	0	0	0	0	0	0	0	0	0	0	9	0	0	9	0	0
+shj	4	0	0	0	0	0	0	0	0	0	0	18	0	0	18	0	0
+shpNTpo	6	11	2	0	9	0	0	0	0	0	0	9	0	0	9	0	0
+shr	25	29	2	0	27	0	11	0	0	11	0	34	0	5	29	0	4
+sim	11	0	0	0	0	0	2	2	0	0	0	3	0	0	3	0	0
+six	6	0	0	0	0	0	0	0	0	0	0	7	0	1	6	0	0
+sjaNT	1	0	0	0	0	0	0	0	0	0	0	6	0	0	6	0	0
+sle	12	5	1	0	4	0	2	2	0	0	0	68	0	4	64	0	0
+slk	4	4	0	0	4	0	7	0	0	7	0	5	0	0	5	0	0
+sll	3	0	0	0	0	0	0	0	0	0	0	5	0	0	5	0	0
+smkNT	3	0	0	0	0	0	0	0	0	0	0	1	0	0	1	0	0
+sna	5	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0
+snc	9	0	0	0	0	0	0	0	0	0	0	15	0	0	15	0	0
+snnNT	7	0	0	0	0	0	0	0	0	0	0	1	0	0	1	0	0
+snp	2	0	0	0	0	0	18	0	0	18	0	0	0	0	0	0	0
+snp-lambau	4	0	0	0	0	0	18	0	0	18	0	5	0	0	5	0	0
+snx	10	0	0	0	0	0	0	0	0	0	0	10	0	0	10	0	0
+sny	12	0	0	0	0	0	1	0	0	1	0	9	0	2	7	0	0
+som	2	0	0	0	0	0	0	0	0	0	0	2	0	0	2	0	0
+soq	4	0	0	0	0	0	0	0	0	0	0	17	0	0	17	0	0
+soy	6	0	0	0	0	0	4	0	0	4	0	4	0	3	1	0	0
+spaRV1909	1	13	1	0	12	0	0	0	0	0	0	36	0	0	36	0	0
+spabes	19	36	1	0	35	0	1	1	0	0	0	208	1	8	199	0	0
+spabll	15	13	5	0	8	0	99	1	0	98	0	21	1	6	14	0	0
+spablm	15	8	2	0	6	0	35	0	0	35	0	9	2	2	5	0	0
+spaonbv	12	12	2	0	10	0	0	0	0	0	0	20	0	2	18	0	4
+spapddpt	10	1	1	0	0	0	22	0	0	22	0	31	1	4	26	0	0
+sparvg	3	5	0	0	5	0	0	0	0	0	0	16	1	2	13	0	0
+spav1602p	8	23	1	0	22	0	0	0	0	0	0	17	0	2	15	0	0
+spavbl	15	7	3	0	4	0	5	0	0	5	0	53	0	1	52	0	2
+spl	10	1	1	0	0	0	0	0	0	0	0	15	0	2	13	0	0
+spm	7	1	1	0	0	0	0	0	0	0	0	10	1	0	9	0	0
+spp	9	3	2	1	0	0	20	0	0	20	0	10	1	2	7	0	0
+sps	7	0	0	0	0	0	0	0	0	0	0	24	0	0	24	0	0
+spyNT	7	0	0	0	0	0	1	1	0	0	0	3	0	0	3	0	0
+sri	6	0	0	0	0	0	0	0	0	0	0	6	0	0	6	0	0
+srmNT	7	1	1	0	0	0	14	0	0	14	0	9	0	1	8	0	0
+srnNT	3	0	0	0	0	0	0	0	0	0	0	7	0	0	7	0	0
+srp1865	1	0	0	0	0	0	0	0	0	0	0	7	0	0	7	0	0
+srp1868	3	0	0	0	0	0	0	0	0	0	0	4	0	2	2	0	0
+srponspc	1	1	0	0	1	0	0	0	0	0	0	0	0	0	0	0	0
+srponstl	1	1	0	0	1	0	0	0	0	0	0	39	0	0	39	0	0
+srqNT	6	0	0	0	0	0	0	0	0	0	0	9	2	0	7	0	0
+ssd	4	0	0	0	0	0	0	0	0	0	0	1	0	0	1	0	0
+ssg	4	0	0	0	0	0	0	0	0	0	0	12	0	0	12	0	0
+ssx	4	0	0	0	0	0	1	0	0	1	0	0	0	0	0	0	0
+stpNT	3	1	1	0	0	0	0	0	0	0	0	5	0	0	5	0	0
+stw	6	2	1	1	0	0	2	0	0	2	0	8	0	0	8	0	0
+sua	3	0	0	0	0	0	20	0	0	20	0	1	0	0	1	0	0
+sue	11	2	1	0	1	0	18	0	0	18	0	16	0	4	12	0	0
+sur	6	3	1	0	2	0	0	0	0	0	0	16	0	1	15	0	0
+sus	2	0	0	0	0	0	0	0	0	0	0	12	0	0	12	0	0
+susa	12	0	0	0	0	0	0	0	0	0	0	11	0	0	11	0	0
+suzBl	35	23	0	2	21	0	0	0	0	0	0	106	0	7	99	0	0
+swe	29	3	1	0	2	0	50	1	0	49	0	102	1	2	99	0	0
+swef	13	2	0	0	2	0	0	0	0	0	0	33	0	4	29	0	2
+swh1850	1	2	0	0	2	0	0	0	0	0	0	10	0	0	10	0	2
+swhonen	18	0	0	0	0	0	16	1	0	15	0	6	0	3	3	0	0
+swhonmm	2	0	0	0	0	0	18	0	0	18	0	0	0	0	0	0	0
+swhulb	32	66	3	0	63	0	31	0	0	31	0	10	1	0	9	0	2
+swp	6	1	0	0	1	0	0	0	0	0	0	20	0	1	19	0	0
+sxbNT	5	0	0	0	0	0	0	0	0	0	0	27	0	0	27	0	0
+tacNT	12	8	0	0	8	0	0	0	0	0	0	12	0	3	9	0	0
+taj	9	4	0	0	4	0	0	0	0	0	0	2	0	0	2	0	2
+tam2017	6	11	1	0	10	0	0	0	0	0	0	8	0	0	8	0	0
+tamtcv	7	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0
+tap	6	0	0	0	0	0	0	0	0	0	0	5	0	0	5	0	0
+tav	7	0	0	0	0	0	0	0	0	0	0	11	0	0	11	0	0
+taw	2	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0
+tbc	4	0	0	0	0	0	0	0	0	0	0	22	0	0	22	0	0
+tbf	3	0	0	0	0	0	0	0	0	0	0	3	0	0	3	0	0
+tbg	21	0	0	0	0	0	3	3	0	0	0	28	0	0	28	0	0
+tbg-a	7	0	0	0	0	0	0	0	0	0	0	10	0	2	8	0	0
+tblNT	8	0	0	0	0	0	0	0	0	0	0	14	0	0	14	0	0
+tbo	6	1	1	0	0	0	9	0	0	9	0	8	0	0	8	0	0
+tbx	7	1	1	0	0	0	2	0	0	2	0	16	0	0	16	0	0
+tbzsim	18	1	0	1	0	0	19	2	0	17	0	6	0	2	4	0	0
+tcaNT	6	4	2	0	2	0	0	0	0	0	0	5	0	0	5	0	2
+tcn	13	0	0	0	0	0	0	0	0	0	0	19	0	1	18	0	0
+tcs	11	0	0	0	0	0	0	0	0	0	0	33	0	1	32	0	0
+tczchongthu	27	27	7	1	19	0	9	0	0	9	0	260	0	6	254	0	7
+tdt	6	0	0	0	0	0	0	0	0	0	0	1	0	0	1	0	0
+tdx	13	7	1	0	6	0	0	0	0	0	0	119	1	5	113	0	0
+teeNT	1	0	0	0	0	0	0	0	0	0	0	1	1	0	0	0	0
+tel2017	9	6	0	1	5	0	0	0	0	0	0	12	0	1	11	0	0
+telotsa	5	0	0	0	0	0	0	0	0	0	0	7	0	0	7	0	0
+terNT	1	0	0	0	0	0	13	0	0	13	0	7	0	0	7	0	0
+tet	6	0	0	0	0	0	0	0	0	0	0	2	0	0	2	0	0
+tew	5	1	1	0	0	0	0	0	0	0	0	3	0	1	2	0	0
+tfrNTpo	2	7	0	0	7	0	0	0	0	0	0	0	0	0	0	0	0
+tgj	19	5	3	1	1	0	8	2	0	6	0	24	0	0	24	0	1
+tgk	14	0	0	0	0	0	2	2	0	0	0	16	1	0	15	0	0
+tglulb	27	11	2	0	9	0	9	0	0	9	0	12	1	1	10	0	4
+tgo	2	0	0	0	0	0	0	0	0	0	0	9	0	1	8	0	0
+tgp	10	0	0	0	0	0	0	0	0	0	0	21	0	3	18	0	0
+thaKJV	1	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0
+thr	6	0	0	0	0	0	0	0	0	0	0	26	0	1	25	0	0
+tif	3	0	0	0	0	0	0	0	0	0	0	1	0	1	0	0	0
+tim	3	0	0	0	0	0	0	0	0	0	0	19	0	0	19	0	0
+tiw	3	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0
+tiy	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0
+tke	10	0	0	0	0	0	0	0	0	0	0	4	0	0	4	0	0
+tkr	12	0	0	0	0	0	0	0	0	0	0	7	0	1	6	0	0
+tkuNT	0	1	0	0	1	0	0	0	0	0	0	6	0	0	6	0	0
+tlf	4	0	0	0	0	0	0	0	0	0	0	12	0	2	10	0	0
+tmd	5	0	0	0	0	0	0	0	0	0	0	21	0	0	21	0	0
+tnaNT	9	0	0	0	0	0	0	0	0	0	0	4	0	0	4	0	0
+tnc	3	0	0	0	0	0	0	0	0	0	0	9	0	0	9	0	0
+tnk	4	0	0	0	0	0	0	0	0	0	0	8	0	0	8	0	0
+tnn	5	0	0	0	0	0	0	0	0	0	0	2	0	1	1	0	0
+tnp	0	4	0	0	4	0	0	0	0	0	0	1	0	0	1	0	0
+tocNT	4	0	0	0	0	0	0	0	0	0	0	4	0	1	3	0	0
+tod	8	0	0	0	0	0	0	0	0	0	0	5	0	0	5	0	0
+tof	11	1	1	0	0	0	0	0	0	0	0	6	0	0	6	0	0
+tojNT	5	0	0	0	0	0	0	0	0	0	0	5	0	0	5	0	0
+ton	12	5	2	0	3	0	0	0	0	0	0	0	0	0	0	0	0
+tooNT	7	2	0	0	2	0	0	0	0	0	0	9	0	4	5	0	0
+topNT	3	0	0	0	0	0	0	0	0	0	0	9	0	2	7	0	0
+tosNT	4	0	0	0	0	0	0	0	0	0	0	4	0	2	2	0	0
+tpa	7	14	0	0	14	0	0	0	0	0	0	15	0	0	15	0	0
+tpi	6	0	0	0	0	0	0	0	0	0	0	11	0	0	11	0	0
+tpiOTNT	4	0	0	0	0	0	0	0	0	0	0	9	0	0	9	0	0
+tptNT	2	0	0	0	0	0	10	0	0	10	0	10	0	0	10	0	0
+tpz	2	0	0	0	0	0	0	0	0	0	0	2	0	0	2	0	0
+trcNT	2	0	0	0	0	0	0	0	0	0	0	18	0	0	18	0	0
+tsn	8	2	2	0	0	0	0	0	0	0	0	0	0	0	0	0	0
+tsw	4	0	0	0	0	0	5	0	0	5	0	20	0	1	19	0	0
+tswNT	6	10	0	0	10	0	10	0	0	10	0	30	0	2	28	0	0
+ttcNT	10	0	0	0	0	0	0	0	0	0	0	16	0	0	16	0	0
+tte	0	0	0	0	0	0	0	0	0	0	0	20	0	0	20	0	0
+tteo	4	0	0	0	0	0	0	0	0	0	0	9	0	0	9	0	0
+tuc-o	5	1	0	1	0	0	0	0	0	0	0	14	0	0	14	0	0
+tuc-t	3	0	0	0	0	0	0	0	0	0	0	17	0	0	17	0	0
+tue	3	0	0	0	0	0	0	0	0	0	0	15	0	0	15	0	0
+tuf	3	0	0	0	0	0	0	0	0	0	0	9	0	0	9	0	0
+tuoNT	2	0	0	0	0	0	0	0	0	0	0	3	0	0	3	0	0
+turobt	12	0	0	0	0	0	0	0	0	0	0	14	0	4	10	0	0
+turytc	18	2	1	1	0	0	0	0	0	0	0	35	0	2	33	0	0
+tvk	5	1	0	0	1	0	2	1	0	1	0	10	0	0	10	0	0
+tvn	10	0	0	0	0	0	3	3	0	0	0	12	0	0	12	0	0
+tvt	13	0	0	0	0	0	1	0	0	1	0	24	0	2	22	0	0
+twi	13	0	0	0	0	0	0	0	0	0	0	6	0	3	3	0	0
+twiasante	11	0	0	0	0	0	0	0	0	0	0	3	0	2	1	0	0
+txq	8	0	0	0	0	0	0	0	0	0	0	26	0	0	26	0	0
+txuNT	6	1	1	0	0	0	0	0	0	0	0	14	0	0	14	0	0
+tyx	7	0	0	0	0	0	13	0	0	13	0	35	0	0	35	0	0
+tzjE	5	0	0	0	0	0	0	0	0	0	0	7	0	0	7	0	0
+tzjNT	0	0	0	0	0	0	0	0	0	0	0	7	0	0	7	0	0
+tzoNT	6	0	0	0	0	0	0	0	0	0	0	14	0	0	14	0	0
+tzoSA	3	0	0	0	0	0	0	0	0	0	0	7	0	0	7	0	0
+tzoZNT	0	0	0	0	0	0	0	0	0	0	0	14	0	0	14	0	0
+tzotzc	3	5	0	0	5	0	0	0	0	0	0	15	0	1	14	0	0
+tzotze	8	0	0	0	0	0	0	0	0	0	0	19	0	3	16	0	0
+ubr	30	2	2	0	0	0	0	0	0	0	0	31	0	6	25	0	0
+ubu-andelale	11	2	1	1	0	0	6	0	0	6	0	16	0	2	14	0	0
+ubu-kala	15	42	0	0	42	0	0	0	0	0	0	16	0	3	13	0	2
+ubu-nopenge	14	17	3	0	14	0	3	1	0	2	0	19	0	1	18	0	0
+udu	7	3	1	0	2	0	0	0	0	0	0	0	0	0	0	0	2
+uigara	26	24	3	0	21	0	1	1	0	0	0	39	0	9	30	0	2
+uigcyr	17	20	3	0	17	0	3	1	0	2	0	45	1	1	43	0	2
+uiglat	15	21	3	0	18	0	3	1	0	2	0	45	1	1	43	0	2
+uigpin	19	21	3	0	18	0	3	1	0	2	0	47	1	1	45	0	2
+ukr1871	8	1	1	0	0	0	4	0	0	4	0	17	0	1	16	0	0
+ukr1996	8	1	1	0	0	0	4	0	0	4	0	17	0	1	16	0	0
+ukrfb	8	1	1	0	0	0	4	0	0	4	0	17	0	1	16	0	0
+ukronpu	15	0	0	0	0	0	0	0	0	0	0	61	0	7	54	0	0
+uli	7	0	0	0	0	0	0	0	0	0	0	12	0	1	11	0	0
+ulk	4	1	0	0	1	0	1	1	0	0	0	15	0	0	15	0	0
+ulk1902	5	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0
+unx	3	0	0	0	0	0	0	0	0	0	0	2	0	0	2	0	0
+upv	7	0	0	0	0	0	0	0	0	0	0	12	0	1	11	0	0
+uraNT	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0
+urbNT	3	0	0	0	0	0	0	0	0	0	0	10	0	0	10	0	0
+urd	14	29	1	0	28	0	0	0	0	0	0	24	0	3	21	0	0
+urdgvh	11	9	1	0	8	0	0	0	0	0	0	22	0	3	19	0	4
+urdgvr	11	9	2	1	6	0	0	0	0	0	0	25	0	0	25	0	2
+urdgvu	10	1	1	0	0	0	0	0	0	0	0	20	0	0	20	0	0
+urdoucv	7	0	0	0	0	0	0	0	0	0	0	2	0	0	2	0	0
+uri	4	1	1	0	0	0	0	0	0	0	0	3	0	0	3	0	0
+urim	5	0	0	0	0	0	11	0	0	11	0	12	0	2	10	0	0
+uro	7	0	0	0	0	0	0	0	0	0	0	15	0	0	15	0	0
+urt	0	0	0	0	0	0	0	0	0	0	0	16	0	0	16	0	0
+urw	3	0	0	0	0	0	0	0	0	0	0	14	0	0	14	0	0
+usa	7	1	0	0	1	0	0	0	0	0	0	35	0	0	35	0	0
+uspNT	0	0	0	0	0	0	0	0	0	0	0	6	0	0	6	0	0
+utr	10	1	0	1	0	0	13	0	0	13	0	4	0	0	4	0	0
+uvh	6	2	0	0	2	0	0	0	0	0	0	1	0	0	1	0	2
+uvl	3	0	0	0	0	0	9	0	0	9	0	36	0	0	36	0	0
+vaa	11	0	0	0	0	0	0	0	0	0	0	17	0	4	13	0	0
+vgr	9	0	0	0	0	0	0	0	0	0	0	16	0	3	13	0	0
+vid	7	18	0	1	17	0	0	0	0	0	0	17	0	0	17	0	4
+vie1934	6	18	3	0	15	0	0	0	0	0	0	41	0	0	41	0	0
+vieovcb	13	1	0	1	0	0	1	1	0	0	0	21	0	0	21	0	0
+viv	3	1	0	0	1	0	17	1	0	16	0	0	0	0	0	0	0
+vmyNT	3	5	0	0	5	0	0	0	0	0	0	2	0	1	1	0	0
+waj	3	2	1	0	1	0	0	0	0	0	0	0	0	0	0	0	0
+wal	2	0	0	0	0	0	0	0	0	0	0	28	1	0	27	0	0
+wapNT	5	0	0	0	0	0	0	0	0	0	0	16	0	0	16	0	0
+wat	9	0	0	0	0	0	1	1	0	0	0	29	0	0	29	0	0
+wbi	16	13	2	0	11	0	3	1	0	2	0	23	1	1	21	0	4
+wbp	5	14	1	0	13	0	1	0	0	1	0	21	0	1	20	0	0
+wbq	4	5	1	0	4	0	0	0	0	0	0	25	0	3	22	0	2
+wed	11	0	0	0	0	0	0	0	0	0	0	3	0	0	3	0	0
+wed-topura	10	3	3	0	0	0	0	0	0	0	0	14	0	0	14	0	0
+wer	11	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0
+wim	6	2	2	0	0	0	0	0	0	0	0	21	0	3	18	0	0
+wiu	5	1	1	0	0	0	0	0	0	0	0	1	0	1	0	0	0
+wiv	6	0	0	0	0	0	0	0	0	0	0	19	0	0	19	0	0
+wja	20	2	2	0	0	0	2	1	0	1	0	16	0	3	13	0	0
+wlo	11	18	0	0	18	0	1	0	0	1	0	60	0	3	57	0	0
+wmt	1	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0
+wmw	10	0	0	0	0	0	0	0	0	0	0	5	1	0	4	0	0
+wnc	4	0	0	0	0	0	0	0	0	0	0	2	0	2	0	0	0
+wnu	6	0	0	0	0	0	0	0	0	0	0	13	0	2	11	0	0
+wol2010	5	1	0	1	0	0	0	0	0	0	0	17	0	0	17	0	0
+wolmbs	9	0	0	0	0	0	0	0	0	0	0	5	0	1	4	0	0
+wos	7	1	0	0	1	0	0	0	0	0	0	12	0	0	12	0	0
+wrk	6	0	0	0	0	0	0	0	0	0	0	13	0	0	13	0	0
+wro	7	172	0	1	171	0	0	0	0	0	0	5	0	3	2	0	0
+wrs	9	2	0	0	2	0	0	0	0	0	0	2	0	0	2	0	0
+wsk	13	1	1	0	0	0	0	0	0	0	0	34	0	3	31	0	0
+wuv	2	1	0	0	1	0	0	0	0	0	0	35	0	0	35	0	0
+xavNT	4	0	0	0	0	0	0	0	0	0	0	8	0	0	8	0	0
+xbi-w	5	6	0	0	6	0	0	0	0	0	0	7	0	0	7	0	0
+xbi-y	4	1	0	0	1	0	0	0	0	0	0	5	0	2	3	0	0
+xed	6	0	0	0	0	0	8	0	0	8	0	23	0	0	23	0	0
+xla	10	0	0	0	0	0	13	0	0	13	0	10	0	0	10	0	0
+xnj	2	0	0	0	0	0	0	0	0	0	0	14	0	0	14	0	0
+xnn	6	0	0	0	0	0	9	0	0	9	0	0	0	0	0	0	0
+xon	2	0	0	0	0	0	17	0	0	17	0	3	0	0	3	0	0
+xsi	0	0	0	0	0	0	14	0	0	14	0	2	0	0	2	0	0
+xsn	9	1	0	0	1	0	0	0	0	0	0	10	0	0	10	0	0
+xtdNT	6	2	1	0	1	0	0	0	0	0	0	9	0	2	7	0	0
+xtmNTpp	2	12	0	0	12	0	1	1	0	0	0	5	0	0	5	0	0
+yaaNT	2	3	0	0	3	0	0	0	0	0	0	0	0	0	0	0	0
+yadNT	7	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0
+yaf	20	3	1	1	1	0	0	0	0	0	0	49	1	4	44	0	0
+yal	5	0	0	0	0	0	0	0	0	0	0	7	0	0	7	0	0
+yao	4	1	1	0	0	0	0	0	0	0	0	20	0	0	20	0	0
+yap	13	2	2	0	0	0	65	0	0	65	0	36	1	0	35	0	0
+yaqNT	5	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0
+yby	4	0	0	0	0	0	14	0	0	14	0	2	0	0	2	0	0
+ycn	9	3	0	0	3	0	0	0	0	0	0	2	0	2	0	0	0
+ydd	12	3	1	0	2	0	0	0	0	0	0	17	1	3	13	0	2
+yer	2	0	0	0	0	0	28	0	0	28	0	58	0	0	58	0	0
+yka	0	0	0	0	0	0	14	0	0	14	0	16	0	0	16	0	0
+yle	0	0	0	0	0	0	7	0	0	7	0	2	0	0	2	0	0
+yml	6	0	0	0	0	0	12	0	0	12	0	16	0	0	16	0	0
+ymp	2	0	0	0	0	0	0	0	0	0	0	14	0	0	14	0	0
+yns	10	1	0	1	0	0	13	0	0	13	0	10	0	4	6	0	0
+yom	6	1	0	0	1	0	13	0	0	13	0	17	0	1	16	0	0
+yon	9	2	2	0	0	0	0	0	0	0	0	26	0	5	21	0	0
+yor	5	0	0	0	0	0	1	0	0	1	0	1	0	1	0	0	0
+yrb	3	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0
+yreNT	2	0	0	0	0	0	1	0	0	1	0	2	0	0	2	0	0
+yss-yamano	12	0	0	0	0	0	0	0	0	0	0	11	1	0	10	0	0
+yss-yawu	2	0	0	0	0	0	1	0	0	1	0	4	0	1	3	0	0
+yuj	12	9	0	0	9	0	0	0	0	0	0	6	0	0	6	0	0
+yut	2	0	0	0	0	0	0	0	0	0	0	18	0	0	18	0	0
+yuw	8	0	0	0	0	0	0	0	0	0	0	7	0	2	5	0	0
+yvaNT	2	5	0	0	5	0	0	0	0	0	0	3	0	0	3	0	0
+zaaNT	11	0	0	0	0	0	0	0	0	0	0	2	0	2	0	0	0
+zabNT	3	13	0	0	13	0	0	0	0	0	0	3	0	0	3	0	0
+zacNT	3	0	0	0	0	0	13	0	0	13	0	0	0	0	0	0	0
+zadNT	4	3	0	0	3	0	0	0	0	0	0	9	0	2	7	0	0
+zaiNT	1	0	0	0	0	0	1	0	0	1	0	7	0	1	6	0	0
+zaj	2	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0
+zajp	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0
+zak	4	0	0	0	0	0	0	0	0	0	0	10	0	0	10	0	0
+zamNT	2	5	0	0	5	0	0	0	0	0	0	7	1	1	5	0	0
+zaoNT	8	0	0	0	0	0	0	0	0	0	0	4	0	3	1	0	0
+zapNT	2	5	0	0	5	0	0	0	0	0	0	1	0	1	0	0	0
+zarNT	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0
+zasNT	1	0	0	0	0	0	0	0	0	0	0	3	0	0	3	0	0
+zatNTps	4	0	0	0	0	0	0	0	0	0	0	17	0	0	17	0	0
+zavNT	3	7	0	0	7	0	0	0	0	0	0	5	0	1	4	0	0
+zawNT	6	7	0	0	7	0	0	0	0	0	0	19	0	1	18	0	0
+zbu	12	1	0	0	1	0	0	0	0	0	0	5	0	3	2	0	0
+zcaNT	9	11	1	0	10	0	0	0	0	0	0	3	0	3	0	0	4
+zgam	15	5	0	0	5	0	1	1	0	0	0	23	1	0	22	0	0
+zia	6	0	0	0	0	0	0	0	0	0	0	13	0	0	13	0	0
+zin	3	0	0	0	0	0	0	0	0	0	0	9	0	0	9	0	0
+ziw	2	15	2	0	13	0	0	0	0	0	0	9	0	0	9	0	2
+zlmKSZI	4	0	0	0	0	0	0	0	0	0	0	22	0	0	22	0	0
+zosNT	5	1	0	0	1	0	0	0	0	0	0	15	0	0	15	0	0
+zpcNT	2	1	1	0	0	0	0	0	0	0	0	4	0	0	4	0	0
+zplNT	3	8	1	0	7	0	0	0	0	0	0	1	0	1	0	0	0
+zpmNT	3	3	0	0	3	0	0	0	0	0	0	2	0	1	1	0	0
+zpoNT	5	4	0	0	4	0	0	0	0	0	0	1	0	1	0	0	0
+zpqNT	1	4	0	0	4	0	0	0	0	0	0	1	0	0	1	0	0
+zpuNT	3	1	1	0	0	0	0	0	0	0	0	8	0	0	8	0	0
+zpvNT	5	11	0	0	11	0	0	0	0	0	0	7	0	0	7	0	0
+zpzNTpp	6	5	0	0	5	0	0	0	0	0	0	0	0	0	0	0	0
+zsrNT	5	0	0	0	0	0	0	0	0	0	0	1	0	1	0	0	0
+ztp	15	12	0	0	12	0	0	0	0	0	0	80	0	4	76	0	0
+ztqNT	7	0	0	0	0	0	0	0	0	0	0	1	0	1	0	0	0
+ztyNTps	2	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0
+zypNT	5	1	0	1	0	0	0	0	0	0	0	2	0	0	2	0	0

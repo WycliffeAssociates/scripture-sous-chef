@@ -1573,6 +1573,42 @@ pub(crate) fn drive_nonletter_usage(
     finish_nonletter_usage(cache, corpus, cfg, plan, out);
 }
 
+/// Every maximal visible-nonletter run this rule OBSERVES in a corpus, as
+/// `(global verse index, verse-local byte span)` in scan order — the candidate
+/// domain itself, independent of any judgment.
+///
+/// It exists because the migration ledger's central question is *observability*,
+/// not emission: "is there any span the three retired rules flag where this rule
+/// sees no candidate at all?" A judged run set cannot answer that, because a run
+/// every channel abstains on emits nothing at any floor while still being fully
+/// observed. This is also the extractor a census lane would mirror, so it is the
+/// one honest place both readings come from.
+pub fn nonletter_candidate_runs(corpus: &Corpus) -> Vec<(crate::corpus::KeyIdx, Span)> {
+    let mut cache = crate::substrate::SubstrateCache::new();
+    let mut sink = Vec::new();
+    drive_nonletter_usage(
+        true,
+        &mut cache,
+        corpus,
+        &NonletterUsageConfig::default(),
+        &mut sink,
+    );
+    let mut out = Vec::new();
+    for book in corpus.book_layout() {
+        let Some(contrib) = cache.book_contribution(&book.slug) else {
+            continue;
+        };
+        for (chapter, block) in contrib.chapters.iter().zip(&book.chapters) {
+            let base = crate::substrate::chapter_base(block, &chapter.token);
+            for site in chapter.body.sites.iter() {
+                let (local, span) = site.addr.unpack();
+                out.push((rebase(base, local), span));
+            }
+        }
+    }
+    out
+}
+
 /// `uni.nonletter-usage-anomaly` findings for a whole corpus at a given config,
 /// via the observation substrate over a fresh transient cache — the single
 /// implementation, for tests and calibration callers. Findings are in the final

@@ -192,6 +192,23 @@ fn main() {
             }
             return;
         }
+        // THE MIGRATION LEDGER (epic plan §11.1/§14.3) — the shipped rule against
+        // the three retired rules over the fleet, plus the two obligations the
+        // sequence-`k=2` ruling attached. Writes the durable TSV to stdout.
+        // Optional trailing `sequence_k` and `placement_k` overrides, so the two
+        // knobs the FLAG 2 obligations put in question can be measured against the
+        // adjudicated wins without a rebuild.
+        [flag, path, knobs @ ..] if flag == "--nonletter-ledger" && knobs.len() <= 2 => {
+            let mut cfg = ssc_core::config::NonletterUsageConfig::default();
+            if let Some(k) = knobs.first() {
+                cfg.sequence_k = k.parse().expect("sequence_k is a number");
+            }
+            if let Some(k) = knobs.get(1) {
+                cfg.placement_k = k.parse().expect("placement_k is a number");
+            }
+            survey::nonletter_ledger::nonletter_ledger_fleet(Path::new(path), cfg);
+            return;
+        }
         [flag, path] if flag == "--glyphs" => {
             let p = Path::new(path);
             if p.is_dir() {

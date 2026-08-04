@@ -917,3 +917,184 @@ rayon worker.
 
 Fleet sweeps: `RAYON_NUM_THREADS=4 ./target/release/examples/calibrate --nonletter
 corpora/vref overlap` — 2 m 41 s for 1,504 corpora with the ledger.
+
+---
+
+# Addendum 3 — the migration ledger FALSIFIES the shipped placement knee
+
+- **Date:** 2026-08-04, after the live rule landed (`828fef7`) and before any
+  deletion.
+- **Measured with:** the shipped rule, not the probe —
+  `cargo run --release -p ssc-core --example calibrate -- --nonletter-ledger corpora/vref [sequence_k] [placement_k]`,
+  which calls `nonletter_usage_findings` and `nonletter_candidate_runs`, the same
+  public surfaces the engine judges through.
+- **Durable artifact:**
+  [`2026-08-04-nonletter-usage-migration-ledger.tsv`](2026-08-04-nonletter-usage-migration-ledger.tsv)
+  (shipped knobs, full fleet, per corpus).
+- **Verdict: STOP. The three retired rules must NOT be deleted yet.** Both FLAG 2
+  obligations fail, and they fail for two different reasons — one of which the
+  packet could not have seen.
+
+## C1. The deletion gate itself passes: `lost = 0`
+
+| retired rule | total | preserved | coalesced | intentionally moved | **lost** |
+| --- | --- | --- | --- | --- | --- |
+| `punct.adjacency-anomaly` | 9,354 | 1,252 | 256 | 7,846 | **0** |
+| `lex.punct-only-token` | 4,481 | 393 | 0 | 4,088 | **0** |
+| `punct.spacing-anomaly` | 27,024 | 231 | 1,418 | 25,375 | **0** |
+| **all** | **40,859** | 1,876 (4.6%) | 1,674 (4.1%) | 37,309 (91.3%) | **0 (0.000%)** |
+
+The shipped rule emits **13,709** findings fleet-wide at defaults.
+
+`lost` is measured against `nonletter_candidate_runs`, the observed candidate
+domain, **not** against a judged run set — because a run every channel abstains on
+emits nothing at any floor while still being fully observed, so "emits nothing"
+and "sees nothing" are different answers and only the second is a coverage loss.
+So the candidate domain really is a strict superset of all three old domains, as
+the probe found. Nothing below changes that.
+
+## C2. Obligation (a) FAILS — the `k = 2` movers read as ERRORS, not conventions
+
+908 old adjacency findings (**11.6%** of the 7,846 moved) are declined at
+`sequence_k = 2` but WOULD be emitted by the same rule at `k = 8`. That is exactly
+the population the obligation names: pairings this translation has already written
+2–7 times, which `k = 2` therefore treats as established.
+
+They are spread across **263 corpora, at most 11 each** — a broad, thin
+population, which is the shape of a *repeated slip*, not of a convention. And the
+samples do not read as conventions at all:
+
+| corpus | sid | pattern | context |
+| --- | --- | --- | --- |
+| `WA-dav-reg` | MRK 14:51 | `,;` | `…kumzunguluka,; wamwhada ela…` |
+| `WA-dav-reg` | LUK 5:27 | `,:` | `…Akamgoria,: Nnuge."…` |
+| `WA-dig-reg` | LUK 1:42 | `.;;` | `…sauti mbalia.;; ukabarikiwa…` |
+| `WA-mgz-reg` | MRK 12:34 | `,.` | `…wa Moolongo,. Keento afo…` |
+| `WA-mgz-reg` | LUK 13:9 | `.!` | `…akunja tayaye oteme.!"…` |
+| `WA-dso-ulb` | MAT 19:16 | `?*` | `…अनन्त जीवन पायबी?*"…` |
+| `portft` | MAT 17:21 | `!,` | `…para lá!, e ele iria…` |
+| `WA-vid-reg` | MRK 8:24 | `,,` | `…kota migodi jangujenda,,…` |
+| `WA-ha-ulb` | RUT 3:16 | `?.` | `…yi ɗiyata?." Rut ta faɗa…` |
+| `WA-haq-reg` | MAT 20:21 | `.!!` | `…mubhufalme bwanje.!!…` |
+| `WA-ida-x-isukha-reg` | MAT 7:9 | `?\` | `…lichina amue?\VI0 Inoho lwa…` |
+| `WA-sde-ulb` | MAT 9:6 | `,......` | `…ku guzu ivang,......" I woh…` |
+
+`,;` · `,:` · `.;;` · `,.` · `.!` · `?*` · `!,` · `,,` · `?.` · `.!!` · `,......`
+— and `?\VI0`, which is leaked markup. These are not orthographic conventions in
+any writing system. FLAG 2's obligation (a) says plainly: *if that surfaces a
+population reading as real systematic errors rather than conventions, STOP and
+report rather than deleting the old rules.* It does, so this is that stop.
+
+The defence recorded for `k = 2` was the idea document's non-goal — *"widespread
+systematic mistakes may be learned like any other convention"*. That defence does
+not cover this population, because 2–7 occurrences is not widespread. `k = 2`
+does not merely learn a systematic mistake; it treats a **second occurrence** as
+proof of convention.
+
+`sequence_k = 4` recovers none of them on the sampled corpora (the junk pairs sit
+at ≥ 5 occurrences or ≤ 3 and were already caught). `sequence_k = 8` recovers all
+908 by construction.
+
+## C3. Obligation (b) FAILS — and this is the more serious finding
+
+The corpora ADR 0024 and ADR 0054 name as adjudicated multilingual wins, under the
+shipped knobs:
+
+| corpus | old findings | preserved | coalesced | moved | lost | the ADR's adjudication |
+| --- | --- | --- | --- | --- | --- | --- |
+| `engwebster` | 23 | **0** | **0** | **23** | 0 | spaced period-typography collapses; the genuine spaced-`!` slips **kept** |
+| `WA-ne-udb` | 103 | 2 | 1 | 100 | 0 | `,`/`!` anchors **kept** and the 40 verse-final dandas kept at ≈0.549 |
+| `WA-kmr-IQ-badini-reg` | 69 | 3 | 3 | 63 | 0 | the 1,289 spaced ` ،` convention collapses; slips **kept** |
+| `WA-pa-ulb` | 68 | 3 | 2 | 63 | 0 | the spaced `? !` convention collapses; slips **kept** |
+| `ayn_reg` | — | — | — | — | — | **not present in `corpora/vref`** — the ADR 0024 win cannot be checked here |
+
+`engwebster` loses **every one** of its 23, and they are not typography — they are
+a broken hyphenation pass splitting words across a space:
+
+```
+LEV 18:18   …besides the other in her life -time .
+LEV 26:22   …few in number, and your high -ways shall be desolate.
+NUM 20:17   …will go by the king's high -way, we will not turn…
+JDG 20:16   …could sling stones to a hair -breadth , and not miss.
+```
+
+`WA-ne-udb` loses `MAT 4:9` `,ब` — a **missing space after a comma**, which is
+addendum §A3's own example of the *most actionable* finding this rule produces —
+and `MAT 4:4` / `MAT 4:10` `न!` `ल!`, attached terminals in a translation that
+spaces them.
+
+(`WA-ne-udb` `MAT 6:23` ` !`, the verse-final danda, is a different matter: it is
+population 2 of §12's "intentionally moved", already accepted as drift because the
+old behavior is the verse-initial ≈ sentence-initial error the domain invariant
+forbids. It stays accepted.)
+
+### The root cause: the placement knee lost ADR 0050's volume term
+
+`NonletterUsageConfig::placement_k` is a **fixed absolute knee of 8**. The rule it
+replaces used ADR 0050's **opportunity-proportional** knee:
+
+```text
+K = minority_recurrence_k + minority_rate_per_10k · N_pool / 10 000
+  = 32 + 40 · N_pool / 10 000          ≈ 87 at WA-ne-udb's volume
+```
+
+ADR 0050's amendment exists *precisely because* a flat knee wrongly silenced slip
+clouds that grow with corpus volume — its own headline was pa_ulb's 17 spaced `,`
+of 37,928 restored to 0.91. This rule reintroduced the flat knee, so any slip form
+recurring 9 or more times scores zero where spacing tolerated up to ~87.
+
+The probe could not see this. Its placement channel used the same fixed `k = 8`,
+and the packet compared **aggregate volumes and anchor corpora it built itself** —
+never the ADR 0054 adjudicated corpora. Obligation (b) is what surfaced it, which
+is exactly why it was attached.
+
+### The knob sweep that isolates it
+
+Seven corpora — the four ADR roster corpora plus `WA-dav-reg`, `WA-mgz-reg`,
+`portft` from the §C2 samples. 504 old findings between them.
+
+| `sequence_k` | `placement_k` | preserved + coalesced | new findings | `engwebster` recovered |
+| --- | --- | --- | --- | --- |
+| **2** | **8** *(shipped)* | 33 (6.5%) | 123 | **0 / 23** |
+| 4 | 8 | 33 | 123 | 0 / 23 |
+| 8 | 8 | 70 (13.9%) | 185 | 0 / 23 |
+| 2 | 32 | 68 (13.5%) | 262 | 4 / 23 |
+| 2 | 87 | 208 (41.3%) | 609 | **23 / 23** |
+| 8 | 87 | 236 (46.8%) | 661 | 23 / 23 |
+
+**`placement_k` is the dominant lever, not `sequence_k`.** 8 → 87 alone moves
+preservation from 33 to 208 and recovers every `engwebster` slip; `sequence_k`
+2 → 8 alone adds 37.
+
+At full fleet, `sequence_k = 8` with `placement_k = 87`:
+
+| series | preserved + coalesced of 40,859 | new findings |
+| --- | --- | --- |
+| shipped (`2`, `8`) | 3,550 (8.7%) | 13,709 |
+| diagnostic (`8`, `87`) | 12,957 (31.7%) | **65,174** |
+
+So the proxy recovers 3.6× the old coverage at **4.8× the volume**. A flat 87 is
+therefore a diagnostic, **not** a candidate: it is far too permissive on the thin
+pools a low-volume corpus has, which is the whole reason ADR 0050's knee is
+proportional rather than flat.
+
+## C4. What this asks the mediator to adjudicate
+
+Three separable decisions, in the order they bind:
+
+1. **The placement knee.** Restore ADR 0050's shape —
+   `K = placement_k + placement_rate_per_10k · N_pool / 10 000` — as a
+   two-knob judging config, and recalibrate both against the fleet AND the ADR
+   0054 roster (which becomes a permanent gate, not a one-off check). This is a
+   Gate 1 reopening on the placement channel, and it is the change the evidence
+   actually demands.
+2. **`sequence_k`.** The honesty argument for `k = 2` stands on its own terms, but
+   the population it silences is junk, so either raise it to 8 or give the channel
+   a support-aware graded form. Cheaper than (1) and independent of it.
+3. **Only then, deletion.** Both obligations re-run against whatever lands, with
+   the ADR roster preserved-or-explicitly-adjudicated per span.
+
+Nothing about the substrate, the candidate domain, the boundary derivation, the
+run-membership rarity basis or the Nd pooling is implicated. `lost = 0` holds and
+the observation schema does not move for either remedy: both are judging knobs, so
+a fix re-judges from retained observations and maps zero chapters.

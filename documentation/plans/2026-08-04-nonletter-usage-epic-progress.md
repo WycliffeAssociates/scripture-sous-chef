@@ -973,3 +973,154 @@ during the scheduler migration.
   adjudicated decisions (rule math test-first, plan §14.2), then delete the three
   retired rules and all their surfaces in one reviewable series, and produce the
   durable full-fleet old/new overlap TSV.
+
+---
+
+## Entry 11 — checkpoint 4: the live rule landed; DELETION IS BLOCKED by FLAG 2
+
+- **Date:** 2026-08-04
+- **Status:** `NonletterUsageSubstrate` and `uni.nonletter-usage-anomaly` are
+  **live, tested and default-on** (`828fef7`). The three-rule deletion series was
+  **NOT started**, and must not be, because **both FLAG 2 obligations fail** and
+  Entry 9's obligation (a) is an explicit stop clause.
+- **Addendum:** [`2026-08-04-nonletter-usage-probe.md`](../calibration/2026-08-04-nonletter-usage-probe.md)
+  §C1–C4.
+- **Durable ledger:** [`2026-08-04-nonletter-usage-migration-ledger.tsv`](../calibration/2026-08-04-nonletter-usage-migration-ledger.tsv)
+  — full fleet, per corpus, measured on the SHIPPED rule.
+
+### What landed — `828fef7` (one commit; the two movements never share one)
+
+The substrate from Entry 10's blueprint, the live rule test-first against plan
+§14.2's case list (36 new tests, synthetic `VerseMap`s only, no corpus fixtures),
+and every closed surface: `RuleId::NonletterUsageAnomaly`,
+`FindingArgs::NonletterUsage` + `NonletterReason`/`NonletterForm`,
+`NonletterUsageConfig` (judging-only), catalog card + message, Review Depth profile
+→ `Mapped`, wire discriminant **26** with the count-pair digest, wasm `SousConfig`
+projection, regenerated `findings.generated.{js,d.ts}`.
+
+**Purely additive, and proved so:** the WA default dump with the rule live is
+byte-identical to `before.wa.default.tsv` on every non-`uni.nonletter-usage-anomaly`
+row, and adds 4,744 rows. The three retired rules are untouched.
+
+Verification: `cargo test -p ssc-core` 587 (588 with `--features parallel`),
+`ssc-galley` 25, `ssc-wire` 25, `ssc-wasm` 16, node `findings/galley/package`
+tests all green; `cargo check -p ssc-wasm --target wasm32-unknown-unknown` clean;
+clippy clean in both new modules; formatting applied to touched lines only.
+
+### Two deviations from Entry 10's blueprint, both deliberate
+
+1. **Identity is NOT pooled for digits.** Entry 10 said Nd digits collapse to one
+   identity key. The probe — the authority on scoring semantics — pools only (a)
+   the directed-pair **follower** key and (b) the rarity **numerator** (via the
+   corpus-level `digit_class_runs`). The tally identity itself stays exact
+   grapheme bytes everywhere, so placement is per-digit. Following Entry 10's
+   summary literally would have changed placement and diverged from every measured
+   anchor.
+2. **The pooled pair key is `"\u{1}#"`, not `"#"`.** A control scalar classifies
+   as hygiene and can never be a candidate identity, so the sentinel cannot
+   collide; the probe's bare `#` collides wherever a corpus writes a literal `#`
+   beside another nonletter. Rare, and strictly a probe defect.
+
+Entry 10's two solved problems both held. `seen_previous` is explicit and has a
+dedicated witness (`a_candidate_free_chapter_still_proves_a_neighbour_exists`).
+The deferred edges' identities are recorded in the observation, for exactly the
+stated reason. One simplification fell out: since `Boundary` is the trailing
+edge's default and a neighbouring chapter overwrites it with `Spaced`,
+`finish_book` is a no-op and there is no unresolved third state.
+
+### FLAG 2 obligation (a) — FAILS: the `k = 2` movers are ERRORS
+
+908 old adjacency findings (11.6% of the 7,846 moved) are declined at
+`sequence_k = 2` but would be emitted by the same rule at `k = 8` — i.e. they moved
+*specifically* because the pairing was already written 2–7 times. Spread across
+**263 corpora, ≤ 11 each**: the shape of a repeated slip, not a convention.
+
+Sampled: `,;` · `,:` · `.;;` · `,.` · `.!` · `?*` · `!,` · `,,` · `?.` · `.!!` ·
+`,......` · and `?\VI0` (leaked markup). None of these is an orthographic
+convention in any writing system. Full sample table in addendum §C2.
+
+The recorded defence for `k = 2` was the idea document's "widespread systematic
+mistakes may be learned like any other convention". It does not cover this
+population: 2–7 occurrences is not widespread, and `k = 2` treats a **second**
+occurrence as proof of convention.
+
+### FLAG 2 obligation (b) — FAILS, and this is the more serious finding
+
+| corpus | old | preserved | coalesced | moved | the ADR adjudication |
+| --- | --- | --- | --- | --- | --- |
+| `engwebster` | 23 | **0** | **0** | **23** | genuine spaced-`!` slips **kept** |
+| `WA-ne-udb` | 103 | 2 | 1 | 100 | `,`/`!` anchors **kept** |
+| `WA-kmr-IQ-badini-reg` | 69 | 3 | 3 | 63 | slips **kept** |
+| `WA-pa-ulb` | 68 | 3 | 2 | 63 | slips **kept** |
+| `ayn_reg` | — | — | — | — | **absent from `corpora/vref`** — unverifiable |
+
+`engwebster` loses all 23, and they are a broken hyphenation pass
+(`life -time`, `high -ways`, `hair -breadth`), not typography. `WA-ne-udb` loses
+`MAT 4:9` `,ब` — a **missing space after a comma**, which is addendum §A3's own
+example of the most *actionable* finding this rule produces.
+
+**Root cause, named:** `placement_k` is a **flat absolute knee of 8**. The rule it
+replaces used ADR 0050's opportunity-proportional knee
+`K = 32 + 40·N_pool/10 000` (≈ 87 at `WA-ne-udb`'s volume). ADR 0050's amendment
+exists precisely because a flat knee wrongly silences slip clouds that grow with
+volume — its headline case was pa_ulb's 17 spaced `,` of 37,928. The new rule
+reintroduced the flat knee, so a slip form recurring 9+ times scores zero.
+
+The packet could not have caught this: the probe's placement channel used the same
+flat `k = 8`, and the packet compared aggregate volumes and its own synthetic
+anchors, never the ADR 0054 corpora. Obligation (b) is what surfaced it.
+
+Knob sweep (7 corpora, 504 old findings) isolating the lever:
+
+| `sequence_k` | `placement_k` | preserved+coalesced | new findings | `engwebster` |
+| --- | --- | --- | --- | --- |
+| **2** | **8** (shipped) | 33 (6.5%) | 123 | **0/23** |
+| 4 | 8 | 33 | 123 | 0/23 |
+| 8 | 8 | 70 | 185 | 0/23 |
+| 2 | 32 | 68 | 262 | 4/23 |
+| 2 | 87 | 208 (41.3%) | 609 | **23/23** |
+| 8 | 87 | 236 (46.8%) | 661 | 23/23 |
+
+Full fleet: shipped `(2, 8)` preserves 3,550 of 40,859 (8.7%) at 13,709 findings;
+diagnostic `(8, 87)` preserves 12,957 (31.7%) at **65,174** — 3.6× the coverage for
+4.8× the volume. A flat 87 is a **diagnostic, not a candidate**: it is far too
+permissive on a low-volume corpus's thin pools, which is why ADR 0050's knee is
+proportional.
+
+### The deletion gate itself PASSES
+
+`lost = 0` across the whole fleet, on every retired rule — measured against
+`nonletter_candidate_runs` (the observed candidate domain), not a judged run set,
+because a fully abstaining run emits nothing at any floor while still being
+observed. The candidate domain is a strict superset of all three old domains. That
+result is unaffected by everything above, and neither remedy touches the
+observation schema: both are judging knobs, so a fix re-judges from retained
+observations and maps zero chapters.
+
+### Also worth recording
+
+- **A pre-existing gap fixed:** the JS discriminant pin in
+  `crates/wasm/js/findings.test.mjs` was missing code 25
+  (`lex.untranslated-word`), so its one-to-one coverage assertion had been failing
+  since that rule landed. The node tests are **not** in the `cargo test` gate.
+- **`ayn_reg` is not in `corpora/vref`**, so ADR 0024's named Arabic `۔۔`
+  suppression win cannot be checked on this fleet at all. It needs either the
+  corpus or an explicit substitute anchor before Gate E can claim that row.
+- New dev-only tool: `--nonletter-ledger <dir> [sequence_k] [placement_k]`
+  (`crates/core/examples/calibrate/survey/nonletter_ledger.rs`), and one new
+  public calibration surface, `nonletter_candidate_runs`, which is also the
+  extractor a census lane would mirror.
+
+### Next safe step — for the mediator, in binding order
+
+1. **Adjudicate the placement knee.** Restore ADR 0050's shape as a two-knob
+   judging config and recalibrate against the fleet **and** the ADR 0054 roster,
+   which becomes a permanent gate rather than a one-off check. This is a Gate 1
+   reopening on the placement channel.
+2. **Adjudicate `sequence_k`** — raise to 8, or give the channel a support-aware
+   graded form. Independent of (1) and cheaper.
+3. **Only then the deletion series**, with both obligations re-run and the ADR
+   roster preserved-or-adjudicated per span.
+
+Until (1) and (2) are adjudicated the three retired rules stay live beside the new
+one. That is a safe intermediate state: the new rule is purely additive today.
