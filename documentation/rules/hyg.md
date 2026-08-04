@@ -193,11 +193,9 @@ deterministic hygiene, not a corpus-relative score.
 
 **Nuance & ADR ties** — This rule *owns* the phenomenon (ADR 0034):
 previously my_juds' damage was double-reported by a score-1.0 bypass in
-`lex.punct-only-token` and by `punct.adjacency-anomaly`'s identical-run pass
-— two findings, two severities, two scores per site. Both corpus-relative
-rules now **exclude the pattern from candidacy** (the same shape as
-punct-only's merge-conflict exclusion): punct-only skips chunks whose core is
-a 3+ `?`-run; adjacency's identical-run pass skips 3+ `?` runs. `??` stays
+`punct.adjacency-anomaly`'s identical-run pass — two findings, two severities,
+two scores per site. The corpus-relative rule now **excludes the pattern from
+candidacy**: adjacency's identical-run pass skips 3+ `?` runs. `??` stays
 theirs. Two neighbouring damage classes are explicit **non-goals**, recorded
 rather than half-detected: a *single* mid-word `?` substitution (occurs ~7×
 across all 106 corpora, and Thai's are plausibly real question marks inside

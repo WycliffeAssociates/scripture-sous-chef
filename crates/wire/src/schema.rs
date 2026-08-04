@@ -67,7 +67,9 @@ pub const fn wire_def(rule: RuleId) -> WireDef {
         RuleId::MergeConflictMarker => (9, None),
         RuleId::PunctuationAdjacencyAnomaly => (10, CountPair),
         RuleId::DuplicateWord => (11, None),
-        RuleId::PunctOnlyToken => (12, CountPair),
+        // 12 is RETIRED (`lex.punct-only-token`, absorbed by
+        // `uni.nonletter-usage-anomaly`). Never reused — reuse would be a
+        // versioned layout change (§A.1).
         RuleId::CombiningMarkWithoutBase => (13, None),
         RuleId::RedundantZeroWidthSpace => (14, None),
         RuleId::MixedScriptInToken => (15, CountPair),
@@ -325,7 +327,6 @@ mod tests {
             (9, "struct.merge-conflict-marker", "none", "target-only"),
             (10, "punct.adjacency-anomaly", "count-pair", "target-only"),
             (11, "lex.duplicate-word", "none", "target-only"),
-            (12, "lex.punct-only-token", "count-pair", "target-only"),
             (13, "uni.combining-mark-without-base", "none", "target-only"),
             (14, "uni.redundant-zero-width-space", "none", "target-only"),
             (15, "uni.mixed-script-in-token", "count-pair", "target-only"),

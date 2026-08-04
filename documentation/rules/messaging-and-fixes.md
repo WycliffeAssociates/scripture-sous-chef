@@ -85,7 +85,6 @@ is larger); the engine ships the counts, not the derived value.
 | `case.mixed-case-word` | Corpus | Odd capital inside a word | "‘{word}’ has a capital in the middle here — this translation writes it that way {other} of {total} times." | `MixedCaseWord { word, other, total }` |
 | `punct.spacing-anomaly` | Corpus | Inconsistent spacing around punctuation | "‘{mark}’ is {form} on the {side} to {a word/a number/a mark} in only {count} of {total} places ({pct}%)." — one clause per violated side, joined by "; and " | `SpacingConvention { mark, left: Option<SpacingSide>, right: Option<SpacingSide> }` (each `SpacingSide { form, class, count, total }`, ADR 0054) |
 | `punct.bracket-balance` | Corpus | Unmatched bracket | pairing: "This bracket has no partner — the translation pairs it in {majority} of {total} places." · short-span: "This bracket pair stays open unusually long — {majority} of {total} pairs close within a few verses." | `BracketWindow { window, measure, majority, total }` |
-| `lex.punct-only-token` | Corpus | Stranded punctuation | "A lone punctuation mark, rare here — seen {count} times across {units} words of text." (`{units}` is the total token count — the score is per-token, not per-punctuation) | `PunctOnlyRate { count, units }` |
 | `punct.adjacency-anomaly` | Corpus | Unusual punctuation combination | "The punctuation ‘{pattern}’ is unusual here — it appears {k} of {lead_n} times, in {books} of {corpus} books." | `AdjacencyEvidence { pattern, k, lead_n, books, corpus }` |
 | `uni.mixed-script-in-token` | Corpus | Mixed alphabets in one word | "This word mixes writing systems — a mix this translation uses in only {books} of {corpus} books." | `ScriptMixEvidence { k, n, books, corpus }` |
 | `lex.repeated-character-run` | Corpus | Repeated letter | "‘{ch}’ repeats {run} times here — a repetition this translation doesn't otherwise use." | `RepeatEvidence { ch, run }` |
@@ -113,7 +112,6 @@ from the op + the finding's `range` + verse text; only `ToDominantForm` /
 | `punct.spacing-anomaly` | ToDominantForm | drop/insert a space (direction from `spaced` vs `attached`) | ✅ |
 | `uni.mixed-numeral-systems` | ToTarget | span digit → `target` (same value, dominant system) | ✅ (needs `target` arg) |
 | `uni.mixed-script-in-token` | None *(deferred)* | homoglyph → majority script — needs a confusables table | ❌ |
-| `lex.punct-only-token` | None | delete is *usually* right but not certain — review | ❌ |
 | `punct.adjacency-anomaly` | None | collapse target ambiguous (`,,`→`,`? `?.`→`?`) | ❌ |
 | `lex.repeated-character-run` | None | target repetition count unknown | ❌ |
 | `case.mixed-case-word` | None | correct clean shape unknown (could be all-lower or titlecase) — review | ❌ |
@@ -141,7 +139,7 @@ already ride in `FindingArgs`.
 
 - **Shipping:** every scored rule's structured args —
   `SpacingConvention`, `CasingConvention`, `BracketWindow` (measure + share),
-  `PunctOnlyRate`, `AdjacencyEvidence`, `ScriptMixEvidence`, `RepeatEvidence`
+  `AdjacencyEvidence`, `ScriptMixEvidence`, `RepeatEvidence`
   (ADR 0048). Plus `catalog::message(code, args)` — the default English label
   for **every** rule, rendered from those args (deterministic rules render
   static text). The playground displays it in the preview and drill-down.

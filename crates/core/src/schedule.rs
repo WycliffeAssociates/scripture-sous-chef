@@ -211,7 +211,6 @@ pub(crate) struct MappedChapterBundle {
     pub(crate) spacing: Option<crate::signals::punctuation::SpacingChapterObs>,
     pub(crate) adjacency: Option<crate::signals::punctuation::AdjacencyChapterObs>,
     pub(crate) normalization: Option<crate::signals::mixed_normalization::NormChapterObs>,
-    pub(crate) punct_only: Option<crate::signals::lexical::PunctOnlyChapterObs>,
     pub(crate) bracket: Option<crate::signals::bracket_balance::BracketChapterObs>,
     pub(crate) repeated_run: Option<crate::signals::lexical::RepeatChapterObs>,
     pub(crate) mixed_script: Option<crate::signals::script_mixing::MixedScriptChapterObs>,
@@ -236,7 +235,6 @@ impl MappedChapterBundle {
             (SubstrateId::Spacing, self.spacing.is_some()),
             (SubstrateId::Adjacency, self.adjacency.is_some()),
             (SubstrateId::RepeatedRun, self.repeated_run.is_some()),
-            (SubstrateId::PunctOnly, self.punct_only.is_some()),
             (SubstrateId::MixedScript, self.mixed_script.is_some()),
             (SubstrateId::Glyph, self.glyph.is_some()),
             (SubstrateId::Proportionality, self.proportionality.is_some()),
@@ -575,18 +573,6 @@ fn map_one_chapter(w: &ChapterMapWork<'_>, ctx: &MapContext<'_>) -> MappedChapte
             crate::signals::punctuation::AdjacencySubstrate,
         >(w.token, w.texts, &prep, w.paired, &(), &()));
     }
-    if w.participants.contains(SubstrateId::PunctOnly) {
-        bundle.punct_only = Some(
-            map_participant::<crate::signals::lexical::PunctOnlySubstrate>(
-                w.token,
-                w.texts,
-                &prep,
-                w.paired,
-                &(),
-                &(),
-            ),
-        );
-    }
     if w.participants.contains(SubstrateId::Bracket) {
         bundle.bracket = Some(map_participant::<
             crate::signals::bracket_balance::BracketSubstrate,
@@ -832,8 +818,7 @@ mod tests {
     fn needs_of(id: SubstrateId) -> PrepNeeds {
         use crate::signals::{
             bracket_balance::BracketSubstrate, casing::CasingSubstrate,
-            lexical::DuplicateWordSubstrate, lexical::PunctOnlySubstrate,
-            lexical::RepeatedRunSubstrate, mixed_case::MixedCaseSubstrate,
+            lexical::DuplicateWordSubstrate, lexical::RepeatedRunSubstrate, mixed_case::MixedCaseSubstrate,
             mixed_normalization::NormalizationSubstrate, nonletter_usage::NonletterUsageSubstrate,
             proportionality::ProportionalitySubstrate, punctuation::AdjacencySubstrate,
             punctuation::SpacingSubstrate, rare_glyph::GlyphSubstrate,
@@ -843,7 +828,6 @@ mod tests {
             SubstrateId::Spacing => SpacingSubstrate::NEEDS,
             SubstrateId::Adjacency => AdjacencySubstrate::NEEDS,
             SubstrateId::RepeatedRun => RepeatedRunSubstrate::NEEDS,
-            SubstrateId::PunctOnly => PunctOnlySubstrate::NEEDS,
             SubstrateId::MixedScript => MixedScriptSubstrate::NEEDS,
             SubstrateId::Glyph => GlyphSubstrate::NEEDS,
             SubstrateId::Proportionality => ProportionalitySubstrate::NEEDS,

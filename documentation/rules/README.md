@@ -22,7 +22,7 @@ args, and fix capability** (what a front end can `replace()`), see
 | --- | --- | --- |
 | [`hyg.md`](hyg.md) | `hyg.*` | tab-in-body, control-chars, zero-width-misuse, empty-verse, invalid-codepoint, replacement-run |
 | [`uni.md`](uni.md) | `uni.*` | combining-mark-without-base, mixed-script-in-token, redundant-zero-width-space, rare-glyph, mixed-numeral-systems, mixed-normalization |
-| [`lex.md`](lex.md) | `lex.*` | excess-h-whitespace, duplicate-word, punct-only-token, repeated-character-run, untranslated-word (cross-map) |
+| [`lex.md`](lex.md) | `lex.*` | excess-h-whitespace, duplicate-word, repeated-character-run, untranslated-word (cross-map) |
 | [`struct.md`](struct.md) | `struct.*` | source-marker-leftover, merge-conflict-marker |
 | [`punct.md`](punct.md) | `punct.*` | bracket-balance, adjacency-anomaly, spacing-anomaly |
 | [`prop.md`](prop.md) | `prop.*` | length-ratio |
@@ -58,7 +58,6 @@ file where it isn't obvious.
 | `prop.length-ratio` | Warning | on | substrate-backed, target/reference | ✅ documented (ADR 0013, 0017, 0069) |
 | `lex.untranslated-word` | Warning | **off** (standing stop clause) | substrate-backed, target/reference | ✅ documented (2026-07-30 calibration + case-shape excusal) |
 | `punct.adjacency-anomaly` | Info | on | substrate-backed, corpus-relative | ✅ documented (ADR 0024, 0031) |
-| `lex.punct-only-token` | Warning | on | substrate-backed, corpus-relative | ✅ documented (ADR 0030, 0032) |
 | `case.sentence-initial-lowercase` | Info | **off** | substrate-backed, word table | ✅ documented (ADR 0035, 0051, 0052) |
 | `case.inconsistent-word-casing` | Info | **off** | substrate-backed, word table | ✅ documented (ADR 0051, 0052) |
 | `case.mixed-case-word` | Info | **off** | substrate-backed, word shape table | ✅ documented (ADR 0055) |

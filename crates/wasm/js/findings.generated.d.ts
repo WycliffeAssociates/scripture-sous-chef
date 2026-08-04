@@ -14,7 +14,6 @@ export type WireRuleId =
   | "struct.merge-conflict-marker"
   | "punct.adjacency-anomaly"
   | "lex.duplicate-word"
-  | "lex.punct-only-token"
   | "uni.combining-mark-without-base"
   | "uni.redundant-zero-width-space"
   | "uni.mixed-script-in-token"

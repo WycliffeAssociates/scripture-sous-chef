@@ -2,11 +2,11 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use ssc_core::config::{
-    BracketBalanceConfig, CasingConfig, MixedScriptConfig, PunctOnlyTokenConfig,
+    BracketBalanceConfig, CasingConfig, MixedScriptConfig,
     PunctuationAdjacencyConfig, PunctuationSpacingConfig, RepeatedCharacterRunConfig,
 };
 use ssc_core::signals::bracket_balance::bracket_findings;
-use ssc_core::signals::lexical::{punct_only_findings, repeated_run_findings};
+use ssc_core::signals::lexical::repeated_run_findings;
 use ssc_core::signals::punctuation::adjacency_findings;
 use ssc_core::{
     BracketMeasure, Config, Corpus, Finding, FindingArgs, RuleId, analyze, analyze_with_config,
@@ -114,7 +114,6 @@ pub(crate) fn fleet(dir: &Path, out: &Path) {
     cfg.punctuation_adjacency.emit_score_min = 0.0;
     cfg.punctuation_spacing.emit_score_min = 0.0;
     cfg.repeated_character_run.emit_score_min = 0.0;
-    cfg.punct_only_token.emit_score_min = 0.0;
     cfg.mixed_script.emit_score_min = 0.0;
 
     let floors: Vec<Option<f32>> = RuleId::ALL
@@ -133,7 +132,6 @@ pub(crate) fn fleet(dir: &Path, out: &Path) {
             RuleId::RepeatedCharacterRun => {
                 Some(RepeatedCharacterRunConfig::default().emit_score_min)
             }
-            RuleId::PunctOnlyToken => Some(PunctOnlyTokenConfig::default().emit_score_min),
             RuleId::MixedScriptInToken => Some(MixedScriptConfig::default().emit_score_min),
             _ => None,
         })
@@ -535,86 +533,6 @@ impl GraphemesFirst for str {
     }
 }
 
-/// Punct-only-token signal exploration: every finding the shipped rule
-/// produces, with the exact flagged chunk, how many times that same chunk is
-/// flagged corpus-wide (pattern recurrence — the candidate convention signal),
-/// and a little context for eyeballing.
-pub(crate) fn punct_only_calib(dir: &Path) {
-    use std::collections::HashMap;
-
-    use ssc_core::signals::lexical::scan_punct_only_token;
-
-    let corpus = dir.file_name().unwrap().to_string_lossy().to_string();
-    let target = load_corpus(dir);
-
-    // Pass 1: count every flagged chunk pattern corpus-wide.
-    let mut pattern_count: HashMap<String, usize> = HashMap::new();
-    let mut per_verse: Vec<(&str, &str, Vec<ssc_core::Span>)> = Vec::new();
-    for (key, text) in target.keys().iter().zip(target.texts()) {
-        let spans = scan_punct_only_token(text);
-        if spans.is_empty() {
-            continue;
-        }
-        for s in &spans {
-            *pattern_count.entry(s.slice(text).to_string()).or_default() += 1;
-        }
-        per_verse.push((key.as_str(), text.as_str(), spans));
-    }
-    let total: usize = pattern_count.values().sum();
-
-    // Pass 2: emit per-finding rows.
-    println!("corpus\tsid\tchunk\tchunk_count\ttotal_findings\tverses\tcontext");
-    for (key, text, spans) in &per_verse {
-        for s in spans {
-            let chunk = s.slice(text);
-            let ctx_start = text[..s.start as usize]
-                .char_indices()
-                .rev()
-                .nth(19)
-                .map(|(i, _)| i)
-                .unwrap_or(0);
-            let ctx: String = text[ctx_start..]
-                .chars()
-                .take(20 + chunk.chars().count() + 20)
-                .collect::<String>()
-                .replace(['\t', '\n'], " ");
-            println!(
-                "{corpus}\t{key}\t{chunk}\t{}\t{total}\t{}\t{ctx}",
-                pattern_count[chunk],
-                target.len(),
-            );
-        }
-    }
-    let mut top: Vec<_> = pattern_count.iter().collect();
-    top.sort_by(|a, b| b.1.cmp(a.1));
-    let head: Vec<String> = top
-        .iter()
-        .take(6)
-        .map(|(p, n)| format!("[{p}]x{n}"))
-        .collect();
-    eprintln!(
-        "{corpus}: {} verses, {total} candidates, {} distinct patterns | {}",
-        target.len(),
-        pattern_count.len(),
-        head.join(" ")
-    );
-
-    // Production score distribution at floor 0, and the shipped-floor count.
-    let findings = punct_only_findings(
-        &target,
-        &PunctOnlyTokenConfig {
-            emit_score_min: 0.0,
-            ..Default::default()
-        },
-    );
-    report_scored("lex.punct-only-token", &target, &findings);
-    let shipped = PunctOnlyTokenConfig::default().emit_score_min;
-    let surfaced = findings
-        .iter()
-        .filter(|f| f.score.unwrap_or(0.0) >= shipped)
-        .count();
-    eprintln!("{corpus}: surfaced at shipped floor {shipped}: {surfaced}");
-}
 
 /// Bracket-balance calibration (ADR 0037) at floor 0. Reports the production
 /// score distribution, per-family tallies (which delimiter families the corpus

@@ -56,8 +56,6 @@ pub(crate) enum SubstrateId {
     Adjacency,
     /// `lex.repeated-character-run`'s per-cluster / per-word recurrence counts.
     RepeatedRun,
-    /// `lex.punct-only-token`'s per-pattern candidate counts.
-    PunctOnly,
     /// `uni.mixed-script-in-token`'s per-signature / per-script token counts.
     MixedScript,
     /// `uni.rare-glyph`'s scalar inventory + rare-letter word detail.
@@ -99,7 +97,6 @@ impl SubstrateId {
         SubstrateId::Spacing,
         SubstrateId::Adjacency,
         SubstrateId::RepeatedRun,
-        SubstrateId::PunctOnly,
         SubstrateId::MixedScript,
         SubstrateId::Glyph,
         SubstrateId::Proportionality,
@@ -190,7 +187,6 @@ pub const SUBSTRATE_NAMES: [&str; SubstrateId::ALL.len()] = [
     "spacing",
     "adjacency",
     "repeated-run",
-    "punct-only",
     "mixed-script",
     "glyph",
     "proportionality",
@@ -1424,7 +1420,6 @@ pub(crate) struct ActiveSubstrates {
     pub(crate) spacing: bool,
     pub(crate) adjacency: bool,
     pub(crate) repeated_run: bool,
-    pub(crate) punct_only: bool,
     pub(crate) mixed_script: bool,
     pub(crate) glyph: bool,
     pub(crate) proportionality: bool,
@@ -1446,7 +1441,6 @@ impl ActiveSubstrates {
             spacing: any(spacing_consumers()),
             adjacency: any(adjacency_consumers()),
             repeated_run: any(repeated_run_consumers()),
-            punct_only: any(punct_only_consumers()),
             mixed_script: any(mixed_script_consumers()),
             glyph: any(glyph_consumers()),
             proportionality: any(proportionality_consumers()),
@@ -1466,7 +1460,6 @@ impl ActiveSubstrates {
             SubstrateId::Spacing => self.spacing,
             SubstrateId::Adjacency => self.adjacency,
             SubstrateId::RepeatedRun => self.repeated_run,
-            SubstrateId::PunctOnly => self.punct_only,
             SubstrateId::MixedScript => self.mixed_script,
             SubstrateId::Glyph => self.glyph,
             SubstrateId::Proportionality => self.proportionality,
@@ -1496,11 +1489,6 @@ pub(crate) fn adjacency_consumers() -> &'static [RuleId] {
 /// The closed registry: the repeated-run substrate's sole consumer.
 pub(crate) fn repeated_run_consumers() -> &'static [RuleId] {
     &[RuleId::RepeatedCharacterRun]
-}
-
-/// The closed registry: the punct-only substrate's sole consumer.
-pub(crate) fn punct_only_consumers() -> &'static [RuleId] {
-    &[RuleId::PunctOnlyToken]
 }
 
 /// The closed registry: the mixed-script substrate's sole consumer.
@@ -1665,7 +1653,6 @@ pub(crate) fn input_of(id: SubstrateId) -> SubstrateInput {
         SubstrateId::Spacing
         | SubstrateId::Adjacency
         | SubstrateId::RepeatedRun
-        | SubstrateId::PunctOnly
         | SubstrateId::MixedScript
         | SubstrateId::Glyph
         | SubstrateId::Normalization
@@ -1685,7 +1672,6 @@ pub(crate) fn consumers_of(id: SubstrateId) -> &'static [RuleId] {
         SubstrateId::Spacing => spacing_consumers(),
         SubstrateId::Adjacency => adjacency_consumers(),
         SubstrateId::RepeatedRun => repeated_run_consumers(),
-        SubstrateId::PunctOnly => punct_only_consumers(),
         SubstrateId::MixedScript => mixed_script_consumers(),
         SubstrateId::Glyph => glyph_consumers(),
         SubstrateId::Proportionality => proportionality_consumers(),
@@ -1718,10 +1704,6 @@ mod tests {
         assert_eq!(
             <crate::signals::lexical::RepeatedRunSubstrate as ObservationSubstrate>::ID,
             SubstrateId::RepeatedRun
-        );
-        assert_eq!(
-            <crate::signals::lexical::PunctOnlySubstrate as ObservationSubstrate>::ID,
-            SubstrateId::PunctOnly
         );
         assert_eq!(
             <crate::signals::script_mixing::MixedScriptSubstrate as ObservationSubstrate>::ID,
@@ -1780,7 +1762,6 @@ mod tests {
                 spacing: true,
                 adjacency: true,
                 repeated_run: true,
-                punct_only: true,
                 mixed_script: true,
                 glyph: true,
                 proportionality: true,
@@ -1813,7 +1794,6 @@ mod tests {
         check::<crate::signals::punctuation::SpacingSubstrate>();
         check::<crate::signals::punctuation::AdjacencySubstrate>();
         check::<crate::signals::lexical::RepeatedRunSubstrate>();
-        check::<crate::signals::lexical::PunctOnlySubstrate>();
         check::<crate::signals::script_mixing::MixedScriptSubstrate>();
         check::<crate::signals::rare_glyph::GlyphSubstrate>();
         check::<crate::signals::proportionality::ProportionalitySubstrate>();

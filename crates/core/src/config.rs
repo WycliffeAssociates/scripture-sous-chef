@@ -437,40 +437,6 @@ impl Default for RepeatedCharacterRunConfig {
     }
 }
 
-/// Knobs for `lex.punct-only-token`. The candidate scan (whitespace-delimited
-/// chunks that are entirely punctuation/symbols, minus the deterministic
-/// exemptions) is fixed; these values decide whether a detected chunk is
-/// unusual relative to the corpus's own typography (ADR 0030).
-#[derive(Debug, Clone, Copy, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(default))]
-pub struct PunctOnlyTokenConfig {
-    /// Occurrences of the exact chunk per 10,000 whitespace-delimited lexical
-    /// units at which its convention factor reaches zero. A detached-danda
-    /// substitute (`|`), doubled Ethiopic wordspace (`፡፡`), or spaced Burmese
-    /// final (`၏။`) recurs orders of magnitude above this; one-off wreckage
-    /// (`.,`, stray `=`) sits orders of magnitude below.
-    pub convention_rate_per_10k: f32,
-    /// Wilson confidence for the chunk-rate estimate. Shrinks small-sample
-    /// rates toward zero, so a sparse corpus can't declare a convention from a
-    /// handful of units — the load-bearing small-corpus behaviour. `0` trusts
-    /// observed rates as-is.
-    pub confidence_z: f32,
-    /// Minimum evidence to emit. Scores below this are established corpus
-    /// conventions and are not serialized as findings.
-    pub emit_score_min: f32,
-}
-
-impl Default for PunctOnlyTokenConfig {
-    fn default() -> Self {
-        Self {
-            convention_rate_per_10k: 1.0,
-            confidence_z: 1.96,
-            emit_score_min: 0.5,
-        }
-    }
-}
-
 /// Knobs for `uni.mixed-script-in-token`. The rule keeps the deterministic
 /// candidate extraction (a token whose distinct non-`None` scripts number ≥2)
 /// but replaces the fixed "two scripts ⇒ flag" verdict with a corpus-rate one
@@ -773,8 +739,6 @@ pub struct Config {
     pub punctuation_spacing: PunctuationSpacingConfig,
     #[cfg_attr(feature = "serde", serde(default))]
     pub repeated_character_run: RepeatedCharacterRunConfig,
-    #[cfg_attr(feature = "serde", serde(default))]
-    pub punct_only_token: PunctOnlyTokenConfig,
     #[cfg_attr(feature = "serde", serde(default))]
     pub mixed_script: MixedScriptConfig,
     #[cfg_attr(feature = "serde", serde(default))]

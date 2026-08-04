@@ -68,7 +68,7 @@ use reporting::{census_fleet, census_single, time_configs};
 use survey::casing::{analyze_casing, casing_fleet, casing_single_report};
 use survey::glyphs::{analyze_glyphs, glyph_fleet, glyph_single_report};
 use survey::misc::{
-    batch, bracket_calib, fleet, punct_calib, punct_only_calib, repeat_calib,
+    batch, bracket_calib, fleet, punct_calib, repeat_calib,
     spacing_fleet_sweep, zwsp_calib,
 };
 use survey::mixedcase::{analyze_mixedcase, mixedcase_fleet, mixedcase_single_report};
@@ -316,10 +316,6 @@ fn main() {
         // Punct-only-token signal exploration: per-finding TSV (chunk, its
         // corpus-wide recurrence as a flagged pattern, context) on stdout;
         // per-corpus summary on stderr.
-        [flag, t] if flag == "--punct-only" => {
-            punct_only_calib(Path::new(t));
-            return;
-        }
         // Build a pre-parsed corpus blob for one of the three fixed presets
         // (`small` ~15 script-diverse corpora, `wa` ~251, `full` ~1,504) from
         // a vref directory. Regenerate only when corpora/vref itself changes;

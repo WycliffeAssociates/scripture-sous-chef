@@ -39,8 +39,7 @@ use std::fmt::Write as _;
 use std::path::Path;
 
 use ssc_core::config::{
-    NonletterUsageConfig, PunctOnlyTokenConfig, PunctuationAdjacencyConfig,
-    PunctuationSpacingConfig,
+    NonletterUsageConfig, PunctuationAdjacencyConfig, PunctuationSpacingConfig,
 };
 use ssc_core::{Corpus, Finding, RuleId, Span};
 
@@ -97,10 +96,6 @@ fn old_findings(corpus: &Corpus) -> Vec<Finding> {
         corpus,
         &PunctuationAdjacencyConfig::default(),
     );
-    out.extend(ssc_core::signals::lexical::punct_only_findings(
-        corpus,
-        &PunctOnlyTokenConfig::default(),
-    ));
     out.extend(ssc_core::signals::punctuation::spacing_findings(
         corpus,
         &PunctuationSpacingConfig::default(),
@@ -116,7 +111,7 @@ fn overlaps(a: Span, b: Span) -> bool {
 struct CorpusLedger {
     id: String,
     /// `[rule index][disposition]` counts, rule index in `OLD_RULES` order.
-    counts: [[u64; 4]; 3],
+    counts: [[u64; 4]; 2],
     new_findings: usize,
     /// Old adjacency findings the same rule at `sequence_k = 8` WOULD have
     /// emitted — the population obligation (a) is about.
@@ -137,12 +132,11 @@ struct AdjudicatedRow {
     samples: Vec<String>,
 }
 
-const OLD_RULES: [(&str, RuleId); 3] = [
+const OLD_RULES: [(&str, RuleId); 2] = [
     (
         "punct.adjacency-anomaly",
         RuleId::PunctuationAdjacencyAnomaly,
     ),
-    ("lex.punct-only-token", RuleId::PunctOnlyToken),
     ("punct.spacing-anomaly", RuleId::PunctuationSpacingAnomaly),
 ];
 
@@ -220,7 +214,7 @@ fn ledger_for(id: &str, corpus: &Corpus, tuned: NonletterUsageConfig) -> CorpusL
             .push(f.range);
     }
 
-    let mut counts = [[0u64; 4]; 3];
+    let mut counts = [[0u64; 4]; 2];
     let mut k2_moved = 0u64;
     let mut k2_samples: Vec<String> = Vec::new();
     let mut adj_samples: Vec<String> = Vec::new();
@@ -388,7 +382,7 @@ pub(crate) fn nonletter_ledger_fleet(dir: &Path, tuned: NonletterUsageConfig) {
     );
 
     // ── Fleet totals, per retired rule and overall.
-    let mut fleet = [[0u64; 4]; 3];
+    let mut fleet = [[0u64; 4]; 2];
     let mut new_total = 0usize;
     let mut k2_total = 0u64;
     for r in &rows {
@@ -490,9 +484,8 @@ pub(crate) fn nonletter_ledger_fleet(dir: &Path, tuned: NonletterUsageConfig) {
     println!("## per corpus");
     println!(
         "corpus\tnew_findings\tadj_total\tadj_preserved\tadj_coalesced\tadj_moved\tadj_lost\t\
-         punctonly_total\tpunctonly_preserved\tpunctonly_coalesced\tpunctonly_moved\t\
-         punctonly_lost\tspacing_total\tspacing_preserved\tspacing_coalesced\tspacing_moved\t\
-         spacing_lost\tk2_movers"
+         spacing_total\tspacing_preserved\tspacing_coalesced\tspacing_moved\tspacing_lost\t\
+         k2_movers"
     );
     let mut sorted: Vec<&CorpusLedger> = rows.iter().collect();
     sorted.sort_by(|a, b| a.id.cmp(&b.id));

@@ -121,12 +121,6 @@ export const WIRE_SCHEMA = Object.freeze(
       "input_dependency": "target-only"
     },
     {
-      "code": 12,
-      "rule_id": "lex.punct-only-token",
-      "digest": "count-pair",
-      "input_dependency": "target-only"
-    },
-    {
       "code": 13,
       "rule_id": "uni.combining-mark-without-base",
       "digest": "none",
@@ -258,7 +252,6 @@ export const CODE_TO_RULE = Object.freeze({
   "9": "struct.merge-conflict-marker",
   "10": "punct.adjacency-anomaly",
   "11": "lex.duplicate-word",
-  "12": "lex.punct-only-token",
   "13": "uni.combining-mark-without-base",
   "14": "uni.redundant-zero-width-space",
   "15": "uni.mixed-script-in-token",
@@ -288,7 +281,6 @@ export const RULE_TO_CODE = Object.freeze({
   "struct.merge-conflict-marker": 9,
   "punct.adjacency-anomaly": 10,
   "lex.duplicate-word": 11,
-  "lex.punct-only-token": 12,
   "uni.combining-mark-without-base": 13,
   "uni.redundant-zero-width-space": 14,
   "uni.mixed-script-in-token": 15,
@@ -318,7 +310,6 @@ export const CODE_TO_DIGEST = Object.freeze({
   "9": "none",
   "10": "count-pair",
   "11": "none",
-  "12": "count-pair",
   "13": "none",
   "14": "none",
   "15": "count-pair",
@@ -348,7 +339,6 @@ export const CODE_TO_INPUT_DEPENDENCY = Object.freeze({
   "9": "target-only",
   "10": "target-only",
   "11": "target-only",
-  "12": "target-only",
   "13": "target-only",
   "14": "target-only",
   "15": "target-only",

@@ -354,7 +354,7 @@ Every available configuration option, set to its built-in default. Copy this and
 > older reference is retained for its conceptual material.
 
 `punct.adjacency-anomaly`, `punct.spacing-anomaly`,
-`lex.repeated-character-run`, `lex.punct-only-token`,
+`lex.repeated-character-run`,
 `case.sentence-initial-lowercase`, `case.inconsistent-word-casing`, and
 `punct.bracket-balance` are corpus-relative rules with typed knobs. Each emits
 a continuous `score ∈ [0, 1]` whose unit is **anomaly evidence**, not a
@@ -362,7 +362,7 @@ correctness verdict: 1 ≈ "unlike this corpus's own conventions", 0 ≈ "ordina
 here" (ADR 0032). For the dominance-verdict rules (spacing, casing,
 bracket-balance) that evidence *is* the conservative dominance of the
 convention the flagged site violates — same number, read from the
-convention's side. All but `lex.punct-only-token` (Warning) carry
+convention's side. All carry
 `Severity::Info`. A finding is emitted only when its score reaches
 `emit_score_min`, so established conventions emit nothing. Most stateful rules
 are aggregate-only (tiny per-book counts, no per-occurrence sites); the two
@@ -459,25 +459,6 @@ tokenization inflated one grapheme into one token and hid established joins.
 
 **Stricter (fewer findings):** lower `convention_rate_per_10k`, lower
 `word_recurrence_k`, or raise `emit_score_min`. **Looser:** reverse those.
-
-### `lex.punct-only-token` (`Config.punct_only_token`) — **default ON**
-
-| knob | meaning |
-| --- | --- |
-| `convention_rate_per_10k` | occurrences of one core pattern per 10,000 whitespace lexical units at which its convention strength saturates; default 1.0. Converted to a fraction internally (`/ 10⁴`) and fed to Wilson `strength` |
-| `confidence_z` | Wilson confidence (ADR 0032); default 1.96 |
-| `emit_score_min` | surfacing floor; default 0.5 |
-
-`evidence = 1 − strength(count, lexical_units, rate/10⁴, z)` per core pattern
-(riding quotes/closers stripped, closers by the UCD bracket inventory) —
-ADR 0030, 0032. Two deterministic candidacy exclusions: runs of 3+
-`<`/`=`/`>`/`|` are never candidates (merge-conflict markers,
-`struct.merge-conflict-marker`'s finding), and chunks whose core is a run of
-3+ `?` are never candidates (encoding damage, `hyg.replacement-run`'s
-finding — ADR 0034; the old judge-side score-1.0 bypass is gone).
-
-**Stricter (fewer findings):** lower `convention_rate_per_10k` or raise
-`emit_score_min`. **Looser:** reverse those.
 
 ### `case.sentence-initial-lowercase` + `case.inconsistent-word-casing` (`Config.casing` consumers) — **both default OFF**
 

@@ -120,8 +120,6 @@ pub(crate) struct SubstrateSection {
     pub(crate) adjacency: SubstrateCache<punctuation::AdjacencySubstrate>,
     /// `lex.repeated-character-run`'s substrate (Phase E).
     pub(crate) repeated_run: SubstrateCache<lexical::RepeatedRunSubstrate>,
-    /// `lex.punct-only-token`'s substrate (Phase E).
-    pub(crate) punct_only: SubstrateCache<lexical::PunctOnlySubstrate>,
     /// `uni.mixed-script-in-token`'s substrate (Phase E).
     pub(crate) mixed_script: SubstrateCache<script_mixing::MixedScriptSubstrate>,
     /// `uni.rare-glyph`'s substrate (Phase E).
@@ -171,7 +169,6 @@ impl SubstrateSection {
         self.spacing.map_route = label;
         self.adjacency.map_route = label;
         self.repeated_run.map_route = label;
-        self.punct_only.map_route = label;
         self.mixed_script.map_route = label;
         self.glyph.map_route = label;
         self.proportionality.map_route = label;
@@ -189,7 +186,6 @@ impl SubstrateSection {
             spacing: SubstrateCache::new(),
             adjacency: SubstrateCache::new(),
             repeated_run: SubstrateCache::new(),
-            punct_only: SubstrateCache::new(),
             mixed_script: SubstrateCache::new(),
             glyph: SubstrateCache::new(),
             proportionality: SubstrateCache::new(),
@@ -211,7 +207,6 @@ impl SubstrateSection {
         self.spacing.clear();
         self.adjacency.clear();
         self.repeated_run.clear();
-        self.punct_only.clear();
         self.mixed_script.clear();
         self.glyph.clear();
         self.proportionality.clear();
@@ -234,7 +229,6 @@ impl SubstrateSection {
         self.spacing.remove_book(slug);
         self.adjacency.remove_book(slug);
         self.repeated_run.remove_book(slug);
-        self.punct_only.remove_book(slug);
         self.mixed_script.remove_book(slug);
         self.glyph.remove_book(slug);
         self.proportionality.remove_book(slug);
@@ -261,7 +255,6 @@ impl SubstrateSection {
             S::Spacing => &mut self.spacing.pending,
             S::Adjacency => &mut self.adjacency.pending,
             S::RepeatedRun => &mut self.repeated_run.pending,
-            S::PunctOnly => &mut self.punct_only.pending,
             S::MixedScript => &mut self.mixed_script.pending,
             S::Glyph => &mut self.glyph.pending,
             S::Proportionality => &mut self.proportionality.pending,

@@ -340,11 +340,6 @@ fn extract_digest(code: RuleId, args: Option<&FindingArgs>) -> Result<Digest, Pa
         }
         (RuleId::InconsistentWordCasing, _) => Err(mismatch()),
 
-        (RuleId::PunctOnlyToken, Some(FindingArgs::PunctOnlyRate { count, units })) => {
-            Ok(count_pair(*count, *units))
-        }
-        (RuleId::PunctOnlyToken, _) => Err(mismatch()),
-
         (RuleId::PunctuationAdjacencyAnomaly, Some(FindingArgs::AdjacencyEvidence { books, corpus, .. })) => {
             Ok(count_pair(*books, *corpus))
         }

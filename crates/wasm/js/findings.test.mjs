@@ -97,7 +97,6 @@ const PIN = [
   [9, "struct.merge-conflict-marker", "none", "target-only"],
   [10, "punct.adjacency-anomaly", "count-pair", "target-only"],
   [11, "lex.duplicate-word", "none", "target-only"],
-  [12, "lex.punct-only-token", "count-pair", "target-only"],
   [13, "uni.combining-mark-without-base", "none", "target-only"],
   [14, "uni.redundant-zero-width-space", "none", "target-only"],
   [15, "uni.mixed-script-in-token", "count-pair", "target-only"],

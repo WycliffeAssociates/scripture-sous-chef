@@ -264,7 +264,6 @@ mod tests {
             (RuleId::BracketBalance, FindingArgs::BracketWindow { window: vec![], measure: BracketMeasure::Pairing, majority: 99, total: 100 }, DecodedDigest::Pair { a: 99, b: 100, saturated: false }),
             (RuleId::SentenceInitialLowercase, FindingArgs::CasingConvention { glyph: Some('.'), quoted: false, upper: 512, total: 520 }, DecodedDigest::Pair { a: 512, b: 520, saturated: false }),
             (RuleId::InconsistentWordCasing, FindingArgs::WordCasing { word: "jesus".into(), upper: 1315, total: 1316 }, DecodedDigest::Pair { a: 1315, b: 1316, saturated: false }),
-            (RuleId::PunctOnlyToken, FindingArgs::PunctOnlyRate { count: 3, units: 42 }, DecodedDigest::Pair { a: 3, b: 42, saturated: false }),
             (RuleId::PunctuationAdjacencyAnomaly, FindingArgs::AdjacencyEvidence { pattern: "..".into(), k: 3, lead_n: 120, books: 4, corpus: 66 }, DecodedDigest::Pair { a: 4, b: 66, saturated: false }),
             (RuleId::MixedScriptInToken, FindingArgs::ScriptMixEvidence { k: 1, n: 9, books: 2, corpus: 66 }, DecodedDigest::Pair { a: 2, b: 66, saturated: false }),
             (RuleId::MixedCaseWord, FindingArgs::MixedCaseWord { word: "dios".into(), other: 1, total: 41 }, DecodedDigest::Pair { a: 1, b: 41, saturated: false }),

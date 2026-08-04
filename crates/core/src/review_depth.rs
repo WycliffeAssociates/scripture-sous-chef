@@ -147,7 +147,6 @@ pub const fn review_control(rule: RuleId) -> ReviewControl {
         | RuleId::MergeConflictMarker
         | RuleId::PunctuationAdjacencyAnomaly
         | RuleId::DuplicateWord
-        | RuleId::PunctOnlyToken
         | RuleId::CombiningMarkWithoutBase
         | RuleId::RedundantZeroWidthSpace
         | RuleId::MixedScriptInToken
@@ -197,8 +196,7 @@ pub fn apply_review_policy(
             | RuleId::MergeConflictMarker
             | RuleId::PunctuationAdjacencyAnomaly
             | RuleId::DuplicateWord
-            | RuleId::PunctOnlyToken
-            | RuleId::CombiningMarkWithoutBase
+                | RuleId::CombiningMarkWithoutBase
             | RuleId::RedundantZeroWidthSpace
             | RuleId::MixedScriptInToken
             | RuleId::RepeatedCharacterRun

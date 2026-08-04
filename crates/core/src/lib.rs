@@ -435,7 +435,7 @@ pub use catalog::{
 pub use census::{CensusOptions, Inventory, census};
 pub use config::{
     BracketBalanceConfig, CasingConfig, CasingRuleConfig, Config, InconsistentWordCasingConfig,
-    ProportionalityConfig, PunctOnlyTokenConfig, PunctuationAdjacencyConfig,
+    ProportionalityConfig, PunctuationAdjacencyConfig,
     PunctuationSpacingConfig, RepeatedCharacterRunConfig, SentenceInitialCasingConfig,
 };
 pub use corpus::{BookBlock, ChapterBlock, Corpus, CorpusError, KeyIdx, MutationEffect};
@@ -747,11 +747,6 @@ fn transition(
         &mut substrates.normalization,
         &mut schedule,
     );
-    let mut punct_only_plan = signals::lexical::plan_punct_only(
-        active.punct_only,
-        &mut substrates.punct_only,
-        &mut schedule,
-    );
     let mut bracket_plan = signals::bracket_balance::plan_bracket(
         active.bracket,
         &mut substrates.bracket,
@@ -869,9 +864,6 @@ fn transition(
     if let Some(plan) = normalization_plan.as_mut() {
         schedule::scatter(&work, &mut mapped, plan, |b| b.normalization.take());
     }
-    if let Some(plan) = punct_only_plan.as_mut() {
-        schedule::scatter(&work, &mut mapped, plan, |b| b.punct_only.take());
-    }
     if let Some(plan) = bracket_plan.as_mut() {
         schedule::scatter(&work, &mut mapped, plan, |b| b.bracket.take());
     }
@@ -988,15 +980,6 @@ fn transition(
             &mut substrates.repeated_run,
             target,
             &config.repeated_character_run,
-            plan,
-            &mut out,
-        );
-    }
-    if let Some(plan) = punct_only_plan {
-        signals::lexical::finish_punct_only(
-            &mut substrates.punct_only,
-            target,
-            &config.punct_only_token,
             plan,
             &mut out,
         );

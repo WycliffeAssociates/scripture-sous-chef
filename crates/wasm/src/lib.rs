@@ -183,22 +183,6 @@ pub struct RepeatedCharacterRunOverrides {
     pub emit_score_min: Option<f32>,
 }
 
-/// Partial overrides for `lex.punct-only-token`'s corpus-relative score.
-/// Omitted fields keep core's calibrated defaults (ADR 0030).
-#[derive(Deserialize, Tsify, Default)]
-#[tsify(from_wasm_abi)]
-pub struct PunctOnlyTokenOverrides {
-    #[serde(default)]
-    #[tsify(optional)]
-    pub convention_rate_per_10k: Option<f32>,
-    #[serde(default)]
-    #[tsify(optional)]
-    pub confidence_z: Option<f32>,
-    #[serde(default)]
-    #[tsify(optional)]
-    pub emit_score_min: Option<f32>,
-}
-
 /// Partial overrides for `uni.mixed-script-in-token`'s corpus-relative score.
 /// Omitted fields keep core's calibrated defaults (ADR 0047).
 #[derive(Deserialize, Tsify, Default)]
@@ -339,9 +323,6 @@ pub struct SousConfig {
     #[serde(default)]
     #[tsify(optional)]
     pub repeated_character_run: Option<RepeatedCharacterRunOverrides>,
-    #[serde(default)]
-    #[tsify(optional)]
-    pub punct_only_token: Option<PunctOnlyTokenOverrides>,
     #[serde(default)]
     #[tsify(optional)]
     pub mixed_script: Option<MixedScriptOverrides>,
@@ -490,17 +471,6 @@ fn build_config(
             }
             if let Some(v) = r.emit_score_min {
                 cfg.repeated_character_run.emit_score_min = v;
-            }
-        }
-        if let Some(p) = c.punct_only_token {
-            if let Some(v) = p.convention_rate_per_10k {
-                cfg.punct_only_token.convention_rate_per_10k = v;
-            }
-            if let Some(v) = p.confidence_z {
-                cfg.punct_only_token.confidence_z = v;
-            }
-            if let Some(v) = p.emit_score_min {
-                cfg.punct_only_token.emit_score_min = v;
             }
         }
         if let Some(m) = c.mixed_script {
@@ -1176,11 +1146,6 @@ mod tests {
                 confidence_z: Some(1.5),
                 emit_score_min: Some(0.8),
             }),
-            punct_only_token: Some(PunctOnlyTokenOverrides {
-                convention_rate_per_10k: Some(4.0),
-                confidence_z: Some(1.2),
-                emit_score_min: Some(0.9),
-            }),
             mixed_script: Some(MixedScriptOverrides {
                 convention_rate: Some(0.05),
                 confidence_z: Some(1.5),
@@ -1243,10 +1208,7 @@ mod tests {
         assert_eq!(cfg.repeated_character_run.convention_rate_per_10k, 3.0);
         assert_eq!(cfg.repeated_character_run.word_recurrence_k, 7.0);
         assert_eq!(cfg.repeated_character_run.confidence_z, 1.5);
-        assert_eq!(cfg.punct_only_token.confidence_z, 1.2);
         assert_eq!(cfg.repeated_character_run.emit_score_min, 0.8);
-        assert_eq!(cfg.punct_only_token.convention_rate_per_10k, 4.0);
-        assert_eq!(cfg.punct_only_token.emit_score_min, 0.9);
         assert_eq!(cfg.mixed_script.convention_rate, 0.05);
         assert_eq!(cfg.mixed_script.confidence_z, 1.5);
         assert_eq!(cfg.mixed_script.breadth_convention_rate, 0.3);

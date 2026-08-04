@@ -83,7 +83,7 @@ fn build_config(name: &str) -> Config {
             cfg.rules.insert(RuleId::RepeatedCharacterRun, false);
             cfg
         }
-        "all-no-punct-only" => {
+        "all-no-punct-only-RETIRED" => {
             let mut cfg = build_config("all");
             cfg.rules.insert(RuleId::PunctOnlyToken, false);
             cfg

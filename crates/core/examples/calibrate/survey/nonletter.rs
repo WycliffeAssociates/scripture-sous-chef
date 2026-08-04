@@ -1356,28 +1356,21 @@ impl Disposition {
 }
 
 /// The three retired rules, in the order the ledger reports them.
-const OLD_RULES: [(&str, RuleId); 3] = [
+const OLD_RULES: [(&str, RuleId); 2] = [
     (
         "punct.adjacency-anomaly",
         RuleId::PunctuationAdjacencyAnomaly,
     ),
-    ("lex.punct-only-token", RuleId::PunctOnlyToken),
     ("punct.spacing-anomaly", RuleId::PunctuationSpacingAnomaly),
 ];
 
 /// The three retired rules' findings for one corpus, at shipped defaults.
 fn old_findings(corpus: &Corpus) -> Vec<Finding> {
-    use ssc_core::config::{
-        PunctOnlyTokenConfig, PunctuationAdjacencyConfig, PunctuationSpacingConfig,
-    };
+    use ssc_core::config::{PunctuationAdjacencyConfig, PunctuationSpacingConfig};
     let mut out = ssc_core::signals::punctuation::adjacency_findings(
         corpus,
         &PunctuationAdjacencyConfig::default(),
     );
-    out.extend(ssc_core::signals::lexical::punct_only_findings(
-        corpus,
-        &PunctOnlyTokenConfig::default(),
-    ));
     out.extend(ssc_core::signals::punctuation::spacing_findings(
         corpus,
         &PunctuationSpacingConfig::default(),
@@ -1815,10 +1808,7 @@ fn fleet_row(id: String, corpus: &Corpus, kn: Knobs, with_overlap: bool) -> Flee
         row.old_default_on = old
             .iter()
             .filter(|f| {
-                matches!(
-                    f.code,
-                    RuleId::PunctuationAdjacencyAnomaly | RuleId::PunctOnlyToken
-                )
+                matches!(f.code, RuleId::PunctuationAdjacencyAnomaly)
             })
             .count() as u64;
         for f in &old {

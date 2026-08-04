@@ -71,7 +71,6 @@ define_rule_ids! {
     MergeConflictMarker      => "struct.merge-conflict-marker",
     PunctuationAdjacencyAnomaly => "punct.adjacency-anomaly",
     DuplicateWord            => "lex.duplicate-word",
-    PunctOnlyToken           => "lex.punct-only-token",
     CombiningMarkWithoutBase => "uni.combining-mark-without-base",
     RedundantZeroWidthSpace  => "uni.redundant-zero-width-space",
     MixedScriptInToken       => "uni.mixed-script-in-token",
@@ -136,7 +135,6 @@ impl RuleId {
             | RuleId::MergeConflictMarker
             | RuleId::PunctuationAdjacencyAnomaly
             | RuleId::DuplicateWord
-            | RuleId::PunctOnlyToken
             | RuleId::CombiningMarkWithoutBase
             | RuleId::RedundantZeroWidthSpace
             | RuleId::MixedScriptInToken
@@ -442,11 +440,6 @@ pub enum FindingArgs {
         upper: u32,
         total: u32,
     },
-    /// `lex.punct-only-token`: how rare this stranded-punctuation pattern is —
-    /// `count` occurrences across `units` lexical units (ADR 0048). The plain
-    /// rarity behind the score; the flagged mark is in the finding's `range`.
-    #[cfg_attr(feature = "serde", serde(rename = "punct-only-rate"))]
-    PunctOnlyRate { count: u32, units: u32 },
     /// `punct.adjacency-anomaly`: the two independent convention axes behind
     /// the score, as raw counts (ADR 0048). `pattern` is the flagged run;
     /// `k / lead_n` is how often it occurs among that lead glyph's runs;

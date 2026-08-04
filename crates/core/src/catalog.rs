@@ -193,13 +193,6 @@ pub fn card(id: RuleId) -> RuleCard {
             ),
             Deterministic,
         ),
-        RuleId::PunctOnlyToken => (
-            "Stranded punctuation",
-            "Punctuation standing alone between words, in a pattern this translation doesn't otherwise use.",
-            "Detached marks the text uses everywhere (a spaced danda, quotation styles) are respected as house style; a lone stray is usually debris from editing.",
-            None,
-            CorpusRelative,
-        ),
         RuleId::CombiningMarkWithoutBase => (
             "Accent with nothing to attach to",
             "A combining accent or vowel sign with no letter in front of it — after a space or punctuation.",
@@ -496,12 +489,6 @@ pub fn message(id: RuleId, args: Option<&FindingArgs>) -> String {
             ),
             _ => "Punctuation combined in a way this translation almost never uses.".into(),
         },
-        RuleId::PunctOnlyToken => match args {
-            Some(FindingArgs::PunctOnlyRate { count, units }) => format!(
-                "A lone punctuation mark, rare here — seen {count} times across {units} words of text."
-            ),
-            _ => "Punctuation standing alone between words, unusual for this translation.".into(),
-        },
         RuleId::MixedScriptInToken => match args {
             Some(FindingArgs::ScriptMixEvidence { books, corpus, .. }) => format!(
                 "This word mixes writing systems — a mix this translation uses in only \
@@ -664,7 +651,6 @@ mod tests {
             scored,
             vec![
                 RuleId::PunctuationAdjacencyAnomaly,
-                RuleId::PunctOnlyToken,
                 RuleId::MixedScriptInToken,
                 RuleId::RepeatedCharacterRun,
                 RuleId::BracketBalance,
