@@ -745,3 +745,175 @@ RAYON_NUM_THREADS=4 ./target/release/examples/calibrate --nonletter corpora/vref
 3 m 10 s for 1,504 corpora including the overlap ledger. This is an environment
 artifact, not a probe defect — earlier identical runs at full parallelism
 succeeded twice — but it is recorded so the next person does not chase it.
+
+---
+
+# Addendum 2 — FLAG 3 resolved: Nd-only digit pooling extended to rarity
+
+- **Date:** 2026-08-04. Follows the owner-ratified Gate 1 decisions and the
+  mediator's FLAG 1/2/3 rulings.
+- **Rulings applied:** FLAG 1 default-on **stands** (final, owner-ratified);
+  FLAG 2 sequence k=2 **stands**; FLAG 3 → **extend digit pooling (Unicode Nd
+  only) to the rarity channel's identity, on the run-membership basis**.
+
+## B1. A REAL BUG the No-vs-Nd check caught
+
+The instruction to verify that pair pooling used **Nd** and not a broader numeric
+predicate found a genuine defect. `classify` assigned `CandClass::Digit` on:
+
+```rust
+} else if cl.is_decimal_digit() || cl.is_numeric() {   // WRONG
+```
+
+`is_numeric()` is the fused `NUMERIC` bit — all of **N\***, i.e. No and Nl as well
+as Nd. So `²` (U+00B2, category **No**) *was* being pooled into the digit
+participant for the pair channel. The consequence would have been exactly what the
+ruling warns against: superscript and odd-numeral glyphs losing their own identity
+and therefore their ability to fire.
+
+Fixed by splitting the class:
+
+| class | Unicode | pooled? | why |
+| --- | --- | --- | --- |
+| `Digit` | **Nd** only | **yes**, for pairs *and* rarity | compositional — which numbers occur is not an orthographic convention |
+| `Numeral` | **No**, **Nl** (`²`, `½`, Roman numerals) | **no**, per-identity | a superscript numeral is a glyph choice, and an odd numeral appearing once is precisely the rare-identity case the rule exists to surface |
+
+`uni.mixed-numeral-systems` keeps cross-system ownership; non-Nd numerals of other
+scripts remain per-identity.
+
+## B2. Schema consequence — RECORD BEFORE FREEZING THE SUBSTRATE
+
+The rarity channel now needs **one extra scalar** in the retained observations:
+
+```text
+digit_class_runs: u64   // maximal nonletter runs containing >= 1 Nd digit
+```
+
+Rarity's numerator becomes:
+
+```text
+numerator(occurrence) = if class == Digit { digit_class_runs } else { run_memberships(identity) }
+                        - 1      // leave-one-out: the run under judgment
+```
+
+Leave-one-out still removes exactly one run, and that is sound for the pooled class
+for the same reason it is per-identity: the run under judgment contains this digit
+and therefore counted toward the class exactly once. Findings are already coalesced
+per run, so one run is one piece of evidence.
+
+Cost: one `u64` per corpus (not per identity) plus the existing per-identity
+`run_memberships` counter. Negligible against the §3 figures.
+
+## B3. Anchors — the predicted division of labour, verified
+
+| anchor | rarity | placement | max | verdict |
+| --- | --- | --- | --- | --- |
+| stray digit in a **digit-free** corpus | **1.000** | abstain | 1.000 | class rarity fires ✓ |
+| ordinary digit where numbers are common | **0.000** | 0.000 | 0.000 | rarity silent ✓ |
+| `th3e`, digits common (`3`×801) | 0.000 | **0.999** | 0.999 | still fires, via **placement** ✓ |
+| `1,000` numeric grouping | 0.000 | abstain | 0.000 | silent ✓ |
+| **`²` U+00B2 (No) in a digit-rich corpus** | **1.000** | abstain | 1.000 | own identity, fires ✓ |
+| **`½` U+00BD (No) in a digit-rich corpus** | **1.000** | abstain | 1.000 | own identity, fires ✓ |
+
+Every other anchor is unchanged, including the singleton/×2/×4 ladder
+(1.000/0.875/0.625), every established-convention silence, and the `*******` /
+`****` recovery at 0.875 (punctuation, so unaffected by digit pooling).
+
+## B4. Measured effect
+
+| series | before (Nd+No+Nl pooled for pairs only) | after (Nd-only, pooled for pairs + rarity) |
+| --- | --- | --- |
+| `digit` occurrences / hits / per-10k | 4,320,431 / 10,059 / **23.28** | 1,218,852 / 2,761 / **22.65** |
+| `numeral` (No/Nl) occurrences / hits / per-10k | — (folded into digit) | 3,101,579 / **108** / **0.35** |
+| all numeric-class hits | **10,059** | **2,869** (−71%) |
+| absolute-rarity channel, fleet @.50 | 15,139 | **7,939** (−48%) |
+| composed, fleet @.50 | 31,521 | **24,334** |
+
+### How decisions 5 and FLAG 3 compose
+
+The four bases, all measured in one sweep so every label matches its data:
+
+| basis | depth 0 p50 | depth 50 p50 | depth 100 p50 | fleet @.90 | fleet @.75 | fleet @.50 |
+| --- | --- | --- | --- | --- | --- | --- |
+| **ADOPTED — (d) runs + pooled Nd** | **4** | **8** | **13** | **9,160** | **15,326** | **24,334** |
+| (d) runs, digits UNPOOLED (FLAG 3's before) | 5 | 10 | 17 | 10,115 | 18,800 | 31,534 |
+| raw occurrences (decision 5's before) | 5 | 9 | 16 | 9,642 | 17,340 | 28,729 |
+| (a) occurrences + continuation floor 2 | 5 | 9 | 16 | 9,824 | 17,646 | 29,086 |
+
+The two decisions compose cleanly and in opposite directions: decision 5 alone
+*raised* volume (28,729 → 31,534 at floor 0.50, +9.8%) as the price of recovering
+the `*******` case, and FLAG 3's pooling then took it to **24,334 — 15% BELOW the
+pre-decision-5 baseline**. So the final model recovers a case the baseline missed
+*and* emits less than the baseline did.
+
+**Digits still fire at ~10× the punctuation rate (22.65 vs 2.23 per 10k), so this
+is surfaced with channel attribution as instructed.** Two things make that number
+less alarming than it looks, and one of them is a measurement artifact I should
+name:
+
+1. **Absolute numeric-class volume fell 71%** (10,059 → 2,869). The rate is flat
+   only because the No/Nl split also removed 3.1M occurrences from the digit
+   denominator.
+2. **`hits` counts OCCURRENCES above the floor, not coalesced findings.** All
+   three digits of a `175` run fire, but the run is **one** finding. Digit runs
+   average 2–3 members, so the digit per-10k rate overstates digit *findings* by
+   roughly that factor, while punctuation runs are usually length 1 and are not
+   overstated. Adjusting for it puts digits within ~3–4× of punctuation, not 10×.
+3. The remaining hits concentrate where they should: corpora that barely use
+   digits, where the whole class is genuinely rare and a stray digit is worth a
+   look. That is the behavior the pooling was chosen to produce.
+
+Placement pooling for digits remains **deferred** per decision 6. No placement
+change was made.
+
+## B5. FLAG 1's table, re-reported with FLAG 3's fix in place
+
+| series | p50 | p90 | p99 | fleet total |
+| --- | --- | --- | --- | --- |
+| retired default-on pair (adjacency + punct-only) | 3 | 27 | 75 | 13,835 |
+| `uni.nonletter-usage-anomaly` at depth 50 | **8** | **21** | **37** | **15,326** |
+
+- p50 ratio **2.67** (was 3.33).
+- **Fleet volume +10.8%** (was +36%).
+- **p90 is now LOWER** than the retired pair (21 vs 27), and **p99 is 51% lower**
+  (37 vs 75).
+
+So after FLAG 3's fix the replacement emits ~11% more findings fleet-wide than the
+two default-on rules it replaces, while being *less* concentrated at both the p90
+and p99 tails. Default-on is final per the ruling; this is the table it rests on.
+
+## B6. Depth volumes and ledger, final knobs
+
+| depth | floor | p50 | p90 | p99 | fleet |
+| --- | --- | --- | --- | --- | --- |
+| 0 | 0.90 | 4 | 14 | 27 | 9,160 |
+| 50 | 0.75 | 8 | 21 | 37 | 15,326 |
+| 100 | 0.50 | 13 | 33 | 56 | 24,334 |
+
+Per channel at floor 0.50: rarity 7,939 (p50 3) · placement 11,892 (p50 7) ·
+sequence 4,603 (p50 2) · composed 24,334 (p50 13). Placement is now the largest
+channel, which is the most defensible outcome of the three — it is the channel
+whose findings read as the most actionable (§A3).
+
+Ledger, unchanged in the only respect that matters:
+
+| disposition | count | share |
+| --- | --- | --- |
+| preserved | 2,518 | 6.16% |
+| duplicate-coalesced | 2,726 | 6.67% |
+| intentionally moved | 35,615 | 87.17% |
+| **lost** | **0** | **0.000%** |
+
+## B7. Reproduction — the EPERM flakiness is now handled, not worked around
+
+The sandbox's intermittent `Operation not permitted` on corpus reads persisted even
+at `RAYON_NUM_THREADS=4` (a fifth run died on `caoNT.txt`). Rather than keep
+retrying by hand, `crates/core/dev/vref_io.rs` now retries a failed read up to 5
+times with a short growing backoff before panicking. This changes **no parsing
+whatsoever** — on success the bytes are the same bytes, `<range>` handling is
+untouched, and a genuinely unreadable file still panics with its original error.
+It only stops one transient refusal from aborting a multi-minute fleet sweep from a
+rayon worker.
+
+Fleet sweeps: `RAYON_NUM_THREADS=4 ./target/release/examples/calibrate --nonletter
+corpora/vref overlap` — 2 m 41 s for 1,504 corpora with the ledger.

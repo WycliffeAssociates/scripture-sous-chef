@@ -26,7 +26,7 @@ use ssc_core::key::parse_key;
 // This module is shared via `#[path]`; not every includer calls every fn.
 #[allow(dead_code)]
 pub fn load_corpus(path: &Path) -> Corpus {
-    let text = fs::read_to_string(path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    let text = read_with_retry(path);
     let mut keys = Vec::new();
     let mut texts = Vec::new();
     for line in text.lines() {
@@ -40,6 +40,38 @@ pub fn load_corpus(path: &Path) -> Corpus {
         texts.push(verse.to_string());
     }
     Corpus::try_from_parts(keys, texts).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+}
+
+/// Read a corpus file, retrying a few times on a TRANSIENT error.
+///
+/// Fleet sweeps read ~1,500 files from many threads at once, and some sandboxed
+/// environments intermittently refuse a read that succeeds moments later
+/// (`Operation not permitted`, EPERM, on a file that is readable before and
+/// after). One such refusal used to abort a whole multi-minute sweep from a rayon
+/// worker. Retrying is safe because it changes no parsing whatsoever: on success
+/// the bytes are the same bytes, and a genuinely unreadable file still panics with
+/// the original error after the last attempt.
+#[allow(dead_code)]
+fn read_with_retry(path: &Path) -> String {
+    const ATTEMPTS: u32 = 5;
+    let mut last = None;
+    for attempt in 0..ATTEMPTS {
+        match fs::read_to_string(path) {
+            Ok(text) => return text,
+            Err(e) => {
+                last = Some(e);
+                // Brief, growing backoff; the refusals observed cleared immediately.
+                std::thread::sleep(std::time::Duration::from_millis(
+                    20 * u64::from(attempt) + 20,
+                ));
+            }
+        }
+    }
+    panic!(
+        "read {} after {ATTEMPTS} attempts: {}",
+        path.display(),
+        last.expect("a failed attempt recorded its error")
+    );
 }
 
 /// Resolve a corpus by id (e.g. `WA-en-ulb`) to its vref file under

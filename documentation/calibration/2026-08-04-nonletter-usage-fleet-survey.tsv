@@ -16,10 +16,10 @@ retained_bytes_per_chapter	1103	2529	5934
 
 ## per-channel finding counts per corpus (floor 0.50) — equal-corpus
 channel	p50	p90	p99	fleet_total	corpora_firing
-absolute_rarity	7	25	40	15139	1221
+absolute_rarity	3	14	26	7939	1104
 placement	7	16	30	11892	1426
-sequence	2	8	18	4590	1071
-max(composed)	17	42	64	31521	1489
+sequence	2	8	18	4603	1071
+max(composed)	13	33	56	24334	1484
 
 ## channel abstention share of candidate occurrences (equal-corpus median)
 channel	p50_share	p90_share
@@ -29,61 +29,62 @@ sequence	0.9447	0.9943
 
 ## composed-score counts by emission floor (Review Depth anchor evidence)
 floor	p50	p90	p99	fleet_total
-0.50	17	42	64	31521
-0.75	10	26	44	18787
-0.90	5	15	27	10102
+0.50	13	33	56	24334
+0.75	8	21	37	15326
+0.90	4	14	27	9160
 
 ## small (<8000 verses) vs mature corpora
-small	corpora=1104	candidates_p50=33418	hits_p50=18	hits_p90=43	rarity_abstain_p50=0.0000
-mature	corpora=400	candidates_p50=116334	hits_p50=17	hits_p90=39	rarity_abstain_p50=0.0000
+small	corpora=1104	candidates_p50=33418	hits_p50=12	hits_p90=31	rarity_abstain_p50=0.0000
+mature	corpora=400	candidates_p50=116334	hits_p50=16	hits_p90=36	rarity_abstain_p50=0.0000
 
 ## corpus-weighted tail — the 20 corpora with the most composed hits
 id	verses	candidates	distinct	rarity	placement	sequence	max	per_10k_cand
-portft	7896	54282	39	26	44	23	93	17.13
 WA-am-ulb	31079	110308	49	22	43	24	89	8.07
-WA-dje-reg	7954	26905	37	48	18	19	85	31.59
-WA-dso-ulb	7928	29534	44	25	34	20	79	26.75
+portft	7896	54282	39	21	44	23	88	16.21
 WA-lo-ulb	31081	137459	34	15	29	31	75	5.46
-WA-tel-x-piya-reg	4015	54530	39	14	44	17	75	13.75
 WA-mhi-x-burolo-reg	7626	48964	33	27	34	13	74	15.11
 WA-tel-x-onda-reg	4022	48314	32	6	52	16	74	15.32
-WA-lee-reg	7958	50915	39	32	31	8	70	13.75
+WA-dso-ulb	7928	29534	44	17	34	20	71	24.04
 WA-tel-x-kovi-reg	3898	33456	34	13	47	10	70	20.92
-bsj	7821	22214	29	54	5	9	68	30.61
-WA-nl-ulb	7957	29754	34	32	26	9	67	22.52
-WA-gaz-ulb	7935	38087	36	25	31	10	66	17.33
 WA-byn-reg	7582	33546	33	26	25	14	65	19.38
-WA-mr-udb	7899	31638	24	15	43	7	65	20.54
+WA-dje-reg	7954	26905	37	28	18	19	65	24.16
+WA-tel-x-piya-reg	4015	54530	39	4	44	17	65	11.92
 WA-ilo-udb	30799	141552	33	21	28	15	64	4.52
 WA-lel-reg	7941	54281	31	6	37	22	64	11.79
-oyde	7929	41399	43	40	20	4	64	15.46
-WA-ngw-reg	7932	21997	29	46	10	8	63	28.64
-WA-or-udb	7958	25765	38	40	20	3	63	24.45
+WA-omt-reg	7927	42179	35	24	26	10	60	14.23
+WA-gaz-ulb	7935	38087	36	17	31	10	58	15.23
+WA-es-419-ulb	31100	130570	33	10	24	23	57	4.37
+WA-tpi-ulb	31085	115163	33	24	17	15	56	4.86
+WA-wci-reg	7955	20742	25	14	38	4	56	27.00
+etr	4201	19840	12	49	7	0	56	28.23
+WA-ha-ulb	31098	137921	34	17	16	23	55	3.99
+WA-mr-udb	7899	31638	24	5	43	7	55	17.38
 
 ## decision 5 — rarity numerator basis, composed volume at the adjudicated depth floors
-(d) run memberships | baseline = raw occurrences | (a) occurrences + continuation support floor 2
+ADOPTED = (d) runs + pooled Nd | (d) runs, digits unpooled = FLAG 3's before | raw occurrences = decision 5's before | (a) occurrences + + continuation support floor 2
 variant	depth0(.90)_p50	depth50(.75)_p50	depth100(.50)_p50	fleet@.90	fleet@.75	fleet@.50
-(d) run memberships	5	10	17	10102	18787	31521
-baseline occurrences	5	9	16	9629	17327	28716
-(a) occ + cont floor 2	5	9	16	9811	17633	29073
+ADOPTED: (d) runs + pooled Nd	4	8	13	9160	15326	24334
+(d) runs, digits UNPOOLED	5	10	17	10115	18800	31534
+raw occurrences	5	9	16	9642	17340	28729
+(a) occ + cont floor 2	5	9	16	9824	17646	29086
 
 ## decision 8 — default-on volume check
 (the two RETIRED default-on rules' per-corpus counts vs this rule at the adjudicated depth-50 floor 0.75)
 series	p50	p90	p99	fleet_total
 retired default-on pair (adjacency + punct-only)	3	27	75	13835
-uni.nonletter-usage-anomaly at depth 50	10	26	44	18787
-p50 ratio new/retired = 3.33 (mediator's flag threshold: > 2.00)
+uni.nonletter-usage-anomaly at depth 50	8	21	37	15326
+p50 ratio new/retired = 2.67 (mediator's flag threshold: > 2.00)
 
 ## absolute rarity sweep (equal-corpus per-corpus counts)
 knee_k/min_exposure	p50@.50	p90@.50	p99@.50	fleet@.50	p90@.90	fleet@.90
-k=2/exp>=0	2	9	18	5540	5	2713
-k=2/exp>=2000	2	9	18	5540	5	2713
-k=4/exp>=2000	4	14	23	8553	5	2713
-k=8/exp>=0	7	25	40	15154	5	2713
-k=8/exp>=2000	7	25	40	15139	5	2713
-k=8/exp>=10000	7	25	40	14443	5	2631
-k=16/exp>=2000	16	46	69	29522	9	5540
-k=32/exp>=2000	34	84	127	59555	19	11636
+k=2/exp>=0	1	6	13	3466	3	1758
+k=2/exp>=2000	1	6	13	3466	3	1758
+k=4/exp>=2000	2	9	16	5079	3	1758
+k=8/exp>=0	3	14	26	7944	3	1758
+k=8/exp>=2000	3	14	26	7939	3	1758
+k=8/exp>=10000	3	13	26	7584	3	1700
+k=16/exp>=2000	7	24	48	15061	6	3466
+k=32/exp>=2000	15	47	91	31094	12	6565
 
 ## placement sweep (equal-corpus per-corpus counts)
 min_pool/knee_k	p50@.50	p90@.50	p99@.50	fleet@.50	p90@.90	fleet@.90
@@ -99,18 +100,19 @@ pool>=300/k=16	8	21	39	15400	5	3546
 keying/denominator/min_leads/knee_k	p50@.50	p90@.50	p99@.50	fleet@.50	p90@.90	fleet@.90
 exact/all-lead/leads>=30/k=8	34	126	195	73797	27	18833
 exact/leads-run/leads>=30/k=8	20	107	169	54783	21	12797
-pool#/all-lead/leads>=30/k=8	21	57	96	41096	17	11328
-pool#/leads-run/leads>=30/k=2	3	12	22	7176	12	7176
-pool#/leads-run/leads>=30/k=8	11	45	77	26841	12	7176
-pool#/leads-run/leads>=100/k=8	6	28	57	16065	8	4590
-pool#/leads-run/leads>=300/k=8	3	18	39	9608	5	2755
-pool#/leads-run/leads>=300/k=32	10	52	127	29822	17	8705
+pool#/all-lead/leads>=30/k=8	21	58	96	41161	17	11351
+pool#/leads-run/leads>=30/k=2	3	12	22	7198	12	7198
+pool#/leads-run/leads>=30/k=8	11	45	77	26905	12	7198
+pool#/leads-run/leads>=100/k=8	6	29	58	16107	8	4603
+pool#/leads-run/leads>=300/k=8	3	18	39	9622	5	2759
+pool#/leads-run/leads>=300/k=32	10	52	127	29890	17	8715
 
 ## composed hits by candidate class (fleet totals, floor 0.50)
 class	occurrences	hits	hits_per_10k_occ
-digit	4320431	10059	23.28
+digit(Nd)	1218852	2761	22.65
+numeral(No/Nl)	3101579	108	0.35
 quote	19236962	4637	2.41
-punct	70518271	15732	2.23
+punct	70518271	15735	2.23
 symbol	1209874	921	7.61
 other	607049	172	2.83
 
@@ -151,20 +153,20 @@ zavNT	“	27	0	471	0	0	0.00000
 zavNT	”	409	49	0	0	39	0.00000
 
 ## singleton and seen-twice behavior (self-licensing)
-singleton_glyph_types p50=1 p90=4; they produce hits p50=1 p90=4 (fleet 2240)
-seen_twice_glyph_types p50=0 p90=2; they produce hits p50=0 p90=4 (fleet 2294)
+singleton_glyph_types p50=1 p90=4; they produce hits p50=1 p90=3 (fleet 1724)
+seen_twice_glyph_types p50=0 p90=2; they produce hits p50=0 p90=4 (fleet 1544)
 
 ## old-rule overlap ledger, PER RETIRED RULE (fleet totals)
 old findings (3 retired rules, shipped defaults) = 40859
 old_rule	total	preserved	coalesced	intentionally_moved	lost	lost_share
-punct.adjacency-anomaly	9354	1528	281	7545	0	0.00000
+punct.adjacency-anomaly	9354	1528	272	7554	0	0.00000
 lex.punct-only-token	4481	624	0	3857	0	0.00000
-punct.spacing-anomaly	27024	368	2465	24191	0	0.00000
+punct.spacing-anomaly	27024	366	2454	24204	0	0.00000
 
 disposition	count	share_of_all_old_findings
-preserved	2520	0.06168
-duplicate-coalesced	2746	0.06721
-intentionally-moved	35593	0.87112
+preserved	2518	0.06163
+duplicate-coalesced	2726	0.06672
+intentionally-moved	35615	0.87166
 lost	0	0.00000
 
 ## corpora with the most LOST old findings
@@ -226,6 +228,10 @@ emoji once	😀	1	4001	spaced	spaced	Neither	1.000	abstain	abstain	rarity	1.000	
 straight vs curly quote mixing	“	1	4002	spaced	letter	EndOnly	1.000	abstain	abstain	rarity	1.000	he said “go” to them
 th3e — common digit, Both topology	3	801	7201	letter	letter	Both	0.000	0.999	abstain	placement	0.999	th3e
 1,000 numeric grouping (should stay quiet)	,	1602	7210	internal	internal	interior	0.000	abstain	abstain	none	0.000	1,000
+stray digit in a DIGIT-FREE corpus (class rarity must fire)	7	1	4001	spaced	spaced	Neither	1.000	abstain	abstain	rarity	1.000	stray 7, no other digits
+ordinary digit where numbers are common (rarity must be silent)	3	801	7201	spaced	spaced	Neither	0.000	0.000	abstain	none	0.000	ordinary 3
+U+00B2 is No not Nd — must stay its OWN identity and fire	²	1	7201	letter	spaced	StartOnly	1.000	abstain	abstain	rarity	1.000	superscript 2 in a digit-rich corpus
+U+00BD vulgar fraction (No) — own identity	½	1	7201	spaced	spaced	Neither	1.000	abstain	abstain	rarity	1.000	vulgar half in a digit-rich corpus
 mov$ing — symbol, Both topology	$	1	4001	letter	letter	Both	1.000	abstain	abstain	rarity	1.000	mov$ing
 wo.rd — common period, Both topology	.	801	4001	letter	letter	Both	0.000	0.999	abstain	placement	0.999	wo.rd
 wo"rd — quote marginals ordinary, Both rare	"	1601	4001	letter	letter	Both	0.000	0.999	abstain	placement	0.999	wo"rd

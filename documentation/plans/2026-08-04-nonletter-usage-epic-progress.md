@@ -698,7 +698,143 @@ answers to those would bake them in and make reversal expensive. The adjudicatio
 own instruction on decision 8 was to "flag it before finalizing", and the
 threshold it named is exceeded.
 
-- **Next safe step:** adjudicate FLAGS 1–3. On receipt, checkpoint 4 proper —
+---
+
+## Entry 9 — OWNER RATIFICATION, flag rulings, and FLAG 3 resolved
+
+- **Date:** 2026-08-04
+- **Packet:** addendum 2 (§B1–B7) in
+  [`2026-08-04-nonletter-usage-probe.md`](../calibration/2026-08-04-nonletter-usage-probe.md).
+  Durable `.tsv` refreshed to the post-FLAG-3 run.
+
+### OWNER RATIFICATION — the Phase E ADR may cite owner confirmation
+
+The **owner ratified the Gate 1 adjudication**, explicitly including:
+
+- **digit pooling for pairs**;
+- **default-on** enablement;
+- the **run-membership rarity** mediation (decision 5 option (d));
+- approval of the **glottal-stop validation result** (`'` as an orthographic
+  letter in Mayan/Tupí–Guaraní corpora, `Both` topology 57–97% dominant, silenced
+  by convention learning with no allow-list).
+
+The Phase E ADR can therefore cite **owner confirmation**, not merely delegated
+mediator adjudication. Decision 5 option (d) adoption is confirmed, with the
+(a)/(b) rejection reasoning accepted as sound and measured.
+
+### FLAG 1 — default-on STANDS (final)
+
+The ~2× ratio was a proxy set without absolute numbers and misfires at these tiny
+bases. Ruling rationale, recorded for the ADR: p50 3 → 8 findings per corpus is
+trivially reviewable for a whole translation at `Info` severity; fleet is +10.8%,
+not +233%; p90 and p99 are both **lower** than the retired pair. Concentrated →
+flatter is **redistribution, not inflation**.
+
+Re-reported with FLAG 3's fix in place, as instructed:
+
+| series | p50 | p90 | p99 | fleet |
+| --- | --- | --- | --- | --- |
+| retired default-on pair (adjacency + punct-only) | 3 | 27 | 75 | 13,835 |
+| this rule at depth 50 | **8** | **21** | **37** | **15,326** |
+
+Ratio now 2.67 (was 3.33); fleet +10.8% (was +36%); **p90 now lower** (21 vs 27)
+and **p99 51% lower** (37 vs 75).
+
+### FLAG 2 — sequence k=2 STANDS, with two obligations attached
+
+Defense grounds for the ADR: (1) the idea doc's explicit non-goal — *"treating
+corpus convention as correctness; widespread systematic mistakes may be learned
+like any other convention"* — directly sanctions dropping pairs seen 2–7 times as
+established convention evidence; (2) `lost = 0` means observability is intact, and
+depth 100 still reveals seen-once pairs (`knee(1, k=2) = 0.5` at floor 0.50).
+
+**Two obligations now owed at Phase E, recorded so they cannot be lost:**
+
+- **(a)** the Phase E ADR must include a per-population sample of the adjacency
+  findings that moved *specifically because of k=2* (pairs seen 2–7), confirming
+  they read as conventions — with any that read as systematic **errors** explicitly
+  listed and counted. **If that surfaces a population reading as real systematic
+  errors rather than conventions, STOP and report rather than deleting the old
+  rules.**
+- **(b)** Gate E's accepted-fixture check runs against the known adjudicated
+  multilingual wins (ADR 0024 / 0054 lineage examples) extracted from the
+  before-pins — each one preserved, or explicitly listed as accepted drift with its
+  sample.
+
+### FLAG 3 — RESOLVED: Nd-only pooling extended to rarity, and it caught a real bug
+
+The instruction to verify pair pooling used **Nd** rather than a broader numeric
+predicate **found a genuine defect**. `classify` used
+`cl.is_decimal_digit() || cl.is_numeric()`, and `is_numeric()` is the fused
+`NUMERIC` bit covering all of **N\*** — so `²` (U+00B2, category **No**) *was*
+being pooled into the digit pair participant, which would have cost it its own
+identity and its ability to fire. Split into:
+
+- `Digit` = **Nd** only — pooled for pairs **and** rarity;
+- `Numeral` = **No**/**Nl** (`²`, `½`) — **per-identity**, never pooled.
+
+Predicted division of labour verified against anchors:
+
+| anchor | result |
+| --- | --- |
+| stray digit in a **digit-free** corpus | rarity **1.000** — class rarity fires |
+| ordinary digit where numbers are common | **0.000** — rarity silent |
+| `th3e` with digits common | placement **0.999** — still fires, via placement |
+| `1,000` numeric grouping | 0.000 — silent |
+| **`²` (No) in a digit-rich corpus** | rarity **1.000** — own identity, fires |
+| **`½` (No) in a digit-rich corpus** | rarity **1.000** — own identity, fires |
+
+All other anchors unchanged, including the `*******`/`****` recovery at 0.875.
+
+**Schema consequence, recorded BEFORE the substrate is frozen (as instructed):**
+rarity needs one extra corpus-level scalar, `digit_class_runs: u64` = maximal
+nonletter runs containing ≥1 Nd digit. Rarity's numerator is
+`(if class == Digit { digit_class_runs } else { run_memberships }) - 1`.
+Leave-one-out still removes exactly one run.
+
+**Digit fire rate re-measured and surfaced with channel attribution, as
+instructed:** digits still fire at **22.65 per 10k occurrences** vs punctuation's
+2.23. But absolute numeric-class volume fell **71%** (10,059 → 2,869) and the
+rarity channel fell **48%** fleet-wide (15,139 → 7,939); the rate is flat only
+because the No/Nl split also removed 3.1M occurrences from the digit denominator.
+A measurement artifact also inflates it: `hits` counts *occurrences* above floor,
+not coalesced findings — all three digits of a `175` run fire but the run is **one**
+finding, and digit runs average 2–3 members while punctuation runs are usually
+length 1. Adjusted, digits sit within ~3–4× of punctuation. Placement pooling for
+digits stays deferred; no placement change was made.
+
+### Incidental fix — dev loader read retry
+
+The sandbox's intermittent `Operation not permitted` on corpus reads persisted at
+`RAYON_NUM_THREADS=4` (a fifth run died on `caoNT.txt`), so
+`crates/core/dev/vref_io.rs` now retries a failed read up to 5 times with a short
+growing backoff before panicking. This changes **no parsing**: `<range>` handling
+is untouched, the bytes on success are the same bytes, and a genuinely unreadable
+file still panics with its original error. It only stops one transient refusal from
+aborting a multi-minute sweep from a rayon worker.
+
+### Final knobs, frozen for the substrate
+
+| channel | knobs |
+| --- | --- |
+| absolute rarity | run-membership basis, **Nd digits pooled into one class identity**; exposure ≥ 2000; k = 8 |
+| placement | pool ≥ 30; k = 8; start/end marginals + four-state topology, `max` across them; topology abstains when both sides are run-interior |
+| sequence | directed pairs with **Nd digits pooled**; leads-a-run denominator; leads ≥ 100; k = 2; plus bounded same-glyph continuation in production |
+| composition | `max` across the three channels; abstention never a zero |
+| Review Depth | depth 0 → 0.90, 50 → 0.75, 100 → 0.50 |
+| default | **on**, `Info` |
+
+- **Next safe step:** checkpoint 4 proper — `NonletterUsageSubstrate` and
+  `uni.nonletter-usage-anomaly` test-first per plan §14.2 against the frozen knobs
+  above, then the three-rule deletion series per §11.1 in separate commits (the two
+  movements never share a commit), the durable full-fleet old/new overlap TSV, and
+  the drift summary — carrying FLAG 2's obligations (a) and (b).
+
+---
+
+## Entry 8 addendum — original next-safe-step note (superseded by Entry 9)
+
+- Adjudicate FLAGS 1–3. On receipt, checkpoint 4 proper —
   `NonletterUsageSubstrate` and `uni.nonletter-usage-anomaly` test-first per plan
   §14.2, then the three-rule deletion series per §11.1 in separate commits, the
   durable full-fleet old/new overlap TSV, and the drift summary.

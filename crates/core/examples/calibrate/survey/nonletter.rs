@@ -76,7 +76,16 @@ enum Kind {
 /// assumed (plan §9 / the idea's open question 2).
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 enum CandClass {
+    /// Unicode **Nd** only — a decimal digit. The compositional class: which
+    /// numbers happen to occur in a translation is not an orthographic
+    /// convention, so Nd digits pool into one identity for both the pair and the
+    /// rarity channel.
     Digit,
+    /// Other numeric categories — **No** (`²`, `½`, superscripts) and **Nl**.
+    /// Deliberately NOT pooled: a superscript numeral is a glyph choice, and an
+    /// odd numeral appearing once is exactly the rare-identity case the rule must
+    /// surface. `uni.mixed-numeral-systems` keeps cross-system ownership.
+    Numeral,
     Quote,
     Punct,
     Symbol,
@@ -84,8 +93,9 @@ enum CandClass {
 }
 
 impl CandClass {
-    const ALL: [Self; 5] = [
+    const ALL: [Self; 6] = [
         Self::Digit,
+        Self::Numeral,
         Self::Quote,
         Self::Punct,
         Self::Symbol,
@@ -93,7 +103,8 @@ impl CandClass {
     ];
     fn label(self) -> &'static str {
         match self {
-            Self::Digit => "digit",
+            Self::Digit => "digit(Nd)",
+            Self::Numeral => "numeral(No/Nl)",
             Self::Quote => "quote",
             Self::Punct => "punct",
             Self::Symbol => "symbol",
@@ -216,8 +227,12 @@ fn classify(cluster: &str) -> Kind {
     }
     Kind::Candidate(if cl.is_quote() {
         CandClass::Quote
-    } else if cl.is_decimal_digit() || cl.is_numeric() {
+    } else if cl.is_decimal_digit() {
+        // Nd ONLY. `is_numeric()` would also admit No/Nl (`²`, `½`), which must
+        // stay per-identity — see `CandClass::Numeral`.
         CandClass::Digit
+    } else if cl.is_numeric() {
+        CandClass::Numeral
     } else if cl.is_punctuation() {
         CandClass::Punct
     } else if cl.is_symbol() {
@@ -304,6 +319,9 @@ struct CorpusObs {
     baseless_marks: u64,
     /// Per-class candidate occurrence totals.
     class_totals: BTreeMap<CandClass, u64>,
+    /// Maximal nonletter runs containing at least one Nd digit — the pooled
+    /// digit class's run count for the rarity channel.
+    digit_class_runs: u64,
     glyphs: BTreeMap<Box<str>, GlyphObs>,
     occurrences: Vec<Occurrence>,
     /// Retained-observation cost, in bytes, and the chapter count it spans.
@@ -348,6 +366,7 @@ fn observe(id: String, corpus: &Corpus) -> CorpusObs {
         hygiene_graphemes: 0,
         baseless_marks: 0,
         class_totals: BTreeMap::new(),
+        digit_class_runs: 0,
         glyphs: BTreeMap::new(),
         occurrences: Vec::new(),
         chapters: 0,
@@ -464,7 +483,9 @@ fn observe(id: String, corpus: &Corpus) -> CorpusObs {
                         // be attached to; treat it as spaced rather than inventing
                         // a class the judge would have to pool.
                         Kind::Hygiene | Kind::BaselessMark => NeighbourClass::Spaced,
-                        Kind::Candidate(CandClass::Digit) => NeighbourClass::Digit,
+                        Kind::Candidate(CandClass::Digit | CandClass::Numeral) => {
+                            NeighbourClass::Digit
+                        }
                         // Unreachable: a candidate neighbour would be in the run.
                         Kind::Candidate(_) => NeighbourClass::Spaced,
                     },
@@ -531,6 +552,14 @@ fn observe(id: String, corpus: &Corpus) -> CorpusObs {
                     verse: cell.verse,
                     byte: cell.byte,
                 });
+            }
+
+            // The pooled digit class: once per run that contains any Nd digit.
+            if cells[run_start..run_end]
+                .iter()
+                .any(|c| matches!(c.kind, Kind::Candidate(CandClass::Digit)))
+            {
+                obs.digit_class_runs += 1;
             }
 
             // Run memberships: once per run per distinct identity in it.
@@ -617,7 +646,20 @@ struct Scored {
 enum RarityBasis {
     /// Raw occurrences of the identity.
     Occurrences,
-    /// The number of maximal nonletter RUNS the identity appears in — option (d).
+    /// Run memberships, with **Nd digits pooled into one class identity** whose
+    /// run count is the number of maximal nonletter runs containing at least one
+    /// Nd digit.
+    ///
+    /// Digits are compositional: per-identity digit rarity measures *which
+    /// numbers happen to occur*, not orthographic convention — the same artifact
+    /// pooling fixed for pairs (§7.2), so the same remedy applies. The division of
+    /// labour this produces: a corpus that uses numbers freely establishes the
+    /// digit class and ordinary digits go silent in rarity, while an unusual digit
+    /// PLACEMENT (`th3e`) still fires through the placement channel; a corpus that
+    /// never uses digits still fires on a stray one through class rarity.
+    RunMembershipsPooledDigits,
+    /// The number of maximal nonletter RUNS the identity appears in — option (d),
+    /// per-identity with no pooling.
     ///
     /// The defect this repairs is identity-level self-licensing: wreckage inflates
     /// its own rarity count past the knee. In `WA-as-ulb` all 11 occurrences of `*`
@@ -679,7 +721,7 @@ struct Knobs {
 /// with k = 8 on the run-membership basis, placement pool >= 30 with k = 8,
 /// sequence pooled-digits / leads-a-run with leads >= 100 and k = 2.
 const DEFAULT_KNOBS: Knobs = Knobs {
-    rarity_basis: RarityBasis::RunMemberships,
+    rarity_basis: RarityBasis::RunMembershipsPooledDigits,
     continuation_min_support: 100,
     rarity_k: 8.0,
     rarity_min_exposure: 2_000,
@@ -696,6 +738,12 @@ const DEFAULT_KNOBS: Knobs = Knobs {
 /// The pre-decision-5 baseline, for the option (a)/(b)/(d) comparison.
 const OCCURRENCE_BASIS: Knobs = Knobs {
     rarity_basis: RarityBasis::Occurrences,
+    ..DEFAULT_KNOBS
+};
+
+/// The unpooled run-membership basis, for the FLAG 3 before/after comparison.
+const UNPOOLED_DIGITS: Knobs = Knobs {
+    rarity_basis: RarityBasis::RunMemberships,
     ..DEFAULT_KNOBS
 };
 
@@ -729,6 +777,13 @@ fn score(occ: &Occurrence, obs: &CorpusObs, kn: Knobs) -> Scored {
     let rarity_numerator = match kn.rarity_basis {
         RarityBasis::Occurrences => g.count,
         RarityBasis::RunMemberships => g.run_memberships,
+        // The pooled digit class stands in for every Nd identity. Leave-one-out
+        // still excludes exactly one run — the one under judgment, which contains
+        // this digit and therefore counted toward the class.
+        RarityBasis::RunMembershipsPooledDigits => match occ.class {
+            CandClass::Digit => obs.digit_class_runs,
+            _ => g.run_memberships,
+        },
     }
     .saturating_sub(1);
     let rarity = if rarity_abstained {
@@ -1067,6 +1122,38 @@ fn anchor_table(kn: Knobs) -> Vec<Anchor> {
         &synth(EN_NUM, N, &["there were 1,000 of them and 2,000 more"]),
         "1,000",
         ",",
+        kn,
+    ));
+    // FLAG 3 / decision on pooled digit-class rarity: the predicted division of
+    // labour. A digit-free corpus must still fire on a stray digit through CLASS
+    // rarity; a number-using corpus must go silent in rarity while `th3e` keeps
+    // firing through PLACEMENT.
+    out.push(anchor(
+        "stray digit in a DIGIT-FREE corpus (class rarity must fire)",
+        &synth(EN, N, &["there were 7 of them"]),
+        "stray 7, no other digits",
+        "7",
+        kn,
+    ));
+    out.push(anchor(
+        "ordinary digit where numbers are common (rarity must be silent)",
+        &synth(EN_NUM, N, &["and 3 more came"]),
+        "ordinary 3",
+        "3",
+        kn,
+    ));
+    out.push(anchor(
+        "U+00B2 is No not Nd — must stay its OWN identity and fire",
+        &synth(EN_NUM, N, &["the second\u{00B2} book"]),
+        "superscript 2 in a digit-rich corpus",
+        "\u{00B2}",
+        kn,
+    ));
+    out.push(anchor(
+        "U+00BD vulgar fraction (No) — own identity",
+        &synth(EN_NUM, N, &["about \u{00BD} of them"]),
+        "vulgar half in a digit-rich corpus",
+        "\u{00BD}",
         kn,
     ));
     out.push(anchor(
@@ -1449,6 +1536,7 @@ struct FleetRow {
     /// (d) run memberships, the occurrence baseline, and option (a).
     basis_d: [u64; 3],
     basis_occ: [u64; 3],
+    basis_unpooled: [u64; 3],
     basis_a: [u64; 3],
     /// The two RETIRED DEFAULT-ON rules' finding counts for this corpus — the
     /// baseline decision 8's default-on check compares against.
@@ -1560,6 +1648,7 @@ fn fleet_row(id: String, corpus: &Corpus, kn: Knobs, with_overlap: bool) -> Flee
         twice_hits: 0,
         basis_d: [0; 3],
         basis_occ: [0; 3],
+        basis_unpooled: [0; 3],
         basis_a: [0; 3],
         old_default_on: 0,
         rarity_sweep: vec![[0; 2]; RARITY_SWEEP.len()],
@@ -1644,6 +1733,7 @@ fn fleet_row(id: String, corpus: &Corpus, kn: Knobs, with_overlap: bool) -> Flee
         for (variant, which) in [
             (DEFAULT_KNOBS, 0usize),
             (OCCURRENCE_BASIS, 1),
+            (UNPOOLED_DIGITS, 3),
             (OPTION_A, 2),
         ] {
             let v = score(occ, &obs, variant);
@@ -1652,6 +1742,7 @@ fn fleet_row(id: String, corpus: &Corpus, kn: Knobs, with_overlap: bool) -> Flee
                     match which {
                         0 => row.basis_d[i] += 1,
                         1 => row.basis_occ[i] += 1,
+                        3 => row.basis_unpooled[i] += 1,
                         _ => row.basis_a[i] += 1,
                     }
                 }
@@ -1959,7 +2050,8 @@ pub(crate) fn nonletter_fleet(dir: &Path, overlap: bool) {
     // ── Decision 5: the rarity numerator basis ────────────────────────────
     println!(
         "\n## decision 5 — rarity numerator basis, composed volume at the adjudicated \
-         depth floors\n(d) run memberships | baseline = raw occurrences | (a) occurrences \
+         depth floors\nADOPTED = (d) runs + pooled Nd | (d) runs, digits unpooled = FLAG 3's \
+         before | raw occurrences = decision 5's before | (a) occurrences + \
          + continuation support floor 2"
     );
     println!(
@@ -1967,10 +2059,11 @@ pub(crate) fn nonletter_fleet(dir: &Path, overlap: bool) {
     );
     for (label, get) in [
         (
-            "(d) run memberships",
+            "ADOPTED: (d) runs + pooled Nd",
             (|r: &FleetRow| &r.basis_d) as fn(&FleetRow) -> &[u64; 3],
         ),
-        ("baseline occurrences", |r| &r.basis_occ),
+        ("(d) runs, digits UNPOOLED", |r| &r.basis_unpooled),
+        ("raw occurrences", |r| &r.basis_occ),
         ("(a) occ + cont floor 2", |r| &r.basis_a),
     ] {
         let col = |i: usize| -> Vec<u64> { eligible.iter().map(|r| get(r)[i]).collect() };
