@@ -146,6 +146,14 @@ fn main() {
             }
             return;
         }
+        // The shipped rule's Review Depth volume table (0/50/100), per corpus —
+        // driven through `nonletter_usage_findings` at `config_at_review_depth`,
+        // so it counts coalesced FINDINGS at the shipped constants rather than the
+        // probe model's per-floor occurrences.
+        [flag, dir] if flag == "--nonletter-depths" => {
+            survey::nonletter::nonletter_depth_fleet(Path::new(dir));
+            return;
+        }
         [flag, path] if flag == "--glyphs" => {
             let p = Path::new(path);
             if p.is_dir() {

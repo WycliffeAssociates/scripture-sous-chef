@@ -7,28 +7,6 @@
 export type FindingsArgsOut = (FindingArgs | null)[];
 
 /**
- * A separator mark\'s *judged* form on one side of an occurrence (ADR 0054 2nd
- * amendment — the binary bit inside a class pool):
- *
- * - `Attached` — the mark clings directly to the neighbour (no whitespace).
- * - `Spaced` — horizontal whitespace was crossed to reach the neighbour, **or**
- *   the verse/book seam was reached (the seam reads as whitespace, never its
- *   own category — repo `CLAUDE.md`; a terminal is never attached across a
- *   seam). The neighbour\'s *class* is still read across the seam, in book order.
- *
- * The form is orthogonal to the neighbour\'s [`SpacingClass`]: a `Number`-pool
- * `.` can be `Attached` (`7.8`, a decimal) or `Spaced` (`verse. 3`, a
- * cross-reference), and the pool learns which is the convention.
- *
- * This is the shipped wire/args vocabulary as well as the rule\'s internal one —
- * deliberately one type, so the published JSON string and the counter the rule
- * incremented cannot drift. Every variant carries an **explicit** `serde`
- * rename: these strings are a published surface and must never depend on an
- * inferred naming convention.
- */
-export type SpacingForm = "attached" | "spaced";
-
-/**
  * An ordered, duplicate-preserving vref corpus as it arrives from JS:
  * parallel `keys`/`texts` arrays in caller-presented order (a `Corpus` is a
  * duplicate-preserving structure, not a map — unlike the retired
@@ -98,26 +76,6 @@ export interface RuleCard {
 }
 
 /**
- * One violated side of a `punct.spacing-anomaly` finding (ADR 0054 2nd
- * amendment — the pooled class-conditioned model): the observed minority `form`
- * against the neighbour-content pool `class` that judged it, how many of the
- * mark\'s occurrences **in that pool** take this form (`count`), and the pool\'s
- * judged occupancy `N_pool` (`total`). `count / total` is the descriptive rate
- * the Wilson-bound `score` deliberately isn\'t (ADR 0048).
- *
- * `form`/`class` are closed vocabularies and are typed as such: they were
- * `String` until 2026-07-27, which cost 48 bytes of heap-pointer weight per
- * side and made `FindingArgs` the widest thing in a `Finding`. Field order is
- * unchanged, so the serialized object\'s key order is unchanged.
- */
-export interface SpacingSide {
-    form: SpacingForm;
-    class: SpacingClass;
-    count: number;
-    total: number;
-}
-
-/**
  * One whole-book update block from JS. TS: `{ slug, keys, texts }`. Chapter
  * or verse edits are the caller\'s to roll up to their whole book before
  * sending — the book is the invalidation unit.
@@ -137,16 +95,6 @@ export interface MixedCaseOverrides {
     emit_score_min?: number;
     recurrence_k?: number;
     confidence_z?: number;
-}
-
-/**
- * Partial overrides for `lex.punct-only-token`\'s corpus-relative score.
- * Omitted fields keep core\'s calibrated defaults (ADR 0030).
- */
-export interface PunctOnlyTokenOverrides {
-    convention_rate_per_10k?: number;
-    confidence_z?: number;
-    emit_score_min?: number;
 }
 
 /**
@@ -189,32 +137,6 @@ export interface ProportionalityOverrides {
 }
 
 /**
- * Partial overrides for `punct.adjacency-anomaly`\'s knobs. Omitted fields
- * keep core\'s defaults (`convention_rate` 0.5, `confidence_z` 1.96,
- * `emit_score_min` 0.5). See ADR 0024.
- */
-export interface PunctuationAdjacencyOverrides {
-    convention_rate?: number;
-    confidence_z?: number;
-    emit_score_min?: number;
-}
-
-/**
- * Partial overrides for `punct.spacing-anomaly`\'s knobs. Omitted fields keep
- * core\'s defaults (ADR 0029, 0050): `emit_score_min` 0.5 (the emission floor
- * on the two-factor score), `confidence_z` 1.96 (an advanced calibration
- * knob), `minority_recurrence_k` 32 (the recurrence knee\'s absolute base),
- * and `minority_rate_per_10k` 40 (the knee\'s opportunity-proportional
- * allowance: `K = k + r·N/10 000` over the mark\'s total occurrences `N`).
- */
-export interface PunctuationSpacingOverrides {
-    emit_score_min?: number;
-    confidence_z?: number;
-    minority_recurrence_k?: number;
-    minority_rate_per_10k?: number;
-}
-
-/**
  * Partial overrides for `uni.mixed-script-in-token`\'s corpus-relative score.
  * Omitted fields keep core\'s calibrated defaults (ADR 0047).
  */
@@ -225,6 +147,33 @@ export interface MixedScriptOverrides {
     breadth_z?: number;
     breadth_min_books?: number;
     emit_score_min?: number;
+}
+
+/**
+ * Partial overrides for `uni.nonletter-usage-anomaly`\'s corpus-relative score.
+ * Omitted fields keep core\'s calibrated defaults — the frozen Gate 1 knobs:
+ * `emit_score_min` 0.75 (the adjudicated Review Depth midpoint), `rarity_k` 8,
+ * `placement_min_pool` 30, `sequence_k` 2 (the channel is honestly binary at
+ * these denominators), and the three support gates below which a channel
+ * abstains rather than inventing a convention.
+ *
+ * Prefer moving Review Depth to a per-knob override: depth resolves all five
+ * policy values together, so a hand-set support gate can silently contradict the
+ * floor it ships with.
+ */
+export interface NonletterUsageOverrides {
+    emit_score_min?: number;
+    rarity_min_exposure?: number;
+    rarity_k?: number;
+    placement_min_pool?: number;
+    placement_k?: number;
+    placement_rate_per_10k?: number;
+    placement_z?: number;
+    sequence_min_leads?: number;
+    sequence_k?: number;
+    sequence_rate_per_10k?: number;
+    sequence_z?: number;
+    continuation_min_support?: number;
 }
 
 /**
@@ -261,7 +210,7 @@ export interface CasingOverrides {
  * config and localisation off: Rust via [`RuleId::ALL`] +
  * exhaustive `match`; TS via the `Tsify` string union.
  */
-export type RuleId = "lex.excess-h-whitespace" | "hyg.tab-in-body" | "hyg.control-chars" | "hyg.zero-width-misuse" | "hyg.empty-verse" | "hyg.invalid-codepoint" | "hyg.replacement-run" | "prop.length-ratio" | "struct.source-marker-leftover" | "struct.merge-conflict-marker" | "punct.adjacency-anomaly" | "lex.duplicate-word" | "lex.punct-only-token" | "uni.combining-mark-without-base" | "uni.redundant-zero-width-space" | "uni.mixed-script-in-token" | "lex.repeated-character-run" | "uni.mixed-numeral-systems" | "punct.bracket-balance" | "punct.spacing-anomaly" | "case.sentence-initial-lowercase" | "case.inconsistent-word-casing" | "uni.rare-glyph" | "case.mixed-case-word" | "uni.mixed-normalization" | "lex.untranslated-word";
+export type RuleId = "lex.excess-h-whitespace" | "hyg.tab-in-body" | "hyg.control-chars" | "hyg.zero-width-misuse" | "hyg.empty-verse" | "hyg.invalid-codepoint" | "hyg.replacement-run" | "prop.length-ratio" | "struct.source-marker-leftover" | "struct.merge-conflict-marker" | "lex.duplicate-word" | "uni.combining-mark-without-base" | "uni.redundant-zero-width-space" | "uni.mixed-script-in-token" | "lex.repeated-character-run" | "uni.mixed-numeral-systems" | "punct.bracket-balance" | "case.sentence-initial-lowercase" | "case.inconsistent-word-casing" | "uni.rare-glyph" | "case.mixed-case-word" | "uni.mixed-normalization" | "lex.untranslated-word" | "uni.nonletter-usage-anomaly";
 
 /**
  * Structured message arguments — the additive payload ADR 0010 §6
@@ -274,7 +223,7 @@ export type RuleId = "lex.excess-h-whitespace" | "hyg.tab-in-body" | "hyg.contro
  * collected into `Vec`s and never copied on a hot path, so this costs
  * nothing real (ADR 0016).
  */
-export type FindingArgs = { kind: "length-ratio"; ratio_pct: number; scope: LengthRatioScope } | { kind: "bracket-window"; window: DelimObservation[]; measure: BracketMeasure; majority: number; total: number } | { kind: "spacing-convention"; mark: string; left: SpacingSide | null; right: SpacingSide | null } | { kind: "casing-convention"; glyph: string | null; quoted: boolean; upper: number; total: number } | { kind: "word-casing"; word: string; upper: number; total: number } | { kind: "punct-only-rate"; count: number; units: number } | { kind: "adjacency-evidence"; pattern: string; k: number; lead_n: number; books: number; corpus: number } | { kind: "script-mix-evidence"; k: number; n: number; books: number; corpus: number } | { kind: "repeat-evidence"; ch: string; run: number } | { kind: "duplicate-word"; first_sid: string } | { kind: "rare-glyph"; glyph: string; count: number } | { kind: "mixed-case-word"; word: string; other: number; total: number } | { kind: "normalization"; affected: number; example: string } | { kind: "untranslated-word"; copied_pct: number; run_len: number };
+export type FindingArgs = { kind: "length-ratio"; ratio_pct: number; scope: LengthRatioScope } | { kind: "bracket-window"; window: DelimObservation[]; measure: BracketMeasure; majority: number; total: number } | { kind: "casing-convention"; glyph: string | null; quoted: boolean; upper: number; total: number } | { kind: "word-casing"; word: string; upper: number; total: number } | { kind: "script-mix-evidence"; k: number; n: number; books: number; corpus: number } | { kind: "repeat-evidence"; ch: string; run: number } | { kind: "duplicate-word"; first_sid: string } | { kind: "rare-glyph"; glyph: string; count: number } | { kind: "mixed-case-word"; word: string; other: number; total: number } | { kind: "normalization"; affected: number; example: string } | { kind: "untranslated-word"; copied_pct: number; run_len: number } | { kind: "nonletter-usage"; glyph: string; reason: NonletterReason; form: NonletterForm; partner: string; count: number; total: number; also: NonletterReason[] };
 
 /**
  * The analysis-input set every entry point takes as one typed object:
@@ -316,16 +265,14 @@ export interface RuleCatalog {
 export type InputDependency = "target-only" | "target-and-reference-silent-when-absent";
 
 /**
- * The content class of a mark\'s first non-whitespace neighbour — the **pool**
- * its attached-vs-spaced binary is conditioned on (ADR 0054 2nd amendment).
- * Quote is merged into `Punct` (user ruling). A `Number` neighbour is a
- * (non-quote) numeric scalar; a `Letter` neighbour is any cluster containing an
- * alphabetic scalar (a decomposed base + combining letter still counts);
- * everything else — another mark, a quote, a bracket, a symbol — is `Punct`.
+ * The form a `uni.nonletter-usage-anomaly` finding\'s primary reason names: the
+ * neighbour class for a side reason, the four-state topology for `Topology`, and
+ * `None` for the reasons that name no form (rarity, pair, continuation).
  *
- * Explicitly renamed per variant for the same reason as [`SpacingForm`].
+ * Start/end are **logical**, never visual left/right, so a finding does not move
+ * when text direction does.
  */
-export type SpacingClass = "letter" | "number" | "punct";
+export type NonletterForm = "none" | "letter" | "digit" | "spaced" | "neither" | "start-only" | "end-only" | "both";
 
 /**
  * The lazy args of one finding, cloned out of the resident `Galley` on the
@@ -382,6 +329,19 @@ export type LengthRatioScope = { Book: { z: number } } | { Project: { z: number 
 export type BracketMeasure = "pairing" | "short-span";
 
 /**
+ * Which of `uni.nonletter-usage-anomaly`\'s channels set a finding\'s score — the
+ * **primary reason**, chosen by a fixed priority when several tie. Three
+ * independently sufficient channels (absolute rarity, placement, sequence)
+ * compose with `max`, and placement/sequence each split into the sub-reasons
+ * below, so a consumer can name the exact convention the occurrence stands
+ * against rather than a single opaque \"unusual\".
+ *
+ * Explicitly renamed per variant: these strings are a published localisation
+ * surface and must never depend on an inferred naming convention.
+ */
+export type NonletterReason = "rarity" | "start" | "end" | "topology" | "pair" | "continuation";
+
+/**
  * Which rules to run, plus per-rule knobs. `rules` maps a rule code to a
  * flag; omit a rule to keep it enabled (default-on). TS: `{ rules?:
  * Partial<Record<RuleId, boolean>>, proportionality?: … }` — `RuleId` is
@@ -393,14 +353,12 @@ export interface SousConfig {
     review?: ReviewPolicyInput;
     proportionality?: ProportionalityOverrides;
     casing?: CasingOverrides;
-    punctuation_adjacency?: PunctuationAdjacencyOverrides;
-    punctuation_spacing?: PunctuationSpacingOverrides;
     repeated_character_run?: RepeatedCharacterRunOverrides;
-    punct_only_token?: PunctOnlyTokenOverrides;
     mixed_script?: MixedScriptOverrides;
     rare_glyph?: RareGlyphOverrides;
     mixed_case?: MixedCaseOverrides;
     untranslated_words?: UntranslatedWordsOverrides;
+    nonletter_usage?: NonletterUsageOverrides;
 }
 
 export interface ReviewDepthCatalog {

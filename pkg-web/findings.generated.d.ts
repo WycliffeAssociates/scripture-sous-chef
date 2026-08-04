@@ -12,22 +12,20 @@ export type WireRuleId =
   | "prop.length-ratio"
   | "struct.source-marker-leftover"
   | "struct.merge-conflict-marker"
-  | "punct.adjacency-anomaly"
   | "lex.duplicate-word"
-  | "lex.punct-only-token"
   | "uni.combining-mark-without-base"
   | "uni.redundant-zero-width-space"
   | "uni.mixed-script-in-token"
   | "lex.repeated-character-run"
   | "uni.mixed-numeral-systems"
   | "punct.bracket-balance"
-  | "punct.spacing-anomaly"
   | "case.sentence-initial-lowercase"
   | "case.inconsistent-word-casing"
   | "uni.rare-glyph"
   | "case.mixed-case-word"
   | "uni.mixed-normalization"
-  | "lex.untranslated-word";
+  | "lex.untranslated-word"
+  | "uni.nonletter-usage-anomaly";
 
 export type Severity = "error" | "warning" | "info";
 

@@ -179,7 +179,20 @@ fn main() {
             cfg.rules.insert(RuleId::InconsistentWordCasing, false);
             cfg
         }
-        other => panic!("unknown config {other:?} (want default|all|all-pos-only|all-no-casing)"),
+        // Shipped defaults MINUS `uni.nonletter-usage-anomaly` — paired with
+        // "default", the difference is that rule's whole warm contribution. It is
+        // the only mapped, grapheme-reading, retained-site substrate the shipped
+        // default set drives, and it replaced three cheap tape-only ones, so this
+        // is the pair the warm-path packet needs.
+        "default-no-nonletter" => {
+            let mut cfg = Config::v1_defaults();
+            cfg.rules.insert(RuleId::NonletterUsageAnomaly, false);
+            cfg
+        }
+        other => panic!(
+            "unknown config {other:?} \
+             (want default|default-no-nonletter|all|all-pos-only|all-no-casing)"
+        ),
     };
     eprintln!("config: {config_name}");
     let drive_phases = args.iter().any(|a| a == "--drive-phases");
@@ -198,22 +211,37 @@ fn main() {
             "cold seed {code} {config_name}: map {:?} reduce {:?} judge {:?}",
             ph.map, ph.reduce, ph.judge
         );
+        // Plan and map are no longer per-substrate: the chapter-outer scheduler
+        // does them once for every participant, so attributing them per row would
+        // be a fiction. They are reported whole by `schedule_phases()`; the table
+        // keeps the four phases a substrate still owns alone.
+        let (plan, map) = ssc_core::bench::schedule_phases();
+        println!("  scheduler (all participants): plan {plan:?} map {map:?}");
         let cold = ssc_core::bench::drive_phases();
+        const NP: usize = ssc_core::bench::DRIVE_PHASE_NAMES.len();
         println!(
-            "  {:<15} {:>9} {:>9} {:>9} {:>9} {:>9} {:>9} {:>10}",
-            "substrate", "plan", "map", "reduce", "keys", "judge", "materlz", "row total",
+            "  {:<15} {:>9} {:>9} {:>9} {:>9} {:>10}",
+            "substrate",
+            ssc_core::bench::DRIVE_PHASE_NAMES[0],
+            ssc_core::bench::DRIVE_PHASE_NAMES[1],
+            ssc_core::bench::DRIVE_PHASE_NAMES[2],
+            ssc_core::bench::DRIVE_PHASE_NAMES[3],
+            "row total",
         );
         let mut grand = 0f64;
         for (s, name) in ssc_core::bench::SUBSTRATE_NAMES.iter().enumerate() {
-            let cells: Vec<f64> = (0..6).map(|p| cold[s][p].as_secs_f64() * 1e3).collect();
+            let cells: Vec<f64> = (0..NP).map(|p| cold[s][p].as_secs_f64() * 1e3).collect();
             let row: f64 = cells.iter().sum();
             grand += row;
             println!(
-                "  {name:<15} {:>9.4} {:>9.4} {:>9.4} {:>9.4} {:>9.4} {:>9.4} {:>10.4}",
-                cells[0], cells[1], cells[2], cells[3], cells[4], cells[5], row,
+                "  {name:<15} {:>9.4} {:>9.4} {:>9.4} {:>9.4} {:>10.4}",
+                cells[0], cells[1], cells[2], cells[3], row,
             );
         }
-        println!("  {:<15} cold: all substrates, all phases: {grand:.4} ms", "");
+        println!(
+            "  {:<15} cold: all substrates, all owned phases: {grand:.4} ms",
+            ""
+        );
         println!(
             "  {:<15} shared token lane retained: {:.3} MB",
             "",
@@ -261,7 +289,8 @@ fn main() {
     // rebuild + prior/prep bookkeeping) and analyze, and analyze further into
     // the map/reduce/judge phase split (`ssc_core::bench`, bench-probes only).
     // `--drive-phases` additionally decomposes the judge window into the
-    // per-substrate × per-phase table (`ssc_core::bench::drive_phases`): the
+    // per-substrate × per-owned-phase table (`ssc_core::bench::drive_phases`,
+    // 4 columns since the chapter-outer scheduler took plan/map whole): the
     // coarse `judge` figure is one window covering every substrate's whole
     // `drive_*`, and a per-substrate FIXED cost can only be attributed to a
     // phase — planning, mapping, ordered reduction, judge-key discovery,
@@ -284,8 +313,10 @@ fn main() {
         let mut red = Vec::with_capacity(trials);
         let mut jud = Vec::with_capacity(trials);
         let mut findings = 0usize;
-        let mut drives: Vec<[[std::time::Duration; 6]; ssc_core::bench::SUBSTRATE_NAMES.len()]> =
-            Vec::with_capacity(trials);
+        let mut drives: Vec<
+            [[std::time::Duration; ssc_core::bench::DRIVE_PHASE_NAMES.len()];
+                ssc_core::bench::SUBSTRATE_NAMES.len()],
+        > = Vec::with_capacity(trials);
         for _ in 0..trials {
             rot = (rot + 1) % blocks.len();
             let block = blocks[rot].clone();
@@ -333,13 +364,21 @@ fn main() {
             // cannot invent a phase cost. Cell medians are independent, so the
             // row sums are medians of parts, not the median of the whole — close
             // enough to attribute a share, and stated rather than implied.
+            let (plan, map) = ssc_core::bench::schedule_phases();
+            println!("  scheduler (all participants): plan {plan:?} map {map:?}");
+            const NP: usize = ssc_core::bench::DRIVE_PHASE_NAMES.len();
             println!(
-                "  {:<15} {:>9} {:>9} {:>9} {:>9} {:>9} {:>9} {:>10}",
-                "substrate", "plan", "map", "reduce", "keys", "judge", "materlz", "row total",
+                "  {:<15} {:>9} {:>9} {:>9} {:>9} {:>10}",
+                "substrate",
+                ssc_core::bench::DRIVE_PHASE_NAMES[0],
+                ssc_core::bench::DRIVE_PHASE_NAMES[1],
+                ssc_core::bench::DRIVE_PHASE_NAMES[2],
+                ssc_core::bench::DRIVE_PHASE_NAMES[3],
+                "row total",
             );
             let mut grand = 0f64;
             for (s, name) in ssc_core::bench::SUBSTRATE_NAMES.iter().enumerate() {
-                let mut cells = [0f64; 6];
+                let mut cells = [0f64; NP];
                 for (p, cell) in cells.iter_mut().enumerate() {
                     let mut v: Vec<std::time::Duration> = drives.iter().map(|t| t[s][p]).collect();
                     *cell = spike_bench::median(&mut v).as_secs_f64() * 1e3;
@@ -347,11 +386,14 @@ fn main() {
                 let row: f64 = cells.iter().sum();
                 grand += row;
                 println!(
-                    "  {name:<15} {:>9.4} {:>9.4} {:>9.4} {:>9.4} {:>9.4} {:>9.4} {:>10.4}",
-                    cells[0], cells[1], cells[2], cells[3], cells[4], cells[5], row,
+                    "  {name:<15} {:>9.4} {:>9.4} {:>9.4} {:>9.4} {:>10.4}",
+                    cells[0], cells[1], cells[2], cells[3], row,
                 );
             }
-            println!("  {:<15} all substrates, all phases: {grand:.4} ms", "");
+            println!(
+                "  {:<15} all substrates, all owned phases: {grand:.4} ms",
+                ""
+            );
         }
     }
     if flip_probe {

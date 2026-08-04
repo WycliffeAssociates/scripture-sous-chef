@@ -109,21 +109,9 @@ export const WIRE_SCHEMA = Object.freeze(
       "input_dependency": "target-only"
     },
     {
-      "code": 10,
-      "rule_id": "punct.adjacency-anomaly",
-      "digest": "count-pair",
-      "input_dependency": "target-only"
-    },
-    {
       "code": 11,
       "rule_id": "lex.duplicate-word",
       "digest": "none",
-      "input_dependency": "target-only"
-    },
-    {
-      "code": 12,
-      "rule_id": "lex.punct-only-token",
-      "digest": "count-pair",
       "input_dependency": "target-only"
     },
     {
@@ -163,12 +151,6 @@ export const WIRE_SCHEMA = Object.freeze(
       "input_dependency": "target-only"
     },
     {
-      "code": 19,
-      "rule_id": "punct.spacing-anomaly",
-      "digest": "count-pair",
-      "input_dependency": "target-only"
-    },
-    {
       "code": 20,
       "rule_id": "case.sentence-initial-lowercase",
       "digest": "count-pair",
@@ -203,6 +185,12 @@ export const WIRE_SCHEMA = Object.freeze(
       "rule_id": "lex.untranslated-word",
       "digest": "none",
       "input_dependency": "target-and-reference-silent-when-absent"
+    },
+    {
+      "code": 26,
+      "rule_id": "uni.nonletter-usage-anomaly",
+      "digest": "count-pair",
+      "input_dependency": "target-only"
     }
   ]
 }
@@ -250,22 +238,20 @@ export const CODE_TO_RULE = Object.freeze({
   "7": "prop.length-ratio",
   "8": "struct.source-marker-leftover",
   "9": "struct.merge-conflict-marker",
-  "10": "punct.adjacency-anomaly",
   "11": "lex.duplicate-word",
-  "12": "lex.punct-only-token",
   "13": "uni.combining-mark-without-base",
   "14": "uni.redundant-zero-width-space",
   "15": "uni.mixed-script-in-token",
   "16": "lex.repeated-character-run",
   "17": "uni.mixed-numeral-systems",
   "18": "punct.bracket-balance",
-  "19": "punct.spacing-anomaly",
   "20": "case.sentence-initial-lowercase",
   "21": "case.inconsistent-word-casing",
   "22": "uni.rare-glyph",
   "23": "case.mixed-case-word",
   "24": "uni.mixed-normalization",
   "25": "lex.untranslated-word",
+  "26": "uni.nonletter-usage-anomaly",
 });
 
 export const RULE_TO_CODE = Object.freeze({
@@ -279,22 +265,20 @@ export const RULE_TO_CODE = Object.freeze({
   "prop.length-ratio": 7,
   "struct.source-marker-leftover": 8,
   "struct.merge-conflict-marker": 9,
-  "punct.adjacency-anomaly": 10,
   "lex.duplicate-word": 11,
-  "lex.punct-only-token": 12,
   "uni.combining-mark-without-base": 13,
   "uni.redundant-zero-width-space": 14,
   "uni.mixed-script-in-token": 15,
   "lex.repeated-character-run": 16,
   "uni.mixed-numeral-systems": 17,
   "punct.bracket-balance": 18,
-  "punct.spacing-anomaly": 19,
   "case.sentence-initial-lowercase": 20,
   "case.inconsistent-word-casing": 21,
   "uni.rare-glyph": 22,
   "case.mixed-case-word": 23,
   "uni.mixed-normalization": 24,
   "lex.untranslated-word": 25,
+  "uni.nonletter-usage-anomaly": 26,
 });
 
 export const CODE_TO_DIGEST = Object.freeze({
@@ -308,22 +292,20 @@ export const CODE_TO_DIGEST = Object.freeze({
   "7": "count-pair",
   "8": "none",
   "9": "none",
-  "10": "count-pair",
   "11": "none",
-  "12": "count-pair",
   "13": "none",
   "14": "none",
   "15": "count-pair",
   "16": "u32",
   "17": "none",
   "18": "count-pair",
-  "19": "count-pair",
   "20": "count-pair",
   "21": "count-pair",
   "22": "u32",
   "23": "count-pair",
   "24": "u32",
   "25": "none",
+  "26": "count-pair",
 });
 
 export const CODE_TO_INPUT_DEPENDENCY = Object.freeze({
@@ -337,20 +319,18 @@ export const CODE_TO_INPUT_DEPENDENCY = Object.freeze({
   "7": "target-and-reference-silent-when-absent",
   "8": "target-only",
   "9": "target-only",
-  "10": "target-only",
   "11": "target-only",
-  "12": "target-only",
   "13": "target-only",
   "14": "target-only",
   "15": "target-only",
   "16": "target-only",
   "17": "target-only",
   "18": "target-only",
-  "19": "target-only",
   "20": "target-only",
   "21": "target-only",
   "22": "target-only",
   "23": "target-only",
   "24": "target-only",
   "25": "target-and-reference-silent-when-absent",
+  "26": "target-only",
 });

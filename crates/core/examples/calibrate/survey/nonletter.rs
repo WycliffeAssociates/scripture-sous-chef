@@ -2159,3 +2159,79 @@ pub(crate) fn nonletter_fleet(dir: &Path) {
         }
     }
 }
+
+// ───────────────────────────────────────────────────────────────────────────
+// Review Depth volume table for the SHIPPED rule
+// ───────────────────────────────────────────────────────────────────────────
+
+/// Per-corpus finding counts for `uni.nonletter-usage-anomaly` at the three
+/// adjudicated Review Depth anchors (0 / 50 / 100), driven through the shipped
+/// `nonletter_usage_findings` at `config_at_review_depth` — not through the probe's
+/// model. This is what the drift ADR's depth table must cite: the probe's own
+/// per-floor hits count occurrences above a floor, while a finding is one coalesced
+/// maximal run, and the probe predates the class-conditioned topology axis.
+///
+/// Equal-corpus percentiles are computed **zeros included** over every corpus in
+/// the directory, which is the base the drift summary standardised on.
+pub(crate) fn nonletter_depth_fleet(dir: &Path) {
+    use rayon::prelude::*;
+    use ssc_core::ReviewDepth;
+    use ssc_core::signals::nonletter_usage::{config_at_review_depth, nonletter_usage_findings};
+
+    let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
+        .unwrap_or_else(|e| panic!("read {}: {e}", dir.display()))
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "txt"))
+        .collect();
+    files.sort();
+    let total = files.len();
+    eprintln!("nonletter depth table: {total} corpora");
+
+    const DEPTHS: [u8; 3] = [0, 50, 100];
+    let cfgs: Vec<_> = DEPTHS
+        .iter()
+        .map(|&d| config_at_review_depth(ReviewDepth::new(d).unwrap()))
+        .collect();
+
+    let done = std::sync::atomic::AtomicUsize::new(0);
+    let mut rows: Vec<(String, [u64; 3])> = files
+        .par_iter()
+        .map(|f| {
+            let id = f.file_stem().unwrap().to_string_lossy().to_string();
+            let corpus = load_corpus(f);
+            let mut counts = [0u64; 3];
+            for (i, cfg) in cfgs.iter().enumerate() {
+                counts[i] = nonletter_usage_findings(&corpus, cfg).len() as u64;
+            }
+            let n = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+            if n.is_multiple_of(200) {
+                eprintln!("{n}/{total}");
+            }
+            (id, counts)
+        })
+        .collect();
+    rows.sort_by(|a, b| a.0.cmp(&b.0));
+
+    println!("# uni.nonletter-usage-anomaly — Review Depth volume table (SHIPPED rule)");
+    println!("# corpora={total} (zeros included in every percentile)");
+    println!("depth\tfloor\tp50\tp90\tp99\tmax\tfleet\tcorpora_firing");
+    for (i, &d) in DEPTHS.iter().enumerate() {
+        let v: Vec<u64> = rows.iter().map(|(_, c)| c[i]).collect();
+        println!(
+            "{d}\t{:.2}\t{}\t{}\t{}\t{}\t{}\t{}",
+            cfgs[i].emit_score_min,
+            pct_u(&v, 0.50),
+            pct_u(&v, 0.90),
+            pct_u(&v, 0.99),
+            v.iter().copied().max().unwrap_or(0),
+            v.iter().sum::<u64>(),
+            v.iter().filter(|&&n| n > 0).count(),
+        );
+    }
+    println!("\n## per corpus");
+    println!("corpus\tdepth0\tdepth50\tdepth100");
+    for (id, c) in &rows {
+        println!("{id}\t{}\t{}\t{}", c[0], c[1], c[2]);
+    }
+}

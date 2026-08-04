@@ -108,14 +108,22 @@ fn build_config(name: &str) -> Config {
             cfg
         }
         // The nonletter-usage substrate's own retained footprint — plan §7.5's
-        // retained-compact-sites decision is the one this pair measures.
+        // retained-compact-sites decision is the one this pair measures. Both
+        // pairs matter: `all` isolates it beside every other substrate, and
+        // `default` is the shipped set, where it is the ONLY retained-site
+        // substrate.
         "all-no-nonletter" => {
             let mut cfg = build_config("all");
             cfg.rules.insert(RuleId::NonletterUsageAnomaly, false);
             cfg
         }
+        "default-no-nonletter" => {
+            let mut cfg = Config::v1_defaults();
+            cfg.rules.insert(RuleId::NonletterUsageAnomaly, false);
+            cfg
+        }
         other => panic!(
-            "unknown config {other:?} (want default|all|all-no-repeat|all-no-mixed-script|all-no-glyph|all-no-proportionality|all-no-normalization|all-no-bracket|all-no-duplicate|all-no-casing|all-no-mixed-case|all-no-nonletter)"
+            "unknown config {other:?} (want default|all|all-no-repeat|all-no-mixed-script|all-no-glyph|all-no-proportionality|all-no-normalization|all-no-bracket|all-no-duplicate|all-no-casing|all-no-mixed-case|all-no-nonletter|default-no-nonletter)"
         ),
     }
 }
