@@ -620,141 +620,58 @@ struct RatioMapWork<'a> {
     view: crate::substrate::ChapterView<'a>,
 }
 
-/// The reference corpus's chapters by `(slug, chapter token)` — the pairing index
-/// §5.2 requires a reference-declaring substrate to declare. Built once per
-/// analyze; `None` when there is no reference corpus at all.
-type ReferenceChapters<'a> = FxHashMap<(&'a str, &'a str), &'a crate::corpus::ChapterLayout>;
-
-fn index_reference_chapters(source: &Corpus) -> ReferenceChapters<'_> {
-    let mut idx: ReferenceChapters<'_> = FxHashMap::default();
-    for book in source.book_layout() {
-        for c in &book.chapters {
-            // A chapter run may not reopen, so this is a function, not a
-            // multimap — the same invariant that makes the per-key ordinal
-            // chapter-local.
-            idx.insert((&book.slug, &c.chapter), c);
-        }
-    }
-    idx
-}
-
-/// Drive the `proj.length-ratio` observation substrate for one analysis. The one
-/// source-dependent drive: each chapter's stamp carries the paired reference
-/// chapter's hash (or the explicit absent tag), so a reference edit, a reference
-/// replacement, and a reference removal each invalidate exactly the chapters whose
-/// evidence moved — and a target-only substrate's stamps are untouched by all
-/// three.
-pub(crate) fn drive_proportionality(
+/// Plan the `proj.length-ratio` substrate's share of this analysis: enrol it in
+/// the chapter-outer schedule for exactly the chapters whose observation input
+/// stamp moved. When inactive, drop the cached products so an edit while it is
+/// disabled does no work for it, and enrol nothing.
+///
+/// One of the two source-dependent plans, alongside `lex.untranslated-word`: each
+/// chapter's stamp carries the paired reference chapter's hash (or the explicit
+/// absent tag), so a reference edit, a reference replacement, and a reference
+/// removal each invalidate exactly the chapters whose evidence moved — and a
+/// target-only substrate's stamps are untouched by all three.
+pub(crate) fn plan_proportionality<'a>(
     active: bool,
     cache: &mut crate::substrate::SubstrateCache<ProportionalitySubstrate>,
-    corpus: &Corpus,
-    source: Option<&Corpus>,
-    cfg: &ProportionalityConfig,
-    out: &mut Vec<Finding>,
-) {
-    use crate::substrate::{
-        ChapterView, DrivePhase, DriveProbe, ObservationInputStamp, ObservationSubstrate,
-        PairedView,
-    };
+    schedule: &mut crate::schedule::Schedule<'a>,
+    reference: Option<&crate::schedule::ReferencePairingIndex<'a>>,
+) -> Option<crate::schedule::SubstratePlan<'a, ProportionalitySubstrate>> {
+    use crate::substrate::ObservationInputStamp;
     #[cfg(any(test, feature = "test-probes"))]
     cache.reset_probes();
     if !active {
         cache.clear();
-        return;
+        return None;
     }
-    let mut probe = DriveProbe::new(crate::substrate::SubstrateId::Proportionality);
-    let keys = corpus.keys();
-    let texts = corpus.texts();
-    let layout = corpus.book_layout();
-    let reference = source.map(index_reference_chapters);
-    let src_keys = source.map(Corpus::keys);
-    let src_texts = source.map(Corpus::texts);
-    // Borrowed chapter tokens: the layout owns them and outlives the drive, so
-    // the planning pass never allocates. `update_book` takes ownership only
-    // where it rebuilds a persistent cache entry.
-    let mut stamped: Vec<Vec<(&str, ObservationInputStamp)>> = Vec::with_capacity(layout.len());
-    let mut work: Vec<RatioMapWork<'_>> = Vec::new();
-    let mut book_runs: Vec<std::ops::Range<usize>> = Vec::new();
-    let mut work_bytes = 0usize;
-    // The paired view for one target chapter: its own keys/texts plus the
-    // reference chapter carrying the same `(slug, token)`, if any.
-    let paired_view = |slug: &str, c: &crate::corpus::ChapterLayout| -> Option<PairedView<'_>> {
-        let rc = reference.as_ref()?.get(&(slug, &*c.chapter))?;
-        Some(PairedView {
-            keys: &keys[c.range.clone()],
-            reference_keys: &src_keys?[rc.range.clone()],
-            reference_texts: &src_texts?[rc.range.clone()],
-        })
-    };
-    for (bi, book) in layout.iter().enumerate() {
-        let run_start = work.len();
-        let mut chapters = Vec::with_capacity(book.chapters.len());
-        for (ci, c) in book.chapters.iter().enumerate() {
-            let paired = paired_view(&book.slug, c);
-            // The declared reference half of the stamp (plan §5.2). `with_reference`
-            // will not compile for a substrate whose registry entry is `TargetOnly`,
-            // and `target_only` will not compile here — the declaration, not this
-            // driver, decides which stamp shape is legal.
-            let stamp = ObservationInputStamp::with_reference::<ProportionalitySubstrate>(
+    Some(
+        schedule.enrol::<ProportionalitySubstrate>(cache, |slug, c| {
+            // `with_reference` will not compile for a substrate whose registry entry
+            // is `TargetOnly`, and `target_only` will not compile here — the
+            // declaration, not this planner, decides which stamp shape is legal.
+            ObservationInputStamp::with_reference::<ProportionalitySubstrate>(
                 c.hash,
                 &(),
-                reference
-                    .as_ref()
-                    .and_then(|idx| idx.get(&(&*book.slug, &*c.chapter)))
-                    .map(|rc| rc.hash),
-            );
-            if !cache.observation_is_current(&book.slug, &c.chapter, &stamp) {
-                let verses = &texts[c.range.clone()];
-                work_bytes += verses.iter().map(String::len).sum::<usize>();
-                work.push(RatioMapWork {
-                    book: bi,
-                    chapter: ci,
-                    view: ChapterView::paired::<ProportionalitySubstrate>(
-                        &c.chapter, verses, paired,
-                    ),
-                });
-            }
-            chapters.push((&*c.chapter, stamp));
-        }
-        if work.len() > run_start {
-            book_runs.push(run_start..work.len());
-        }
-        stamped.push(chapters);
-    }
-    probe.mark(DrivePhase::Plan);
-    let route = crate::rule::map_route(&book_runs, work.len(), work_bytes);
-    #[cfg(any(test, feature = "test-probes"))]
-    {
-        cache.map_route = route.label();
-    }
-    let fresh = crate::rule::map_chapter_work(&work, &book_runs, route, |w| {
-        ProportionalitySubstrate::map_chapter(&w.view, &(), &())
-    });
-    // Back into caller-order `(book, chapter)` slots, so reduction reads them in
-    // corpus order and never in completion order.
-    let mut slots: Vec<Vec<Option<RatioChapterObs>>> = layout
-        .iter()
-        .map(|b| (0..b.chapters.len()).map(|_| None).collect())
-        .collect();
-    for (w, obs) in work.iter().zip(fresh) {
-        slots[w.book][w.chapter] = Some(obs);
-    }
-    probe.mark(DrivePhase::Map);
+                reference.and_then(|r| r.hash_of(slug, &c.chapter)),
+            )
+        }),
+    )
+}
+
+/// Reduce, judge and materialize `proj.length-ratio` from the observations the
+/// chapter-outer scheduler mapped.
+pub(crate) fn finish_proportionality(
+    cache: &mut crate::substrate::SubstrateCache<ProportionalitySubstrate>,
+    corpus: &Corpus,
+    cfg: &ProportionalityConfig,
+    plan: crate::schedule::SubstratePlan<'_, ProportionalitySubstrate>,
+    out: &mut Vec<Finding>,
+) {
+    use crate::substrate::{DrivePhase, DriveProbe, ObservationSubstrate};
+    let mut probe = DriveProbe::new(crate::substrate::SubstrateId::Proportionality);
+    let layout = corpus.book_layout();
+    let crate::schedule::SubstratePlan { stamped, mut slots } = plan;
     for (bi, book) in layout.iter().enumerate() {
-        cache.update_book(&book.slug, &stamped[bi], &(), |i| {
-            slots[bi][i].take().unwrap_or_else(|| {
-                let c = &book.chapters[i];
-                ProportionalitySubstrate::map_chapter(
-                    &ChapterView::paired::<ProportionalitySubstrate>(
-                        &c.chapter,
-                        &texts[c.range.clone()],
-                        paired_view(&book.slug, c),
-                    ),
-                    &(),
-                    &(),
-                )
-            })
-        });
+        cache.update_book(&book.slug, &stamped[bi], &(), |i| slots.take(bi, i));
     }
     probe.mark(DrivePhase::Reduce);
     // The judge key set is the aggregate's own book set — one verdict per book,
@@ -782,6 +699,32 @@ pub(crate) fn drive_proportionality(
         }
     }
     probe.mark(DrivePhase::Materialize);
+}
+
+/// The whole substrate on its own, over one caller-held cache — the shape the
+/// per-rule convenience entry point and its tests use. Same planning pass, same
+/// chapter task, same `finish_*`; only the participation mask is narrower.
+pub(crate) fn drive_proportionality(
+    active: bool,
+    cache: &mut crate::substrate::SubstrateCache<ProportionalitySubstrate>,
+    corpus: &Corpus,
+    source: Option<&Corpus>,
+    cfg: &ProportionalityConfig,
+    out: &mut Vec<Finding>,
+) {
+    let keys = corpus.keys();
+    let reference = crate::schedule::ReferencePairingIndex::new(source);
+    let mut schedule = crate::schedule::Schedule::new(corpus);
+    let Some(mut plan) = plan_proportionality(active, cache, &mut schedule, reference.as_ref())
+    else {
+        return;
+    };
+    schedule.run_solo::<ProportionalitySubstrate>(&mut plan, &(), &(), |slug, c| {
+        reference
+            .as_ref()
+            .and_then(|r| r.view_of(&keys[c.range.clone()], slug, &c.chapter))
+    });
+    finish_proportionality(cache, corpus, cfg, plan, out);
 }
 
 /// `proj.length-ratio` findings for a whole corpus at a given config, via the

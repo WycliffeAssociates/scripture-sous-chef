@@ -12,7 +12,7 @@ use crate::config::RepeatedCharacterRunConfig;
 use crate::corpus::{Corpus, LocalKeyIdx, SiteAddr, rebase};
 use crate::diagnostics::{Finding, FindingArgs, RuleId, Severity};
 use crate::evidence;
-use crate::grapheme::{GSpan, segment, segment_tape};
+use crate::grapheme::{GSpan, segment};
 use crate::span::Span;
 use crate::tape::TapeEntry;
 use crate::token::Token;

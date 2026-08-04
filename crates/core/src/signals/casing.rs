@@ -2875,7 +2875,7 @@ pub(crate) fn finish_casing(
         retained,
         symbols,
     } = state;
-    use crate::substrate::{DrivePhase, DriveProbe, ObservationSubstrate, SubstratePatch};
+    use crate::substrate::{DrivePhase, DriveProbe, SubstratePatch};
     let mut probe = DriveProbe::new(crate::substrate::SubstrateId::Casing);
     let layout = corpus.book_layout();
     let crate::schedule::SubstratePlan { stamped, mut slots } = plan;

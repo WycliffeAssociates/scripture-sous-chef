@@ -2,8 +2,8 @@
 //! source-paired tier plan
 //! (`documentation/plans/2026-07-30-source-paired-tier-plan.md`). Mirrors
 //! `signals::proportionality`'s paired-drive precedent end to end:
-//! `ChapterView::paired`, `ObservationInputStamp::with_reference`,
-//! `index_reference_chapters` (pairing by verse key, never position).
+//! `ObservationInputStamp::with_reference` and the scheduler's shared
+//! `ReferencePairingIndex` (pairing by verse key, never position).
 //!
 //! For each target verse, a target token is "copied" when its NFC +
 //! Unicode-lowercased form (see `fold_via` — deliberately not full case
@@ -181,23 +181,6 @@ pub(crate) struct UntranslatedWordsSubstrate;
 
 const _: crate::substrate::SubstrateId =
     <UntranslatedWordsSubstrate as crate::substrate::ObservationSubstrate>::ID;
-
-/// Index the reference corpus by key string, in presented order — pairing is
-/// by (exact key string, occurrence ordinal), never position. Mirrors
-/// `signals::proportionality::index_reference_chapters` exactly (duplicated
-/// rather than shared: the two substrates' driving loops are independent and
-/// each is small enough that sharing would cost more coupling than it saves).
-type ReferenceChapters<'a> = FxHashMap<(&'a str, &'a str), &'a crate::corpus::ChapterLayout>;
-
-fn index_reference_chapters(source: &Corpus) -> ReferenceChapters<'_> {
-    let mut idx: ReferenceChapters<'_> = FxHashMap::default();
-    for book in source.book_layout() {
-        for c in &book.chapters {
-            idx.insert((&book.slug, &c.chapter), c);
-        }
-    }
-    idx
-}
 
 /// One chapter's map: which target tokens are copied from the paired
 /// reference verse, by (exact key string, occurrence ordinal).
@@ -576,118 +559,48 @@ impl WordBookContribution {
     }
 }
 
-/// One chapter the substrate has to map, as the ordered map seam sees it —
-/// mirrors `proportionality::RatioMapWork` exactly.
-struct WordMapWork<'a> {
-    book: usize,
-    chapter: usize,
-    view: crate::substrate::ChapterView<'a>,
-}
-
-/// Drive the `lex.untranslated-word` observation substrate for one analysis.
-/// Structurally identical to `proportionality::drive_proportionality` (the
-/// plan's "paired-drive precedent end to end") — the one source-dependent
-/// drive shape, applied to a second substrate.
-pub(crate) fn drive_untranslated_words(
+/// Plan the `lex.untranslated-word` substrate's share of this analysis. The
+/// second source-dependent plan; structurally identical to
+/// `proportionality::plan_proportionality`.
+pub(crate) fn plan_untranslated_words<'a>(
     active: bool,
     cache: &mut crate::substrate::SubstrateCache<UntranslatedWordsSubstrate>,
-    corpus: &Corpus,
-    source: Option<&Corpus>,
-    cfg: &UntranslatedWordsConfig,
-    out: &mut Vec<Finding>,
-) {
-    use crate::substrate::{
-        ChapterView, DrivePhase, DriveProbe, ObservationInputStamp, ObservationSubstrate,
-        PairedView,
-    };
+    schedule: &mut crate::schedule::Schedule<'a>,
+    reference: Option<&crate::schedule::ReferencePairingIndex<'a>>,
+) -> Option<crate::schedule::SubstratePlan<'a, UntranslatedWordsSubstrate>> {
+    use crate::substrate::ObservationInputStamp;
     #[cfg(any(test, feature = "test-probes"))]
     cache.reset_probes();
     if !active {
         cache.clear();
-        return;
+        return None;
     }
-    let mut probe = DriveProbe::new(crate::substrate::SubstrateId::UntranslatedWords);
-    let keys = corpus.keys();
-    let texts = corpus.texts();
-    let layout = corpus.book_layout();
-    let reference = source.map(index_reference_chapters);
-    let src_keys = source.map(Corpus::keys);
-    let src_texts = source.map(Corpus::texts);
-    let mut stamped: Vec<Vec<(&str, ObservationInputStamp)>> = Vec::with_capacity(layout.len());
-    let mut work: Vec<WordMapWork<'_>> = Vec::new();
-    let mut book_runs: Vec<std::ops::Range<usize>> = Vec::new();
-    let mut work_bytes = 0usize;
-    let paired_view = |slug: &str, c: &crate::corpus::ChapterLayout| -> Option<PairedView<'_>> {
-        let rc = reference.as_ref()?.get(&(slug, &*c.chapter))?;
-        Some(PairedView {
-            keys: &keys[c.range.clone()],
-            reference_keys: &src_keys?[rc.range.clone()],
-            reference_texts: &src_texts?[rc.range.clone()],
-        })
-    };
-    for (bi, book) in layout.iter().enumerate() {
-        let run_start = work.len();
-        let mut chapters = Vec::with_capacity(book.chapters.len());
-        for (ci, c) in book.chapters.iter().enumerate() {
-            let paired = paired_view(&book.slug, c);
-            let stamp = ObservationInputStamp::with_reference::<UntranslatedWordsSubstrate>(
+    Some(
+        schedule.enrol::<UntranslatedWordsSubstrate>(cache, |slug, c| {
+            ObservationInputStamp::with_reference::<UntranslatedWordsSubstrate>(
                 c.hash,
                 &(),
-                reference
-                    .as_ref()
-                    .and_then(|idx| idx.get(&(&*book.slug, &*c.chapter)))
-                    .map(|rc| rc.hash),
-            );
-            if !cache.observation_is_current(&book.slug, &c.chapter, &stamp) {
-                let verses = &texts[c.range.clone()];
-                work_bytes += verses.iter().map(String::len).sum::<usize>();
-                work.push(WordMapWork {
-                    book: bi,
-                    chapter: ci,
-                    view: ChapterView::paired::<UntranslatedWordsSubstrate>(
-                        &c.chapter, verses, paired,
-                    ),
-                });
-            }
-            chapters.push((&*c.chapter, stamp));
-        }
-        if work.len() > run_start {
-            book_runs.push(run_start..work.len());
-        }
-        stamped.push(chapters);
-    }
-    probe.mark(DrivePhase::Plan);
-    let route = crate::rule::map_route(&book_runs, work.len(), work_bytes);
-    #[cfg(any(test, feature = "test-probes"))]
-    {
-        cache.map_route = route.label();
-    }
-    let fresh = crate::rule::map_chapter_work(&work, &book_runs, route, |w| {
-        UntranslatedWordsSubstrate::map_chapter(&w.view, &(), &())
-    });
-    let mut slots: Vec<Vec<Option<WordChapterObs>>> = layout
-        .iter()
-        .map(|b| (0..b.chapters.len()).map(|_| None).collect())
-        .collect();
-    for (w, obs) in work.iter().zip(fresh) {
-        slots[w.book][w.chapter] = Some(obs);
-    }
-    probe.mark(DrivePhase::Map);
+                reference.and_then(|r| r.hash_of(slug, &c.chapter)),
+            )
+        }),
+    )
+}
+
+/// Reduce, judge and materialize `lex.untranslated-word` from the observations
+/// the chapter-outer scheduler mapped.
+pub(crate) fn finish_untranslated_words(
+    cache: &mut crate::substrate::SubstrateCache<UntranslatedWordsSubstrate>,
+    corpus: &Corpus,
+    cfg: &UntranslatedWordsConfig,
+    plan: crate::schedule::SubstratePlan<'_, UntranslatedWordsSubstrate>,
+    out: &mut Vec<Finding>,
+) {
+    use crate::substrate::{DrivePhase, DriveProbe, ObservationSubstrate};
+    let mut probe = DriveProbe::new(crate::substrate::SubstrateId::UntranslatedWords);
+    let layout = corpus.book_layout();
+    let crate::schedule::SubstratePlan { stamped, mut slots } = plan;
     for (bi, book) in layout.iter().enumerate() {
-        cache.update_book(&book.slug, &stamped[bi], &(), |i| {
-            slots[bi][i].take().unwrap_or_else(|| {
-                let c = &book.chapters[i];
-                UntranslatedWordsSubstrate::map_chapter(
-                    &ChapterView::paired::<UntranslatedWordsSubstrate>(
-                        &c.chapter,
-                        &texts[c.range.clone()],
-                        paired_view(&book.slug, c),
-                    ),
-                    &(),
-                    &(),
-                )
-            })
-        });
+        cache.update_book(&book.slug, &stamped[bi], &(), |i| slots.take(bi, i));
     }
     probe.mark(DrivePhase::Reduce);
     // The judge key set is always exactly `{()}` — one corpus-wide verdict,
@@ -705,6 +618,32 @@ pub(crate) fn drive_untranslated_words(
         }
     }
     probe.mark(DrivePhase::Materialize);
+}
+
+/// The whole substrate on its own, over one caller-held cache — the shape the
+/// per-rule convenience entry point and its tests use. Same planning pass, same
+/// chapter task, same `finish_*`; only the participation mask is narrower.
+pub(crate) fn drive_untranslated_words(
+    active: bool,
+    cache: &mut crate::substrate::SubstrateCache<UntranslatedWordsSubstrate>,
+    corpus: &Corpus,
+    source: Option<&Corpus>,
+    cfg: &UntranslatedWordsConfig,
+    out: &mut Vec<Finding>,
+) {
+    let keys = corpus.keys();
+    let reference = crate::schedule::ReferencePairingIndex::new(source);
+    let mut schedule = crate::schedule::Schedule::new(corpus);
+    let Some(mut plan) = plan_untranslated_words(active, cache, &mut schedule, reference.as_ref())
+    else {
+        return;
+    };
+    schedule.run_solo::<UntranslatedWordsSubstrate>(&mut plan, &(), &(), |slug, c| {
+        reference
+            .as_ref()
+            .and_then(|r| r.view_of(&keys[c.range.clone()], slug, &c.chapter))
+    });
+    finish_untranslated_words(cache, corpus, cfg, plan, out);
 }
 
 /// `lex.untranslated-word` findings for a whole corpus at a given config, via

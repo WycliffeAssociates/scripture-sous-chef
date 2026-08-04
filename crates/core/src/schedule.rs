@@ -99,6 +99,72 @@ impl SubstrateMask {
     }
 }
 
+/// One reference corpus, resolved once per analyze into the pairing every
+/// reference-declaring participant reads.
+///
+/// The pairing is by `(slug, chapter token)`, and that is sound because a key's
+/// chapter token is *parsed from the key* and a chapter run may not reopen: every
+/// occurrence of a key string therefore lies inside one chapter run, on both
+/// sides. So a target chapter's reference evidence is exactly the reference
+/// chapter carrying the same token in the same book — never a wider scope, and
+/// never a cross-slug read.
+///
+/// Resolved by the scheduler rather than per substrate because the chapter task
+/// hands one pairing to every participant. Before the chapter-outer schedule each
+/// reference-declaring drive built this index itself, which meant two identical
+/// whole-reference walks whenever both were active.
+pub(crate) struct ReferencePairingIndex<'a> {
+    chapters: rustc_hash::FxHashMap<(&'a str, &'a str), &'a ChapterLayout>,
+    keys: &'a [String],
+    texts: &'a [String],
+}
+
+impl<'a> ReferencePairingIndex<'a> {
+    pub(crate) fn new(source: Option<&'a Corpus>) -> Option<Self> {
+        let source = source?;
+        let mut chapters: rustc_hash::FxHashMap<(&'a str, &'a str), &'a ChapterLayout> =
+            rustc_hash::FxHashMap::default();
+        for book in source.book_layout() {
+            for c in &book.chapters {
+                // A chapter run may not reopen, so this is a function, not a
+                // multimap — the same invariant that makes the per-key ordinal
+                // chapter-local.
+                chapters.insert((&book.slug, &c.chapter), c);
+            }
+        }
+        Some(ReferencePairingIndex {
+            chapters,
+            keys: source.keys(),
+            texts: source.texts(),
+        })
+    }
+
+    /// The paired reference chapter's content hash, for the declared half of a
+    /// reference-declaring substrate's [`ObservationInputStamp`]. `None` means
+    /// nothing pairs with this chapter, which stamps as an explicit absent tag —
+    /// distinct from "not declared", so a reference appearing or disappearing
+    /// invalidates exactly the observations whose evidence moved.
+    pub(crate) fn hash_of(&self, slug: &str, token: &str) -> Option<u128> {
+        self.chapters.get(&(slug, token)).map(|rc| rc.hash)
+    }
+
+    /// The paired view for one target chapter: its own keys plus the reference
+    /// chapter's keys and texts.
+    pub(crate) fn view_of(
+        &self,
+        target_keys: &'a [String],
+        slug: &str,
+        token: &str,
+    ) -> Option<PairedView<'a>> {
+        let rc = self.chapters.get(&(slug, token))?;
+        Some(PairedView {
+            keys: target_keys,
+            reference_keys: &self.keys[rc.range.clone()],
+            reference_texts: &self.texts[rc.range.clone()],
+        })
+    }
+}
+
 /// One chapter's accumulated scheduling facts, before the work list is built.
 #[derive(Clone, Copy, Default)]
 struct Cell {
@@ -153,6 +219,42 @@ pub(crate) struct MappedChapterBundle {
     pub(crate) duplicate_word: Option<crate::signals::lexical::DuplicateChapterObs>,
     pub(crate) mixed_case: Option<crate::signals::mixed_case::MixedCaseChapterObs>,
     pub(crate) casing: Option<crate::signals::casing::CasingChapterObs>,
+    pub(crate) proportionality: Option<crate::signals::proportionality::RatioChapterObs>,
+    pub(crate) untranslated_words: Option<crate::signals::untranslated_words::WordChapterObs>,
+}
+
+impl MappedChapterBundle {
+    /// Which substrate slots this bundle actually filled — the observable half of
+    /// the closed-set guard `the_chapter_task_maps_every_substrate_it_is_given`
+    /// needs. Exhaustive over [`SubstrateId`], so a new substrate is a compile
+    /// error here too.
+    #[cfg(test)]
+    fn filled(&self) -> SubstrateMask {
+        let mut m = SubstrateMask::EMPTY;
+        for (id, present) in [
+            (SubstrateId::Spacing, self.spacing.is_some()),
+            (SubstrateId::Adjacency, self.adjacency.is_some()),
+            (SubstrateId::RepeatedRun, self.repeated_run.is_some()),
+            (SubstrateId::PunctOnly, self.punct_only.is_some()),
+            (SubstrateId::MixedScript, self.mixed_script.is_some()),
+            (SubstrateId::Glyph, self.glyph.is_some()),
+            (SubstrateId::Proportionality, self.proportionality.is_some()),
+            (SubstrateId::Normalization, self.normalization.is_some()),
+            (SubstrateId::Bracket, self.bracket.is_some()),
+            (SubstrateId::DuplicateWord, self.duplicate_word.is_some()),
+            (SubstrateId::Casing, self.casing.is_some()),
+            (SubstrateId::MixedCase, self.mixed_case.is_some()),
+            (
+                SubstrateId::UntranslatedWords,
+                self.untranslated_words.is_some(),
+            ),
+        ] {
+            if present {
+                m.insert(id);
+            }
+        }
+        m
+    }
 }
 
 /// The inputs a chapter task needs beyond the corpus text: the shared
@@ -539,6 +641,19 @@ fn map_one_chapter(w: &ChapterMapWork<'_>, ctx: &MapContext<'_>) -> MappedChapte
             ctx.words,
         ));
     }
+    // The two reference-declaring participants. `ChapterView::scheduled` is what
+    // grants them the pairing and withholds it from everyone else, through their
+    // `Pairing` type rather than through this block's ordering.
+    if w.participants.contains(SubstrateId::Proportionality) {
+        bundle.proportionality = Some(map_participant::<
+            crate::signals::proportionality::ProportionalitySubstrate,
+        >(w.token, w.texts, &prep, w.paired, &(), &()));
+    }
+    if w.participants.contains(SubstrateId::UntranslatedWords) {
+        bundle.untranslated_words = Some(map_participant::<
+            crate::signals::untranslated_words::UntranslatedWordsSubstrate,
+        >(w.token, w.texts, &prep, w.paired, &(), &()));
+    }
     bundle
 }
 
@@ -608,5 +723,90 @@ mod tests {
             assert!(all.contains(id));
         }
         assert_eq!(all.0.count_ones() as usize, SubstrateId::ALL.len());
+    }
+
+    /// THE CLOSED-SET GUARD. For every `SubstrateId`, a chapter task given exactly
+    /// that participant must fill exactly that bundle slot.
+    ///
+    /// Both halves matter, and both were real defects while this module was being
+    /// built. A missing arm in [`map_one_chapter`] left the bit set and the slot
+    /// empty, which `scatter` can only discover as a runtime panic on the first
+    /// corpus that reaches it; an arm keyed to the wrong id would fill a
+    /// neighbour's slot and hand one substrate another's observation. Neither is
+    /// something the type system catches, because every arm is well typed on its
+    /// own — so it is pinned here instead.
+    #[test]
+    fn the_chapter_task_maps_every_substrate_it_is_given() {
+        // Verse texts rich enough that no mapper's output depends on finding
+        // something: `filled()` reports slot presence, not emptiness, so even a
+        // mapper that observes nothing must still fill its slot.
+        let texts: Vec<String> = [
+            "In the beginning, God created;",
+            "a  b) \"word\" ४५ e\u{0301}",
+        ]
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
+        let words = crate::interner::WordInterner::default();
+        let per_verse: Vec<Box<dyn crate::rule::PerVerseRule>> = Vec::new();
+        let ctx = MapContext {
+            words: &words,
+            per_verse: &per_verse,
+        };
+        for &id in SubstrateId::ALL {
+            let mut participants = SubstrateMask::EMPTY;
+            participants.insert(id);
+            // The union of one participant's needs is its own declaration; a
+            // mapper reading a view it did not declare panics in the accessor,
+            // which is the other half of the contract this exercises.
+            let needs = needs_of(id);
+            let work = ChapterMapWork {
+                book: 0,
+                chapter: 0,
+                token: "1",
+                texts: &texts,
+                paired: None,
+                participants,
+                needs,
+                direct: false,
+            };
+            let bundle = map_one_chapter(&work, &ctx);
+            assert_eq!(
+                bundle.filled(),
+                participants,
+                "the chapter task given only {id:?} filled a different slot set — its \
+                 participant arm is missing or keyed to the wrong id"
+            );
+        }
+    }
+
+    /// The declared needs of one substrate by id — the exhaustive match that lets
+    /// the guard above drive every participant without naming its type twice.
+    #[cfg(test)]
+    fn needs_of(id: SubstrateId) -> PrepNeeds {
+        use crate::signals::{
+            bracket_balance::BracketSubstrate, casing::CasingSubstrate,
+            lexical::DuplicateWordSubstrate, lexical::PunctOnlySubstrate,
+            lexical::RepeatedRunSubstrate, mixed_case::MixedCaseSubstrate,
+            mixed_normalization::NormalizationSubstrate, proportionality::ProportionalitySubstrate,
+            punctuation::AdjacencySubstrate, punctuation::SpacingSubstrate,
+            rare_glyph::GlyphSubstrate, script_mixing::MixedScriptSubstrate,
+            untranslated_words::UntranslatedWordsSubstrate,
+        };
+        match id {
+            SubstrateId::Spacing => SpacingSubstrate::NEEDS,
+            SubstrateId::Adjacency => AdjacencySubstrate::NEEDS,
+            SubstrateId::RepeatedRun => RepeatedRunSubstrate::NEEDS,
+            SubstrateId::PunctOnly => PunctOnlySubstrate::NEEDS,
+            SubstrateId::MixedScript => MixedScriptSubstrate::NEEDS,
+            SubstrateId::Glyph => GlyphSubstrate::NEEDS,
+            SubstrateId::Proportionality => ProportionalitySubstrate::NEEDS,
+            SubstrateId::Normalization => NormalizationSubstrate::NEEDS,
+            SubstrateId::Bracket => BracketSubstrate::NEEDS,
+            SubstrateId::DuplicateWord => DuplicateWordSubstrate::NEEDS,
+            SubstrateId::Casing => CasingSubstrate::NEEDS,
+            SubstrateId::MixedCase => MixedCaseSubstrate::NEEDS,
+            SubstrateId::UntranslatedWords => UntranslatedWordsSubstrate::NEEDS,
+        }
     }
 }

@@ -632,6 +632,23 @@ fn transition(
         &mut schedule,
         &mut substrate_lane,
     );
+    // One reference pairing index for the whole analyze, read by every
+    // reference-declaring participant. Two identical whole-reference walks used to
+    // happen whenever both were active.
+    let reference = schedule::ReferencePairingIndex::new(source);
+    let target_keys = target.keys();
+    let mut proportionality_plan = signals::proportionality::plan_proportionality(
+        active.proportionality,
+        &mut substrates.proportionality,
+        &mut schedule,
+        reference.as_ref(),
+    );
+    let mut untranslated_words_plan = signals::untranslated_words::plan_untranslated_words(
+        active.untranslated_words,
+        &mut substrates.untranslated_words,
+        &mut schedule,
+        reference.as_ref(),
+    );
     let mut casing_plan = signals::casing::plan_casing(
         config.is_enabled(RuleId::SentenceInitialLowercase),
         config.is_enabled(RuleId::InconsistentWordCasing),
@@ -645,7 +662,11 @@ fn transition(
             words: &substrates.words,
             per_verse: &per_verse,
         },
-        |_slug, _chapter| None,
+        |slug, chapter| {
+            reference.as_ref().and_then(|r| {
+                r.view_of(&target_keys[chapter.range.clone()], slug, &chapter.chapter)
+            })
+        },
     );
     if let Some(plan) = spacing_plan.as_mut() {
         schedule::scatter(&work, &mut mapped, plan, |b| b.spacing.take());
@@ -679,6 +700,12 @@ fn transition(
     }
     if let Some((plan, _)) = casing_plan.as_mut() {
         schedule::scatter(&work, &mut mapped, plan, |b| b.casing.take());
+    }
+    if let Some(plan) = proportionality_plan.as_mut() {
+        schedule::scatter(&work, &mut mapped, plan, |b| b.proportionality.take());
+    }
+    if let Some(plan) = untranslated_words_plan.as_mut() {
+        schedule::scatter(&work, &mut mapped, plan, |b| b.untranslated_words.take());
     }
     drop(mapped);
     drop(work);
@@ -737,14 +764,15 @@ fn transition(
             &mut out,
         );
     }
-    signals::proportionality::drive_proportionality(
-        active.proportionality,
-        &mut substrates.proportionality,
-        target,
-        source,
-        &config.proportionality,
-        &mut out,
-    );
+    if let Some(plan) = proportionality_plan {
+        signals::proportionality::finish_proportionality(
+            &mut substrates.proportionality,
+            target,
+            &config.proportionality,
+            plan,
+            &mut out,
+        );
+    }
     // Oracle pin-move (source-paired tier plan, Phase C): the substrate
     // landed excluded from both oracle configs (this call did not exist
     // yet); this is the one line that activates it. `v1_defaults()` still
@@ -753,14 +781,15 @@ fn transition(
     // forces every RuleId::ALL member enabled, so this is the change that
     // makes it produce real findings there (see the pin-move's own commit
     // for the measured drift).
-    signals::untranslated_words::drive_untranslated_words(
-        active.untranslated_words,
-        &mut substrates.untranslated_words,
-        target,
-        source,
-        &config.untranslated_words,
-        &mut out,
-    );
+    if let Some(plan) = untranslated_words_plan {
+        signals::untranslated_words::finish_untranslated_words(
+            &mut substrates.untranslated_words,
+            target,
+            &config.untranslated_words,
+            plan,
+            &mut out,
+        );
+    }
     if let Some(plan) = normalization_plan {
         signals::mixed_normalization::finish_normalization(
             &mut substrates.normalization,
