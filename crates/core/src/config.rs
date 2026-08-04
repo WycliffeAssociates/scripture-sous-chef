@@ -615,15 +615,22 @@ impl Default for MixedCaseConfig {
 
 /// Knobs for `uni.nonletter-usage-anomaly`.
 ///
-/// **The two recurrence-knee constants are PROVISIONAL.** They are ADR 0050's own
-/// shipped pair (base 32, slope 40), adopted because that is the codebase's
-/// calibrated answer to this exact question, and they are the only setting measured
-/// to preserve the ADR 0054 adjudicated multilingual wins. They also **fail** the
-/// depth-50 volume gate — 53,383 fleet findings against a ~30,650 budget, p99 145
-/// against a 75 ceiling — and no `(base, slope)` pair satisfies both at once. That
-/// frontier is reported, not resolved; see calibration addendum §D and the epic
-/// progress log's Entry 13. The rule is additive until the three retired rules are
-/// deleted, and that deletion is blocked on this adjudication.
+/// **The constants are FINAL** (epic progress log Entry 16). The two recurrence
+/// knees carry ADR 0050's opportunity-proportional shape with its own shipped base
+/// and slope; the topology tally is conditioned on a coarse outer content class.
+/// Measured over the 1,504-corpus fleet at depth 50, against the three rules this
+/// replaces — on one identical corpus base, zeros included:
+///
+/// ```text
+/// series                     p50   p90   p99   fleet
+/// the retired trio            18    61   170   40,859
+/// this rule                   12    52   127   33,265
+/// ```
+///
+/// Strictly cheaper on every axis (0.81× fleet) while preserving every adjudicated
+/// multilingual win. Default users move from the retired default-ON *pair* (p50 3,
+/// p99 71, 13,835) to this, which is deliberately heavier because defaults now
+/// include the spacing domain they never had — the owner-ratified default-on intent.
 ///
 /// Every field is a **judging** knob —
 /// the observation substrate has no extraction config at all — so a change here

@@ -1504,3 +1504,102 @@ right comparison, the constants are final and the deletion series follows
 immediately per plan §11.1. Otherwise options 2-vs-3 from Entry 13 go to the owner
 as the ruling anticipated. Also still owed at checkpoint 5: the node suite joins the
 verification list.
+
+---
+
+## Entry 16 — gate (iii) basis ruled; CONSTANTS FINAL (recorded verbatim)
+
+- **Date:** 2026-08-04
+- **Source:** mediator, on Entry 15 and calibration addendum §E.
+
+> Ruling, record verbatim: **gate (iii)'s reference basis is the retired TRIO —
+> constants are FINAL at conditioned A** (placement (32,40), sequence (8,40), pool
+> floor 30, TopoClass conditioning, SCHEMA_STAMP 2).
+>
+> Grounds: (a) the rule's volume budget must be measured against the coverage it
+> delivers, and it replaces all three rules — spacing included; (b) both of my
+> original constants came from bases now known to be wrong: 15,326 was the falsified
+> flat-knee model's own volume (measuring the repair against the defect), and 75 was
+> the pair's ceiling (measured 83) while the absorbed spacing rule alone runs p99
+> 132; (c) against the trio, conditioned A is strictly cheaper on every axis — 0.81×
+> fleet, p50 12 vs 19, p90 52 vs 62, p99 127 vs 170 — with the full roster preserved
+> and obligation (a) at residue 0. Frontier closed.
+>
+> Attach one explicit rider to the record: the DEFAULTS experience check, stated
+> separately so the ADR can't be accused of basis-shopping. Default users move from
+> the pair (p50 7, p99 83, 13,835 fleet) to this rule at depth 50 (p50 12, p99 127,
+> 33,265) — heavier, deliberately, because defaults now include the spacing domain
+> they never had; that was the owner-ratified default-on intent. Also reconcile in
+> the addendum the pair-p50 discrepancy between the earlier FLAG 1 tables (p50 3) and
+> your ledger measurement (p50 7) — one sentence on the differing measurement bases,
+> so the ADR cites one consistent set.
+>
+> Further approvals: the falsified-mechanism finding is accepted and should stay in
+> the record exactly as written — ruling right, prediction wrong, benefit by
+> abstention. The pool-floor sweep (breaks gate (ii) at 200+) staying at 30 is right.
+> The `th3e`/detached-mark message weakening (Topology → Start marginal, same 0.999
+> score, honest abstention on thin/degenerate cells) is ACCEPTED as shipped behavior
+> — record it in the drift materials with the renamed tests; if you have the ledger
+> machinery warm, note "class-conditioned topology with pooled-table backoff on thin
+> cells" as a one-paragraph idea candidate for post-epic evaluation (message
+> precision only, scores identical) — do not implement it.
+>
+> Then proceed immediately: mark constants final (remove PROVISIONAL), refresh
+> ledger/addendum, re-run both obligations end-to-end for the record, and execute the
+> deletion series per plan §11.1 — three rules, every closed surface (RuleId,
+> configs, Review Depth rows, substrate IDs/caches, stats, finding args, digests,
+> catalog, localization, docs, tests, generated schema, wasm projection,
+> editor-facing declarations), separate commits, no compatibility residue. Durable
+> overlap TSV and drift summary close the checkpoint. Stop and report at completed
+> checkpoint 4.
+
+### The reconciliation the rider asks for — one consistent set
+
+Every earlier per-corpus figure in this epic was computed on one of **two different
+bases**, which is the whole discrepancy:
+
+- **zeros included**, all 1,504 fleet corpora — what the probe's FLAG 1 tables used;
+- **firing corpora only** — what my §E2 `awk` over the oracle dump used, because a
+  corpus with no findings of a rule has no rows to count (the pair fires in 1,026 of
+  1,504, the trio in 1,422).
+
+Recomputed on the **zeros-included 1,504-corpus base for every series**, which is
+the set the ADR should cite:
+
+| series | p50 | p90 | p99 | max | fleet |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| the retired **trio**, all three | **18** | **61** | **170** | 308 | **40,859** |
+| the retired default-**ON** pair | **3** | **27** | **71** | 172 | 13,835 |
+| `punct.spacing-anomaly` alone | 12 | 37 | 132 | 278 | 27,024 |
+| **this rule, depth 50 (final)** | **12** | **52** | **127** | 282 | **33,265** |
+
+Two corrections to my own earlier numbers, both against my case:
+
+- the pair's p99 is **71** on this base, so gate (iii)'s original `75` ceiling was
+  the *right* number for the pair after all — my §E2 figure of 83 was the
+  firing-corpora-only artifact. The ruling's ground (b) still holds on the point that
+  matters: the pair excludes spacing, whose own p99 is 132.
+- the pair's p50 is **3**, exactly FLAG 1's figure — so FLAG 1 and this ledger never
+  disagreed; they counted different denominators.
+
+The ruling's comparison survives the correction intact: **12 vs 18, 52 vs 61,
+127 vs 170, 0.81× fleet.**
+
+### The defaults rider, stated separately
+
+A default user's experience changes from the retired default-ON pair to this rule at
+depth 50:
+
+| | p50 | p90 | p99 | fleet |
+| --- | ---: | ---: | ---: | ---: |
+| retired default-on pair | 3 | 27 | 71 | 13,835 |
+| this rule at depth 50 | 12 | 52 | 127 | 33,265 |
+
+Deliberately heavier, and not a basis-shopping artifact: defaults now include the
+**spacing domain** they never had (`punct.spacing-anomaly` shipped default-off and
+carries p50 12 / p99 132 / 27,024 of its own). Roughly, `pair + spacing = trio`, and
+this rule is cheaper than the trio while being on by default where two of the three
+were. That is exactly the owner-ratified default-on intent from Entry 9's FLAG 1
+ruling: the replacement must not be a silent coverage regression for default users.
+
+- **Next safe step:** the deletion series per plan §11.1.
