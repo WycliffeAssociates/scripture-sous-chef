@@ -1257,6 +1257,10 @@ impl crate::substrate::ObservationSubstrate for NonletterUsageSubstrate {
         old: Option<&NonletterBookContribution>,
         new: Option<&NonletterBookContribution>,
     ) -> Vec<NonletterKey> {
+        // Did this replacement move the aggregate at all? That is the only
+        // question the delta can answer honestly for this rule (see the return
+        // below), so it is tracked as one flag rather than per key.
+        let mut moved = false;
         let empty: Vec<(Box<str>, Tally)> = Vec::new();
         merge_tallies(
             old.map_or(&empty[..], |c| &c.tallies[..]),
@@ -1266,23 +1270,61 @@ impl crate::substrate::ObservationSubstrate for NonletterUsageSubstrate {
                 for (i, slot) in e.counters.iter_mut().enumerate() {
                     let sub = o.map_or(0, |t| t.counters[i]);
                     let add = n.map_or(0, |t| t.counters[i]);
+                    moved |= add != sub;
                     *slot = *slot + add - sub;
                 }
-                for (f, count) in o.into_iter().flat_map(|t| t.pairs.iter()) {
+                // `moved` compares the two ADDENDS follower by follower — never
+                // "is this count nonzero", which would read every unchanged book
+                // with any pair at all as a move and defeat the whole dirty-chapter
+                // contract (measured: it kept the warm path on a whole-corpus
+                // re-materialization for every multi-chapter book).
+                let (empty_pairs, mut oi, mut ni) = (&[][..], 0usize, 0usize);
+                let (op, np) = (
+                    o.map_or(empty_pairs, |t| &t.pairs[..]),
+                    n.map_or(empty_pairs, |t| &t.pairs[..]),
+                );
+                while oi < op.len() || ni < np.len() {
+                    let cmp = match (op.get(oi), np.get(ni)) {
+                        (Some((a, _)), Some((b, _))) => a.cmp(b),
+                        (Some(_), None) => std::cmp::Ordering::Less,
+                        (None, Some(_)) => std::cmp::Ordering::Greater,
+                        (None, None) => unreachable!("loop guard"),
+                    };
+                    let (f, sub, add) = match cmp {
+                        std::cmp::Ordering::Less => {
+                            let (f, c) = &op[oi];
+                            oi += 1;
+                            (f, *c, 0)
+                        }
+                        std::cmp::Ordering::Greater => {
+                            let (f, c) = &np[ni];
+                            ni += 1;
+                            (f, 0, *c)
+                        }
+                        std::cmp::Ordering::Equal => {
+                            let (f, oc) = &op[oi];
+                            let (_, nc) = &np[ni];
+                            oi += 1;
+                            ni += 1;
+                            (f, *oc, *nc)
+                        }
+                    };
+                    if sub == add {
+                        continue;
+                    }
+                    moved = true;
                     let p = e.pairs.entry(f.clone()).or_default();
-                    *p -= count;
+                    *p = *p + add - sub;
                     if *p == 0 {
                         e.pairs.remove(f);
                     }
-                }
-                for (f, count) in n.into_iter().flat_map(|t| t.pairs.iter()) {
-                    *e.pairs.entry(f.clone()).or_default() += count;
                 }
                 if e.is_zero() {
                     stats.tallies.remove(glyph);
                 }
             },
         );
+        let (before_exposure, before_digits) = (stats.exposure, stats.digit_class_runs);
         if let Some(o) = old {
             stats.exposure -= o.exposure;
             stats.digit_class_runs -= o.digit_class_runs;
@@ -1300,14 +1342,26 @@ impl crate::substrate::ObservationSubstrate for NonletterUsageSubstrate {
                 stats.per_book.remove(slug);
             }
         }
-        // EMPTY, and honestly so: every judged rate reads a corpus-global
-        // denominator (`exposure` for rarity, the identity's own corpus-wide pools
-        // for placement and sequence), so a book replacement that moves a single
-        // count moves either nothing or every key — never a subset, which is the
-        // one answer that would be wrong. This substrate's consumer rebuilds its
-        // whole partition from the analyze's findings, so the delta has no reader;
-        // the same structural reason punct-only, repeated-run and casing give.
-        Vec::new()
+        moved |= stats.exposure != before_exposure || stats.digit_class_runs != before_digits;
+        // EITHER EMPTY OR EVERY KEY — never a subset, and that is the honest
+        // answer rather than a coarsening. Every judged rate reads a corpus-global
+        // denominator (`exposure` and `digit_class_runs` for rarity, the identity's
+        // own corpus-wide pools for placement and sequence), so a replacement that
+        // moves one count re-judges every identity; one that moves nothing
+        // re-judges none.
+        //
+        // The distinction is what buys the warm path: an edit that touches no
+        // visible nonletter — the ordinary word keystroke — leaves the aggregate
+        // untouched, every verdict standing, and only the edited chapter's own
+        // sites owing new records. `finish_nonletter_usage` turns a non-empty
+        // delta straight into `owe_all` rather than scanning for the chapters that
+        // name a moved key, because for this rule that scan could only ever return
+        // all of them.
+        if moved {
+            stats.tallies.keys().cloned().collect()
+        } else {
+            Vec::new()
+        }
     }
 
     fn judge(
@@ -1448,12 +1502,25 @@ impl NonletterBookContribution {
     /// canonical channel order and then by member position; every other channel
     /// that also cleared the floor travels in the args, so no violated fact is
     /// lost.
+    ///
+    /// `dirty` restricts emission to the chapters whose partition groups this call
+    /// replaces: `None` rewrites the whole partition, `Some(set)` emits only for
+    /// those chapter tokens and leaves every other chapter's committed records
+    /// standing (plan §6.4). This is load-bearing for the warm path, not an
+    /// optimisation detail: the per-site work here re-segments the run's graphemes
+    /// and re-scans every member against every channel, so an unrestricted call is
+    /// a whole-corpus cost on every keystroke.
+    ///
+    /// The chapter walk itself is not skipped — the cardinality assertion and the
+    /// per-chapter token check are the alignment proofs the emitted addresses rest
+    /// on.
     fn materialize(
         &self,
         layout: &[crate::corpus::ChapterLayout],
         corpus: &Corpus,
         verdicts: &BTreeMap<NonletterKey, IdentityVerdict>,
         floor: f64,
+        dirty: Option<&std::collections::BTreeSet<&str>>,
         out: &mut Vec<Finding>,
     ) {
         let texts = corpus.texts();
@@ -1469,6 +1536,9 @@ impl NonletterBookContribution {
         let mut spans: Vec<GSpan> = Vec::new();
         for (chapter, block) in self.chapters.iter().zip(layout) {
             let base = crate::substrate::chapter_base(block, &chapter.token);
+            if dirty.is_some_and(|d| !d.contains(&*chapter.token)) {
+                continue;
+            }
             for site in chapter.body.sites.iter() {
                 let (local, span) = site.addr.unpack();
                 let text = &texts[block.range.start + usize::from(local.get())];
@@ -1580,20 +1650,51 @@ pub fn config_at_review_depth(depth: crate::review_depth::ReviewDepth) -> Nonlet
 // Drive
 // ───────────────────────────────────────────────────────────────────────────
 
+/// The closed consumer set — the rules whose partition this substrate owns.
+const CONSUMERS: &[RuleId] = &[NONLETTER_USAGE_ANOMALY];
+
+/// Every judging knob, folded. A move forces the whole partition to rebuild: the
+/// knobs re-judge every identity without moving one observation.
+fn judging_fp(cfg: &NonletterUsageConfig) -> u64 {
+    crate::substrate::judging_fp(&[
+        cfg.emit_score_min,
+        cfg.rarity_min_exposure as f32,
+        cfg.rarity_k,
+        cfg.placement_min_pool as f32,
+        cfg.placement_k,
+        cfg.placement_rate_per_10k,
+        cfg.placement_z,
+        cfg.sequence_min_leads as f32,
+        cfg.sequence_k,
+        cfg.sequence_rate_per_10k,
+        cfg.sequence_z,
+        cfg.continuation_min_support as f32,
+    ])
+}
+
 /// Plan this substrate's share of the analysis: enrol it in the chapter-outer
 /// schedule for exactly the chapters whose observation input stamp moved. When
-/// inactive, drop the cached products so an edit while it is disabled does no work
-/// for it, and enrol nothing.
+/// inactive, drop the cached products AND its resident finding partition —
+/// retained records would keep publishing for a disabled rule — and enrol nothing.
 pub(crate) fn plan_nonletter_usage<'a>(
     active: bool,
     cache: &mut crate::substrate::SubstrateCache<NonletterUsageSubstrate>,
     schedule: &mut crate::schedule::Schedule<'a>,
+    lane: &mut crate::substrate::SubstrateLane,
 ) -> Option<crate::schedule::SubstratePlan<'a, NonletterUsageSubstrate>> {
-    use crate::substrate::ObservationInputStamp;
+    use crate::substrate::{ObservationInputStamp, SubstratePatch};
     #[cfg(any(test, feature = "test-probes"))]
     cache.reset_probes();
     if !active {
         cache.clear();
+        lane.patches.push(SubstratePatch {
+            substrate: crate::substrate::SubstrateId::NonletterUsage,
+            rules: CONSUMERS,
+            emitting: Vec::new(),
+            findings: Vec::new(),
+            dirty: Vec::new(),
+            all_dirty: true,
+        });
         return None;
     }
     Some(
@@ -1603,26 +1704,59 @@ pub(crate) fn plan_nonletter_usage<'a>(
     )
 }
 
-/// Reduce, judge and materialize `uni.nonletter-usage-anomaly` from the
-/// observations the chapter-outer scheduler mapped.
+/// Reduce, judge and patch `uni.nonletter-usage-anomaly`'s resident partition
+/// from the observations the chapter-outer scheduler mapped.
+///
+/// The dirty set this consumes is the union of two independent halves (ADR 0067):
+/// the chapters whose ordered sites moved (accumulated by `update_book`), and —
+/// when the corpus aggregate moved at all — every chapter, because every judged
+/// rate here reads a corpus-global denominator. The second half is therefore
+/// `owe_all` rather than a scan: for this rule a scan for "chapters naming a moved
+/// key" could only ever return all of them, and on a cold analyze it would be a
+/// whole-corpus walk to reach a conclusion one flag already states.
 pub(crate) fn finish_nonletter_usage(
     cache: &mut crate::substrate::SubstrateCache<NonletterUsageSubstrate>,
     corpus: &Corpus,
     cfg: &NonletterUsageConfig,
     plan: crate::schedule::SubstratePlan<'_, NonletterUsageSubstrate>,
-    out: &mut Vec<Finding>,
+    lane: &mut crate::substrate::SubstrateLane,
 ) {
-    use crate::substrate::{DrivePhase, DriveProbe};
+    use crate::substrate::{DrivePhase, DriveProbe, SubstratePatch};
     let mut probe = DriveProbe::new(crate::substrate::SubstrateId::NonletterUsage);
     let layout = corpus.book_layout();
     let crate::schedule::SubstratePlan { stamped, mut slots } = plan;
+    let mut aggregate_moved = false;
     for (bi, book) in layout.iter().enumerate() {
-        cache.update_book(&book.slug, &stamped[bi], &(), |i| slots.take(bi, i));
+        let delta = cache.update_book(&book.slug, &stamped[bi], &(), |i| slots.take(bi, i));
+        aggregate_moved |= !delta.is_empty();
     }
     probe.mark(DrivePhase::Reduce);
+    // Accumulated into `pending`, not consumed here: the aggregate move is already
+    // applied to the cache by `update_book`, so a retry after a failed attempt
+    // would see an unmoved aggregate while the partition still described the
+    // previous input.
+    if aggregate_moved {
+        cache.pending.owe_all();
+    }
+    let emitting = vec![NONLETTER_USAGE_ANOMALY];
+    let (all_dirty, dirty) = cache.pending.plan(judging_fp(cfg), &emitting);
+    // Per book, the chapter tokens whose groups this call replaces. `None` is the
+    // whole-partition rebuild.
+    let dirty_by_book: Option<rustc_hash::FxHashMap<&str, std::collections::BTreeSet<&str>>> =
+        (!all_dirty).then(|| {
+            let mut m: rustc_hash::FxHashMap<&str, std::collections::BTreeSet<&str>> =
+                rustc_hash::FxHashMap::default();
+            for (slug, chapter) in &dirty {
+                m.entry(slug).or_default().insert(chapter);
+            }
+            m
+        });
     // Judge every identity in the aggregate. Each is named by at least one retained
     // run member, so this is exactly the key set that can emit — and there is no
-    // key-discovery phase, because the aggregate's key set already IS it.
+    // key-discovery phase, because the aggregate's key set already IS it. Judging
+    // is not narrowed to the dirty chapters' identities: it is measured at ~0.01 ms
+    // for the whole fleet's key set, so the narrowing would cost a site scan to save
+    // nothing.
     let kn = Knobs::of(cfg);
     let stats = cache.corpus_stats();
     let verdicts: BTreeMap<NonletterKey, IdentityVerdict> = stats
@@ -1635,11 +1769,34 @@ pub(crate) fn finish_nonletter_usage(
         cache.judged = verdicts.len();
     }
     probe.mark(DrivePhase::Judge);
+    let empty: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+    let mut findings: Vec<Finding> = Vec::new();
     for book in layout {
+        let book_dirty = dirty_by_book
+            .as_ref()
+            .map(|m| m.get(&*book.slug).unwrap_or(&empty));
+        if book_dirty.is_some_and(std::collections::BTreeSet::is_empty) {
+            continue;
+        }
         if let Some(contrib) = cache.book_contribution(&book.slug) {
-            contrib.materialize(&book.chapters, corpus, &verdicts, kn.floor, out);
+            contrib.materialize(
+                &book.chapters,
+                corpus,
+                &verdicts,
+                kn.floor,
+                book_dirty,
+                &mut findings,
+            );
         }
     }
+    lane.patches.push(SubstratePatch {
+        substrate: crate::substrate::SubstrateId::NonletterUsage,
+        rules: CONSUMERS,
+        emitting,
+        findings,
+        dirty,
+        all_dirty,
+    });
     probe.mark(DrivePhase::Materialize);
 }
 
@@ -1651,14 +1808,14 @@ pub(crate) fn drive_nonletter_usage(
     cache: &mut crate::substrate::SubstrateCache<NonletterUsageSubstrate>,
     corpus: &Corpus,
     cfg: &NonletterUsageConfig,
-    out: &mut Vec<Finding>,
+    lane: &mut crate::substrate::SubstrateLane,
 ) {
     let mut schedule = crate::schedule::Schedule::new(corpus);
-    let Some(mut plan) = plan_nonletter_usage(active, cache, &mut schedule) else {
+    let Some(mut plan) = plan_nonletter_usage(active, cache, &mut schedule, lane) else {
         return;
     };
     schedule.run_solo::<NonletterUsageSubstrate>(&mut plan, &(), &(), |_, _| None);
-    finish_nonletter_usage(cache, corpus, cfg, plan, out);
+    finish_nonletter_usage(cache, corpus, cfg, plan, lane);
 }
 
 /// Every maximal visible-nonletter run this rule OBSERVES in a corpus, as
@@ -1673,7 +1830,7 @@ pub(crate) fn drive_nonletter_usage(
 /// one honest place both readings come from.
 pub fn nonletter_candidate_runs(corpus: &Corpus) -> Vec<(crate::corpus::KeyIdx, Span)> {
     let mut cache = crate::substrate::SubstrateCache::new();
-    let mut sink = Vec::new();
+    let mut sink = crate::substrate::SubstrateLane::default();
     drive_nonletter_usage(
         true,
         &mut cache,
@@ -1703,8 +1860,9 @@ pub fn nonletter_candidate_runs(corpus: &Corpus) -> Vec<(crate::corpus::KeyIdx, 
 /// stable order.
 pub fn nonletter_usage_findings(corpus: &Corpus, cfg: &NonletterUsageConfig) -> Vec<Finding> {
     let mut cache = crate::substrate::SubstrateCache::new();
-    let mut out = Vec::new();
-    drive_nonletter_usage(true, &mut cache, corpus, cfg, &mut out);
+    let mut lane = crate::substrate::SubstrateLane::default();
+    drive_nonletter_usage(true, &mut cache, corpus, cfg, &mut lane);
+    let mut out: Vec<Finding> = lane.patches.into_iter().flat_map(|p| p.findings).collect();
     out.sort_by_key(|f| (f.key_idx, f.range.start, f.range.end));
     out
 }
@@ -1823,19 +1981,72 @@ mod tests {
         );
     }
 
+    /// Drive one call over a caller-held cache and return the patch it published —
+    /// the findings for exactly the chapters this call OWED, which on a warm cache
+    /// that owes nothing is deliberately empty.
+    fn drive_patch(
+        cache: &mut crate::substrate::SubstrateCache<NonletterUsageSubstrate>,
+        corpus: &Corpus,
+        cfg: &NonletterUsageConfig,
+    ) -> crate::substrate::SubstratePatch {
+        let mut lane = crate::substrate::SubstrateLane::default();
+        drive_nonletter_usage(true, cache, corpus, cfg, &mut lane);
+        lane.patches
+            .pop()
+            .expect("an active drive publishes a patch")
+    }
+
+    /// The resident pair a `Galley` holds for this substrate: its observation cache
+    /// and its finding partition. The patch a warm drive publishes covers only the
+    /// chapters that call OWED, so a resident-equals-cold test has to read back the
+    /// committed PARTITION, not the patch — that is the whole point of the
+    /// dirty-chapter contract, and comparing patches would silently pass a
+    /// substrate that emitted nothing.
+    struct Resident {
+        cache: crate::substrate::SubstrateCache<NonletterUsageSubstrate>,
+        findings: crate::cache::FindingSection,
+    }
+
+    impl Resident {
+        fn new() -> Self {
+            Resident {
+                cache: crate::substrate::SubstrateCache::new(),
+                findings: crate::cache::FindingSection::standalone(),
+            }
+        }
+
+        /// Remove a book from every half of the resident state, as
+        /// `AnalysisCache::remove_book` does.
+        fn remove_book(&mut self, slug: &str) {
+            self.cache.remove_book(slug);
+            self.findings.remove_book(slug);
+        }
+
+        fn analyze(&mut self, corpus: &Corpus, cfg: &NonletterUsageConfig) -> Vec<Finding> {
+            let mut lane = crate::substrate::SubstrateLane::default();
+            drive_nonletter_usage(true, &mut self.cache, corpus, cfg, &mut lane);
+            let present: std::collections::BTreeSet<(&str, &str)> = corpus
+                .book_layout()
+                .iter()
+                .flat_map(|b| b.chapters.iter().map(|c| (&*b.slug, &*c.chapter)))
+                .collect();
+            self.findings
+                .commit_substrates(&lane, corpus, Some(&present));
+            for _ in &lane.patches {
+                self.cache.pending.promote();
+            }
+            let mut out = self.findings.assemble(corpus);
+            out.sort_by_key(|f| (f.key_idx, f.range.start, f.range.end));
+            out
+        }
+    }
+
     /// The corpus aggregate this rule judges from — white-box, so the boundary and
     /// pooling contracts can be pinned on the counters themselves rather than
     /// inferred from a score.
     fn tallies(corpus: &Corpus) -> BTreeMap<Box<str>, CorpusTally> {
         let mut cache = crate::substrate::SubstrateCache::new();
-        let mut out = Vec::new();
-        drive_nonletter_usage(
-            true,
-            &mut cache,
-            corpus,
-            &NonletterUsageConfig::default(),
-            &mut out,
-        );
+        let _ = drive_patch(&mut cache, corpus, &NonletterUsageConfig::default());
         cache.corpus_stats().tallies.clone()
     }
 
@@ -2062,15 +2273,15 @@ mod tests {
     fn a_schema_stamp_bump_invalidates_exactly_this_substrate() {
         use crate::substrate::{ObservationInputStamp, ObservationSubstrate};
         let corpus = synth(EN, 4, &["a ~ b"]);
-        let mut cache = crate::substrate::SubstrateCache::new();
-        let mut out = Vec::new();
-        drive_nonletter_usage(
-            true,
-            &mut cache,
-            &corpus,
-            &NonletterUsageConfig::default(),
-            &mut out,
-        );
+        // A full resident pair, so the partition is actually COMMITTED: without a
+        // commit the judging identity never promotes and every call would honestly
+        // report the whole partition owed, which would make the reuse assertion
+        // below vacuous.
+        let mut resident = Resident::new();
+        // (This fixture is deliberately tiny, so the rule's support gates abstain and
+        // `cold` is empty. The subject here is stamp invalidation, not emission.)
+        let cold = resident.analyze(&corpus, &NonletterUsageConfig::default());
+        let cache = &mut resident.cache;
         let book = &corpus.book_layout()[0];
         let chapter = &book.chapters[0];
         let current =
@@ -2093,19 +2304,132 @@ mod tests {
         // And a stamp mismatch really does re-map, rather than being reported stale
         // and then reused.
         cache.reset_probes();
-        let mut again = Vec::new();
+        let mut lane = crate::substrate::SubstrateLane::default();
         drive_nonletter_usage(
             true,
-            &mut cache,
+            &mut resident.cache,
             &corpus,
             &NonletterUsageConfig::default(),
-            &mut again,
+            &mut lane,
         );
         assert_eq!(
-            cache.mapped, 0,
+            resident.cache.mapped, 0,
             "an unbumped stamp reuses every observation"
         );
-        assert_eq!(again, out);
+        // Having re-mapped nothing under the same judging identity, the call owes
+        // NOTHING: no chapter's records changed, so the patch is empty and the
+        // committed partition still stands. That is the dirty-chapter contract, and
+        // it is what keeps the warm path off a whole-corpus re-materialization.
+        let again = lane
+            .patches
+            .pop()
+            .expect("an active drive publishes a patch");
+        assert!(
+            !again.all_dirty && again.dirty.is_empty() && again.findings.is_empty(),
+            "a call that re-maps nothing under an unmoved judging identity owes nothing"
+        );
+        // And the answer the caller sees is unchanged — read back from the
+        // partition, not from the patch.
+        assert_eq!(
+            resident.analyze(&corpus, &NonletterUsageConfig::default()),
+            cold
+        );
+    }
+
+    /// THE WARM-PATH CONTRACT, and the reason this substrate patches its partition
+    /// instead of rewriting it: a one-chapter edit that touches no visible nonletter
+    /// owes **exactly that chapter's** records, not the corpus's.
+    ///
+    /// This is not a micro-optimisation witness. Materialization here re-segments
+    /// every retained run's graphemes and re-scans every member against every
+    /// channel, so an unrestricted call is a whole-corpus cost on every keystroke:
+    /// measured at ~6.3 ms fixed per warm edit against ~0.4 ms for the rest of the
+    /// shipped default set, independent of the edit's size. The test asserts the
+    /// property in both directions, because only the pair is meaningful — a
+    /// substrate that owed nothing ever would also pass the first half.
+    #[test]
+    fn a_word_only_edit_owes_exactly_the_edited_chapter() {
+        let cells: Vec<(&str, &str, u16, String)> = (1..=4)
+            .flat_map(|c| {
+                (1..=6).map(move |v| {
+                    (
+                        "GEN",
+                        ["1", "2", "3", "4"][c - 1],
+                        v,
+                        format!(
+                            "alpha{}, and a ~ mark here.",
+                            ["a", "b", "c", "d", "e", "f"][usize::from(v) - 1]
+                        ),
+                    )
+                })
+            })
+            .collect();
+        let build = |cs: &[(&str, &str, u16, String)]| -> Corpus {
+            let keys = cs
+                .iter()
+                .map(|&(b, c, v, _)| format!("{b} {c}:{v}"))
+                .collect();
+            let texts = cs.iter().map(|(_, _, _, t)| t.clone()).collect();
+            Corpus::try_from_parts(keys, texts).unwrap()
+        };
+        let mut resident = Resident::new();
+        let cold = resident.analyze(&build(&cells), &open());
+
+        // A LETTERS-ONLY edit inside chapter 3: no candidate is added, removed or
+        // re-contexted, so the corpus aggregate does not move and every verdict
+        // stands. Only chapter 3's own records can have changed.
+        let mut edited = cells.clone();
+        edited[13].3 = "alphazz, and a ~ mark here.".to_string();
+        let corpus = build(&edited);
+        let mut lane = crate::substrate::SubstrateLane::default();
+        drive_nonletter_usage(true, &mut resident.cache, &corpus, &open(), &mut lane);
+        let patch = lane
+            .patches
+            .pop()
+            .expect("an active drive publishes a patch");
+        assert!(
+            !patch.all_dirty,
+            "a word-only edit must not owe the whole partition"
+        );
+        assert_eq!(
+            patch.dirty,
+            vec![(Box::from("GEN"), Box::from("3"))],
+            "exactly the edited chapter is owed"
+        );
+        assert!(
+            patch
+                .findings
+                .iter()
+                .all(|f| corpus.key(f.key_idx).starts_with("GEN 3:")),
+            "and it emitted for no other chapter"
+        );
+
+        // The other direction: an edit that ADDS a candidate moves the corpus-global
+        // denominators, so every identity is re-judged and the whole partition is
+        // honestly owed. Narrowing that would publish stale verdicts.
+        let mut punct = cells.clone();
+        punct[13].3 = "alphab, and a ~ mark here!!".to_string();
+        let mut lane = crate::substrate::SubstrateLane::default();
+        drive_nonletter_usage(
+            true,
+            &mut resident.cache,
+            &build(&punct),
+            &open(),
+            &mut lane,
+        );
+        assert!(
+            lane.patches.pop().unwrap().all_dirty,
+            "an edit that moves the aggregate owes every chapter"
+        );
+
+        // And the answer never changes: the patched partition equals cold at every
+        // step, which is what makes the narrowing safe rather than merely fast.
+        let mut resident = Resident::new();
+        assert_eq!(resident.analyze(&build(&cells), &open()), cold);
+        assert_eq!(
+            resident.analyze(&corpus, &open()),
+            nonletter_usage_findings(&corpus, &open())
+        );
     }
 
     /// The same shapes, established by the translation, go quiet — and quiet because
@@ -2670,22 +2994,20 @@ mod tests {
     fn a_judging_only_change_maps_and_reduces_nothing() {
         let corpus = synth(EN, N, &["procrastinate ~ my case"]);
         let mut cache = crate::substrate::SubstrateCache::new();
-        let mut out = Vec::new();
-        drive_nonletter_usage(true, &mut cache, &corpus, &open(), &mut out);
+        let out = drive_patch(&mut cache, &corpus, &open()).findings;
         assert!(cache.mapped > 0, "the cold call maps");
 
-        let mut rejudged = Vec::new();
-        drive_nonletter_usage(
-            true,
-            &mut cache,
-            &corpus,
-            &NonletterUsageConfig::default(),
-            &mut rejudged,
-        );
+        let rejudged = drive_patch(&mut cache, &corpus, &NonletterUsageConfig::default());
         assert_eq!(cache.mapped, 0, "a judging knob maps nothing");
         assert_eq!(cache.reduced, 0, "a judging knob reduces nothing");
-        assert!(!rejudged.is_empty(), "and the findings still move");
-        assert!(rejudged.len() < out.len());
+        // A judging move re-judges every key, so it DOES owe the whole partition —
+        // that is not a re-map, and the two must not be conflated.
+        assert!(
+            rejudged.all_dirty,
+            "a judging knob rebuilds the whole partition without mapping"
+        );
+        assert!(!rejudged.findings.is_empty(), "and the findings still move");
+        assert!(rejudged.findings.len() < out.len());
     }
 
     /// The Review Depth profile is monotone in every knob, its midpoint IS the
@@ -2785,9 +3107,8 @@ mod tests {
                 .collect()
         };
         let cfg = open();
-        let mut cache = crate::substrate::SubstrateCache::new();
-        let mut out = Vec::new();
-        drive_nonletter_usage(true, &mut cache, &build(&cells), &cfg, &mut out);
+        let mut resident = Resident::new();
+        let _ = resident.analyze(&build(&cells), &cfg);
         let mut state = 0x9E37_79B9_7F4A_7C15u64;
         for step in 0..32 {
             state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
@@ -2795,9 +3116,7 @@ mod tests {
             let si = (state >> 11) as usize % shapes.len();
             cells[ci].2 = shapes[si].to_string();
             let corpus = build(&cells);
-            let mut inc = Vec::new();
-            drive_nonletter_usage(true, &mut cache, &corpus, &cfg, &mut inc);
-            inc.sort_by_key(|f| (f.key_idx, f.range.start, f.range.end));
+            let inc = resident.analyze(&corpus, &cfg);
             assert_eq!(
                 render(&corpus, &inc),
                 render(&corpus, &nonletter_usage_findings(&corpus, &cfg)),
@@ -2815,13 +3134,10 @@ mod tests {
             ("EXO", "1", 1, "b ~ there and , here"),
         ]);
         let gen_only = rows(&[("GEN", "1", 1, "a ~ here and , there")]);
-        let mut cache = crate::substrate::SubstrateCache::new();
-        let mut out = Vec::new();
-        drive_nonletter_usage(true, &mut cache, &both, &open(), &mut out);
-        cache.remove_book("EXO");
-        let mut after = Vec::new();
-        drive_nonletter_usage(true, &mut cache, &gen_only, &open(), &mut after);
-        after.sort_by_key(|f| (f.key_idx, f.range.start, f.range.end));
+        let mut resident = Resident::new();
+        let _ = resident.analyze(&both, &open());
+        resident.remove_book("EXO");
+        let after = resident.analyze(&gen_only, &open());
         assert_eq!(
             after,
             nonletter_usage_findings(&gen_only, &open()),
@@ -2834,16 +3150,21 @@ mod tests {
     fn a_disabled_consumer_maps_nothing() {
         let corpus = synth(EN, 4, &["a ~ b"]);
         let mut cache = crate::substrate::SubstrateCache::new();
-        let mut out = Vec::new();
+        let mut lane = crate::substrate::SubstrateLane::default();
         drive_nonletter_usage(
             false,
             &mut cache,
             &corpus,
             &NonletterUsageConfig::default(),
-            &mut out,
+            &mut lane,
         );
-        assert!(out.is_empty());
         assert_eq!(cache.mapped, 0);
+        // An inactive drive still publishes ONE patch — an empty, whole-partition
+        // one, which is how the resident partition of a just-disabled rule is
+        // DROPPED rather than left publishing (plan §7.2).
+        let patch = lane.patches.pop().expect("a drop patch is published");
+        assert!(patch.findings.is_empty() && patch.emitting.is_empty() && patch.all_dirty);
+        assert_eq!(patch.rules, CONSUMERS);
     }
 
     /// The rule runs through `analyze` at shipped defaults — it is DEFAULT-ON,

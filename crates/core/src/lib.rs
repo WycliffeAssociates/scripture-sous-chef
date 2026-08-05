@@ -774,6 +774,7 @@ fn transition(
         active.nonletter_usage,
         &mut substrates.nonletter_usage,
         &mut schedule,
+        &mut substrate_lane,
     );
     let mut casing_plan = signals::casing::plan_casing(
         config.is_enabled(RuleId::SentenceInitialLowercase),
@@ -1005,7 +1006,7 @@ fn transition(
             target,
             &config.nonletter_usage,
             plan,
-            &mut out,
+            &mut substrate_lane,
         );
     }
     if let Some(plan) = normalization_plan {
