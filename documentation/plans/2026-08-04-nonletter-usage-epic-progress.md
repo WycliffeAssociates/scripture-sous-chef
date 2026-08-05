@@ -2122,3 +2122,178 @@ change which chapters are re-emitted, not what any finding says, so a fix is
 gated by re-running these same two full-fleet dumps and requiring the **new**
 pins byte-identical to the `after.full.*` pins recorded here. Nothing published
 depends on the choice yet — checkpoint 6's editor migration has not started.
+
+---
+
+## Entry 20 — the warm-path remedy landed; all three gates PASS
+
+- **Date:** 2026-08-04
+- **Status:** Entry 19's stop is **closed**. Remedy (1) is implemented (`c6e4075`)
+  and all three gates pass: the pins are byte-identical, the warm trio is back to
+  1.06–1.18× master, and the §14.1 invariants hold with a new corpus-free witness
+  for the contract the fix rests on.
+- **Ruling implemented:** the dirty-chapter restriction in
+  `NonletterBookContribution::materialize` — the exact mechanism the retired
+  `punct.spacing-anomaly` used (plan §6.4). Remedy (2) recorded, not taken.
+
+### What landed
+
+The substrate moved onto the **partial-partition lane** it should always have been
+on. `materialize` takes `dirty: Option<&BTreeSet<&str>>`; `finish_nonletter_usage`
+publishes a `SubstratePatch` into the `SubstrateLane` instead of writing into `out`;
+`plan_nonletter_usage` publishes an empty whole-partition patch when inactive, so a
+just-disabled rule's partition is dropped rather than left publishing (plan §7.2);
+`judging_fp` folds every judging knob, so a knob move rebuilds the whole partition
+without mapping anything.
+
+`replace_book_in_corpus_stats` now returns an **honest** delta rather than always
+empty: **either empty or every key, never a subset**. That is not a coarsening, it
+is the only truthful answer for this rule — every judged rate reads a corpus-global
+denominator (`exposure`, `digit_class_runs`, the identity's corpus-wide pools), so a
+replacement that moves one count re-judges every identity and one that moves nothing
+re-judges none. `finish` turns a non-empty delta straight into `owe_all` rather than
+scanning for the chapters naming a moved key, because for this rule that scan could
+only ever return all of them, and on a cold analyze it would be a whole-corpus walk
+to reach a conclusion one flag already states.
+
+### THE BUG GATE (b) CAUGHT — and why it would have shipped otherwise
+
+The first cut set `moved` from `count != 0` while walking each addend's pair table.
+That reads **every unchanged book that has any directed pair at all** as a move. The
+result was a fix that looked *half*-effective for entirely the wrong reason:
+
+| bench | master | before | after the first cut |
+| --- | ---: | ---: | ---: |
+| 3JN | 2.385 ms | 8.851 ms | **2.472 ms** ✓ |
+| MAT | 2.680 ms | 9.397 ms | 9.281 ms ✗ |
+| PSA | 2.784 ms | 9.329 ms | 9.580 ms ✗ |
+
+`3JN` recovered because a 15-verse book happens to hold almost no directed pairs, so
+`moved` stayed false there and nowhere else. A one-book smoke test would have called
+this fixed. The gate's "**report actual numbers** for all three, and stop if any
+exceeds 1.5×" is what made the partial recovery visible as a defect rather than as
+book-size variance.
+
+The pair delta is now a merge-join over the two addends comparing follower by
+follower. The counter half already compared `add != sub` correctly, and the two
+corpus scalars are compared before/after.
+
+### Gate (b) — PASSES on all three
+
+Criterion `ssc-galley --bench warm_edit`, absolute medians, `RAYON_NUM_THREADS=4`,
+same box; master is `70dda25`:
+
+| bench | master | before the fix | **after** | vs master |
+| --- | ---: | ---: | ---: | ---: |
+| `galley_warm_edit_3JN` | 2.385 ms | 8.851 ms | **2.520 ms** | **1.06×** |
+| `galley_warm_edit_MAT` | 2.680 ms | 9.397 ms | **3.108 ms** | **1.16×** |
+| `galley_warm_edit_PSA` | 2.784 ms | 9.329 ms | **3.286 ms** | **1.18×** |
+
+The `~6.3 ms fixed` cost collapsed to dirty-chapter-proportional, as predicted.
+Decomposition (`--drive-phases`, nonletter row, ms):
+
+| edit shape | reduce | judge | materialize |
+| --- | ---: | ---: | ---: |
+| letters-only, aggregate stable (MAT) | 0.046 | 0.010 | **0.0001** |
+| punctuation added, aggregate moves (MAT) | 0.057 | 0.012 | 6.281 |
+
+Whole warm analyze on the letters-only shape: 3JN 0.41 ms, MAT 0.52 ms, PSA 0.52 ms.
+
+**The second row is the honest shape, not a residual defect.** An edit that adds or
+removes a visible nonletter moves the corpus-global denominators, every identity is
+re-judged, and every chapter's records are genuinely stale — narrowing that would
+publish stale verdicts. The win is on the ordinary keystroke, which is a letter.
+
+### Gate (a) — PASSES, byte-identical
+
+Both full-fleet dumps re-run on the final code (`corpora/vref`,
+`RAYON_NUM_THREADS=4`, `scope=full`) and diffed by sha256 against the checkpoint-5
+pins:
+
+| dump | sha256 | verdict |
+| --- | --- | --- |
+| `gate2.full.default.tsv` | `5edf2940b3eada76401279b0262955d7b9ecc8abca51866ac5b6b4f07053b7f3` | **identical** to `after.full.default.tsv` |
+| `gate2.full.all.tsv` | `f548f5d1e03e61ea9c2a3ded2b430c729fabbc920175f983b8c33791bfdfc315` | **identical** to `after.full.all.tsv` |
+
+The resident transcript was re-run too — it exercises the resident mutation path
+this change alters, so byte-identity there is the stronger of the two proofs:
+
+| transcript | sha256 | verdict |
+| --- | --- | --- |
+| `gate.transcript.full.default.tsv` | `c342eac95838f3ef…` | **identical** |
+| `gate.transcript.full.all.tsv` | `fef0858337b985fa…` | **identical** |
+
+(An intermediate `gate.full.*` pair was also taken before the pair-delta bug was
+found and was likewise byte-identical — the bug was a performance defect only, never
+a correctness one, which is exactly why the oracle could not have caught it.)
+
+### Gate (c) — PASSES, with a new witness
+
+Every §14.1 invariant still holds: `phase_f_tests`' seven pass, including
+`one_chapter_edit_maps_exactly_that_chapter_for_every_active_participant`,
+`a_judging_only_change_maps_and_reduces_nothing`,
+`enabling_one_rule_maps_only_its_own_substrate` and
+`a_reference_only_edit_maps_reference_consumers_only`; Galley's
+`nonletter_knob_change_is_substrate_local`,
+`nonletter_toggle_off_and_on_is_substrate_local` and
+`update_config_knob_only_change_remaps_nothing` pass.
+
+Three substrate-level tests were re-pointed onto the new contract rather than being
+loosened, because the patch a warm drive publishes is no longer the whole answer:
+
+- **New:** `a_word_only_edit_owes_exactly_the_edited_chapter` — the headline
+  witness, corpus-free, asserting **both** directions: a letters-only edit owes
+  exactly `GEN/3` and emits for no other chapter, **and** an edit that adds a
+  candidate owes every chapter. Only the pair is meaningful; a substrate that owed
+  nothing ever would pass the first half. It also re-checks patched-equals-cold, so
+  the narrowing is proved safe, not merely fast. Its doc comment records the ~6.3 ms
+  measurement so a future reader knows what the test is protecting.
+- `a_schema_stamp_bump_invalidates_exactly_this_substrate` now drives through a full
+  resident pair (cache + committed `FindingSection`), because without a commit the
+  judging identity never promotes and every call would honestly report the whole
+  partition owed — which would have made the reuse assertion vacuous.
+- `resident_equals_cold_under_randomized_edits` and
+  `removing_a_book_withdraws_its_evidence_exactly` now read back the **committed
+  partition** through the same `Resident` harness rather than comparing patches.
+  Comparing patches would silently pass a substrate that emitted nothing.
+- `a_disabled_consumer_maps_nothing` additionally asserts the drop patch's shape.
+
+### Memory and cold seed — re-reported as asked, both unmoved
+
+| measure | value | vs before the fix |
+| --- | --- | --- |
+| retained (dhat, WA-en-ulb, `default` − `default-no-nonletter`) | **4.01 MB** | unchanged — the layout is untouched |
+| retained (`all` − `all-no-nonletter`) | **4.01 MB** | unchanged |
+| cold seed, `default` | 280.9 ms | (was 287 ms) |
+| cold seed, `default-no-nonletter` | 231.8 ms | (was 234 ms) |
+| **cold delta** | **+49.1 ms / +21%** | was +53 ms / +23%; the difference is noise |
+
+Both go into the drift ADR's measured-cost section, with the packet's
+**1.1 KB/chapter estimate explicitly marked superseded** — it was the probe model's
+figure and predates both the class-conditioned topology table and the deferred-edge
+identity strings; the shipped substrate measures ≈3.4 KB/chapter, and at shipped
+defaults it is **32% of the entire resident footprint**.
+
+### Remedy (2), recorded not taken
+
+[`2026-08-04-nonletter-materialize-segmentation-trade.md`](../ideas/candidates/2026-08-04-nonletter-materialize-segmentation-trade.md)
+— retain the run's member spans, or memoize segmentation per distinct run string
+within a pass, to stop re-deriving at materialize what the map already knew. Not
+taken: it is a retained-layout change against the budget that is already the tight
+one. The candidate notes that the per-pass memo is the cheaper half, carries no
+retained cost, and should be measured first and separately.
+
+### Verification
+
+`cargo test --workspace` green (519 core, 25 galley, 24 wire, 16 wasm, 1 xtask);
+`-p ssc-core --features parallel` green (520); all three node suites green; clippy at
+its pre-existing 25 warnings with none in the touched region; touched-lines-only
+formatting.
+
+### Next safe step — checkpoint 6
+
+Editor migration in `../scripture-editor-proto-2`, the intentional-drift ADR, the PO
+checklist rewrite per plan §11.3–11.4, release notes, the probe's dead-code sweep
+(`RarityBasis::RunMemberships`, `UNPOOLED_DIGITS`), and the plan to `completed/`
+after cross-repo verification. The drift summary's two corrected p99 figures (128
+and 75) and these measured costs go into the ADR.
