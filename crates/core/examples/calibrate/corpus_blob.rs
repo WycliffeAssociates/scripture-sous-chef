@@ -92,7 +92,11 @@ fn preset_files(dir: &Path, preset: Preset) -> Vec<PathBuf> {
             .filter(|p| {
                 let exists = p.exists();
                 if !exists {
-                    eprintln!("warning: small preset id missing from {}: {}", dir.display(), p.display());
+                    eprintln!(
+                        "warning: small preset id missing from {}: {}",
+                        dir.display(),
+                        p.display()
+                    );
                 }
                 exists
             })

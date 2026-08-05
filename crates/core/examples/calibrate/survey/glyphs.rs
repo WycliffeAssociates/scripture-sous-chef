@@ -1379,4 +1379,3 @@ mod glyph_tests {
         assert!(!q.proper_noun_shape);
     }
 }
-

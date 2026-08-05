@@ -88,8 +88,7 @@ impl SubstrateId {
     /// Every substrate id, declaration order — the exhaustive iteration source
     /// the registry-completeness tests walk.
     #[allow(dead_code)] // registry-completeness tests + future multi-substrate iteration
-    pub(crate) const ALL: &'static [SubstrateId] =
-        &[
+    pub(crate) const ALL: &'static [SubstrateId] = &[
         SubstrateId::RepeatedRun,
         SubstrateId::MixedScript,
         SubstrateId::Glyph,
@@ -678,11 +677,7 @@ impl PendingPartition {
     /// A move in either forces the whole rebuild: a judging knob maps and reduces
     /// nothing but re-judges every key for that rule (plan §7.1/§6.3), and a
     /// newly enabled consumer has no partition to patch.
-    pub(crate) fn plan(
-        &mut self,
-        judge_fp: u64,
-        emitting: &[RuleId],
-    ) -> PartitionOwed {
+    pub(crate) fn plan(&mut self, judge_fp: u64, emitting: &[RuleId]) -> PartitionOwed {
         let judging_moved = self
             .judged_under
             .as_ref()
@@ -905,12 +900,14 @@ impl<S: ObservationSubstrate> OldColumns<S> {
             .zip(self.reduced_stamps)
             .zip(self.reduced)
             .map(
-                |((((token, input_stamp), observation), reduced_stamp), reduced)| SubstrateChapter {
-                    token,
-                    input_stamp,
-                    observation,
-                    reduced_stamp: reduced_stamp.expect("unchanged book retains every stamp"),
-                    reduced: reduced.expect("unchanged book retains every reduced chapter"),
+                |((((token, input_stamp), observation), reduced_stamp), reduced)| {
+                    SubstrateChapter {
+                        token,
+                        input_stamp,
+                        observation,
+                        reduced_stamp: reduced_stamp.expect("unchanged book retains every stamp"),
+                        reduced: reduced.expect("unchanged book retains every reduced chapter"),
+                    }
                 },
             )
             .collect();
@@ -1224,7 +1221,13 @@ impl<S: ObservationSubstrate> SubstrateCache<S> {
         // results untouched (nothing the replay can produce reaches back past its
         // own start).
         let mut reduced: Vec<Option<S::ReducedChapter>> = (0..n)
-            .map(|k| if k < start { old.reduced[k].take() } else { None })
+            .map(|k| {
+                if k < start {
+                    old.reduced[k].take()
+                } else {
+                    None
+                }
+            })
             .collect();
         let mut stamps: Vec<Option<ReducedChapterStamp<S::BoundaryState>>> = vec![None; n];
         let mut converged_at: Option<usize> = None;
@@ -1922,7 +1925,7 @@ mod replay {
     impl ObservationSubstrate for Local {
         const ID: SubstrateId = SubstrateId::Bracket;
         const SCHEMA_STAMP: u64 = 1;
-    type Pairing = crate::substrate::NoReference;
+        type Pairing = crate::substrate::NoReference;
         // A synthetic driver substrate: its map reads the chapter's verse texts
         // directly, so it requests no mechanical view.
         const NEEDS: crate::prep::PrepNeeds = crate::prep::PrepNeeds::NONE;
@@ -1977,7 +1980,7 @@ mod replay {
     impl ObservationSubstrate for Carry {
         const ID: SubstrateId = SubstrateId::Bracket;
         const SCHEMA_STAMP: u64 = 2;
-    type Pairing = crate::substrate::NoReference;
+        type Pairing = crate::substrate::NoReference;
         // A synthetic driver substrate: its map reads the chapter's verse texts
         // directly, so it requests no mechanical view.
         const NEEDS: crate::prep::PrepNeeds = crate::prep::PrepNeeds::NONE;
@@ -2128,13 +2131,20 @@ mod replay {
         let mut cache: SubstrateCache<Local> = SubstrateCache::new();
         let cold = [("1", "aa"), ("2", "bb"), ("3", "cc"), ("4", "dd")];
         drive(&mut cache, "GEN", &cold);
-        assert_eq!((cache.mapped, cache.reduced), (4, 4), "cold does every chapter");
+        assert_eq!(
+            (cache.mapped, cache.reduced),
+            (4, 4),
+            "cold does every chapter"
+        );
 
         cache.reset_probes();
         let edited = [("1", "aa"), ("2", "BB"), ("3", "cc"), ("4", "dd")];
         drive(&mut cache, "GEN", &edited);
         assert_eq!(cache.mapped, 1, "only the changed chapter is mapped");
-        assert_eq!(cache.reduced, 1, "an empty boundary state converges at once");
+        assert_eq!(
+            cache.reduced, 1,
+            "an empty boundary state converges at once"
+        );
         assert_equals_cold(&cache, "GEN", &edited);
     }
 
@@ -2250,7 +2260,10 @@ mod replay {
         cache.reset_probes();
         let moved = [("1", "aa"), ("3", "cc"), ("2", "bb")];
         drive(&mut cache, "GEN", &moved);
-        assert_eq!(cache.mapped, 0, "a moved chapter's observation is position-independent");
+        assert_eq!(
+            cache.mapped, 0,
+            "a moved chapter's observation is position-independent"
+        );
         assert!(cache.reduced >= 2, "the reordered suffix is re-reduced");
         assert_equals_cold(&cache, "GEN", &moved);
     }
@@ -2286,8 +2299,7 @@ mod replay {
         // Chapters carry content or are empty (pass-through) so the generated
         // edits exercise short, long, and book-end convergence distances.
         let tokens = ["1", "2", "3", "4", "5", "6", "7", "8"];
-        let mut contents: Vec<String> =
-            tokens.iter().map(|t| format!("{t}x")).collect();
+        let mut contents: Vec<String> = tokens.iter().map(|t| format!("{t}x")).collect();
         let mut rng = 0x2545_F491_4F6C_DD1Du64;
         // Seed cold, so every later step measures incremental work only.
         let next = |rng: &mut u64| {
@@ -2308,9 +2320,9 @@ mod replay {
             let which = (next(&mut rng) % tokens.len() as u64) as usize;
             let kind = next(&mut rng) % 3;
             contents[which] = match kind {
-                0 => String::new(),              // becomes a pass-through chapter
-                1 => format!("{which}{step}"),   // new content, new trailing char
-                _ => format!("{step}{which}"),   // new content, same trailing char
+                0 => String::new(),            // becomes a pass-through chapter
+                1 => format!("{which}{step}"), // new content, new trailing char
+                _ => format!("{step}{which}"), // new content, same trailing char
             };
             let chapters: Vec<(&str, &str)> = tokens
                 .iter()
@@ -2359,7 +2371,7 @@ mod replay {
     impl ObservationSubstrate for Owned {
         const ID: SubstrateId = SubstrateId::Bracket;
         const SCHEMA_STAMP: u64 = 3;
-    type Pairing = crate::substrate::NoReference;
+        type Pairing = crate::substrate::NoReference;
         // A synthetic driver substrate: its map reads the chapter's verse texts
         // directly, so it requests no mechanical view.
         const NEEDS: crate::prep::PrepNeeds = crate::prep::PrepNeeds::NONE;
@@ -2534,7 +2546,10 @@ mod replay {
         cache.reset_probes();
         let edited = [("1", "aa"), ("2", "b"), ("3", "c!")];
         drive_owned(&mut cache, "GEN", &edited);
-        assert_eq!(cache.reduced, 1, "nothing is carried, so it converges at once");
+        assert_eq!(
+            cache.reduced, 1,
+            "nothing is carried, so it converges at once"
+        );
         assert_owned_equals_cold(&cache, "GEN", &edited);
 
         // Edit the dangling chapter itself: the replay reaches the book edge.

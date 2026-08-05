@@ -747,4 +747,3 @@ mod mixedcase_tests {
         assert!(!mc_first_cased_upper("kiSwahili"));
     }
 }
-

@@ -11,8 +11,8 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use ssc_core::{
-    analyze_with_config, apply_review_policy, AnalysisId, Config, Corpus, FindingArgs,
-    ReviewAdjustment, ReviewDepth, ReviewPolicy, RuleId, TargetContextId,
+    AnalysisId, Config, Corpus, FindingArgs, ReviewAdjustment, ReviewDepth, ReviewPolicy, RuleId,
+    TargetContextId, analyze_with_config, apply_review_policy,
 };
 use tsify::Tsify;
 use wasm_bindgen::prelude::*;
@@ -335,9 +335,7 @@ pub struct FindingsArgsOut(pub Vec<Option<FindingArgs>>);
 /// Build core's effective `Config`: calibrated defaults, Review Depth mapping,
 /// explicit advanced native overrides, then rule enablement. Validation errors
 /// are returned so malformed public input cannot be silently clamped.
-fn build_config(
-    config: Option<SousConfig>,
-) -> Result<Config, ssc_core::ReviewPolicyError> {
+fn build_config(config: Option<SousConfig>) -> Result<Config, ssc_core::ReviewPolicyError> {
     let mut cfg = Config::v1_defaults();
     let Some(c) = config else {
         return Ok(cfg);
@@ -354,13 +352,7 @@ fn build_config(
             .into_iter()
             .map(|(rule, value)| Ok((rule, ReviewAdjustment::from_i16(value)?)))
             .collect::<Result<BTreeMap<_, _>, ssc_core::ReviewPolicyError>>()?;
-        apply_review_policy(
-            &mut cfg,
-            &ReviewPolicy {
-                depth,
-                adjustments,
-            },
-        )?;
+        apply_review_policy(&mut cfg, &ReviewPolicy { depth, adjustments })?;
     }
 
     {
@@ -741,14 +733,20 @@ impl std::fmt::Display for ArgsError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ArgsError::NoAnalysis => {
-                write!(f, "no successful analysis: call analyze() before requesting args")
+                write!(
+                    f,
+                    "no successful analysis: call analyze() before requesting args"
+                )
             }
             ArgsError::StaleId { requested, current } => write!(
                 f,
                 "stale analysis id {requested}: the current publication is {current}"
             ),
             ArgsError::IndexOutOfRange { index, count } => {
-                write!(f, "record index {index} out of range (current record count {count})")
+                write!(
+                    f,
+                    "record index {index} out of range (current record count {count})"
+                )
             }
         }
     }
@@ -826,7 +824,11 @@ impl Galley {
         }
     }
 
-    fn finding_args_core(&self, analysis_id: u64, index: u32) -> Result<Option<FindingArgs>, ArgsError> {
+    fn finding_args_core(
+        &self,
+        analysis_id: u64,
+        index: u32,
+    ) -> Result<Option<FindingArgs>, ArgsError> {
         self.check_current_id(analysis_id)?;
         let i = index as usize;
         if i >= self.last_args.len() {
@@ -934,7 +936,10 @@ impl Galley {
     /// provenance stales the same-slug target books whose source changed on the
     /// next analyze. Returns the `MutationEffect`.
     #[wasm_bindgen(js_name = replaceSource)]
-    pub fn replace_source(&mut self, source: Option<VrefCorpus>) -> Result<MutationEffect, JsError> {
+    pub fn replace_source(
+        &mut self,
+        source: Option<VrefCorpus>,
+    ) -> Result<MutationEffect, JsError> {
         let source = source.map(to_corpus_or_reject).transpose()?;
         let effect = self.inner.replace_source(source);
         self.invalidate_publication_on(effect);
@@ -963,7 +968,8 @@ impl Galley {
     /// table)` only after the pack succeeds; a pack failure leaves the previous
     /// publication untouched (§3.3 `EngineCurrentWireStale`).
     pub fn analyze(&mut self) -> Result<Vec<u8>, JsError> {
-        self.analyze_packed().map_err(|e| JsError::new(&e.to_string()))
+        self.analyze_packed()
+            .map_err(|e| JsError::new(&e.to_string()))
     }
 
     /// The lazy args of one finding from the last successful [`analyze`](Galley::analyze),
@@ -1333,11 +1339,7 @@ mod tests {
     /// idempotent), and the edited book's finding surfaces in a decoded record.
     #[test]
     fn galley_boundary_construct_edit_analyze_twice() {
-        let mut g = new_galley(
-            &[("GEN 1:1", "a  b"), ("GEN 1:2", "one")],
-            None,
-            None,
-        );
+        let mut g = new_galley(&[("GEN 1:1", "a  b"), ("GEN 1:2", "one")], None, None);
         let _ = g.analyze_packed().unwrap();
         g.update_book(BookUpdateIn {
             slug: "GEN".to_string(),
@@ -1347,7 +1349,10 @@ mod tests {
         .unwrap();
         let a = g.analyze_packed().unwrap();
         let b = g.analyze_packed().unwrap();
-        assert_eq!(a, b, "warm re-analyze is byte-identical through the wrapper");
+        assert_eq!(
+            a, b,
+            "warm re-analyze is byte-identical through the wrapper"
+        );
         let snap = ssc_wire::decode(&a).unwrap();
         assert!(
             snap.records
@@ -1411,7 +1416,10 @@ mod tests {
             let resident = new_galley(&target, source, Some(all_rules()))
                 .analyze_packed()
                 .unwrap();
-            assert_eq!(stateless, resident, "stateless == resident (source={source:?})");
+            assert_eq!(
+                stateless, resident,
+                "stateless == resident (source={source:?})"
+            );
             // The header id is content-derived and identical across the two paths.
             assert_eq!(
                 ssc_wire::decode(&stateless).unwrap().analysis_id,
@@ -1437,8 +1445,16 @@ mod tests {
         let id = snap.analysis_id;
         // Select by the record's own has_args bit so the test never hard-codes a
         // rule's args policy.
-        let args_i = snap.records.iter().position(|r| r.has_args).expect("an args-bearing record") as u32;
-        let none_i = snap.records.iter().position(|r| !r.has_args).expect("a no-args record") as u32;
+        let args_i = snap
+            .records
+            .iter()
+            .position(|r| r.has_args)
+            .expect("an args-bearing record") as u32;
+        let none_i = snap
+            .records
+            .iter()
+            .position(|r| !r.has_args)
+            .expect("a no-args record") as u32;
 
         // index -> Some for an args-bearing record; None for a no-args record.
         assert!(g.finding_args_core(id, args_i).unwrap().is_some());
@@ -1477,9 +1493,14 @@ mod tests {
         let mut g = new_galley(&base, None, Some(all_rules()));
 
         // no analyze yet -> reject.
-        assert!(matches!(g.finding_args_core(0, 0), Err(ArgsError::NoAnalysis)));
+        assert!(matches!(
+            g.finding_args_core(0, 0),
+            Err(ArgsError::NoAnalysis)
+        ));
 
-        let id0 = ssc_wire::decode(&g.analyze_packed().unwrap()).unwrap().analysis_id;
+        let id0 = ssc_wire::decode(&g.analyze_packed().unwrap())
+            .unwrap()
+            .analysis_id;
         // a wrong id rejects.
         assert!(matches!(
             g.finding_args_core(id0.wrapping_add(1), 0),
@@ -1494,10 +1515,18 @@ mod tests {
         })
         .unwrap();
         // the old id is rejected even before re-analyze (publication was staled).
-        assert!(matches!(g.finding_args_core(id0, 0), Err(ArgsError::NoAnalysis)));
-        let id1 = ssc_wire::decode(&g.analyze_packed().unwrap()).unwrap().analysis_id;
+        assert!(matches!(
+            g.finding_args_core(id0, 0),
+            Err(ArgsError::NoAnalysis)
+        ));
+        let id1 = ssc_wire::decode(&g.analyze_packed().unwrap())
+            .unwrap()
+            .analysis_id;
         assert_ne!(id1, id0, "an edit changes the content-derived id");
-        assert!(matches!(g.finding_args_core(id0, 0), Err(ArgsError::StaleId { .. })));
+        assert!(matches!(
+            g.finding_args_core(id0, 0),
+            Err(ArgsError::StaleId { .. })
+        ));
 
         // edit back to the original: the id recurs (content-addressed).
         g.update_book(BookUpdateIn {
@@ -1506,9 +1535,14 @@ mod tests {
             texts: vec!["the the word".into(), "a  b".into()],
         })
         .unwrap();
-        let id2 = ssc_wire::decode(&g.analyze_packed().unwrap()).unwrap().analysis_id;
+        let id2 = ssc_wire::decode(&g.analyze_packed().unwrap())
+            .unwrap()
+            .analysis_id;
         assert_eq!(id2, id0, "edit-then-undo recurs the id");
-        assert!(g.finding_args_core(id0, 0).is_ok(), "the recurred id revalidates");
+        assert!(
+            g.finding_args_core(id0, 0).is_ok(),
+            "the recurred id revalidates"
+        );
     }
 
     /// A reference-only change moves the analysis id and stales the prior args
@@ -1518,13 +1552,20 @@ mod tests {
     fn reference_only_change_moves_id_and_stales_args() {
         let target = [("GEN 1:1", "the the word"), ("GEN 1:2", "a  b")];
         let mut g = new_galley(&target, None, Some(all_rules()));
-        let id0 = ssc_wire::decode(&g.analyze_packed().unwrap()).unwrap().analysis_id;
+        let id0 = ssc_wire::decode(&g.analyze_packed().unwrap())
+            .unwrap()
+            .analysis_id;
 
         g.replace_source(Some(vref(&[("GEN 1:1", "s"), ("GEN 1:2", "t")])))
             .unwrap();
         // publication staled by the Changed source replacement.
-        assert!(matches!(g.finding_args_core(id0, 0), Err(ArgsError::NoAnalysis)));
-        let id1 = ssc_wire::decode(&g.analyze_packed().unwrap()).unwrap().analysis_id;
+        assert!(matches!(
+            g.finding_args_core(id0, 0),
+            Err(ArgsError::NoAnalysis)
+        ));
+        let id1 = ssc_wire::decode(&g.analyze_packed().unwrap())
+            .unwrap()
+            .analysis_id;
         assert_ne!(id1, id0, "a reference change moves the analysis id");
     }
 
@@ -1535,10 +1576,14 @@ mod tests {
     fn fresh_instance_accepts_prior_instances_id() {
         let target = [("GEN 1:1", "the the word"), ("GEN 1:2", "a  b")];
         let mut a = new_galley(&target, None, Some(all_rules()));
-        let id_a = ssc_wire::decode(&a.analyze_packed().unwrap()).unwrap().analysis_id;
+        let id_a = ssc_wire::decode(&a.analyze_packed().unwrap())
+            .unwrap()
+            .analysis_id;
 
         let mut b = new_galley(&target, None, Some(all_rules()));
-        let id_b = ssc_wire::decode(&b.analyze_packed().unwrap()).unwrap().analysis_id;
+        let id_b = ssc_wire::decode(&b.analyze_packed().unwrap())
+            .unwrap()
+            .analysis_id;
         assert_eq!(id_a, id_b, "same inputs -> same id across instances");
         // b's accessor accepts the id a minted (they are the same value).
         assert!(b.finding_args_core(id_a, 0).is_ok());
@@ -1560,7 +1605,9 @@ mod tests {
             Some(all_rules()),
         );
         // A first successful analyze establishes a publication.
-        let id0 = ssc_wire::decode(&g.analyze_packed().unwrap()).unwrap().analysis_id;
+        let id0 = ssc_wire::decode(&g.analyze_packed().unwrap())
+            .unwrap()
+            .analysis_id;
         assert_eq!(g.last_analysis_id, Some(id0));
 
         // A real edit stales the publication, then dirties the handle.
@@ -1570,7 +1617,10 @@ mod tests {
             texts: vec!["the the word extra".into(), "a  b".into()],
         })
         .unwrap();
-        assert_eq!(g.last_analysis_id, None, "a Changed edit stales the publication");
+        assert_eq!(
+            g.last_analysis_id, None,
+            "a Changed edit stales the publication"
+        );
         assert!(g.inner.is_dirty());
 
         // Arm a pack failure: core succeeds (map/reduce/judge run once, handle
@@ -1588,11 +1638,16 @@ mod tests {
         // Retry: no fault armed. The inner handle is already CleanPublished with
         // a warm cache, so this re-analyze does zero new map (no re-walk); the
         // pack now succeeds and publishes the current snapshot.
-        let bytes = g.analyze_packed().expect("retry packs the current snapshot");
+        let bytes = g
+            .analyze_packed()
+            .expect("retry packs the current snapshot");
         let id1 = ssc_wire::decode(&bytes).unwrap().analysis_id;
         assert_ne!(id1, id0, "the edited snapshot has a new id");
         assert_eq!(g.last_analysis_id, Some(id1), "the retry publishes");
-        assert!(g.finding_args_core(id1, 0).is_ok(), "args available after retry");
+        assert!(
+            g.finding_args_core(id1, 0).is_ok(),
+            "args available after retry"
+        );
 
         // The pack-retry reaches the cold result: its packed bytes are identical
         // to a fresh cold analyze of the same edited inputs — the partition lane
@@ -1604,7 +1659,10 @@ mod tests {
             Some(all_rules()),
         );
         let cold_bytes = cold.analyze_packed().expect("cold analyze packs");
-        assert_eq!(bytes, cold_bytes, "pack-retry is byte-identical to the cold result");
+        assert_eq!(
+            bytes, cold_bytes,
+            "pack-retry is byte-identical to the cold result"
+        );
     }
 
     /// The wasm-boundary equivalence bookend: every packed record decodes to the
@@ -1634,7 +1692,11 @@ mod tests {
         let snap = ssc_wire::decode(&bytes).unwrap();
         assert_eq!(snap.records.len(), core.len());
         for (rec, f) in snap.records.iter().zip(core.iter()) {
-            assert_eq!(rec.key_idx, f.key_idx.get(), "record resolves to the same key");
+            assert_eq!(
+                rec.key_idx,
+                f.key_idx.get(),
+                "record resolves to the same key"
+            );
             assert_eq!(rec.rule, f.code);
             assert_eq!(rec.severity, f.severity);
             match f.score {

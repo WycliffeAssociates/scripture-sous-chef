@@ -145,32 +145,64 @@ impl SiteAddr {
 /// Why [`Corpus::try_from_parts`] rejected its input.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CorpusError {
-    MismatchedLengths { keys: usize, texts: usize },
-    CorpusTooLarge { len: usize },
-    MalformedKey { key: String, source: key::KeyError },
-    BookTooLarge { slug: String, len: usize },
-    ReopenedBook { slug: String },
+    MismatchedLengths {
+        keys: usize,
+        texts: usize,
+    },
+    CorpusTooLarge {
+        len: usize,
+    },
+    MalformedKey {
+        key: String,
+        source: key::KeyError,
+    },
+    BookTooLarge {
+        slug: String,
+        len: usize,
+    },
+    ReopenedBook {
+        slug: String,
+    },
     /// An opaque chapter token that reappears inside its book after another
     /// token closed it (`GEN 1:1, GEN 2:1, GEN 1:2`). Like a book, a chapter is
     /// one contiguous run; tokens are compared opaquely (no numeric ordering).
-    ReopenedChapter { slug: String, chapter: String },
+    ReopenedChapter {
+        slug: String,
+        chapter: String,
+    },
     /// A [`BookBlock`] key whose parsed book slug is not the block's own slug.
-    SlugMismatch { slug: String, key: String },
+    SlugMismatch {
+        slug: String,
+        key: String,
+    },
     /// A [`BookBlock`] with no verses. Removal is the explicit
     /// [`Corpus::remove_book`], never an empty block.
-    EmptyBook { slug: String },
+    EmptyBook {
+        slug: String,
+    },
     /// Two [`BookBlock`]s in one [`Corpus::replace_books`] batch share a slug.
-    DuplicateSlugInBatch { slug: String },
+    DuplicateSlugInBatch {
+        slug: String,
+    },
     /// A [`ChapterBlock`] with no verses. A zero-verse chapter is a removal and
     /// must go through a whole-book [`Corpus::replace_books`], never an empty
     /// chapter block.
-    EmptyChapterBlock { slug: String, chapter: String },
+    EmptyChapterBlock {
+        slug: String,
+        chapter: String,
+    },
     /// A [`ChapterBlock`] key whose parsed chapter token is not the block's own
     /// chapter (its book already matched, or `SlugMismatch` would have fired).
-    ChapterTokenMismatch { chapter: String, key: String },
+    ChapterTokenMismatch {
+        chapter: String,
+        key: String,
+    },
     /// [`Corpus::replace_chapter`] found no `(slug, chapter)` run to replace.
     /// Whole-chapter insertion uses [`Corpus::replace_books`].
-    ChapterNotFound { slug: String, chapter: String },
+    ChapterNotFound {
+        slug: String,
+        chapter: String,
+    },
 }
 
 impl fmt::Display for CorpusError {
@@ -207,10 +239,16 @@ impl fmt::Display for CorpusError {
                 "book block {slug:?} contains key {key:?}, whose book is not {slug:?}"
             ),
             CorpusError::EmptyBook { slug } => {
-                write!(f, "book block {slug:?} is empty; use remove_book to delete a book")
+                write!(
+                    f,
+                    "book block {slug:?} is empty; use remove_book to delete a book"
+                )
             }
             CorpusError::DuplicateSlugInBatch { slug } => {
-                write!(f, "book {slug:?} appears more than once in one replace_books batch")
+                write!(
+                    f,
+                    "book {slug:?} appears more than once in one replace_books batch"
+                )
             }
             CorpusError::EmptyChapterBlock { slug, chapter } => write!(
                 f,
@@ -353,9 +391,8 @@ fn build_book_at(keys: &[String], texts: &[String], start: usize) -> BookLayout 
 /// targets where `isize` is narrower than the address space the domain admits.
 fn shift_book(book: &mut BookLayout, new_start: usize) {
     let old_start = book.range.start;
-    let rebase = |r: &Range<usize>| {
-        (new_start + (r.start - old_start))..(new_start + (r.end - old_start))
-    };
+    let rebase =
+        |r: &Range<usize>| (new_start + (r.start - old_start))..(new_start + (r.end - old_start));
     book.range = rebase(&book.range);
     for c in &mut book.chapters {
         c.range = rebase(&c.range);
@@ -611,7 +648,13 @@ impl Corpus {
         let layout: Vec<(usize, usize, Option<usize>)> = self
             .layout
             .iter()
-            .map(|b| (b.range.start, b.range.end, slug_to_slot.get(&*b.slug).copied()))
+            .map(|b| {
+                (
+                    b.range.start,
+                    b.range.end,
+                    slug_to_slot.get(&*b.slug).copied(),
+                )
+            })
             .collect();
 
         // 3. The resulting corpus must stay addressable (Corpus's own invariant,
@@ -625,7 +668,11 @@ impl Corpus {
         let final_len: usize = layout
             .iter()
             .map(|&(s, e, replaced)| match replaced {
-                Some(i) => slots[i].as_ref().expect("replacement slot present").keys.len(),
+                Some(i) => slots[i]
+                    .as_ref()
+                    .expect("replacement slot present")
+                    .keys
+                    .len(),
                 None => e - s,
             })
             .sum::<usize>()
@@ -857,10 +904,15 @@ impl Corpus {
     pub fn remove_book(&mut self, slug: &str) -> bool {
         let mut start = 0usize;
         while start < self.keys.len() {
-            let book = parse_key(&self.keys[start]).expect("Corpus validated keys").book;
+            let book = parse_key(&self.keys[start])
+                .expect("Corpus validated keys")
+                .book;
             let mut end = start + 1;
             while end < self.keys.len()
-                && parse_key(&self.keys[end]).expect("Corpus validated keys").book == book
+                && parse_key(&self.keys[end])
+                    .expect("Corpus validated keys")
+                    .book
+                    == book
             {
                 end += 1;
             }
@@ -914,7 +966,6 @@ impl<'a> BookGroup<'a> {
     pub(crate) fn key(&self, local: LocalKeyIdx) -> &'a str {
         &self.keys[usize::from(local.0)]
     }
-
 }
 
 pub type Books<'a> = Vec<BookGroup<'a>>;
@@ -1067,11 +1118,8 @@ mod tests {
         // GEN chapter 1 closes when chapter 2 starts; 1 then reappearing is a
         // reopened chapter (distinct from an out-of-order verse within one
         // chapter, which is legal — see below).
-        let err = Corpus::try_from_parts(
-            keys(&["GEN 1:1", "GEN 2:1", "GEN 1:2"]),
-            texts(3),
-        )
-        .unwrap_err();
+        let err =
+            Corpus::try_from_parts(keys(&["GEN 1:1", "GEN 2:1", "GEN 1:2"]), texts(3)).unwrap_err();
         assert_eq!(
             err,
             CorpusError::ReopenedChapter {
@@ -1085,11 +1133,7 @@ mod tests {
     fn accepts_out_of_order_verses_within_one_chapter() {
         // Out-of-order verse tokens in the SAME chapter run are legal — the
         // chapter did not reopen, only the verse order is noncanonical.
-        let c = Corpus::try_from_parts(
-            keys(&["GEN 1:1", "GEN 1:3", "GEN 1:2"]),
-            texts(3),
-        )
-        .unwrap();
+        let c = Corpus::try_from_parts(keys(&["GEN 1:1", "GEN 1:3", "GEN 1:2"]), texts(3)).unwrap();
         assert_eq!(c.len(), 3);
     }
 
@@ -1097,22 +1141,14 @@ mod tests {
     fn accepts_noncanonical_but_contiguous_chapter_runs() {
         // Chapters need not be in numeric order, only contiguous: `3` then `1`
         // is fine as long as neither reopens.
-        let c = Corpus::try_from_parts(
-            keys(&["GEN 3:1", "GEN 3:2", "GEN 1:1"]),
-            texts(3),
-        )
-        .unwrap();
+        let c = Corpus::try_from_parts(keys(&["GEN 3:1", "GEN 3:2", "GEN 1:1"]), texts(3)).unwrap();
         assert_eq!(c.len(), 3);
     }
 
     #[test]
     fn a_chapter_token_may_recur_in_a_different_book() {
         // Chapter tokens are book-local: GEN 1 and EXO 1 do not collide.
-        let c = Corpus::try_from_parts(
-            keys(&["GEN 1:1", "EXO 1:1"]),
-            texts(2),
-        )
-        .unwrap();
+        let c = Corpus::try_from_parts(keys(&["GEN 1:1", "EXO 1:1"]), texts(2)).unwrap();
         assert_eq!(c.len(), 2);
     }
 
@@ -1133,7 +1169,11 @@ mod tests {
                 chapter: "1".to_string(),
             }
         );
-        assert_eq!(c.keys(), keys(&["GEN 1:1"]).as_slice(), "rejected block is a no-op");
+        assert_eq!(
+            c.keys(),
+            keys(&["GEN 1:1"]).as_slice(),
+            "rejected block is a no-op"
+        );
     }
 
     /// The owned layout records presented-order books and their contiguous
@@ -1199,7 +1239,10 @@ mod tests {
         ])
         .unwrap();
         let expect = Corpus::try_from_parts(c.keys().to_vec(), c.texts().to_vec()).unwrap();
-        assert_eq!(c.layout, expect.layout, "layout current after replace_books");
+        assert_eq!(
+            c.layout, expect.layout,
+            "layout current after replace_books"
+        );
 
         // remove EXO.
         c.remove_book("EXO");
@@ -1261,7 +1304,11 @@ mod tests {
             &["a", "b", "c"],
         )])
         .unwrap();
-        assert_eq!(m1.book_layout()[0].hash, target, "replace_books folds identically");
+        assert_eq!(
+            m1.book_layout()[0].hash,
+            target,
+            "replace_books folds identically"
+        );
 
         // Reach the same content via a single-chapter replacement.
         let mut m2 = Corpus::try_from_parts(
@@ -1269,9 +1316,18 @@ mod tests {
             keys(&["A", "B", "c"]),
         )
         .unwrap();
-        m2.replace_chapter(chapter_block("GEN", "1", &["GEN 1:1", "GEN 1:2"], &["a", "b"]))
-            .unwrap();
-        assert_eq!(m2.book_layout()[0].hash, target, "replace_chapter folds identically");
+        m2.replace_chapter(chapter_block(
+            "GEN",
+            "1",
+            &["GEN 1:1", "GEN 1:2"],
+            &["a", "b"],
+        ))
+        .unwrap();
+        assert_eq!(
+            m2.book_layout()[0].hash,
+            target,
+            "replace_chapter folds identically"
+        );
     }
 
     fn chapter_block(slug: &str, chapter: &str, ks: &[&str], txt: &[&str]) -> ChapterBlock {
@@ -1326,13 +1382,23 @@ mod tests {
         assert_layout(&c, "append-new");
 
         // chapter replace, changing the run length (EXO ch1: 1 verse -> 2).
-        c.replace_chapter(chapter_block("EXO", "1", &["EXO 1:1", "EXO 1:2"], &["x", "y"]))
-            .unwrap();
+        c.replace_chapter(chapter_block(
+            "EXO",
+            "1",
+            &["EXO 1:1", "EXO 1:2"],
+            &["x", "y"],
+        ))
+        .unwrap();
         assert_layout(&c, "chapter replace (length change)");
 
         // no-op chapter replace (byte-identical) leaves the layout untouched.
-        c.replace_chapter(chapter_block("EXO", "1", &["EXO 1:1", "EXO 1:2"], &["x", "y"]))
-            .unwrap();
+        c.replace_chapter(chapter_block(
+            "EXO",
+            "1",
+            &["EXO 1:1", "EXO 1:2"],
+            &["x", "y"],
+        ))
+        .unwrap();
         assert_layout(&c, "chapter replace no-op");
 
         // no-op book replace (byte-identical) leaves the layout untouched.
@@ -1380,7 +1446,10 @@ mod tests {
             c.keys(),
             keys(&["GEN 1:3", "GEN 1:3", "GEN 1:1", "GEN 2:1", "EXO 1:1"]).as_slice()
         );
-        assert_eq!(c.texts(), keys(&["n3", "n3b", "n1", "g21", "e11"]).as_slice());
+        assert_eq!(
+            c.texts(),
+            keys(&["n3", "n3b", "n1", "g21", "e11"]).as_slice()
+        );
         // Layout equals a freshly-built corpus over the spliced vectors.
         let expect = Corpus::try_from_parts(c.keys().to_vec(), c.texts().to_vec()).unwrap();
         assert_eq!(c.layout, expect.layout);
@@ -1397,21 +1466,26 @@ mod tests {
         .unwrap();
         let before = c.clone();
         let effect = c
-            .replace_chapter(chapter_block("GEN", "1", &["GEN 1:1", "GEN 1:2"], &["g11", "g12"]))
+            .replace_chapter(chapter_block(
+                "GEN",
+                "1",
+                &["GEN 1:1", "GEN 1:2"],
+                &["g11", "g12"],
+            ))
             .unwrap();
         assert_eq!(effect, MutationEffect::Unchanged);
-        assert_eq!(c, before, "a no-op chapter replace leaves the corpus untouched");
+        assert_eq!(
+            c, before,
+            "a no-op chapter replace leaves the corpus untouched"
+        );
     }
 
     /// Every `replace_chapter` rejection is atomic — the corpus is untouched —
     /// and each validation case fires its own error.
     #[test]
     fn replace_chapter_rejections_are_atomic() {
-        let original = Corpus::try_from_parts(
-            keys(&["GEN 1:1", "GEN 2:1"]),
-            keys(&["g11", "g21"]),
-        )
-        .unwrap();
+        let original =
+            Corpus::try_from_parts(keys(&["GEN 1:1", "GEN 2:1"]), keys(&["g11", "g21"])).unwrap();
 
         // empty block
         let mut c = original.clone();
@@ -1543,9 +1617,9 @@ mod tests {
         let mut c =
             Corpus::try_from_parts(keys(&["GEN 1:1", "EXO 1:1"]), keys(&["g", "e"])).unwrap();
         c.replace_books(vec![
-            block("NUM", &["NUM 1:1"], &["n"]),                    // new (batch idx 0)
+            block("NUM", &["NUM 1:1"], &["n"]), // new (batch idx 0)
             block("EXO", &["EXO 1:1", "EXO 1:2"], &["E1", "E2"]), // replacement
-            block("LEV", &["LEV 1:1"], &["l"]),                    // new (batch idx 2)
+            block("LEV", &["LEV 1:1"], &["l"]), // new (batch idx 2)
         ])
         .unwrap();
         // GEN carried, EXO replaced in place, then new books in batch order
@@ -1642,6 +1716,9 @@ mod tests {
         assert!(c.remove_book("GEN"));
         assert_eq!(c.keys(), keys(&["EXO 1:1"]).as_slice());
         assert!(c.remove_book("EXO"));
-        assert!(c.is_empty(), "removing the last book leaves a valid empty corpus");
+        assert!(
+            c.is_empty(),
+            "removing the last book leaves a valid empty corpus"
+        );
     }
 }

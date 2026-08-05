@@ -184,8 +184,9 @@ enum WCat {
 /// for the `WB_EXTEND`/`WB_SEP` bits). `Kana`/`Hebr` are included
 /// defensively even though those scalars are already routed to their own
 /// `WCat` variant before this check runs.
-const ALETTER_EXCLUDED_SCRIPTS: [&str; 8] =
-    ["Thai", "Laoo", "Khmr", "Mymr", "Hani", "Hira", "Kana", "Hebr"];
+const ALETTER_EXCLUDED_SCRIPTS: [&str; 8] = [
+    "Thai", "Laoo", "Khmr", "Mymr", "Hani", "Hira", "Kana", "Hebr",
+];
 
 /// Disambiguates which of the 6 `Class::is_wb_sep()` categories a scalar
 /// belongs to — only called once that bit has already fast-rejected
@@ -201,11 +202,11 @@ fn wb_sep_category(c: char) -> WCat {
         0x003A | 0x00B7 | 0x0387 | 0x055F | 0x05F4 | 0x2027 | 0xFE13 | 0xFE55 | 0xFF1A => {
             WCat::MidLetter
         }
-        0x002C | 0x003B | 0x037E | 0x0589 | 0x060C | 0x060D | 0x066C | 0x07F8 | 0x2044
-        | 0xFE50 | 0xFE54 | 0xFF0C | 0xFF1B => WCat::MidNum,
+        0x002C | 0x003B | 0x037E | 0x0589 | 0x060C | 0x060D | 0x066C | 0x07F8 | 0x2044 | 0xFE50
+        | 0xFE54 | 0xFF0C | 0xFF1B => WCat::MidNum,
         0x002E | 0x2018 | 0x2019 | 0x2024 | 0xFE52 | 0xFF07 | 0xFF0E => WCat::MidNumLet,
-        0x005F | 0x202F | 0x203F | 0x2040 | 0x2054 | 0xFE33 | 0xFE34 | 0xFE4D | 0xFE4E
-        | 0xFE4F | 0xFF3F => WCat::ExtendNumLet,
+        0x005F | 0x202F | 0x203F | 0x2040 | 0x2054 | 0xFE33 | 0xFE34 | 0xFE4D | 0xFE4E | 0xFE4F
+        | 0xFF3F => WCat::ExtendNumLet,
         other => unreachable!(
             "Class::is_wb_sep() set for U+{other:04X} but it isn't in the \
              42-codepoint WB_SEP set — charclass_table.rs and this match drifted"
@@ -477,8 +478,7 @@ fn no_break(atoms: &[Atom], i: usize) -> bool {
     if cur == WCat::HebrewLetter && next == WCat::SingleQuote {
         return true; // WB7a
     }
-    if cur == WCat::HebrewLetter && next == WCat::DoubleQuote && next2 == Some(WCat::HebrewLetter)
-    {
+    if cur == WCat::HebrewLetter && next == WCat::DoubleQuote && next2 == Some(WCat::HebrewLetter) {
         return true; // WB7b
     }
     if cur == WCat::DoubleQuote && next == WCat::HebrewLetter && prev == Some(WCat::HebrewLetter) {

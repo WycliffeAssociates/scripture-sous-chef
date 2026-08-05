@@ -63,7 +63,11 @@ fn density_over(per_verse: &[(u64, u64)], n: usize) -> Option<f64> {
     let (na, tot) = per_verse[..n]
         .iter()
         .fold((0u64, 0u64), |(a, b), &(x, y)| (a + x, b + y));
-    if tot == 0 { None } else { Some(na as f64 / tot as f64) }
+    if tot == 0 {
+        None
+    } else {
+        Some(na as f64 / tot as f64)
+    }
 }
 
 struct FlaggedBook {
@@ -82,7 +86,11 @@ fn main() {
         .unwrap_or_else(|e| panic!("read_dir {}: {e}", corpora_dir.display()))
         .filter_map(|e| e.ok())
         .map(|e| e.path())
-        .filter(|p| p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.ends_with(".txt")))
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.ends_with(".txt"))
+        })
         .collect();
     files.sort();
     eprintln!("scanning {} corpora (full fleet)", files.len());
@@ -111,7 +119,8 @@ fn main() {
         let corpus = vref_io::load_corpus(path);
         for group in by_book(&corpus) {
             total_books += 1;
-            let per_verse: Vec<(u64, u64)> = group.texts.iter().map(|t| verse_ascii_counts(t)).collect();
+            let per_verse: Vec<(u64, u64)> =
+                group.texts.iter().map(|t| verse_ascii_counts(t)).collect();
             let verse_count = per_verse.len();
             book_lengths.push(verse_count);
             let Some(true_density) = density_over(&per_verse, verse_count) else {
@@ -161,7 +170,9 @@ fn main() {
     println!("=== Book-level ASCII-density prefix-sampling survey (full fleet) ===");
     println!("total books scanned: {total_books}");
 
-    println!("\n--- error shrinkage: |estimate(N) - true density|, percentiles (books w/ verse_count > N only) ---");
+    println!(
+        "\n--- error shrinkage: |estimate(N) - true density|, percentiles (books w/ verse_count > N only) ---"
+    );
     println!(
         "{:>4} {:>10} {:>10} {:>10} {:>10} {:>10} {:>10}",
         "N", "n_books", "mean", "median", "p90", "p99", "max"
@@ -186,7 +197,9 @@ fn main() {
         );
     }
 
-    println!("\n--- directional agreement: does estimate(N) land on the same side of threshold T as the true density? ---");
+    println!(
+        "\n--- directional agreement: does estimate(N) land on the same side of threshold T as the true density? ---"
+    );
     println!(
         "{:>4} {:>8}{}",
         "N",
@@ -210,7 +223,9 @@ fn main() {
         println!("{n:>4} {:>8}{row}", eligible_books_by_n[ni]);
     }
 
-    println!("\n--- smallest N (from the candidate set) reaching >=99.9% agreement, per threshold ---");
+    println!(
+        "\n--- smallest N (from the candidate set) reaching >=99.9% agreement, per threshold ---"
+    );
     for (ti, &t) in CANDIDATE_THRESHOLDS.iter().enumerate() {
         let mut found = None;
         for (ni, &n) in CANDIDATE_N.iter().enumerate() {
@@ -234,7 +249,11 @@ fn main() {
         flagged.len()
     );
     for f in &flagged {
-        let ts: Vec<String> = f.disagreed_thresholds.iter().map(|t| format!("{:.0}%", t * 100.0)).collect();
+        let ts: Vec<String> = f
+            .disagreed_thresholds
+            .iter()
+            .map(|t| format!("{:.0}%", t * 100.0))
+            .collect();
         println!(
             "{} {} (verses={}) true={:.2}% est50={:.2}% disagreed_at=[{}]",
             f.corpus_id,

@@ -274,10 +274,7 @@ fn median_in_place(v: &mut [f64]) -> f64 {
     } else {
         let (lo, mid, _) = v.select_nth_unstable_by(n / 2, cmp);
         let hi = *mid;
-        let lo_max = lo
-            .iter()
-            .copied()
-            .fold(f64::NEG_INFINITY, f64::max);
+        let lo_max = lo.iter().copied().fold(f64::NEG_INFINITY, f64::max);
         (lo_max + hi) / 2.0
     }
 }
@@ -299,8 +296,18 @@ fn spread_of<'a>(ratios: impl Iterator<Item = &'a RatioBits>) -> Spread {
     // large whenever the whole unit clears `min_verses` — a side collapsing
     // to a handful of deviations signals a genuine tie pileup or a skewed
     // distribution, not starvation.
-    let mut above: Vec<f64> = v.iter().copied().filter(|&x| x > med).map(|x| x - med).collect();
-    let mut below: Vec<f64> = v.iter().copied().filter(|&x| x < med).map(|x| med - x).collect();
+    let mut above: Vec<f64> = v
+        .iter()
+        .copied()
+        .filter(|&x| x > med)
+        .map(|x| x - med)
+        .collect();
+    let mut below: Vec<f64> = v
+        .iter()
+        .copied()
+        .filter(|&x| x < med)
+        .map(|x| med - x)
+        .collect();
     let mut symmetric: Vec<f64> = v.iter().map(|&x| (x - med).abs()).collect();
     let n_above = above.len();
     let n_below = below.len();
@@ -854,7 +861,13 @@ mod tests {
                     }
                     _ => "-".to_string(),
                 };
-                format!("{}|{}|{:?}|{a}", c.key(f.key_idx), f.range.end, f.score, a = a)
+                format!(
+                    "{}|{}|{:?}|{a}",
+                    c.key(f.key_idx),
+                    f.range.end,
+                    f.score,
+                    a = a
+                )
             })
             .collect()
     }
@@ -1544,11 +1557,15 @@ mod tests {
         };
         let findings = run(&long_only, &target, Some(&source));
         assert!(
-            findings.iter().any(|f| target.key(f.key_idx) == key("GEN", 59)),
+            findings
+                .iter()
+                .any(|f| target.key(f.key_idx) == key("GEN", 59)),
             "the long-side outlier must fire under a permissive z_long: {findings:?}"
         );
         assert!(
-            findings.iter().all(|f| target.key(f.key_idx) != key("GEN", 60)),
+            findings
+                .iter()
+                .all(|f| target.key(f.key_idx) != key("GEN", 60)),
             "the short-side outlier must NOT fire under an impossibly strict z_short: {findings:?}"
         );
 
@@ -1560,11 +1577,15 @@ mod tests {
         };
         let findings = run(&short_only, &target, Some(&source));
         assert!(
-            findings.iter().any(|f| target.key(f.key_idx) == key("GEN", 60)),
+            findings
+                .iter()
+                .any(|f| target.key(f.key_idx) == key("GEN", 60)),
             "the short-side outlier must fire under a permissive z_short: {findings:?}"
         );
         assert!(
-            findings.iter().all(|f| target.key(f.key_idx) != key("GEN", 59)),
+            findings
+                .iter()
+                .all(|f| target.key(f.key_idx) != key("GEN", 59)),
             "the long-side outlier must NOT fire under an impossibly strict z_long: {findings:?}"
         );
     }
@@ -1625,14 +1646,19 @@ mod tests {
             ratios.push(RatioBits(15.0));
         }
         let spread = spread_of(ratios.iter());
-        assert_eq!(spread.med, 10.0, "the tie block must anchor the median exactly");
+        assert_eq!(
+            spread.med, 10.0,
+            "the tie block must anchor the median exactly"
+        );
         assert!(spread.n_above >= SIDE_DATA_FLOOR && spread.n_below >= SIDE_DATA_FLOOR);
         assert_ne!(
             spread.mad_above, spread.mad_symmetric,
             "sanity: the own-side and pooled MADs must actually differ here, \
              or this test would pass vacuously"
         );
-        let gated = spread.gated(0).expect("count > 0 and min_verses=0 always judges");
+        let gated = spread
+            .gated(0)
+            .expect("count > 0 and min_verses=0 always judges");
         assert_eq!(
             gated.mad_above,
             Some(spread.mad_above),

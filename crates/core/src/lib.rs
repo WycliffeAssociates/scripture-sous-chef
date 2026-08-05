@@ -161,7 +161,9 @@ mod phase_f_tests {
 
     fn corpus(book: &str, verses: &[&str]) -> Corpus {
         Corpus::try_from_parts(
-            (1..=verses.len()).map(|verse| format!("{book} 1:{verse}")).collect(),
+            (1..=verses.len())
+                .map(|verse| format!("{book} 1:{verse}"))
+                .collect(),
             verses.iter().map(|text| (*text).to_owned()).collect(),
         )
         .unwrap()
@@ -195,10 +197,12 @@ mod phase_f_tests {
         let mut cache = AnalysisCache::new();
         analyze_resident(&initial, None, &cfg, &mut cache).unwrap();
         cache.remove_book("EXO");
-        assert!(cache
-            .partition_findings(&initial)
-            .iter()
-            .all(|finding| !initial.key(finding.key_idx).starts_with("EXO")));
+        assert!(
+            cache
+                .partition_findings(&initial)
+                .iter()
+                .all(|finding| !initial.key(finding.key_idx).starts_with("EXO"))
+        );
 
         let edited = corpus("GEN", &["clean text"]);
         let resident = analyze_resident(&edited, None, &cfg, &mut cache).unwrap();
@@ -440,8 +444,6 @@ mod phase_f_tests {
         }
     }
 }
-#[cfg(feature = "bench-probes")]
-pub use stream::{FloorNeeds, walk_floor};
 pub use catalog::{
     REVIEW_DEPTH_CATALOG, ReviewControl, ReviewDepthCatalog, RuleCard, Verdict, rule_cards,
 };
@@ -460,6 +462,8 @@ pub use review_depth::{
     ReviewAdjustment, ReviewDepth, ReviewPolicy, ReviewPolicyError, apply_review_policy,
 };
 pub use span::{GraphemeSpan, Span, Utf16Span};
+#[cfg(feature = "bench-probes")]
+pub use stream::{FloorNeeds, walk_floor};
 
 use corpus::LocalKeyIdx;
 
@@ -622,7 +626,6 @@ fn transition(
     config: &Config,
     cache: &mut AnalysisCache,
 ) -> Result<Vec<Finding>, AnalyzeError> {
-
     let all_per_verse = rule::per_verse_rules();
     // Every direct-lane rule id, enabled or not: the complete set of partitions
     // the direct lane owns. Taken from the registry (not a hand-kept list) so a
@@ -905,13 +908,14 @@ fn transition(
     // edit, however small.
     let direct_stale = prep.direct_chapter_count() > chapter_count
         || finding_lane.direct_stamp_count() > chapter_count;
-    let direct_present: Option<std::collections::BTreeSet<(&str, &str)>> = direct_stale.then(|| {
-        target
-            .book_layout()
-            .iter()
-            .flat_map(|b| b.chapters.iter().map(|c| (&*b.slug, &*c.chapter)))
-            .collect()
-    });
+    let direct_present: Option<std::collections::BTreeSet<(&str, &str)>> =
+        direct_stale.then(|| {
+            target
+                .book_layout()
+                .iter()
+                .flat_map(|b| b.chapters.iter().map(|c| (&*b.slug, &*c.chapter)))
+                .collect()
+        });
     if let Some(present) = direct_present.as_ref() {
         prep.retain_direct(|slug, chapter| present.contains(&(slug, chapter)));
     }
@@ -1216,9 +1220,7 @@ mod tests {
         let ref_dependent: Vec<RuleId> = RuleId::ALL
             .iter()
             .copied()
-            .filter(|r| {
-                r.input_dependency() == InputDependency::TargetAndReferenceSilentWhenAbsent
-            })
+            .filter(|r| r.input_dependency() == InputDependency::TargetAndReferenceSilentWhenAbsent)
             .collect();
         assert_eq!(
             ref_dependent,
@@ -1338,14 +1340,6 @@ mod tests {
             "GEN's finding emits last"
         );
     }
-
-
-
-
-
-
-
-
 
     #[test]
     fn analyze_flags_double_space() {
@@ -1472,10 +1466,6 @@ mod tests {
         );
     }
 
-
-
-
-
     /// `uni.redundant-zero-width-space` runs through `analyze` as a default-on
     /// per-verse rule: a doubled U+200B run surfaces at Info, while a single
     /// U+200B — even space-adjacent — and a legitimate in-token word break stay
@@ -1511,8 +1501,6 @@ mod tests {
         assert_eq!(hits[0].severity, Severity::Info);
     }
 
-
-
     /// Guards the `RuleId` wire format: the serde rename must match
     /// `code()` and must not drift from the v0.0.1 strings the consumer
     /// keys config/localisation off.
@@ -1543,12 +1531,6 @@ mod tests {
     }
 
     // ── Resident finding partitions: the atomic finding boundary (§3.3) ──────
-
-
-
-
-
-
 
     /// A one-book corpus large enough to force the chapter-map parallel route.
     #[cfg(feature = "parallel")]
@@ -1583,8 +1565,4 @@ mod tests {
             assert_eq!(got, reference, "{threads} threads changed the answer");
         }
     }
-
-
-
-
 }

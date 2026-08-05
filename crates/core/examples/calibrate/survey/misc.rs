@@ -116,9 +116,12 @@ pub(crate) fn fleet(dir: &Path, out: &Path) {
         .iter()
         .map(|id| match id {
             RuleId::BracketBalance => Some(BracketBalanceConfig::default().emit_score_min),
-            RuleId::SentenceInitialLowercase => {
-                Some(CasingConfig::default().sentence_initial.evidence.emit_score_min)
-            }
+            RuleId::SentenceInitialLowercase => Some(
+                CasingConfig::default()
+                    .sentence_initial
+                    .evidence
+                    .emit_score_min,
+            ),
             RuleId::RepeatedCharacterRun => {
                 Some(RepeatedCharacterRunConfig::default().emit_score_min)
             }
@@ -308,8 +311,7 @@ pub(crate) fn fleet(dir: &Path, out: &Path) {
     // `</` must not appear inside the inline <script> payload; `<\/` is the
     // same string after JSON unescaping.
     let payload = data.to_string().replace("</", "<\\/");
-    let html =
-        include_str!("../../fleet_report_template.html").replace("__FLEET_DATA__", &payload);
+    let html = include_str!("../../fleet_report_template.html").replace("__FLEET_DATA__", &payload);
     std::fs::write(out, html).unwrap_or_else(|e| panic!("write {}: {e}", out.display()));
     eprintln!("wrote {}", out.display());
 }
@@ -522,7 +524,6 @@ impl GraphemesFirst for str {
         self.graphemes(true).next().unwrap_or("")
     }
 }
-
 
 /// Bracket-balance calibration (ADR 0037) at floor 0. Reports the production
 /// score distribution, per-family tallies (which delimiter families the corpus

@@ -300,7 +300,9 @@ impl crate::substrate::ObservationSubstrate for NormalizationSubstrate {
         );
         match new {
             Some(c) => {
-                stats.per_book.insert(Box::from(slug), Arc::clone(&c.counts));
+                stats
+                    .per_book
+                    .insert(Box::from(slug), Arc::clone(&c.counts));
             }
             None => {
                 stats.per_book.remove(slug);
@@ -442,7 +444,14 @@ fn materialize_corpus(
         let key_anchor = raw_forms
             .iter()
             .filter(|(raw, _)| **raw != majority_raw)
-            .map(|(_, m)| (m.first_key_idx, m.first_span.start, m.first_span, key.clone()))
+            .map(|(_, m)| {
+                (
+                    m.first_key_idx,
+                    m.first_span.start,
+                    m.first_span,
+                    key.clone(),
+                )
+            })
             .min_by(|a, b| (a.0, a.1).cmp(&(b.0, b.1)))
             .expect("a mixed key has at least one non-majority form");
         if anchor
@@ -565,7 +574,10 @@ mod tests {
 
     /// A one-chapter book from `(verse, text)` pairs.
     fn book(name: &str, verses: &[(u16, &str)]) -> Corpus {
-        let keys = verses.iter().map(|&(v, _)| format!("{name} 1:{v}")).collect();
+        let keys = verses
+            .iter()
+            .map(|&(v, _)| format!("{name} 1:{v}"))
+            .collect();
         let texts = verses.iter().map(|&(_, t)| t.to_string()).collect();
         Corpus::try_from_parts(keys, texts).unwrap()
     }
@@ -624,11 +636,7 @@ mod tests {
         // "whichever form differs from the previous verse".
         let c = book(
             "GEN",
-            &[
-                (1, "caf\u{00E9}"),
-                (2, "cafe\u{0301}"),
-                (3, "caf\u{00E9}"),
-            ],
+            &[(1, "caf\u{00E9}"), (2, "cafe\u{0301}"), (3, "caf\u{00E9}")],
         );
         let f = run(&c);
         assert_eq!(f.len(), 1);
@@ -728,10 +736,7 @@ mod tests {
         // Acute (ccc 230) then grave-below (ccc 220) violates canonical
         // order; grave-below then acute matches it. Both raw sequences carry
         // the same two marks, so they share one NFC key once reordered.
-        let c = book(
-            "GEN",
-            &[(1, "a\u{0301}\u{0316}"), (2, "a\u{0316}\u{0301}")],
-        );
+        let c = book("GEN", &[(1, "a\u{0301}\u{0316}"), (2, "a\u{0316}\u{0301}")]);
         let f = run(&c);
         assert_eq!(f.len(), 1, "{f:?}");
     }
@@ -778,7 +783,10 @@ mod tests {
         match &f[0].args {
             Some(FindingArgs::Normalization { affected, example }) => {
                 assert_eq!(*affected, 2, "one minority occurrence from each key");
-                assert_eq!(example, "\u{00E9}", "anchor must come from the é key, not K");
+                assert_eq!(
+                    example, "\u{00E9}",
+                    "anchor must come from the é key, not K"
+                );
             }
             other => panic!("{other:?}"),
         }
@@ -856,10 +864,7 @@ mod tests {
     fn pure_ascii_with_no_alternate_form_is_silent() {
         let c = book(
             "GEN",
-            &[(
-                1,
-                "In the beginning God created the heavens and the earth.",
-            )],
+            &[(1, "In the beginning God created the heavens and the earth.")],
         );
         assert!(run(&c).is_empty());
     }
@@ -929,10 +934,7 @@ mod tests {
     fn same_raw_form_across_books_is_summed_and_ordered_by_presented_book_order() {
         let c = multi_book(&[
             ("GEN", &[(1, "caf\u{00E9}")][..]),
-            (
-                "EXO",
-                &[(1, "cafe\u{0301}"), (2, "caf\u{00E9}")][..],
-            ),
+            ("EXO", &[(1, "cafe\u{0301}"), (2, "caf\u{00E9}")][..]),
         ]);
         let f = run(&c);
         assert_eq!(f.len(), 1, "{f:?}");
@@ -1033,7 +1035,11 @@ mod tests {
         let inc = resident(&mut cache, &corpus);
         assert_eq!(cache.mapped, 1, "one changed chapter maps one chapter");
         assert_eq!(inc.len(), 1);
-        assert_eq!(corpus.key(inc[0].key_idx), "GEN 3:1", "the anchor is the deviant");
+        assert_eq!(
+            corpus.key(inc[0].key_idx),
+            "GEN 3:1",
+            "the anchor is the deviant"
+        );
         assert_eq!(
             render(&corpus, &inc),
             render(&corpus, &normalization_findings(&corpus)),
@@ -1046,11 +1052,7 @@ mod tests {
     /// chapter's global base, and the retained addresses are chapter-local.
     #[test]
     fn the_anchor_rebases_when_an_earlier_chapter_grows() {
-        let short: &[(u16, u16, &str)] = &[
-            (1, 1, YYA),
-            (2, 1, YYA),
-            (2, 2, YA_NUKTA),
-        ];
+        let short: &[(u16, u16, &str)] = &[(1, 1, YYA), (2, 1, YYA), (2, 2, YA_NUKTA)];
         let long: &[(u16, u16, &str)] = &[
             (1, 1, YYA),
             (1, 2, YYA),
@@ -1072,10 +1074,7 @@ mod tests {
             "GEN 2:2",
             "the retained chapter-local anchor rebases through the new layout"
         );
-        assert_eq!(
-            render(&b, &second),
-            render(&b, &normalization_findings(&b))
-        );
+        assert_eq!(render(&b, &second), render(&b, &normalization_findings(&b)));
     }
 
     /// Removing a book removes its forms from the aggregate, which can take the
@@ -1083,10 +1082,7 @@ mod tests {
     /// the incrementally maintained one.
     #[test]
     fn removing_a_book_can_unmix_the_corpus() {
-        let corpus = multi_book(&[
-            ("GEN", &[(1, YYA)]),
-            ("EXO", &[(1, YA_NUKTA)]),
-        ]);
+        let corpus = multi_book(&[("GEN", &[(1, YYA)]), ("EXO", &[(1, YA_NUKTA)])]);
         let gen_only = multi_book(&[("GEN", &[(1, YYA)])]);
         let mut cache = crate::substrate::SubstrateCache::new();
         assert_eq!(resident(&mut cache, &corpus).len(), 1);
@@ -1104,7 +1100,15 @@ mod tests {
     /// the tie-break and the anchor all move.
     #[test]
     fn resident_normalization_equals_cold_under_randomized_edits() {
-        let shapes = [YYA, YA_NUKTA, X_MARKS_CANON, X_MARKS_B, X_MARKS_C, "plain", ""];
+        let shapes = [
+            YYA,
+            YA_NUKTA,
+            X_MARKS_CANON,
+            X_MARKS_B,
+            X_MARKS_C,
+            "plain",
+            "",
+        ];
         let mut rows: Vec<(u16, u16, String)> = Vec::new();
         for ch in 1..=3u16 {
             for v in 1..=5u16 {
@@ -1112,7 +1116,10 @@ mod tests {
             }
         }
         let build = |rows: &[(u16, u16, String)]| {
-            let keys = rows.iter().map(|(c, v, _)| format!("GEN {c}:{v}")).collect();
+            let keys = rows
+                .iter()
+                .map(|(c, v, _)| format!("GEN {c}:{v}"))
+                .collect();
             let texts = rows.iter().map(|(_, _, t)| t.clone()).collect();
             Corpus::try_from_parts(keys, texts).unwrap()
         };

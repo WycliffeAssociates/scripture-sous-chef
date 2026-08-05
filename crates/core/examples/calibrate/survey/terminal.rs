@@ -731,4 +731,3 @@ fn terminal_gate_sweep(
         println!("  T={t:.2}: {} corpora  [largest: {names}]", losers.len());
     }
 }
-

@@ -1075,7 +1075,10 @@ fn build_evidence(
             e.1 += t.total();
         }
         for (m, t) in w.quoted() {
-            let ck = ClassKey { mark: m, quoted: true };
+            let ck = ClassKey {
+                mark: m,
+                quoted: true,
+            };
             if trust.get(&ck).copied().unwrap_or(0.0) > PROMOTE_BAR {
                 let e = habit.entry(Some(ck)).or_default();
                 e.0 += t.upper();
@@ -1181,9 +1184,17 @@ impl Model {
     fn effective_upper(&self, w: &WordStats, intrinsic: bool) -> f64 {
         let (mid_up, _) = self.eff_mid(w, intrinsic);
         let (trust, habit, z) = if intrinsic {
-            (&self.intrinsic.trust, &self.intrinsic.habit, self.intrinsic.confidence_z)
+            (
+                &self.intrinsic.trust,
+                &self.intrinsic.habit,
+                self.intrinsic.confidence_z,
+            )
         } else {
-            (&self.positional.trust, &self.positional.habit, self.positional.confidence_z)
+            (
+                &self.positional.trust,
+                &self.positional.habit,
+                self.positional.confidence_z,
+            )
         };
         let habit_dominance = |key: Option<ClassKey>| {
             habit
@@ -1217,7 +1228,10 @@ impl Model {
                 self.positional_quote_promoted(m)
             };
             if t.upper > 0 && promoted {
-                let ck = ClassKey { mark: m, quoted: true };
+                let ck = ClassKey {
+                    mark: m,
+                    quoted: true,
+                };
                 let discount = 1.0 - trust_class(ck) * habit_dominance(Some(ck));
                 up += discount * f64::from(t.upper);
             }
@@ -2163,13 +2177,9 @@ impl CasingJudge {
         CasingJudge {
             model,
             positional_k: clamp_count(cfg.sentence_initial.evidence.recurrence_k),
-            positional_floor: f64::from(clamp_unit(
-                cfg.sentence_initial.evidence.emit_score_min,
-            )),
+            positional_floor: f64::from(clamp_unit(cfg.sentence_initial.evidence.emit_score_min)),
             intrinsic_k: clamp_count(cfg.inconsistent_word.evidence.recurrence_k),
-            intrinsic_floor: f64::from(clamp_unit(
-                cfg.inconsistent_word.evidence.emit_score_min,
-            )),
+            intrinsic_floor: f64::from(clamp_unit(cfg.inconsistent_word.evidence.emit_score_min)),
         }
     }
 
@@ -2186,7 +2196,13 @@ impl CasingJudge {
                 return None;
             }
             let (glyph, quoted) = pos.habit_glyph();
-            Some((score as f32, glyph, quoted, clamp_u32(f.raw_major), clamp_u32(f.raw_total)))
+            Some((
+                score as f32,
+                glyph,
+                quoted,
+                clamp_u32(f.raw_major),
+                clamp_u32(f.raw_total),
+            ))
         });
         let intrinsic = self.model.intrinsic(w).and_then(|f| {
             let score = f.dominance * rarity(f.minority, self.intrinsic_k);
@@ -2756,8 +2772,7 @@ impl CasingBookContribution {
                 let bid = ids[usize::from(site.key)] as usize;
                 let word = &self.words[bid].0;
                 let outcome = memo.get(bid, word, site.pos, || judge.outcome(word, site.pos));
-                if positional
-                    && let Some((score, glyph, quoted, upper, total)) = outcome.positional
+                if positional && let Some((score, glyph, quoted, upper, total)) = outcome.positional
                 {
                     out.push(Finding {
                         key_idx: rebase(base, site.addr.unpack().0),
@@ -2773,9 +2788,7 @@ impl CasingBookContribution {
                         }),
                     });
                 }
-                if intrinsic
-                    && let Some((score, upper, total)) = outcome.intrinsic
-                {
+                if intrinsic && let Some((score, upper, total)) = outcome.intrinsic {
                     out.push(Finding {
                         key_idx: rebase(base, site.addr.unpack().0),
                         code: INCONSISTENT_WORD_CASING,
@@ -2954,8 +2967,8 @@ pub(crate) fn finish_casing(
     // the key phase, and the per-site verdicts are drawn inside materialization,
     // so `judge` stays zero here and materialization carries both.
     let (all_dirty, dirty) = cache.pending.plan(judging_fp(cfg), &emitting);
-    let dirty_by_book: Option<FxHashMap<&str, std::collections::BTreeSet<&str>>> =
-        (!all_dirty).then(|| {
+    let dirty_by_book: Option<FxHashMap<&str, std::collections::BTreeSet<&str>>> = (!all_dirty)
+        .then(|| {
             let mut m: FxHashMap<&str, std::collections::BTreeSet<&str>> = FxHashMap::default();
             for (slug, chapter) in &dirty {
                 m.entry(slug).or_default().insert(chapter);
@@ -3019,7 +3032,6 @@ pub(crate) fn finish_casing(
         cache.judged = memo.judged;
     }
 }
-
 
 /// Both consumers on their own, over one caller-held cache — the shape the
 /// convenience entry point and the casing tests use. Same planning pass, same
@@ -3126,7 +3138,11 @@ pub fn field_extent_probe(corpus: &Corpus) -> (usize, usize, usize) {
                 let mut prev_letter = false;
                 let mut cursor = 0usize;
                 for w in words_buf.iter().copied() {
-                    advance_gap(&text[cursor..w.start as usize], &mut pending, &mut prev_letter);
+                    advance_gap(
+                        &text[cursor..w.start as usize],
+                        &mut pending,
+                        &mut prev_letter,
+                    );
                     let word = &text[w.start as usize..w.end as usize];
                     types.insert(word.to_lowercase(), ());
                     classes.insert(pos_of(book_initial, pending.take()), ());
@@ -3295,13 +3311,13 @@ mod tests {
             '\u{0}',
             '.',
             '?',
-            '\u{0589}',       // Armenian full stop
-            '\u{3002}',       // ideographic full stop
-            '\u{D7FF}',       // last scalar before the surrogate hole
-            '\u{E000}',       // first scalar after it
-            '\u{FFFF}',       // last BMP scalar
-            '\u{1F600}',      // astral plane
-            '\u{10FFFF}',     // the highest Unicode scalar
+            '\u{0589}',   // Armenian full stop
+            '\u{3002}',   // ideographic full stop
+            '\u{D7FF}',   // last scalar before the surrogate hole
+            '\u{E000}',   // first scalar after it
+            '\u{FFFF}',   // last BMP scalar
+            '\u{1F600}',  // astral plane
+            '\u{10FFFF}', // the highest Unicode scalar
         ];
         for mark in marks {
             for quoted in [false, true] {
@@ -3318,7 +3334,13 @@ mod tests {
                 assert_ne!(p, PosClass::MIDFLOW);
                 assert_ne!(p, PosClass::BOOK_INITIAL);
                 // The quote bit is the ONLY difference between the two contexts.
-                assert_ne!(p, PosClass::forced(ClassKey { mark, quoted: !quoted }));
+                assert_ne!(
+                    p,
+                    PosClass::forced(ClassKey {
+                        mark,
+                        quoted: !quoted
+                    })
+                );
             }
         }
     }
@@ -3353,9 +3375,18 @@ mod tests {
     /// `BookInitial` < forced (by `(mark, quoted)`) < `Midflow`.
     #[test]
     fn pos_class_ordering_is_semantic_not_bitwise() {
-        let bare = PosClass::forced(ClassKey { mark: '.', quoted: false });
-        let quoted = PosClass::forced(ClassKey { mark: '.', quoted: true });
-        let later = PosClass::forced(ClassKey { mark: '?', quoted: false });
+        let bare = PosClass::forced(ClassKey {
+            mark: '.',
+            quoted: false,
+        });
+        let quoted = PosClass::forced(ClassKey {
+            mark: '.',
+            quoted: true,
+        });
+        let later = PosClass::forced(ClassKey {
+            mark: '?',
+            quoted: false,
+        });
         assert!(PosClass::BOOK_INITIAL < bare);
         assert!(bare < quoted);
         assert!(quoted < later, "mark orders before the quote flag");
@@ -3740,7 +3771,8 @@ mod tests {
         let dirty = cycle("GEN", &["we saw Jesus"], 20);
         let dirty = push_verse(dirty, "GEN", 100, "we saw jesus");
         assert_eq!(
-            cache.analyze(&symbols, &dirty, &c)
+            cache
+                .analyze(&symbols, &dirty, &c)
                 .iter()
                 .filter(|f| f.code == INCONSISTENT_WORD_CASING)
                 .count(),
@@ -3756,7 +3788,8 @@ mod tests {
         let two = cycle("GEN", &["we saw Jesus"], 20);
         let two = extend_corpus(two, book("EXO", &[(1, "we saw jesus")]));
         assert_eq!(
-            cache.analyze(&symbols, &two, &c)
+            cache
+                .analyze(&symbols, &two, &c)
                 .iter()
                 .filter(|f| f.code == INCONSISTENT_WORD_CASING)
                 .count(),
@@ -4022,7 +4055,10 @@ mod tests {
             "battery produced only {} word types",
             packed_obs.words.keys.len()
         );
-        assert!(packed_obs.first.is_some(), "battery never resolved a first word");
+        assert!(
+            packed_obs.first.is_some(),
+            "battery never resolved a first word"
+        );
         assert!(
             packed_obs.tail.is_some(),
             "battery left no pending terminal at the chapter end"
@@ -4101,10 +4137,7 @@ mod tests {
             ('!', true),
             ('?', false),
         ] {
-            w.record(
-                PosClass::forced(ClassKey { mark, quoted }),
-                Case::Upper,
-            );
+            w.record(PosClass::forced(ClassKey { mark, quoted }), Case::Upper);
         }
         assert_eq!(
             w.forced
@@ -4120,8 +4153,14 @@ mod tests {
                 ('?', true)
             ]
         );
-        assert_eq!(w.bare().map(|(m, _)| m).collect::<Vec<_>>(), vec!['!', '.', '?']);
-        assert_eq!(w.quoted().map(|(m, _)| m).collect::<Vec<_>>(), vec!['!', '.', '?']);
+        assert_eq!(
+            w.bare().map(|(m, _)| m).collect::<Vec<_>>(),
+            vec!['!', '.', '?']
+        );
+        assert_eq!(
+            w.quoted().map(|(m, _)| m).collect::<Vec<_>>(),
+            vec!['!', '.', '?']
+        );
         // A merge preserves it, and does not duplicate a class already present.
         let mut other = WordStats::default();
         other.record(
@@ -4139,7 +4178,10 @@ mod tests {
             Case::Lower,
         );
         w.add(&other);
-        assert_eq!(w.bare().map(|(m, _)| m).collect::<Vec<_>>(), vec!['!', ',', '.', '?']);
+        assert_eq!(
+            w.bare().map(|(m, _)| m).collect::<Vec<_>>(),
+            vec!['!', ',', '.', '?']
+        );
         assert_eq!(w.bare().map(|(_, t)| t.total()).sum::<u64>(), 5);
     }
 
@@ -4270,7 +4312,10 @@ mod tests {
         );
         let mut q = GapEffect::default();
         q.extend(" \u{201d} ");
-        assert_eq!(q.from_none, None, "no letter precedes, so nothing is created");
+        assert_eq!(
+            q.from_none, None,
+            "no letter precedes, so nothing is created"
+        );
         assert_eq!(
             q.apply(Some(Pending {
                 mark: '.',
@@ -4322,7 +4367,10 @@ mod tests {
         let worded = map_one("2", &["he stops."]);
         let a = reduce_one(&worded, &after_terminal('!')).1;
         let b = reduce_one(&worded, &PositionBoundary::default()).1;
-        assert_eq!(a, b, "a chapter with a word leaves its own state, not a carry");
+        assert_eq!(
+            a, b,
+            "a chapter with a word leaves its own state, not a carry"
+        );
     }
 
     /// End to end (plan §12.3): a terminal at the end of one chapter forces the
@@ -4378,14 +4426,20 @@ mod tests {
         edited[5][0] = "There we went there.".to_string();
         let ev = chaptered("GEN", &edited);
         let inc = cache.analyze(&symbols, &ev, &c);
-        assert_eq!(cache.cache.mapped, 1, "one changed chapter maps one chapter");
+        assert_eq!(
+            cache.cache.mapped, 1,
+            "one changed chapter maps one chapter"
+        );
         assert!(
             cache.cache.reduced <= 2,
             "the changed chapter leaves its own trailing context, so the replay \
              converges at it or its successor; reduced={}",
             cache.cache.reduced
         );
-        assert!(!cold.is_empty(), "the fixture must have findings to preserve");
+        assert!(
+            !cold.is_empty(),
+            "the fixture must have findings to preserve"
+        );
         assert_eq!(render(&ev, &inc), render(&ev, &run_both(&ev, &c)));
 
         // Unchanged re-drive: no map, no reduce, and the model is reused.
@@ -4548,7 +4602,11 @@ mod tests {
         // intrinsic consumer's findings are simply not materialized.
         let only_pos = cache.analyze_consumers(true, false, &symbols, &vm, &c);
         assert_eq!(cache.cache.mapped, 0, "a consumer toggle re-maps nothing");
-        assert!(only_pos.iter().all(|f| f.code == SENTENCE_INITIAL_LOWERCASE));
+        assert!(
+            only_pos
+                .iter()
+                .all(|f| f.code == SENTENCE_INITIAL_LOWERCASE)
+        );
         assert_eq!(
             only_pos.len(),
             both.iter()
@@ -4559,7 +4617,10 @@ mod tests {
         // Both off: the last consumer leaving drops the substrate's products.
         let off = cache.analyze_consumers(false, false, &symbols, &vm, &c);
         assert!(off.is_empty());
-        assert!(cache.retained.is_none(), "the model memo goes with the substrate");
+        assert!(
+            cache.retained.is_none(),
+            "the model memo goes with the substrate"
+        );
         let back = cache.analyze_consumers(true, true, &symbols, &vm, &c);
         assert!(cache.cache.mapped > 0, "re-enabling rebuilds the substrate");
         assert_eq!(render(&vm, &back), render(&vm, &both));
@@ -4578,11 +4639,7 @@ mod tests {
                 CasingConfig {
                     sentence_initial: crate::config::SentenceInitialCasingConfig {
                         evidence: crate::config::CasingRuleConfig {
-                            emit_score_min: base
-                                .sentence_initial
-                                .evidence
-                                .emit_score_min
-                                + 0.125,
+                            emit_score_min: base.sentence_initial.evidence.emit_score_min + 0.125,
                             ..base.sentence_initial.evidence
                         },
                         ..base.sentence_initial
@@ -4631,11 +4688,7 @@ mod tests {
                 CasingConfig {
                     inconsistent_word: crate::config::InconsistentWordCasingConfig {
                         evidence: crate::config::CasingRuleConfig {
-                            emit_score_min: base
-                                .inconsistent_word
-                                .evidence
-                                .emit_score_min
-                                + 0.125,
+                            emit_score_min: base.inconsistent_word.evidence.emit_score_min + 0.125,
                             ..base.inconsistent_word.evidence
                         },
                     },
@@ -4789,7 +4842,11 @@ mod tests {
         // 1. drop chapter 1's closing terminal: chapter 2's opener stops being
         //    forced, so a LATER chapter's sites move.
         rows[4].2 = "There we go there".to_string();
-        step(&mut r, &rows, "chapter-final terminal removed (carry moves)");
+        step(
+            &mut r,
+            &rows,
+            "chapter-final terminal removed (carry moves)",
+        );
 
         // 2. put it back and add one in chapter 2 instead.
         rows[4].2 = "There we go there.".to_string();
@@ -4938,8 +4995,10 @@ mod tests {
             assert_eq!(memo.judged, distinct.len(), "era {era}: judged count");
             // The precondition: a book-scoped memo would have judged strictly
             // more, or this witness proves nothing about corpus scope.
-            let mut per_book: Vec<(usize, usize, usize)> =
-                sites.iter().map(|&(b, l, pi)| (b, books[b][l], pi)).collect();
+            let mut per_book: Vec<(usize, usize, usize)> = sites
+                .iter()
+                .map(|&(b, l, pi)| (b, books[b][l], pi))
+                .collect();
             per_book.sort_unstable();
             per_book.dedup();
             assert!(
@@ -5141,7 +5200,10 @@ mod tests {
         step(&mut r, &rows, "a book is removed");
 
         let patched_panel = routes.iter().filter(|(_, (_, p))| *p).count();
-        let rebuilt_panel = routes.iter().filter(|(w, (_, p))| !*p && *w != "cold seed").count();
+        let rebuilt_panel = routes
+            .iter()
+            .filter(|(w, (_, p))| !*p && *w != "cold seed")
+            .count();
         assert!(
             patched_panel > 0 && rebuilt_panel > 0,
             "the script must exercise both the panel-patch and the panel-rebuild \

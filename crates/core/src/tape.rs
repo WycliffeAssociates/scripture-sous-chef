@@ -389,8 +389,7 @@ mod tests {
             prev = Some(e.cl);
         }
         // MULTI_NUMSYS: ≥2 distinct numeral systems.
-        let systems: rustc_hash::FxHashSet<u32> =
-            text.chars().filter_map(numeral_system).collect();
+        let systems: rustc_hash::FxHashSet<u32> = text.chars().filter_map(numeral_system).collect();
         if systems.len() >= 2 {
             b |= Mask::MULTI_NUMSYS.0;
         }

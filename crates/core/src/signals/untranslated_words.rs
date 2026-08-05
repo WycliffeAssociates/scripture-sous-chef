@@ -254,8 +254,11 @@ fn map_word_chapter(chapter: &crate::substrate::ChapterView<'_>) -> WordChapterO
                 });
             }
             source_order.extend(0..source_spans.len());
-            source_order
-                .sort_unstable_by(|&a, &b| source_spans[a].slice(&source_pool).cmp(source_spans[b].slice(&source_pool)));
+            source_order.sort_unstable_by(|&a, &b| {
+                source_spans[a]
+                    .slice(&source_pool)
+                    .cmp(source_spans[b].slice(&source_pool))
+            });
 
             let mut copied = Vec::new();
             for (ti, tok) in target_tok_buf.iter().enumerate() {
@@ -424,7 +427,11 @@ impl crate::substrate::ObservationSubstrate for UntranslatedWordsSubstrate {
         }
     }
 
-    fn judge(cfg: &UntranslatedWordsConfig, _key: &WordKey, stats: &WordCorpusStats) -> WordOutcome {
+    fn judge(
+        cfg: &UntranslatedWordsConfig,
+        _key: &WordKey,
+        stats: &WordCorpusStats,
+    ) -> WordOutcome {
         if stats.total_tokens == 0 {
             return WordOutcome::default();
         }
@@ -500,7 +507,8 @@ impl WordBookContribution {
                 let mut i = 0;
                 while i < adjusted.len() {
                     let mut j = i + 1;
-                    while j < adjusted.len() && adjusted[j].token_idx == adjusted[j - 1].token_idx + 1
+                    while j < adjusted.len()
+                        && adjusted[j].token_idx == adjusted[j - 1].token_idx + 1
                     {
                         j += 1;
                     }
@@ -680,7 +688,11 @@ mod tests {
         UntranslatedWordsConfig::default()
     }
 
-    fn run(target: &Corpus, source: Option<&Corpus>, cfg: &UntranslatedWordsConfig) -> Vec<Finding> {
+    fn run(
+        target: &Corpus,
+        source: Option<&Corpus>,
+        cfg: &UntranslatedWordsConfig,
+    ) -> Vec<Finding> {
         untranslated_word_findings(target, source, cfg)
     }
 
@@ -702,7 +714,10 @@ mod tests {
     #[test]
     fn no_source_produces_nothing() {
         let (target, _) = clean_background(60);
-        let target = mk(&target.iter().map(|(k, t)| (k.as_str(), t.as_str())).collect::<Vec<_>>());
+        let target = mk(&target
+            .iter()
+            .map(|(k, t)| (k.as_str(), t.as_str()))
+            .collect::<Vec<_>>());
         assert!(run(&target, None, &cfg()).is_empty());
     }
 
@@ -715,7 +730,13 @@ mod tests {
     fn interior_mixed_case(s: &str) -> String {
         s.chars()
             .enumerate()
-            .map(|(i, c)| if i % 2 == 0 { c.to_ascii_lowercase() } else { c.to_ascii_uppercase() })
+            .map(|(i, c)| {
+                if i % 2 == 0 {
+                    c.to_ascii_lowercase()
+                } else {
+                    c.to_ascii_uppercase()
+                }
+            })
             .collect()
     }
 
@@ -732,8 +753,14 @@ mod tests {
         let pasted = interior_mixed_case(&source[2].1);
         target[2].1 = pasted.clone();
 
-        let target_c = mk(&target.iter().map(|(k, t)| (k.as_str(), t.as_str())).collect::<Vec<_>>());
-        let source_c = mk(&source.iter().map(|(k, t)| (k.as_str(), t.as_str())).collect::<Vec<_>>());
+        let target_c = mk(&target
+            .iter()
+            .map(|(k, t)| (k.as_str(), t.as_str()))
+            .collect::<Vec<_>>());
+        let source_c = mk(&source
+            .iter()
+            .map(|(k, t)| (k.as_str(), t.as_str()))
+            .collect::<Vec<_>>());
         let findings = run(&target_c, Some(&source_c), &cfg());
         assert_eq!(findings.len(), 1, "{findings:?}");
         let f = &findings[0];
@@ -742,8 +769,15 @@ mod tests {
         // The finding's span is the run itself, sliced from the ACTUAL
         // (uppercased) target text — never the whole verse for a real run.
         let slice = f.range.slice(&pasted);
-        assert_eq!(slice, pasted, "a whole-verse paste's run IS the whole verse's tokens");
-        let Some(FindingArgs::UntranslatedWord { copied_pct, run_len }) = f.args else {
+        assert_eq!(
+            slice, pasted,
+            "a whole-verse paste's run IS the whole verse's tokens"
+        );
+        let Some(FindingArgs::UntranslatedWord {
+            copied_pct,
+            run_len,
+        }) = f.args
+        else {
             panic!("expected UntranslatedWord args");
         };
         assert!(copied_pct > 90.0, "copied_pct = {copied_pct}");
@@ -763,8 +797,14 @@ mod tests {
             target[i].1 = format!("{} Yerusalem", target[i].1);
             source[i].1 = format!("{} Yerusalem", source[i].1);
         }
-        let target_c = mk(&target.iter().map(|(k, t)| (k.as_str(), t.as_str())).collect::<Vec<_>>());
-        let source_c = mk(&source.iter().map(|(k, t)| (k.as_str(), t.as_str())).collect::<Vec<_>>());
+        let target_c = mk(&target
+            .iter()
+            .map(|(k, t)| (k.as_str(), t.as_str()))
+            .collect::<Vec<_>>());
+        let source_c = mk(&source
+            .iter()
+            .map(|(k, t)| (k.as_str(), t.as_str()))
+            .collect::<Vec<_>>());
         let findings = run(&target_c, Some(&source_c), &cfg());
         assert!(
             findings.is_empty(),
@@ -784,11 +824,20 @@ mod tests {
             let k = key("GEN", v);
             // Target and source share ~all vocabulary throughout — the
             // related-language shape, not a handful of pastes.
-            target.push((k.clone(), format!("word{} shared common terms here {v}", v % 5)));
+            target.push((
+                k.clone(),
+                format!("word{} shared common terms here {v}", v % 5),
+            ));
             source.push((k, format!("word{} shared common terms here {v}", v % 5)));
         }
-        let target_c = mk(&target.iter().map(|(k, t)| (k.as_str(), t.as_str())).collect::<Vec<_>>());
-        let source_c = mk(&source.iter().map(|(k, t)| (k.as_str(), t.as_str())).collect::<Vec<_>>());
+        let target_c = mk(&target
+            .iter()
+            .map(|(k, t)| (k.as_str(), t.as_str()))
+            .collect::<Vec<_>>());
+        let source_c = mk(&source
+            .iter()
+            .map(|(k, t)| (k.as_str(), t.as_str()))
+            .collect::<Vec<_>>());
         assert!(run(&target_c, Some(&source_c), &cfg()).is_empty());
     }
 
@@ -799,8 +848,14 @@ mod tests {
         let (mut target, mut source) = clean_background(60);
         target[2].1 = String::new();
         source[4].1 = String::new();
-        let target_c = mk(&target.iter().map(|(k, t)| (k.as_str(), t.as_str())).collect::<Vec<_>>());
-        let source_c = mk(&source.iter().map(|(k, t)| (k.as_str(), t.as_str())).collect::<Vec<_>>());
+        let target_c = mk(&target
+            .iter()
+            .map(|(k, t)| (k.as_str(), t.as_str()))
+            .collect::<Vec<_>>());
+        let source_c = mk(&source
+            .iter()
+            .map(|(k, t)| (k.as_str(), t.as_str()))
+            .collect::<Vec<_>>());
         assert!(run(&target_c, Some(&source_c), &cfg()).is_empty());
     }
 
@@ -831,7 +886,14 @@ mod tests {
 
         let mut cache = crate::substrate::SubstrateCache::new();
         let mut out = Vec::new();
-        drive_untranslated_words(true, &mut cache, &target_c, Some(&source_c), &cfg(), &mut out);
+        drive_untranslated_words(
+            true,
+            &mut cache,
+            &target_c,
+            Some(&source_c),
+            &cfg(),
+            &mut out,
+        );
         assert_eq!(cache.mapped, 3, "a cold call maps every chapter");
 
         // Paste chapter 2 verse 5's text from the source verbatim.
@@ -847,7 +909,9 @@ mod tests {
         let cold = untranslated_word_findings(&edited, Some(&source_c), &cfg());
         assert_eq!(
             inc.iter().map(|f| (f.key_idx, f.range)).collect::<Vec<_>>(),
-            cold.iter().map(|f| (f.key_idx, f.range)).collect::<Vec<_>>(),
+            cold.iter()
+                .map(|f| (f.key_idx, f.range))
+                .collect::<Vec<_>>(),
             "resident result must equal cold analysis"
         );
         assert_eq!(edited.key(inc[0].key_idx), "GEN 2:5");
@@ -870,8 +934,14 @@ mod tests {
         // must not.
         target[2].1 = "Yohana alikimbia haraka sana".to_string();
         source[2].1 = "Yohana alikimbia haraka sana".to_string();
-        let target_c = mk(&target.iter().map(|(k, t)| (k.as_str(), t.as_str())).collect::<Vec<_>>());
-        let source_c = mk(&source.iter().map(|(k, t)| (k.as_str(), t.as_str())).collect::<Vec<_>>());
+        let target_c = mk(&target
+            .iter()
+            .map(|(k, t)| (k.as_str(), t.as_str()))
+            .collect::<Vec<_>>());
+        let source_c = mk(&source
+            .iter()
+            .map(|(k, t)| (k.as_str(), t.as_str()))
+            .collect::<Vec<_>>());
         let findings = run(&target_c, Some(&source_c), &cfg());
         assert_eq!(
             findings.len(),
@@ -908,8 +978,14 @@ mod tests {
         target[2].1 = phrase.clone();
         source[2].1 = phrase.clone();
 
-        let target_c = mk(&target.iter().map(|(k, t)| (k.as_str(), t.as_str())).collect::<Vec<_>>());
-        let source_c = mk(&source.iter().map(|(k, t)| (k.as_str(), t.as_str())).collect::<Vec<_>>());
+        let target_c = mk(&target
+            .iter()
+            .map(|(k, t)| (k.as_str(), t.as_str()))
+            .collect::<Vec<_>>());
+        let source_c = mk(&source
+            .iter()
+            .map(|(k, t)| (k.as_str(), t.as_str()))
+            .collect::<Vec<_>>());
         let findings = run(&target_c, Some(&source_c), &cfg());
         assert_eq!(
             findings.len(),
@@ -924,13 +1000,19 @@ mod tests {
         // The phrase has 6 tokens; the first ("Yerusalemu") is excused
         // (title-case), so the surviving run is the remaining 5 lowercase
         // tokens.
-        assert_eq!(run_len, 5, "run_len = {run_len}, expected the tail of the run to survive intact");
+        assert_eq!(
+            run_len, 5,
+            "run_len = {run_len}, expected the tail of the run to survive intact"
+        );
         let slice = f.range.slice(&phrase);
         assert!(
             !slice.contains("Yerusalemu"),
             "the excused leading (title-case) token must not anchor the surviving run: {slice:?}"
         );
-        assert!(slice.contains("kabisa"), "the run's tail must survive: {slice:?}");
+        assert!(
+            slice.contains("kabisa"),
+            "the run's tail must survive: {slice:?}"
+        );
     }
 
     /// A judging-knob-only change (e.g. a stricter `emit_score_min`) maps
@@ -938,18 +1020,38 @@ mod tests {
     #[test]
     fn knob_change_maps_and_reduces_nothing() {
         let (target, source) = clean_background(60);
-        let target_c = mk(&target.iter().map(|(k, t)| (k.as_str(), t.as_str())).collect::<Vec<_>>());
-        let source_c = mk(&source.iter().map(|(k, t)| (k.as_str(), t.as_str())).collect::<Vec<_>>());
+        let target_c = mk(&target
+            .iter()
+            .map(|(k, t)| (k.as_str(), t.as_str()))
+            .collect::<Vec<_>>());
+        let source_c = mk(&source
+            .iter()
+            .map(|(k, t)| (k.as_str(), t.as_str()))
+            .collect::<Vec<_>>());
         let mut cache = crate::substrate::SubstrateCache::new();
         let mut out = Vec::new();
-        drive_untranslated_words(true, &mut cache, &target_c, Some(&source_c), &cfg(), &mut out);
+        drive_untranslated_words(
+            true,
+            &mut cache,
+            &target_c,
+            Some(&source_c),
+            &cfg(),
+            &mut out,
+        );
         cache.reset_probes();
         let strict = UntranslatedWordsConfig {
             emit_score_min: 0.999,
             ..cfg()
         };
         let mut out2 = Vec::new();
-        drive_untranslated_words(true, &mut cache, &target_c, Some(&source_c), &strict, &mut out2);
+        drive_untranslated_words(
+            true,
+            &mut cache,
+            &target_c,
+            Some(&source_c),
+            &strict,
+            &mut out2,
+        );
         assert_eq!(
             (cache.mapped, cache.reduced),
             (0, 0),

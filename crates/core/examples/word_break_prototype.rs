@@ -124,8 +124,8 @@ enum Wb {
 }
 
 fn parse_word_break(path: &Path) -> Vec<(u32, u32, Wb)> {
-    let text = std::fs::read_to_string(path)
-        .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    let text =
+        std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
     let mut out = Vec::new();
     for line in text.lines() {
         let line = line.split('#').next().unwrap_or("").trim();
@@ -218,8 +218,9 @@ enum WCat {
 /// `Word_Break=Other`, per direct inspection of `WordBreakProperty.txt`).
 /// `Kana`/`Hebr` are included defensively even though those scalars are
 /// already routed to their own `WCat` variant before this check runs.
-const ALETTER_EXCLUDED_SCRIPTS: [&str; 8] =
-    ["Thai", "Laoo", "Khmr", "Mymr", "Hani", "Hira", "Kana", "Hebr"];
+const ALETTER_EXCLUDED_SCRIPTS: [&str; 8] = [
+    "Thai", "Laoo", "Khmr", "Mymr", "Hani", "Hira", "Kana", "Hebr",
+];
 
 /// Disambiguates which of the 6 `WB_SEP`-bit categories a scalar belongs to
 /// — only called once `Class::is_wb_sep()` has already fast-rejected
@@ -235,11 +236,11 @@ fn wb_sep_category(c: char) -> WCat {
         0x003A | 0x00B7 | 0x0387 | 0x055F | 0x05F4 | 0x2027 | 0xFE13 | 0xFE55 | 0xFF1A => {
             WCat::MidLetter
         }
-        0x002C | 0x003B | 0x037E | 0x0589 | 0x060C | 0x060D | 0x066C | 0x07F8 | 0x2044
-        | 0xFE50 | 0xFE54 | 0xFF0C | 0xFF1B => WCat::MidNum,
+        0x002C | 0x003B | 0x037E | 0x0589 | 0x060C | 0x060D | 0x066C | 0x07F8 | 0x2044 | 0xFE50
+        | 0xFE54 | 0xFF0C | 0xFF1B => WCat::MidNum,
         0x002E | 0x2018 | 0x2019 | 0x2024 | 0xFE52 | 0xFF07 | 0xFF0E => WCat::MidNumLet,
-        0x005F | 0x202F | 0x203F | 0x2040 | 0x2054 | 0xFE33 | 0xFE34 | 0xFE4D | 0xFE4E
-        | 0xFE4F | 0xFF3F => WCat::ExtendNumLet,
+        0x005F | 0x202F | 0x203F | 0x2040 | 0x2054 | 0xFE33 | 0xFE34 | 0xFE4D | 0xFE4E | 0xFE4F
+        | 0xFF3F => WCat::ExtendNumLet,
         other => unreachable!(
             "Class::is_wb_sep() set for U+{other:04X} but it isn't in the \
              42-codepoint WB_SEP set — charclass_table.rs and this match drifted"
@@ -493,8 +494,7 @@ fn no_break(atoms: &[Atom], i: usize) -> bool {
     if cur == WCat::HebrewLetter && next == WCat::SingleQuote {
         return true; // WB7a
     }
-    if cur == WCat::HebrewLetter && next == WCat::DoubleQuote && next2 == Some(WCat::HebrewLetter)
-    {
+    if cur == WCat::HebrewLetter && next == WCat::DoubleQuote && next2 == Some(WCat::HebrewLetter) {
         return true; // WB7b
     }
     if cur == WCat::DoubleQuote && next == WCat::HebrewLetter && prev == Some(WCat::HebrewLetter) {
@@ -802,8 +802,13 @@ fn run_corpus_differential(wb_ranges: &[(u32, u32, Wb)], scope: &str) {
     let mut hand_rolled_mismatch = 0u64;
     let mut trivial_match = 0u64;
     let mut trivial_mismatch = 0u64; // ascii-gate + complex-deferred combined; should stay 0
-    let mut mismatch_examples: Vec<(String, String, String, Vec<(usize, usize)>, Vec<(usize, usize)>)> =
-        Vec::new();
+    let mut mismatch_examples: Vec<(
+        String,
+        String,
+        String,
+        Vec<(usize, usize)>,
+        Vec<(usize, usize)>,
+    )> = Vec::new();
 
     for path in &wa_files {
         let id = path
@@ -923,7 +928,12 @@ const BENCH_CORPORA: &[(&str, &str)] = &[
 /// `warmup` untimed passes. `black_box` on the input and the per-call result
 /// (same pattern as `word_break_ascii_gate_bench.rs`) prevents the optimizer
 /// from hoisting the loop-invariant call.
-fn median_ns_per_verse(texts: &[&str], trials: u32, warmup: u32, mut f: impl FnMut(&str) -> usize) -> f64 {
+fn median_ns_per_verse(
+    texts: &[&str],
+    trials: u32,
+    warmup: u32,
+    mut f: impl FnMut(&str) -> usize,
+) -> f64 {
     for _ in 0..warmup {
         for &t in texts {
             black_box(f(black_box(t)));
@@ -945,11 +955,20 @@ fn run_perf_bench(wb_ranges: &[(u32, u32, Wb)]) {
     const TRIALS: u32 = 7;
     const WARMUP: u32 = 2;
 
-    println!("\n=== Part 3: throughput, hand-rolled walker vs unicode-segmentation (tokenizing-only) ===");
+    println!(
+        "\n=== Part 3: throughput, hand-rolled walker vs unicode-segmentation (tokenizing-only) ==="
+    );
     println!(
         "{:<22} {:<24} {:>8} {:>12} {:>12} {:>8} {:>9} {:>11} {:>9}",
-        "corpus", "script", "verses", "mine_ns/v", "oracle_ns/v", "ratio", "ascii_gate%",
-        "hand_rolled%", "deferred%"
+        "corpus",
+        "script",
+        "verses",
+        "mine_ns/v",
+        "oracle_ns/v",
+        "ratio",
+        "ascii_gate%",
+        "hand_rolled%",
+        "deferred%"
     );
     for &(id, script) in BENCH_CORPORA {
         let path = corpus_path(id);
@@ -976,9 +995,8 @@ fn run_perf_bench(wb_ranges: &[(u32, u32, Wb)]) {
         // `Vec` via `my_tokens` (allocates) — an apples-to-oranges
         // comparison that would have overstated the reference's speed on
         // every corpus. Fixed before trusting any "gap closed" reading.
-        let mine_ns = median_ns_per_verse(&texts, TRIALS, WARMUP, |t| {
-            my_tokens(t, wb_ranges).0.len()
-        });
+        let mine_ns =
+            median_ns_per_verse(&texts, TRIALS, WARMUP, |t| my_tokens(t, wb_ranges).0.len());
         let oracle_ns = median_ns_per_verse(&texts, TRIALS, WARMUP, |t| {
             t.unicode_word_indices()
                 .map(|(s, w)| (s, s + w.len()))
@@ -1006,7 +1024,9 @@ fn run_perf_bench(wb_ranges: &[(u32, u32, Wb)]) {
     // reproducing exactly what this bench measured before this follow-up),
     // under the SAME corrected (both-sides-materialize) methodology. This
     // is what separates "the gate helped" from "the fairness fix helped".
-    println!("\n--- ASCII gate isolated (Latin corpora only; no-gate vs with-gate, same fair methodology) ---");
+    println!(
+        "\n--- ASCII gate isolated (Latin corpora only; no-gate vs with-gate, same fair methodology) ---"
+    );
     println!(
         "{:<22} {:>12} {:>12} {:>12} {:>9} {:>9}",
         "corpus", "no_gate_ns/v", "with_gate_ns/v", "oracle_ns/v", "no_gate_x", "with_gate_x"
@@ -1022,9 +1042,8 @@ fn run_perf_bench(wb_ranges: &[(u32, u32, Wb)]) {
         let no_gate_ns = median_ns_per_verse(&texts, TRIALS, WARMUP, |t| {
             my_tokens_no_ascii_gate(t, wb_ranges).len()
         });
-        let with_gate_ns = median_ns_per_verse(&texts, TRIALS, WARMUP, |t| {
-            my_tokens(t, wb_ranges).0.len()
-        });
+        let with_gate_ns =
+            median_ns_per_verse(&texts, TRIALS, WARMUP, |t| my_tokens(t, wb_ranges).0.len());
         let oracle_ns = median_ns_per_verse(&texts, TRIALS, WARMUP, |t| {
             t.unicode_word_indices()
                 .map(|(s, w)| (s, s + w.len()))

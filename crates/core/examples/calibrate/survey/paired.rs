@@ -80,8 +80,7 @@ pub(crate) struct PairRow {
 }
 
 fn read_manifest(path: &Path) -> Vec<PairRow> {
-    let text =
-        fs::read_to_string(path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    let text = fs::read_to_string(path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
     text.lines()
         .skip(1) // header
         .filter(|l| !l.trim().is_empty())
@@ -224,13 +223,31 @@ fn median_double_mad(mut v: Vec<f64>) -> (f64, f64, f64) {
         return (0.0, 0.0, 0.0);
     }
     let med = median(&mut v);
-    let mut above: Vec<f64> = v.iter().copied().filter(|&x| x > med).map(|x| x - med).collect();
-    let mut below: Vec<f64> = v.iter().copied().filter(|&x| x < med).map(|x| med - x).collect();
+    let mut above: Vec<f64> = v
+        .iter()
+        .copied()
+        .filter(|&x| x > med)
+        .map(|x| x - med)
+        .collect();
+    let mut below: Vec<f64> = v
+        .iter()
+        .copied()
+        .filter(|&x| x < med)
+        .map(|x| med - x)
+        .collect();
     let mut symmetric: Vec<f64> = v.iter().map(|&x| (x - med).abs()).collect();
     let n_above = above.len();
     let n_below = below.len();
-    let mad_above_raw = if above.is_empty() { 0.0 } else { median(&mut above) };
-    let mad_below_raw = if below.is_empty() { 0.0 } else { median(&mut below) };
+    let mad_above_raw = if above.is_empty() {
+        0.0
+    } else {
+        median(&mut above)
+    };
+    let mad_below_raw = if below.is_empty() {
+        0.0
+    } else {
+        median(&mut below)
+    };
     let mad_symmetric = median(&mut symmetric);
     // Per-side data floor with pooled fallback (ADR 0069): a side under
     // `SIDE_DATA_FLOOR` strict deviations (or with a zero own-side MAD)
@@ -245,7 +262,11 @@ fn median_double_mad(mut v: Vec<f64>) -> (f64, f64, f64) {
             mad_symmetric
         }
     };
-    (med, effective(n_above, mad_above_raw), effective(n_below, mad_below_raw))
+    (
+        med,
+        effective(n_above, mad_above_raw),
+        effective(n_below, mad_below_raw),
+    )
 }
 
 /// A verse's z-threshold-independent detection floor on ONE side, in
@@ -652,7 +673,12 @@ pub(crate) fn paired_survey(pairs_path: &Path, out_dir: &Path) {
             source.len()
         );
         reports.push(survey_one_pair(
-            &id, row, &target, &source, out_dir, &mut triage,
+            &id,
+            row,
+            &target,
+            &source,
+            out_dir,
+            &mut triage,
         ));
     }
     write_summary(out_dir, &reports, &skipped);
@@ -689,8 +715,12 @@ fn survey_one_pair(
         shear,
         excluded,
     } = analyze(&rows, target, source);
-    let book_by_name: HashMap<&str, &BookStat> = books.iter().map(|b| (b.book.as_str(), b)).collect();
-    let shear_idx: HashSet<usize> = shear.iter().flat_map(|s| [s.global_a, s.global_b]).collect();
+    let book_by_name: HashMap<&str, &BookStat> =
+        books.iter().map(|b| (b.book.as_str(), b)).collect();
+    let shear_idx: HashSet<usize> = shear
+        .iter()
+        .flat_map(|s| [s.global_a, s.global_b])
+        .collect();
 
     let counts_at = |zt: f64| {
         rows.iter()
@@ -737,8 +767,12 @@ fn survey_one_pair(
             book.mad_below,
             book.n,
             book.quarantined,
-            v.book_z.map(|z| format!("{z:.3}")).unwrap_or_else(|| "NA".to_string()),
-            v.project_z.map(|z| format!("{z:.3}")).unwrap_or_else(|| "NA".to_string()),
+            v.book_z
+                .map(|z| format!("{z:.3}"))
+                .unwrap_or_else(|| "NA".to_string()),
+            v.project_z
+                .map(|z| format!("{z:.3}"))
+                .unwrap_or_else(|| "NA".to_string()),
             scope,
             is_shear,
             fires,
@@ -774,8 +808,9 @@ fn survey_one_pair(
     fs::write(out_dir.join(format!("{id}.verses.tsv")), verses_out)
         .unwrap_or_else(|e| panic!("write {id}.verses.tsv: {e}"));
 
-    let mut books_out =
-        String::from("book\tn\tmedian\tmad_above\tmad_below\tquarantined\tfloor_pct_long_z3.5\tfloor_pct_short_z3.5\n");
+    let mut books_out = String::from(
+        "book\tn\tmedian\tmad_above\tmad_below\tquarantined\tfloor_pct_long_z3.5\tfloor_pct_short_z3.5\n",
+    );
     let mut books_report = Vec::with_capacity(books.len());
     for b in &books {
         let floor_long = percent_floor(DEFAULT_Z, b.median, b.mad_above);
@@ -788,8 +823,12 @@ fn survey_one_pair(
             b.mad_above,
             b.mad_below,
             b.quarantined,
-            floor_long.map(|p| format!("{p:.2}")).unwrap_or_else(|| "NA".to_string()),
-            floor_short.map(|p| format!("{p:.2}")).unwrap_or_else(|| "NA".to_string()),
+            floor_long
+                .map(|p| format!("{p:.2}"))
+                .unwrap_or_else(|| "NA".to_string()),
+            floor_short
+                .map(|p| format!("{p:.2}"))
+                .unwrap_or_else(|| "NA".to_string()),
         );
         books_report.push(BookStatOut {
             book: b.book.clone(),
@@ -813,24 +852,35 @@ fn survey_one_pair(
         floors_out += &format!("\tfloor_pct_long_z{z}\tfloor_pct_short_z{z}");
     }
     floors_out.push('\n');
-    let floor_row = |label: &str, n: usize, med: f64, mad_above: f64, mad_below: f64, out: &mut String| {
-        *out += &format!("{label}\t{n}\t{med:.6}\t{mad_above:.6}\t{mad_below:.6}");
-        for &z in Z_SWEEP {
-            let long = percent_floor(z, med, mad_above);
-            let short = percent_floor(z, med, mad_below);
-            *out += &format!(
-                "\t{}\t{}",
-                long.map(|v| format!("{v:.2}")).unwrap_or_else(|| "NA".to_string()),
-                short.map(|v| format!("{v:.2}")).unwrap_or_else(|| "NA".to_string()),
-            );
-        }
-        out.push('\n');
-    };
+    let floor_row =
+        |label: &str, n: usize, med: f64, mad_above: f64, mad_below: f64, out: &mut String| {
+            *out += &format!("{label}\t{n}\t{med:.6}\t{mad_above:.6}\t{mad_below:.6}");
+            for &z in Z_SWEEP {
+                let long = percent_floor(z, med, mad_above);
+                let short = percent_floor(z, med, mad_below);
+                *out += &format!(
+                    "\t{}\t{}",
+                    long.map(|v| format!("{v:.2}"))
+                        .unwrap_or_else(|| "NA".to_string()),
+                    short
+                        .map(|v| format!("{v:.2}"))
+                        .unwrap_or_else(|| "NA".to_string()),
+                );
+            }
+            out.push('\n');
+        };
     for b in &books {
         if b.quarantined {
             continue; // a pairing artifact's floor is meaningless
         }
-        floor_row(&format!("book:{}", b.book), b.n, b.median, b.mad_above, b.mad_below, &mut floors_out);
+        floor_row(
+            &format!("book:{}", b.book),
+            b.n,
+            b.median,
+            b.mad_above,
+            b.mad_below,
+            &mut floors_out,
+        );
     }
     floor_row(
         "project",
@@ -852,7 +902,10 @@ fn survey_one_pair(
 
     let mut shear_out = String::from("book\tchapter\tkey_a\tkey_b\tz_a\tz_b\n");
     for s in &shear {
-        shear_out += &format!("{}\t{}\t{}\t{}\t{:.3}\t{:.3}\n", s.book, s.chapter, s.key_a, s.key_b, s.z_a, s.z_b);
+        shear_out += &format!(
+            "{}\t{}\t{}\t{}\t{:.3}\t{:.3}\n",
+            s.book, s.chapter, s.key_a, s.key_b, s.z_a, s.z_b
+        );
     }
     fs::write(out_dir.join(format!("{id}.shear.tsv")), shear_out)
         .unwrap_or_else(|e| panic!("write {id}.shear.tsv: {e}"));
@@ -947,12 +1000,18 @@ fn multi_source_sensitivity(reports: &[PairReport]) -> Vec<MultiSourceRow> {
                 let (a, b) = (group[i], group[j]);
                 let overlap = a.flagged_keys.intersection(&b.flagged_keys).count();
                 let union = a.flagged_keys.union(&b.flagged_keys).count();
-                let jaccard = if union == 0 { 1.0 } else { overlap as f64 / union as f64 };
+                let jaccard = if union == 0 {
+                    1.0
+                } else {
+                    overlap as f64 / union as f64
+                };
 
                 let floors_a: HashMap<&str, f64> = a
                     .books
                     .iter()
-                    .filter_map(|bk| floor_pct_combined(bk.floor_pct_default).map(|p| (bk.book.as_str(), p)))
+                    .filter_map(|bk| {
+                        floor_pct_combined(bk.floor_pct_default).map(|p| (bk.book.as_str(), p))
+                    })
                     .collect();
                 let deltas: Vec<f64> = b
                     .books
@@ -1280,7 +1339,12 @@ pub(crate) fn seed_faults(pairs_path: &Path, out_dir: &Path) {
         // A baseline survey of the UNMUTATED pair — gives the report its
         // scatter/boundary context alongside the fault tables below.
         surveys.push(survey_one_pair(
-            &id, row, &target, &source, out_dir, &mut unused_triage,
+            &id,
+            row,
+            &target,
+            &source,
+            out_dir,
+            &mut unused_triage,
         ));
 
         let rows = pair_verses(&target, &source);
@@ -1297,14 +1361,19 @@ pub(crate) fn seed_faults(pairs_path: &Path, out_dir: &Path) {
         for f in &selected {
             gt += &format!("{}\t{}\t{}\n", f.key, f.kind.label(), f.kind.magnitude());
         }
-        fs::write(out_dir.join(format!("{id}.seed-faults.ground-truth.tsv")), gt)
-            .unwrap_or_else(|e| panic!("write ground-truth: {e}"));
+        fs::write(
+            out_dir.join(format!("{id}.seed-faults.ground-truth.tsv")),
+            gt,
+        )
+        .unwrap_or_else(|e| panic!("write ground-truth: {e}"));
 
         let seeded_idx: HashMap<usize, FaultKind> =
             selected.iter().map(|f| (f.global_idx, f.kind)).collect();
         let mut texts = target.texts().to_vec();
-        let source_text_of: HashMap<usize, &str> =
-            rows.iter().map(|r| (r.global_idx, r.source_text.as_str())).collect();
+        let source_text_of: HashMap<usize, &str> = rows
+            .iter()
+            .map(|r| (r.global_idx, r.source_text.as_str()))
+            .collect();
         for (&gi, &kind) in &seeded_idx {
             let src = source_text_of.get(&gi).copied().unwrap_or("");
             texts[gi] = apply_fault(&texts[gi], src, kind);
@@ -1340,7 +1409,10 @@ pub(crate) fn seed_faults(pairs_path: &Path, out_dir: &Path) {
                 continue;
             }
             match seeded_idx.get(&r.global_idx) {
-                Some(&kind) => catch.get_mut(&kind).expect("every kind pre-inserted").record(v),
+                Some(&kind) => catch
+                    .get_mut(&kind)
+                    .expect("every kind pre-inserted")
+                    .record(v),
                 None => {
                     clean_total += 1;
                     for (zi, &zt) in Z_SWEEP.iter().enumerate() {
@@ -1378,10 +1450,15 @@ pub(crate) fn seed_faults(pairs_path: &Path, out_dir: &Path) {
             }
             catch_out.push('\n');
         }
-        fs::write(out_dir.join(format!("{id}.seed-faults.catch.tsv")), catch_out)
-            .unwrap_or_else(|e| panic!("write catch.tsv: {e}"));
+        fs::write(
+            out_dir.join(format!("{id}.seed-faults.catch.tsv")),
+            catch_out,
+        )
+        .unwrap_or_else(|e| panic!("write catch.tsv: {e}"));
 
-        let mut clean_out = String::from("z\tclean_n\tflagged_book\tflagged_project\tflagged_combined\trate_combined\n");
+        let mut clean_out = String::from(
+            "z\tclean_n\tflagged_book\tflagged_project\tflagged_combined\trate_combined\n",
+        );
         for (zi, &zt) in Z_SWEEP.iter().enumerate() {
             let rate = clean_combined[zi] as f64 / clean_total.max(1) as f64;
             clean_out += &format!(
@@ -1389,8 +1466,11 @@ pub(crate) fn seed_faults(pairs_path: &Path, out_dir: &Path) {
                 clean_book[zi], clean_project[zi], clean_combined[zi]
             );
         }
-        fs::write(out_dir.join(format!("{id}.seed-faults.clean.tsv")), clean_out)
-            .unwrap_or_else(|e| panic!("write clean.tsv: {e}"));
+        fs::write(
+            out_dir.join(format!("{id}.seed-faults.clean.tsv")),
+            clean_out,
+        )
+        .unwrap_or_else(|e| panic!("write clean.tsv: {e}"));
 
         eprintln!(
             "seed-faults: {id} seeded {} verses ({} clean); real-rule catch/clean tables written",
@@ -1452,8 +1532,7 @@ pub(crate) fn uw_calibrate(pairs_path: &Path, out_dir: &Path) {
 
     let default_cfg = UntranslatedWordsConfig::default();
     let mut baseline_out = String::from("pair\tkey\tcopied_pct\trun_len\tall_titlecase_run\n");
-    let mut recall_out =
-        String::from("pair\tfault_type\tmagnitude\tn_seeded\tn_caught_default\n");
+    let mut recall_out = String::from("pair\tfault_type\tmagnitude\tn_seeded\tn_caught_default\n");
     let mut sweep_out = String::from(
         "pair\tknob\tvalue\tsource_paste_caught\tsource_paste_n\tpartial_paste_caught\tpartial_paste_n\tclean_flagged\tclean_n\n",
     );
@@ -1475,7 +1554,11 @@ pub(crate) fn uw_calibrate(pairs_path: &Path, out_dir: &Path) {
         // confirm the shape of the false-positive population.
         let baseline = untranslated_word_findings(&target, Some(&source), &default_cfg);
         for f in &baseline {
-            let Some(FindingArgs::UntranslatedWord { copied_pct, run_len }) = f.args else {
+            let Some(FindingArgs::UntranslatedWord {
+                copied_pct,
+                run_len,
+            }) = f.args
+            else {
                 continue;
             };
             let key = target.key(f.key_idx);
@@ -1484,7 +1567,8 @@ pub(crate) fn uw_calibrate(pairs_path: &Path, out_dir: &Path) {
             let all_titlecase_run = slice
                 .split_whitespace()
                 .all(|w| w.chars().next().is_some_and(char::is_uppercase));
-            baseline_out += &format!("{id}\t{key}\t{copied_pct:.1}\t{run_len}\t{all_titlecase_run}\n");
+            baseline_out +=
+                &format!("{id}\t{key}\t{copied_pct:.1}\t{run_len}\t{all_titlecase_run}\n");
         }
 
         // --- 2/3. Seeded source-paste recall + knob sweep.
@@ -1497,8 +1581,10 @@ pub(crate) fn uw_calibrate(pairs_path: &Path, out_dir: &Path) {
         let seeded_idx: HashMap<usize, FaultKind> =
             selected.iter().map(|f| (f.global_idx, f.kind)).collect();
         let mut texts = target.texts().to_vec();
-        let source_text_of: HashMap<usize, &str> =
-            rows.iter().map(|r| (r.global_idx, r.source_text.as_str())).collect();
+        let source_text_of: HashMap<usize, &str> = rows
+            .iter()
+            .map(|r| (r.global_idx, r.source_text.as_str()))
+            .collect();
         for (&gi, &kind) in &seeded_idx {
             let src = source_text_of.get(&gi).copied().unwrap_or("");
             texts[gi] = apply_fault(&texts[gi], src, kind);
@@ -1507,8 +1593,10 @@ pub(crate) fn uw_calibrate(pairs_path: &Path, out_dir: &Path) {
             .unwrap_or_else(|e| panic!("{id}: mutated corpus invalid: {e}"));
 
         let default_findings = untranslated_word_findings(&mutated, Some(&source), &default_cfg);
-        let fired_default: HashSet<usize> =
-            default_findings.iter().map(|f| f.key_idx.get() as usize).collect();
+        let fired_default: HashSet<usize> = default_findings
+            .iter()
+            .map(|f| f.key_idx.get() as usize)
+            .collect();
         let mut per_kind_n: HashMap<FaultKind, usize> = HashMap::new();
         let mut per_kind_caught: HashMap<FaultKind, usize> = HashMap::new();
         for f in &selected {
@@ -1543,11 +1631,13 @@ pub(crate) fn uw_calibrate(pairs_path: &Path, out_dir: &Path) {
 
         let mut sweep_one = |cfg: &UntranslatedWordsConfig, label: &str, value: f32| {
             let findings = untranslated_word_findings(&mutated, Some(&source), cfg);
-            let fired: HashSet<usize> =
-                findings.iter().map(|f| f.key_idx.get() as usize).collect();
+            let fired: HashSet<usize> = findings.iter().map(|f| f.key_idx.get() as usize).collect();
             let caught = paste_idx.iter().filter(|gi| fired.contains(gi)).count();
             let partial_caught = partial_idx.iter().filter(|gi| fired.contains(gi)).count();
-            let clean_flagged = fired.iter().filter(|gi| !seeded_idx.contains_key(gi)).count();
+            let clean_flagged = fired
+                .iter()
+                .filter(|gi| !seeded_idx.contains_key(gi))
+                .count();
             sweep_out += &format!(
                 "{id}\t{label}\t{value}\t{caught}\t{}\t{partial_caught}\t{}\t{clean_flagged}\t{clean_denom}\n",
                 paste_idx.len(),
@@ -1556,21 +1646,30 @@ pub(crate) fn uw_calibrate(pairs_path: &Path, out_dir: &Path) {
         };
         for &v in UW_EMIT_SWEEP {
             sweep_one(
-                &UntranslatedWordsConfig { emit_score_min: v, ..default_cfg },
+                &UntranslatedWordsConfig {
+                    emit_score_min: v,
+                    ..default_cfg
+                },
                 "emit_score_min",
                 v,
             );
         }
         for &v in UW_RECUR_SWEEP {
             sweep_one(
-                &UntranslatedWordsConfig { word_recurrence_k: v, ..default_cfg },
+                &UntranslatedWordsConfig {
+                    word_recurrence_k: v,
+                    ..default_cfg
+                },
                 "word_recurrence_k",
                 v,
             );
         }
         for &v in UW_RUN_BONUS_SWEEP {
             sweep_one(
-                &UntranslatedWordsConfig { run_bonus: v, ..default_cfg },
+                &UntranslatedWordsConfig {
+                    run_bonus: v,
+                    ..default_cfg
+                },
                 "run_bonus",
                 v,
             );
@@ -1633,11 +1732,17 @@ pub(crate) fn uw_case_shape_simulate(pairs_path: &Path, out_dir: &Path) {
             continue;
         }
         let rows = pair_verses(&target, &source);
-        let source_text_of: HashMap<usize, &str> =
-            rows.iter().map(|r| (r.global_idx, r.source_text.as_str())).collect();
+        let source_text_of: HashMap<usize, &str> = rows
+            .iter()
+            .map(|r| (r.global_idx, r.source_text.as_str()))
+            .collect();
 
         for f in &findings {
-            let Some(FindingArgs::UntranslatedWord { copied_pct, run_len }) = f.args else {
+            let Some(FindingArgs::UntranslatedWord {
+                copied_pct,
+                run_len,
+            }) = f.args
+            else {
                 continue;
             };
             let gi = f.key_idx.get() as usize;
@@ -1684,8 +1789,7 @@ pub(crate) fn uw_case_shape_simulate(pairs_path: &Path, out_dir: &Path) {
             }
             let sim_max_run = sim_runs.iter().copied().max().unwrap_or(0);
             let sim_fraction = sim.len() as f64 / total as f64;
-            let sim_bonus =
-                1.0 + f64::from(cfg.run_bonus) * (sim_max_run.saturating_sub(1) as f64);
+            let sim_bonus = 1.0 + f64::from(cfg.run_bonus) * (sim_max_run.saturating_sub(1) as f64);
             let sim_score = (sim_fraction * sim_bonus).min(1.0) as f32;
             let survives = sim_score >= cfg.emit_score_min;
             if survives {
@@ -1803,7 +1907,8 @@ fn write_report_html(
     // `</` must not appear inside the inline <script> payload; `<\/` is the
     // same string after JSON unescaping (fleet report's convention).
     let payload = data.to_string().replace("</", "<\\/");
-    let html = include_str!("../../paired_report_template.html").replace("__PAIRED_DATA__", &payload);
+    let html =
+        include_str!("../../paired_report_template.html").replace("__PAIRED_DATA__", &payload);
     let out = out_dir.join("paired-report.html");
     fs::write(&out, html).unwrap_or_else(|e| panic!("write {}: {e}", out.display()));
     eprintln!("wrote {}", out.display());
@@ -1867,19 +1972,28 @@ mod tests {
         for v in 1..=60 {
             pairs.push((format!("PSA 1:{v}"), "abcdefghij ".repeat(12)));
         }
-        let target_pairs: Vec<(&str, &str)> = pairs.iter().map(|(k, t)| (k.as_str(), t.as_str())).collect();
+        let target_pairs: Vec<(&str, &str)> = pairs
+            .iter()
+            .map(|(k, t)| (k.as_str(), t.as_str()))
+            .collect();
         let target = corpus(&target_pairs);
         let source_owned: Vec<(String, String)> = pairs
             .iter()
             .map(|(k, _)| (k.clone(), "abcdefghij ".repeat(4)))
             .collect();
-        let source_refs: Vec<(&str, &str)> = source_owned.iter().map(|(k, t)| (k.as_str(), t.as_str())).collect();
+        let source_refs: Vec<(&str, &str)> = source_owned
+            .iter()
+            .map(|(k, t)| (k.as_str(), t.as_str()))
+            .collect();
         let source = corpus(&source_refs);
 
         let rows = pair_verses(&target, &source);
         let stats = book_stats(&rows);
         let psa = stats.iter().find(|b| b.book == "PSA").unwrap();
-        assert!(psa.quarantined, "PSA's ~3x median must be flagged as a pairing artifact");
+        assert!(
+            psa.quarantined,
+            "PSA's ~3x median must be flagged as a pairing artifact"
+        );
         for other in ["GEN", "EXO", "LEV"] {
             let b = stats.iter().find(|b| b.book == other).unwrap();
             assert!(!b.quarantined, "{other} must not be quarantined");
@@ -1904,7 +2018,10 @@ mod tests {
 
     #[test]
     fn source_paste_replaces_target_text_verbatim() {
-        assert_eq!(apply_fault("original", "pasted", FaultKind::SourcePaste), "pasted");
+        assert_eq!(
+            apply_fault("original", "pasted", FaultKind::SourcePaste),
+            "pasted"
+        );
     }
 
     #[test]
@@ -1935,8 +2052,16 @@ mod tests {
     /// hidden randomness, matching every other `FaultKind`'s contract.
     #[test]
     fn partial_paste_is_deterministic() {
-        let a = apply_fault("alpha beta gamma delta", "uno dos tres cuatro", FaultKind::PartialPaste(50));
-        let b = apply_fault("alpha beta gamma delta", "uno dos tres cuatro", FaultKind::PartialPaste(50));
+        let a = apply_fault(
+            "alpha beta gamma delta",
+            "uno dos tres cuatro",
+            FaultKind::PartialPaste(50),
+        );
+        let b = apply_fault(
+            "alpha beta gamma delta",
+            "uno dos tres cuatro",
+            FaultKind::PartialPaste(50),
+        );
         assert_eq!(a, b);
     }
 
@@ -1948,8 +2073,14 @@ mod tests {
     /// definition, not against the other side's.
     #[test]
     fn partial_paste_handles_empty_sides() {
-        assert_eq!(apply_fault("", "uno dos tres", FaultKind::PartialPaste(50)), "s tres");
-        assert_eq!(apply_fault("alpha beta gamma", "", FaultKind::PartialPaste(50)), "alpha be");
+        assert_eq!(
+            apply_fault("", "uno dos tres", FaultKind::PartialPaste(50)),
+            "s tres"
+        );
+        assert_eq!(
+            apply_fault("alpha beta gamma", "", FaultKind::PartialPaste(50)),
+            "alpha be"
+        );
         assert_eq!(apply_fault("", "", FaultKind::PartialPaste(50)), "");
     }
 
@@ -1959,7 +2090,10 @@ mod tests {
         for v in 1..=200 {
             pairs.push((format!("GEN 1:{v}"), "abcdefghij".to_string()));
         }
-        let target_refs: Vec<(&str, &str)> = pairs.iter().map(|(k, t)| (k.as_str(), t.as_str())).collect();
+        let target_refs: Vec<(&str, &str)> = pairs
+            .iter()
+            .map(|(k, t)| (k.as_str(), t.as_str()))
+            .collect();
         let target = corpus(&target_refs);
         let source = corpus(&target_refs);
         let rows = pair_verses(&target, &source);
@@ -2003,18 +2137,32 @@ mod tests {
             };
             pairs.push((format!("OBA 1:{v}"), t));
         }
-        let target_refs: Vec<(&str, &str)> = pairs.iter().map(|(k, t)| (k.as_str(), t.as_str())).collect();
+        let target_refs: Vec<(&str, &str)> = pairs
+            .iter()
+            .map(|(k, t)| (k.as_str(), t.as_str()))
+            .collect();
         let target = corpus(&target_refs);
-        let source_owned: Vec<(String, String)> =
-            pairs.iter().map(|(k, _)| (k.clone(), base.clone())).collect();
-        let source_refs: Vec<(&str, &str)> = source_owned.iter().map(|(k, t)| (k.as_str(), t.as_str())).collect();
+        let source_owned: Vec<(String, String)> = pairs
+            .iter()
+            .map(|(k, _)| (k.clone(), base.clone()))
+            .collect();
+        let source_refs: Vec<(&str, &str)> = source_owned
+            .iter()
+            .map(|(k, t)| (k.as_str(), t.as_str()))
+            .collect();
         let source = corpus(&source_refs);
 
         let verdicts = harvest_real_verdicts(&target, &source);
         let rows = pair_verses(&target, &source);
         let oba3 = rows.iter().find(|r| r.key == "OBA 1:3").unwrap();
-        let v = verdicts.get(&(oba3.global_idx as u32)).copied().unwrap_or_default();
-        assert!(v.book_z.is_none(), "OBA (5 verses) must not judge on its own book channel");
+        let v = verdicts
+            .get(&(oba3.global_idx as u32))
+            .copied()
+            .unwrap_or_default();
+        assert!(
+            v.book_z.is_none(),
+            "OBA (5 verses) must not judge on its own book channel"
+        );
         assert!(
             v.project_z.is_some_and(|z| z.abs() > DEFAULT_Z),
             "OBA 1:3's gross outlier must still fire via the pooled project channel: {v:?}"
@@ -2035,10 +2183,22 @@ mod tests {
             row_stub(3, "GEN", "GEN 1:4"),
         ];
         let verdicts = vec![
-            RealVerdict { book_z: Some(0.2), project_z: None },   // typical
-            RealVerdict { book_z: Some(7.0), project_z: None },   // shear half A
-            RealVerdict { book_z: Some(-7.5), project_z: None },  // shear half B
-            RealVerdict { book_z: Some(0.1), project_z: None },   // typical
+            RealVerdict {
+                book_z: Some(0.2),
+                project_z: None,
+            }, // typical
+            RealVerdict {
+                book_z: Some(7.0),
+                project_z: None,
+            }, // shear half A
+            RealVerdict {
+                book_z: Some(-7.5),
+                project_z: None,
+            }, // shear half B
+            RealVerdict {
+                book_z: Some(0.1),
+                project_z: None,
+            }, // typical
         ];
         let shear = detect_shear(&rows, &verdicts);
         assert_eq!(shear.len(), 1);
@@ -2052,8 +2212,14 @@ mod tests {
     fn shear_requires_opposite_signs_not_just_both_extreme() {
         let rows = vec![row_stub(0, "GEN", "GEN 1:1"), row_stub(1, "GEN", "GEN 1:2")];
         let verdicts = vec![
-            RealVerdict { book_z: Some(7.0), project_z: None },
-            RealVerdict { book_z: Some(7.2), project_z: None }, // same sign: real, not shear
+            RealVerdict {
+                book_z: Some(7.0),
+                project_z: None,
+            },
+            RealVerdict {
+                book_z: Some(7.2),
+                project_z: None,
+            }, // same sign: real, not shear
         ];
         assert!(detect_shear(&rows, &verdicts).is_empty());
     }
@@ -2062,8 +2228,14 @@ mod tests {
     fn shear_requires_consecutive_verse_numbers() {
         let rows = vec![row_stub(0, "GEN", "GEN 1:1"), row_stub(1, "GEN", "GEN 1:3")]; // gap
         let verdicts = vec![
-            RealVerdict { book_z: Some(7.0), project_z: None },
-            RealVerdict { book_z: Some(-7.0), project_z: None },
+            RealVerdict {
+                book_z: Some(7.0),
+                project_z: None,
+            },
+            RealVerdict {
+                book_z: Some(-7.0),
+                project_z: None,
+            },
         ];
         assert!(detect_shear(&rows, &verdicts).is_empty());
     }

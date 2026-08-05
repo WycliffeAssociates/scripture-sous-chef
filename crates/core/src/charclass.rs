@@ -516,7 +516,11 @@ mod tests {
             let mut decomposed = Vec::new();
             decompose_canonical(c, |d| decomposed.push(d));
             let differs = decomposed.len() != 1 || decomposed[0] != c;
-            if differs && decomposed.iter().all(|&d| canonical_combining_class(d) == 0) {
+            if differs
+                && decomposed
+                    .iter()
+                    .all(|&d| canonical_combining_class(d) == 0)
+            {
                 set.extend(decomposed.iter().copied());
             }
         }
@@ -549,22 +553,43 @@ mod tests {
         // Rule A: composed forms whose own decomposition differs.
         assert!(class_of('\u{00E9}').is_norm_relevant(), "é (composed)");
         assert!(class_of('\u{212A}').is_norm_relevant(), "KELVIN SIGN");
-        assert!(class_of('\u{09DF}').is_norm_relevant(), "Bengali YYA (composed, composition-excluded)");
+        assert!(
+            class_of('\u{09DF}').is_norm_relevant(),
+            "Bengali YYA (composed, composition-excluded)"
+        );
         // Rule B: combining marks (catches pure mark-reordering and the
         // decomposed side of any accent pair).
-        assert!(class_of('\u{0301}').is_norm_relevant(), "COMBINING ACUTE ACCENT");
-        assert!(class_of('\u{0316}').is_norm_relevant(), "COMBINING GRAVE ACCENT BELOW");
-        assert!(class_of('\u{09BC}').is_norm_relevant(), "Bengali nukta (combining)");
+        assert!(
+            class_of('\u{0301}').is_norm_relevant(),
+            "COMBINING ACUTE ACCENT"
+        );
+        assert!(
+            class_of('\u{0316}').is_norm_relevant(),
+            "COMBINING GRAVE ACCENT BELOW"
+        );
+        assert!(
+            class_of('\u{09BC}').is_norm_relevant(),
+            "Bengali nukta (combining)"
+        );
         // Rule C: canonical-singleton decomposition targets.
-        assert!(class_of('K').is_norm_relevant(), "ASCII K (KELVIN's target)");
+        assert!(
+            class_of('K').is_norm_relevant(),
+            "ASCII K (KELVIN's target)"
+        );
         assert!(
             class_of(';').is_norm_relevant(),
             "ASCII semicolon (GREEK QUESTION MARK U+037E's canonical singleton target)"
         );
-        assert!(class_of('\u{1100}').is_norm_relevant(), "Hangul leading Jamo (a precomposed syllable's target)");
+        assert!(
+            class_of('\u{1100}').is_norm_relevant(),
+            "Hangul leading Jamo (a precomposed syllable's target)"
+        );
         assert!(class_of('\u{1161}').is_norm_relevant(), "Hangul vowel Jamo");
         // Hangul precomposed syllable itself (rule A: its own NFD differs).
-        assert!(class_of('\u{AC00}').is_norm_relevant(), "가 (precomposed Hangul syllable)");
+        assert!(
+            class_of('\u{AC00}').is_norm_relevant(),
+            "가 (precomposed Hangul syllable)"
+        );
 
         // Negative/selectivity: ordinary letters, space, and digits must NOT
         // be flagged — this is what makes the prefilter actually narrow the
@@ -572,10 +597,11 @@ mod tests {
         // accent's own combining mark already gates that cluster via rule
         // B); 'K' and ';' are excluded from this set — both are genuinely
         // flagged above as real singleton decomposition targets.
-        for c in "abcdefghijlmnopqrstuvwxyzABCDEFGHIJLMNOPQRSTUVWXYZ0123456789 .,!?"
-            .chars()
-        {
-            assert!(!class_of(c).is_norm_relevant(), "ordinary {c:?} must be selective");
+        for c in "abcdefghijlmnopqrstuvwxyzABCDEFGHIJLMNOPQRSTUVWXYZ0123456789 .,!?".chars() {
+            assert!(
+                !class_of(c).is_norm_relevant(),
+                "ordinary {c:?} must be selective"
+            );
         }
     }
 }

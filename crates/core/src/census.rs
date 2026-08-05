@@ -948,8 +948,7 @@ mod tests {
         let inv = run(&corpus);
         let lane = section(&inv, SectionId::CaseShapes);
 
-        let [lower, title, allcaps, other] =
-            crate::signals::mixed_case::shape_totals(&corpus);
+        let [lower, title, allcaps, other] = crate::signals::mixed_case::shape_totals(&corpus);
         let mut expected: BTreeMap<&str, u64> = BTreeMap::new();
         expected.insert("lower", lower);
         expected.insert("title", title);

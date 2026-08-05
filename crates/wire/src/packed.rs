@@ -8,11 +8,9 @@
 //! particular UTF-16 projection goes through [`project_utf16_checked`], never
 //! `Span::to_utf16` (which assumes a valid span and indexes/casts accordingly).
 
-use ssc_core::{
-    AnalysisId, Corpus, Finding, FindingArgs, RuleId, Severity, Span, TargetContextId,
-};
+use ssc_core::{AnalysisId, Corpus, Finding, FindingArgs, RuleId, Severity, Span, TargetContextId};
 
-use crate::schema::{digest_shape, rule_for_code, wire_code, DigestShape};
+use crate::schema::{DigestShape, digest_shape, rule_for_code, wire_code};
 
 // ---- layout constants (§A.1) ----------------------------------------------
 
@@ -66,7 +64,11 @@ pub enum PackError {
     /// `start > end`.
     SpanReversed { start: u32, end: u32 },
     /// `end` exceeds the verse text byte length.
-    SpanOutOfBounds { start: u32, end: u32, text_len: usize },
+    SpanOutOfBounds {
+        start: u32,
+        end: u32,
+        text_len: usize,
+    },
     /// An endpoint is not a UTF-8 character boundary of the verse text.
     SpanNotCharBoundary { offset: u32 },
     /// A projected UTF-16 offset exceeds `u16::MAX`.
@@ -92,7 +94,10 @@ impl std::fmt::Display for PackError {
             PackError::InvalidKeyIdx {
                 key_idx,
                 corpus_len,
-            } => write!(f, "key_idx {key_idx} out of range (corpus len {corpus_len})"),
+            } => write!(
+                f,
+                "key_idx {key_idx} out of range (corpus len {corpus_len})"
+            ),
             PackError::SpanReversed { start, end } => {
                 write!(f, "reversed span: start {start} > end {end}")
             }
@@ -185,7 +190,9 @@ fn project_utf16_checked(range: Span, text: &str) -> Result<(u16, u16), PackErro
     }
     let start = range.start as usize;
     if !text.is_char_boundary(start) {
-        return Err(PackError::SpanNotCharBoundary { offset: range.start });
+        return Err(PackError::SpanNotCharBoundary {
+            offset: range.start,
+        });
     }
     if !text.is_char_boundary(end) {
         return Err(PackError::SpanNotCharBoundary { offset: range.end });
@@ -291,14 +298,18 @@ fn extract_digest(code: RuleId, args: Option<&FindingArgs>) -> Result<Digest, Pa
         }
         (RuleId::ProjectLengthRatio, _) => Err(mismatch()),
 
-        (RuleId::BracketBalance, Some(FindingArgs::BracketWindow { majority, total, .. })) => {
-            Ok(count_pair(*majority, *total))
-        }
+        (
+            RuleId::BracketBalance,
+            Some(FindingArgs::BracketWindow {
+                majority, total, ..
+            }),
+        ) => Ok(count_pair(*majority, *total)),
         (RuleId::BracketBalance, _) => Err(mismatch()),
 
-        (RuleId::SentenceInitialLowercase, Some(FindingArgs::CasingConvention { upper, total, .. })) => {
-            Ok(count_pair(*upper, *total))
-        }
+        (
+            RuleId::SentenceInitialLowercase,
+            Some(FindingArgs::CasingConvention { upper, total, .. }),
+        ) => Ok(count_pair(*upper, *total)),
         (RuleId::SentenceInitialLowercase, _) => Err(mismatch()),
 
         (RuleId::InconsistentWordCasing, Some(FindingArgs::WordCasing { upper, total, .. })) => {
@@ -306,9 +317,10 @@ fn extract_digest(code: RuleId, args: Option<&FindingArgs>) -> Result<Digest, Pa
         }
         (RuleId::InconsistentWordCasing, _) => Err(mismatch()),
 
-        (RuleId::MixedScriptInToken, Some(FindingArgs::ScriptMixEvidence { books, corpus, .. })) => {
-            Ok(count_pair(*books, *corpus))
-        }
+        (
+            RuleId::MixedScriptInToken,
+            Some(FindingArgs::ScriptMixEvidence { books, corpus, .. }),
+        ) => Ok(count_pair(*books, *corpus)),
         (RuleId::MixedScriptInToken, _) => Err(mismatch()),
 
         (RuleId::MixedCaseWord, Some(FindingArgs::MixedCaseWord { other, total, .. })) => {
@@ -329,10 +341,9 @@ fn extract_digest(code: RuleId, args: Option<&FindingArgs>) -> Result<Digest, Pa
         }
         (RuleId::MixedNormalization, _) => Err(mismatch()),
 
-        (
-            RuleId::NonletterUsageAnomaly,
-            Some(FindingArgs::NonletterUsage { count, total, .. }),
-        ) => Ok(count_pair(*count, *total)),
+        (RuleId::NonletterUsageAnomaly, Some(FindingArgs::NonletterUsage { count, total, .. })) => {
+            Ok(count_pair(*count, *total))
+        }
         (RuleId::NonletterUsageAnomaly, _) => Err(mismatch()),
 
         // Every other v1 code: four zero bytes, whatever args it carries.
@@ -373,8 +384,9 @@ pub fn pack(
     analysis_id: AnalysisId,
     has_reference: bool,
 ) -> Result<Vec<u8>, PackError> {
-    let count = u32::try_from(findings.len())
-        .map_err(|_| PackError::TooManyRecords { count: findings.len() })?;
+    let count = u32::try_from(findings.len()).map_err(|_| PackError::TooManyRecords {
+        count: findings.len(),
+    })?;
     let total_len = (count as usize)
         .checked_mul(RECORD_LEN)
         .and_then(|body| body.checked_add(HEADER_LEN))

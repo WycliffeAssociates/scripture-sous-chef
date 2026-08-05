@@ -11,13 +11,13 @@
 use std::fs;
 use std::path::Path;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use ssc_core::{
-    analyze_with_config, AnalysisId, BracketMeasure, Config, Corpus, Finding, FindingArgs,
-    LengthRatioScope, RuleId, Severity, Span, TargetContextId,
+    AnalysisId, BracketMeasure, Config, Corpus, Finding, FindingArgs, LengthRatioScope, RuleId,
+    Severity, Span, TargetContextId, analyze_with_config,
 };
 use ssc_wire::packed::{DecodedDigest, DecodedSnapshot};
-use ssc_wire::{decode, pack, HEADER_LEN};
+use ssc_wire::{HEADER_LEN, decode, pack};
 
 fn hex(bytes: &[u8]) -> String {
     let mut s = String::with_capacity(bytes.len() * 2);
@@ -41,8 +41,22 @@ fn base_finding() -> Finding {
         .expect("double space fires")
 }
 
-fn synth(base: &Finding, code: RuleId, sev: Severity, range: Span, score: Option<f32>, args: Option<FindingArgs>) -> Finding {
-    Finding { code, severity: sev, range, score, args, ..*base }
+fn synth(
+    base: &Finding,
+    code: RuleId,
+    sev: Severity,
+    range: Span,
+    score: Option<f32>,
+    args: Option<FindingArgs>,
+) -> Finding {
+    Finding {
+        code,
+        severity: sev,
+        range,
+        score,
+        args,
+        ..*base
+    }
 }
 
 fn digest_json(d: DecodedDigest) -> Value {
@@ -131,11 +145,71 @@ pub fn run(out: &Path) {
     // extra severities; a record at the duplicate key.
     let r = |a: u32, b: u32| Span { start: a, end: b };
     let spread = [
-        synth(&base, RuleId::ExcessHWhitespace, Severity::Warning, r(1, 3), None, None),
-        Finding { key_idx: idx(&base, 1), ..synth(&base, RuleId::DuplicateWord, Severity::Warning, r(0, 4), None, Some(FindingArgs::DuplicateWord { first_sid: "GEN 1:1".into() })) },
-        Finding { key_idx: idx(&base, 1), ..synth(&base, RuleId::RareGlyph, Severity::Info, r(0, 1), Some(0.61), Some(FindingArgs::RareGlyph { glyph: 'x', count: 70_000 })) },
-        Finding { key_idx: idx(&base, 2), ..synth(&base, RuleId::BracketBalance, Severity::Error, r(0, 1), Some(0.99), Some(FindingArgs::BracketWindow { window: vec![], measure: BracketMeasure::Pairing, majority: 70_000, total: 5 })) },
-        Finding { key_idx: idx(&base, 2), ..synth(&base, RuleId::ProjectLengthRatio, Severity::Info, r(1, 2), Some(0.5), Some(FindingArgs::LengthRatio { ratio_pct: 312.0, scope: LengthRatioScope::Book { z: 3.5 } })) },
+        synth(
+            &base,
+            RuleId::ExcessHWhitespace,
+            Severity::Warning,
+            r(1, 3),
+            None,
+            None,
+        ),
+        Finding {
+            key_idx: idx(&base, 1),
+            ..synth(
+                &base,
+                RuleId::DuplicateWord,
+                Severity::Warning,
+                r(0, 4),
+                None,
+                Some(FindingArgs::DuplicateWord {
+                    first_sid: "GEN 1:1".into(),
+                }),
+            )
+        },
+        Finding {
+            key_idx: idx(&base, 1),
+            ..synth(
+                &base,
+                RuleId::RareGlyph,
+                Severity::Info,
+                r(0, 1),
+                Some(0.61),
+                Some(FindingArgs::RareGlyph {
+                    glyph: 'x',
+                    count: 70_000,
+                }),
+            )
+        },
+        Finding {
+            key_idx: idx(&base, 2),
+            ..synth(
+                &base,
+                RuleId::BracketBalance,
+                Severity::Error,
+                r(0, 1),
+                Some(0.99),
+                Some(FindingArgs::BracketWindow {
+                    window: vec![],
+                    measure: BracketMeasure::Pairing,
+                    majority: 70_000,
+                    total: 5,
+                }),
+            )
+        },
+        Finding {
+            key_idx: idx(&base, 2),
+            ..synth(
+                &base,
+                RuleId::ProjectLengthRatio,
+                Severity::Info,
+                r(1, 2),
+                Some(0.5),
+                Some(FindingArgs::LengthRatio {
+                    ratio_pct: 312.0,
+                    scope: LengthRatioScope::Book { z: 3.5 },
+                }),
+            )
+        },
     ];
 
     // The good "spread" buffer, reused as the base for malformed mutations.
@@ -144,7 +218,8 @@ pub fn run(out: &Path) {
     let aid = AnalysisId::compute(&spread_corpus, None, &cfg);
     let good = pack(&spread, &spread_corpus, tcid, aid, false).expect("pack spread");
 
-    let empty_corpus = Corpus::try_from_parts(vec!["GEN 1:1".to_string()], vec!["clean".to_string()]).unwrap();
+    let empty_corpus =
+        Corpus::try_from_parts(vec!["GEN 1:1".to_string()], vec!["clean".to_string()]).unwrap();
 
     let valids = vec![
         valid_vector("empty", &[], &empty_corpus, false),
@@ -161,10 +236,16 @@ pub fn run(out: &Path) {
         malformed("reserved_header_flag", good.clone(), |b| b[7] = 0b0000_0010),
         malformed("reserved_header_u32", good.clone(), |b| b[12] = 1),
         malformed("length_trailing_byte", good.clone(), |b| b.push(0)),
-        malformed("length_truncated", good.clone(), |b| { b.pop(); }),
+        malformed("length_truncated", good.clone(), |b| {
+            b.pop();
+        }),
         malformed("unknown_code", good.clone(), |b| b[rec0] = 200),
-        malformed("unknown_severity", good.clone(), |b| b[rec0 + 1] |= 0b0000_0011),
-        malformed("reserved_record_flag", good.clone(), |b| b[rec0 + 1] |= 0b0010_0000),
+        malformed("unknown_severity", good.clone(), |b| {
+            b[rec0 + 1] |= 0b0000_0011
+        }),
+        malformed("reserved_record_flag", good.clone(), |b| {
+            b[rec0 + 1] |= 0b0010_0000
+        }),
         // record 0 has no score => setting its score lane non-zero must reject
         malformed("score_lane_nonzero", good.clone(), |b| b[rec0 + 10] = 1),
     ];

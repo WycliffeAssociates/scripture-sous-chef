@@ -40,8 +40,8 @@ use crate::diagnostics::{
     BracketMeasure, DelimObservation, DelimRole, Finding, FindingArgs, RuleId, Severity,
 };
 use crate::evidence;
-use crate::span::Span;
 use crate::signals::punctuation::merge_join;
+use crate::span::Span;
 
 pub const BRACKET_BALANCE: RuleId = RuleId::BracketBalance;
 
@@ -486,7 +486,9 @@ impl crate::substrate::ObservationSubstrate for BracketSubstrate {
         );
         match new {
             Some(c) => {
-                stats.per_book.insert(Box::from(slug), Arc::clone(&c.tallies));
+                stats
+                    .per_book
+                    .insert(Box::from(slug), Arc::clone(&c.tallies));
             }
             None => {
                 stats.per_book.remove(slug);
@@ -509,11 +511,7 @@ impl crate::substrate::ObservationSubstrate for BracketSubstrate {
         };
         let pairs: u64 = t.distances.values().sum();
         // "Short" is the judging knob's window, applied to the knob-free histogram.
-        let short: u64 = t
-            .distances
-            .range(..=window)
-            .map(|(_, &c)| c)
-            .sum();
+        let short: u64 = t.distances.range(..=window).map(|(_, &c)| c).sum();
         BracketOutcome {
             pairing: evidence::dominance(t.matched_events, t.events, z),
             pairing_majority: t.matched_events,
@@ -1235,10 +1233,7 @@ mod tests {
         ];
         let c = book("GEN", &verses);
         assert!(bracket_findings(&c, &rule(10)).is_empty());
-        assert!(
-            bracket_findings(&c, &no_floor(10))
-                .is_empty()
-        );
+        assert!(bracket_findings(&c, &no_floor(10)).is_empty());
     }
 
     /// The exclusion is scoped to the corner-bracket family, not a blanket CJK
@@ -1315,7 +1310,10 @@ mod tests {
     }
 
     fn build(rows: &[(u16, u16, String)]) -> Corpus {
-        let keys = rows.iter().map(|(c, v, _)| format!("GEN {c}:{v}")).collect();
+        let keys = rows
+            .iter()
+            .map(|(c, v, _)| format!("GEN {c}:{v}"))
+            .collect();
         let texts = rows.iter().map(|(_, _, t)| t.clone()).collect();
         Corpus::try_from_parts(keys, texts).unwrap()
     }
@@ -1343,7 +1341,10 @@ mod tests {
             "chapter 2 absorbs the carried opener and leaves the same empty stack"
         );
         assert!(inc.is_empty(), "the pair matches across the seam: {inc:?}");
-        assert_eq!(render(&both, &inc), render(&both, &bracket_findings(&both, &cfg)));
+        assert_eq!(
+            render(&both, &inc),
+            render(&both, &bracket_findings(&both, &cfg))
+        );
     }
 
     /// §12.3: the state converges only at BOOK END. An opener in chapter 1 that
@@ -1434,7 +1435,10 @@ mod tests {
         cache.reset_probes();
         let after = resident(&mut cache, &edited, &cfg);
         assert_eq!(cache.mapped, 1);
-        assert_eq!(cache.reduced, 1, "a 500-deep entering stack still converges at once");
+        assert_eq!(
+            cache.reduced, 1,
+            "a 500-deep entering stack still converges at once"
+        );
         assert_eq!(
             render(&edited, &after),
             render(&edited, &bracket_findings(&edited, &cfg))
@@ -1538,7 +1542,10 @@ mod tests {
         cache.reset_probes();
         let inc = resident(&mut cache, &edited, &cfg);
         assert_eq!(cache.mapped, 1, "one changed chapter maps one chapter");
-        assert_eq!(cache.reduced, 1, "the stack it leaves is unchanged, so it converges");
+        assert_eq!(
+            cache.reduced, 1,
+            "the stack it leaves is unchanged, so it converges"
+        );
 
         // A different window re-judges from the cached observations: the histogram
         // is knob-free, the window is applied at judge.
@@ -1554,6 +1561,9 @@ mod tests {
             render(&edited, &narrow),
             render(&edited, &bracket_findings(&edited, &wide))
         );
-        assert_eq!(render(&edited, &inc), render(&edited, &bracket_findings(&edited, &cfg)));
+        assert_eq!(
+            render(&edited, &inc),
+            render(&edited, &bracket_findings(&edited, &cfg))
+        );
     }
 }

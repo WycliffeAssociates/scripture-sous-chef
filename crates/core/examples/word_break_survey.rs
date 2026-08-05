@@ -359,10 +359,21 @@ fn print_global_correlation(ranges: &[(u32, u32, Wb)]) {
             stats.entry(wb).or_default().tally(c);
         }
     }
-    println!("\n=== Word_Break x Class correlation (GLOBAL — every UCD-assigned codepoint, not corpus-sampled) ===");
+    println!(
+        "\n=== Word_Break x Class correlation (GLOBAL — every UCD-assigned codepoint, not corpus-sampled) ==="
+    );
     println!(
         "{:<20} {:>10} {:>7} {:>7} {:>7} {:>7} {:>9} {:>7} {:>7} {:>9}",
-        "category", "count", "alpha%", "num%", "dec%", "mark%", "extender%", "punct%", "quote%", "zwformat%"
+        "category",
+        "count",
+        "alpha%",
+        "num%",
+        "dec%",
+        "mark%",
+        "extender%",
+        "punct%",
+        "quote%",
+        "zwformat%"
     );
     for &wb in &ALL_WB {
         if wb == Wb::Other {
@@ -551,7 +562,11 @@ fn main() {
     println!("\n=== ASCII-cliff (per corpus): verse purity + non-ASCII verse density ===");
     println!(
         "{:<28} {:>8} {:>12} {:>12} {:>10}",
-        "corpus", "verses", "pure_ascii%", "has_nonascii%", "mean_nonascii_ratio_in_nonascii_verses%"
+        "corpus",
+        "verses",
+        "pure_ascii%",
+        "has_nonascii%",
+        "mean_nonascii_ratio_in_nonascii_verses%"
     );
     let mut total_verses = 0u64;
     let mut total_pure = 0u64;
@@ -585,7 +600,10 @@ fn main() {
         .get(per_corpus_ratios.len() / 2)
         .copied()
         .unwrap_or(0.0);
-    println!("\n--- ASCII-cliff aggregate across {} corpora ---", ascii_by_corpus.len());
+    println!(
+        "\n--- ASCII-cliff aggregate across {} corpora ---",
+        ascii_by_corpus.len()
+    );
     println!("total verses: {total_verses}");
     println!(
         "pure-ASCII verses: {total_pure} ({:.2}%)",
@@ -611,7 +629,9 @@ fn main() {
     // Full per-corpus CSV for anything not printed above, so the detail isn't
     // lost — written to the scratchpad, not committed anywhere.
     let csv_path = "/private/tmp/claude-503/-Users-willkelly-Documents-Work-Code-scripture-sous-chef--claude-worktrees-line-cook-finding-address/c0eb965d-b254-4450-aa1b-630ca9a7a161/scratchpad/ascii_cliff_per_corpus.csv";
-    let mut csv = String::from("corpus,verses,pure_ascii_verses,nonascii_verses,pure_ascii_pct,nonascii_pct,mean_nonascii_ratio_in_nonascii_verses_pct\n");
+    let mut csv = String::from(
+        "corpus,verses,pure_ascii_verses,nonascii_verses,pure_ascii_pct,nonascii_pct,mean_nonascii_ratio_in_nonascii_verses_pct\n",
+    );
     for (id, a) in &ascii_by_corpus {
         let mean_ratio = if a.nonascii_verses > 0 {
             100.0 * a.nonascii_ratio_sum / a.nonascii_verses as f64
@@ -637,6 +657,12 @@ fn main() {
 
     // Sanity: make sure distinct-codepoint sets aren't silently empty due to a
     // wiring bug (would make the whole survey meaningless).
-    let total_distinct: HashSet<u32> = combined.values().flat_map(|s| s.distinct.iter().copied()).collect();
-    eprintln!("total distinct codepoints observed across sample: {}", total_distinct.len());
+    let total_distinct: HashSet<u32> = combined
+        .values()
+        .flat_map(|s| s.distinct.iter().copied())
+        .collect();
+    eprintln!(
+        "total distinct codepoints observed across sample: {}",
+        total_distinct.len()
+    );
 }

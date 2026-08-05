@@ -409,7 +409,8 @@ impl FindingSection {
         corpus: &crate::corpus::Corpus,
         retained_ids: &[RuleId],
     ) {
-        self.partitions.retain(|code, _| retained_ids.contains(code));
+        self.partitions
+            .retain(|code, _| retained_ids.contains(code));
         debug_assert!(
             findings.iter().all(|f| !retained_ids.contains(&f.code)),
             "a patched-lane rule's findings must reach its partition through its own lane"
@@ -764,7 +765,6 @@ impl AnalysisCache {
         out.sort_by_key(|f| (f.key_idx, f.range.start, f.code));
         out
     }
-
 }
 
 impl PrepSection {
@@ -899,7 +899,6 @@ impl PrepSection {
         });
         self.direct_chapters = kept;
     }
-
 }
 
 fn config_fingerprint(config: &Config) -> u64 {

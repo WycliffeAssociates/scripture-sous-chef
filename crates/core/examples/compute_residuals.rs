@@ -64,13 +64,19 @@ fn main() {
         }
     }
 
-    println!("=== ALetter residual (Word_Break=ALetter, is_alphabetic()==false): {} codepoints ===", aletter_residual.len());
+    println!(
+        "=== ALetter residual (Word_Break=ALetter, is_alphabetic()==false): {} codepoints ===",
+        aletter_residual.len()
+    );
     for cp in &aletter_residual {
         let c = char::from_u32(*cp).unwrap();
         println!("  U+{cp:04X} {c:?} gc={:?}", c.general_category());
     }
 
-    println!("\n=== Numeric residual (Word_Break=Numeric, GC!=Nd): {} codepoints ===", numeric_residual.len());
+    println!(
+        "\n=== Numeric residual (Word_Break=Numeric, GC!=Nd): {} codepoints ===",
+        numeric_residual.len()
+    );
     for cp in &numeric_residual {
         let c = char::from_u32(*cp).unwrap();
         println!("  U+{cp:04X} {c:?} gc={:?}", c.general_category());

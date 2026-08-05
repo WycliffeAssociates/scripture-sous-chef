@@ -195,9 +195,7 @@ const _: crate::substrate::SubstrateId =
 
 /// One chapter's mixed-script map: the same per-verse, per-token extraction the
 /// retired listener ran.
-fn map_mixed_script_chapter(
-    chapter: &crate::substrate::ChapterView<'_>,
-) -> MixedScriptChapterObs {
+fn map_mixed_script_chapter(chapter: &crate::substrate::ChapterView<'_>) -> MixedScriptChapterObs {
     let mut signature_counts: BTreeMap<Box<str>, u64> = BTreeMap::new();
     let mut script_tokens: BTreeMap<Box<str>, u64> = BTreeMap::new();
     let mut sites: Vec<SiteAddr> = Vec::new();
@@ -302,16 +300,14 @@ impl crate::substrate::ObservationSubstrate for MixedScriptSubstrate {
 
     fn finish_book(_leaving: &(), _carry_out: &mut MixedScriptReduced) {}
 
-    fn fold_book(
-        reduced: &[MixedScriptReduced],
-        _symbols: &(),
-    ) -> MixedScriptBookContribution {
+    fn fold_book(reduced: &[MixedScriptReduced], _symbols: &()) -> MixedScriptBookContribution {
         MixedScriptBookContribution {
-            signature_counts: Arc::new(fold_script_counts(
-                reduced
+            signature_counts: Arc::new(fold_script_counts(reduced.iter().flat_map(|r| {
+                r.counts
+                    .signature_counts
                     .iter()
-                    .flat_map(|r| r.counts.signature_counts.iter().map(|(s, n)| (s.clone(), *n))),
-            )),
+                    .map(|(s, n)| (s.clone(), *n))
+            }))),
             script_tokens: Arc::new(fold_script_counts(
                 reduced
                     .iter()
@@ -399,7 +395,9 @@ impl crate::substrate::ObservationSubstrate for MixedScriptSubstrate {
         }
         if !moved_scripts.is_empty() {
             for sig in stats.signatures.keys() {
-                if sig.split('+').any(|sc| moved_scripts.iter().any(|m| **m == *sc))
+                if sig
+                    .split('+')
+                    .any(|sc| moved_scripts.iter().any(|m| **m == *sc))
                     && !delta.contains(sig)
                 {
                     delta.push(sig.clone());
@@ -708,7 +706,12 @@ mod tests {
         f.iter()
             .map(|f| {
                 let a = match &f.args {
-                    Some(FindingArgs::ScriptMixEvidence { k, n, books, corpus }) => {
+                    Some(FindingArgs::ScriptMixEvidence {
+                        k,
+                        n,
+                        books,
+                        corpus,
+                    }) => {
                         format!("{k}/{n}/{books}/{corpus}")
                     }
                     _ => "-".to_string(),

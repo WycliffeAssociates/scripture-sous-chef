@@ -285,7 +285,10 @@ mod tests {
             .iter()
             .find(|r| r.rule_id == "prop.length-ratio")
             .unwrap();
-        assert_eq!(lr.input_dependency, "target-and-reference-silent-when-absent");
+        assert_eq!(
+            lr.input_dependency,
+            "target-and-reference-silent-when-absent"
+        );
         assert_eq!(lr.digest, "count-pair");
         let ws = s
             .rules
@@ -334,8 +337,18 @@ mod tests {
             (16, "lex.repeated-character-run", "u32", "target-only"),
             (17, "uni.mixed-numeral-systems", "none", "target-only"),
             (18, "punct.bracket-balance", "count-pair", "target-only"),
-            (20, "case.sentence-initial-lowercase", "count-pair", "target-only"),
-            (21, "case.inconsistent-word-casing", "count-pair", "target-only"),
+            (
+                20,
+                "case.sentence-initial-lowercase",
+                "count-pair",
+                "target-only",
+            ),
+            (
+                21,
+                "case.inconsistent-word-casing",
+                "count-pair",
+                "target-only",
+            ),
             (22, "uni.rare-glyph", "u32", "target-only"),
             (23, "case.mixed-case-word", "count-pair", "target-only"),
             (24, "uni.mixed-normalization", "u32", "target-only"),

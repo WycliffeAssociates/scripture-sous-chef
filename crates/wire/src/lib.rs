@@ -18,20 +18,20 @@ pub mod packed;
 pub mod schema;
 
 pub use packed::{
-    decode, pack, DecodeError, DecodedDigest, DecodedRecord, DecodedSnapshot, PackError, SpanEnd,
-    HEADER_LEN, MAGIC, RECORD_LEN, VERSION,
+    DecodeError, DecodedDigest, DecodedRecord, DecodedSnapshot, HEADER_LEN, MAGIC, PackError,
+    RECORD_LEN, SpanEnd, VERSION, decode, pack,
 };
 pub use schema::{
-    digest_shape, rule_for_code, schema, schema_json, wire_code, DigestShape, SchemaRule,
-    WireSchema,
+    DigestShape, SchemaRule, WireSchema, digest_shape, rule_for_code, schema, schema_json,
+    wire_code,
 };
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use ssc_core::{
-        analyze_with_config, AnalysisId, BracketMeasure, Config, Corpus, Finding, FindingArgs,
-        LengthRatioScope, RuleId, Severity, Span, TargetContextId,
+        AnalysisId, BracketMeasure, Config, Corpus, Finding, FindingArgs, LengthRatioScope, RuleId,
+        Severity, Span, TargetContextId, analyze_with_config,
     };
 
     // ---- synthetic-finding scaffolding -----------------------------------
@@ -147,10 +147,22 @@ mod tests {
         let base = base_finding();
         for sev in [Severity::Error, Severity::Warning, Severity::Info] {
             for score in [None, Some(0.5f32)] {
-                for args in [None, Some(FindingArgs::DuplicateWord { first_sid: "GEN 1:1".into() })] {
+                for args in [
+                    None,
+                    Some(FindingArgs::DuplicateWord {
+                        first_sid: "GEN 1:1".into(),
+                    }),
+                ] {
                     // TabInBody has no digest, so has_args can be set with a
                     // zero payload independently of has_score.
-                    let f = synth(&base, RuleId::TabInBody, sev, Span { start: 0, end: 1 }, score, args.clone());
+                    let f = synth(
+                        &base,
+                        RuleId::TabInBody,
+                        sev,
+                        Span { start: 0, end: 1 },
+                        score,
+                        args.clone(),
+                    );
                     let buf = pack_one(f).unwrap();
                     let rec = &decode(&buf).unwrap().records[0];
                     assert_eq!(rec.severity, sev);
@@ -170,17 +182,44 @@ mod tests {
         let quantum = 0.5 / 65535.0 + f32::EPSILON;
         // exactness at the endpoints
         for (s, want) in [(0.0f32, 0.0f32), (1.0f32, 1.0f32)] {
-            let f = synth(&base, RuleId::RareGlyph, Severity::Info, Span { start: 0, end: 1 }, Some(s), Some(FindingArgs::RareGlyph { glyph: 'x', count: 1 }));
-            let got = decode(&pack_one(f).unwrap()).unwrap().records[0].score.unwrap();
+            let f = synth(
+                &base,
+                RuleId::RareGlyph,
+                Severity::Info,
+                Span { start: 0, end: 1 },
+                Some(s),
+                Some(FindingArgs::RareGlyph {
+                    glyph: 'x',
+                    count: 1,
+                }),
+            );
+            let got = decode(&pack_one(f).unwrap()).unwrap().records[0]
+                .score
+                .unwrap();
             assert_eq!(got, want, "score {s} is exact");
         }
         // round-trip fidelity + monotonicity across a sweep
         let mut prev = f32::NEG_INFINITY;
         for i in 0..=1000u32 {
             let s = i as f32 / 1000.0;
-            let f = synth(&base, RuleId::RareGlyph, Severity::Info, Span { start: 0, end: 1 }, Some(s), Some(FindingArgs::RareGlyph { glyph: 'x', count: 1 }));
-            let got = decode(&pack_one(f).unwrap()).unwrap().records[0].score.unwrap();
-            assert!((got - s).abs() <= quantum, "score {s} -> {got} within a quantum");
+            let f = synth(
+                &base,
+                RuleId::RareGlyph,
+                Severity::Info,
+                Span { start: 0, end: 1 },
+                Some(s),
+                Some(FindingArgs::RareGlyph {
+                    glyph: 'x',
+                    count: 1,
+                }),
+            );
+            let got = decode(&pack_one(f).unwrap()).unwrap().records[0]
+                .score
+                .unwrap();
+            assert!(
+                (got - s).abs() <= quantum,
+                "score {s} -> {got} within a quantum"
+            );
             assert!(got >= prev, "monotone non-decreasing: {got} >= {prev}");
             prev = got;
         }
@@ -190,8 +229,21 @@ mod tests {
     fn invalid_scores_reject() {
         let base = base_finding();
         for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, -0.001, 1.001] {
-            let f = synth(&base, RuleId::RareGlyph, Severity::Info, Span { start: 0, end: 1 }, Some(bad), Some(FindingArgs::RareGlyph { glyph: 'x', count: 1 }));
-            assert!(matches!(pack_one(f), Err(PackError::InvalidScore { .. })), "score {bad} rejects");
+            let f = synth(
+                &base,
+                RuleId::RareGlyph,
+                Severity::Info,
+                Span { start: 0, end: 1 },
+                Some(bad),
+                Some(FindingArgs::RareGlyph {
+                    glyph: 'x',
+                    count: 1,
+                }),
+            );
+            assert!(
+                matches!(pack_one(f), Err(PackError::InvalidScore { .. })),
+                "score {bad} rejects"
+            );
         }
     }
 
@@ -202,28 +254,75 @@ mod tests {
         let base = base_finding();
         let none_args = || None;
         // reversed
-        let f = synth(&base, RuleId::TabInBody, Severity::Info, Span { start: 3, end: 1 }, None, none_args());
+        let f = synth(
+            &base,
+            RuleId::TabInBody,
+            Severity::Info,
+            Span { start: 3, end: 1 },
+            None,
+            none_args(),
+        );
         assert!(matches!(pack_one(f), Err(PackError::SpanReversed { .. })));
         // out of bounds (BASE_TEXT is 12 bytes)
-        let f = synth(&base, RuleId::TabInBody, Severity::Info, Span { start: 0, end: 13 }, None, none_args());
-        assert!(matches!(pack_one(f), Err(PackError::SpanOutOfBounds { .. })));
+        let f = synth(
+            &base,
+            RuleId::TabInBody,
+            Severity::Info,
+            Span { start: 0, end: 13 },
+            None,
+            none_args(),
+        );
+        assert!(matches!(
+            pack_one(f),
+            Err(PackError::SpanOutOfBounds { .. })
+        ));
         // non-char-boundary: pack a multibyte verse and split it mid-scalar
-        let corpus = Corpus::try_from_parts(vec!["GEN 1:1".to_string()], vec!["é".to_string()]).unwrap();
-        let (tcid, aid) = { let cfg = Config::v1_defaults(); (TargetContextId::compute(&corpus, &cfg), AnalysisId::compute(&corpus, None, &cfg)) };
-        let f = synth(&base, RuleId::TabInBody, Severity::Info, Span { start: 0, end: 1 }, None, none_args());
-        assert!(matches!(pack(&[f], &corpus, tcid, aid, false), Err(PackError::SpanNotCharBoundary { .. })));
+        let corpus =
+            Corpus::try_from_parts(vec!["GEN 1:1".to_string()], vec!["é".to_string()]).unwrap();
+        let (tcid, aid) = {
+            let cfg = Config::v1_defaults();
+            (
+                TargetContextId::compute(&corpus, &cfg),
+                AnalysisId::compute(&corpus, None, &cfg),
+            )
+        };
+        let f = synth(
+            &base,
+            RuleId::TabInBody,
+            Severity::Info,
+            Span { start: 0, end: 1 },
+            None,
+            none_args(),
+        );
+        assert!(matches!(
+            pack(&[f], &corpus, tcid, aid, false),
+            Err(PackError::SpanNotCharBoundary { .. })
+        ));
     }
 
     #[test]
     fn utf16_projection_and_overflow() {
         // A supplementary-plane char is 2 UTF-16 units: prove the projection.
-        let corpus = Corpus::try_from_parts(vec!["GEN 1:1".to_string()], vec!["😀x".to_string()]).unwrap();
+        let corpus =
+            Corpus::try_from_parts(vec!["GEN 1:1".to_string()], vec!["😀x".to_string()]).unwrap();
         let cfg = Config::v1_defaults();
-        let (tcid, aid) = (TargetContextId::compute(&corpus, &cfg), AnalysisId::compute(&corpus, None, &cfg));
+        let (tcid, aid) = (
+            TargetContextId::compute(&corpus, &cfg),
+            AnalysisId::compute(&corpus, None, &cfg),
+        );
         let base = base_finding();
         // the "x" is bytes 4..5 -> UTF-16 2..3
-        let f = synth(&base, RuleId::TabInBody, Severity::Info, Span { start: 4, end: 5 }, None, None);
-        let rec = &decode(&pack(&[f], &corpus, tcid, aid, false).unwrap()).unwrap().records[0];
+        let f = synth(
+            &base,
+            RuleId::TabInBody,
+            Severity::Info,
+            Span { start: 4, end: 5 },
+            None,
+            None,
+        );
+        let rec = &decode(&pack(&[f], &corpus, tcid, aid, false).unwrap())
+            .unwrap()
+            .records[0];
         assert_eq!((rec.start, rec.end), (2, 3));
         // Overflow is checked (can't cheaply build a >65535-unit verse here;
         // the checked conversion path is exercised by construction — a valid
@@ -236,10 +335,16 @@ mod tests {
         let base = base_finding();
         let empty = Corpus::try_from_parts(Vec::new(), Vec::new()).unwrap();
         let cfg = Config::v1_defaults();
-        let (tcid, aid) = (TargetContextId::compute(&empty, &cfg), AnalysisId::compute(&empty, None, &cfg));
+        let (tcid, aid) = (
+            TargetContextId::compute(&empty, &cfg),
+            AnalysisId::compute(&empty, None, &cfg),
+        );
         assert!(matches!(
             pack(&[base], &empty, tcid, aid, false),
-            Err(PackError::InvalidKeyIdx { key_idx: 0, corpus_len: 0 })
+            Err(PackError::InvalidKeyIdx {
+                key_idx: 0,
+                corpus_len: 0
+            })
         ));
     }
 
@@ -250,15 +355,107 @@ mod tests {
         let base = base_finding();
         let r = Span { start: 0, end: 1 };
         let cases: Vec<(RuleId, FindingArgs, DecodedDigest)> = vec![
-            (RuleId::ProjectLengthRatio, FindingArgs::LengthRatio { ratio_pct: 312.4, scope: LengthRatioScope::Book { z: 3.5 } }, DecodedDigest::Pair { a: 312, b: 0, saturated: false }),
-            (RuleId::BracketBalance, FindingArgs::BracketWindow { window: vec![], measure: BracketMeasure::Pairing, majority: 99, total: 100 }, DecodedDigest::Pair { a: 99, b: 100, saturated: false }),
-            (RuleId::SentenceInitialLowercase, FindingArgs::CasingConvention { glyph: Some('.'), quoted: false, upper: 512, total: 520 }, DecodedDigest::Pair { a: 512, b: 520, saturated: false }),
-            (RuleId::InconsistentWordCasing, FindingArgs::WordCasing { word: "jesus".into(), upper: 1315, total: 1316 }, DecodedDigest::Pair { a: 1315, b: 1316, saturated: false }),
-            (RuleId::MixedScriptInToken, FindingArgs::ScriptMixEvidence { k: 1, n: 9, books: 2, corpus: 66 }, DecodedDigest::Pair { a: 2, b: 66, saturated: false }),
-            (RuleId::MixedCaseWord, FindingArgs::MixedCaseWord { word: "dios".into(), other: 1, total: 41 }, DecodedDigest::Pair { a: 1, b: 41, saturated: false }),
-            (RuleId::RepeatedCharacterRun, FindingArgs::RepeatEvidence { ch: 'a', run: 7 }, DecodedDigest::U32(7)),
-            (RuleId::RareGlyph, FindingArgs::RareGlyph { glyph: 'ẃ', count: 7 }, DecodedDigest::U32(7)),
-            (RuleId::MixedNormalization, FindingArgs::Normalization { affected: 3, example: "é".into() }, DecodedDigest::U32(3)),
+            (
+                RuleId::ProjectLengthRatio,
+                FindingArgs::LengthRatio {
+                    ratio_pct: 312.4,
+                    scope: LengthRatioScope::Book { z: 3.5 },
+                },
+                DecodedDigest::Pair {
+                    a: 312,
+                    b: 0,
+                    saturated: false,
+                },
+            ),
+            (
+                RuleId::BracketBalance,
+                FindingArgs::BracketWindow {
+                    window: vec![],
+                    measure: BracketMeasure::Pairing,
+                    majority: 99,
+                    total: 100,
+                },
+                DecodedDigest::Pair {
+                    a: 99,
+                    b: 100,
+                    saturated: false,
+                },
+            ),
+            (
+                RuleId::SentenceInitialLowercase,
+                FindingArgs::CasingConvention {
+                    glyph: Some('.'),
+                    quoted: false,
+                    upper: 512,
+                    total: 520,
+                },
+                DecodedDigest::Pair {
+                    a: 512,
+                    b: 520,
+                    saturated: false,
+                },
+            ),
+            (
+                RuleId::InconsistentWordCasing,
+                FindingArgs::WordCasing {
+                    word: "jesus".into(),
+                    upper: 1315,
+                    total: 1316,
+                },
+                DecodedDigest::Pair {
+                    a: 1315,
+                    b: 1316,
+                    saturated: false,
+                },
+            ),
+            (
+                RuleId::MixedScriptInToken,
+                FindingArgs::ScriptMixEvidence {
+                    k: 1,
+                    n: 9,
+                    books: 2,
+                    corpus: 66,
+                },
+                DecodedDigest::Pair {
+                    a: 2,
+                    b: 66,
+                    saturated: false,
+                },
+            ),
+            (
+                RuleId::MixedCaseWord,
+                FindingArgs::MixedCaseWord {
+                    word: "dios".into(),
+                    other: 1,
+                    total: 41,
+                },
+                DecodedDigest::Pair {
+                    a: 1,
+                    b: 41,
+                    saturated: false,
+                },
+            ),
+            (
+                RuleId::RepeatedCharacterRun,
+                FindingArgs::RepeatEvidence { ch: 'a', run: 7 },
+                DecodedDigest::U32(7),
+            ),
+            (
+                RuleId::RareGlyph,
+                FindingArgs::RareGlyph {
+                    glyph: 'ẃ',
+                    count: 7,
+                },
+                DecodedDigest::U32(7),
+            ),
+            (
+                RuleId::MixedNormalization,
+                FindingArgs::Normalization {
+                    affected: 3,
+                    example: "é".into(),
+                },
+                DecodedDigest::U32(3),
+            ),
         ];
         for (code, args, want) in cases {
             let f = synth(&base, code, Severity::Info, r, None, Some(args));
@@ -272,18 +469,64 @@ mod tests {
         let base = base_finding();
         let r = Span { start: 0, end: 1 };
         // count-pair lane clamps and flags
-        let f = synth(&base, RuleId::BracketBalance, Severity::Info, r, None, Some(FindingArgs::BracketWindow { window: vec![], measure: BracketMeasure::Pairing, majority: 70_000, total: 5 }));
+        let f = synth(
+            &base,
+            RuleId::BracketBalance,
+            Severity::Info,
+            r,
+            None,
+            Some(FindingArgs::BracketWindow {
+                window: vec![],
+                measure: BracketMeasure::Pairing,
+                majority: 70_000,
+                total: 5,
+            }),
+        );
         let rec = decode(&pack_one(f).unwrap()).unwrap().records.remove(0);
-        assert_eq!(rec.digest(), DecodedDigest::Pair { a: u16::MAX, b: 5, saturated: true });
+        assert_eq!(
+            rec.digest(),
+            DecodedDigest::Pair {
+                a: u16::MAX,
+                b: 5,
+                saturated: true
+            }
+        );
         // u32 lane above 0xFFFF is lossless and never saturates
-        let f = synth(&base, RuleId::RepeatedCharacterRun, Severity::Info, r, None, Some(FindingArgs::RepeatEvidence { ch: 'a', run: 100_000 }));
+        let f = synth(
+            &base,
+            RuleId::RepeatedCharacterRun,
+            Severity::Info,
+            r,
+            None,
+            Some(FindingArgs::RepeatEvidence {
+                ch: 'a',
+                run: 100_000,
+            }),
+        );
         let rec = decode(&pack_one(f).unwrap()).unwrap().records.remove(0);
         assert_eq!(rec.digest(), DecodedDigest::U32(100_000));
         assert!(!rec.payload_saturated);
         // length-ratio saturates its single lane
-        let f = synth(&base, RuleId::ProjectLengthRatio, Severity::Info, r, None, Some(FindingArgs::LengthRatio { ratio_pct: 90_000.0, scope: LengthRatioScope::Book { z: 9.0 } }));
+        let f = synth(
+            &base,
+            RuleId::ProjectLengthRatio,
+            Severity::Info,
+            r,
+            None,
+            Some(FindingArgs::LengthRatio {
+                ratio_pct: 90_000.0,
+                scope: LengthRatioScope::Book { z: 9.0 },
+            }),
+        );
         let rec = decode(&pack_one(f).unwrap()).unwrap().records.remove(0);
-        assert_eq!(rec.digest(), DecodedDigest::Pair { a: u16::MAX, b: 0, saturated: true });
+        assert_eq!(
+            rec.digest(),
+            DecodedDigest::Pair {
+                a: u16::MAX,
+                b: 0,
+                saturated: true
+            }
+        );
     }
 
     #[test]
@@ -292,10 +535,26 @@ mod tests {
         let r = Span { start: 0, end: 1 };
         // assigned code, absent args
         let f = synth(&base, RuleId::BracketBalance, Severity::Info, r, None, None);
-        assert!(matches!(pack_one(f), Err(PackError::DigestArgsMismatch { .. })));
+        assert!(matches!(
+            pack_one(f),
+            Err(PackError::DigestArgsMismatch { .. })
+        ));
         // assigned code, wrong variant
-        let f = synth(&base, RuleId::BracketBalance, Severity::Info, r, None, Some(FindingArgs::RareGlyph { glyph: 'x', count: 1 }));
-        assert!(matches!(pack_one(f), Err(PackError::DigestArgsMismatch { .. })));
+        let f = synth(
+            &base,
+            RuleId::BracketBalance,
+            Severity::Info,
+            r,
+            None,
+            Some(FindingArgs::RareGlyph {
+                glyph: 'x',
+                count: 1,
+            }),
+        );
+        assert!(matches!(
+            pack_one(f),
+            Err(PackError::DigestArgsMismatch { .. })
+        ));
     }
 
     #[test]
@@ -303,8 +562,21 @@ mod tests {
         let base = base_finding();
         let r = Span { start: 0, end: 1 };
         for bad in [f32::NAN, f32::INFINITY, -1.0] {
-            let f = synth(&base, RuleId::ProjectLengthRatio, Severity::Info, r, None, Some(FindingArgs::LengthRatio { ratio_pct: bad, scope: LengthRatioScope::Book { z: 3.0 } }));
-            assert!(matches!(pack_one(f), Err(PackError::DigestValueInvalid { .. })), "ratio {bad} rejects");
+            let f = synth(
+                &base,
+                RuleId::ProjectLengthRatio,
+                Severity::Info,
+                r,
+                None,
+                Some(FindingArgs::LengthRatio {
+                    ratio_pct: bad,
+                    scope: LengthRatioScope::Book { z: 3.0 },
+                }),
+            );
+            assert!(
+                matches!(pack_one(f), Err(PackError::DigestValueInvalid { .. })),
+                "ratio {bad} rejects"
+            );
         }
     }
 
@@ -312,7 +584,16 @@ mod tests {
     fn unassigned_code_writes_four_zero_bytes_even_with_args() {
         let base = base_finding();
         // duplicate-word carries args but has no digest assignment.
-        let f = synth(&base, RuleId::DuplicateWord, Severity::Warning, Span { start: 0, end: 1 }, None, Some(FindingArgs::DuplicateWord { first_sid: "GEN 1:1".into() }));
+        let f = synth(
+            &base,
+            RuleId::DuplicateWord,
+            Severity::Warning,
+            Span { start: 0, end: 1 },
+            None,
+            Some(FindingArgs::DuplicateWord {
+                first_sid: "GEN 1:1".into(),
+            }),
+        );
         let rec = decode(&pack_one(f).unwrap()).unwrap().records.remove(0);
         assert!(rec.has_args);
         assert_eq!(rec.payload, [0, 0, 0, 0]);
@@ -329,25 +610,40 @@ mod tests {
     #[test]
     fn decode_rejects_every_malformed_header() {
         // too short
-        assert!(matches!(decode(&[0u8; 8]), Err(DecodeError::TooShortForHeader { .. })));
+        assert!(matches!(
+            decode(&[0u8; 8]),
+            Err(DecodeError::TooShortForHeader { .. })
+        ));
         // bad magic
-        let mut b = good_empty(); b[0] = b'X';
+        let mut b = good_empty();
+        b[0] = b'X';
         assert!(matches!(decode(&b), Err(DecodeError::BadMagic)));
         // bad version
-        let mut b = good_empty(); b[4] = 2;
+        let mut b = good_empty();
+        b[4] = 2;
         assert!(matches!(decode(&b), Err(DecodeError::BadVersion { .. })));
         // bad record len
-        let mut b = good_empty(); b[5] = 15;
+        let mut b = good_empty();
+        b[5] = 15;
         assert!(matches!(decode(&b), Err(DecodeError::BadRecordLen { .. })));
         // bad header len
-        let mut b = good_empty(); b[6] = 24;
+        let mut b = good_empty();
+        b[6] = 24;
         assert!(matches!(decode(&b), Err(DecodeError::BadHeaderLen { .. })));
         // reserved header flag bit
-        let mut b = good_empty(); b[7] = 0b0000_0010;
-        assert!(matches!(decode(&b), Err(DecodeError::ReservedHeaderFlag { .. })));
+        let mut b = good_empty();
+        b[7] = 0b0000_0010;
+        assert!(matches!(
+            decode(&b),
+            Err(DecodeError::ReservedHeaderFlag { .. })
+        ));
         // reserved header u32 non-zero
-        let mut b = good_empty(); b[12] = 1;
-        assert!(matches!(decode(&b), Err(DecodeError::ReservedHeaderU32 { .. })));
+        let mut b = good_empty();
+        b[12] = 1;
+        assert!(matches!(
+            decode(&b),
+            Err(DecodeError::ReservedHeaderU32 { .. })
+        ));
     }
 
     #[test]
@@ -355,38 +651,75 @@ mod tests {
         // count says 1 but buffer is header-only
         let mut b = good_empty();
         b[8..12].copy_from_slice(&1u32.to_le_bytes());
-        assert!(matches!(decode(&b), Err(DecodeError::LengthMismatch { .. })));
+        assert!(matches!(
+            decode(&b),
+            Err(DecodeError::LengthMismatch { .. })
+        ));
         // trailing byte
         let mut b = good_empty();
         b.push(0);
-        assert!(matches!(decode(&b), Err(DecodeError::LengthMismatch { .. })));
+        assert!(matches!(
+            decode(&b),
+            Err(DecodeError::LengthMismatch { .. })
+        ));
         // truncated record: a valid 1-record buffer with the last byte removed
         let base = base_finding();
-        let mut one = pack_one(synth(&base, RuleId::TabInBody, Severity::Info, Span { start: 0, end: 1 }, None, None)).unwrap();
+        let mut one = pack_one(synth(
+            &base,
+            RuleId::TabInBody,
+            Severity::Info,
+            Span { start: 0, end: 1 },
+            None,
+            None,
+        ))
+        .unwrap();
         one.pop();
-        assert!(matches!(decode(&one), Err(DecodeError::LengthMismatch { .. })));
+        assert!(matches!(
+            decode(&one),
+            Err(DecodeError::LengthMismatch { .. })
+        ));
     }
 
     #[test]
     fn decode_rejects_bad_records() {
         let base = base_finding();
-        let good = pack_one(synth(&base, RuleId::TabInBody, Severity::Info, Span { start: 0, end: 1 }, None, None)).unwrap();
+        let good = pack_one(synth(
+            &base,
+            RuleId::TabInBody,
+            Severity::Info,
+            Span { start: 0, end: 1 },
+            None,
+            None,
+        ))
+        .unwrap();
         // unknown severity (value 3)
         let mut b = good.clone();
         b[HEADER_LEN + 1] |= 0b0000_0011;
-        assert!(matches!(decode(&b), Err(DecodeError::UnknownSeverity { .. })));
+        assert!(matches!(
+            decode(&b),
+            Err(DecodeError::UnknownSeverity { .. })
+        ));
         // reserved record flag bit
         let mut b = good.clone();
         b[HEADER_LEN + 1] |= 0b0010_0000;
-        assert!(matches!(decode(&b), Err(DecodeError::ReservedRecordFlag { .. })));
+        assert!(matches!(
+            decode(&b),
+            Err(DecodeError::ReservedRecordFlag { .. })
+        ));
         // unknown code
         let mut b = good.clone();
         b[HEADER_LEN] = 200;
-        assert!(matches!(decode(&b), Err(DecodeError::UnknownCode { code: 200 })));
+        assert!(matches!(
+            decode(&b),
+            Err(DecodeError::UnknownCode { code: 200 })
+        ));
         // score lane non-zero while has_score clear
         let mut b = good.clone();
         b[HEADER_LEN + 10] = 1;
-        assert!(matches!(decode(&b), Err(DecodeError::ScoreLaneNonZero { .. })));
+        assert!(matches!(
+            decode(&b),
+            Err(DecodeError::ScoreLaneNonZero { .. })
+        ));
     }
 
     // ---- the equivalence bookend (replaces project()) --------------------
@@ -401,7 +734,7 @@ mod tests {
         let keys = vec!["GEN 1:1".to_string(), "GEN 1:2".to_string()];
         let texts = vec![
             "the the word".to_string(), // duplicate word (args, no score by default cfg)
-            "a  b".to_string(),          // excess whitespace (no args, no score)
+            "a  b".to_string(),         // excess whitespace (no args, no score)
         ];
         let corpus = Corpus::try_from_parts(keys.clone(), texts.clone()).unwrap();
         let mut cfg = Config::v1_defaults();
@@ -441,7 +774,8 @@ mod tests {
     /// content-derived (same target/reference/config => same id).
     #[test]
     fn finding_free_corpus_is_count_zero_and_ids_are_content_derived() {
-        let corpus = Corpus::try_from_parts(vec!["GEN 1:1".to_string()], vec!["clean".to_string()]).unwrap();
+        let corpus =
+            Corpus::try_from_parts(vec!["GEN 1:1".to_string()], vec!["clean".to_string()]).unwrap();
         let cfg = Config::v1_defaults();
         let findings = analyze_with_config(&corpus, None, &cfg);
         assert!(findings.is_empty());
@@ -450,6 +784,9 @@ mod tests {
         let snap = decode(&pack(&findings, &corpus, tcid, aid, false).unwrap()).unwrap();
         assert_eq!(snap.records.len(), 0);
         // recomputing the id for the same input reproduces it (content-derived)
-        assert_eq!(AnalysisId::compute(&corpus, None, &cfg).get(), snap.analysis_id);
+        assert_eq!(
+            AnalysisId::compute(&corpus, None, &cfg).get(),
+            snap.analysis_id
+        );
     }
 }

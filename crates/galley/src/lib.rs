@@ -16,8 +16,8 @@
 
 use rustc_hash::FxHashSet;
 use ssc_core::{
-    AnalysisCache, AnalysisId, AnalyzeError, BookBlock, CensusOptions, ChapterBlock, Config, Corpus,
-    CorpusError, Finding, Inventory, MutationEffect, TargetContextId, analyze_resident,
+    AnalysisCache, AnalysisId, AnalyzeError, BookBlock, CensusOptions, ChapterBlock, Config,
+    Corpus, CorpusError, Finding, Inventory, MutationEffect, TargetContextId, analyze_resident,
     census,
 };
 
@@ -218,7 +218,12 @@ impl Galley {
     /// valid warmed entries / recomputes the invalid ones and reaches exactly the
     /// cold result — it can never mistake the failed attempt for a publication.
     pub fn try_analyze(&mut self) -> Result<Vec<Finding>, AnalyzeError> {
-        match analyze_resident(&self.corpus, self.source.as_ref(), &self.config, &mut self.cache) {
+        match analyze_resident(
+            &self.corpus,
+            self.source.as_ref(),
+            &self.config,
+            &mut self.cache,
+        ) {
             Ok(findings) => {
                 self.state = Lifecycle::CleanPublished;
                 Ok(findings)
@@ -276,7 +281,9 @@ mod tests {
 
     fn keyed(book: &str, verses: &[&str]) -> (Vec<String>, Vec<String>) {
         (
-            (1..=verses.len()).map(|v| format!("{book} 1:{v}")).collect(),
+            (1..=verses.len())
+                .map(|v| format!("{book} 1:{v}"))
+                .collect(),
             verses.iter().map(|s| s.to_string()).collect(),
         )
     }
@@ -306,7 +313,9 @@ mod tests {
 
     /// A one-book corpus from owned verse strings (for the casing helpers).
     fn corpus_book(slug: &str, verses: &[String]) -> Corpus {
-        let keys = (1..=verses.len()).map(|v| format!("{slug} 1:{v}")).collect();
+        let keys = (1..=verses.len())
+            .map(|v| format!("{slug} 1:{v}"))
+            .collect();
         Corpus::try_from_parts(keys, verses.to_vec()).unwrap()
     }
 
@@ -336,7 +345,9 @@ mod tests {
     /// `n` clean capital-after-`.` verses then one lowercase-after-terminal
     /// anomaly — fires `case.sentence-initial-lowercase` when that rule is on.
     fn casing_fire(n: usize) -> Vec<String> {
-        let mut v: Vec<String> = (0..n).map(|_| "The men saw the gate.".to_string()).collect();
+        let mut v: Vec<String> = (0..n)
+            .map(|_| "The men saw the gate.".to_string())
+            .collect();
         v.push("He fell. the gate stood.".to_string());
         v
     }
@@ -403,14 +414,20 @@ mod tests {
     #[test]
     fn reanalyze_without_edits_does_no_work() {
         let cfg = Config::all();
-        let c0 = corpus_of(vec![keyed("GEN", &["a  b", "one"]), keyed("EXO", &["x\ty", "two"])]);
+        let c0 = corpus_of(vec![
+            keyed("GEN", &["a  b", "one"]),
+            keyed("EXO", &["x\ty", "two"]),
+        ]);
         let mut g = Galley::new(c0, None, cfg);
         let a = g.analyze();
         let before = g.cache.probe();
         let b = g.analyze();
         let after = g.cache.probe();
         assert_eq!(a, b, "identical findings");
-        assert_eq!(after.direct_misses, before.direct_misses, "the no-edit re-analyze re-maps nothing");
+        assert_eq!(
+            after.direct_misses, before.direct_misses,
+            "the no-edit re-analyze re-maps nothing"
+        );
         assert_eq!(
             after.direct_hits - before.direct_hits,
             2,
@@ -491,7 +508,11 @@ mod tests {
         assert!(!g.cache.remove_book("GEN"), "cache entry is already gone");
 
         let expected = corpus_of(vec![keyed("EXO", &["x\ty"])]);
-        assert_eq!(findings, cold(&expected, &cfg), "equals a corpus without GEN");
+        assert_eq!(
+            findings,
+            cold(&expected, &cfg),
+            "equals a corpus without GEN"
+        );
     }
 
     /// An enabled-set change (rule off → on) re-analyzes to exactly the cold
@@ -521,7 +542,10 @@ mod tests {
     #[test]
     fn update_config_identical_preserves_cache_and_publication() {
         let cfg = Config::all();
-        let corpus = corpus_of(vec![keyed("GEN", &["a  b", "one"]), keyed("EXO", &["x\ty", "two"])]);
+        let corpus = corpus_of(vec![
+            keyed("GEN", &["a  b", "one"]),
+            keyed("EXO", &["x\ty", "two"]),
+        ]);
         let mut g = Galley::new(corpus, None, cfg.clone());
         let a = g.analyze();
         g.update_config(cfg);
@@ -529,7 +553,10 @@ mod tests {
         let b = g.analyze();
         let after = g.cache.probe();
         assert_eq!(a, b, "identical findings");
-        assert_eq!(after.direct_misses, before.direct_misses, "unchanged config re-maps nothing");
+        assert_eq!(
+            after.direct_misses, before.direct_misses,
+            "unchanged config re-maps nothing"
+        );
     }
 
     /// `Galley` is `Send` (a Tauri command holds it behind a `Mutex`).
@@ -545,7 +572,10 @@ mod tests {
     #[test]
     fn earlier_book_growth_and_shrink_rebase_later_keys() {
         let cfg = Config::all();
-        let c0 = corpus_of(vec![keyed("GEN", &["a  b", "one"]), keyed("EXO", &["x\ty", "two"])]);
+        let c0 = corpus_of(vec![
+            keyed("GEN", &["a  b", "one"]),
+            keyed("EXO", &["x\ty", "two"]),
+        ]);
         let mut g = Galley::new(c0, None, cfg.clone());
         g.analyze(); // warms EXO's per-verse + walk products
 
@@ -556,14 +586,23 @@ mod tests {
             keyed("EXO", &["x\ty", "two"]),
         ]);
         let findings = g.analyze();
-        assert_eq!(findings, cold(&grown, &cfg), "growth rebases EXO's cached findings");
+        assert_eq!(
+            findings,
+            cold(&grown, &cfg),
+            "growth rebases EXO's cached findings"
+        );
         assert!(
-            findings.iter().any(|f| g.corpus().key(f.key_idx) == "EXO 1:1"),
+            findings
+                .iter()
+                .any(|f| g.corpus().key(f.key_idx) == "EXO 1:1"),
             "EXO's finding resolves to its shifted key"
         );
 
         g.update_book(book("GEN", &["a  b", "one"])).unwrap();
-        let shrunk = corpus_of(vec![keyed("GEN", &["a  b", "one"]), keyed("EXO", &["x\ty", "two"])]);
+        let shrunk = corpus_of(vec![
+            keyed("GEN", &["a  b", "one"]),
+            keyed("EXO", &["x\ty", "two"]),
+        ]);
         assert_eq!(g.analyze(), cold(&shrunk, &cfg), "shrink rebases too");
     }
 
@@ -601,7 +640,11 @@ mod tests {
             (0, 0),
             "no unrelated substrate maps/reduces on a knob-only change"
         );
-        assert_eq!(findings, cold(&corpus, &cfg2), "findings track the new knobs");
+        assert_eq!(
+            findings,
+            cold(&corpus, &cfg2),
+            "findings track the new knobs"
+        );
     }
 
     /// A NONLETTER-USAGE judging-knob change maps and reduces ZERO chapters (its
@@ -649,7 +692,11 @@ mod tests {
             non_nonletter_before, non_nonletter_after,
             "unrelated rules' findings are byte-identical across a nonletter knob change"
         );
-        assert_eq!(after, cold(&corpus, &cfg2), "resident == cold under the new knob");
+        assert_eq!(
+            after,
+            cold(&corpus, &cfg2),
+            "resident == cold under the new knob"
+        );
     }
 
     /// Toggling the nonletter rule off drops its substrate (edits while off do no
@@ -665,8 +712,7 @@ mod tests {
         // a dominant convention and a rare minority: 40 verses write `,` attached
         // to the previous word, one writes it attached to the NEXT word instead.
         let slip = |last: &str| -> (Vec<String>, Vec<String>) {
-            let mut texts: Vec<String> =
-                (0..40).map(|_| "word, word here".to_string()).collect();
+            let mut texts: Vec<String> = (0..40).map(|_| "word, word here".to_string()).collect();
             texts.push(last.to_string());
             let keys = (1..=texts.len()).map(|v| format!("GEN 1:{v}")).collect();
             (keys, texts)
@@ -726,7 +772,11 @@ mod tests {
         // Re-enable: rebuild only the nonletter substrate to the cold result.
         g.update_config(on.clone());
         let reenabled = g.analyze();
-        assert_eq!(reenabled, cold(&edited, &on), "re-enabling rebuilds to cold");
+        assert_eq!(
+            reenabled,
+            cold(&edited, &on),
+            "re-enabling rebuilds to cold"
+        );
     }
 
     // ── uni.mixed-normalization through the resident Galley (ADR 0063) ──────
@@ -756,7 +806,9 @@ mod tests {
         let cold_pass = g.analyze();
         assert_eq!(cold_pass, cold(&c0, &cfg), "cold pass");
         assert!(
-            cold_pass.iter().all(|f| f.code != RuleId::MixedNormalization),
+            cold_pass
+                .iter()
+                .all(|f| f.code != RuleId::MixedNormalization),
             "consistently composed é is silent"
         );
 
@@ -766,7 +818,10 @@ mod tests {
         let warm = g.analyze();
         let after = g.cache.probe();
         assert_eq!(warm, cold_pass, "no-edit rewarm matches the cold pass");
-        assert_eq!(after.direct_misses, before.direct_misses, "unchanged books re-map nothing");
+        assert_eq!(
+            after.direct_misses, before.direct_misses,
+            "unchanged books re-map nothing"
+        );
 
         // Introduce a second (decomposed) raw form under é's NFC key.
         let mut expected = c0.clone();
@@ -774,7 +829,11 @@ mod tests {
         expected.replace_books(vec![exo_mixed.clone()]).unwrap();
         g.update_book(exo_mixed).unwrap();
         let mixed = g.analyze();
-        assert_eq!(mixed, cold(&expected, &cfg), "after introducing the second form");
+        assert_eq!(
+            mixed,
+            cold(&expected, &cfg),
+            "after introducing the second form"
+        );
         assert!(
             mixed.iter().any(|f| f.code == RuleId::MixedNormalization),
             "the mix now fires"
@@ -786,15 +845,25 @@ mod tests {
         expected2.replace_books(vec![exo_fixed.clone()]).unwrap();
         g.update_book(exo_fixed).unwrap();
         let fixed = g.analyze();
-        assert_eq!(fixed, cold(&expected2, &cfg), "after fixing the deviant form");
+        assert_eq!(
+            fixed,
+            cold(&expected2, &cfg),
+            "after fixing the deviant form"
+        );
         assert!(fixed.iter().all(|f| f.code != RuleId::MixedNormalization));
 
         // Reintroduce the mix, then remove the only deviant book — clears.
         let exo_mixed_again = book("EXO", &["cafe\u{0301}", "still clean"]);
         let mut expected3 = expected2.clone();
-        expected3.replace_books(vec![exo_mixed_again.clone()]).unwrap();
+        expected3
+            .replace_books(vec![exo_mixed_again.clone()])
+            .unwrap();
         g.update_book(exo_mixed_again).unwrap();
-        assert!(g.analyze().iter().any(|f| f.code == RuleId::MixedNormalization));
+        assert!(
+            g.analyze()
+                .iter()
+                .any(|f| f.code == RuleId::MixedNormalization)
+        );
 
         expected3.remove_book("EXO");
         assert_eq!(g.remove_books(&["EXO"]), 1);
@@ -804,7 +873,11 @@ mod tests {
             cold(&expected3, &cfg),
             "removing the only deviant book clears it"
         );
-        assert!(after_remove.iter().all(|f| f.code != RuleId::MixedNormalization));
+        assert!(
+            after_remove
+                .iter()
+                .all(|f| f.code != RuleId::MixedNormalization)
+        );
     }
 
     /// Caller-presented order, not canonical book order, decides the anchor
@@ -847,7 +920,9 @@ mod tests {
         let corpus = corpus_of(vec![keyed("GEN", &["caf\u{00E9}", "cafe\u{0301}"])]);
         let mut g = Galley::new(corpus.clone(), None, cfg_off.clone());
         assert!(
-            g.analyze().iter().all(|f| f.code != RuleId::MixedNormalization),
+            g.analyze()
+                .iter()
+                .all(|f| f.code != RuleId::MixedNormalization),
             "silent under the default-off config"
         );
 
@@ -858,7 +933,11 @@ mod tests {
 
         g.update_config(cfg_off.clone());
         let back_off = g.analyze();
-        assert_eq!(back_off, cold(&corpus, &cfg_off), "disabling again matches the cold default-off result");
+        assert_eq!(
+            back_off,
+            cold(&corpus, &cfg_off),
+            "disabling again matches the cold default-off result"
+        );
     }
 
     /// The rule ignores the source corpus entirely (plan §0): swapping or
@@ -869,12 +948,19 @@ mod tests {
         let target = corpus_of(vec![keyed("GEN", &["caf\u{00E9}", "cafe\u{0301}"])]);
         let mut g = Galley::new(target.clone(), None, cfg.clone());
         let without_source = g.analyze();
-        assert!(without_source.iter().any(|f| f.code == RuleId::MixedNormalization));
+        assert!(
+            without_source
+                .iter()
+                .any(|f| f.code == RuleId::MixedNormalization)
+        );
 
         let source = corpus_of(vec![keyed("GEN", &["whatever source text"])]);
         g.replace_source(Some(source));
         let with_source = g.analyze();
-        assert_eq!(with_source, without_source, "source-only update does not move the finding");
+        assert_eq!(
+            with_source, without_source,
+            "source-only update does not move the finding"
+        );
     }
 
     /// Every mutation verb reports `Changed` for a real edit and a proven
@@ -883,7 +969,10 @@ mod tests {
     #[test]
     fn mutation_effects_report_changed_and_unchanged() {
         let cfg = Config::all();
-        let c0 = corpus_of(vec![keyed("GEN", &["a  b", "one"]), keyed("EXO", &["x\ty", "two"])]);
+        let c0 = corpus_of(vec![
+            keyed("GEN", &["a  b", "one"]),
+            keyed("EXO", &["x\ty", "two"]),
+        ]);
         let src = corpus_of(vec![keyed("GEN", &["s"])]);
         let mut g = Galley::new(c0, Some(src.clone()), cfg.clone());
 
@@ -932,7 +1021,10 @@ mod tests {
 
         // update_config: identical → Unchanged; different → Changed.
         assert_eq!(g.update_config(cfg.clone()), MutationEffect::Unchanged);
-        assert_eq!(g.update_config(Config::v1_defaults()), MutationEffect::Changed);
+        assert_eq!(
+            g.update_config(Config::v1_defaults()),
+            MutationEffect::Changed
+        );
 
         // remove_books: absent slug → 0; present → 1.
         assert_eq!(g.remove_books(&["NOPE"]), 0);
@@ -946,7 +1038,10 @@ mod tests {
     #[test]
     fn identity_accessors_track_inputs() {
         let cfg = Config::all();
-        let c0 = corpus_of(vec![keyed("GEN", &["a  b", "one"]), keyed("EXO", &["x\ty", "two"])]);
+        let c0 = corpus_of(vec![
+            keyed("GEN", &["a  b", "one"]),
+            keyed("EXO", &["x\ty", "two"]),
+        ]);
         let src = corpus_of(vec![keyed("GEN", &["s"])]);
         let mut g = Galley::new(c0.clone(), Some(src), cfg.clone());
 
@@ -962,7 +1057,11 @@ mod tests {
             g.update_book(book("GEN", &["a  b", "one"])).unwrap(),
             MutationEffect::Unchanged
         );
-        assert_eq!(g.expected_analysis_id(), id0, "id stable across a semantic no-op");
+        assert_eq!(
+            g.expected_analysis_id(),
+            id0,
+            "id stable across a semantic no-op"
+        );
 
         // A real target edit moves the id (and the target-context id).
         g.update_book(book("GEN", &["a  b edited", "one"])).unwrap();
@@ -974,7 +1073,11 @@ mod tests {
         let tcid1 = g.expected_target_context_id();
         let id1 = g.expected_analysis_id();
         g.replace_source(Some(corpus_of(vec![keyed("GEN", &["different source"])])));
-        assert_ne!(g.expected_analysis_id(), id1, "reference change moves the analysis id");
+        assert_ne!(
+            g.expected_analysis_id(),
+            id1,
+            "reference change moves the analysis id"
+        );
         assert_eq!(
             g.expected_target_context_id(),
             tcid1,
@@ -987,7 +1090,11 @@ mod tests {
 
         // A config change moves both ids.
         g.update_config(Config::v1_defaults());
-        assert_ne!(g.expected_target_context_id(), tcid1, "config change moves the target-context id");
+        assert_ne!(
+            g.expected_target_context_id(),
+            tcid1,
+            "config change moves the target-context id"
+        );
     }
 
     /// `census` is a pure read of the resident corpus, independent of cache state.
@@ -1018,7 +1125,10 @@ mod tests {
             for src in [None, Some(&source)] {
                 let one_shot = analyze_with_config(&target, src, &cfg);
                 let resident = Galley::new(target.clone(), src.cloned(), cfg.clone()).analyze();
-                assert_eq!(one_shot, resident, "one-shot == resident for identical inputs");
+                assert_eq!(
+                    one_shot, resident,
+                    "one-shot == resident for identical inputs"
+                );
             }
         }
     }
@@ -1030,14 +1140,21 @@ mod tests {
     #[test]
     fn lifecycle_state_transitions() {
         let cfg = Config::all();
-        let c0 = corpus_of(vec![keyed("GEN", &["a  b", "one"]), keyed("EXO", &["x\ty", "two"])]);
+        let c0 = corpus_of(vec![
+            keyed("GEN", &["a  b", "one"]),
+            keyed("EXO", &["x\ty", "two"]),
+        ]);
         let mut g = Galley::new(c0, None, cfg);
 
         assert_eq!(g.state(), Lifecycle::Dirty, "a fresh handle is Dirty");
         assert!(g.is_dirty());
 
         g.analyze();
-        assert_eq!(g.state(), Lifecycle::CleanPublished, "a successful analyze publishes");
+        assert_eq!(
+            g.state(),
+            Lifecycle::CleanPublished,
+            "a successful analyze publishes"
+        );
         assert!(!g.is_dirty());
 
         // A proven no-op preserves the clean state.
@@ -1045,16 +1162,28 @@ mod tests {
             g.update_book(book("GEN", &["a  b", "one"])).unwrap(),
             MutationEffect::Unchanged
         );
-        assert_eq!(g.state(), Lifecycle::CleanPublished, "a no-op does not dirty");
+        assert_eq!(
+            g.state(),
+            Lifecycle::CleanPublished,
+            "a no-op does not dirty"
+        );
 
         // A changed mutation dirties; a second one coalesces (stays Dirty).
         g.update_book(book("GEN", &["a  b edited", "one"])).unwrap();
         assert_eq!(g.state(), Lifecycle::Dirty);
         g.update_book(book("EXO", &["x\ty edited", "two"])).unwrap();
-        assert_eq!(g.state(), Lifecycle::Dirty, "coalesced mutations stay Dirty");
+        assert_eq!(
+            g.state(),
+            Lifecycle::Dirty,
+            "coalesced mutations stay Dirty"
+        );
 
         g.analyze();
-        assert_eq!(g.state(), Lifecycle::CleanPublished, "one analyze republishes");
+        assert_eq!(
+            g.state(),
+            Lifecycle::CleanPublished,
+            "one analyze republishes"
+        );
     }
 
     /// Several changed mutations before ONE analyze coalesce to exactly the cold
@@ -1064,7 +1193,10 @@ mod tests {
     #[test]
     fn coalesced_mutations_equal_cold_of_the_final_inputs() {
         let cfg = Config::all();
-        let c0 = corpus_of(vec![keyed("GEN", &["a  b", "one"]), keyed("EXO", &["x\ty", "two"])]);
+        let c0 = corpus_of(vec![
+            keyed("GEN", &["a  b", "one"]),
+            keyed("EXO", &["x\ty", "two"]),
+        ]);
         let mut g = Galley::new(c0.clone(), None, cfg.clone());
         g.analyze();
 
@@ -1079,9 +1211,17 @@ mod tests {
         g.update_book(book("GEN", &["a  b final", "one"])).unwrap(); // latest GEN wins
 
         let mut expected = c0;
-        expected.replace_books(vec![book("GEN", &["a  b final", "one"])]).unwrap();
-        expected.replace_books(vec![book("EXO", &["x\ty two", "two"])]).unwrap();
-        assert_eq!(g.analyze(), cold(&expected, &cfg), "coalesced == cold of final inputs");
+        expected
+            .replace_books(vec![book("GEN", &["a  b final", "one"])])
+            .unwrap();
+        expected
+            .replace_books(vec![book("EXO", &["x\ty two", "two"])])
+            .unwrap();
+        assert_eq!(
+            g.analyze(),
+            cold(&expected, &cfg),
+            "coalesced == cold of final inputs"
+        );
     }
 
     /// After analyze, a byte-identical re-supply is a proven no-op that keeps the
@@ -1090,7 +1230,10 @@ mod tests {
     #[test]
     fn noop_update_preserves_publication() {
         let cfg = Config::all();
-        let c0 = corpus_of(vec![keyed("GEN", &["a  b", "one"]), keyed("EXO", &["x\ty", "two"])]);
+        let c0 = corpus_of(vec![
+            keyed("GEN", &["a  b", "one"]),
+            keyed("EXO", &["x\ty", "two"]),
+        ]);
         let mut g = Galley::new(c0.clone(), None, cfg.clone());
         let published = g.analyze();
         assert_eq!(g.state(), Lifecycle::CleanPublished);
@@ -1099,8 +1242,16 @@ mod tests {
             g.update_book(book("GEN", &["a  b", "one"])).unwrap(),
             MutationEffect::Unchanged
         );
-        assert_eq!(g.state(), Lifecycle::CleanPublished, "no-op preserves publication");
-        assert_eq!(g.analyze(), published, "re-analyze after a no-op is unchanged");
+        assert_eq!(
+            g.state(),
+            Lifecycle::CleanPublished,
+            "no-op preserves publication"
+        );
+        assert_eq!(
+            g.analyze(),
+            published,
+            "re-analyze after a no-op is unchanged"
+        );
         assert_eq!(g.analyze(), cold(&c0, &cfg));
     }
 
@@ -1125,7 +1276,9 @@ mod tests {
             let mut gen_edit = gen_book_0();
             gen_edit[0] = ("GEN 1:1", "In the beginning God created (the wide heavens.");
             let mut expected = c0;
-            expected.replace_books(vec![block_pairs("GEN", &gen_edit)]).unwrap();
+            expected
+                .replace_books(vec![block_pairs("GEN", &gen_edit)])
+                .unwrap();
             g.update_book(block_pairs("GEN", &gen_edit)).unwrap();
             assert_eq!(g.state(), Lifecycle::Dirty);
 
@@ -1229,7 +1382,10 @@ mod tests {
 
     /// LEV: one chapter, an adjacent same-word duplicate.
     fn lev_book_0() -> Vec<(&'static str, &'static str)> {
-        vec![("LEV 1:1", "The priest spoke and the people people listened.")]
+        vec![(
+            "LEV 1:1",
+            "The priest spoke and the people people listened.",
+        )]
     }
 
     /// A source corpus paired by slug/key so `prop.length-ratio` is genuinely
@@ -1278,7 +1434,9 @@ mod tests {
             .filter(|(i, _)| *i != 4)
             .map(|(_, p)| p)
             .collect();
-        target.replace_books(vec![block_pairs("GEN", &gen_del)]).unwrap();
+        target
+            .replace_books(vec![block_pairs("GEN", &gen_del)])
+            .unwrap();
         g.update_book(block_pairs("GEN", &gen_del)).unwrap();
         assert_eq!(
             g.analyze(),
@@ -1290,7 +1448,9 @@ mod tests {
         let mut gen_ins = gen_del.clone();
         gen_ins.push(("GEN 3:2", "And the woman answered wisely."));
         gen_ins.push(("GEN 3:3", "So they hid among among the trees."));
-        target.replace_books(vec![block_pairs("GEN", &gen_ins)]).unwrap();
+        target
+            .replace_books(vec![block_pairs("GEN", &gen_ins)])
+            .unwrap();
         g.update_book(block_pairs("GEN", &gen_ins)).unwrap();
         assert_eq!(
             g.analyze(),
@@ -1305,10 +1465,15 @@ mod tests {
         let mut gen_v1 = gen_ins.clone();
         gen_v1[0] = ("GEN 1:1", "In the beginning God created (the skies.");
         let mut gen_v2 = gen_ins.clone();
-        gen_v2[0] = ("GEN 1:1", "In the beginning God created (the vault of heaven.");
+        gen_v2[0] = (
+            "GEN 1:1",
+            "In the beginning God created (the vault of heaven.",
+        );
         g.update_book(block_pairs("GEN", &gen_v1)).unwrap();
         g.update_book(block_pairs("GEN", &gen_v2)).unwrap();
-        target.replace_books(vec![block_pairs("GEN", &gen_v2)]).unwrap();
+        target
+            .replace_books(vec![block_pairs("GEN", &gen_v2)])
+            .unwrap();
         assert_eq!(
             g.analyze(),
             cold_src(&target, source.as_ref(), &cfg),
@@ -1317,9 +1482,14 @@ mod tests {
 
         // ── Step 5: remove a chapter by whole-book update ────────────────────
         // Drop all of GEN chapter 3.
-        let gen_no_ch3: Vec<(&str, &str)> =
-            gen_v2.iter().copied().filter(|(k, _)| !k.starts_with("GEN 3:")).collect();
-        target.replace_books(vec![block_pairs("GEN", &gen_no_ch3)]).unwrap();
+        let gen_no_ch3: Vec<(&str, &str)> = gen_v2
+            .iter()
+            .copied()
+            .filter(|(k, _)| !k.starts_with("GEN 3:"))
+            .collect();
+        target
+            .replace_books(vec![block_pairs("GEN", &gen_no_ch3)])
+            .unwrap();
         g.update_book(block_pairs("GEN", &gen_no_ch3)).unwrap();
         assert_eq!(
             g.analyze(),
@@ -1338,7 +1508,9 @@ mod tests {
         // Reinsert EXO. A re-added slug appends after existing books (API
         // fixed order) — the referee cold analyze uses the SAME resulting
         // order, so equality still holds.
-        target.replace_books(vec![block_pairs("EXO", &exo_book_0())]).unwrap();
+        target
+            .replace_books(vec![block_pairs("EXO", &exo_book_0())])
+            .unwrap();
         g.update_book(block_pairs("EXO", &exo_book_0())).unwrap();
         assert_eq!(
             g.analyze(),
@@ -1374,7 +1546,9 @@ mod tests {
         // casing knob, re-enabling nothing else — each config change must land
         // exactly on the cold result under the new config.
         let mut cfg_toggle = cfg.clone();
-        cfg_toggle.rules.insert(RuleId::InconsistentWordCasing, false);
+        cfg_toggle
+            .rules
+            .insert(RuleId::InconsistentWordCasing, false);
         g.update_config(cfg_toggle.clone());
         assert_eq!(
             g.analyze(),
@@ -1450,16 +1624,17 @@ mod tests {
             ("JHN 1:2", "the Word was with God and was God."),
             ("JHN 2:1", "on the third day there was a wedding."),
         ]);
-        target.replace_books(vec![block_pairs(
-            "JHN",
-            &jhn_ch1_edit
-                .keys()
-                .iter()
-                .zip(jhn_ch1_edit.texts())
-                .map(|(k, t)| (k.as_str(), t.as_str()))
-                .collect::<Vec<_>>(),
-        )])
-        .unwrap();
+        target
+            .replace_books(vec![block_pairs(
+                "JHN",
+                &jhn_ch1_edit
+                    .keys()
+                    .iter()
+                    .zip(jhn_ch1_edit.texts())
+                    .map(|(k, t)| (k.as_str(), t.as_str()))
+                    .collect::<Vec<_>>(),
+            )])
+            .unwrap();
         g.update_book(block_pairs(
             "JHN",
             &jhn_ch1_edit
@@ -1505,7 +1680,10 @@ mod tests {
             MutationEffect::Changed,
             "first chapter replacement changes the resident input"
         );
-        assert_eq!(g.update_chapter(jhn_c1_v2.clone()).unwrap(), MutationEffect::Changed);
+        assert_eq!(
+            g.update_chapter(jhn_c1_v2.clone()).unwrap(),
+            MutationEffect::Changed
+        );
         // The referee: apply only the latest chapter content to `target`.
         target.replace_chapter(jhn_c1_v2).unwrap();
         assert_eq!(

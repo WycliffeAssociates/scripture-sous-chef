@@ -30,7 +30,6 @@ pub(crate) trait PerVerseRule: Sync {
     }
 }
 
-
 /// Run `f` over every book and collect the outputs **in `books`' presented
 /// order** (index-aligned with `books`, which is caller order, not canonical
 /// book order — see `Corpus`). Under the `parallel` feature the books fan out
@@ -303,7 +302,10 @@ mod tests {
             map_route(&[0..3, 3..7], 7, over_threshold()),
             expect_parallel(MapRoute::Books)
         );
-        assert_eq!(map_route(&[0..1, 1..2], 2, 1), expect_parallel(MapRoute::Books));
+        assert_eq!(
+            map_route(&[0..1, 1..2], 2, 1),
+            expect_parallel(MapRoute::Books)
+        );
         // One dirty book, several dirty chapters, enough work: fan out by chapter.
         assert_eq!(
             map_route(&[0..12], 12, over_threshold()),
@@ -312,7 +314,10 @@ mod tests {
         // One dirty chapter: there is only one useful map task.
         assert_eq!(map_route(&[0..1], 1, over_threshold()), MapRoute::Serial);
         // Several dirty chapters but too little work to schedule.
-        assert_eq!(map_route(&[0..12], 12, over_threshold() - 1), MapRoute::Serial);
+        assert_eq!(
+            map_route(&[0..12], 12, over_threshold() - 1),
+            MapRoute::Serial
+        );
         // Nothing dirty at all.
         assert_eq!(map_route(&[], 0, 0), MapRoute::Serial);
     }

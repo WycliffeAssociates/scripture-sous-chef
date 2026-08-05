@@ -25,7 +25,10 @@ fn main() {
         .filter(|p| p.extension().is_some_and(|x| x == "txt"))
         .collect();
     files.sort();
-    eprintln!("scanning {} corpora (full fleet) via the REAL ssc_core::token::tokenize", files.len());
+    eprintln!(
+        "scanning {} corpora (full fleet) via the REAL ssc_core::token::tokenize",
+        files.len()
+    );
 
     let mut total_verses = 0u64;
     let mut mismatches = 0u64;

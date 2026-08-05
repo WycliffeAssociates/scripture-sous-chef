@@ -130,7 +130,10 @@ mod tests {
     }
 
     fn target() -> Corpus {
-        corpus(&[("GEN 1:1", "in the beginning"), ("GEN 1:2", "and the earth")])
+        corpus(&[
+            ("GEN 1:1", "in the beginning"),
+            ("GEN 1:2", "and the earth"),
+        ])
     }
 
     fn source() -> Corpus {
@@ -168,10 +171,16 @@ mod tests {
         let base = AnalysisId::compute(&target(), Some(&source()), &cfg);
 
         let edited_target = corpus(&[("GEN 1:1", "changed"), ("GEN 1:2", "and the earth")]);
-        assert_ne!(AnalysisId::compute(&edited_target, Some(&source()), &cfg), base);
+        assert_ne!(
+            AnalysisId::compute(&edited_target, Some(&source()), &cfg),
+            base
+        );
 
         let edited_ref = corpus(&[("GEN 1:1", "beginning"), ("GEN 1:2", "changed")]);
-        assert_ne!(AnalysisId::compute(&target(), Some(&edited_ref), &cfg), base);
+        assert_ne!(
+            AnalysisId::compute(&target(), Some(&edited_ref), &cfg),
+            base
+        );
 
         let mut cfg2 = Config::v1_defaults();
         cfg2.rules.insert(RuleId::DuplicateWord, true);

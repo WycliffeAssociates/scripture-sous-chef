@@ -988,11 +988,23 @@ mod tests {
         // `7.8` decimal: attached to digits both sides ⇒ Number pool, attached.
         // `7. 8` cross-reference: attached-left, spaced-right, SAME Number pool.
         let dec = opps_of("7.8");
-        assert_eq!(dec[0].left, read(SpacingClass::Number, SpacingForm::Attached));
-        assert_eq!(dec[0].right, read(SpacingClass::Number, SpacingForm::Attached));
+        assert_eq!(
+            dec[0].left,
+            read(SpacingClass::Number, SpacingForm::Attached)
+        );
+        assert_eq!(
+            dec[0].right,
+            read(SpacingClass::Number, SpacingForm::Attached)
+        );
         let refr = opps_of("7. 8");
-        assert_eq!(refr[0].left, read(SpacingClass::Number, SpacingForm::Attached));
-        assert_eq!(refr[0].right, read(SpacingClass::Number, SpacingForm::Spaced));
+        assert_eq!(
+            refr[0].left,
+            read(SpacingClass::Number, SpacingForm::Attached)
+        );
+        assert_eq!(
+            refr[0].right,
+            read(SpacingClass::Number, SpacingForm::Spaced)
+        );
     }
 
     #[test]
@@ -1011,10 +1023,16 @@ mod tests {
     #[test]
     fn a_book_edge_side_abstains_but_a_cross_seam_side_reads_across() {
         let edge = opps_of("word.");
-        assert_eq!(edge[0].left, read(SpacingClass::Letter, SpacingForm::Attached));
+        assert_eq!(
+            edge[0].left,
+            read(SpacingClass::Letter, SpacingForm::Attached)
+        );
         assert_eq!(edge[0].right, None, "book-edge trailing mark abstains");
         let crossed = opps_cross("word.", None, Some(SpacingClass::Letter));
-        assert_eq!(crossed[0].right, read(SpacingClass::Letter, SpacingForm::Spaced));
+        assert_eq!(
+            crossed[0].right,
+            read(SpacingClass::Letter, SpacingForm::Spaced)
+        );
         let mid = opps_of("word. word");
         assert_eq!(
             (crossed[0].left, crossed[0].right),
@@ -1073,8 +1091,14 @@ mod tests {
         let hy = opps_of("co-operate");
         assert_eq!(hy.len(), 1);
         assert_eq!(hy[0].mark, '-');
-        assert_eq!(hy[0].left, read(SpacingClass::Letter, SpacingForm::Attached));
-        assert_eq!(hy[0].right, read(SpacingClass::Letter, SpacingForm::Attached));
+        assert_eq!(
+            hy[0].left,
+            read(SpacingClass::Letter, SpacingForm::Attached)
+        );
+        assert_eq!(
+            hy[0].right,
+            read(SpacingClass::Letter, SpacingForm::Attached)
+        );
         let maqaf = opps_of("\u{05D0}\u{05BE}\u{05D1}");
         assert_eq!(maqaf.len(), 1);
         assert_eq!(maqaf[0].mark, '\u{05BE}');
@@ -1088,5 +1112,4 @@ mod tests {
         assert_eq!(o[0].mark, ',');
         assert_eq!(o[0].left, read(SpacingClass::Letter, SpacingForm::Attached));
     }
-
 }

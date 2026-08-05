@@ -242,7 +242,9 @@ impl ChapterShapeProfile {
     /// shipped total is taken after [`widen`](Self::widen).
     #[cfg(any(test, feature = "bench-probes"))]
     fn total(self) -> u64 {
-        u64::from(self.lower) + u64::from(self.title) + u64::from(self.allcaps)
+        u64::from(self.lower)
+            + u64::from(self.title)
+            + u64::from(self.allcaps)
             + u64::from(self.other)
     }
 }
@@ -551,7 +553,10 @@ impl crate::substrate::ObservationSubstrate for MixedCaseSubstrate {
 
     fn finish_book(_leaving: &(), _carry_out: &mut MixedCaseReduced) {}
 
-    fn fold_book(reduced: &[MixedCaseReduced], symbols: &WordInterner) -> MixedCaseBookContribution {
+    fn fold_book(
+        reduced: &[MixedCaseReduced],
+        symbols: &WordInterner,
+    ) -> MixedCaseBookContribution {
         // Sum the chapters' per-symbol profiles, keyed by the shared SYMBOL, so
         // this pass hashes 4-byte integers instead of words and never touches
         // the arena; the words are resolved once, below, for the sort.
@@ -675,11 +680,7 @@ impl crate::substrate::ObservationSubstrate for MixedCaseSubstrate {
             return MixedCaseOutcome::default();
         }
         MixedCaseOutcome {
-            emit: Some((
-                score as f32,
-                p.other,
-                total.min(u64::from(u32::MAX)) as u32,
-            )),
+            emit: Some((score as f32, p.other, total.min(u64::from(u32::MAX)) as u32)),
         }
     }
 }
@@ -980,7 +981,6 @@ pub(crate) fn shape_totals(corpus: &Corpus) -> [u64; 4] {
     }
     totals
 }
-
 
 /// The whole substrate on its own, over one caller-held cache — the shape the
 /// per-rule convenience entry point and its tests use. Same planning pass, same
@@ -1529,7 +1529,12 @@ mod tests {
         // Pre-populate the table with an unrelated vocabulary, so every word of
         // `corpus` is numbered differently than it was above.
         let warm = WordInterner::default();
-        let (pk, pt) = shaped(&["LEV"], 3, 3, &["wholly different vocabulary appears first"]);
+        let (pk, pt) = shaped(
+            &["LEV"],
+            3,
+            3,
+            &["wholly different vocabulary appears first"],
+        );
         let primer =
             Corpus::try_from_parts(pk, pt.iter().map(|t| (*t).to_string()).collect()).unwrap();
         let mut primer_cache = Resident::new();
@@ -1558,8 +1563,11 @@ mod tests {
         const SHAPES: &[&str] = &["we praise Dios today", "and Dios spoke", "Dios again"];
         let (keys, mut texts) = shaped(&["GEN"], 8, 3, SHAPES);
         let build = |texts: &[&str]| {
-            Corpus::try_from_parts(keys.clone(), texts.iter().map(|t| (*t).to_string()).collect())
-                .unwrap()
+            Corpus::try_from_parts(
+                keys.clone(),
+                texts.iter().map(|t| (*t).to_string()).collect(),
+            )
+            .unwrap()
         };
         let knobs = cfg(0.5, 32.0, 0.0);
         let symbols = WordInterner::default();
@@ -1573,13 +1581,19 @@ mod tests {
         let e = build(&texts);
         cache.cache.reset_probes();
         let inc = cache.analyze(&symbols, &e, &knobs);
-        assert_eq!(cache.cache.mapped, 1, "one changed chapter maps one chapter");
+        assert_eq!(
+            cache.cache.mapped, 1,
+            "one changed chapter maps one chapter"
+        );
         assert_eq!(
             cache.cache.reduced, 1,
             "an empty boundary state can never cascade past the changed chapter"
         );
         assert_eq!(inc.len(), 1, "{:?}", render(&e, &inc));
-        assert_eq!(render(&e, &inc), render(&e, &mixed_case_findings(&e, &knobs)));
+        assert_eq!(
+            render(&e, &inc),
+            render(&e, &mixed_case_findings(&e, &knobs))
+        );
 
         // An unchanged re-drive maps and reduces nothing, and says the same thing.
         cache.cache.reset_probes();
@@ -1647,7 +1661,10 @@ mod tests {
         let mut r = Resident::new();
         let first = r.analyze(&symbols, &before, &knobs);
         assert_eq!(first.len(), 1, "{:?}", render(&before, &first));
-        assert_eq!(first[0].range.start, 10, "the slip starts after `we praise `");
+        assert_eq!(
+            first[0].range.start, 10,
+            "the slip starts after `we praise `"
+        );
 
         // Same word types, same shapes, same counts — a different order. The
         // aggregate cannot move; the site must.
@@ -1784,11 +1801,7 @@ mod tests {
     /// judge, so the extraction fingerprint cannot move.
     #[test]
     fn a_knob_change_maps_and_reduces_nothing() {
-        const SHAPES: &[&str] = &[
-            "we praise Dios today",
-            "we praise DIos today",
-            "Dios spoke",
-        ];
+        const SHAPES: &[&str] = &["we praise Dios today", "we praise DIos today", "Dios spoke"];
         let (keys, texts) = shaped(&["GEN"], 4, 3, SHAPES);
         let corpus =
             Corpus::try_from_parts(keys, texts.iter().map(|t| (*t).to_string()).collect()).unwrap();
@@ -1825,8 +1838,11 @@ mod tests {
         ];
         let (keys, mut texts) = shaped(&["GEN", "EXO"], 4, 3, SHAPES);
         let build = |texts: &[&str]| {
-            Corpus::try_from_parts(keys.clone(), texts.iter().map(|t| (*t).to_string()).collect())
-                .unwrap()
+            Corpus::try_from_parts(
+                keys.clone(),
+                texts.iter().map(|t| (*t).to_string()).collect(),
+            )
+            .unwrap()
         };
         let knobs = cfg(0.5, 4.0, 0.0);
         let symbols = WordInterner::default();
@@ -1910,7 +1926,10 @@ mod tests {
         let fold = |corpus: &Corpus| {
             let mut r = Resident::new();
             let _ = r.analyze(&symbols, corpus, &cfg(0.5, 32.0, 0.0));
-            r.cache.book_contribution("GEN").expect("GEN folded").clone()
+            r.cache
+                .book_contribution("GEN")
+                .expect("GEN folded")
+                .clone()
         };
         let old = fold(&before);
         let new = fold(&after);

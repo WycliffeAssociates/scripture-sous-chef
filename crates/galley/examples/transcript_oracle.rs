@@ -40,12 +40,12 @@ use ssc_galley::Galley;
 // have exactly one definition. `corpus_blob` reaches `crate::oracle::*` and
 // `crate::vref_io::*`, and `oracle` reaches `crate::{vref_io, corpus_blob}`, so
 // the module names below must match those the two files expect.
-#[path = "../../core/dev/vref_io.rs"]
-mod vref_io;
-#[path = "../../core/examples/calibrate/oracle.rs"]
-mod oracle;
 #[path = "../../core/examples/calibrate/corpus_blob.rs"]
 mod corpus_blob;
+#[path = "../../core/examples/calibrate/oracle.rs"]
+mod oracle;
+#[path = "../../core/dev/vref_io.rs"]
+mod vref_io;
 
 use oracle::{OracleScope, load_corpora, oracle_config, resolve_source, write_findings};
 
@@ -136,7 +136,12 @@ fn dump_incremental(path: &Path, out_path: &Path, cfg_name: &str, scope: OracleS
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    match args.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
+    match args
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .as_slice()
+    {
         // Trailing `wa`|`full` scopes the fleet; a `.blob` path ignores it (the
         // blob already encodes its preset).
         ["--dump-incremental", path, out, cfg_name, rest @ ..] => {

@@ -11,9 +11,9 @@
 //! reset it only at book boundaries — exactly as their per-rule walks did
 //! (repo CLAUDE.md: verse markers are addressing, not discourse).
 //!
-use crate::corpus::{BookGroup, LocalKeyIdx};
 #[cfg(feature = "bench-probes")]
 use crate::corpus::Books;
+use crate::corpus::{BookGroup, LocalKeyIdx};
 use crate::grapheme::{self, GSpan};
 use crate::tape::{self, TapeEntry};
 use crate::token::{self, Token};
@@ -57,7 +57,6 @@ impl Needs {
         }
     }
 }
-
 
 /// Sample size for the per-book adaptive tokenize gate (ADR 0064): the
 /// number of a book's leading verses whose non-ASCII codepoint density

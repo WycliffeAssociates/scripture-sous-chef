@@ -478,8 +478,7 @@ fn map_glyph_chapter(chapter: &crate::substrate::ChapterView<'_>) -> GlyphChapte
     // Sort the word table by key, remembering where the first letter token's word
     // landed, and drop the unresolved marker when a LATER occurrence of the same
     // type already fixed the chapter's last-seen shape.
-    let mut rows: Vec<(Box<str>, ChapterWordInfo)> =
-        word_keys.into_iter().zip(word_info).collect();
+    let mut rows: Vec<(Box<str>, ChapterWordInfo)> = word_keys.into_iter().zip(word_info).collect();
     rows.sort_by(|a, b| a.0.cmp(&b.0));
     // At most one row can carry the open `forced`: only the chapter's first letter
     // token writes `None`, and ANY later occurrence of that same word type
@@ -511,7 +510,6 @@ fn map_glyph_chapter(chapter: &crate::substrate::ChapterView<'_>) -> GlyphChapte
         tail: pending,
     }
 }
-
 
 impl crate::substrate::ObservationSubstrate for GlyphSubstrate {
     const ID: crate::substrate::SubstrateId = crate::substrate::SubstrateId::Glyph;
@@ -825,11 +823,7 @@ impl crate::substrate::ObservationSubstrate for GlyphSubstrate {
         Vec::new()
     }
 
-    fn judge(
-        cfg: &RareGlyphConfig,
-        key: &GlyphKey,
-        stats: &GlyphCorpusStats,
-    ) -> GlyphOutcome {
+    fn judge(cfg: &RareGlyphConfig, key: &GlyphKey, stats: &GlyphCorpusStats) -> GlyphOutcome {
         let threshold = f64::from(clamp_unit(cfg.closure_threshold));
         let k = clamp_count(cfg.recurrence_k).min(f64::from(RARE_CAP));
         let floor = f64::from(clamp_unit(cfg.emit_score_min));
@@ -903,10 +897,7 @@ impl crate::substrate::ObservationSubstrate for GlyphSubstrate {
             return GlyphOutcome::default();
         }
         GlyphOutcome {
-            emit: Some((
-                score as f32,
-                count.min(u64::from(u32::MAX)) as u32,
-            )),
+            emit: Some((score as f32, count.min(u64::from(u32::MAX)) as u32)),
         }
     }
 }
@@ -1026,7 +1017,11 @@ pub(crate) fn finish_rare_glyph(
     }
     #[cfg(any(test, feature = "test-probes"))]
     {
-        cache.judged = stats.inventory.keys().filter(|&&c| is_letter_scalar(c)).count();
+        cache.judged = stats
+            .inventory
+            .keys()
+            .filter(|&&c| is_letter_scalar(c))
+            .count();
     }
     probe.mark(DrivePhase::Judge);
     // Nothing survived: skip the re-scan entirely. This is the overwhelmingly
@@ -1041,7 +1036,6 @@ pub(crate) fn finish_rare_glyph(
     }
     probe.mark(DrivePhase::Materialize);
 }
-
 
 /// The whole substrate on its own, over one caller-held cache — the shape the
 /// per-rule convenience entry point and its tests use. Same planning pass, same
@@ -1296,10 +1290,7 @@ mod tests {
     #[test]
     fn knee_excludes_thrice_seen_letter() {
         let map = corpus("GEN", &[(500, "qami"), (501, "qapo"), (502, "qelu")]);
-        assert!(
-            run(&map, &cfg()).is_empty(),
-            "count 3 exceeds knee 2"
-        );
+        assert!(run(&map, &cfg()).is_empty(), "count 3 exceeds knee 2");
     }
 
     /// A letter seen exactly twice (knee ≤2) surfaces at both occurrences.
@@ -1333,11 +1324,7 @@ mod tests {
     #[test]
     fn lexical_spares_scattered_occurrences() {
         let map = corpus("GEN", &[(500, "qami mele"), (501, "qapo huli")]);
-        assert_eq!(
-            run(&map, &cfg()).len(),
-            2,
-            "scattered rare letter is kept"
-        );
+        assert_eq!(run(&map, &cfg()).len(), 2, "scattered rare letter is kept");
     }
 
     // ── titlecase proper-noun-shape discount ────────────────────────────
@@ -1513,7 +1500,10 @@ mod tests {
         let mut texts = Vec::new();
         let mut v = 1u16;
         for _ in 0..40 {
-            for t in ["\u{1F97} \u{3B1}\u{3BD} \u{3B7}\u{3BC}\u{3B5}\u{3C1}\u{3B1}", "\u{1F97} \u{3BA}\u{3B1}\u{3B9} \u{3C4}\u{3B7}"] {
+            for t in [
+                "\u{1F97} \u{3B1}\u{3BD} \u{3B7}\u{3BC}\u{3B5}\u{3C1}\u{3B1}",
+                "\u{1F97} \u{3BA}\u{3B1}\u{3B9} \u{3C4}\u{3B7}",
+            ] {
                 keys.push(format!("GEN 1:{v}"));
                 texts.push(t.to_string());
                 v += 1;
@@ -1532,7 +1522,10 @@ mod tests {
         assert!(
             !found.iter().any(|f| matches!(
                 f.args,
-                Some(FindingArgs::RareGlyph { glyph: '\u{1F9F}', .. })
+                Some(FindingArgs::RareGlyph {
+                    glyph: '\u{1F9F}',
+                    ..
+                })
             )),
             "the capital pools with its lowercase type and is discounted: {:?}",
             render(&map, &found)
