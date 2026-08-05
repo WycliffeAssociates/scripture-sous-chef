@@ -100,17 +100,25 @@ new suite uses ~520 verses of settled habit plus one slip.
 
 ## Release-coupled step still owed
 
-The editor's `package.json` still names `#v0.0.5`. The migration was verified
-against the locally built `pkg-web`/`pkg-bundler` from this branch (copied into
-`node_modules`), because the tag does not exist yet. At release:
+The editor already names the tag:
+`"scripture-sous-chef-web": "github:WycliffeAssociates/scripture-sous-chef#v0.0.6"`
+(committed as `build: adopt scripture-sous-chef-web v0.0.6`). **`v0.0.6` resolves
+only after this repository's epic branch merges and is tagged**, so `pnpm install`
+in the editor cannot fetch it until then — deliberate: the dependency is pinned by
+tag, never by branch or commit sha.
 
-1. tag and push this repository as `v0.0.6`;
-2. in the editor, set
-   `"scripture-sous-chef-web": "github:WycliffeAssociates/scripture-sous-chef#v0.0.6"`
-   and `pnpm install` to refresh the lockfile;
-3. re-run `pnpm check`, `pnpm lint`, `pnpm test:unit`, `pnpm build.web`. All four
-   were green against the local build (168 files / 1,146 tests, including the
-   28 new ones).
+The editor's **lockfile is deliberately not updated**. It needs a real fetch to
+compute the tarball integrity hash, and its diff could not be separated from an
+unrelated in-progress dependency change in that working tree.
 
-`pnpm-workspace.yaml` already exempts `scripture-sous-chef-web` from
-`minimumReleaseAge`, so a just-pushed tag is adoptable immediately.
+At release, in order:
+
+1. merge this branch and tag/push the repository as `v0.0.6`;
+2. in the editor, `pnpm install` to refresh `pnpm-lock.yaml` against the tag;
+3. re-run `pnpm check`, `pnpm lint`, `pnpm test:unit`, `pnpm build.web`.
+
+All four were green during the migration, verified against the locally built
+`pkg-web`/`pkg-bundler` copied into `node_modules` (168 files / 1,146 tests,
+including 28 new ones). `pnpm-workspace.yaml` already exempts
+`scripture-sous-chef-web` from `minimumReleaseAge`, so a just-pushed tag is
+adoptable immediately.

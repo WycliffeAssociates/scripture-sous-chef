@@ -2297,3 +2297,255 @@ checklist rewrite per plan §11.3–11.4, release notes, the probe's dead-code s
 (`RarityBasis::RunMemberships`, `UNPOOLED_DIGITS`), and the plan to `completed/`
 after cross-repo verification. The drift summary's two corrected p99 figures (128
 and 75) and these measured costs go into the ADR.
+
+---
+
+## Entry 21 — checkpoint 6 mostly landed; **HANDOFF** at a green boundary (owner wind-down)
+
+- **Date:** 2026-08-04
+- **Status:** the ADR, the whole docs reconciliation, the editor migration, and
+  the release build are **landed and committed in both repos, both trees green**.
+  Stopped on an owner wind-down directive before the two closing items (plan to
+  `completed/`, completion packet). Nothing is half-edited in either working tree
+  beyond the owner's own editor WIP, which was left exactly as found.
+- **Commits, core** (branch `nonletter-usage-epic`):
+  `df6de56` stale rule text + the unpinned mapped-set smoke ·
+  `04108ba` ADR 0071 + full docs reconciliation ·
+  `7b2b84d` `chore(release): prepare v0.0.6`
+- **Commits, editor** (`../scripture-editor-proto-2`, branch `dev`):
+  `629845bd` localization + Phase F test suite ·
+  `384d68bf` adopt `scripture-sous-chef-web` v0.0.6
+
+### What landed — B, the drift ADR
+
+[`ADR 0071`](../adrs/0071-nonletter-usage-anomaly-replaces-three-rules.md), on
+ADR 0059's template, carrying every required element: what replaced what and why;
+the final constants with a per-knob derivation trail (which ruling set it, and
+that rarity was never reopened); the volume drift on the single zeros-included
+1,504-corpus base (12 / 52 / **128** / 33,265 vs the trio's 18 / 61 / 170 /
+40,859 = 0.81×) with the defaults rider stated separately (the pair's 3 / 27 /
+**75** / 13,835 → this rule, **net +19,430**, deliberate because defaults now
+include the spacing domain); `lost = 0` with the observed-candidate-domain
+measurement note; obligation (a) discharged at residue 0 after the `k = 2`
+reversal and obligation (b) at ADR 0054's own keep-sets with **`ayn_reg`
+EXPLICITLY UNVERIFIED**; the three moved populations; both falsified mechanisms
+plus the anchor battery's structural blindness and the slip-cloud witness that
+closes it corpus-free; the `th3e`/detached message weakening as accepted;
+engwebster's 19 at 0.603 as correct depth behavior; the measured costs (4.01 MB
+≈ 3.4 KB/chapter **superseding the packet's 1.1 KB estimate**, 32% of the default
+resident footprint, cold seed +49.1 ms/+21%, warm 1.06–1.18× master); owner
+ratification cited to Entries 7/9/12/14/16; and the re-pinned `after.full.*`
+sha256s including the retained-rule projections.
+
+Six ADRs moved to **Superseded by 0071** (0024, 0029, 0030, 0031, 0050, 0054),
+each status line naming what outlived its rule. The index gained 0071 and the
+**missing 0069 row** (a pre-existing gap).
+
+Remedy (2)'s idea candidate was already committed by the previous unit
+(`ideas/candidates/2026-08-04-nonletter-materialize-segmentation-trade.md`), as
+is the pooled-table-backoff candidate. Nothing owed there.
+
+### What landed — C, docs reconciliation
+
+- **`rules/uni.md`**: the rule's page in the house format, plus a namespace note
+  explaining why a rule that absorbed three `punct.`/`lex.` rules is a `uni.`
+  rule. **`rules/README.md`**: its row in "All rules", and the three retired rows
+  now cite ADR 0071 instead of "Phase E ADR (pending)". **`rules/punct.md`**: the
+  hygiene → bracket → generic ownership order. **`messaging-and-fixes.md`**: its
+  message/args row, its `FixKind: None` row with the reason (unusualness is not
+  wrongness, so there is nothing to replace *with*), the `String`-args wire
+  exception, and a status section that no longer claims deleted args are shipping.
+- **`reference/config.md`**: a §6b subsection — every knob, why `placement_z` /
+  `sequence_z` are 1.0, and that a zero `*_rate_per_10k` is a documented
+  regression rather than a tuning choice.
+- **PO checklist**, rewritten per plan §11.3–§11.4 exactly. All seven absorbed
+  rows point at the new rule; all five corrected-wording rows landed. One is a
+  real correction rather than a rewording: the 2026-07-30 refresh credited
+  straight-vs-curly quotes (#5) and superscript numerals (#7) to
+  `uni.rare-glyph`, which is **Letter-lane only** — they are this rule's rarity
+  channel, and both candidates are now marked RE-ROUTED. The owner's raw reading
+  notes at the foot of that file are preserved and each is answered.
+- **Drift summary**: the two corrected p99 figures (128, 75), the measured
+  depth-0/100 rows, `+19,430` stated, and its status restated as ADR 0071's
+  source material rather than pending working notes.
+- **Plan §2/§10**: the `th3e` example wording corrected to what ships.
+- **Release notes/handoff**:
+  [`handoffs/2026-08-04-nonletter-usage-editor-handoff.md`](../handoffs/2026-08-04-nonletter-usage-editor-handoff.md).
+
+### What landed — A, the editor migration
+
+The editor is **catalog-driven**, which is why this was small: a sweep for all
+three retired ids, their `FindingArgs` names, and their config keys across `src`,
+`tests`, `product-docs` and both locale catalogs returns **nothing**. Settings,
+typed config projection, and finding presentation therefore needed **no change** —
+the new card appears automatically with `review_control: "mapped"`, default-on,
+and `galleyConfigFromSettings` already passes `review.depth`.
+
+What did need writing:
+
+- `sousLocalization.ts` gains the rule with **a whole localized sentence per
+  (reason, form)** the engine can publish — 14 of them plus an evidence-free
+  fallback. The formatter now takes the finding's structured args.
+- `findingCodeLabels.ts` gains the filter chip, using the engine's own card title
+  so the toggle and the chip name one thing.
+- `tests/unit/nonletterUsage.test.ts` — 28 tests driving the **shipped wasm
+  engine** through the editor's own decode seam (`decodeGalleyAnalysis`), reading
+  real evidence off `galley.findingArgs`.
+
+**Plan Phase F cases, all exercised and passing:** `~` (rarity, "only one
+place"), `th3e` (**`start`/`letter`** — the shipped weakening, asserted as such
+with a comment saying that asserting "both ends" would assert behavior that does
+not ship), `wo.rd` (`topology`/`both`), `wo"rd` (`topology`/`both` while both
+one-sided forms stay ordinary), bracket fallback (`punct.bracket-balance` emits
+nothing corpus-wide and the generic rule covers the `]` as rarity), quote
+adjacency (`pair`, partner `,` — literally the plan's canonical `. → ,` case),
+detached mark (**`start`/`spaced`**, the second weakening), a longer same-glyph
+run (`continuation`, `:::` over `::`), and depth changes (strictly more at 100
+than at 0, monotone across 0/50/100, and the settings default equals the
+catalog's anchor). Presentation and filtering are asserted too, as is the absence
+of all three retired ids from the catalog and from both localizers.
+
+**The fixture trap the brief warned about is real and was hit twice.** Placement
+needs a judged pool of 30+ *and* rarity's exposure gate is depth-mapped: at depth
+50 it wants **2,000+** visible non-letter occurrences corpus-wide. Two fixtures
+sat at 1,998 and silently produced nothing. Every fixture is now ~520 verses of
+settled habit plus exactly one slip, and the file's header comment says so.
+
+**Not built, deliberately:** the lazy-args request path. Packed records carry
+only a `hasArgs` bit and the args live in the worker's Galley, so the UI renders
+the evidence-free sentence today and the counted wording is exercised by tests.
+This is unchanged from the 2026-07-16 mixed-normalization handoff, which recorded
+the same gap; it is a detail-UI product decision, not a migration gap. Both
+handoffs now say so.
+
+### Three defects found and fixed in passing
+
+1. **`scripts/test-review-depth-package.mjs` was FAILING** and nobody had run it:
+   it pins the Review-Depth-mapped catalog set and still expected
+   `punct.spacing-anomaly`. It is in neither the cargo gate nor the three node
+   suites, so the whole deletion series missed it. Re-pinned to
+   `uni.nonletter-usage-anomaly`.
+2. **The committed wasm packages did not match HEAD.** They were regenerated at
+   checkpoint 5 (`e030b30`), *before* `c6e4075`'s dirty-chapter materialization
+   fix — so a downstream consumer taking those artifacts would have taken the
+   3.7× warm path. Rebuilt from source in the release commit.
+3. **Two stale published doc comments.** `NonletterUsageOverrides` (shipped as
+   TypeScript to the editor) still described `sequence_k` 2 as "honestly binary at
+   these denominators" — the model obligation (a) falsified — and
+   `NonletterUsageConfig`'s drift table carried the pre-correction p99s (127, 71).
+   Also `hyg.replacement-run` named `punct.adjacency-anomaly` as the current owner
+   of `??` rhetoric. All three corrected; no behavior touched.
+
+### Verification at the handoff boundary
+
+**Core** (`7b2b84d`, tree clean): `cargo test --workspace` green — 519 core / 25
+galley / 24 wire / 16 wasm / 1 xtask; `-p ssc-core --features parallel` green
+(520); `cargo check -p ssc-wasm --target wasm32-unknown-unknown` clean; all
+**three node suites green against the rebuilt packages** (findings 15, galley 2,
+package 2) plus the Review Depth package smoke; `cargo clippy --workspace
+--all-targets` at its **pre-existing 25-warning baseline**, none in a touched
+region; formatting on touched lines only (no file-wide `cargo fmt`).
+
+**Editor** (`384d68bf`): `pnpm check` (tsc) clean, `pnpm lint` (oxlint) clean,
+`pnpm test:unit` **168 files / 1,146 tests green** (28 of them new),
+`pnpm build.web` succeeds. `oxfmt --check` clean on the touched files. No test
+failed at any point, so nothing needed attributing to the owner's WIP.
+
+**No oracle dump was run, and none is owed by this checkpoint.** Nothing in
+checkpoint 6 touched engine behavior: the only Rust edits are doc comments and a
+node smoke-test pin. Entry 20's `after.full.*` pins therefore still stand as the
+behavior of record.
+
+### The editor repo's owner WIP — inventory, left exactly as found
+
+Unrelated in-progress work (braid/mirror lifecycle, recovery-buffer removal) was
+present before this unit started and is **untouched**: never committed, stashed,
+reverted or edited. 23 paths:
+
+- `package.json` (the `usfm-onion-web` pin → commit sha) and `pnpm-lock.yaml`
+- `src/app/domain/api/materializeLoadedProject.ts`; **deleted**
+  `src/app/domain/api/parseRecoveredBookContents.ts`,
+  `src/app/domain/api/recoverDirtyBuffers.ts`
+- `src/app/domain/editor/pipelines/mirrorPatchProducer.ts`,
+  `src/app/domain/editor/utils/usfmTokenStreamSerializedAdapter.ts`
+- `src/app/domain/mirror/{braidHost,mirrorProtocol,workspaceKernel}.ts`,
+  `src/app/domain/project/workingFileMutations.ts`
+- `src/app/routes/$project.index.tsx`,
+  `src/app/ui/components/blocks/RecoveryReportBanner.tsx`,
+  `src/app/ui/contexts/WorkspaceContext.tsx`
+- `src/tauri/domain/mirror/RustMirrorSession.ts`,
+  `src/tauri/rust/{Cargo.toml,Cargo.lock,src/lib.rs,src/mirror.rs}`
+- `src/web/domain/braid/WebBraidHost.ts`,
+  `src/web/domain/mirror/webMirrorEngines.ts`
+- `tests/unit/core/domain/mirror/workspaceKernel.test.ts`; **deleted**
+  `tests/unit/recoverDirtyBuffers.test.ts`; **new**
+  `tests/unit/app/domain/editor/utils/lexicalTokenBoundaryShape.test.ts`
+
+Two consequences worth recording. **The `package.json` bump was staged as a
+single hunk** (`git apply --cached` of my line alone), so the owner's
+`usfm-onion-web` pin stayed uncommitted in the worktree — verified after
+committing. **The lockfile was deliberately left uncommitted**: it needs a real
+fetch to compute the tag's tarball integrity hash, and its diff cannot be
+separated from the owner's pin change. And `pnpm i18n` (which `build.web` runs)
+rewrites all four locale catalogs with unrelated line-number churn plus messages
+from the owner's WIP, so **the locale catalogs were reverted rather than
+committed** — lingui renders the source string for an uncompiled message, which
+is why the suite passes with an empty catalog, and the build regenerates them
+anyway.
+
+### The tag plan (owner-confirmed: BY TAG, not by branch or sha)
+
+1. Core cut `chore(release): prepare v0.0.6` — workspace version, both package
+   manifests, and `pkg-web`/`pkg-bundler` regenerated from source.
+2. The editor's `package.json` already names
+   `github:WycliffeAssociates/scripture-sous-chef#v0.0.6`.
+3. **`v0.0.6` resolves only once this branch merges and is tagged.** Until then
+   the editor cannot `pnpm install`; the migration was verified against the
+   locally built `pkg-web`/`pkg-bundler` copied into the editor's
+   `node_modules/.pnpm/…/scripture-sous-chef-web/` (a copied artifact, no manifest
+   churn). That copy is *not* what the editor resolves after a real install — a
+   `pnpm install` at release replaces it.
+4. Then, in the editor: `pnpm install` (refreshes `pnpm-lock.yaml` against the
+   tag), then `pnpm check`, `pnpm lint`, `pnpm test:unit`, `pnpm build.web`.
+   `pnpm-workspace.yaml` already exempts the package from `minimumReleaseAge`.
+
+### Remaining checkpoint 6 items — exact list
+
+| item | state |
+| --- | --- |
+| **A** editor package adopt / bump | **DONE** (by tag; resolves post-merge) |
+| **A** typed config + settings for the rule | **DONE** — catalog-driven, no change needed; asserted by test |
+| **A** exhaustive localization (messages + evidence) | **DONE** — 14 sentences + fallback, all 6 reasons × forms |
+| **A** finding presentation + filtering | **DONE** — no change needed; asserted by test |
+| **A** complete deletion of the three retired identities | **DONE** — zero residue; asserted by test |
+| **A** Phase F cases through the editor harness | **DONE** — all eight, plus depth changes |
+| **A** editor lazy-args request path | **NOT DONE, deliberate** — product decision, recorded in both handoffs |
+| **B** drift ADR | **DONE** — ADR 0071, accepted |
+| **B** remedy-(2) idea candidate | **DONE** by the previous unit |
+| **C** `documentation/rules/` | **DONE** |
+| **C** `reference/config.md` | **DONE** |
+| **C** PO checklist rows §11.3–§11.4 | **DONE** |
+| **C** release notes / handoff | **DONE** |
+| **C** ADR index | **DONE** (+ the missing 0069 row) |
+| **D** re-verify both repos green | **DONE** — see Verification above |
+| **D** move the plan to `documentation/plans/completed/` | **OWED** — with the progress log beside it, per the convention every completed plan in that directory follows |
+| **D** final progress-log entry = the completion packet against plan §18's twelve criteria, item by item | **OWED** |
+| release | **OWED** — merge, tag `v0.0.6`, then the editor's `pnpm install` |
+
+### Next safe step
+
+1. Write the completion packet as a new progress-log entry, item by item against
+   plan §18's twelve criteria. Nine are already satisfiable from the record
+   (Entries 5, 6/7, 11–18, 19, 20 and this entry); the ones needing a sentence
+   each are §18(10) — the editor package passes **against the locally built
+   package**, with the tag resolving post-merge — and §18(11), which is now true.
+2. Move `2026-08-04-nonletter-usage-epic-plan.md` **and** this progress log to
+   `documentation/plans/completed/`, updating the plan's `Status:` line (it still
+   says "open; implementation has not started") and fixing the relative links
+   that shift by one directory level. ADR 0071 already links the progress log at
+   its `completed/` path, so that link goes live with the move; nothing else in
+   the repo links either file by path.
+3. Only then release: merge, tag `v0.0.6`, `pnpm install` in the editor, re-run
+   its four checks.
+
+Both trees are green and committed, so any of these can start cold.
