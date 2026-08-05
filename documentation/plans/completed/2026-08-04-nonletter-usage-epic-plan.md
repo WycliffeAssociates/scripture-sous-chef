@@ -1,7 +1,12 @@
 # Plan — chapter-outer mapping and `uni.nonletter-usage-anomaly`
 
 - **Date:** 2026-08-04
-- **Status:** open; implementation has not started
+- **Status:** **COMPLETED 2026-08-05.** Shipped as
+  [ADR 0071](../../adrs/0071-nonletter-usage-anomaly-replaces-three-rules.md),
+  which is the authority where it and this plan disagree. The completion packet
+  against §18's twelve criteria is the final entry of the companion progress log;
+  two items are carried past the epic and named there (the Phase F **browser**
+  witness, owner-owned, and a post-release perf audit).
 - **Plan depth:** exhaustive
 - **Interview:** regular, completed through the 2026-08-03/04 design discussion
 - **Testing tolerance:** hardened for execution restructuring, corpus statistics,
@@ -10,13 +15,13 @@
 - **Companion progress log:**
   [`2026-08-04-nonletter-usage-epic-progress.md`](2026-08-04-nonletter-usage-epic-progress.md)
 - **Absorbs:**
-  [`chapter-outer selective map hoisting`](../ideas/candidates/2026-07-28-chapter-outer-selective-map-hoisting.md)
+  [`chapter-outer selective map hoisting`](../../ideas/candidates/2026-07-28-chapter-outer-selective-map-hoisting.md)
   and
-  [`uni.nonletter-usage-anomaly`](../ideas/committed/2026-08-03-unified-nonletter-usage-anomaly.md)
+  [`uni.nonletter-usage-anomaly`](../../ideas/committed/2026-08-03-unified-nonletter-usage-anomaly.md)
 - **Binding architecture:** ADR 0065 (packed findings), ADR 0067 (typed
   observation substrates/resident Galley), ADR 0068 (accepted cold-path cost),
   and ADR 0070 (Review Depth)
-- **Process contract:** [rule-development skill](../../.claude/skills/rule-development/SKILL.md)
+- **Process contract:** [rule-development skill](../../../.claude/skills/rule-development/SKILL.md)
 
 ## Document authority
 

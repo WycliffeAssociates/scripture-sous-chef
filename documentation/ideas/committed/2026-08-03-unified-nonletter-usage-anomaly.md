@@ -1,7 +1,7 @@
 # Idea — `uni.nonletter-usage-anomaly`
 
 Date: 2026-08-03. Status: **absorbed 2026-08-04** into the
-[chapter-outer mapping and `uni.nonletter-usage-anomaly` epic](../../plans/2026-08-04-nonletter-usage-epic-plan.md).
+[chapter-outer mapping and `uni.nonletter-usage-anomaly` epic](../../plans/completed/2026-08-04-nonletter-usage-epic-plan.md).
 Retain this file as historical rationale and do not implement it separately.
 The direction remains committed, but its candidate inventory, pooled
 denominators, and Review Depth mapping still require fleet measurement and

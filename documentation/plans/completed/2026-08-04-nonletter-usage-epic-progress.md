@@ -377,7 +377,7 @@ only at the end.
    defeated the point.
 2. Direct-lane prep keyed by the whole config fingerprint — **do not change
    behavior in this epic**. Recorded as
-   [`2026-08-04-direct-lane-prep-config-fingerprint.md`](../ideas/candidates/2026-08-04-direct-lane-prep-config-fingerprint.md)
+   [`2026-08-04-direct-lane-prep-config-fingerprint.md`](../../ideas/candidates/2026-08-04-direct-lane-prep-config-fingerprint.md)
    so it is not lost.
 3. `bench::schedule_phases` + the `shared_prep_bytes` repointing — **approved**.
 4. `DRIVE_PHASE_NAMES` 6 → 4 — **acceptable, and hereby a KNOWN CONSUMER
@@ -402,8 +402,8 @@ only at the end.
   adjudication**. Nothing live changed: no `RuleId`, config, catalog, wire
   discriminant, localization, or default. The only source added is a dev-only
   survey module.
-- **Packet:** [`documentation/calibration/2026-08-04-nonletter-usage-probe.md`](../calibration/2026-08-04-nonletter-usage-probe.md)
-- **Durable raw output:** [`documentation/calibration/2026-08-04-nonletter-usage-fleet-survey.tsv`](../calibration/2026-08-04-nonletter-usage-fleet-survey.tsv)
+- **Packet:** [`documentation/calibration/2026-08-04-nonletter-usage-probe.md`](../../calibration/2026-08-04-nonletter-usage-probe.md)
+- **Durable raw output:** [`documentation/calibration/2026-08-04-nonletter-usage-fleet-survey.tsv`](../../calibration/2026-08-04-nonletter-usage-fleet-survey.tsv)
 - **Probe:** `crates/core/examples/calibrate/survey/nonletter.rs`, CLI
   `--nonletter <dir|file> [overlap]`
 - **Fleet run:** 1,504 corpora, 66–107 s wall on 10 cores including the
@@ -509,7 +509,7 @@ observations.**
 
 - **Date:** 2026-08-04
 - **Source:** mediator, on the packet
-  [`2026-08-04-nonletter-usage-probe.md`](../calibration/2026-08-04-nonletter-usage-probe.md).
+  [`2026-08-04-nonletter-usage-probe.md`](../../calibration/2026-08-04-nonletter-usage-probe.md).
   Recorded verbatim below; this is the decision of record for the live rule.
 
 > Gate 1 adjudication follows. Record it verbatim in the progress log as the
@@ -600,7 +600,7 @@ observations.**
   fleet. Decision 5 resolved under delegated authority. **Live rule NOT started**
   — three flags are raised for adjudication first, two of them threshold or
   consequence breaches created by the adjudication itself.
-- **Packet addendum:** [`2026-08-04-nonletter-usage-probe.md`](../calibration/2026-08-04-nonletter-usage-probe.md)
+- **Packet addendum:** [`2026-08-04-nonletter-usage-probe.md`](../../calibration/2026-08-04-nonletter-usage-probe.md)
   §A1–A5. Durable `.tsv` refreshed to the adjudicated-knob run.
 
 ### Decision 5 — option (d) ADOPTED
@@ -704,7 +704,7 @@ threshold it named is exceeded.
 
 - **Date:** 2026-08-04
 - **Packet:** addendum 2 (§B1–B7) in
-  [`2026-08-04-nonletter-usage-probe.md`](../calibration/2026-08-04-nonletter-usage-probe.md).
+  [`2026-08-04-nonletter-usage-probe.md`](../../calibration/2026-08-04-nonletter-usage-probe.md).
   Durable `.tsv` refreshed to the post-FLAG-3 run.
 
 ### OWNER RATIFICATION — the Phase E ADR may cite owner confirmation
@@ -983,9 +983,9 @@ during the scheduler migration.
   **live, tested and default-on** (`828fef7`). The three-rule deletion series was
   **NOT started**, and must not be, because **both FLAG 2 obligations fail** and
   Entry 9's obligation (a) is an explicit stop clause.
-- **Addendum:** [`2026-08-04-nonletter-usage-probe.md`](../calibration/2026-08-04-nonletter-usage-probe.md)
+- **Addendum:** [`2026-08-04-nonletter-usage-probe.md`](../../calibration/2026-08-04-nonletter-usage-probe.md)
   §C1–C4.
-- **Durable ledger:** [`2026-08-04-nonletter-usage-migration-ledger.tsv`](../calibration/2026-08-04-nonletter-usage-migration-ledger.tsv)
+- **Durable ledger:** [`2026-08-04-nonletter-usage-migration-ledger.tsv`](../../calibration/2026-08-04-nonletter-usage-migration-ledger.tsv)
   — full fleet, per corpus, measured on the SHIPPED rule.
 
 ### What landed — `828fef7` (one commit; the two movements never share one)
@@ -1208,7 +1208,7 @@ one. That is a safe intermediate state: the new rule is purely additive today.
   shared knee. The **constants are not chosen**: no `(base, slope)` pair satisfies
   gates (ii) and (iii) together, and the ruling's own instruction for that case is
   to report the frontier table. The deletion series remains blocked.
-- **Addendum:** [`2026-08-04-nonletter-usage-probe.md`](../calibration/2026-08-04-nonletter-usage-probe.md)
+- **Addendum:** [`2026-08-04-nonletter-usage-probe.md`](../../calibration/2026-08-04-nonletter-usage-probe.md)
   §D1–D5. Durable ledger refreshed to candidate A.
 
 ### The frontier (full fleet, floor 0.75 = depth 50)
@@ -1396,7 +1396,7 @@ checkpoint 5 per Entry 12: the node test suite joins the verification list.
   two literal reference constants and passes against the three rules actually being
   replaced — so per the ruling I stop with the table rather than choose. Deletion
   remains blocked.
-- **Addendum:** [`2026-08-04-nonletter-usage-probe.md`](../calibration/2026-08-04-nonletter-usage-probe.md)
+- **Addendum:** [`2026-08-04-nonletter-usage-probe.md`](../../calibration/2026-08-04-nonletter-usage-probe.md)
   §E1–E5. Durable ledger refreshed to the conditioned candidate A.
 
 ### What landed
@@ -1799,7 +1799,7 @@ rule-swap sets for small synthetic fixtures, and it is worth expecting again.
 
 ### The drift summary
 
-[`documentation/calibration/2026-08-04-nonletter-usage-drift-summary.md`](../calibration/2026-08-04-nonletter-usage-drift-summary.md)
+[`documentation/calibration/2026-08-04-nonletter-usage-drift-summary.md`](../../calibration/2026-08-04-nonletter-usage-drift-summary.md)
 — working notes for the Phase E ADR, not the ADR. It carries: the final constants;
 the volume drift on **one** consistent zeros-included 1,504-corpus base with the
 defaults rider stated separately; the ledger's `lost = 0` with the reason the
@@ -2276,7 +2276,7 @@ defaults it is **32% of the entire resident footprint**.
 
 ### Remedy (2), recorded not taken
 
-[`2026-08-04-nonletter-materialize-segmentation-trade.md`](../ideas/candidates/2026-08-04-nonletter-materialize-segmentation-trade.md)
+[`2026-08-04-nonletter-materialize-segmentation-trade.md`](../../ideas/candidates/2026-08-04-nonletter-materialize-segmentation-trade.md)
 — retain the run's member spans, or memoize segmentation per distinct run string
 within a pass, to stop re-deriving at materialize what the map already knew. Not
 taken: it is a retained-layout change against the budget that is already the tight
@@ -2318,7 +2318,7 @@ and 75) and these measured costs go into the ADR.
 
 ### What landed — B, the drift ADR
 
-[`ADR 0071`](../adrs/0071-nonletter-usage-anomaly-replaces-three-rules.md), on
+[`ADR 0071`](../../adrs/0071-nonletter-usage-anomaly-replaces-three-rules.md), on
 ADR 0059's template, carrying every required element: what replaced what and why;
 the final constants with a per-knob derivation trail (which ruling set it, and
 that rarity was never reopened); the volume drift on the single zeros-included
@@ -2370,7 +2370,7 @@ is the pooled-table-backoff candidate. Nothing owed there.
   source material rather than pending working notes.
 - **Plan §2/§10**: the `th3e` example wording corrected to what ships.
 - **Release notes/handoff**:
-  [`handoffs/2026-08-04-nonletter-usage-editor-handoff.md`](../handoffs/2026-08-04-nonletter-usage-editor-handoff.md).
+  [`handoffs/2026-08-04-nonletter-usage-editor-handoff.md`](../../handoffs/2026-08-04-nonletter-usage-editor-handoff.md).
 
 ### What landed — A, the editor migration
 
@@ -2549,3 +2549,176 @@ anyway.
    its four checks.
 
 Both trees are green and committed, so any of these can start cold.
+
+---
+
+## Entry 22 — EPIC COMPLETE: the §18 completion packet
+
+- **Date:** 2026-08-05
+- **Status:** the plan's twelve completion criteria are met, with **two items
+  explicitly carried past the epic and named below** — the Phase F browser
+  witness (owner-owned) and the cancelled perf audit. This plan and this log move
+  to `documentation/plans/completed/` with this entry.
+- **Authority:** where this plan and
+  [ADR 0071](../../adrs/0071-nonletter-usage-anomaly-replaces-three-rules.md)
+  disagree, the ADR is the record of what shipped (`plans/README.md`).
+
+### The twelve criteria, item by item
+
+**1. Chapter-outer scheduling owner-promoted and shipped, or explicitly rejected
+with evidence and the plan amended first.** ✅ **Promoted and shipped.** Gate A's
+prototype packet went to the owner before any production module changed
+(Entry 3/4); the production scheduler landed at checkpoint 2 (Entry 5) as its own
+revertible commit group, with the closed prep-needs table, the deliberate
+pre-alpha removals, and four flagged deviations adjudicated in the same entry.
+
+**2. Execution-only full-fleet default/all findings and the resident transcript
+proved byte-identical before intentional behavior work.** ✅ Entry 5's retained
+scheduler gate, bookended at full fleet on both configs; the WA subset carried
+intermediate steps and the bookends were always full scope.
+
+**3. The full nonletter calibration packet and owner decisions recorded.** ✅
+[`2026-08-04-nonletter-usage-probe.md`](../../calibration/2026-08-04-nonletter-usage-probe.md)
+(base packet + addenda A–E) and
+[the fleet survey TSV](../../calibration/2026-08-04-nonletter-usage-fleet-survey.tsv);
+decisions in Entries 7 (Gate 1), 9 (**owner ratification**), 12, 14 and 16.
+
+**4. The rule satisfies its claim/counterclaim and every approved depth anchor.**
+✅ 39 synthetic tests, the depth profile 0.90/0.75/0.50 measured on the shipped
+rule at all three anchors (Entry 19), monotone with no cliffs. The claim is
+unusualness against the translation's own conventions and nothing stronger — the
+counterclaim list is in ADR 0071's Consequences. Two anchors are documented as
+scoring identically while naming a weaker reason (`th3e`, detached mark), and the
+anchor battery's one structural blind spot is closed corpus-free by
+`a_slip_cloud_that_grew_with_volume_survives_the_recurrence_knee`.
+
+**5. The three retired rules and every source/generated/editor surface gone.** ✅
+Deleted in three separate commits (`afb121b`, `b7923f7`, `1246d52`), each
+enumerating its surfaces; wire codes 10/12/19 retired and never reused; a sweep
+for all nine retired symbols/ids across `crates`, `xtask`, `spike-bench/src`,
+`scripts`, and the editor's `src`/`tests`/`product-docs`/locale catalogs returns
+nothing. Checkpoint 6 caught the last three residues: a **failing**
+`test-review-depth-package.mjs` pin, and two stale published doc comments
+(`df6de56`).
+
+**6. Intentional finding drift measured, adjudicated, documented in an ADR, and
+explicitly re-pinned.** ✅ [ADR 0071](../../adrs/0071-nonletter-usage-anomaly-replaces-three-rules.md),
+with the drift on one zeros-included 1,504-corpus base, both obligations, both
+falsified mechanisms, and the `after.full.*` sha256s (Entries 19/20).
+
+**7. Cold/resident/edit/remove/toggle/reference/config/retry and serial/parallel
+behavior pass hardened gates.** ✅ `phase_f_tests`' seven scheduler invariants,
+Galley's substrate-locality and randomized resident-equals-cold tests, the
+schema-stamp invalidation witness, `a_word_only_edit_owes_exactly_the_edited_chapter`
+(both directions), and `cargo test -p ssc-core --features parallel` identical to
+serial. Two of these witnesses were **strengthened at the very end** (`77d7014`):
+the judging-only test now asserts *every* exposed map/reduce counter, and
+Galley's knob-only test now inspects the substrate whose own knob moved.
+
+**8. The packed wire stays fixed-size; JS identity/reconciliation pass.** ✅
+16-byte records unchanged, discriminant 26 with the count-pair digest, Rust and
+JS discriminant pins updated, `__vectors__.json` regenerated by
+`cargo xtask wire-vectors`; the three node suites green against the built
+packages. A pre-existing JS pin gap (code 25) was fixed in passing.
+
+**9. Census remains exhaustive and agrees on segmentation/count facts.** ✅ Both
+flagged extractors survived their rules (`adjacency_runs_all` +
+`count_lead_opportunities`; `SpacingAcc`/`SIDE_CELLS`/`mark_attached_spaced`),
+`SpacingForm`/`SpacingClass` moved to `signals::punctuation` as `pub(crate)`
+rather than left as dead public wire vocabulary, and
+`census::mark_spacing_matches_rule_tallies` was re-pointed onto the independent
+batch walk so it stays a real cross-check instead of becoming a tautology.
+
+**10. The editor package, localization, settings, messages, and test-drive cases
+pass against the released package.** ✅ **with one owner-owned exception.** The
+editor migration is committed (`629845bd`, `384d68bf`): 14 localized sentences
+(one per reason × form) plus the evidence-free fallback, the filter chip, and 28
+tests driving the shipped wasm engine through the editor's own decode seam over
+all eight Phase F cases plus depth changes, presentation and filtering. `pnpm
+check`, `pnpm lint`, `pnpm test:unit` (168 files / 1,146 tests) and
+`pnpm build.web` all green.
+
+Two qualifications, both deliberate:
+
+- **"Against the released package" is satisfied against the release build, not a
+  fetched tag.** `v0.0.6` resolves only after this branch merges and is tagged;
+  verification used the release-built `pkg-web`/`pkg-bundler` copied into the
+  editor's `node_modules`. The editor already names the tag; its lockfile is
+  deliberately unchanged (a real fetch is needed for the integrity hash).
+- **The Phase F *browser* witness is OUTSTANDING and OWNER-OWNED.** The eight
+  cases are exercised through the editor's vitest harness against the real wasm
+  engine, not through a running browser session; the owner is writing that
+  witness personally. Gate F's "browser cold/warm lifecycle measured" clause is
+  therefore the one clause this unit did not close, and it is recorded here as
+  owner work rather than quietly folded into ✅.
+
+**11. Rule docs, config reference, PO checklist, ADR index, calibration evidence,
+source-idea dispositions, and release handoff agree with shipped truth.** ✅
+`rules/uni.md` (new page), `rules/README.md`, `rules/punct.md`,
+`messaging-and-fixes.md`, `reference/config.md` §6b, the PO checklist rewritten
+per §11.3–§11.4 exactly (including the re-routing of two candidates off
+`uni.rare-glyph`, which is Letter-lane only), the drift summary's corrected
+figures, the ADR index (plus the missing 0069 row), both absorbed idea documents
+left as historical rationale, and the
+[editor handoff](../../handoffs/2026-08-04-nonletter-usage-editor-handoff.md).
+
+**12. The progress log contains the final verification packet and the plan moves
+to `completed/` with it.** ✅ This entry, and the move it accompanies.
+
+### Final verification sweep
+
+- `cargo test --workspace`: **green** — 519 core / 25 galley / 24 wire / 16 wasm
+  / 1 xtask.
+- `cargo test -p ssc-core --features parallel`: **green** (520).
+- `cargo check -p ssc-wasm --target wasm32-unknown-unknown`: clean.
+- Three node suites against the built packages: `findings` 15, `galley` 2,
+  `package` 2 — plus the Review Depth package smoke, which is now in the
+  verification list precisely because it was found failing.
+- `cargo clippy --workspace --all-targets`: the pre-existing 25-warning baseline.
+- **Formatting: the backlog is cleared.** `cargo fmt --all` landed as its own
+  owner-authorized style-only commit (`bdb5a51`, 40 files, whitespace and
+  wrapping only), with `cargo test --workspace` re-verified green after. Every
+  earlier commit in this epic formatted touched lines only, because the baseline
+  was not rustfmt-clean; it is now.
+- **No oracle dump was run at checkpoint 6, and none is owed.** Nothing after
+  Entry 20 touched engine behavior: the Rust edits are doc comments, two test
+  assertions, and whitespace. Entry 20's `after.full.*` pins are the behavior of
+  record.
+
+### Two things carried past the epic
+
+1. **The Phase F browser witness — OWNER-OWNED.** See criterion 10. Not a gap in
+   the engine or the editor code; the remaining evidence is a browser
+   cold/warm lifecycle run the owner is authoring.
+2. **The dhat + samply "meat on the bone" audit — STARTED, then CANCELLED by the
+   owner, deferred post-release.** It was commissioned after checkpoint 6 and
+   stopped mid-flight for the release window. **No measurement artifact was
+   committed and none should be trusted**: the numbers reached were partial, one
+   paired dhat arm never finished, and the samply profiles were unsymbolicated,
+   so nothing from it is a result. It is a fresh post-release task, not a resumable
+   one. Its scope, for whoever picks it up: decompose the substrate's 4.01 MB
+   retained footprint (sites vs identity tables vs topology cells vs pair tables,
+   and whether there is padding / over-wide integer / duplicate-identity slack);
+   attribute the +49.1 ms cold seed (map vs the per-mapper separate passes over
+   shared prep that plan §6.3 deferred fusing vs site retention); confirm the
+   warm 1.06–1.18× is irreducible and profile the punctuation-edit `owe_all`
+   rejudge; deliverable a ranked, ms/MB-sized opportunity list under
+   `documentation/calibration/`. Two idea candidates already in the backlog are
+   its natural first inputs:
+   [`nonletter-materialize-segmentation-trade`](../../ideas/candidates/2026-08-04-nonletter-materialize-segmentation-trade.md)
+   and
+   [`conditioned-topology-pooled-backoff`](../../ideas/candidates/2026-08-04-conditioned-topology-pooled-backoff.md).
+
+### Release sequence (all that is left)
+
+1. Merge `nonletter-usage-epic`.
+2. Tag and push **`v0.0.6`** — `chore(release): prepare v0.0.6` (`7b2b84d`) is
+   already on the branch, with `pkg-web`/`pkg-bundler` rebuilt from source (the
+   checkpoint-5 packages predated the warm-path fix and would have shipped the
+   3.7× path).
+3. In `scripture-editor-proto-2`: `pnpm install` to refresh `pnpm-lock.yaml`
+   against the tag, then `pnpm check`, `pnpm lint`, `pnpm test:unit`,
+   `pnpm build.web`.
+4. Owner: the Phase F browser witness.
+
+**Epic closed.**

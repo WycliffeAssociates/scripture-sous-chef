@@ -5,7 +5,7 @@
   this packet is a live rule: no `RuleId`, config, catalog, wire, or default
   changed. The probe is `crates/core/examples/calibrate/survey/nonletter.rs`,
   reached by `--nonletter`.
-- **Plan:** [epic plan §9](../plans/2026-08-04-nonletter-usage-epic-plan.md);
+- **Plan:** [epic plan §9](../plans/completed/2026-08-04-nonletter-usage-epic-plan.md);
   progress log Entry 6
 - **Raw output (durable):**
   [`2026-08-04-nonletter-usage-fleet-survey.tsv`](2026-08-04-nonletter-usage-fleet-survey.tsv)

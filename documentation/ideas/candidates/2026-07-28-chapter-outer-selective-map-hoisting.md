@@ -2,7 +2,7 @@
 
 - Date: 2026-07-28
 - Status: **absorbed 2026-08-04** into the
-  [chapter-outer mapping and `uni.nonletter-usage-anomaly` epic](../../plans/2026-08-04-nonletter-usage-epic-plan.md);
+  [chapter-outer mapping and `uni.nonletter-usage-anomaly` epic](../../plans/completed/2026-08-04-nonletter-usage-epic-plan.md);
   retain this file as historical rationale and do not implement it separately
 - Context: ADR 0067, ADR 0068, and the completed granularity-spine plan §5.1
 
