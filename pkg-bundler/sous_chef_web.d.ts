@@ -151,15 +151,19 @@ export interface MixedScriptOverrides {
 
 /**
  * Partial overrides for `uni.nonletter-usage-anomaly`\'s corpus-relative score.
- * Omitted fields keep core\'s calibrated defaults — the frozen Gate 1 knobs:
+ * Omitted fields keep core\'s calibrated defaults — the constants ADR 0071 froze:
  * `emit_score_min` 0.75 (the adjudicated Review Depth midpoint), `rarity_k` 8,
- * `placement_min_pool` 30, `sequence_k` 2 (the channel is honestly binary at
- * these denominators), and the three support gates below which a channel
- * abstains rather than inventing a convention.
+ * `placement_min_pool` 30, placement\'s opportunity-proportional knee
+ * `K = 32 + 40·N/10⁴`, sequence\'s `K = 8 + 40·N/10⁴`, and the support gates below
+ * which a channel abstains rather than inventing a convention.
  *
- * Prefer moving Review Depth to a per-knob override: depth resolves all five
- * policy values together, so a hand-set support gate can silently contradict the
- * floor it ships with.
+ * Setting either `*_rate_per_10k` to `0` makes that knee flat, which is a
+ * documented regression rather than a tuning choice: a flat knee silences the
+ * slip clouds a large translation accrues with volume.
+ *
+ * Prefer moving Review Depth to a per-knob override: depth resolves the policy
+ * values together, so a hand-set support gate can silently contradict the floor
+ * it ships with.
  */
 export interface NonletterUsageOverrides {
     emit_score_min?: number;
