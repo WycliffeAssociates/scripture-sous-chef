@@ -9,10 +9,14 @@ import {
   rule_catalog as catalogBundler,
 } from "../pkg-bundler/sous_chef_web.js";
 
+// The Review-Depth-mapped set, pinned so a rule cannot gain or lose a mapped
+// profile without this smoke failing. `punct.spacing-anomaly` was the original
+// third member; it was deleted and its domain absorbed by
+// `uni.nonletter-usage-anomaly`, which carries the mapped profile now (ADR 0071).
 const expectedMapped = new Set([
-  "punct.spacing-anomaly",
   "case.sentence-initial-lowercase",
   "case.inconsistent-word-casing",
+  "uni.nonletter-usage-anomaly",
 ]);
 
 function assertCatalog(catalog, label) {

@@ -405,21 +405,21 @@ impl Default for MixedCaseConfig {
 
 /// Knobs for `uni.nonletter-usage-anomaly`.
 ///
-/// **The constants are FINAL** (epic progress log Entry 16). The two recurrence
-/// knees carry ADR 0050's opportunity-proportional shape with its own shipped base
-/// and slope; the topology tally is conditioned on a coarse outer content class.
-/// Measured over the 1,504-corpus fleet at depth 50, against the three rules this
-/// replaces — on one identical corpus base, zeros included:
+/// **The constants are FINAL** — ADR 0071 (epic progress log Entry 16). The two
+/// recurrence knees carry ADR 0050's opportunity-proportional shape with its own
+/// shipped base and slope; the topology tally is conditioned on a coarse outer
+/// content class. Measured over the 1,504-corpus fleet at depth 50, against the
+/// three rules this replaces — on one identical corpus base, zeros included:
 ///
 /// ```text
 /// series                     p50   p90   p99   fleet
 /// the retired trio            18    61   170   40,859
-/// this rule                   12    52   127   33,265
+/// this rule                   12    52   128   33,265
 /// ```
 ///
 /// Strictly cheaper on every axis (0.81× fleet) while preserving every adjudicated
 /// multilingual win. Default users move from the retired default-ON *pair* (p50 3,
-/// p99 71, 13,835) to this, which is deliberately heavier because defaults now
+/// p99 75, 13,835) to this, which is deliberately heavier because defaults now
 /// include the spacing domain they never had — the owner-ratified default-on intent.
 ///
 /// Every field is a **judging** knob —
@@ -429,9 +429,9 @@ impl Default for MixedCaseConfig {
 ///
 /// The candidate scan (visible nonalphabetic extended grapheme clusters, with
 /// hygiene's domain and baseless marks excluded) is fixed. These values are the
-/// whole judgment surface, and they are the frozen Gate 1 knobs
-/// (`documentation/calibration/2026-08-04-nonletter-usage-probe.md`, owner-ratified
-/// in the epic progress log's Entry 9). Ships **default-on** at `Severity::Info`:
+/// whole judgment surface, and they are the constants ADR 0071 recorded
+/// (`documentation/calibration/2026-08-04-nonletter-usage-probe.md` for the sweep,
+/// owner-ratified in the epic progress log's Entry 9). Ships **default-on** at `Severity::Info`:
 /// it replaces two default-on rules, so shipping it off would be a silent coverage
 /// regression for every default user.
 ///

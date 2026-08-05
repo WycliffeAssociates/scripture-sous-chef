@@ -262,10 +262,13 @@ pub(crate) fn scan_invalid_codepoint(tape: &[TapeEntry]) -> Vec<Span> {
 /// modern equivalent and belongs to `hyg.invalid-codepoint`; a `?`-run is
 /// valid Unicode, so only its shape gives it away. Corpus recurrence must
 /// never excuse it (destroyed text recurs like a convention — my_juds carries
-/// ~1,000 such chunks), which is why this is deterministic hygiene and the
-/// corpus-relative punctuation rules exclude the pattern from candidacy
-/// rather than each half-owning it. Real `??`/`???` rhetoric exists at run
-/// length 2 and is left to `punct.adjacency-anomaly`'s statistics; genuine
+/// ~1,000 such chunks), which is why this is deterministic hygiene rather than
+/// something a corpus-relative rule half-owns. Hygiene is the more specific
+/// owner at this exact span (plan/ADR 0071 ownership order: hygiene, then
+/// structural, then `uni.nonletter-usage-anomaly`); the retired
+/// `punct.adjacency-anomaly` additionally excluded `?`-runs from candidacy
+/// outright, a judging policy that went with it. Real `??` rhetoric exists at
+/// run length 2 and is a corpus-relative question, not this rule's; genuine
 /// triple question marks in scripture body text are not an attested
 /// convention in any surveyed corpus.
 pub const REPLACEMENT_RUN: RuleId = RuleId::ReplacementRun;
