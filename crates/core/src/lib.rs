@@ -316,10 +316,16 @@ mod phase_f_tests {
         cfg.nonletter_usage.emit_score_min = 0.999;
         let rejudged = analyze_resident(&corpus, None, &cfg, &mut cache).unwrap();
         let p = cache.probe();
+        // EVERY exposed map/reduce counter, not a sample of them: the invariant is
+        // that a judging-only move enrols no substrate at all, so naming only the
+        // substrate whose knob moved (plus two spot checks) would let a third
+        // substrate start re-mapping on any config change without failing here.
         assert_eq!(p.nonletter_mapped, 0, "nonletter re-mapped");
         assert_eq!(p.nonletter_reduced, 0, "nonletter re-reduced");
         assert_eq!(p.casing_mapped, 0, "casing re-mapped");
+        assert_eq!(p.casing_reduced, 0, "casing re-reduced");
         assert_eq!(p.duplicate_mapped, 0, "duplicate re-mapped");
+        assert_eq!(p.duplicate_reduced, 0, "duplicate re-reduced");
         assert_eq!(rejudged, analyze_with_config(&corpus, None, &cfg));
     }
 

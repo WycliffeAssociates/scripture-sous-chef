@@ -588,10 +588,18 @@ mod tests {
         g.update_config(cfg2.clone());
         let findings = g.analyze();
         let probe = g.cache.probe();
+        // The knob that moved is CASING's, so casing is the substrate that has to
+        // prove it stayed valid — asserting only on nonletter would pass even if
+        // the substrate whose own knob changed re-mapped the whole corpus.
+        assert_eq!(
+            (probe.casing_mapped, probe.casing_reduced),
+            (0, 0),
+            "the casing substrate maps/reduces nothing on its own knob-only change"
+        );
         assert_eq!(
             (probe.nonletter_mapped, probe.nonletter_reduced),
             (0, 0),
-            "the nonletter substrate maps/reduces nothing on a knob-only change"
+            "no unrelated substrate maps/reduces on a knob-only change"
         );
         assert_eq!(findings, cold(&corpus, &cfg2), "findings track the new knobs");
     }
@@ -657,7 +665,8 @@ mod tests {
         // a dominant convention and a rare minority: 40 verses write `,` attached
         // to the previous word, one writes it attached to the NEXT word instead.
         let slip = |last: &str| -> (Vec<String>, Vec<String>) {
-            let mut texts: Vec<String> = (0..40).map(|_| "word, word here".to_string()).collect();
+            let mut texts: Vec<String> =
+                (0..40).map(|_| "word, word here".to_string()).collect();
             texts.push(last.to_string());
             let keys = (1..=texts.len()).map(|v| format!("GEN 1:{v}")).collect();
             (keys, texts)
