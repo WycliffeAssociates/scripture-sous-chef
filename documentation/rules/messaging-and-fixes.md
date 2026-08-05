@@ -35,11 +35,12 @@ accounted for:
 ### Wire discipline (the constraints these args respect)
 
 - Single glyphs/marks are `char` (4 B, `Copy`) — never a heap `String`.
-  **Intentional exception:** `uni.mixed-normalization`'s `example` is a
-  `String`. Its domain is an NFC-normalized grapheme cluster, not a single
-  glyph — composition exclusions (Bengali `U+09DF` → `U+09AF U+09BC`) and
-  multi-mark clusters can be more than one scalar, so `char` cannot
-  represent it (ADR 0063).
+  **Intentional exceptions**, both for the same reason: `uni.mixed-normalization`'s
+  `example` and `uni.nonletter-usage-anomaly`'s `glyph` / `partner` are
+  `String`s. Their domain is a grapheme cluster, not a single glyph —
+  composition exclusions (Bengali `U+09DF` → `U+09AF U+09BC`), multi-mark
+  clusters and emoji sequences can be more than one scalar, so `char` cannot
+  represent them (ADR 0063, ADR 0071).
 - Counts are `u32` / rates are `f32` — `Copy`, set at `judge`, no extra alloc
   beyond the `Finding` itself.
 - Per-finding args are ≤ ~24 bytes. No whole-verse or token-array round-trips.
@@ -86,6 +87,7 @@ is larger); the engine ships the counts, not the derived value.
 | `lex.repeated-character-run` | Corpus | Repeated letter | "‘{ch}’ repeats {run} times here — a repetition this translation doesn't otherwise use." | `RepeatEvidence { ch, run }` |
 | `uni.rare-glyph` | Corpus | Barely-used letter | "The letter ‘{glyph}’ appears only {count} times in this whole translation." | `RareGlyph { glyph, count }` |
 | `uni.mixed-normalization` | Det | Mixed character encoding | "This text writes ‘{example}’ in two different encodings in {affected} places." | `Normalization { affected, example }` |
+| `uni.nonletter-usage-anomaly` | Corpus | Unusual nonletter usage | rarity: "‘{glyph}’ appears in only {count+1} places in this translation." · every other reason: "‘{glyph}’ is {habit} here; this translation writes it that way {count} of {total} other places.", where `{habit}` is selected from (`reason`, `form`) — e.g. `Start`+`Letter` → "attached to a word at the start", `Topology`+`Both` → "attached to text at both ends", `Pair` → "written directly before ‘{partner}’", `Continuation` → "repeated in a longer run" (default, no args: "A non-letter used in a way this translation almost never uses it.") | `NonletterUsage { glyph, reason, form, partner, count, total, also }` — `reason` ∈ `rarity`\|`start`\|`end`\|`topology`\|`pair`\|`continuation`; `form` ∈ `none`\|`letter`\|`digit`\|`spaced`\|`neither`\|`start-only`\|`end-only`\|`both`; `count`/`total` are **leave-one-out** (this occurrence excluded from both); `also` lists the other channels that independently cleared the floor at the same run, so no violated fact is lost to the `max` |
 
 ## Fix capability — what a front end can `replace()`
 
@@ -110,6 +112,7 @@ from the op + the finding's `range` + verse text; only `ToDominantForm` /
 | `lex.repeated-character-run` | None | target repetition count unknown | ❌ |
 | `case.mixed-case-word` | None | correct clean shape unknown (could be all-lower or titlecase) — review | ❌ |
 | `uni.rare-glyph` | None | the intended letter is unknown — a stray that needs review or re-import | ❌ |
+| `uni.nonletter-usage-anomaly` | None | the rule claims unusualness, not wrongness — there is no "correct" form to replace with. A missing space, a stray mark and a legitimate house style all present the same way, and only a human knows which. The finding's job is to name the habit and its counts | ❌ |
 | `uni.combining-mark-without-base` | None | a letter may be *missing*, not the mark spurious | ❌ |
 | `punct.bracket-balance` | None | insertion point of the missing partner is unknown | ❌ |
 | `hyg.invalid-codepoint` | None | original character is gone — needs re-import | ❌ |
@@ -129,12 +132,14 @@ front-end-side, right-to-left by offset so spans don't shift. No engine wire
 cost — the ops are inferred from `code` + `FixKind`, the values (where needed)
 already ride in `FindingArgs`.
 
-## Status (2026-07-08)
+## Status (2026-07-08; refreshed 2026-08-04 for ADR 0071)
 
 - **Shipping:** every scored rule's structured args —
-  `SpacingConvention`, `CasingConvention`, `BracketWindow` (measure + share),
-  `AdjacencyEvidence`, `ScriptMixEvidence`, `RepeatEvidence`
-  (ADR 0048). Plus `catalog::message(code, args)` — the default English label
+  `CasingConvention`, `WordCasing`, `MixedCaseWord`, `BracketWindow`
+  (measure + share), `ScriptMixEvidence`, `RepeatEvidence`, `RareGlyph`,
+  `Normalization`, `NonletterUsage` (ADR 0048). (`SpacingConvention` and
+  `AdjacencyEvidence` went with `punct.spacing-anomaly` and
+  `punct.adjacency-anomaly` — ADR 0071.) Plus `catalog::message(code, args)` — the default English label
   for **every** rule, rendered from those args (deterministic rules render
   static text). The playground displays it in the preview and drill-down.
 - **Proposed, not built:** `FixKind` on `RuleCard` and any `updateSafe()`

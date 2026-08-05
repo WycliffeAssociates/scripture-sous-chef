@@ -354,8 +354,9 @@ Every available configuration option, set to its built-in default. Copy this and
 > older reference is retained for its conceptual material.
 
 `lex.repeated-character-run`,
-`case.sentence-initial-lowercase`, `case.inconsistent-word-casing`, and
-`punct.bracket-balance` are corpus-relative rules with typed knobs. Each emits
+`case.sentence-initial-lowercase`, `case.inconsistent-word-casing`,
+`punct.bracket-balance`, and `uni.nonletter-usage-anomaly` are corpus-relative
+rules with typed knobs. Each emits
 a continuous `score ∈ [0, 1]` whose unit is **anomaly evidence**, not a
 correctness verdict: 1 ≈ "unlike this corpus's own conventions", 0 ≈ "ordinary
 here" (ADR 0032). For the dominance-verdict rules (casing,
@@ -481,6 +482,50 @@ excluded. A never-paired glyph (gux's letter-`]`) self-suppresses at ~0.
 
 **Stricter (fewer findings):** raise `emit_score_min`. **Looser:** lower it
 (weak-convention families' orphans surface near the floor).
+
+### `uni.nonletter-usage-anomaly` (`Config.nonletter_usage`) — **default ON**, Review Depth **mapped**
+
+The one rule in this section that ships **on**, because it replaced two default-on
+rules plus one default-off one (ADR 0071 — `punct.spacing-anomaly`,
+`punct.adjacency-anomaly`, `lex.punct-only-token`). It scores a visible
+non-letter's usage as `max(rarity, placement, sequence)` — three independently
+sufficient channels, never noisy-OR, with abstention never read as a zero.
+
+Nearly every knob below is an **advanced override**. The user-facing control is
+**Review Depth**, which resolves `emit_score_min` along the adjudicated profile
+0.90 (depth 0) → 0.75 (depth 50) → 0.50 (depth 100).
+
+| knob | meaning |
+| --- | --- |
+| `emit_score_min` | the decision threshold: emit a run only when its strongest channel reaches this. Higher ⇒ fewer, surer findings. Default **0.75** (the depth-50 anchor) |
+| `rarity_min_exposure` | rarity's support gate — below this many visible-non-letter occurrences corpus-wide the channel abstains entirely, which is what separates one `$` in a large translation (well-supported rarity) from one `$` in a tiny one (thin evidence). Default **2,000**. Fleet-measured as nearly inert on the bulk (12,343 → 11,658 across 0 → 10,000): its whole effect is confined to genuinely tiny corpora, which is where it is wanted |
+| `rarity_k` | rarity's recurrence knee over the identity's **run memberships** — a grapheme appearing in `k` or more separate non-letter runs is established and scores 0. Default **8**. Counting *places* rather than occurrences is what stops wreckage licensing itself (`*******` + `****` is 11 occurrences but 2 places) |
+| `placement_min_pool` | placement's support gate — the minimum judged pool (a side marginal, or one `TopoClass`-conditioned topology cell) before that component speaks. Default **30**. It is what makes a single medial `*` abstain instead of concluding medial `*` is the convention. Sweeping it to 200+ starts *breaking* adjudicated multilingual wins, so it is not a sensitivity dial |
+| `placement_k` | the **base** of placement's proportional knee `K = placement_k + placement_rate_per_10k · N_pool/10⁴`. Default **32** |
+| `placement_rate_per_10k` | the knee's allowance per 10,000 judged opportunities (ADR 0050's amendment). Default **40**. **Not decorative:** `0` makes the knee flat, and a flat knee is what silenced `engwebster`'s 23 spaced-hyphen slips (`life -time`, `high -ways`) and `WA-ne-udb`'s missing space after a comma — all findings ADR 0054 explicitly adjudicated as keep. Slips accumulate with volume; the knee has to as well |
+| `placement_z` | Wilson confidence for placement's dominance estimates. Default **1.0** rather than 1.96: measured on the fleet, these pools are large enough that a 95% bound is indistinguishable from a 68% one on the bulk, while a wider bound only shrinks the thin identities the support gates already own |
+| `sequence_min_leads` | sequence's support gate — the minimum number of occurrences of the lead grapheme that actually *lead* a non-letter run before its directed pairings are judged. Default **100** |
+| `sequence_k` | the base of sequence's knee over directed **lead** opportunities. Default **8**. A flat knee failed here twice in opposite directions: flat 2 declined 908 plain errors (`,;` `.;;` `,.` `,,` `,......`) by treating a *second* sighting as convention, and flat 8 carries placement's volume-blindness |
+| `sequence_rate_per_10k` | the same allowance per 10,000 directed lead opportunities. Default **40** |
+| `sequence_z` | Wilson confidence for sequence's dominance. Default **1.0**, same reasoning as placement |
+| `continuation_min_support` | the bounded same-glyph continuation component's support gate — the minimum number of same-glyph runs of the identity before its run-length histogram may speak. Default **100**. It recovers `:::` over an established `::`, and `..` over an established single `.`, which directed pairs cannot reach because both edges of `:::` are familiar |
+
+Every count fed to these gates is **leave-one-out**: the occurrence under
+judgment is removed from both numerator and denominator, so a finding's reported
+`0 of 1,601` is literally true. Rarity pools **Nd** digits into one class
+identity for its numerator (a stray digit in a digit-free translation fires; an
+ordinary digit in a numeric text does not) while No/Nl numerals (`²`, `½`) keep
+their own identity; sequence pools Nd digits as the *follower* key only.
+Placement's topology table is conditioned on a coarse outer content class
+(`Letter` / `Digit` / `Detached`) and abstains on a thin or degenerate cell —
+which is why `th3e` reports the start marginal rather than `Both`.
+
+**Stricter (fewer findings):** raise `emit_score_min` (or lower Review Depth) —
+that is the intended dial. **Looser:** the reverse. Raising the support gates
+makes more channels abstain (fewer findings, and quieter on small corpora);
+raising the knee bases/rates treats larger recurring minorities as established
+conventions, which is also quieter but for a different reason. Setting either
+`*_rate_per_10k` to 0 is a documented regression, not a tuning choice.
 
 ## 6c. Cross-map (source-paired) rules
 

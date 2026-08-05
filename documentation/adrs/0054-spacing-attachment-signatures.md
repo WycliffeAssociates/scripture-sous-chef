@@ -1,8 +1,16 @@
 # ADR 0054: `punct.spacing-anomaly` — joint attachment signatures
 
 - **Date:** 2026-07-10
-- **Status:** Accepted — **but every model below is superseded by the SECOND
-  amendment at the very end of this file (2026-07-11, the pooled
+- **Status:** **Superseded by
+  [ADR 0071](0071-nonletter-usage-anomaly-replaces-three-rules.md)** —
+  `punct.spacing-anomaly` was deleted on 2026-08-04 and its domain absorbed by
+  `uni.nonletter-usage-anomaly`. Two things here outlive the rule: the
+  **class-conditioned pooling** precedent (adopted as that rule's `TopoClass`
+  topology axis) and the **roster of adjudicated multilingual wins**
+  (`engwebster` 4, `WA-ne-udb` 76, `WA-kmr-IQ-badini-reg` ≥ 20, `WA-pa-ulb`
+  ≥ 25), which became a permanent regression gate on the replacement and caught
+  a real flat-knee defect in it. Within this file, **every model below is
+  superseded by the SECOND amendment at the very end (2026-07-11, the pooled
   class-conditioned model). Read that first; the 16-cell decision and the
   per-side first amendment are lineage.**
 - **Supersedes / amends:** [ADR 0029](0029-punctuation-spacing-corpus-relative.md)

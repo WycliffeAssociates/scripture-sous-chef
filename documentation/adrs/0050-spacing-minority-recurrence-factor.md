@@ -1,7 +1,12 @@
 # ADR 0050: `punct.spacing-anomaly` scores dominance × minority-recurrence rarity
 
 - **Date:** 2026-07-09
-- **Status:** Accepted
+- **Status:** **Superseded by [ADR 0071](0071-nonletter-usage-anomaly-replaces-three-rules.md)** — `punct.spacing-anomaly` was deleted on
+  2026-08-04, but this ADR's amendment is the load-bearing survivor: the
+  opportunity-proportional recurrence knee `K = base + slope·N/10⁴` is
+  `uni.nonletter-usage-anomaly`'s knee in **both** its placement and sequence
+  channels. A flat knee was reintroduced there once and failed in both
+  directions; see 0071.
 - **Amends:** [ADR 0029](0029-punctuation-spacing-corpus-relative.md) (the
   dominance-only score) and resolves the "volume *is* the inconsistency count"
   margin left open by [ADR 0033](0033-separator-class-is-po-not-ascii.md).

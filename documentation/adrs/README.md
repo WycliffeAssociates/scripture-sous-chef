@@ -40,14 +40,14 @@ isn't visible from the code alone.
 | 0021 | 2026-07-01 | [Domain-tailored grapheme segmenter over one fused static table](0021-grapheme-segmenter-fast-path-fused-static-table.md) | Accepted |
 | 0022 | 2026-07-01 | [Extend the fused table to General_Category groups and script](0022-fused-table-category-and-script.md) | Accepted |
 | 0023 | 2026-07-01 | [U+200B is orthography-dependent — a corpus-relative anomaly, not hygiene](0023-zero-width-space-corpus-relative-anomaly.md) | Accepted (ZWNJ/ZWJ treatment amended by 0025; scorer superseded by 0027, hygiene half stands) |
-| 0024 | 2026-07-01 | [Repeated/mixed punctuation is judged corpus-relative, not by a fixed allow-list](0024-punctuation-adjacency-corpus-relative.md) | Accepted |
+| 0024 | 2026-07-01 | [Repeated/mixed punctuation is judged corpus-relative, not by a fixed allow-list](0024-punctuation-adjacency-corpus-relative.md) | Superseded by 0071 (`punct.adjacency-anomaly` deleted) |
 | 0025 | 2026-07-06 | [Drop ZWNJ/ZWJ flagging from hygiene — flagging nothing beats flagging wrong](0025-drop-joiner-flagging-from-hygiene.md) | Accepted |
 | 0026 | 2026-07-06 | [Drop `\|`/`^` from source-marker-leftover — a bare pipe is valid USFM text](0026-drop-pipe-caret-from-source-marker-leftover.md) | Accepted |
 | 0027 | 2026-07-06 | [Retire the corpus-relative ZWSP scorer; adopt a deterministic redundant-ZWSP rule](0027-redundant-zwsp-deterministic-retire-corpus-relative.md) | Accepted (supersedes 0023 scorer) |
 | 0028 | 2026-07-06 | [Repeated letter runs are judged against corpus recurrence](0028-repeated-character-run-corpus-relative.md) | Accepted |
-| 0029 | 2026-07-06 | [Punctuation spacing is a per-mark corpus convention — flag the minority form](0029-punctuation-spacing-corpus-relative.md) | Accepted (amends 0014 space-before-punct) |
-| 0030 | 2026-07-06 | [Punct-only tokens are judged against corpus recurrence](0030-punct-only-token-corpus-relative.md) | Accepted |
-| 0031 | 2026-07-06 | [Punctuation adjacency is judged by breadth and run length, not frequency alone](0031-punctuation-adjacency-breadth-and-length.md) | Accepted (amends 0024; retires placeholder-leftover) |
+| 0029 | 2026-07-06 | [Punctuation spacing is a per-mark corpus convention — flag the minority form](0029-punctuation-spacing-corpus-relative.md) | Superseded by 0071 (`punct.spacing-anomaly` deleted) |
+| 0030 | 2026-07-06 | [Punct-only tokens are judged against corpus recurrence](0030-punct-only-token-corpus-relative.md) | Superseded by 0071 (`lex.punct-only-token` deleted) |
+| 0031 | 2026-07-06 | [Punctuation adjacency is judged by breadth and run length, not frequency alone](0031-punctuation-adjacency-breadth-and-length.md) | Superseded by 0071 (amended 0024; its placeholder-leftover retirement stands) |
 | 0032 | 2026-07-06 | [One evidence library — the lexical rules adopt Wilson shrinkage](0032-evidence-library-wilson-unification.md) | Accepted (amends 0028, 0030) |
 | 0033 | 2026-07-06 | [The separator-punctuation class is GC `Po`, not an ASCII list](0033-separator-class-is-po-not-ascii.md) | Accepted (amends 0029, 0031) |
 | 0034 | 2026-07-06 | [`hyg.replacement-run` owns `?`-run damage; control chars report per run](0034-replacement-run-owns-mojibake.md) | Accepted (amends 0030, 0031) |
@@ -66,11 +66,11 @@ isn't visible from the code alone.
 | 0047 | 2026-07-08 | [Store the crate's full script set faithfully; push mixing policy into a probabilistic rule](0047-full-script-set-no-collapse-probabilistic-mixing.md) | Accepted (amends 0009/0022) |
 | 0048 | 2026-07-08 | [Ship the raw convention share alongside the Wilson-bound score](0048-descriptive-share-args-for-dominance-rules.md) | Accepted (extends 0029/0010) |
 | 0049 | 2026-07-09 | [CJK corner brackets are quotation marks — excluded from the bracket inventory](0049-cjk-corner-brackets-excluded-from-bracket-inventory.md) | Accepted (amends 0037; relates 0039) |
-| 0050 | 2026-07-09 | [`punct.spacing-anomaly` scores dominance × minority-recurrence rarity](0050-spacing-minority-recurrence-factor.md) | Accepted (amends 0029/0033) |
+| 0050 | 2026-07-09 | [`punct.spacing-anomaly` scores dominance × minority-recurrence rarity](0050-spacing-minority-recurrence-factor.md) | Superseded by 0071 (rule deleted; its proportional knee is 0071's placement/sequence shape) |
 | 0051 | 2026-07-10 | [Casing rebuilt on a word lexicon — two-factor scores, two rules from one module](0051-casing-two-factor-word-lexicon.md) | Accepted (supersedes 0035's scoring) |
 | 0052 | 2026-07-10 | [`terminal_strength` — learned mark trust gates casing's positional flagging, weights its censoring discount](0052-terminal-strength-mark-trust.md) | Accepted (builds on 0051) |
 | 0053 | 2026-07-10 | [`uni.rare-glyph` — the letter (L) lane, with a glyph-census substrate](0053-rare-glyph-letter-lane.md) | Accepted |
-| 0054 | 2026-07-10 | [Spacing attachment signatures — pooled class-conditioned per-side conventions](0054-spacing-attachment-signatures.md) | Accepted (amends 0050) |
+| 0054 | 2026-07-10 | [Spacing attachment signatures — pooled class-conditioned per-side conventions](0054-spacing-attachment-signatures.md) | Superseded by 0071 (rule deleted; its adjudicated multilingual roster is 0071's regression gate) |
 | 0055 | 2026-07-10 | [`case.mixed-case-word` — the interior-capital anomaly](0055-mixed-case-word.md) | Accepted |
 | 0056 | 2026-07-10 | [Rare-glyph reduce: page-table census, surface-deferred attribution](0056-rare-glyph-reduce-page-table.md) | Accepted |
 | 0057 | 2026-07-11 | [The event-stream engine — one fused book walk, every rule a listener](0057-event-stream-engine.md) | Superseded by 0067 |
@@ -85,7 +85,9 @@ isn't visible from the code alone.
 | 0066 | 2026-07-27 | [Casing's juror order is canonical (sorted), not hash-incidental](0066-canonical-juror-order.md) | Accepted |
 | 0067 | 2026-07-27 | [Typed observation substrates and the resident `Galley`](0067-typed-observation-substrates-resident-galley.md) | Accepted (supersedes legacy stateful/cache execution) |
 | 0068 | 2026-07-28 | [Cold whole-corpus analyze trades 16–35% for the resident warm model](0068-cold-analyze-trade.md) | Accepted |
+| 0069 | 2026-07-30 | [`prop.length-ratio` — asymmetric double-MAD spread with a per-side data floor](0069-length-ratio-asymmetric-spread.md) | Accepted |
 | 0070 | 2026-07-30 | [Review Depth resolves calibrated judging policy, not one shared score floor](0070-review-depth-policy.md) | Accepted (supersedes 0038's sensitivity decision) |
+| 0071 | 2026-08-04 | [`uni.nonletter-usage-anomaly` replaces three punctuation rules — the measured, adjudicated finding drift](0071-nonletter-usage-anomaly-replaces-three-rules.md) | Accepted (supersedes 0024/0029/0030/0031/0050/0054) |
 
 ## Format
 

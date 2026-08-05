@@ -1,7 +1,12 @@
 # ADR 0031: Punctuation adjacency is judged by breadth and run length, not frequency alone
 
 - **Date:** 2026-07-06
-- **Status:** Accepted
+- **Status:** **Superseded by [ADR 0071](0071-nonletter-usage-anomaly-replaces-three-rules.md)** — `punct.adjacency-anomaly` was deleted
+  on 2026-08-04. Breadth and run length as *judging* factors went with it
+  (`evidence::odds_amplify`, this ADR's length amplifier, had no other
+  consumer and was removed); the bounded same-glyph continuation component of
+  `uni.nonletter-usage-anomaly` is what recovers the `::`-vs-`:::` case. The
+  retirement of `punct.placeholder-leftover` recorded here stands.
 - **Amends:** [ADR 0024](0024-punctuation-adjacency-corpus-relative.md)
   (corpus-relative adjacency verdict). Retires the deterministic
   `punct.placeholder-leftover` of [ADR 0014](0014-deterministic-rule-batch.md).

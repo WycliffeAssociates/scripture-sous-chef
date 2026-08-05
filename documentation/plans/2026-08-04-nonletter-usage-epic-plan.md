@@ -159,7 +159,10 @@ Examples of the intended behavior:
 - a lone `~` or `$` can surface because it is rare against substantial corpus
   exposure;
 - `th3e` can surface because an otherwise ordinary digit is unusually attached
-  to alphabetic graphemes at both ends;
+  to alphabetic graphemes at both ends. **As shipped** it fires at the same score
+  through the *start marginal* rather than through topology, because its
+  `TopoClass`-conditioned `Both(Letter)` cell holds only this occurrence and
+  honestly abstains — see ADR 0071's accepted message weakening;
 - `wo.rd` and `wo"rd` can surface through placement/topology even though their
   marks are common;
 - recurrent medial `*`, detached Ethiopic punctuation, Amharic `::`, ordinary
@@ -649,8 +652,11 @@ all locally violated reasons in deterministic order
 Messages use counts, not unexplained confidence adjectives. Examples:
 
 - “`~` appears once in this translation.”
-- “`3` is attached to letters at both ends here, a placement this translation
-  does not otherwise use.”
+- “`3` is attached to a word at the start here; this translation writes it that
+  way in 0 of 12,904 other places.” (This example was originally written as
+  “attached to letters at both ends”. The score is identical, but conditioning
+  the topology table made that cell too thin to judge, so the shipped sentence
+  names the start marginal — recorded and accepted in ADR 0071.)
 - “`"` occurs between letters here; this translation normally uses it attached
   at only one end.”
 - “`. → ,` occurs here but nowhere else; other period pairings are established.”

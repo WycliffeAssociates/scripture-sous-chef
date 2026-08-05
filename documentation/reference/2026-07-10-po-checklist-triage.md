@@ -1,10 +1,13 @@
 # Idea — PO proofreading checklist triage (Larry's scripts + Greek Room)
 
-Date: 2026-07-10. **Refreshed 2026-07-30** against the current engine
-(26 live rule IDs): the triage's build candidates #1/#2/#4 shipped as
-ADRs 0053/0054/0055, #5/#7 dissolved into #1 as predicted, #6 moved to
-doubtful, and the census shipped (ADR 0058) — statuses below updated in
-place. Input: the product owner's proofreading list (Larry's
+Date: 2026-07-10. **Refreshed 2026-07-30**, and again **2026-08-04** for
+ADR 0071. Against the current engine (24 live rule IDs): the triage's build
+candidates #1/#2/#4 shipped as ADRs 0053/0054/0055; #5/#7 were routed to #1 and
+have since been **re-routed** (see below — they are the new non-letter rule's,
+not rare-glyph's); #6 moved to doubtful; the census shipped (ADR 0058); and on
+2026-08-04 three punctuation rules were replaced by one convention-learned rule
+over visible non-letters, `uni.nonletter-usage-anomaly` (ADR 0071), which now
+owns most of this list's punctuation rows. Statuses below updated in place. Input: the product owner's proofreading list (Larry's
 scripts per everyone, Greek Room per Aaron B), triaged item-by-item into
 owning subsystem, with status against the engine, and remarks on how
 sous-chef implements the idea
@@ -57,20 +60,20 @@ not error — the census shows it, a human judges). **POSTPONED** /
 | Item | Status | Rule / remarks |
 | --- | --- | --- |
 | Verse lengths vs source | **DONE** (uncalibrated) | `prop.length-ratio` — median+MAD robust-z per book and project. Never calibrated (shortlist item 1: source-paired survey). |
-| Space around punctuation | **DONE** | `punct.spacing-anomaly`, rewritten as joint attachment signatures (ADR 0054, superseding the before-only ADR 0050 model) — both sides of every mark observed. Convention-learned: French `« … »` spacing is the corpus's own majority, never flagged. Census lane: `punct.mark-spacing`. |
-| Space before phrase-ending mark | **DONE** | Same rule — it's one spacing context. |
+| Space around punctuation | **DONE** | `uni.nonletter-usage-anomaly`'s **placement** channel (ADR 0071, absorbing `punct.spacing-anomaly` and its ADR 0050 knee + ADR 0054 class conditioning). Both sides of every visible non-letter are observed as logical start/end marginals plus a four-state topology. Convention-learned: French `« … »` spacing is the corpus's own majority, never flagged. Census lane: `punct.mark-spacing` (unchanged — the extractor survives the rule). |
+| Space before phrase-ending mark | **DONE** | Same rule, same channel — it's one placement context. |
 | Repeated words | **DONE** | `lex.duplicate-word` (toggle; auto-recommendation folded into config-recommender idea). |
-| Unpaired delimiters (paren-like) | **DONE** | `punct.bracket-balance` + ADR 0049 inventory (corpus-learned pair set; CJK corner brackets excluded). Quotes deliberately out — parked with census data, ADR 0039. |
-| Unmatched angle bracket | **DONE** | Bracket inventory; a lone `<` is unpaired by count. |
-| Free-floating mark | **DONE** | `uni.combining-mark-without-base` (+ `uni.redundant-zero-width-space`, `hyg.zero-width-misuse`). |
-| Orphaned punctuation | **DONE** | `lex.punct-only-token`. |
+| Unpaired delimiters (paren-like) | **DONE**, with corrected wording | These are **corpus-relative** bracket findings, not a universally deterministic pairing check: `punct.bracket-balance` scores a delimiter family's *own* learned pairing dominance over the ADR 0049 inventory (CJK corner brackets excluded), so a never-paired glyph self-suppresses. Where pairing **abstains** — no learned convention for that family — `uni.nonletter-usage-anomaly` still provides a generic rarity/placement fallback on the same glyph. Quotes deliberately out of bracket balance — parked with census data, ADR 0039. |
+| Unmatched angle bracket | **DONE**, same wording correction | Same two-layer answer: the bracket inventory judges it if the corpus pairs `<` at all; otherwise it is an ordinary visible non-letter and reads through the generic rule. Not "unpaired by count" in the absolute sense. |
+| Free-floating mark | **DONE**, split by domain | Two different findings, and the split is by Unicode category, not by appearance: a **combining** mark with no base (U+0301 COMBINING ACUTE) is deterministic **hygiene** — `uni.combining-mark-without-base` — while a **spacing** clone of the same shape (U+00B4 ACUTE ACCENT `´`, category `Sk`) is a visible non-letter candidate and reads through `uni.nonletter-usage-anomaly`. That is why typing `´` in an editor produces no combining-mark finding: it never was one. (+ `uni.redundant-zero-width-space`, `hyg.zero-width-misuse` for the invisible cases.) |
+| Orphaned punctuation | **DONE** | `uni.nonletter-usage-anomaly`. A detached mark is a **placement** answer — its outer topology is `Neither`, judged against how this translation otherwise places that glyph — and a barely-used glyph is a **rarity** answer. The retired `lex.punct-only-token` asked a narrower whitespace-chunk question; its domain is a strict subset of the new candidate domain (`lost = 0`). |
 | Stranded backslash at end of line | **DONE** | `struct.source-marker-leftover`; marker validity itself is onion. |
 | Unresolved translation conflict | **DONE** | `struct.merge-conflict-marker`. |
-| Unexpected characters (universally-wrong subset) | **DONE** | `hyg.invalid-codepoint`, `hyg.control-chars`, `hyg.replacement-run`, `hyg.tab-in-body`. The *corpus-relative* subset (legit-somewhere glyphs, rare here) is the rare-glyph candidate below. |
-| Repeated / doubled punctuation (Amharic `፡፡`-class) | **DONE** (separators) / **PARTIAL** (quotes) | `punct.adjacency-anomaly` already *is* "repeated-character-run for punct": it catches `wait,, what` and `what?!?` by counting how often this corpus writes that exact run — a run that's frequent (Amharic `፡፡`) or spread across many books is learned as a convention and goes silent; a run the corpus almost never writes surfaces, scored higher the longer it is. The gap: **quote marks are excluded from its candidate set** (`""`, `''` never enter stats), so literal doubled quotes are unjudged — that stays parked with the quote-balance work (ADR 0039). Rare-but-valid *cross*-mark pairings in quote-heavy corpora (`"!`) are a non-issue for the same reason: quotes never enter, so they can't be flagged. |
-| Punctuation after quote mark | **PARTIAL** (by design, updated 2026-07-30) | The signature rewrite (ADR 0054) now observes both sides of every mark, but a quote as *context* reads generic `punct` and quote-adjacent sites abstain on the quote side — so `."` vs `".` ordering is still unjudged as a specific quote question. Quote-specific attachment stays parked with the quote work (ADR 0039). The census `punct.mark-spacing` lane shows quote-adjacent combos with counts. |
-| Text begins with phrase-ending punctuation | **DONE** (via ADR 0054) | A verse-leading `?And` is now an ordinary spacing opportunity: the seam reads as whitespace (no `edge` class — verses are addressing), so the mark signs `space\|letter`, and if that signature is rare for `?` in this corpus it surfaces. `lex.punct-only-token` still catches the free-standing form (`. And`). |
-| Word-medial punctuation | **DONE** (via ADR 0054 — was the gap this triage found) | `word,word` signs `letter\|letter`, judged like any other signature against the mark's own corpus conventions. Genuinely medial `-`/`'` conventions are learned as majority signatures and stay silent, as intended. |
+| Unexpected characters | **DONE**, split three ways | The item has three distinct domains and no single rule owns it: (1) **universally wrong** — `hyg.invalid-codepoint`, `hyg.control-chars`, `hyg.replacement-run`, `hyg.tab-in-body`, plus a combining mark with no base; (2) a **rare Letter** for this translation — `uni.rare-glyph`, the Letter lane only; (3) an **unusual visible non-letter** — `uni.nonletter-usage-anomaly`'s rarity channel, which covers punctuation, quotes, symbols, digits and emoji. A glyph is in exactly one of these domains, so the three never double-report the same span. |
+| Repeated / doubled punctuation (Amharic `፡፡`-class) | **DONE**, quote gap closed (ADR 0071) | `uni.nonletter-usage-anomaly`'s **sequence** channel: directed grapheme pairs (`lead → follower`) over the lead's run-leading opportunities, plus a bounded same-glyph continuation histogram for the `::`-vs-`:::` case pairs cannot reach. A pairing the translation writes often (Amharic `፡፡`, Ethiopic `፡ → ፤`) is its convention and goes silent; `,;` `.;;` `,......` surface. **Quotes now participate** — the retired adjacency rule excluded them from its candidate set, this rule does not — so literal `""` is judged as visible usage. What stays parked is quote *balance* and open/close role assignment (ADR 0039), which is a different question. |
+| Punctuation after quote mark | **DONE as visible usage** (ADR 0071), still parked as a quote-role question | `."` vs `".` is now judged: both graphemes are candidates, the ordering is a directed pair, and each mark's attachment to the other is placement evidence. What the rule deliberately does **not** do is assign opening/closing **roles**, match, nest or balance quotes — so it answers "does this translation write `."` elsewhere?" and never "is this the right kind of quote here?". Quote balance stays parked (ADR 0039). The census `punct.mark-spacing` lane still shows quote-adjacent combos with counts. |
+| Text begins with phrase-ending punctuation | **DONE** as **logical placement** (ADR 0071) | A verse-leading `?And` is judged on its logical **start** side, which reads `Spaced` at a verse seam (a verse boundary is addressing, never a sentence boundary — the domain invariant), and on its four-state topology. If that placement is rare for `?` in this translation it surfaces; the free-standing form (`. And`) is the detached `Neither` topology. Logical start/end, never visual left/right, so the finding does not move with text direction. |
+| Word-medial punctuation | **DONE**, and widened (ADR 0071) | Not just punctuation: `wo.rd`, `wo"rd`, `th3e` and a medial symbol are all the same question — a visible non-letter attached to content at both ends. `wo"rd` is the case the four-state topology exists for: it surfaces even when `"word` and `word"` are both ordinary one-sided forms. Genuinely medial conventions (`-`, and the apostrophe that is a **glottal stop letter** in Mayan/Tupí–Guaraní, 57–97% `Both`-dominant) are learned and stay silent, with no allow-list. |
 | Divergent verse lengths (Owl) | **DONE** | = `prop.length-ratio`. |
 | Verse fragment / verse may be untranslated (length reading) | **DONE**-ish | Short-vs-source is `prop.length-ratio`. The copy-from-source reading is the untranslated-words candidate below. |
 
@@ -87,14 +90,14 @@ and the backlog reorganization:
    shape, no hardcoded bad-character list. Shares its walk with the
    census `letters.glyphs` lane as planned.
 2. **Mark attachment signatures** — **SHIPPED** as the rewrite of
-   `punct.spacing-anomaly` (ADR 0054), superseding the before-only ADR
-   0050 model with no compat shim. Joint (before, after) signatures over
-   {letter, digit, space, punct}; **no `edge` class** — the verse/book
-   seam reads as whitespace (verses are addressing, per CLAUDE.md), so a
-   verse-leading `.word` is ordinary `space|letter` coverage. Quotes stay
-   out of the candidate mark set and read generic `punct` as context;
-   quote-specific attachment remains parked (ADR 0039). This closed the
-   `word,word` and `?And` gaps this triage found.
+   `punct.spacing-anomaly` (ADR 0054), then **absorbed** into
+   `uni.nonletter-usage-anomaly` (ADR 0071, 2026-08-04). Two things
+   survived the absorption and are now the replacement's placement channel:
+   ADR 0050's opportunity-proportional recurrence knee and ADR 0054's
+   class-conditioned pooling. **No `edge` class** then or now — the verse/book
+   seam reads as whitespace (verses are addressing, per CLAUDE.md). Quotes are
+   no longer excluded from candidacy, which is what closed the doubled-quote and
+   `."`-ordering gaps this table used to carry as PARTIAL.
 3. **Untranslated words / source-copy** (Owl) — **STILL OPEN**, the one
    surviving build candidate:
    [`2026-07-30-untranslated-word-calibration.md`](../calibration/2026-07-30-untranslated-word-calibration.md).
@@ -108,22 +111,29 @@ and the backlog reorganization:
    (ADR 0055). Letter-run token unit (so `Hyphenated-Name` is two
    ordinary tokens); recurrence knee excuses `LORD` / `McX`-class
    conventions; census `words.case-shapes` lane shows all counts.
-5. **Quotation-mark anomalies / straight-vs-curly** — **RESOLVED by #1
-   shipping**, as predicted: quote-type mixing (straight `"` 2× in a
-   corpus of 4,500 curly) is the rare-glyph rule doing its job; no
-   separate rule. Quote *balance* still parked (ADR 0039); the census
-   glyph lane shows the mix unconditionally.
+5. **Quotation-mark anomalies / straight-vs-curly** — **RESOLVED, and
+   RE-ROUTED 2026-08-04.** The 2026-07-30 refresh credited this to
+   `uni.rare-glyph`, which is wrong: that rule is the **Letter lane only** (ADR
+   0053), and a quote mark is not a letter. Straight-vs-curly mixing (a straight
+   `"` twice in a corpus of 4,500 curly) is `uni.nonletter-usage-anomaly`'s
+   **rarity** channel — same shape of answer, correct owner. Still no separate
+   rule. Quote *balance* remains parked (ADR 0039); the census glyph lane shows
+   the mix unconditionally.
 6. **Punctuation missing at end of chapter** — **DOUBTFUL** (moved
    2026-07-29 to
    [`ideas/doubtful/2026-07-29-doubtful-rules.md`](../ideas/doubtful/2026-07-29-doubtful-rules.md)):
    doubtful for need, not cost — no user or corpus has asked for it; a
    rule in search of a need. The Wilson self-gating story remains sound
    if a need ever appears.
-7. **Superscript digits / odd numerals** — **RESOLVED by #1 shipping**,
-   as written here: the rare-glyph rule flags the first `¹` in a corpus
-   that never uses them at full score, with no false universal assertion
-   against the corpus that legitimately writes `½`. Never built
-   separately; the census `numbers.token-shapes` lane shows them.
+7. **Superscript digits / odd numerals** — **RESOLVED, and RE-ROUTED
+   2026-08-04**, for the same reason as #5: a superscript digit is not a letter,
+   so this is `uni.nonletter-usage-anomaly`'s rarity channel, not
+   `uni.rare-glyph`'s. The first `¹` in a corpus that never uses them scores at
+   full strength, with no false universal assertion against a corpus that
+   legitimately writes `½` — and deliberately so: **No**/**Nl** numerals keep
+   their own identity and are never pooled into the Nd digit class, which is what
+   preserves their ability to fire. Never built separately; the census
+   `numbers.token-shapes` lane shows them.
 
 ## SOUS — census-only (absolute mode dissolves the house-style fight)
 
@@ -141,7 +151,15 @@ These are the naive-Latin-convention items. A hot-loop rule would need a
 house-style config war; a census row just shows what's there, ranked by
 corpus-relative rarity, and a human with knowledge the engine lacks
 decides. All land in the **number-token census** (every digit-bearing
-token grouped by shape) or the glyph/punct-sequence tables:
+token grouped by shape) or the glyph/punct-sequence tables.
+
+**The number-shape census stays exhaustive and descriptive**, and that is
+unchanged by ADR 0071. `uni.nonletter-usage-anomaly` may surface an
+unusual digit *placement* (`th3e`, a digit attached inside a word) as a scored
+finding, but the census makes **no semantic validity claim** about any number
+shape — it counts `1st`, `0.5`, `3/4` and `1,000` and lets a human judge. The
+two surfaces answer different questions over the same walk, and the census
+remains knob-free.
 
 | Item | Census home |
 | --- | --- |
@@ -179,8 +197,10 @@ token grouped by shape) or the glyph/punct-sequence tables:
 2. **Two genuinely new hot-loop items fell out of the whole PO list**,
    and both shipped: the rare-glyph rule (#1 → ADR 0053, doubling as the
    glyph-census accumulator) and the attachment-signature rewrite (#2 →
-   ADR 0054). With the census (ADR 0058) also landed, the PO list's only
-   remaining engine work is the source-paired tier (#3, untranslated
+   ADR 0054, since absorbed into `uni.nonletter-usage-anomaly` by ADR
+   0071 — which is where most of this list's punctuation rows now resolve, as one
+   rule instead of three). With the census (ADR 0058) also landed, the PO list's
+   only remaining engine work is the source-paired tier (#3, untranslated
    words + length-ratio calibration) — everything else is editor, onion,
    census follow-ons, or adjudicated dead/doubtful.
 3. **The census is not regex-matching.** The "number shapes" and glyph
@@ -206,21 +226,23 @@ From the triage's **ASK PO** rows: "Extra text / unmarked text" and
 text-outside-any-marker → onion territory, but confirm with the PO before
 routing anywhere.
 
+---
 
+## Owner's reading notes on this triage — answered by ADR 0071
 
-space around punct - spacing-anomaly
-space aroud punct
-repeated words
-unpaired delimiters - learn what actually gets paired first and look for pairing. What's the "pairing" threshold is the question I suppose?
-unmatched angle bracket - above same. Does it pair, if not, other rule
-free-floating-mark - combining-mark-without base etc; Though I did type a ´ in my editor and got no results
-orphaned punct - punc only token (i.e. should this one actually roll into our new rule as well), i.e. likely returned as the product of "$glyph" never appears detached on both sides?
-Universally wrong - hygiene
-Repeated/doubled -> Learned via proposed rule? 
-Punctuation after quote mark
-phrase-ending (product of clinging side + capitalizaiton?)
-word-medial - 
+Raw jottings made while reading the tables above, preserved with the answer the
+non-letter epic produced for each. They are the questions that shaped the epic,
+so they are kept rather than deleted.
 
-
-
-Reading:Rare-glyph / rare-letter rule — SHIPPED as uni.rare-glyph (ADR 0053; reduce page table ADR 0056). The Hawaiian case (Latn keyboard, 13-letter alphabet, a stray q): corpus-learned letter frequency, established-inventory × minority-recurrence two-factor shape, no hardcoded bad-character list. Shares its walk with the census letters.glyphs lane as planned.
+| Owner's note | Answer as shipped |
+| --- | --- |
+| *"space around punct — spacing-anomaly"* | Now `uni.nonletter-usage-anomaly`'s placement channel; `punct.spacing-anomaly` is deleted (ADR 0071). |
+| *"unpaired delimiters — learn what actually gets paired first and look for pairing. What's the 'pairing' threshold is the question I suppose?"* | Exactly the shipped design: `punct.bracket-balance` learns each family's own pairing dominance, so the "threshold" is corpus-relative rather than absolute, and a never-paired glyph self-suppresses. Where no pairing convention exists the glyph still reads through the generic non-letter rule. |
+| *"unmatched angle bracket — above same. Does it pair, if not, other rule"* | Confirmed and now literally true: bracket balance if the corpus pairs it, otherwise the generic rule. |
+| *"free-floating-mark — combining-mark-without-base etc; though I did type a `´` in my editor and got no results"* | Correct behavior, and the reason is the category split: `´` is U+00B4 ACUTE ACCENT (`Sk`), a **spacing** character that was never a combining mark, so the hygiene rule cannot see it. It is a visible non-letter candidate and now reads through `uni.nonletter-usage-anomaly`. U+0301 COMBINING ACUTE with no base remains hygiene's. |
+| *"orphaned punct — punct-only token (i.e. should this one actually roll into our new rule as well), i.e. likely returned as the product of '$glyph never appears detached on both sides'?"* | Yes to both halves. It rolled in — `lex.punct-only-token` is deleted — and the mechanism is the one guessed here: the four-state outer topology, where a detached mark is `Neither` and is judged against how the translation otherwise places that glyph. |
+| *"universally wrong — hygiene"* | Unchanged: hygiene owns the universally-wrong domain, and it wins at an exact overlapping span. |
+| *"repeated/doubled → learned via proposed rule?"* | Yes: the sequence channel's directed pairs plus the bounded same-glyph continuation histogram. |
+| *"punctuation after quote mark"* | Judged as visible usage now (quotes are candidates), but never as a quote *role* — no matching, nesting or balance. Balance stays parked (ADR 0039). |
+| *"phrase-ending (product of clinging side + capitalization?)"* | The clinging side, yes — the logical start/end marginals. **Not** capitalization: a verse seam is not a sentence boundary, so nothing here reads casing, and the casing rules stay independent. |
+| *"word-medial"* | Shipped and widened past punctuation: `wo.rd`, `wo"rd`, `th3e`, medial symbols. `wo"rd` is why the four-state topology exists. |

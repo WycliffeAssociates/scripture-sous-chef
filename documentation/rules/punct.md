@@ -4,11 +4,18 @@ The `punct.` namespace now holds exactly one rule: `bracket-balance`, the
 corpus-relative book-stream matcher in `bracket_balance.rs`.
 
 `punct.adjacency-anomaly` and `punct.spacing-anomaly` were both **retired** and
-absorbed into `uni.nonletter-usage-anomaly`. Their extractors survive in
+absorbed into [`uni.nonletter-usage-anomaly`](uni.md) (ADR 0071, which supersedes
+ADRs 0024/0029/0031/0050/0054). Their extractors survive in
 `punctuation.rs` with no rule of their own, read by the census's `punct.runs` and
 `punct.mark-spacing` lanes: the adjacent-punctuation run walk with its
 per-lead-glyph opportunity count, and the per-mark per-side class-conditioned
 attached/spaced walk. Nothing in that file judges any more.
+
+At an exact overlapping span the ownership order is deterministic hygiene →
+`punct.bracket-balance` → `uni.nonletter-usage-anomaly`: the specific structural
+owner wins where it speaks, and the generic rule remains available (as a rarity
+or placement finding) where bracket pairing abstains — a never-paired glyph, or a
+delimiter family with no learned pairing convention.
 
 ---
 

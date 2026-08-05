@@ -1,9 +1,13 @@
 # Intentional finding drift — `uni.nonletter-usage-anomaly` replaces three rules
 
 - **Date:** 2026-08-04
-- **Status:** WORKING NOTES for the Phase E ADR (plan §13 Phase E step 4). Not the
-  ADR. Everything here is measured and adjudicated; the ADR's job is to state the
-  decision and cite this.
+- **Status:** the measured source material for
+  [ADR 0071](../adrs/0071-nonletter-usage-anomaly-replaces-three-rules.md), which
+  is the decision of record. This file stays as the evidence trail; where the two
+  disagree the ADR wins. **Figures corrected 2026-08-04 at checkpoint 6** from the
+  final oracle pins (progress-log Entry 19): this rule's p99 is **128** (was 127 —
+  a percentile-convention off-by-one) and the retired pair's p99 is **75** (was 71),
+  and the depth-0/100 rows below are now measured rather than owed.
 - **Scope:** the behavior movement only. The chapter-outer scheduler movement was
   proved byte-identical at full-fleet scope on both configs (progress log Entry 5)
   and is not part of this drift.
@@ -48,17 +52,18 @@ FLAG 1 and the ledger never disagreed).
 | series | p50 | p90 | p99 | max | fleet |
 | --- | ---: | ---: | ---: | ---: | ---: |
 | the retired **trio** (what is replaced) | 18 | 61 | 170 | 308 | 40,859 |
-| the retired default-**ON** pair | 3 | 27 | 71 | 172 | 13,835 |
+| the retired default-**ON** pair | 3 | 27 | 75 | 172 | 13,835 |
 | `punct.spacing-anomaly` alone (default-off) | 12 | 37 | 132 | 278 | 27,024 |
-| **this rule at depth 50 (the shipped default)** | **12** | **52** | **127** | 282 | **33,265** |
+| **this rule at depth 50 (the shipped default)** | **12** | **52** | **128** | 282 | **33,265** |
 
 Against the coverage it replaces, the rule is **strictly cheaper on every axis**:
-0.81× fleet, p50 12 vs 18, p90 52 vs 61, p99 127 vs 170.
+0.81× fleet, p50 12 vs 18, p90 52 vs 61, p99 128 vs 170.
 
 ### The defaults rider — stated separately so the ADR cannot be accused of basis-shopping
 
-A default user moves from the retired default-ON **pair** (p50 3, p90 27, p99 71,
-13,835 fleet) to this rule at depth 50 (p50 12, p90 52, p99 127, 33,265). That is
+A default user moves from the retired default-ON **pair** (p50 3, p90 27, p99 75,
+13,835 fleet) to this rule at depth 50 (p50 12, p90 52, p99 128, 33,265) — a net
+**+19,430 findings fleet-wide**. That is
 **deliberately heavier**: defaults now include the **spacing domain they never
 had** (`punct.spacing-anomaly` shipped default-off and carries p50 12 / p99 132 /
 27,024 of its own). Roughly `pair + spacing = trio`, and the rule is cheaper than
@@ -68,15 +73,18 @@ silent coverage regression for default users.
 
 ### Review Depth volumes (final knobs)
 
-| depth | floor | p50 | p90 | p99 |
-| --- | --- | ---: | ---: | ---: |
-| 0 | 0.90 | — | — | — |
-| 50 | 0.75 | 12 | 52 | 127 |
-| 100 | 0.50 | — | — | — |
+Measured at checkpoint 5 on the **shipped** rule through
+`config_at_review_depth` (`calibrate --nonletter-depths`), zeros included over
+all 1,504 corpora, ceil-rank percentiles:
 
-Monotone with no cliffs or dead ranges; the depth-0/100 rows are re-measured at
-checkpoint 5 alongside the final pins (the last full-fleet depth sweep, addendum
-§B6, predates the conditioned-topology axis).
+| depth | floor | p50 | p90 | p99 | max | fleet | corpora firing |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 0 | 0.90 | 5 | 23 | 54 | 280 | 14,010 | 1,366 |
+| **50** | **0.75** | **12** | **52** | **128** | 282 | **33,265** | 1,452 |
+| 100 | 0.50 | 30 | 110 | 272 | 562 | 73,541 | 1,491 |
+
+Monotone, no cliffs, no dead ranges. The depth-50 fleet total independently
+reproduces the oracle dump's 33,265, which is what makes the table trustworthy.
 
 ## 4. The migration ledger — coverage is intact
 
@@ -295,5 +303,6 @@ full at the shipped constants. Accepted in Entry 14 directive 5.
   identical. It would restore the `th3e`/detached-mark wording without touching any
   verdict. Post-epic evaluation.
 - Plan §2/§10's `th3e` example wording, the PO checklist rows (plan §11.3–11.4),
-  and the `documentation/rules/` write-up for the new rule are checkpoint-6 work.
+  and the `documentation/rules/` write-up for the new rule were all completed at
+  checkpoint 6, alongside ADR 0071 itself.
 - `ayn_reg`: obtain the corpus or adjudicate a substitute anchor.

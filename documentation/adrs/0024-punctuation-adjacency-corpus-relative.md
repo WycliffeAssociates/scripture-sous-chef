@@ -1,7 +1,13 @@
 # ADR 0024: Repeated/mixed punctuation is judged corpus-relative, not by a fixed allow-list
 
 - **Date:** 2026-07-01
-- **Status:** Accepted
+- **Status:** **Superseded by [ADR 0071](0071-nonletter-usage-anomaly-replaces-three-rules.md)** — `punct.adjacency-anomaly` was
+  deleted on 2026-08-04 and its domain absorbed by
+  `uni.nonletter-usage-anomaly`. The corpus-relative principle stands and
+  carries into that rule's directed-pair sequence channel; the exact
+  maximal-run identity below does not. This ADR's named Arabic `۔۔`
+  suppression win is recorded in 0071 as **explicitly unverified** —
+  `ayn_reg` is absent from the current fleet.
 - **Amends:** [ADR 0014](0014-deterministic-rule-batch.md) (`punct.repeated-punct`
   was one of its deterministic rules). Builds on
   [ADR 0017](0017-stateful-rules-stats-returning-analyze.md) (reduce/merge/judge)

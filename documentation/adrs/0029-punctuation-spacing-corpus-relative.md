@@ -1,7 +1,10 @@
 # ADR 0029: Punctuation spacing is a per-mark corpus convention — flag the minority form
 
 - **Date:** 2026-07-06
-- **Status:** Accepted
+- **Status:** **Superseded by [ADR 0071](0071-nonletter-usage-anomaly-replaces-three-rules.md)** — `punct.spacing-anomaly` was deleted
+  on 2026-08-04 and its domain absorbed by `uni.nonletter-usage-anomaly`,
+  whose placement channel is this model's direct descendant. Its extractor
+  survives, rule-free, for the census's `punct.mark-spacing` lane.
 - **Amends:** [ADR 0014](0014-deterministic-rule-batch.md), which shipped
   `punct.space-before-punct` as a deterministic, default-disabled per-verse rule.
 - **Builds on:** [ADR 0017](0017-stateful-rules-stats-returning-analyze.md)

@@ -1,7 +1,10 @@
 # ADR 0030: Punct-only tokens are judged against corpus recurrence
 
 - **Date:** 2026-07-06
-- **Status:** Accepted
+- **Status:** **Superseded by [ADR 0071](0071-nonletter-usage-anomaly-replaces-three-rules.md)** — `lex.punct-only-token` was deleted on
+  2026-08-04. Its whitespace-chunk domain is a strict subset of
+  `uni.nonletter-usage-anomaly`'s candidate domain (full-fleet ledger:
+  `lost = 0`).
 - **Builds on:** [ADR 0017](0017-stateful-rules-stats-returning-analyze.md)
   (reduce/merge/judge),
   [ADR 0024](0024-punctuation-adjacency-corpus-relative.md)

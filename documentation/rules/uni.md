@@ -15,14 +15,21 @@ and flags only a *doubled* U+200B run (line-break redundant) at Info (ADR
 (`uni.zero-width-space-anomaly`, ADR 0023), retired because a cross-corpus ablation
 found no error class it uniquely caught.
 
-`uni.mixed-normalization` is the one exception to "script identity": it
-compares raw Unicode encodings of the same abstract character, not scripts,
-and is deterministic and corpus-scoped rather than per-verse (ADR 0063).
+Two members are exceptions to "script identity". `uni.mixed-normalization`
+compares raw Unicode encodings of the same abstract character, not scripts, and
+is deterministic and corpus-scoped rather than per-verse (ADR 0063).
+`uni.nonletter-usage-anomaly` reasons about **visible non-letters** — the
+punctuation, quotes, symbols, digits and emoji the other families leave alone —
+and is corpus-relative, script-agnostic and the only default-on scored rule in
+this family (ADR 0071). It lives here rather than under `punct.` because its
+candidate domain is every visible non-alphabetic grapheme, not punctuation
+specifically; `punct.` now holds only `punct.bracket-balance`.
 
 Source: `crates/core/src/signals/hygiene.rs`,
 `crates/core/src/signals/script_mixing.rs`,
 `crates/core/src/signals/zero_width_space.rs`,
-`crates/core/src/signals/mixed_normalization.rs`.
+`crates/core/src/signals/mixed_normalization.rs`,
+`crates/core/src/signals/nonletter_usage.rs`.
 
 ---
 
@@ -331,3 +338,122 @@ suppression with `uni.rare-glyph` (so a normalization-variant scalar isn't
 flagged twice) is a separate, not-yet-scoped follow-up. An NFD fix target
 is deferred unless a future product decision values preserving a
 decomposed house style over NFC interoperability.
+
+---
+
+## `uni.nonletter-usage-anomaly` — Unusual nonletter usage
+
+> **Severity** Info · **Default** **on** · **Scope** substrate-backed,
+> corpus-relative, target-only · **Review Depth** mapped (0 → 0.90, 50 → 0.75,
+> 100 → 0.50) · **Knobs** `emit_score_min`, `rarity_min_exposure`, `rarity_k`,
+> `placement_min_pool`, `placement_k`, `placement_rate_per_10k`, `placement_z`,
+> `sequence_min_leads`, `sequence_k`, `sequence_rate_per_10k`, `sequence_z`,
+> `continuation_min_support` · **Source** `signals/nonletter_usage.rs` ·
+> **ADR** 0071 (replaces `punct.spacing-anomaly`, `punct.adjacency-anomaly` and
+> `lex.punct-only-token`)
+
+**Flags** — A visible non-letter — punctuation, quote, symbol, digit, emoji —
+used in a way this translation almost never uses it. Four shapes, from three
+independent channels:
+- **barely used at all**: `~` in a text that writes it in two places; the first
+  `¹` in a corpus that never uses superscripts; `*******` wreckage where `*`
+  appears in only two *places*
+- **placed unusually**: `wo.rd` (a period inside a word), `th3e` (a digit inside
+  a word), a comma with no space after it where every other comma has one, a
+  mark standing detached from the text
+- **oddly paired**: `. → ,` written here and nowhere else; `,;`
+- **repeated further than usual**: `:::` where the text has established `::`
+
+**Clean (not flagged)** — Anything the translation does consistently, whatever
+the writing system: French `« … »` spacing, Ethiopic `፡ → ፤`, Devanagari
+verse-final dandas, numeric grouping (`1,000`), a medial apostrophe that is a
+**glottal stop letter** in Mayan and Tupí–Guaraní (`Both` topology 57–97%
+dominant — silenced with no allow-list and no script special-casing). Also
+clean: a thin identity with no history of its own — a single medial `*` makes
+placement **abstain** rather than conclude that medial `*` is the convention.
+
+**Why it matters** — Non-letters carry a translation's typographic conventions,
+and the conventions differ per project and per script. A rule with a fixed idea
+of correct spacing or correct pairing is wrong in most of the world. This rule
+learns the translation's own habits and shows only the occurrences that stand
+against them, saying which habit and how many places back it up.
+
+**Verdict model** — `score = max(rarity, placement, sequence)` — three
+independently sufficient channels, never noisy-OR, so correlated sub-reasons can
+all be *explained* without inflating the score. Every count is
+**leave-one-out**: the occurrence under judgment is removed from both numerator
+and denominator, so "in 0 of 1,601 other places" is literally true. An abstaining
+channel is never read as a zero, and a channel with no support may go quiet while
+another well-supported channel still speaks.
+
+1. **Absolute rarity** — how few separate *places* the grapheme appears in.
+   Counted as **run memberships** (maximal non-letter runs), not occurrences,
+   with LOO excluding the whole run: that is what stops wreckage from licensing
+   itself (`*******` + `****` is 11 occurrences but only 2 places). Nd digits
+   pool into one class identity for this numerator, so a stray digit in a
+   digit-free translation fires while an ordinary digit in a numeric text does
+   not; No/Nl numerals (`²`, `½`) keep their own identity and are never pooled.
+   Abstains below `rarity_min_exposure` visible-non-letter occurrences
+   corpus-wide.
+2. **Placement** — start-side marginal, end-side marginal, and a bounded
+   four-state outer topology (`Neither | StartOnly | EndOnly | Both`),
+   `max` across them. Start/end are **logical**, never visual left/right. The
+   topology table is conditioned on a coarse outer content class (`TopoClass`:
+   `Letter` / `Digit` / `Detached`) and abstains on a thin or degenerate cell.
+   Topology is what surfaces `wo"rd` while `"word` and `word"` both stay
+   ordinary.
+3. **Sequence** — directed grapheme pairs (`lead → follower`, digits pooled as
+   the follower key) over the lead's run-leading opportunities, plus a bounded
+   same-glyph continuation histogram for the `::`-vs-`:::` case that pairs cannot
+   reach (both edges of `:::` are familiar).
+
+Both placement and sequence use ADR 0050's **opportunity-proportional recurrence
+knee** `K = base + slope·N/10⁴` over the judged pool's volume, not a flat knee.
+That is not decoration: a flat knee silences exactly the slip clouds a large
+translation produces, and reintroducing one here was the defect the migration
+ledger caught (ADR 0071).
+
+**Config** — `emit_score_min` is the decision threshold and the one users
+normally touch, through **Review Depth** rather than directly (0.90 strict →
+0.75 default → 0.50 exploratory). The support gates (`rarity_min_exposure`,
+`placement_min_pool`, `sequence_min_leads`, `continuation_min_support`) decide
+when a channel has enough evidence to speak at all; the knee knobs
+(`*_k`, `*_rate_per_10k`) decide how many sightings still count as unusual given
+that much opportunity; `*_z` is Wilson confidence (1.0 here — measured, these
+pools are large enough that a 95% bound is indistinguishable from a 68% one on
+the bulk). All are advanced overrides. See
+[`reference/config.md` §6b](../reference/config.md).
+
+**Nuance & ADR ties** — Candidacy is a **visible non-alphabetic extended
+grapheme cluster**: an alphabetic base is context and its combining marks stay
+part of it; controls, zero-width/format characters, invalid code points and a
+combining mark with no base belong to **hygiene** and are excluded from
+candidacy, so hygiene and this rule can never both own a span. Identity is exact
+raw grapheme bytes (`uni.mixed-normalization` owns equivalence claims).
+Findings are **coalesced per maximal run** — several firing members of one run
+are one finding whose range covers the run. Ownership at an exact span is
+deterministic hygiene → established bracket/quote structural violation → this
+rule, with no generic span deduplicator; `punct.bracket-balance`,
+`uni.combining-mark-without-base`, `uni.mixed-numeral-systems` and
+`uni.rare-glyph` (the **Letter** lane) stay separate, and this rule provides the
+generic rarity fallback where a specific structural rule abstains. Quotes
+participate in every channel as ordinary graphemes with **no opening/closing
+role, matching, nesting or balance** — quote balance remains parked (ADR 0039).
+Verse seams are **not** discourse boundaries: a run never spans a seam, the outer
+context of a chapter-edge run reads `Spaced` whenever a neighbouring chapter
+exists, and `Boundary` (abstain) only at a true **book** edge. It is a typed
+observation substrate (ADR 0067) with `SCHEMA_STAMP = 2`, retained compact sites,
+and dirty-chapter materialization; its whole-corpus denominators mean a
+book replacement that moves any count re-judges every identity — the delta is
+either empty or every key, never a subset.
+
+**Open issues / future work** — **Digit placement pooling** stays deferred (the
+digit fire rate is ~3–4× punctuation's after correcting for run coalescing).
+**Class-conditioned topology with pooled-table backoff on thin cells** would
+restore the fuller `th3e` / detached-mark wording — *"attached to text at both
+ends"* rather than *"attached to a word at the start"* — with identical scores;
+recorded as an idea candidate, not implemented. **`ayn_reg`** (ADR 0024's Arabic
+`۔۔` suppression win) is absent from the fleet and its row is explicitly
+unverified. The retained footprint (~3.4 KB/chapter, 32% of the default resident
+total) is this substrate's tight budget, so any new retained axis is a measured
+trade — see the `materialize` segmentation candidate.
